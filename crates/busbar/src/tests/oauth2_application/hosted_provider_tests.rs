@@ -194,3 +194,89 @@ async fn a_refresh_link_rotates_only_from_busbars_own_page() {
     );
     handle.abort();
 }
+
+async fn start_cookie(base: &str) -> (String, serde_json::Value) {
+    let response = client()
+        .get(format!("{base}/auth/token?method=microsoft"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 302);
+    let raw = response.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .strip_prefix("busbar_login=")
+        .unwrap()
+        .to_owned();
+    let decoded = cookie(&raw);
+    let location = response.headers()["location"].to_str().unwrap();
+    let nonce =
+        super::browser::query_param(location, "nonce").expect("actual OIDC authorize nonce");
+    assert_eq!(
+        super::browser::percent_decode(&nonce),
+        decoded["nonce"].as_str().unwrap(),
+        "the real plugin uses the cookie's nonce"
+    );
+    (raw, decoded)
+}
+
+#[tokio::test]
+async fn callback_state_mismatch_400() {
+    let (base, handle) = hosted(&[("microsoft", true)]).await;
+    let (raw, decoded) = start_cookie(&base).await;
+    let code = format!("refused-state-{}", busbar_kernel::door::op_id().counter());
+    let response = client()
+        .get(format!("{base}/auth/token"))
+        .query(&[("code", code.as_str()), ("state", "WRONG-STATE")])
+        .header("cookie", format!("busbar_login={raw}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400, "state mismatch must be a clean 400");
+    let response = client()
+        .get(format!("{base}/auth/token"))
+        .query(&[
+            ("code", code.as_str()),
+            ("state", decoded["state"].as_str().unwrap()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400, "no cookie ⇒ 400");
+    assert_eq!(
+        issuer::exchanges_for(&code),
+        0,
+        "no complete_login exchange is handed to the actual plugin on a refused callback"
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn callback_nonce_mismatch_rejected() {
+    let (base, handle) = hosted(&[("microsoft", true)]).await;
+    let (raw, decoded) = start_cookie(&base).await;
+    let code = format!("WRONG-NONCE-{}", busbar_kernel::door::op_id().counter());
+    assert_ne!(code, decoded["nonce"].as_str().unwrap());
+    let response = client()
+        .get(format!("{base}/auth/token"))
+        .query(&[
+            ("code", code.as_str()),
+            ("state", decoded["state"].as_str().unwrap()),
+        ])
+        .header("cookie", format!("busbar_login={raw}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        400,
+        "an id_token whose nonce ≠ the cookie nonce must be rejected (no key issued)"
+    );
+    let body = response.text().await.unwrap();
+    assert!(!body.contains("bbk_"), "no key issued");
+    assert_eq!(issuer::exchanges_for(&code),1,"the real plugin exchanges the callback once; start_cookie proved it received the core's nonce");
+    handle.abort();
+}

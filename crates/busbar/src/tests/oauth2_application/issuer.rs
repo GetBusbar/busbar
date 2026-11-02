@@ -5,7 +5,11 @@
 // the tokens come from this key; the plugin fetches the document over a real TLS socket.
 const KEY_ID: &str = "distribution-oidc";
 
-type Idp = (ring::signature::EcdsaKeyPair, String, String);
+struct Idp {
+    jwks_url: String,
+    certificate: String,
+    exchanges: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, usize>>>,
+}
 
 fn idp() -> &'static Idp {
     use base64::Engine as _;
@@ -43,6 +47,9 @@ fn idp() -> &'static Idp {
         );
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("the local IdP port");
         let jwks_url = format!("https://{}/jwks", listener.local_addr().expect("the IdP address"));
+        let issuer = jwks_url.trim_end_matches("/jwks").to_owned();
+        let exchanges = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::<String,usize>::new()));
+        let observed = exchanges.clone();
         std::thread::spawn(move || {
             use std::io::{Read as _, Write as _};
             for socket in listener.incoming() {
@@ -62,10 +69,34 @@ fn idp() -> &'static Idp {
                         break;
                     }
                 }
+                let headers = String::from_utf8_lossy(&request);
+                let length = headers.lines().find_map(|line| {
+                    let (name,value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().ok()).flatten()
+                }).unwrap_or(0);
+                let mut content = vec![0; length.min(8192)];
+                if stream.read_exact(&mut content).is_err() { continue; }
                 let (status, body) = if request.starts_with(b"GET /jwks HTTP/1.1\r\n") {
-                    ("200 OK", jwks.as_str())
+                    ("200 OK", jwks.clone())
+                } else if request.starts_with(b"POST /token HTTP/1.1\r\n") {
+                    let form = String::from_utf8_lossy(&content);
+                    let code = form.split('&').filter_map(|pair| pair.split_once('='))
+                        .find(|(name,_)| *name=="code")
+                        .map(|(_,value)| super::browser::percent_decode(&value.replace('+'," ")))
+                        .unwrap_or_default();
+                    *observed.lock().unwrap().entry(code.clone()).or_default() += 1;
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                    let header = b64.encode(serde_json::json!({"alg":"ES256","typ":"JWT","kid":KEY_ID}).to_string());
+                    let claims = b64.encode(serde_json::json!({
+                        "iss":issuer,"aud":"oauth-hosted","sub":"alice","roles":["members"],
+                        "iat":now,"exp":now+3600,"nonce":code,
+                    }).to_string());
+                    let input = format!("{header}.{claims}");
+                    let signature = signing_key.sign(&ring::rand::SystemRandom::new(),input.as_bytes()).expect("sign actual IdP token");
+                    let token = format!("{input}.{}",b64.encode(signature.as_ref()));
+                    ("200 OK",serde_json::json!({"token_type":"Bearer","access_token":"local-oidc-access","id_token":token}).to_string())
                 } else {
-                    ("404 Not Found", "{}")
+                    ("404 Not Found", "{}".into())
                 };
                 let _ = write!(stream,
                     "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -75,25 +106,35 @@ fn idp() -> &'static Idp {
                 let _ = stream.flush();
             }
         });
-        (signing_key, jwks_url, cert_pem)
+        Idp { jwks_url, certificate: cert_pem, exchanges }
     })
 }
 
 pub fn cert_pem() -> &'static str {
-    &idp().2
+    &idp().certificate
 }
 
 pub fn settings(audience: &str) -> serde_json::Map<String, serde_json::Value> {
     serde_json::json!({
-        "issuer": idp().1.trim_end_matches("/jwks"),
+        "issuer": idp().jwks_url.trim_end_matches("/jwks"),
         "audience": audience,
-        "jwks_url": idp().1,
+        "jwks_url": idp().jwks_url,
         "ca_cert_pem": cert_pem(),
         "role_claim": "roles",
-        "authorization_endpoint": format!("{}/authorize", idp().1.trim_end_matches("/jwks")),
-        "token_endpoint": format!("{}/token", idp().1.trim_end_matches("/jwks")),
+        "authorization_endpoint": format!("{}/authorize", idp().jwks_url.trim_end_matches("/jwks")),
+        "token_endpoint": format!("{}/token", idp().jwks_url.trim_end_matches("/jwks")),
     })
     .as_object()
     .expect("OIDC settings")
     .clone()
+}
+
+pub fn exchanges_for(code: &str) -> usize {
+    idp()
+        .exchanges
+        .lock()
+        .unwrap()
+        .get(code)
+        .copied()
+        .unwrap_or(0)
 }
