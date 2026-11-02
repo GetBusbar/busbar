@@ -110,7 +110,9 @@ async fn only_explicit_operator_device_clients_can_omit_redirects_and_use_device
     assert!(!client.grant_types.contains(&GrantType::DeviceCode));
 }
 
-fn build_owner(identity: crate::config::AsIdentity) -> Result<crate::plane::AsPlane, String> {
+fn build_owner(
+    identity: crate::config::AsIdentity,
+) -> Result<crate::plane::AsPlane, crate::plane::AsBuildError> {
     crate::plane::AsPlane::build_carrying(
         identity,
         None,
