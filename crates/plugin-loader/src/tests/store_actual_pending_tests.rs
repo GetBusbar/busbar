@@ -556,4 +556,15 @@ fn a_store_door_without_needs_states_none() {
         "require the actual need-declaring product"
     );
     assert_eq!(statement.needs_len, 1);
+    assert!(!statement.needs.is_null());
+    // SAFETY: validated Statement has exactly one live Need in the still-retained
+    // qualified product image. Its borrowed UTF-8 transport is validated metadata.
+    let transport = unsafe {
+        let need = &*statement.needs;
+        std::slice::from_raw_parts(need.transport.ptr, need.transport.len)
+    };
+    assert_eq!(
+        transport, b"tcp",
+        "actual MySQL's need index zero declares TCP"
+    );
 }
