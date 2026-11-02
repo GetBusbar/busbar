@@ -512,8 +512,7 @@ fn hook_route_lists_require_alignment_before_copying() {
             *context
                 .expect("a hook has a context")
                 .downcast::<HookContext>()
-                .ok()
-                .expect("the hook context has its own type")
+                .unwrap_or_else(|_| panic!("the hook context has its own type"))
         })
     };
     let mut tail = Tail::EMPTY.with_access(CLASS_GATE, PROMPT_NO, USER_NO);
