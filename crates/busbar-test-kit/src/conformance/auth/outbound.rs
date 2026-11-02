@@ -253,6 +253,7 @@ struct Style {
     style: String,
     credential: Option<Vec<u8>>,
 
+    // settings-leak-lint: allow — NON-PROJECTION conformance-harness type: one `auth.outbound`
     settings: Vec<u8>,
     head: Head,
     expect: String,

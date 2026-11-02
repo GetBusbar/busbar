@@ -100,6 +100,7 @@ impl std::fmt::Debug for LoadedSecret {
 }
 
 struct Lending {
+    // settings-leak-lint: allow — NON-PROJECTION engine type: one resolve's settings bytes, lent to
     settings: Vec<u8>,
     held: Mutex<SecretValue<Vec<u8>>>,
 }

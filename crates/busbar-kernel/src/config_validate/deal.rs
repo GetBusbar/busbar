@@ -237,6 +237,7 @@ impl<'a> Seat<'a> {
 pub struct Section {
     /// Where it sits in the operator's file: one path per root key it was dealt from.
     pub at: Vec<Vec<String>>,
+    // settings-leak-lint: allow — NON-PROJECTION engine type. `Section` derives no `Serialize`: it
     /// The blob that crosses: `{verb: section}` for every stated verb the document writes, reserved
     /// sub-keys stripped; an instance's own `settings`.
     pub settings: Value,

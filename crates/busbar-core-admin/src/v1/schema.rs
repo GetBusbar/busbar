@@ -252,6 +252,7 @@ pub struct ConfigSettingsView {
     /// `true` on a PUT that stored + swapped; `false` on a GET (a pure read).
     pub applied: bool,
     pub config_version: u64,
+    // settings-leak-lint: allow — response ENVELOPE member; every bag nested inside it is reduced to
     /// The current effective root-section overlay (only the fields the operator has set; base
     /// `config.yaml` stands for the rest). An arbitrary JSON object (the `RootSettings` projection),
     /// REDACTED by `service::redact_settings_bags`: every opaque `settings:` bag inside it (today

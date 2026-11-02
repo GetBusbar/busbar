@@ -48,6 +48,7 @@ use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::{Dispatcher, Frame, Plugin};
 
 struct Lending {
+    // settings-leak-lint: allow — NON-PROJECTION engine type: one resolve's settings bytes, lent to
     settings: Vec<u8>,
     held: Mutex<Held<Vec<u8>>>,
 }

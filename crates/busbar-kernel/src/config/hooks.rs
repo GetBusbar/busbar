@@ -23,6 +23,7 @@ pub struct HookDefCfg {
     /// The `kind: hook` PLUGIN backing this named hook (by signed-manifest name/alias). REQUIRED,
     /// non-empty; an unresolvable/wrong-kind reference is a fail-closed plugin-preflight error.
     pub module: String,
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
     /// The module's own opaque settings (busbar never interprets them; pushed to the plugin via
     /// `configure`).
     #[serde(default)]
@@ -332,6 +333,7 @@ pub struct HookCfg {
     /// below).
     #[serde(default)]
     pub at: Option<HookStage>,
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
     /// OPAQUE settings map pushed to the hook via the `configure` op: sent to the plugin at
     /// load and re-pushed (commit-on-ack) by `PATCH /api/v1/admin/hooks/{name}/settings`. Busbar
     /// never interprets the contents.

@@ -164,6 +164,7 @@ pub struct FoldSettings<'s> {
     subject: &'s Subject,
     namespace: String,
 
+    // settings-leak-lint: allow — NON-PROJECTION conformance-harness type: one fold's filled
     settings: Vec<u8>,
 }
 
@@ -1148,6 +1149,7 @@ pub fn open_resumed<K: Kind>(p: &Plugin<K>, d: &Dispatcher, settings: &[u8]) -> 
 }
 
 struct OpenLend {
+    // settings-leak-lint: allow — NON-PROJECTION conformance-harness type: the settings bytes a
     settings: Vec<u8>,
     _secrets: Vec<Vec<u8>>,
     blobs: Vec<Blob>,

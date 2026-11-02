@@ -552,6 +552,7 @@ pub struct AuthInstance {
     carriers: Mutex<Vec<String>>,
     metadata_valid: AtomicBool,
 
+    // settings-leak-lint: allow — NON-PROJECTION engine type: the settings bytes this instance was
     settings: Vec<u8>,
 
     secrets: KeptSecrets,

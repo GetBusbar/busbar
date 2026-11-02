@@ -69,6 +69,7 @@ pub struct SecretRef {
     /// The secret module resolving this reference (`env` / `file` built-ins, or a `kind: secret`
     /// plugin's name/alias).
     pub module: String,
+    // settings-leak-lint: allow — DECLARATION, not a projection. This bag is the REFERENCE itself
     /// The module's own settings (opaque to busbar; the built-ins read `key` / `path`).
     pub settings: serde_json::Map<String, serde_json::Value>,
 }

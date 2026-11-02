@@ -65,6 +65,7 @@ pub struct IdentityProviderCfg {
     /// without it is headless-only (still usable via `POST /auth/token`).
     #[serde(default)]
     pub browser_login: Option<BrowserLoginCfg>,
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
     /// The module's own opaque settings (pushed to the auth plugin verbatim).
     #[serde(default)]
     pub settings: serde_json::Map<String, serde_json::Value>,
@@ -89,6 +90,7 @@ pub struct AuthChainEntry {
     pub max_admin_scope: Option<String>,
     /// The operator credential's token, from its definition.
     pub token: Option<SecretRef>,
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
     /// The module's own opaque settings (pushed to an auth plugin verbatim).
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
@@ -359,6 +361,7 @@ pub struct AuthMethodCfg {
     pub module: String,
     /// Browser-login parameters; `Some` ⇒ this provider renders a button on the hosted login page.
     pub browser_login: Option<BrowserLoginCfg>,
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
     /// The module's own opaque settings, pushed to the module verbatim (issuer, audience, …).
     pub settings: serde_json::Map<String, serde_json::Value>,
 }

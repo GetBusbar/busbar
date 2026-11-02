@@ -93,6 +93,7 @@ pub struct StatusReply {
     /// The settings version the hook says it is running.
     #[serde(default)]
     pub settings_version: Option<u64>,
+    // settings-leak-lint: allow — INBOUND wire reply the engine only consumes: the hook's echo of
     /// The hook's echo of its resolved settings bag.
     #[serde(default)]
     pub settings: Option<serde_json::Map<String, serde_json::Value>>,

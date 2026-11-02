@@ -71,6 +71,7 @@ pub struct StoreCfg {
     /// it is empty, which `--validate` refuses as 1.5.5 refused an empty one.
     #[serde(default)]
     pub module: String,
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
     /// The module's own opaque settings, passed through verbatim as its config JSON.
     #[serde(default)]
     pub settings: serde_json::Map<String, serde_json::Value>,
@@ -123,6 +124,7 @@ pub fn store_required() -> String {
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct SecretModuleCfg {
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
     /// The module's own opaque module-level settings, delivered to the plugin's `open()` as its config
     /// JSON. Any `SecretRef`-typed value (e.g. `token: { env: VAULT_TOKEN }`) is resolved via the
     /// built-in env/file modules before it crosses the ABI.
@@ -443,6 +445,7 @@ pub struct ExportDefCfg {
     /// `true` is a LOUD "not yet implemented" error rather than a promise nothing keeps.
     #[serde(default)]
     pub durable: bool,
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
     /// The module's own settings bag. OPAQUE at this layer exactly like `hooks.<name>.settings` —
     /// typed per module by busbar-core's `resolve_export`, so a typo inside it still fails boot loudly.
     #[serde(default)]

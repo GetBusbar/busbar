@@ -199,6 +199,7 @@ struct Inner {
     dispatcher: Arc<Dispatcher>,
     rebind: Rebind,
 
+    // settings-leak-lint: allow — NON-PROJECTION engine type: the instance's own settings bytes,
     settings: zeroize::Zeroizing<Vec<u8>>,
 
     configured: Mutex<Configuration>,

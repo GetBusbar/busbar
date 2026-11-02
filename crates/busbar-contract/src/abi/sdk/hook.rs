@@ -787,6 +787,7 @@ pub trait Hook: Send + Sync {
 /// for it and the generation it opens (or refreshes) to.
 #[derive(Clone, Copy)]
 pub struct Opening<'a> {
+    // settings-leak-lint: allow — borrowed lifecycle input to the hook, never an admin response
     /// The operator's section exactly as the host lent it (empty when none, as 1.5.5 handed it).
     pub settings: &'a str,
     /// The secrets the host resolved for the instance, in the order its settings name them.
