@@ -52,7 +52,7 @@
 //!    collision key the kernel checks at load (the same shape B.5 gives export's routes).
 //! 10. [`ConfigureIn`] gains `name`, echoing the OLD `ConfigureBody`'s instance name.
 //! 11. Hook words are Statement word marks
-//!    ([`MARK_WORD_HOOK`](crate::abi::mechanism::door::MARK_WORD_HOOK)): STATIC, a Statement fact.
+//!     ([`MARK_WORD_HOOK`](crate::abi::mechanism::door::MARK_WORD_HOOK)): STATIC, a Statement fact.
 //!
 //!
 //! **OFF-WORKER (OWNER RULING, decided 2026-09-27, abi-brief.md section 4 item 1):** every hook call

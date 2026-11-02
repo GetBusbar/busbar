@@ -128,6 +128,7 @@
 //! 5. [`MAX_REFUSAL_TEXT`] is at or above the largest field line a transport admits, so words that
 //!    echo a field line the caller sent never overflow it.
 //! 6. A refusal concerning an entry is audited without charging the caller.
+//!
 //! The caller's grant is judged before the entry's standing. A REFUSED
 //!    `arrive` that names the entry its refusal concerns ([`ArriveOut::pool`] with a
 //!    [`ROUTE_POOL`] or [`ROUTE_DIRECT`] [`ArriveOut::route`], and its operation class and
