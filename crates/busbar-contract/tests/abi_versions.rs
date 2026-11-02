@@ -151,7 +151,9 @@ fn every_slot_type_is_extern_c() {
     let door: DoorFn = a_sealed_door;
     let wake: WakeFn = a_wake;
     assert_eq!(
-        op(std::ptr::null_mut(), std::ptr::null(), std::ptr::null_mut()).outcome(),
+        // SAFETY: this exact fixture slot ignores all three pointers, accepting NULL without
+        // reading input or output; no general plugin slot is entered with these pointers.
+        unsafe { op(std::ptr::null_mut(), std::ptr::null(), std::ptr::null_mut()) }.outcome(),
         Outcome::Ready
     );
     assert!(raw().is_null());
