@@ -2617,3 +2617,7 @@ mod acceptance_1_5_5_tests;
 #[cfg(test)]
 #[path = "tests/ticket_store_tests.rs"]
 mod ticket_store_tests;
+
+#[cfg(test)]
+#[path = "tests/ticket_admission_policy.rs"]
+mod ticket_admission_policy;
