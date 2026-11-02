@@ -29,7 +29,7 @@ fn build_with_hook_makes_a_plane_attach_live() {
     let env =
         busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
 
-    let mut builder = crate::new_test_app().hook_env(env);
+    let mut builder = crate::distribution::admin_cross_plane::new_test_app().hook_env(env);
     let tools = busbar_kernel::plane_driver::registry::plane_decl_for_config_section("tools")
         .expect("a plane is registered to own the `tools:` section");
     builder.set_container_hooks(

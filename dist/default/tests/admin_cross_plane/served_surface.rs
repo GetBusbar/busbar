@@ -30,7 +30,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::v1::contract::ADMIN_PREFIX;
+use crate::distribution::admin_cross_plane::v1::contract::ADMIN_PREFIX;
 use busbar_kernel::config::named_map::NamedMapSection;
 
 type Op = (String, String);
@@ -51,23 +51,26 @@ fn abs(rel: &str) -> String {
     format!("{ADMIN_PREFIX}{rel}")
 }
 
-fn loop_verbs() -> BTreeMap<&'static str, crate::verb::KernelVerb> {
-    crate::verb::NEW_VERBS
+fn loop_verbs() -> BTreeMap<&'static str, crate::distribution::admin_cross_plane::verb::KernelVerb>
+{
+    crate::distribution::admin_cross_plane::verb::NEW_VERBS
         .iter()
-        .chain(crate::verb::LEDGER_VERBS)
-        .chain(crate::verb::AUDIT_VERBS)
-        .filter_map(|v| crate::verb::verb_name(*v).map(|name| (name, *v)))
+        .chain(crate::distribution::admin_cross_plane::verb::LEDGER_VERBS)
+        .chain(crate::distribution::admin_cross_plane::verb::AUDIT_VERBS)
+        .filter_map(|v| {
+            crate::distribution::admin_cross_plane::verb::verb_name(*v).map(|name| (name, *v))
+        })
         .collect()
 }
 
 fn unbound_declared_operations() -> BTreeSet<Op> {
     let verbs = loop_verbs();
-    crate::admin_codec::verbs::table()
+    crate::distribution::admin_cross_plane::admin_codec::verbs::table()
         .into_iter()
         .filter(|row| {
             verbs
                 .get(row.verb)
-                .is_some_and(|v| !crate::verb::effect_bound(*v))
+                .is_some_and(|v| !crate::distribution::admin_cross_plane::verb::effect_bound(*v))
         })
         .map(|row| (row.method.to_string(), row.template.to_string()))
         .collect()
@@ -93,11 +96,11 @@ fn removed_operations() -> BTreeSet<Op> {
 }
 
 fn served_admin_operations() -> BTreeMap<Op, Source> {
-    crate::ensure_seam();
+    crate::distribution::admin_cross_plane::ensure_seam();
     let mut out = BTreeMap::new();
     let loop_verbs = loop_verbs();
     let unbound = unbound_declared_operations();
-    for row in crate::admin_codec::verbs::table() {
+    for row in crate::distribution::admin_cross_plane::admin_codec::verbs::table() {
         let op = (row.method.to_string(), row.template.to_string());
         if unbound.contains(&op) {
             continue;
@@ -210,8 +213,10 @@ async fn admin_corpus_reconciles_with_the_served_router() {
     let served = served_admin_operations();
 
     const TOKEN: &str = "served-surface-token";
-    let app = crate::new_test_app().governance(gov(TOKEN)).build();
-    let router = crate::build_router(app);
+    let app = crate::distribution::admin_cross_plane::new_test_app()
+        .governance(gov(TOKEN))
+        .build();
+    let router = crate::distribution::admin_cross_plane::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -455,7 +460,7 @@ fn openapi_documents_every_served_admin_operation() {
 }
 
 async fn served_openapi(app: std::sync::Arc<busbar_kernel::state::App>) -> serde_json::Value {
-    let router = crate::build_router(app);
+    let router = crate::distribution::admin_cross_plane::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -506,7 +511,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
     }
 
     let sections = ["tools", "agents"];
-    let app = crate::new_test_app()
+    let app = crate::distribution::admin_cross_plane::new_test_app()
         .governance(gov("served-openapi-token"))
         .plane_sections(&sections)
         .build();
@@ -532,7 +537,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
          reference ({plane_only:?}) — without them the check below would pass vacuously"
     );
 
-    let app = crate::new_test_app()
+    let app = crate::distribution::admin_cross_plane::new_test_app()
         .governance(gov("served-openapi-token"))
         .plane_sections(&[])
         .build();
@@ -578,7 +583,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
         );
     }
 
-    let app = crate::new_test_app()
+    let app = crate::distribution::admin_cross_plane::new_test_app()
         .governance(gov("served-openapi-token"))
         .plane_sections(&["tools"])
         .build();
@@ -597,8 +602,10 @@ async fn served_openapi_lists_only_the_configured_planes() {
 async fn named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body() {
     busbar_kernel_testkit::test_support::metrics::init();
     const TOKEN: &str = "served-surface-token";
-    let app = crate::new_test_app().governance(gov(TOKEN)).build();
-    let router = crate::build_router(app);
+    let app = crate::distribution::admin_cross_plane::new_test_app()
+        .governance(gov(TOKEN))
+        .build();
+    let router = crate::distribution::admin_cross_plane::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

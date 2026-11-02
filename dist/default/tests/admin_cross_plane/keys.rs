@@ -141,8 +141,11 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
     };
     gov.record_metering(&minted.id, "m", "vendor", Some(&usage), now);
     gov.flush_metering();
-    let app = crate::new_test_app().governance(gov).cost(cost).build();
-    let router = crate::build_router(app);
+    let app = crate::distribution::admin_cross_plane::new_test_app()
+        .governance(gov)
+        .cost(cost)
+        .build();
+    let router = crate::distribution::admin_cross_plane::build_router(app);
     let (addr, handle, client) = spin_up(router).await;
     let mut out = Vec::new();
     for path in [
@@ -190,7 +193,7 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let overlay = TestOverlayStore::new();
-    let app = crate::new_test_app()
+    let app = crate::distribution::admin_cross_plane::new_test_app()
         .governance(gov)
         .overlay_backend(overlay.backend())
         .build();
@@ -262,8 +265,10 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
     busbar_kernel_testkit::test_support::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = crate::new_test_app().governance(gov).build();
-    let router = crate::build_router(app);
+    let app = crate::distribution::admin_cross_plane::new_test_app()
+        .governance(gov)
+        .build();
+    let router = crate::distribution::admin_cross_plane::build_router(app);
     let (addr, handle, client) = spin_up(router).await;
     let url = format!("http://{addr}/api/v1/admin/openapi.json");
 
@@ -382,7 +387,7 @@ async fn drive_key_cap_and_delegation_errors() {
             },
         ),
     ]);
-    let mut app = crate::new_test_app()
+    let mut app = crate::distribution::admin_cross_plane::new_test_app()
         .governance(gov)
         .groups_tree(groups)
         .build();
@@ -390,7 +395,7 @@ async fn drive_key_cap_and_delegation_errors() {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.max_keys_per_principal = 2;
     }
-    let router = crate::build_router(app);
+    let router = crate::distribution::admin_cross_plane::build_router(app);
     let (addr, server, client) = spin_up(router).await;
     let keys_url = format!("http://{addr}/api/v1/admin/keys");
 
@@ -532,8 +537,10 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
     busbar_kernel_testkit::test_support::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = crate::new_test_app().governance(gov).build();
-    let router = crate::build_router(app);
+    let app = crate::distribution::admin_cross_plane::new_test_app()
+        .governance(gov)
+        .build();
+    let router = crate::distribution::admin_cross_plane::build_router(app);
     let (addr, handle, _) = spin_up(router).await;
 
     let r = reqwest::Client::new()
@@ -699,11 +706,15 @@ async fn serve_keys_fixture(
     let app = match fixture {
         KeysFixture::Signing => {
             let gov = gov_with_signer(store, Some("admintok".to_string()));
-            crate::new_test_app().governance(gov).build()
+            crate::distribution::admin_cross_plane::new_test_app()
+                .governance(gov)
+                .build()
         }
         KeysFixture::NoSigner => {
             let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
-            crate::new_test_app().governance(gov).build()
+            crate::distribution::admin_cross_plane::new_test_app()
+                .governance(gov)
+                .build()
         }
 
         KeysFixture::Off => {
@@ -711,7 +722,7 @@ async fn serve_keys_fixture(
                 admin_auth: Vec::new(),
                 ..busbar_kernel::config::AuthCfg::default_none()
             };
-            crate::new_test_app()
+            crate::distribution::admin_cross_plane::new_test_app()
                 .auth(Arc::new(
                     busbar_kernel_testkit::test_support::auth_helpers::new_builtin(&cfg),
                 ))
@@ -719,7 +730,7 @@ async fn serve_keys_fixture(
                 .build()
         }
     };
-    let router = crate::build_router(app.clone());
+    let router = crate::distribution::admin_cross_plane::build_router(app.clone());
     let (addr, handle, _) = spin_up(router).await;
 
     let live = if fixture == KeysFixture::Signing {
@@ -1169,7 +1180,7 @@ async fn admin_error_surface_witnesses_every_declared_response() {
 async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = crate::new_test_app()
+    let app = crate::distribution::admin_cross_plane::new_test_app()
         .governance(gov)
         .group(
             "team",
@@ -1201,7 +1212,7 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
             },
         )
         .build();
-    let router = crate::build_router(app);
+    let router = crate::distribution::admin_cross_plane::build_router(app);
     let (addr, server, client) = spin_up(router).await;
     for (rel, body) in [
         (
@@ -1971,12 +1982,12 @@ async fn drive_plugin_reload_errors() {
     std::fs::write(&providers, "providers: {}\n").unwrap();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = crate::new_test_app()
+    let app = crate::distribution::admin_cross_plane::new_test_app()
         .governance(gov)
         .plugins_dir(dir.clone())
         .disk_paths(config, providers)
         .build();
-    let router = crate::build_router(app);
+    let router = crate::distribution::admin_cross_plane::build_router(app);
     let (addr, server, client) = spin_up(router).await;
 
     let r = client
@@ -2012,13 +2023,13 @@ async fn drive_plugin_rollback_errors() {
     std::fs::write(dir.join(file), &tarball).unwrap();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = crate::new_test_app()
+    let app = crate::distribution::admin_cross_plane::new_test_app()
         .governance(gov)
         .plugins_dir(dir.clone())
         .plugins_cfg(busbar_kernel::config::PluginsCfg::default())
         .overlay_backend(overlay.backend())
         .build();
-    let router = crate::build_router(app);
+    let router = crate::distribution::admin_cross_plane::build_router(app);
     let (addr, server, client) = spin_up(router).await;
     let rollback = |body: String| {
         client
@@ -2129,13 +2140,13 @@ async fn drive_plugin_inspect_errors() {
     let overlay = TestOverlayStore::new();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = crate::new_test_app()
+    let app = crate::distribution::admin_cross_plane::new_test_app()
         .governance(gov)
         .plugins_dir(dir.clone())
         .plugins_cfg(busbar_kernel::config::PluginsCfg::default())
         .overlay_backend(overlay.backend())
         .build();
-    let router = crate::build_router(app);
+    let router = crate::distribution::admin_cross_plane::build_router(app);
     let (addr, server, client) = spin_up(router).await;
 
     let r = client
@@ -2186,7 +2197,7 @@ async fn every_admin_error_surface_answers_its_declared_status() {
     drive_door_verb_errors().await;
     drive_agent_door_verb_errors().await;
     drive_unpriced_usage_reads().await;
-    crate::ensure_seam();
+    crate::distribution::admin_cross_plane::ensure_seam();
     for drive in busbar_kernel_testkit::test_support::seam::test_plane_seams()
         .iter()
         .filter_map(|seam| seam.error_surface_driver)
@@ -2226,14 +2237,15 @@ fn documented_operations() -> Vec<(String, busbar_core_admin::v1::contract::taxo
 fn rate_limit_doc_table_matches_classifier() {
     use busbar_core_admin::v1::contract::taxonomy::MethodTag;
 
-    crate::ensure_seam();
+    crate::distribution::admin_cross_plane::ensure_seam();
 
-    let loop_verbs: std::collections::BTreeSet<&'static str> = crate::verb::NEW_VERBS
-        .iter()
-        .chain(crate::verb::LEDGER_VERBS)
-        .chain(crate::verb::AUDIT_VERBS)
-        .filter_map(|v| crate::verb::verb_name(*v))
-        .collect();
+    let loop_verbs: std::collections::BTreeSet<&'static str> =
+        crate::distribution::admin_cross_plane::verb::NEW_VERBS
+            .iter()
+            .chain(crate::distribution::admin_cross_plane::verb::LEDGER_VERBS)
+            .chain(crate::distribution::admin_cross_plane::verb::AUDIT_VERBS)
+            .filter_map(|v| crate::distribution::admin_cross_plane::verb::verb_name(*v))
+            .collect();
     let answered_by_loop = |rel: &str, method: MethodTag| {
         let method = match method {
             MethodTag::Get => "GET",
@@ -2242,7 +2254,7 @@ fn rate_limit_doc_table_matches_classifier() {
             MethodTag::Patch => "PATCH",
             MethodTag::Delete => "DELETE",
         };
-        crate::admin_codec::verbs::resolve(
+        crate::distribution::admin_cross_plane::admin_codec::verbs::resolve(
             method,
             &format!("{}{rel}", busbar_core_admin::v1::contract::ADMIN_PREFIX),
         )
@@ -2301,7 +2313,7 @@ fn rate_limit_doc_table_matches_classifier() {
 fn overlay_reset_doc_row_matches_the_section_set() {
     use busbar_kernel::config::overlay::OverlaySection;
 
-    crate::ensure_seam();
+    crate::distribution::admin_cross_plane::ensure_seam();
 
     let doc = include_str!("../../../../docs/admin-api.md");
     let row = doc
@@ -2357,13 +2369,13 @@ fn overlay_reset_doc_row_matches_the_section_set() {
 fn linked_export_axis() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        static SINKS: [crate::root_install::ExportDoor; 1] = [(
+        static SINKS: [crate::distribution::admin_cross_plane::root_install::ExportDoor; 1] = [(
             busbar_export_prometheus::NAME,
             busbar_export_prometheus::ALIAS,
             busbar_export_prometheus::door::door,
         )];
-        crate::ensure_seam();
-        crate::root_install::link_exports(&SINKS);
+        crate::distribution::admin_cross_plane::ensure_seam();
+        crate::distribution::admin_cross_plane::root_install::link_exports(&SINKS);
     });
 }
 
@@ -2495,7 +2507,7 @@ async fn named_map_app_opts(
     let overlay = TestOverlayStore::new();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut builder = crate::new_test_app()
+    let mut builder = crate::distribution::admin_cross_plane::new_test_app()
         .governance(gov)
         .serve_tables(tables)
         .overlay_backend(overlay.backend())
@@ -2582,7 +2594,7 @@ async fn named_map_app_opts(
         builder.no_plugin_routes()
     };
     let app = builder.build();
-    let router = crate::build_router(app);
+    let router = crate::distribution::admin_cross_plane::build_router(app);
     let (addr, handle, _) = spin_up(router).await;
     (dir, overlay, addr, handle)
 }
@@ -3206,11 +3218,11 @@ fn publish_door(section: &str, settings: &str) -> ServeTables {
     use busbar_plugin_loader::dispatch::{
         load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
     };
-    crate::ensure_seam();
+    crate::distribution::admin_cross_plane::ensure_seam();
     let owner = busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
         .unwrap_or_else(|| panic!("a test-linked plane owns `{section}:`"));
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let (instance, plane) = crate::test_seams::linked_doors()
+    let (instance, plane) = crate::distribution::admin_cross_plane::test_seams::linked_doors()
         .iter()
         .find_map(|(label, door)| {
             let row = LinkedRow::of(*door).ok()?;
@@ -3659,8 +3671,10 @@ async fn drive_named_map_errors() {
         busbar_kernel_testkit::test_support::metrics::init();
         let store = Arc::new(MemoryStore::new());
         let gov = gov_with_signer(store, Some("admintok".to_string()));
-        let app = crate::new_test_app().governance(gov).build();
-        let router = crate::build_router(app);
+        let app = crate::distribution::admin_cross_plane::new_test_app()
+            .governance(gov)
+            .build();
+        let router = crate::distribution::admin_cross_plane::build_router(app);
         let (addr, handle, _) = spin_up(router).await;
         {
             for (label, method, rel, body) in [

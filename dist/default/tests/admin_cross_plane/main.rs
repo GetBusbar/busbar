@@ -17,7 +17,7 @@ include!(concat!(env!("OUT_DIR"), "/test_operator_auth.rs"));
 include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
 
 #[cfg(feature = "openapi-schema")]
-use openapi::openapi_doc_seamed;
+use self::openapi::openapi_doc_seamed;
 
 #[allow(unused_imports)]
 use busbar_core_admin::{admin_codec, restart, v1, verb};
@@ -56,6 +56,6 @@ pub(crate) fn build_router(app: std::sync::Arc<busbar_kernel::state::App>) -> ax
 mod test_seams {
     pub(crate) fn linked_doors(
     ) -> &'static [(&'static str, busbar_contract::abi::mechanism::door::DoorFn)] {
-        crate::linked::doors()
+        crate::distribution::admin_cross_plane::linked::doors()
     }
 }

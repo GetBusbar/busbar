@@ -65,14 +65,14 @@ fn render_committed_openapi() -> String {
 
 #[cfg(feature = "openapi-schema")]
 pub(crate) fn openapi_doc_seamed() -> serde_json::Value {
-    crate::ensure_seam();
+    crate::distribution::admin_cross_plane::ensure_seam();
     openapi_doc()
 }
 
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_json_matches_committed_file() {
-    crate::ensure_seam();
+    crate::distribution::admin_cross_plane::ensure_seam();
     let fresh = render_committed_openapi();
     if std::env::var("UPDATE_OPENAPI").is_ok_and(|v| v == "1") {
         std::fs::write(COMMITTED_OPENAPI_PATH, &fresh)
@@ -97,7 +97,7 @@ fn openapi_json_matches_committed_file() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_rendered_component_schemas_are_the_committed_ones() {
-    crate::ensure_seam();
+    crate::distribution::admin_cross_plane::ensure_seam();
     let committed: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(COMMITTED_OPENAPI_PATH).expect("read committed openapi"),
     )
