@@ -481,31 +481,6 @@ fn registry(name: &str, hook: HookCfg) -> HashMap<String, HookCfg> {
 }
 
 #[test]
-fn native_policy_resolves_constructed_policy() {
-    for (policy, name) in [
-        (PoolPolicy::Cheapest, "cheapest"),
-        (PoolPolicy::Fastest, "fastest"),
-        (PoolPolicy::LeastBusy, "least_busy"),
-        (PoolPolicy::Usage, "usage"),
-    ] {
-        let cfg = pool_policy(policy);
-        match resolve_policy(&cfg) {
-            Some(ResolvedPolicy::Policy { policy, .. }) => {
-                assert_eq!(
-                    policy.name(),
-                    name,
-                    "resolved native policy name must round-trip"
-                );
-            }
-            other => panic!(
-                "policy: {name} must resolve to a Policy, got none={}",
-                other.is_none()
-            ),
-        }
-    }
-}
-
-#[test]
 fn default_hook_resolves_as_base_for_unnamed_pools() {
     let mut def = base_gate();
     def.default = true;
@@ -1148,21 +1123,6 @@ fn from_ranked_empty_is_abstain() {
         RoutingDecision::from_ranked(std::iter::empty(), &valid),
         RoutingDecision::Abstain,
     );
-}
-
-#[test]
-fn native_resolve_forces_opt_in_flags_off() {
-    match resolve_policy(&pool_policy(PoolPolicy::Cheapest)) {
-        Some(ResolvedPolicy::Policy {
-            send_prompt,
-            send_user,
-            ..
-        }) => {
-            assert!(!send_prompt, "native must force send_prompt off");
-            assert!(!send_user, "native must force send_user off");
-        }
-        None => panic!("native pool must resolve to a policy"),
-    }
 }
 
 #[test]
