@@ -81,7 +81,7 @@ impl Governance for FakeGovernance {
 }
 
 fn admin() -> Grant<AdminVerb> {
-    busbar_kernel_testkit::test_support::tokens::grant::<AdminVerb>()
+    busbar_kernel::teller::Kernel::new().admin_token()
 }
 
 #[test]
