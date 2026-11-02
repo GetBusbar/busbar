@@ -7,13 +7,13 @@ use busbar_kernel::config::{HookCfg, HookKind, PromptAccess, UserAccess};
 fn hook(kind: HookKind, global: bool) -> HookCfg {
     HookCfg {
         kind,
-        plugin: "test-hook".to_string(),
+        plugin: "hooks-ranking".to_string(),
         timeout_ms: 5,
         on_error: "weighted".to_string(),
         prompt: PromptAccess::No,
         user: UserAccess::No,
         priority: 0,
-        settings: serde_json::Map::new(),
+        settings: serde_json::from_value(serde_json::json!({"policy":"cheapest"})).unwrap(),
         at: None,
         on_empty: None,
         global,
@@ -26,51 +26,83 @@ fn hook(kind: HookKind, global: bool) -> HookCfg {
 
 #[test]
 fn build_with_hook_makes_a_plane_attach_live() {
-    let env =
-        busbar_kernel_testkit::test_support::test_hook_env(&["test-hook"], Default::default());
-
-    let mut builder = crate::distribution::admin_cross_plane::new_test_app().hook_env(env);
-    let tools = busbar_kernel::plane_driver::registry::plane_decl_for_config_section("tools")
-        .expect("a plane is registered to own the `tools:` section");
-    builder.set_container_hooks(
-        tools.key,
-        vec![("fs".to_string(), vec!["screen".to_string()])],
-        Vec::new(),
-    );
-
-    {
-        let section: serde_yaml::Value = serde_yaml::from_str(
-            "fs:\n  url: https://tools.internal/fs\n  pin: { mechanism: cert_spki, key: \"sha256/BASE=\" }\n  hooks: [screen]\n",
+    let tools = {
+        crate::distribution::admin_cross_plane::ensure_seam();
+        busbar_kernel::plane_driver::registry::plane_decl_for_config_section("tools")
+            .expect("the product tools plane is registered")
+    };
+    let app = {
+        crate::distribution::admin_cross_plane::ensure_seam();
+        let directory = super::plugins::scratch(&format!(
+            "admin-root-{}",
+            busbar_kernel::door::op_id().counter()
+        ));
+        let library_path = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
+        );
+        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+            .expect("the actual Store statement reads")
+            .expect("the actual Store states itself");
+        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .expect("the actual Store statement parses");
+        let mut manifest = super::plugins::manifest(
+            "store",
+            &facts.name,
+            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        );
+        manifest.version = facts.version;
+        manifest.statement = Some(hex::encode(statement));
+        let archive = super::plugins::signed(
+            &crate::dist_root_install::release_key(),
+            manifest,
+            &std::fs::read(library_path).expect("the actual Store artifact reads"),
+        );
+        std::fs::write(directory.join("store.tar.gz"), archive)
+            .expect("stage the actual Store product");
+        std::fs::write(directory.join("admin.token"), "admintok")
+            .expect("write the operator credential");
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
         )
-        .unwrap();
-        let parse = tools
-            .parse_section
-            .expect("the plane parses its own section");
-        let cfg = parse(tools, &section).expect("the `tools:` section parses");
-        match tools.build_runtime {
-            Some(build) => {
-                builder.install_plane_runtime(
-                    busbar_kernel::state::runtime_slot_key(tools.key),
-                    build(cfg.as_any(), None),
-                );
-            }
-
-            None => {
-                let defs =
-                    std::collections::BTreeMap::from([(tools.config_section, cfg.clone_box())]);
-                let ctx = busbar_kernel::plane_driver::registry::BuildCtx {
-                    endpoint_slot: None,
-                    plane_defs: &defs,
-                    public_url: None,
-                    prior: None,
-                    providers: None,
-                };
-                let slot = (tools.build)(tools, &ctx).expect("the plane builds from its section");
-                builder.install_plane_runtime(tools.key, slot);
-            }
+        .expect("the actual Store settings are JSON");
+        let mut document = serde_json::json!({"tools": {"fs": {"url":"https://tools.internal/fs","pin":{"mechanism":"cert_spki","key":"sha256/BASE="},"hooks":["screen"]}}});
+        document["providers"] = serde_json::json!({});
+        document["models"] = serde_json::json!({});
+        document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
+        document["identity-providers"] = serde_json::json!({"admin-tokens": {
+            "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
+        }});
+        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        let deploy = busbar_kernel::config::deploy_from_deserializer(document)
+            .expect("the actual admin deployment parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the actual admin deployment resolves");
+        let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
+            as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
+        let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+            cfg,
+            busbar_kernel::config::PluginsCfg {
+                enabled: true,
+                dir: directory.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+        )
+        .expect("the product root builds the actual admin application");
+        limits.keep().expect("the product limits commit");
+        if let Some(rotate) = rotate {
+            rotate();
         }
-    }
-    let app = builder.build();
+
+        std::sync::Arc::new(app)
+    };
     assert!(
         !app.plane_gates(tools.key)
             .is_some_and(|g| g.contains_key("fs")),

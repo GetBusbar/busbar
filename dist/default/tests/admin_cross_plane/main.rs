@@ -12,9 +12,8 @@ mod openapi;
 mod served_surface;
 mod service;
 
-include!(concat!(env!("OUT_DIR"), "/test_operator_auth.rs"));
-
-include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
+#[path = "../../../../crates/busbar/src/root/tests/test_plugins.rs"]
+mod plugins;
 
 #[cfg(feature = "openapi-schema")]
 use self::openapi::openapi_doc_seamed;
@@ -27,25 +26,9 @@ pub(crate) fn ensure_seam() {
     SEAM_ONCE.call_once(|| {
         root_install::install();
 
-        busbar_kernel_testkit::test_support::install_root_hook_names(LINKED_HOOK_NAMES);
-
-        for_each_operator_auth_row!(install_operator_row);
-        fn install_operator_row(door: busbar_kernel_testkit::test_support::AuthDoor) {
-            const ROOT_WORDS: busbar_kernel_testkit::test_support::OperatorWords =
-                busbar_kernel_testkit::test_support::OperatorWords {
-                    provider: "admin-tokens",
-                    principal_id: "admin",
-                };
-            busbar_kernel_testkit::test_support::install_operator_auth_row_as(ROOT_WORDS, door);
-        }
         linked::install();
         busbar_core_admin::install();
     });
-}
-
-pub(crate) fn new_test_app() -> busbar_kernel_testkit::test_support::TestApp {
-    ensure_seam();
-    busbar_kernel_testkit::test_support::TestApp::new().plugin_admission(&root_install::ADMISSION)
 }
 
 pub(crate) fn build_router(app: std::sync::Arc<busbar_kernel::state::App>) -> axum::Router {
