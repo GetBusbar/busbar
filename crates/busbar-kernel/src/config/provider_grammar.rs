@@ -331,3 +331,91 @@ mod legacy_refusals {
         }
     }
 }
+
+#[cfg(test)]
+mod actual_plane_legacy_grammar {
+    use super::*;
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum MaxOutputKeyCfg {
+        MaxTokens,
+        MaxCompletionTokens,
+    }
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    #[allow(dead_code)]
+    struct ModelCapabilities {
+        models: Vec<String>,
+        #[serde(default)]
+        max_output_key: Option<MaxOutputKeyCfg>,
+        #[serde(default)]
+        anthropic_adaptive_thinking: Option<bool>,
+        #[serde(default)]
+        native_structured_output: Option<bool>,
+        #[serde(default)]
+        reasoning_none: Option<bool>,
+        #[serde(default)]
+        thinking_always_on: Option<bool>,
+    }
+
+    #[test]
+    fn the_actual_exported_plane_descriptor_keeps_legacy_capability_refusals() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testing/config/provider-keys-llm.json"
+        )))
+        .unwrap();
+        let descriptor = busbar_contract::provider_keys::decode(
+            fixture["descriptor_text"].as_str().unwrap().as_bytes(),
+        )
+        .unwrap();
+        for table in [&descriptor.catalog, &descriptor.entry] {
+            let key = table
+                .keys
+                .iter()
+                .find(|k| k.name == "model_capabilities")
+                .unwrap();
+            for text in [
+                "null",
+                "true",
+                "[true]",
+                "[null]",
+                "[{}]",
+                "[{models: null}]",
+                "[{models: [1]}]",
+                "[{models: [], anthropic_adaptive_thinking: wrong}]",
+                "[{models: [], max_output_key: wrong}]",
+                "[{models: [], max_output_key: 1}]",
+                "[{models: [], unknown: true}]",
+                "[{models: [], reasoning_none: true, reasoning_none: false}]",
+            ] {
+                let legacy = serde_yaml::from_str::<Vec<ModelCapabilities>>(text)
+                    .unwrap_err()
+                    .to_string();
+                let actual = ValueSeed::field(key)
+                    .deserialize(serde_yaml::Deserializer::from_str(text))
+                    .unwrap_err()
+                    .to_string();
+                assert_eq!(actual, legacy, "{text}");
+            }
+        }
+        let key = descriptor
+            .deployment
+            .keys
+            .iter()
+            .find(|k| k.name == "model_capabilities")
+            .unwrap();
+        assert!(
+            serde_yaml::from_str::<Option<Vec<ModelCapabilities>>>("null")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            ValueSeed::field(key)
+                .deserialize(serde_yaml::Deserializer::from_str("null"))
+                .unwrap(),
+            Value::Null
+        );
+    }
+}

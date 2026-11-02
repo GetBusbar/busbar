@@ -123,18 +123,109 @@ fn accepted_keys(sources: &[walk::Source]) -> BTreeMap<String, BTreeSet<String>>
     out
 }
 
-/// A provider_entry! declaration does not discard fields absent from the core struct:
-/// OptionsAside reads every such key into its ProviderTable with a plane-described seed.
-/// Recognize that actual parser delegation, rather than requiring plane keys to remain
-/// duplicated as core Rust fields. The snapshot itself remains the frozen evidence.
-fn descriptor_provider_entries(sources: &[walk::Source]) -> BTreeSet<String> {
+/// Match the plane's actual descriptor against the frozen field's type, recursively.
+/// A field with the same name but a different list, enum or record grammar is not evidence.
+fn descriptor_shape_matches(
+    shape: &busbar_contract::provider_keys::Shape,
+    rust: &str,
+    types: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    use busbar_contract::provider_keys::Shape;
+    match (shape, rust) {
+        (Shape::Str, "String")
+        | (Shape::Bool, "bool")
+        | (Shape::StrMap, "HashMap<String, String>") => true,
+        (Shape::List(inner), text) if text.starts_with("Vec<") && text.ends_with('>') => {
+            descriptor_shape_matches(inner, &text[4..text.len() - 1], types)
+        }
+        (Shape::OneOf(words), name) => types.get(name).is_some_and(|ty| {
+            if ty["kind"] != "enum" {
+                return false;
+            }
+            let mut actual = words.clone();
+            actual.sort();
+            let mut expected: Vec<String> = ty["variants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s.as_str().unwrap().to_string())
+                .collect();
+            expected.sort();
+            actual == expected
+        }),
+        (Shape::Table(table), name) => types.get(name).is_some_and(|ty| {
+            if ty["kind"] != "struct"
+                || table.name.as_deref() != Some(name)
+                || ty["deny_unknown_fields"].as_bool() != Some(table.deny_unknown)
+            {
+                return false;
+            }
+            let fields = ty["fields"].as_object().unwrap();
+            table.keys.len() == fields.len()
+                && table.keys.iter().all(|key| {
+                    fields.get(&key.name).is_some_and(|field| {
+                        field["optional"].as_bool() == Some(!key.required)
+                            && descriptor_shape_matches(
+                                &key.shape,
+                                field["type"].as_str().unwrap(),
+                                types,
+                            )
+                    })
+                })
+        }),
+        _ => false,
+    }
+}
+
+/// The fixture is the actual exported plane descriptor, bound to source provenance and
+/// checked against STATEMENT by that plane's equality regression. It is not an allowlist:
+/// only its exact keys with frozen-equivalent shapes may move out of a core struct.
+fn descriptor_provider_entries(
+    sources: &[walk::Source],
+    types: &serde_json::Map<String, serde_json::Value>,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let fixture: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(walk::repo().join("testing/config/provider-keys-llm.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    let text = fixture["descriptor_text"].as_str().unwrap();
+    let provenance = &fixture["provenance"];
+    assert_eq!(
+        busbar_contract::sha256_hex(text.as_bytes()),
+        provenance["sha256"].as_str().unwrap()
+    );
+    assert_eq!(
+        provenance["repository"],
+        "https://git.getbusbar.dev/GetBusbar/busbar-plane-llm"
+    );
+    assert_eq!(provenance["path"], "plane-llm/src/meta.rs");
+    assert_eq!(provenance["constant"], "PROVIDER_KEYS");
+    assert_eq!(provenance["commit"].as_str().unwrap().len(), 40);
+    let descriptor = busbar_contract::provider_keys::decode(text.as_bytes())
+        .expect("the actual plane descriptor decodes");
     let parser = sources
         .iter()
-        .find(|s| s.rel == "crates/busbar-kernel/src/config/providers.rs");
-    let Some(parser) = parser else {
-        return BTreeSet::new();
-    };
-    let mut entries = BTreeSet::new();
+        .find(|s| s.rel == "crates/busbar-kernel/src/config/providers.rs")
+        .unwrap();
+    // Core-owned keys can never be delegated, even if a descriptor mistakenly states one.
+    let core: BTreeSet<String> = parser
+        .file
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Const(c) if c.ident == "CORE_PROVIDER_KEYS" => Some(walk::tokens(&c.expr)),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|t| match t {
+            TokenTree::Literal(l) => Some(l.to_string().trim_matches('"').to_string()),
+            _ => None,
+        })
+        .collect();
+    assert!(core.contains("base_url"));
+    let fields = accepted_keys(sources);
+    let mut entries = BTreeMap::new();
     for item in &parser.file.items {
         let syn::Item::Macro(m) = item else { continue };
         if !m.mac.path.is_ident("provider_entry") {
@@ -150,26 +241,95 @@ fn descriptor_provider_entries(sources: &[walk::Source]) -> BTreeSet<String> {
                 _ => None,
             })
             .collect();
-        if args.len() != 4 {
+        if args.len() != 4 || !fields.get(&args[0]).is_some_and(|f| f.contains("options")) {
             continue;
         }
-        let fields = accepted_keys(sources);
-        if !fields.get(&args[0]).is_some_and(|f| f.contains("options")) {
+        let table = match args[3].as_str() {
+            "Catalog" => &descriptor.catalog,
+            "Deployment" => &descriptor.deployment,
+            "Entry" => &descriptor.entry,
+            _ => continue,
+        };
+        let Some(frozen) = types.get(&args[0]).and_then(|t| t["fields"].as_object()) else {
             continue;
-        }
-        entries.insert(args[0].clone());
+        };
+        let keys = table
+            .keys
+            .iter()
+            .filter(|key| !core.contains(&key.name))
+            .filter(|key| {
+                frozen.get(&key.name).is_some_and(|field| {
+                    field["optional"].as_bool() == Some(!key.required)
+                        && descriptor_shape_matches(
+                            &key.shape,
+                            field["type"].as_str().unwrap(),
+                            types,
+                        )
+                })
+            })
+            .map(|key| key.name.clone())
+            .collect();
+        entries.insert(args[0].clone(), keys);
     }
-    if !entries.is_empty() {
-        // These calls distinguish active typed validation plus opaque carriage from
-        // merely declaring an unused descriptor or skipping the old fields.
-        let syntax = parser.file.clone();
-        let tokens = quote::quote!(#syntax).to_string();
-        assert!(tokens.contains("door :: provider_keys"));
-        assert!(tokens.contains("next_value_seed (ValueSeed :: field (field))"));
-        assert!(tokens.contains("options . insert"));
-        assert!(tokens.contains("entry . options = options"));
-    }
+    let syntax = &parser.file;
+    let tokens = quote::quote!(#syntax).to_string();
+    assert!(tokens.contains("door :: provider_keys"));
+    assert!(tokens.contains("next_value_seed (ValueSeed :: field (field))"));
+    assert!(tokens.contains("options . insert"));
+    assert!(tokens.contains("entry . options = options"));
     entries
+}
+
+fn removed_config_keys(
+    types: &serde_json::Map<String, serde_json::Value>,
+    declared: &BTreeMap<String, BTreeSet<String>>,
+    delegated: &BTreeMap<String, BTreeSet<String>>,
+) -> Vec<String> {
+    let mut removed = Vec::new();
+    for (name, ty) in types {
+        if ty["kind"] != "struct" {
+            continue;
+        }
+        let Some(keys) = declared.get(name) else {
+            continue;
+        };
+        for field in ty["fields"].as_object().unwrap().keys() {
+            if !keys.contains(field)
+                && !PLANE_SECTIONS.contains(&(name.as_str(), field.as_str()))
+                && !delegated.get(name).is_some_and(|keys| keys.contains(field))
+            {
+                removed.push(format!("{name}.{field}"));
+            }
+        }
+    }
+    removed
+}
+
+#[test]
+fn descriptor_delegation_does_not_hide_removal_of_unrelated_core_fields() {
+    let snapshot: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(walk::repo().join(SNAPSHOT)).unwrap())
+            .unwrap();
+    let types = snapshot["types"].as_object().unwrap();
+    let sources = walk::production(CORE_SRC);
+    let mut declared = accepted_keys(&sources);
+    let delegated = descriptor_provider_entries(&sources, types);
+    for (name, field) in [
+        ("ProviderDef", "base_url"),
+        ("ProviderDeploy", "token_url"),
+        ("HealthCfg", "mode"),
+    ] {
+        assert!(declared.get_mut(name).unwrap().remove(field));
+        assert!(
+            removed_config_keys(types, &declared, &delegated).contains(&format!("{name}.{field}"))
+        );
+    }
+    // A coincidental descriptor key with the wrong frozen grammar is not delegation.
+    assert!(!descriptor_shape_matches(
+        &busbar_contract::provider_keys::Shape::Str,
+        "bool",
+        types
+    ));
 }
 
 #[test]
@@ -179,26 +339,12 @@ fn every_core_config_struct_keeps_every_key_the_frozen_snapshot_records() {
     let types = snapshot["types"].as_object().expect("`types`");
     let sources = walk::production(CORE_SRC);
     let declared = accepted_keys(&sources);
-    let descriptor_entries = descriptor_provider_entries(&sources);
-    let mut checked = 0usize;
-    let mut removed = Vec::new();
-    for (name, ty) in types {
-        if ty["kind"] != "struct" {
-            continue;
-        }
-        let Some(keys) = declared.get(name) else {
-            continue;
-        };
-        checked += 1;
-        for field in ty["fields"].as_object().expect("`fields`").keys() {
-            if !keys.contains(field)
-                && !PLANE_SECTIONS.contains(&(name.as_str(), field.as_str()))
-                && !descriptor_entries.contains(name)
-            {
-                removed.push(format!("{name}.{field}"));
-            }
-        }
-    }
+    let descriptor_entries = descriptor_provider_entries(&sources, types);
+    let checked = types
+        .iter()
+        .filter(|(name, ty)| ty["kind"] == "struct" && declared.contains_key(*name))
+        .count();
+    let removed = removed_config_keys(types, &declared, &descriptor_entries);
     assert!(
         checked > 0,
         "no snapshot struct is declared in core: the walk is wrong"
