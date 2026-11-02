@@ -992,6 +992,8 @@ async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
             now,
         )
         .unwrap();
+    let token_grant = busbar_kernel::seal::lend();
+    let live_token = token.expose(&token_grant).as_str();
     let enforcing = busbar_kernel::test_support::TestApp::new()
         .keys_chain()
         .governance(gov.clone())
@@ -1094,8 +1096,8 @@ async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
     for (index, (credential, accepted, disabled)) in [
         (None, false, false),
         (Some("not-a-valid-key"), false, false),
-        (Some(token.as_str()), true, false),
-        (Some(token.as_str()), false, true),
+        (Some(live_token), true, false),
+        (Some(live_token), false, true),
     ]
     .into_iter()
     .enumerate()
