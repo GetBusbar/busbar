@@ -1384,8 +1384,8 @@ pub(in crate::governance) mod tests {
 
     #[test]
     fn restart_cannot_turn_recent_wall_time_into_receipt_age_authority() {
-        use super::super::{GovState, MemoryStore, RecordStore};
-        let store = Arc::new(MemoryStore::new());
+        use super::super::{GovState, RecordStore};
+        let store = crate::real_store::store();
         let sink = Arc::new(Journal::default());
         let first = GovState::new(store.clone(), None).unwrap();
         first.attach_recovery_sink(sink.clone()).unwrap();
@@ -1420,8 +1420,8 @@ pub(in crate::governance) mod tests {
 
     #[test]
     fn unknown_usage_absorbs_negative_then_not_landed_reposts_only_net_raw_debt() {
-        use super::super::{GovState, MemoryStore, RecordStore};
-        let store = Arc::new(MemoryStore::new());
+        use super::super::{GovState, RecordStore};
+        let store = crate::real_store::store();
         let sink = Arc::new(Journal::default());
         let original = GovState::new(store.clone(), None).unwrap();
         original.attach_recovery_sink(sink.clone()).unwrap();
@@ -1467,8 +1467,8 @@ pub(in crate::governance) mod tests {
 
     #[test]
     fn selected_parent_checkpoint_reconstructs_exact_missing_usage_child() {
-        use super::super::{GovState, MemoryStore, RecordStore};
-        let store = Arc::new(MemoryStore::new());
+        use super::super::{GovState, RecordStore};
+        let store = crate::real_store::store();
         let sink = Arc::new(Journal::default());
         let first = GovState::new(store.clone(), None).unwrap();
         first.attach_recovery_sink(sink.clone()).unwrap();
@@ -1526,8 +1526,8 @@ pub(in crate::governance) mod tests {
     }
     #[test]
     fn two_unknown_positives_cannot_release_each_others_dependent_negatives() {
-        use super::super::{GovState, MemoryStore, RecordStore};
-        let store = Arc::new(MemoryStore::new());
+        use super::super::{GovState, RecordStore};
+        let store = crate::real_store::store();
         let sink = Arc::new(Journal::default());
         let original = GovState::new(store.clone(), None).unwrap();
         original.attach_recovery_sink(sink.clone()).unwrap();
@@ -1582,8 +1582,8 @@ pub(in crate::governance) mod tests {
 
     #[test]
     fn unknown_chunk_transfers_never_sent_unsigned_remainder_to_fresh_children() {
-        use super::super::{GovState, MemoryStore, RecordStore};
-        let store = Arc::new(MemoryStore::new());
+        use super::super::{GovState, RecordStore};
+        let store = crate::real_store::store();
         let sink = Arc::new(Journal::default());
         let original = GovState::new(store.clone(), None).unwrap();
         original.attach_recovery_sink(sink.clone()).unwrap();
@@ -1605,8 +1605,8 @@ pub(in crate::governance) mod tests {
     }
     #[test]
     fn verdict_without_both_quiescence_attestations_persists_nothing() {
-        use super::super::{GovState, MemoryStore, RecordStore};
-        let store = Arc::new(MemoryStore::new());
+        use super::super::{GovState, RecordStore};
+        let store = crate::real_store::store();
         let sink = Arc::new(Journal::default());
         let original = GovState::new(store.clone(), None).unwrap();
         original.attach_recovery_sink(sink.clone()).unwrap();
@@ -1649,14 +1649,14 @@ pub(in crate::governance) mod tests {
 
     #[test]
     fn attested_verdict_still_requires_same_process_driver_quiescence() {
-        use super::super::{GovState, MemoryStore};
+        use super::super::GovState;
         let sink = Arc::new(Journal::default());
-        let original = GovState::new(Arc::new(MemoryStore::new()), None).unwrap();
+        let original = GovState::new(crate::real_store::store(), None).unwrap();
         original.attach_recovery_sink(sink.clone()).unwrap();
         original.resume_raw_recovery().unwrap();
         let intent = raw_intent(&original, 7);
         drop(original);
-        let gov = GovState::new(Arc::new(MemoryStore::new()), None).unwrap();
+        let gov = GovState::new(crate::real_store::store(), None).unwrap();
         gov.attach_recovery_sink(sink.clone()).unwrap();
         gov.resume_raw_recovery().unwrap();
         let selected = gov.recovery_event(intent.operation_id).unwrap();
@@ -1683,8 +1683,8 @@ pub(in crate::governance) mod tests {
     }
     #[test]
     fn retiring_a_successful_root_releases_ram_without_deleting_its_store_chain() {
-        use super::super::{GovState, MemoryStore, RecordStore};
-        let store = Arc::new(MemoryStore::new());
+        use super::super::{GovState, RecordStore};
+        let store = crate::real_store::store();
         let sink = Arc::new(Journal::default());
         let gov = GovState::new(store.clone(), None).unwrap();
         gov.attach_recovery_sink(sink.clone()).unwrap();
@@ -1707,9 +1707,9 @@ pub(in crate::governance) mod tests {
 
     #[test]
     fn retiring_live_or_unknown_custody_cannot_discard_its_authority() {
-        use super::super::{GovState, MemoryStore};
+        use super::super::GovState;
         let sink = Arc::new(Journal::default());
-        let original = GovState::new(Arc::new(MemoryStore::new()), None).unwrap();
+        let original = GovState::new(crate::real_store::store(), None).unwrap();
         original.attach_recovery_sink(sink.clone()).unwrap();
         original.resume_raw_recovery().unwrap();
         let intent = raw_intent(&original, 7);
@@ -1719,7 +1719,7 @@ pub(in crate::governance) mod tests {
             Some(intent.clone())
         );
         drop(original);
-        let gov = GovState::new(Arc::new(MemoryStore::new()), None).unwrap();
+        let gov = GovState::new(crate::real_store::store(), None).unwrap();
         gov.attach_recovery_sink(sink).unwrap();
         gov.resume_raw_recovery().unwrap();
         gov.forget_confirmed_recovery(intent.operation_id);
@@ -1754,8 +1754,8 @@ pub(in crate::governance) mod tests {
     }
     #[test]
     fn foreign_adoption_lost_reply_retains_exact_children_and_sends_only_after_confirmation() {
-        use super::super::{GovState, MemoryStore, RecordStore};
-        let store = Arc::new(MemoryStore::new());
+        use super::super::{GovState, RecordStore};
+        let store = crate::real_store::store();
         let sink = Arc::new(Journal::default());
         let original = GovState::new(store.clone(), None).unwrap();
         original.attach_recovery_sink(sink.clone()).unwrap();
@@ -1809,8 +1809,8 @@ pub(in crate::governance) mod tests {
 
     #[test]
     fn foreign_reaffirmation_preserves_original_decision_audit_and_rejects_opposite_choice() {
-        use super::super::{GovState, MemoryStore, RecordStore};
-        let store = Arc::new(MemoryStore::new());
+        use super::super::{GovState, RecordStore};
+        let store = crate::real_store::store();
         let sink = Arc::new(Journal::default());
         let original = GovState::new(store.clone(), None).unwrap();
         original.attach_recovery_sink(sink.clone()).unwrap();
@@ -1866,8 +1866,8 @@ pub(in crate::governance) mod tests {
     }
     #[test]
     fn foreign_settled_child_is_observed_as_receipt_without_adoption_or_reposting() {
-        use super::super::{GovState, MemoryStore, RecordStore};
-        let store = Arc::new(MemoryStore::new());
+        use super::super::{GovState, RecordStore};
+        let store = crate::real_store::store();
         let sink = Arc::new(Journal::default());
         let original = GovState::new(store.clone(), None).unwrap();
         original.attach_recovery_sink(sink.clone()).unwrap();

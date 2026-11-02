@@ -68,7 +68,7 @@ fn metered_entry(store: &dyn RecordStore, key: &VirtualKey, era: RawRateEra, now
 
 #[test]
 fn exact_entry_correction_cannot_take_counts_from_a_same_timestamp_sibling() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store.clone(), None).unwrap();
     let key = key("vk_correction_exact_entry", None);
     store.put_key(&key).unwrap();
@@ -613,7 +613,7 @@ fn correction_common_positives_keep_same_timestamp_fee_refunds_in_both_raw_branc
 #[test]
 fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_refunding() {
     const FOREIGN_INPUT: u64 = 13;
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let journal = Arc::new(Journal::default());
     let first = GovState::new(store.clone(), None).unwrap();
     first.attach_recovery_sink(journal.clone()).unwrap();
