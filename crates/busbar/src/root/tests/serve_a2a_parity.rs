@@ -233,12 +233,15 @@ fn bind_plane(origin: Origin, instance: &str, dispatcher: &Dispatcher) -> Plugin
     }
 }
 
-struct RawA2aUnits(Arc<busbar_kernel::host_units::UnitRecords>);
+struct RawA2aUnits {
+    records: Arc<busbar_kernel::host_units::UnitRecords>,
+    owned: Vec<u64>,
+}
 
 impl Drop for RawA2aUnits {
     fn drop(&mut self) {
-        for unit in [7, 9, 11] {
-            self.0.ended(unit);
+        for unit in self.owned.drain(..) {
+            self.records.ended(unit);
         }
     }
 }
@@ -986,7 +989,10 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         // exact agent:vendor grant for these original raw unit ids. The opaque caller_ref bytes
         // below are original protocol input, never the source of authority.
         let raw = bind_plane(origin, &instance, &dispatcher);
-        let units = RawA2aUnits(kernel.units().clone());
+        let mut units = RawA2aUnits {
+            records: kernel.units().clone(),
+            owned: Vec::new(),
+        };
         let caller = busbar_contract::services::Caller {
             instance: Arc::from(instance.as_str()),
             plugin: Arc::from(raw.name()),
@@ -994,16 +1000,17 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         };
         for unit in [7, 9, 11] {
             assert!(
-                units.0.get(unit).is_none(),
+                units.records.get(unit).is_none(),
                 "the raw fixture must never overwrite a live unit"
             );
-            units.0.admitted(
+            units.records.admitted(
                 unit,
                 busbar_kernel::host_units::UnitRecord {
                     principal: Some(verified.clone()),
                     depth: 0,
                 },
             );
+            units.owned.push(unit);
             assert!(kernel.entitled(&caller, Some(unit), "agent:vendor"));
             assert!(!kernel.entitled(&caller, Some(unit), "agent:other"));
         }
