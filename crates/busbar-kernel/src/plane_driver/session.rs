@@ -41,8 +41,7 @@ use tokio::sync::{mpsc, watch, Notify};
 use super::{
     guarded_run, CallerEnd, End, FarEnd, OutboundRequest, Piece, Pumping, Src, Step, Toward,
 };
-use crate::plane_driver::cancel::Facts;
-use crate::plane_driver::{PlaneDriver, PlaneUnits, UnitState};
+use crate::plane_driver::{PlaneDriver, PlaneUnits};
 use crate::teller::UnitCtx;
 
 /// THE CALLER'S SIDE OF A DUPLEX SESSION, one trait for every carrier that holds a session open:
@@ -281,7 +280,6 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
             let dialect = st.decoded.as_ref().map_or(0, |x| x.dialect);
             (dialect, st.caller_ref.clone())
         };
-        let far_state = Mutex::new(UnitState::default());
         let none = bytes::Bytes::new();
         let mut near_run = Pumping::new(
             d,
@@ -292,7 +290,7 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
             self.deadline_ns,
             none.clone(),
         );
-        let mut far_run = Pumping::new(d, token, &far_state, ctx, far, self.deadline_ns, none);
+        let mut far_run = Pumping::new(d, token, &self.state, ctx, far, self.deadline_ns, none);
         for run in [&mut near_run, &mut far_run] {
             run.lend_unit(self.arrival.claim, dialect, &caller_ref, stream);
         }
@@ -425,7 +423,6 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
             Ok(Ok(None)) => return End::Done,
             Ok(Ok(Some(request))) => request,
         };
-        run.lock().facts = Facts::default();
         let held = watch::Sender::new(false);
         let token = run.token;
         let turn = Turn {
@@ -478,8 +475,11 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         ended: &EndCell,
     ) -> Result<(), ReasonCode> {
         let why = cause(&end);
+        // Stop the sibling before awaiting a worker control reply. Its next guarded wait must
+        // observe this cause rather than submitting more work to a retiring logical unit.
+        end_session(ended, why.map_or(Halt::Over, Halt::Cause));
         if let End::Cancel(reason, done) = end {
-            let _bill = run.cancel(reason, done);
+            let _bill = run.cancel(reason, done).await;
             if reason == ReasonCode::OverBudget {
                 self.cut_frame().await;
             }

@@ -629,15 +629,9 @@ impl PlaneDriver {
         }
     }
 
-    /// The driver's own ticketless `cancel` of `ticket`, the ticket of the unit keyed `unit`, on
-    /// the calling task: its disposition and its record writes, or `None` when it did not answer
-    /// READY. The unit is named so the plane finds a unit no piece ever reached (audit P-M7).
-    fn cancel_now(
-        &self,
-        ticket: Ticket,
-        unit: u64,
-    ) -> Option<busbar_contract::plane_calls::Cancelled> {
-        self.calls.cancel(ticket, unit)
+    /// Enqueue the logical unit's single cancel on its owning worker before returning the future.
+    fn cancel_unit(&self, ticket: Ticket, unit: u64) -> cancel::CancelFuture {
+        self.calls.cancel_unit(ticket, unit)
     }
 }
 
@@ -877,6 +871,10 @@ pub(crate) struct UnitState {
     unit: u64,
     /// Where the unit stands with its plane's closing call, from `arrive` on ([`close`]).
     close: close::Close,
+    /// The logical unit posts one cancellation bill across both session tickets and sweeps.
+    cancel_billed: Arc<std::sync::atomic::AtomicBool>,
+    /// A worker cancellation has a result owner; idle siblings must wait for that owner to bill.
+    cancel_started: Arc<std::sync::atomic::AtomicBool>,
     /// The unit's correlation id, where its host minted one with its request span
     /// ([`DriverSteps::request_span`]): the id its hooks carry. `None`: the hooks' binder mints.
     request_id: Option<u64>,
@@ -1550,7 +1548,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                 StepAnswer::refuse(token, Refusal::new(ReasonCode::HookVeto))
             }
             route::End::Cancel(cause, done) => {
-                let bill = run.cancel(cause, done);
+                let bill = run.cancel(cause, done).await;
                 self.lock().bill = Some(bill);
                 if cause == ReasonCode::OverBudget {
                     self.cut_frame().await;

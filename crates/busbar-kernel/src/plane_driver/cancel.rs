@@ -163,6 +163,20 @@ impl CancelBill {
     }
 }
 
+/// A queued worker control reply. Enqueueing happens before this future is first polled.
+pub(crate) type CancelFuture = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Option<busbar_contract::plane_calls::Cancelled>> + Send>,
+>;
+
+/// A sweep observes progress without parking a caller or holding a driver table lock.
+pub(crate) fn poll_cancel(
+    future: &mut CancelFuture,
+) -> std::task::Poll<Option<busbar_contract::plane_calls::Cancelled>> {
+    future
+        .as_mut()
+        .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+}
+
 /// A unit whose caller went away, waiting for its cancel to finish.
 pub(crate) struct Buried {
     pub(crate) ctx: UnitCtx,
@@ -170,6 +184,9 @@ pub(crate) struct Buried {
     pub(crate) facts: Facts,
     /// The op that was in flight.
     pub(crate) flight: Option<Box<dyn PieceInFlight>>,
+    pub(crate) closing: Option<CancelFuture>,
+    pub(crate) billed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) started: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The principal the kernel verified for the unit: its cancel row is written under it.
     pub(crate) principal: Option<busbar_contract::caps::PrincipalId>,
     /// The unit is closed already (a done answer, or a cancel that crossed before the drop): the
@@ -184,7 +201,7 @@ pub(crate) struct Buried {
 
 impl PlaneDriver {
     /// Finish every buried unit that can be finished: an in-flight op that has settled, and a unit
-    /// with no op in flight, which gets its ticketless `cancel` here. Each is billed through the
+    /// with no op in flight, whose worker cancellation is enqueued and polled here. Each is billed through the
     /// money seam and its ticket recycled. Then every close a unit dropped open is owed
     /// (`plane_driver/close.rs`). Called at the start of every unit (its decode, and its route
     /// leg); never inside a `Drop`, and never under a lock (the plane is called with none held).
@@ -193,10 +210,7 @@ impl PlaneDriver {
         let mut unsettled = Vec::new();
         for mut unit in buried {
             let key = unit.ctx.key.get();
-            let now = |ticket| {
-                self.cancel_now(ticket, key)
-                    .map(|c| (c.disposition, c.writes))
-            };
+            let mut bill_ready = false;
             let cancelled = match unit.flight.take() {
                 Some(mut flight) => match flight.settled() {
                     None => {
@@ -204,28 +218,59 @@ impl PlaneDriver {
                         unsettled.push(unit);
                         continue;
                     }
-                    // The client-drop path cancelled the op on its worker; an op that ended on its
-                    // own before the cancel reached it leaves the plane owing one.
-                    // An op whose own done answer closed the unit owes it nothing more.
                     Some(done) => match (done.disposition, done.outcome) {
-                        (Some(d), _) => Some((d, flight.cancel_writes())),
-                        (None, AbiOutcome::Fault) => None,
-                        (None, _)
-                            if unit.closed
-                                || super::route::answered_done(
-                                    &done,
-                                    &*flight,
-                                    unit.piece_flags,
-                                    unit.final_answer,
-                                ) =>
-                        {
+                        (Some(d), _) => {
+                            bill_ready = true;
+                            Some((d, flight.cancel_writes()))
+                        }
+                        (None, AbiOutcome::Fault) => {
+                            bill_ready = true;
                             None
                         }
-                        (None, _) => now(unit.ticket),
+                        (None, _)
+                            if super::route::answered_done(
+                                &done,
+                                &*flight,
+                                unit.piece_flags,
+                                unit.final_answer,
+                            ) =>
+                        {
+                            bill_ready = true;
+                            None
+                        }
+                        (None, _) if unit.closed => None,
+                        (None, _) => {
+                            unit.closed = true;
+                            unit.started
+                                .store(true, std::sync::atomic::Ordering::Release);
+                            unit.closing = Some(self.cancel_unit(unit.ticket, key));
+                            unsettled.push(unit);
+                            continue;
+                        }
                     },
                 },
-                None if unit.closed => None,
-                None => now(unit.ticket),
+                None => {
+                    if unit.closing.is_none() && !unit.closed {
+                        unit.closed = true;
+                        unit.started
+                            .store(true, std::sync::atomic::Ordering::Release);
+                        unit.closing = Some(self.cancel_unit(unit.ticket, key));
+                    }
+                    match unit.closing.as_mut().map(poll_cancel) {
+                        Some(std::task::Poll::Pending) => {
+                            unsettled.push(unit);
+                            continue;
+                        }
+                        Some(std::task::Poll::Ready(cancelled)) => {
+                            bill_ready = true;
+                            cancelled.map(|c| (c.disposition, c.writes))
+                        }
+                        None => {
+                            bill_ready = !unit.started.load(std::sync::atomic::Ordering::Acquire);
+                            None
+                        }
+                    }
+                }
             };
             // THE CANCELLED UNIT'S ROW (SEAM-L(r)): what its `cancel` wrote.
             if let Some((_, writes)) = &cancelled {
@@ -233,7 +278,9 @@ impl PlaneDriver {
             }
             let disposition = cancelled.map(|(d, _)| d);
             let bill = CancelBill::new(ReasonCode::ClientGone, disposition, &unit.facts);
-            self.money.cancelled(&unit.ctx, &bill);
+            if bill_ready && !unit.billed.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                self.money.cancelled(&unit.ctx, &bill);
+            }
             self.calls.recycle(unit.ticket);
         }
         self.lock_buried().extend(unsettled);

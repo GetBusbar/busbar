@@ -729,6 +729,8 @@ pub(crate) struct Pumping<'u> {
     bufs: Box<PieceBufs>,
     keep: Keep,
     flight: Option<Box<dyn PieceInFlight>>,
+    /// An eagerly enqueued cancellation retains its reply through caller drop.
+    closing: Option<super::cancel::CancelFuture>,
     ended: bool,
     /// The record writes the `cancel` that ended the last op carried (SEAM-L(r)).
     cancel_writes: Vec<busbar_contract::plane_calls::CancelWrite>,
@@ -755,6 +757,7 @@ impl<'u> Pumping<'u> {
         deadline_ns: u64,
         body: bytes::Bytes,
     ) -> Self {
+        driver.calls.bind_unit(ticket, ctx.key.get());
         Pumping {
             driver,
             token,
@@ -766,6 +769,7 @@ impl<'u> Pumping<'u> {
             bufs: Box::new(PieceBufs::new(&driver.config.caps, body)),
             keep: Arc::new(Mutex::new(None)),
             flight: None,
+            closing: None,
             ended: false,
             cancel_writes: Vec::new(),
             wait_member: None,
@@ -813,6 +817,11 @@ impl<'u> Pumping<'u> {
         let (answered, cause) = match guarded(&mut self.stop, left, &mut **flight).await {
             Ok(answered) => (answered, None),
             Err(cause) => {
+                self.state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .cancel_started
+                    .store(true, std::sync::atomic::Ordering::Release);
                 calls.drop_client(self.ticket);
                 ((&mut **flight).await, Some(cause))
             }
@@ -844,9 +853,11 @@ impl<'u> Pumping<'u> {
     }
 
     /// Cancel the unit for `cause` and bill it. With an op that was in flight, its answer carries
-    /// the disposition the cancel crossing gave; otherwise the driver makes the ticketless `cancel`
-    /// itself, here, on the caller's task.
-    pub(crate) fn cancel(&mut self, cause: ReasonCode, done: Option<Answered>) -> CancelBill {
+    /// the disposition the cancel crossing gave; otherwise the driver enqueues the unit's
+    /// cancellation on its worker and retains the reply until it settles.
+    pub(crate) async fn cancel(&mut self, cause: ReasonCode, done: Option<Answered>) -> CancelBill {
+        let observed_terminal = done.is_some();
+        let cancelled_result = self.lock().close != Close::Closed;
         let cancelled = match done.map(|d| (d.disposition, d.outcome)) {
             Some((Some(d), _)) => Some((d, std::mem::take(&mut self.cancel_writes))),
             Some((None, AbiOutcome::Fault)) => None,
@@ -854,7 +865,7 @@ impl<'u> Pumping<'u> {
             // or the plane said the unit's reply was complete before the cut: a `cancel` now would
             // be its second closing call. It bills as a cancel the plane did not answer.
             _ if self.lock().close == Close::Closed => None,
-            _ => self.cancel_now().map(|c| (c.disposition, c.writes)),
+            _ => self.cancel_now().await.map(|c| (c.disposition, c.writes)),
         };
         // THE CANCELLED UNIT'S ROW (SEAM-L(r)): what its `cancel` wrote, under its principal.
         if let Some((_, writes)) = &cancelled {
@@ -864,15 +875,41 @@ impl<'u> Pumping<'u> {
         let disposition = cancelled.map(|(d, _)| d);
         let facts = self.lock().facts.clone();
         let bill = CancelBill::new(cause, disposition, &facts);
-        self.driver.money.cancelled(self.ctx, &bill);
+        let bill_once = {
+            let st = self.lock();
+            let result_owned = observed_terminal
+                || self.closing.is_some()
+                || cancelled_result
+                || !st.cancel_started.load(std::sync::atomic::Ordering::Acquire);
+            result_owned
+                && !st
+                    .cancel_billed
+                    .swap(true, std::sync::atomic::Ordering::AcqRel)
+        };
+        if bill_once {
+            self.driver.money.cancelled(self.ctx, &bill);
+        }
         bill
     }
 
-    /// The driver's own ticketless `cancel` of the unit, on its ticket and naming it: the unit's
-    /// closing call ([`super::close`]).
-    pub(crate) fn cancel_now(&self) -> Option<busbar_contract::plane_calls::Cancelled> {
-        let cancelled = self.driver.cancel_now(self.ticket, self.ctx.key.get());
-        self.lock().close.closed();
+    /// The worker owns cancellation order across every ticket bound to this logical unit.
+    pub(crate) async fn cancel_now(&mut self) -> Option<busbar_contract::plane_calls::Cancelled> {
+        let owes = {
+            let mut st = self.lock();
+            let owes = st.close != Close::Closed;
+            st.close.closed();
+            if owes {
+                st.cancel_started
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+            owes
+        };
+        if !owes {
+            return None;
+        }
+        self.closing = Some(self.driver.cancel_unit(self.ticket, self.ctx.key.get()));
+        let cancelled = self.closing.as_mut().expect("queued cancel").await;
+        self.closing = None;
         cancelled
     }
 
@@ -997,6 +1034,9 @@ impl Drop for Pumping<'_> {
                     (Some(flight), done)
                 }
                 None => {
+                    self.lock()
+                        .cancel_started
+                        .store(true, std::sync::atomic::Ordering::Release);
                     self.driver.calls.drop_client(self.ticket);
                     (Some(flight), false)
                 }
@@ -1005,17 +1045,26 @@ impl Drop for Pumping<'_> {
         };
         // The buried unit's `cancel` (the client-drop path's, or the sweep's) is its closing call,
         // unless it is closed already: a done answer, or a cancel that crossed before the drop.
-        let (facts, principal, closed) = {
+        let (facts, principal, closed, billed, started) = {
             let mut st = self.lock();
             let closed = done || st.close == Close::Closed;
             st.close.closed();
-            (st.facts.clone(), st.principal.clone(), closed)
+            (
+                st.facts.clone(),
+                st.principal.clone(),
+                closed,
+                st.cancel_billed.clone(),
+                st.cancel_started.clone(),
+            )
         };
         self.driver.bury(Buried {
             ctx: self.ctx.clone(),
             ticket: self.ticket,
             facts,
             flight,
+            closing: self.closing.take(),
+            billed,
+            started,
             principal,
             closed,
             piece_flags: self.piece_flags,
