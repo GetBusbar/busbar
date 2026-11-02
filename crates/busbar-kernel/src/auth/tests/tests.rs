@@ -525,7 +525,7 @@ fn a_door_refusal_retains_its_exact_query_in_a_wiping_target() {
         zeroize::Zeroizing::new(target.to_owned()),
     );
     wiped_when_dropped(&door.1);
-    let response = unauthorized_response(&residual_app(), "/v1/responses", Some(&door));
+    let response = refuse_door(&door);
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(seen.lock().unwrap().as_deref(), Some(target));
 }

@@ -1184,13 +1184,17 @@ pub(crate) type RefusalDoor = (
     zeroize::Zeroizing<String>,
 );
 
+fn refuse_door((refuse, target): &RefusalDoor) -> Response {
+    refuse(busbar_contract::caps::ReasonCode::Unauthenticated, target)
+}
+
 fn unauthorized_response(
     app: &crate::state::App,
     path: &str,
     door: Option<&RefusalDoor>,
 ) -> Response {
-    if let Some((refuse, target)) = door {
-        return refuse(busbar_contract::caps::ReasonCode::Unauthenticated, target);
+    if let Some(door) = door {
+        return refuse_door(door);
     }
     let ingress = ingress_for_path(app, path);
 
