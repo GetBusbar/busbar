@@ -3994,28 +3994,36 @@ pub(crate) mod tool_door {
         }
     }
 
-    /// Typed record rows in memory: the store kind's record slots, for the records services; and
-    /// how many writes of a settled work handle the store refuses next.
-    #[derive(Default)]
+    /// The actual product store, with a bounded refusal of the next work-settlement writes.
     pub(crate) struct Rows(
-        pub(crate)  std::sync::Mutex<
-            BTreeMap<
-                (busbar_contract::ids::RecordSchemaId, Vec<u8>),
-                busbar_contract::kinds::RecordBytes,
-            >,
-        >,
+        Arc<crate::root::loader::store_v3::LoadedStore>,
         pub(crate) std::sync::atomic::AtomicU32,
     );
+
+    impl Default for Rows {
+        fn default() -> Self {
+            Self(
+                crate::root::real_store::store(),
+                std::sync::atomic::AtomicU32::new(0),
+            )
+        }
+    }
 
     impl busbar_kernel::host_records::RecordRows for Rows {
         fn claim(
             &self,
-            _kind: &str,
-            _token: &str,
-            _expires_at: u64,
-            _now: u64,
+            kind: &str,
+            token: &str,
+            expires_at: u64,
+            now: u64,
         ) -> Result<bool, busbar_contract::kinds::StoreError> {
-            Ok(true)
+            busbar_kernel::host_records::RecordRows::claim(
+                &StoreRows(self.0.clone()),
+                kind,
+                token,
+                expires_at,
+                now,
+            )
         }
         fn record_put(
             &self,
@@ -4038,11 +4046,12 @@ pub(crate) mod tool_door {
             if refused {
                 return Err(busbar_contract::kinds::StoreError::Unavailable);
             }
-            self.0
-                .lock()
-                .expect("unpoisoned")
-                .insert((schema, key.to_vec()), value.clone());
-            Ok(())
+            busbar_kernel::host_records::RecordRows::record_put(
+                &StoreRows(self.0.clone()),
+                schema,
+                key,
+                value,
+            )
         }
 
         fn record_get(
@@ -4051,12 +4060,11 @@ pub(crate) mod tool_door {
             key: &[u8],
         ) -> Result<Option<busbar_contract::kinds::RecordBytes>, busbar_contract::kinds::StoreError>
         {
-            Ok(self
-                .0
-                .lock()
-                .expect("unpoisoned")
-                .get(&(schema, key.to_vec()))
-                .cloned())
+            busbar_kernel::host_records::RecordRows::record_get(
+                &StoreRows(self.0.clone()),
+                schema,
+                key,
+            )
         }
 
         fn record_scan(
@@ -4068,16 +4076,12 @@ pub(crate) mod tool_door {
             Vec<(Vec<u8>, busbar_contract::kinds::RecordBytes)>,
             busbar_contract::kinds::StoreError,
         > {
-            let rows = self.0.lock().expect("unpoisoned");
-            let found = rows
-                .iter()
-                .filter(|((s, k), _)| *s == schema && k.starts_with(prefix))
-                .map(|((_, k), v)| (k.clone(), v.clone()));
-            Ok(if limit == 0 {
-                found.collect()
-            } else {
-                found.take(limit as usize).collect()
-            })
+            busbar_kernel::host_records::RecordRows::record_scan(
+                &StoreRows(self.0.clone()),
+                schema,
+                prefix,
+                limit,
+            )
         }
     }
 
@@ -7281,10 +7285,8 @@ mod task_continuation {
             busbar_kernel::host_work::work_key(instance, &reference),
         );
         let state = || {
-            rows.0
-                .lock()
-                .expect("unpoisoned")
-                .get(&key)
+            busbar_kernel::host_records::RecordRows::record_get(&*rows, key.0, &key.1)
+                .expect("the actual store reads the task")
                 .and_then(|row| row.as_slice().get(1).copied())
         };
         assert_eq!(
