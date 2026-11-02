@@ -62,7 +62,9 @@ fn an_apply_that_never_commits_raises_no_rates_and_one_that_commits_raises_them_
         Vec::<i64>::new(),
         "the build alone raised the seam before the transaction committed"
     );
-    limits.keep();
+    limits
+        .keep()
+        .expect("the committed apply activates its rates");
     assert_eq!(
         *recorder.0.lock().unwrap(),
         vec![515_151],
