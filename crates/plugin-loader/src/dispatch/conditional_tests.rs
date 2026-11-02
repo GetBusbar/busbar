@@ -156,18 +156,7 @@ fn tick_answer(
             std::mem::size_of_val(&o),
         )
     };
-    unsafe {
-        answer(
-            wake,
-            KindCode::Plane,
-            slot::TICK,
-            input.ticket,
-            unit,
-            outcome,
-            &o.head,
-            &a,
-        )
-    }
+    unsafe { answer(wake, KindCode::Plane, input.ticket, unit, &o.head, &a) }
 }
 fn complete(route: &Route, decision: Result<Decision, ConditionalFailure>) {
     let (candidate, acked) = route.provider.accepted.lock().unwrap().remove(0);
@@ -313,18 +302,7 @@ fn pending_intent_cannot_carry_serve_reply_piece_records_or_short_output() {
             )
         };
         assert_eq!(
-            unsafe {
-                answer(
-                    wake,
-                    KindCode::Plane,
-                    a.slot,
-                    input.ticket,
-                    None,
-                    Outcome::Pending,
-                    &o.head,
-                    &a,
-                )
-            },
+            unsafe { answer(wake, KindCode::Plane, input.ticket, None, &o.head, &a) },
             Err(())
         );
     }
@@ -349,18 +327,7 @@ fn pending_intent_cannot_carry_serve_reply_piece_records_or_short_output() {
         )
     };
     assert_eq!(
-        unsafe {
-            answer(
-                wake,
-                KindCode::Plane,
-                a.slot,
-                input.ticket,
-                None,
-                Outcome::Pending,
-                &o.head,
-                &a,
-            )
-        },
+        unsafe { answer(wake, KindCode::Plane, input.ticket, None, &o.head, &a) },
         Err(())
     );
     assert_eq!(
@@ -398,18 +365,7 @@ fn old_plane_without_optin_keeps_its_exact_input_and_ordinary_output() {
         )
     };
     assert_eq!(
-        unsafe {
-            answer(
-                wake,
-                KindCode::Plane,
-                slot::TICK,
-                input.ticket,
-                None,
-                Outcome::Ready,
-                &o.head,
-                &a,
-            )
-        },
+        unsafe { answer(wake, KindCode::Plane, input.ticket, None, &o.head, &a) },
         Ok(false)
     );
 }
@@ -668,18 +624,7 @@ fn observed_life_remains_bound_and_held_through_fresh_read_then_commit() {
         )
     };
     assert_eq!(
-        unsafe {
-            answer(
-                wake,
-                KindCode::Plane,
-                slot::TICK,
-                input.ticket,
-                None,
-                Outcome::Pending,
-                &o.head,
-                &a,
-            )
-        },
+        unsafe { answer(wake, KindCode::Plane, input.ticket, None, &o.head, &a) },
         Ok(true)
     );
     let loan = unsafe { prepare(wake, true, slot::DRIVE, &mut input, None) }.unwrap();
@@ -752,10 +697,8 @@ fn unreadable_legacy_blobs_stay_ignored_but_negotiated_blobs_refuse_before_slici
                     answer(
                         legacy_wake,
                         KindCode::Plane,
-                        slot::TICK,
                         input.ticket,
                         None,
-                        Outcome::Ready,
                         &o.head,
                         &a,
                     )
@@ -793,18 +736,7 @@ fn unreadable_legacy_blobs_stay_ignored_but_negotiated_blobs_refuse_before_slici
             )
         };
         assert_eq!(
-            unsafe {
-                answer(
-                    wake,
-                    KindCode::Plane,
-                    slot::TICK,
-                    input.ticket,
-                    None,
-                    Outcome::Pending,
-                    &o.head,
-                    &a,
-                )
-            },
+            unsafe { answer(wake, KindCode::Plane, input.ticket, None, &o.head, &a) },
             Err(())
         );
     }
@@ -905,18 +837,7 @@ fn ack_answer(
             std::mem::size_of_val(&o),
         )
     };
-    unsafe {
-        answer(
-            wake,
-            KindCode::Plane,
-            slot::TICK,
-            input.ticket,
-            None,
-            outcome,
-            &o.head,
-            &a,
-        )
-    }
+    unsafe { answer(wake, KindCode::Plane, input.ticket, None, &o.head, &a) }
 }
 fn driver() -> InHead {
     let mut input = in_head();

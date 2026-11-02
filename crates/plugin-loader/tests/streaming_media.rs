@@ -129,7 +129,7 @@ fn streaming_media_null_and_over_cap_lists_are_refused() {
     let err = bounded_tail_context(|tail| {
         tail.streaming_content_types = NonNull::dangling().as_ptr();
         tail.streaming_content_types_len =
-            busbar_contract::abi::mechanism::check::STATEMENT_LIST_MAX as usize + 1;
+            busbar_contract::abi::mechanism::check::STATEMENT_LIST_MAX + 1;
     })
     .err()
     .unwrap();
