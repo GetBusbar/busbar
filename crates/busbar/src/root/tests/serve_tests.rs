@@ -4608,9 +4608,7 @@ mod tools_door {
             crate::LINKED.auths,
             crate::root::auth_bindings::operator_words(),
         );
-        busbar_kernel_testkit::test_support::install_root_auth_axis(
-            crate::root::dispatch::auth_axis,
-        );
+        crate::dist_root_install::install();
         let chain = vec![busbar_kernel::config::operator_provider().to_string()];
         let rig = port_server.rig(instance, tools, &|app| app.admin_chain(chain.clone()));
         let (server, tool) = (grant_field("scope_server"), grant_field("scope_tool"));
@@ -5146,7 +5144,7 @@ impl Serving {
             &self.lane(),
             MEMBER,
             self.egress.clock.now_secs(),
-            &busbar_kernel_testkit::test_support::tokens::pass(),
+            &busbar_contract::caps::Pass::mint(&busbar_kernel::seal::acquire()),
         )
     }
 
@@ -5155,7 +5153,7 @@ impl Serving {
             &self.lane(),
             MEMBER,
             self.egress.clock.now_secs(),
-            &busbar_kernel_testkit::test_support::tokens::pass(),
+            &busbar_contract::caps::Pass::mint(&busbar_kernel::seal::acquire()),
         )
     }
 
@@ -8974,11 +8972,16 @@ mod pools_door_money {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_keeps_the_budget_unit_of_an_over_cap_answer() {
         let _one = ONE_PUBLISHER.lock().await;
-        let _limits = busbar_kernel_testkit::limits::LIMITS_TEST_LOCK.lock().await;
         const CAP: usize = 4096;
-        let _cap = busbar_kernel_testkit::limits::InstallGuard::install(
-            &busbar_kernel::config::limits::LimitsResolved::with_request_body_max_bytes(CAP),
-        );
+        struct RestoreLimits(Option<busbar_kernel::config::limits::LimitsResolved>);
+        impl Drop for RestoreLimits {
+            fn drop(&mut self) {
+                busbar_kernel::config::limits::swap_installed(self.0.take());
+            }
+        }
+        let _cap = RestoreLimits(busbar_kernel::config::limits::swap_installed(Some(
+            busbar_kernel::config::limits::LimitsResolved::with_request_body_max_bytes(CAP),
+        )));
         let instance = "rehome-money-over-cap";
         let (_state, server) = mock(vec![MockResponse::Ok {
             status: StatusCode::OK,
@@ -11071,11 +11074,28 @@ fn exposition_metric_name(line: &str) -> Option<&str> {
 #[cfg(linked_driver_proofs)]
 #[test]
 fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
-    use busbar_kernel_testkit::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
-    let cap = WarnCapture::capturing_debug();
-    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(cap.clone()));
+    #[derive(Clone)]
+    struct EventWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for EventWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let writer = EventWriter(events.clone());
+    let dispatch = tracing::Dispatch::new(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish(),
+    );
     let mut statuses: Vec<(&str, u16)> = Vec::new();
     tracing::dispatcher::with_default(&dispatch, || {
         let on_workers = dispatch.clone();
@@ -11136,7 +11156,11 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
     );
     assert_eq!(status_of("healthz"), 200, "statuses: {statuses:?}");
 
-    let events = cap.messages();
+    let events: Vec<String> = String::from_utf8(events.lock().unwrap().clone())
+        .expect("tracing emits UTF-8")
+        .lines()
+        .map(str::to_owned)
+        .collect();
     let hits: Vec<&String> = events
         .iter()
         .filter(|m| mentions_a_silence_marker(m))
