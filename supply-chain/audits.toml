@@ -60,6 +60,12 @@ delta = "0.29.0 -> 0.29.0@git:1c190f7dda55dc7df4781b7ecea9faa671fc76fd"
 notes = "Actual exact-delta source review; evidence reviews/forks/tungstenite-report.json. Published archive checksum and all extracted files verified; changed production code and affected consumers inspected. No new unsafe code, ambient capabilities, build scripts or dependency changes. Base 0.29.0 uses existing exemption; no new base audit claimed. This is an AI-assisted review, not human owner approval or executed runtime qualification."
 
 [[audits.unicode-properties]]
+who = "OpenAI Codex (/root/finish_distribution/fork_supplychain_audit; AI-assisted source review)"
+criteria = "safe-to-deploy"
+version = "0.1.4"
+notes = "Full registry snapshot source review, not human approval or executed Rust tests. Archive SHA256 7df058c713841ad818f1dc5d3fd88063241cc61f49f5fbea4b951e8cf5a8d71d matches exact registry index/root lock; all15 archive members match reviewed source, payload tree d791814799ee89d40b1c5db5656433facb035dc314acc9ee51594e294fc381ba. Prior0.1.5 coverage reused only after byte/hash equality; all changed package content reviewed. Dependency-free no_std safe Rust uses immutable arrays and bounded standard binary searches, with no allocation, build script, FFI, unsafe code, mutable globals or deployed ambient capabilities. All3408 category ranges independently match official Unicode17.0.0 across1114112 codepoints; all628 emoji ranges match across1112064 Rust scalars, with sorted/nonoverlapping scalar ranges and total emoji unwrap. Both shipped/default features reviewed. Packaged maintenance generator fully read, not run: fixed official-data curl and local tables.rs rewrite are not Cargo build/runtime behavior; deployed generated output independently checked. Full evidence reviews/unicode-properties-0.1.4/report.md and validation-results.json; prior baseline evidence reviews/stringprep/. Source safety review does not certify caller profiles, full Unicode conformance, legal/license compliance, MSRV/platform execution or separately versioned dependencies. No exemption or version churn."
+
+[[audits.unicode-properties]]
 who = "OpenAI Codex (/root/finish_distribution/test_harness_finish; AI-assisted source review)"
 criteria = "safe-to-deploy"
 version = "0.1.5"
