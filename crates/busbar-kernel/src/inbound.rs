@@ -371,6 +371,8 @@ pub struct ListenerScope {
     pub admission: ListenerAdmission,
     /// Whether the root's legacy fallback surface is physically present.
     pub legacy_fallback: bool,
+    /// Refusal producer retained with this listener generation and its sealed claims.
+    pub refuse: Option<crate::plane_routes::PlaneRefuseByPathFn>,
 }
 
 impl Listener {
@@ -2685,6 +2687,53 @@ impl Inbound {
         let respond = || {
             if let Some(response) = overloaded_refusal(r.cause, overloaded) {
                 return Ok(response);
+            }
+            let refusal = match r.cause {
+                REFUSE_NO_ROUTE => Some((
+                    busbar_contract::caps::ReasonCode::NoDestination,
+                    StatusCode::NOT_FOUND,
+                    "the requested resource was not found",
+                )),
+                REFUSE_METHOD_MISS => Some((
+                    busbar_contract::caps::ReasonCode::MethodNotAllowed,
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "method not allowed for this resource",
+                )),
+                REFUSE_OVER_GATE => Some((
+                    busbar_contract::caps::ReasonCode::BodyTooLarge,
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "request body exceeds the maximum allowed size",
+                )),
+                _ => None,
+            };
+            let native_api = table
+                .listener
+                .scope
+                .as_ref()
+                .is_none_or(|s| s.legacy_fallback)
+                && (path == crate::admin::gate::API_ROOT
+                    || path.starts_with(&format!("{}/", crate::admin::gate::API_ROOT)));
+            if !native_api {
+                if let Some((reason, status, text)) = refusal {
+                    if let Some(rendered) = table
+                        .listener
+                        .scope
+                        .as_ref()
+                        .and_then(|scope| scope.refuse.as_ref())
+                        .and_then(|refuse| {
+                            refuse(&crate::plane_routes::KernelRefusal {
+                                reason,
+                                status: status.as_u16(),
+                                text,
+                                path: &path,
+                                target: &target,
+                                selected_line: line,
+                            })
+                        })
+                    {
+                        return Ok(rendered);
+                    }
+                }
             }
             Ok(match r.cause {
                 REFUSE_NO_ROUTE => crate::router::fallback_error_response(

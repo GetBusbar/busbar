@@ -34,6 +34,8 @@ pub struct KernelRefusal<'a> {
     pub path: &'a str,
     /// The request target the plane reads its path rule off (path and query).
     pub target: &'a str,
+    /// The original sealed line, when the inbound caller already selected one.
+    pub selected_line: Option<&'a crate::guest::Line>,
 }
 
 pub type PlaneRefuseByPathFn =

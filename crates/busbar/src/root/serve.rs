@@ -3087,6 +3087,9 @@ impl ListenerPlan {
             let legacy_fallback = at == "listen";
             let scope = busbar_kernel::inbound::ListenerScope {
                 legacy_fallback,
+                refuse: plan
+                    .prepared(&source.app, &at)
+                    .and_then(|prepared| prepared.refusal_renderer()),
                 admission: Arc::new(move |app, head| {
                     use busbar_kernel::guest::{Claimant, Matched};
                     let fields: Vec<_> = head
@@ -3684,8 +3687,14 @@ fn door_mounts_planned(
     let refuse_by_path: busbar_kernel::plane_routes::PlaneRefuseByPathFn = {
         let routes = Arc::clone(&routes);
         Arc::new(move |r: &busbar_kernel::plane_routes::KernelRefusal<'_>| {
-            let Matched::MethodMiss(line) = routes.guests.matched("", r.path, &[]) else {
-                return None;
+            let line = match r.selected_line {
+                Some(selected) => routes.guests.lines().iter().find(|line| {
+                    line.claimant == selected.claimant && line.route == selected.route
+                })?,
+                None => match routes.guests.matched("", r.path, &[]) {
+                    Matched::MethodMiss(line) => line,
+                    _ => return None,
+                },
             };
             let Claimant::Plane(instance) = &line.claimant else {
                 return None;

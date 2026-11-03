@@ -83,6 +83,7 @@ pub(crate) fn kernel_refusal_response(
             text: message,
             path,
             target,
+            selected_line: None,
         };
         let rendered = PHYSICAL_REFUSER
             .try_with(|(_, render)| render.as_ref().and_then(|render| render(&refusal)))
@@ -1159,6 +1160,11 @@ impl PreparedListener {
             root_surface,
             dispatch_layer: unchanged_dispatch_layer,
         })
+    }
+
+    /// The refusal producer captured with this prepared listener's route snapshot.
+    pub fn refusal_renderer(&self) -> Option<crate::plane_routes::PlaneRefuseByPathFn> {
+        self.refuse_by_path.clone()
     }
 
     /// Apply the composition's dispatch preparation after auth, under the listener's one cap.
