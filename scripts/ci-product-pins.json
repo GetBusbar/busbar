@@ -301,7 +301,7 @@
     {
       "repo": "busbar-plane-mcp",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-plane-mcp",
-      "commit": "b6d6304ad0d4cc1494e9fb689a9661e05cccd22b",
+      "commit": "049f75986a12ddde0d5648596e535de09b528edd",
       "package": "busbar-plane-mcp-plugin",
       "kind": "plane",
       "alias": "mcp",
