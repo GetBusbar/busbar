@@ -680,6 +680,7 @@ impl busbar_contract::services::HostServices for Provider {
         busbar_contract::services::Ran::Now(result)
     }
 }
+#[track_caller]
 fn until(mut predicate: impl FnMut() -> bool) {
     let end = Instant::now() + Duration::from_secs(5);
     while !predicate() {
@@ -917,13 +918,24 @@ fn a_pending_driver_delivers_ids_resumes_and_retires_late_service_custody() {
             .answered_after(2, Duration::from_secs(5)),
         Some(Outcome::Ready)
     );
-    until(|| {
-        states()
-            .lock()
-            .unwrap()
-            .get(&host)
-            .is_some_and(|s| s.releases == 3)
-    });
+    let release_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let all = states().lock().unwrap();
+        let state = all.get(&host).expect("the actual pending driver is still open");
+        if state.releases == 3 {
+            break;
+        }
+        assert!(
+            Instant::now() < release_deadline,
+            "the completed DRIVE answer lease was not released: releases={}, leases={}, resumes={}, answers={}",
+            state.releases,
+            state.leases.len(),
+            state.resumes,
+            plugin.inner.driven.answers(),
+        );
+        drop(all);
+        std::thread::sleep(Duration::from_millis(1));
+    }
     assert_eq!(plugin.inner.driven.drain(), vec![5]);
     assert_eq!(dispatcher.services().held.held(driver), 0);
     assert_eq!(dispatcher.services().held(), 0);
