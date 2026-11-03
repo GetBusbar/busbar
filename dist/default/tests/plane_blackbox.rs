@@ -217,6 +217,11 @@ impl Step {
                 body.get("response_headers_absent"),
                 &format!("{what}.response_headers_absent"),
             )?;
+            if body.get("response_headers_absent").is_some() && absent_headers.is_empty() {
+                return Err(format!(
+                    "{what}.response_headers_absent: a nonempty array is required"
+                ));
+            }
             for name in exact_headers.keys().chain(absent_headers.iter()) {
                 reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
                     format!("{what}: {name:?} is not a valid nonempty response header name")
@@ -1940,6 +1945,7 @@ fn exact_call_and_transport_fields_refuse_malformed_oracles() {
         json!({"json_eq":[]}),
         json!({"response_headers_eq":{"www-authenticate":7}}),
         json!({"response_headers_absent":false}),
+        json!({"response_headers_absent":[]}),
         json!({"response_headers_absent":[""]}),
         json!({"response_headers_absent":["not a header"]}),
         json!({"within_secs":0}),
