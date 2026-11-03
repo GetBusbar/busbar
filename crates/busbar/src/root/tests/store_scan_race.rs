@@ -10,7 +10,10 @@ struct MixedScan {
     delegate: ScanView,
     slots: RecordSlots,
     append: busbar_contract::abi::sdk::store::conditional::Request,
+    triggered: AtomicBool,
     appended: AtomicBool,
+    upper_waker: Mutex<Option<std::task::Waker>>,
+    stages: Mutex<Vec<&'static str>>,
     lower_snapshot: AtomicBool,
     upper_seen: AtomicBool,
 }
@@ -97,25 +100,52 @@ impl StoreCalls for MixedScan {
         limit: u32,
     ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
         Box::pin(async move {
+            let upper = prefix == &part_key(self.node, 302, 0)[..16];
+            if upper {
+                // Do not even create the backend future before the append is
+                // confirmed. Registration plus a second Acquire check closes
+                // the publication/waker-registration race without a thread.
+                std::future::poll_fn(|cx| {
+                    if self.appended.load(Ordering::Acquire) {
+                        return std::task::Poll::Ready(());
+                    }
+                    let mut waiter = self.upper_waker.lock().unwrap();
+                    *waiter = Some(cx.waker().clone());
+                    if self.appended.load(Ordering::Acquire) {
+                        std::task::Poll::Ready(())
+                    } else {
+                        std::task::Poll::Pending
+                    }
+                })
+                .await;
+                self.stages.lock().unwrap().push("upper_backend_started");
+            }
             let rows = self.delegate.record_scan(schema, prefix, limit).await?;
             if prefix == &part_key(self.node, 301, 0)[..16]
-                && !self.appended.swap(true, Ordering::SeqCst)
+                && !self.triggered.swap(true, Ordering::SeqCst)
             {
                 assert!(
                     rows.is_empty(),
                     "lower prefix snapshot predates the atomic append"
                 );
                 self.lower_snapshot.store(true, Ordering::SeqCst);
+                self.stages.lock().unwrap().push("lower_snapshot_captured");
                 assert_eq!(
                     self.slots.apply_transaction(&self.append),
                     Decision::Applied,
                     "both consecutive sealed records are appended in one real Store transaction"
                 );
+                self.stages.lock().unwrap().push("atomic_append_applied");
+                self.appended.store(true, Ordering::Release);
+                let waiter = self.upper_waker.lock().unwrap().take();
+                if let Some(waiter) = waiter {
+                    waiter.wake();
+                }
             }
-            if prefix == &part_key(self.node, 302, 0)[..16] && self.appended.load(Ordering::SeqCst)
-            {
+            if upper {
                 assert!(!rows.is_empty());
                 self.upper_seen.store(true, Ordering::SeqCst);
+                self.stages.lock().unwrap().push("upper_snapshot_observed");
             }
             Ok(rows)
         })
@@ -207,13 +237,18 @@ fn concurrent_atomic_append_can_produce_a_mixed_prefix_view_that_fails_closed() 
         delegate: ScanView::new(&slots, ScanMode::Healthy),
         slots: slots.clone(),
         append,
+        triggered: AtomicBool::new(false),
         appended: AtomicBool::new(false),
+        upper_waker: Mutex::new(None),
+        stages: Mutex::new(Vec::new()),
         lower_snapshot: AtomicBool::new(false),
         upper_seen: AtomicBool::new(false),
     };
     let result = verify_stored_chain(&view, node);
     assert!(view.lower_snapshot.load(Ordering::SeqCst));
     assert!(view.upper_seen.load(Ordering::SeqCst));
+    assert_eq!(*view.stages.lock().unwrap(), ["lower_snapshot_captured", "atomic_append_applied", "upper_backend_started", "upper_snapshot_observed"],
+        "actual read and atomic Store completion order must establish the two distinct snapshot epochs");
     assert!(
         result.unwrap_err().contains("broken hash link or sequence"),
         "the mixed snapshot must fail specifically at the unchanged hash-link/sequence verifier"
