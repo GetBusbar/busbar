@@ -67,6 +67,10 @@ export:
 models:
   test-model:
     provider: mock
+pools:
+  span-pool:
+    members:
+      - model: test-model
 "#,
         ),
     )
@@ -86,8 +90,9 @@ fn request(port: u16, body: &str) -> Option<u16> {
     stream
         .set_read_timeout(Some(Duration::from_secs(20)))
         .ok()?;
+    // The named pool creates the real arrival parent; bare OpenAI ingress has none.
     let req = format!(
-        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\ncontent-type: application/json\r\n\
+        "POST /span-pool/v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\ncontent-type: application/json\r\n\
          content-length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
@@ -203,19 +208,53 @@ fn real_producer_span_records_survive_both_otlp_doors() {
             .filter(|span| span.name == "forward")
             .collect::<Vec<_>>()
     };
+    let parents = |path| {
+        common::otlp::spans(&common::otlp::requests(&seen, Some(path)))
+            .into_iter()
+            .filter(|span| span.name == "named")
+            .collect::<Vec<_>>()
+    };
     let deadline = Instant::now() + Duration::from_secs(30);
-    while forwards(LINKED_PATH).len() < served || forwards(DROPPED_PATH).len() < served {
+    while forwards(LINKED_PATH).len() < served
+        || forwards(DROPPED_PATH).len() < served
+        || parents(LINKED_PATH).len() < served
+        || parents(DROPPED_PATH).len() < served
+    {
         assert!(
             Instant::now() < deadline,
-            "forward spans did not arrive at both collectors:\n{}",
+            "forward spans and their named arrival parents did not reach both collectors:\n{}",
             read_log()
         );
         std::thread::sleep(Duration::from_millis(50));
     }
     let linked = forwards(LINKED_PATH);
     let dropped = forwards(DROPPED_PATH);
+    let linked_parents = parents(LINKED_PATH);
+    let dropped_parents = parents(DROPPED_PATH);
     for span in &linked {
         assert_full_record(span);
+        let parent = linked_parents
+            .iter()
+            .find(|parent| {
+                parent.span_id == span.parent_span_id && parent.trace_id == span.trace_id
+            })
+            .expect("the forward's parent must be the real named-pool arrival on its trace");
+        assert_eq!(
+            attribute(&parent.attributes, "pool"),
+            Some(
+                &opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                    "span-pool".into()
+                )
+            )
+        );
+        let dropped_parent = dropped_parents
+            .iter()
+            .find(|peer| peer.span_id == parent.span_id)
+            .expect("the dropped door must preserve the same named arrival parent identity");
+        assert_eq!(
+            parent, dropped_parent,
+            "both doors must preserve the full named arrival parent"
+        );
         let peer = dropped
             .iter()
             .find(|peer| peer.span_id == span.span_id)
