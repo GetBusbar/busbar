@@ -1430,8 +1430,23 @@ pub(super) mod session_door {
     }
     impl Drop for RtcTasks {
         fn drop(&mut self) {
-            for task in self.0.get_mut().expect("the peer tasks").drain(..) {
+            let tasks: Vec<_> = self
+                .0
+                .get_mut()
+                .expect("the peer tasks")
+                .drain(..)
+                .collect();
+            for task in &tasks {
                 task.abort();
+            }
+            // Join cancelled fixture workers while this test's runtime is alive.
+            // Runtime shutdown also owns any reaper that has not yet been polled.
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    for task in tasks {
+                        let _ = task.await;
+                    }
+                });
             }
         }
     }
@@ -2096,6 +2111,18 @@ pub(super) mod session_door {
         }
         let live = Arc::clone(&served.planes[0].live);
         served.post = Some(Arc::clone(&post));
+        // Run the same workers as Served::spawn_ticks, retaining their handles
+        // so a fixture never leaves a driver alive after its session owner.
+        for plane in &served.planes {
+            let driver = Arc::clone(&plane.driver);
+            peers.keep(tokio::spawn(async move { driver.ticks().await }));
+            let driver = Arc::clone(&plane.driver);
+            peers.keep(tokio::spawn(async move { driver.drives().await }));
+        }
+        let lease = crate::root::serve::LeaseTick {
+            node: Arc::clone(post.node()),
+        };
+        peers.keep(tokio::spawn(lease.ticks()));
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
         let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
