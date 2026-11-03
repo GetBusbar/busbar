@@ -1490,3 +1490,7 @@ criteria = "safe-to-deploy"
 [[exemptions.vsimd]]
 version = "0.8.0"
 criteria = "safe-to-deploy"
+
+[[exemptions.fancy-regex]]
+version = "0.19.0"
+criteria = "safe-to-deploy"
