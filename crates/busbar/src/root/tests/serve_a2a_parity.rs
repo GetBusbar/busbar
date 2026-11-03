@@ -942,10 +942,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         582,
         "the original reported byte count includes caller and far-end input"
     );
-    let store_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("the proof requires a freshly built actual Store image"),
-    );
+    let store_path = crate::root::test_plugins::application_store_library();
     assert!(store_path.is_absolute() && store_path.is_file());
     let stated = rendering_of_library(&store_path)
         .unwrap()
@@ -967,10 +964,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
     std::fs::write(&operator_file, ADMIN_TOKEN).unwrap();
     let signing_file = directory.join("signing.key");
     std::fs::write(&signing_file, hex::encode([9u8; 32])).unwrap();
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .unwrap();
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}/agent", listener.local_addr().unwrap());
     let issuer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
