@@ -117,6 +117,7 @@ fn governed_full(
 ) -> Governed {
     static ROOT: std::sync::Once = std::sync::Once::new();
     ROOT.call_once(|| {
+        crate::root::linked::register_stores(&crate::LINKED);
         use crate::root::loader::dispatch::kinds::transport::Transport;
         use crate::root::loader::dispatch::{
             load_dropped, rendering_of_library, Bind, ConnTable, NoSink,
@@ -240,10 +241,14 @@ fn governed_full(
         std::fs::write(directory.join(format!("{kind}.tar.gz")), archive).unwrap();
     }
     let settings = crate::root::test_plugins::application_store_settings(&directory);
+    let store_module = store_module.expect("the actual Store module is declared");
+    let signing_file = directory.join("token-signing.key");
+    std::fs::write(&signing_file, [9u8; 32]).expect("the actual signing secret");
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {}, "models": {},
-        "auth": {"chain": if keys_chain { vec!["keys"] } else { vec![] }, "admin_auth": []},
-        "store": {"module": store_module.unwrap(), "settings": settings},
+        "auth": {"chain": if keys_chain { vec!["keys"] } else { vec![] }, "admin_auth": [],
+            "signing_key": {"file": signing_file}},
+        "store": {"module": store_module, "settings": settings},
         "advanced": {"allow_destinations": ["127.0.0.1"]}
     }))
     .expect("the money deployment parses");
@@ -353,7 +358,11 @@ fn governed_full(
             as Arc<dyn busbar_kernel::appbuild::RootRules>),
     )
     .expect("the actual root builds the money deployment");
+    limits.stage_boot();
+    let _boot_book = crate::root::boot::book(&app, &store_module)
+        .expect("the actual configured Store binds its boot rate history");
     limits.keep().expect("the product limits commit");
+    std::fs::remove_file(&signing_file).expect("the signing secret was resolved at boot");
     if let Some(rotate) = rotate {
         rotate();
     }
