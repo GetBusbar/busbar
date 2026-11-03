@@ -5252,6 +5252,8 @@ pub(crate) mod door_boundary {
         if let Some(admission) = (row.admission)(&**slot) {
             app.planes = Arc::new((*app.planes).clone().admit(row.key, admission));
         }
+        // Keep the built object under its declaration key, as appbuild does.
+        app.plane_slots.insert(row.key, Arc::clone(slot));
         app.plane_slots.insert(
             busbar_kernel::state::runtime_slot_key(row.key),
             Arc::clone(slot),
@@ -9908,8 +9910,10 @@ fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
             "store": {"module": module, "settings": settings},
         }))
         .expect("the door deployment parses");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+        let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the door deployment resolves");
+        cfg.per_request_fee = 1;
+        cfg.groups = groups.clone();
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let loaded = crate::root::real_store::store();
