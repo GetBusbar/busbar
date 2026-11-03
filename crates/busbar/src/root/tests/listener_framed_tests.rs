@@ -3354,11 +3354,33 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
                 _ => None,
             })
             .unwrap();
-        assert_eq!(
-            pending_status,
-            if first_body.is_empty() { 200 } else { 0 },
-            "empty responses retain their head; nonempty responses retain their final body Emit"
-        );
+        let calls = observed.calls.lock().unwrap().clone();
+        let terminal = calls.iter().enumerate().filter_map(|(index, call)| match call {
+            ObservedCall::Emit { status, end: true, .. } => Some((index, *status)),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(terminal.len(), 1, "exactly one original terminal Emit owns the first answer");
+        let (terminal_index, terminal_status) = terminal[0];
+        assert_eq!(terminal_status, if first_body.is_empty() { 200 } else { 0 },
+            "the original terminal operation retains the actual answer head or final body");
+        assert!(matches!(calls.get(terminal_index + 1),
+            Some(ObservedCall::EmitResult { ticket, .. }) if *ticket == pending_ticket),
+            "the original terminal Emit and pending crossing retain the same concrete ticket");
+        let pending_index = calls.iter().position(|call| matches!(call,
+            ObservedCall::EmitResult { outcome: Outcome::Pending, .. })).unwrap();
+        assert_eq!(pending_status, 0, "a body Emit or MORE recall carries no new answer status");
+        if pending_index == terminal_index + 1 {
+            assert!(!first_body.is_empty(), "the empty answer parks on its head's drain recall");
+            assert!(matches!(calls.get(pending_index - 1),
+                Some(ObservedCall::Emit { status: 0, end: true, .. })),
+                "the nonempty answer may park on its original final body operation");
+        } else {
+            // cross_ticketed clears status/bytes/end on a MORE recall while keeping the
+            // original operation and ticket. The real HTTP 200 remains in the owned wire.
+            assert!(matches!(calls.get(pending_index - 1),
+                Some(ObservedCall::Emit { status: 0, end: false, len: 0 })),
+                "the pending recall is neutral rather than a second head or body");
+        }
         assert!(
             pending_ticket.is_some_and(|ticket| !ticket.is_none()),
             "a real callback owns a concrete native ticket"
