@@ -9339,7 +9339,7 @@ mod pools_door_money {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_keeps_the_budget_unit_of_an_over_cap_answer() {
         let _one = ONE_PUBLISHER.lock().await;
-        const CAP: usize = 4096;
+        const CAP: usize = 65_536;
         struct RestoreLimits(Option<busbar_kernel::config::limits::LimitsResolved>);
         impl Drop for RestoreLimits {
             fn drop(&mut self) {
