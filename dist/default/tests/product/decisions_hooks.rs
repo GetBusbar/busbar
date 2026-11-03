@@ -178,11 +178,7 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
     );
     let signing_key = directory.join("signing.key");
     let provider_key = directory.join("provider.key");
-    std::fs::write(
-        &signing_key,
-        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    )
-    .unwrap();
+    std::fs::write(&signing_key, hex::encode([9u8; 32])).unwrap();
     std::fs::write(&provider_key, "sk-decisions-hooks").unwrap();
     let store_settings: Value = serde_json::from_str(
         &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
@@ -191,7 +187,7 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
     assert!(store_settings.is_object());
     let mut document = json!({
         "store":{"module":store,"settings":store_settings},
-        "providers":{"typesafe":{"protocol":"jev","base_url":format!("http://127.0.0.1:{provider_port}"),"api_key":{"file":provider_key}}},
+        "providers":{"typesafe":{"api_key":{"file":provider_key}}},
         "models":{},
         "decisions":{"models":{"m":{"provider":"typesafe"}}},
         "auth":{"chain":["keys"],"signing_key":{"file":signing_key},"admin_auth":[]},
@@ -211,7 +207,14 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
     }
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("actual decisions deployment parses");
-    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let definitions = std::collections::HashMap::from([(
+        "typesafe".to_owned(),
+        serde_json::from_value(json!({
+            "protocol":"jev", "base_url":format!("http://127.0.0.1:{provider_port}")
+        }))
+        .expect("the actual provider definition parses"),
+    )]);
+    let cfg = busbar_kernel::config::resolve(&deploy, &definitions)
         .expect("actual decisions deployment resolves");
     let providers = crate::root::door_steps::provider_routes(
         &cfg.providers,
