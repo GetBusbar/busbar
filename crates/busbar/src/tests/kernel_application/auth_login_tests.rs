@@ -6,10 +6,14 @@ use std::sync::Arc;
 mod plugins;
 
 fn stage_plugin(directory: &std::path::Path, kind: &str, variable: &str) -> String {
-    let path = std::path::PathBuf::from(
-        std::env::var_os(variable)
-            .unwrap_or_else(|| panic!("{variable} names the actual built product cdylib")),
-    );
+    let path = if kind == "store" {
+        crate::root::test_plugins::application_store_library()
+    } else {
+        std::path::PathBuf::from(
+            std::env::var_os(variable)
+                .unwrap_or_else(|| panic!("{variable} names the actual built product cdylib")),
+        )
+    };
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
         .expect("the actual product statement reads")
         .expect("the actual product exports a statement");
@@ -81,7 +85,7 @@ async fn inbound_provider_retains_the_actual_opened_instance() {
     }
     crate::dist_root_install::install();
     let directory = plugins::scratch("actual-login-instance-custody");
-    let store = stage_plugin(&directory, "store", "BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN");
+    let store = stage_plugin(&directory, "store", "BUSBAR_TEST_SQLITE_CDYLIB");
     let auth = stage_plugin(
         &directory,
         "auth",
@@ -91,10 +95,8 @@ async fn inbound_provider_retains_the_actual_opened_instance() {
         "BUSBAR_LOGIN_CUSTODY_SIGNING_SECRET",
         "actual-custody-token",
     );
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("actual Store settings are JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {}, "models": {},
         "auth": { "chain": [], "admin_auth": [] },

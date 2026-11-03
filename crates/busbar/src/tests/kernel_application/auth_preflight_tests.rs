@@ -20,10 +20,7 @@ fn missing_auth_plugin_is_loud_boot_failure() {
     crate::dist_root_install::install();
     let dir = plugins::scratch("auth-plugin-missing");
 
-    let artifact = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("the freshly built actual Store product is required"),
-    );
+    let artifact = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&artifact)
         .expect("the actual Store statement reads")
         .expect("the actual Store exports its statement");

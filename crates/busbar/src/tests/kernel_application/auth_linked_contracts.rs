@@ -54,10 +54,7 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
     }
     crate::dist_root_install::install();
     let directory = plugins::scratch("actual-operator-file-reload");
-    let library = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("the actual built Store product is required"),
-    );
+    let library = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library)
         .unwrap()
         .unwrap();
@@ -79,10 +76,8 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
         ),
     )
     .unwrap();
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .unwrap();
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     let token_path = directory.join("admin-token");
     let signing_path = directory.join("signing-key");
     std::fs::write(&token_path, "tok-v1").unwrap();
