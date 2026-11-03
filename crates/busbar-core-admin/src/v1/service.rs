@@ -371,69 +371,6 @@ fn plugins_dir_fingerprint(dir: &Path) -> std::io::Result<u64> {
     Ok(hasher.finish())
 }
 
-#[cfg(test)]
-macro_rules! catalog_scan_test_hook {
-    ($dir:expr) => {
-        catalog_scan_test_hooks::maybe_delay_or_panic($dir)
-    };
-}
-#[cfg(not(test))]
-macro_rules! catalog_scan_test_hook {
-    ($dir:expr) => {};
-}
-
-#[cfg(test)]
-mod catalog_scan_test_hooks {
-    use std::path::PathBuf;
-    use std::sync::Mutex;
-    use std::time::Duration;
-
-    enum Armed {
-        Delay(Duration),
-        Panic,
-    }
-    static SLOT: Mutex<Option<(PathBuf, Armed)>> = Mutex::new(None);
-
-    pub(super) fn maybe_delay_or_panic(dir: &std::path::Path) {
-        let armed = SLOT.lock().unwrap();
-        let Some((armed_dir, kind)) = armed.as_ref() else {
-            return;
-        };
-        if armed_dir != dir {
-            return;
-        }
-        match kind {
-            Armed::Delay(d) => std::thread::sleep(*d),
-            Armed::Panic => {
-                drop(armed);
-                panic!(
-                    "catalog_scan_test_hooks: injected panic for {} (spawn_blocking join-error \
-                     fallback proof)",
-                    dir.display()
-                );
-            }
-        }
-    }
-
-    #[must_use]
-    pub(super) struct HookGuard;
-    impl Drop for HookGuard {
-        fn drop(&mut self) {
-            *SLOT.lock().unwrap() = None;
-        }
-    }
-
-    pub(super) fn set_delay(dir: std::path::PathBuf, d: Duration) -> HookGuard {
-        *SLOT.lock().unwrap() = Some((dir, Armed::Delay(d)));
-        HookGuard
-    }
-
-    pub(super) fn set_panic(dir: std::path::PathBuf) -> HookGuard {
-        *SLOT.lock().unwrap() = Some((dir, Armed::Panic));
-        HookGuard
-    }
-}
-
 pub fn auth_modules_compiled_in() -> Vec<&'static str> {
     let mut modules = vec![busbar_kernel::config::KEYS_MODULE];
     modules.extend(busbar_kernel::preflight::inbound_auth_names(
@@ -535,9 +472,6 @@ pub(crate) const MAX_SETTINGS_KEYS: usize = 256;
 pub(crate) const MAX_HOOK_NAME_LEN: usize = 256;
 
 pub(crate) use busbar_kernel::governance::group_provision::build_with_group;
-
-#[cfg_attr(not(test), allow(unused_imports))]
-pub(crate) use busbar_kernel::governance::group_provision::MAX_GROUP_NAME_LEN;
 
 pub(crate) fn validate_hook_settings_size(
     settings: &serde_json::Map<String, serde_json::Value>,
