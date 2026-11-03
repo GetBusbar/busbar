@@ -258,3 +258,96 @@ fn route_and_meter_consume_the_destinations_verify_sealed() {
         "Meter must not see a destination nothing sealed"
     );
 }
+
+#[test]
+fn session_own_is_retained_until_completion_cancellation_or_invalid_finish() {
+    use crate::teller::{open_unit, SessionOpen};
+    use busbar_contract::caps::{Abort, HoldCellState, ReasonCode};
+
+    for terminal in 0..3 {
+        let kernel = Kernel::new();
+        let fixture = Fixture {
+            route_seen: Mutex::new(Vec::new()),
+            meter_seen: Mutex::new(Vec::new()),
+            audited_seen: Mutex::new(Vec::new()),
+        };
+        let gauge = ConcurrencyGauge::new();
+        let canary = crate::canary::Canary::new();
+        let leases = LeaseCell::new();
+        let meter = AccrualMeter::new();
+        let mut ctx = ctx();
+        ctx.call = kernel.next_call();
+        let cell = busbar_contract::caps::HoldCell::new(Hold::open(
+            &kernel.admit_token_for(ctx.call),
+            principal(),
+        ));
+        let run = || Run {
+            cell: &cell,
+            parent: None,
+            leases: &leases,
+            gauge: &gauge,
+            canary: &canary,
+            meter: &meter,
+            taps: None,
+        };
+        let opened = super::block_on(open_unit(&kernel, &fixture, &ctx, run()));
+        let SessionOpen::Admitted { own: Some(own), .. } = opened else {
+            panic!("actual Own session did not retain terminal custody");
+        };
+        assert_eq!(cell.state(), HoldCellState::Admitted);
+        assert_eq!(canary.counts().drafts, 1);
+        assert_eq!(canary.counts().holds, 1);
+        assert_eq!(canary.counts().settlements, 0);
+        let outcome = if terminal == 1 {
+            Outcome::Aborted(Abort::Kernel {
+                reason: ReasonCode::ClientGone,
+            })
+        } else {
+            Outcome::Completed
+        };
+        let mut terminal_ctx = ctx.clone();
+        if terminal == 2 {
+            terminal_ctx.key = UnitKey::new(2);
+        }
+        let ended = own.finish(
+            &kernel,
+            &terminal_ctx,
+            run(),
+            outcome,
+            Evidence {
+                reported: Some(37),
+                fee_units: 1,
+                class: None,
+                upstream_candidate: true,
+            },
+        );
+        let Ended::Settled { end, requests, fee } = ended else {
+            panic!("actual session hold was not settled");
+        };
+        if terminal == 2 {
+            assert!(
+                end.posted().is_err(),
+                "foreign terminal context posted money"
+            );
+            assert_eq!(requests, 0);
+        } else {
+            assert_eq!(end.posted().unwrap().quantity(), 37);
+            assert_eq!(end.posted().unwrap().principal(), &principal());
+            assert_eq!(
+                requests, 1,
+                "ordinary Client authority must remain chargeable"
+            );
+            assert_eq!(fee, 1);
+            assert_eq!(end.outcome(), outcome);
+        }
+        assert_eq!(cell.state(), HoldCellState::Taken);
+        assert!(canary.balanced().is_ok());
+        assert!(
+            matches!(
+                crate::teller::exit(&kernel, &fixture, &ctx, run(), Outcome::Completed, true,),
+                Ended::AlreadySettled
+            ),
+            "session terminal posting was reusable"
+        );
+    }
+}
