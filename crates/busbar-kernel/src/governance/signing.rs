@@ -189,7 +189,6 @@ impl TokenSigner {
         })
     }
 
-
     pub fn mint_ticket_body(
         &self,
         sub: &str,
@@ -259,8 +258,12 @@ impl TokenVerifier {
         self.verify_body_at(body, Some(now), expected_aud)
     }
 
-    pub(crate) fn verify_ticket_body(&self, body: &str) -> Result<TokenClaims, VerifyError> {
-        self.verify_body_at(body, None, Some(TICKET_AUDIENCE))
+    pub(crate) fn verify_ticket_body(
+        &self,
+        body: &str,
+        consumer: &str,
+    ) -> Result<TokenClaims, VerifyError> {
+        self.verify_body_at(body, None, Some(&ticket_audience(consumer)))
     }
 
     fn verify_body_at(

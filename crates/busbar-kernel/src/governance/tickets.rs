@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::signing::ticket_audience;
 use super::*;
 use crate::host_services::VerifiedTicketIdentity;
 use busbar_contract::records::{PlaneDisposition, PlaneRecordRef, Retention};
@@ -283,7 +282,7 @@ impl GovState {
         }
         let body = credential.strip_prefix(prefix)?;
         let material = self.signing_material()?;
-        let claims = match material.verifier.verify_ticket_body(body) {
+        let claims = match material.verifier.verify_ticket_body(body, prefix) {
             Ok(c) => c,
             Err(e) => {
                 tracing::debug!(reason = %e, "ticket verify rejected");
