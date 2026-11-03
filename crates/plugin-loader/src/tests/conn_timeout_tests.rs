@@ -107,7 +107,7 @@ fn pending_establish_keeps_one_open_and_its_original_bound_across_recall() {
     );
     assert_eq!(*table.timeouts.lock().unwrap(), vec![(700, 0)]);
     assert_eq!(table.opened.lock().unwrap().len(), 1);
-    let stored = state(&p).dialling.lock().unwrap().get(&T).unwrap().1;
+    let stored = state(&p).dialling.lock().unwrap().get(&T).unwrap().conn;
     assert_eq!(
         establish(&p, 2, 123).outcome,
         RawOutcome::of(Outcome::Pending)
