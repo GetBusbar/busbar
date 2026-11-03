@@ -3385,6 +3385,29 @@ fn test_validate_all_zero_rate_card_warns_but_does_not_fail() {
         !msgs.iter().any(|m| m.contains("priced-model")),
         "a model with non-zero rates must NOT warn: {msgs:?}"
     );
+    let card = cfg.rate_card.as_mut().expect("the configured rate card");
+    let unit = card["free-by-accident"]
+        .units
+        .keys()
+        .next()
+        .expect("the actual plane declares a non-token billable unit")
+        .clone();
+    card.get_mut("free-by-accident").unwrap().units.insert(
+        unit,
+        serde_json::from_value(serde_json::json!(1)).expect("an exact non-zero unit rate"),
+    );
+    let paid_units = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(paid_units.clone());
+    tracing::subscriber::with_default(subscriber, || validate(&cfg))
+        .expect("a model with a priced non-token unit remains legal");
+    assert!(
+        !paid_units
+            .messages()
+            .iter()
+            .any(|m| m.contains("free-by-accident") && m.contains("every tier at zero")),
+        "a non-zero unit price must suppress the all-free warning: {:?}",
+        paid_units.messages()
+    );
 }
 
 #[test]
