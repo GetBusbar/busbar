@@ -16,7 +16,16 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
     let statement = rendering_of_library(&path)
         .expect("the actual exporter statement reads")
         .expect("the actual exporter carries its statement");
-    let dispatcher = std::sync::Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let connector = crate::root::connector::installed()
+        .expect("the normal root installs the actual transport connector");
+    // The real exporter reads the snapshot host service during SERVE. The
+    // route grant below lends that snapshot; the dispatcher must also expose
+    // the normal service which receives the actual plugin's read.
+    let dispatcher = std::sync::Arc::new(Dispatcher::with_services(
+        DispatchConfig::default(),
+        std::sync::Arc::new(busbar_kernel::host_services::KernelServices::new()),
+    ));
+    crate::root::connector::install_io(&dispatcher);
     let plugin = load_dropped::<Export>(
         &path,
         &statement,
@@ -25,9 +34,8 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
             max_inflight_cap: 64,
             sink: std::sync::Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            // The actual exporter declares its HTTP listener Need. This route-table
-            // fixture serves it through the host and never opens an outbound connection.
-            conns: ConnTable::Probe,
+            conns: ConnTable::Host(std::sync::Arc::clone(connector)
+                as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
         },
     )
     .expect("the actual HTTP exporter loads through its memory ABI");
