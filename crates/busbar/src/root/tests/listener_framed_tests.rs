@@ -2187,6 +2187,14 @@ async fn a_session_waits_for_its_parked_message_before_emitting_the_next() {
         "the actual session handshake commits once"
     );
     let _ = stop.send(true);
+    // The real producer's closed channel finishes WS with a normal close frame. On a
+    // one-byte pipe the peer must drain that wire before the owning server can finish.
+    let mut close_wire = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), client.read_to_end(&mut close_wire))
+        .await
+        .expect("the real WS close frame drains before the server retires")
+        .unwrap();
+    assert_eq!(close_wire, [0x88, 0x02, 0x03, 0xe8], "exact unmasked normal WS close");
     tokio::time::timeout(Duration::from_secs(10), served)
         .await
         .unwrap()
