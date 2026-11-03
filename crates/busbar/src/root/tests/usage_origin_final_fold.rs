@@ -328,3 +328,6 @@ fn final_origin_fold_verifies_unselected_tail_after_all_facts_are_found() {
 
 #[path = "checkpoint_final_fold.rs"]
 mod checkpoint_final_fold_tests;
+
+#[path = "persist_prefix_fold.rs"]
+mod persist_prefix_fold_tests;
