@@ -542,6 +542,13 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
         &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
     )
     .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let late = crate::root::serve::LateServices::new();
+    let dispatcher = crate::root::dispatch::boot(1, &late);
+    crate::root::doors::install_dispatcher(dispatcher);
+    // Match main: register the actual plane declarations before the first config read.
+    crate::register_protocols();
+    crate::register_planes();
+    crate::register_diagnostics();
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
@@ -553,14 +560,8 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual product deployment resolves");
     let judge = crate::root::connector::dest_judge(&config);
-    let late = crate::root::serve::LateServices::new();
-    let dispatcher = crate::root::dispatch::boot(1, &late);
-    crate::root::doors::install_dispatcher(dispatcher);
     let (credentials, _handle) = crate::root::credentials::AppCredentials::late();
     crate::root::serve::compose(judge.clone(), &late, credentials);
-    crate::register_protocols();
-    crate::register_planes();
-    crate::register_diagnostics();
     crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
     crate::root::connector::boot(
         crate::LINKED_TRANSPORT_DOORS,

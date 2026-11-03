@@ -122,20 +122,21 @@ fn governed_full(
             load_dropped, rendering_of_library, Bind, ConnTable, NoSink,
         };
         let release = crate::root::test_plugins::key(0x5a);
+        let late = super::LateServices::new();
+        let dispatcher = crate::root::dispatch::boot(1, &late);
+        crate::root::doors::install_dispatcher(dispatcher);
+        // Match main: publish the actual plane declarations before config parsing reads them.
+        crate::register_protocols();
+        crate::register_planes();
+        crate::register_diagnostics();
         let initial = busbar_kernel::config::deploy_from_yaml_str(
             "providers: {}\nmodels: {}\nadvanced:\n  allow_destinations: [127.0.0.1]\n",
         )
         .expect("the loopback deployment parses");
         let initial = busbar_kernel::config::resolve(&initial, &Default::default()).unwrap();
         let judge = crate::root::connector::dest_judge(&initial);
-        let late = super::LateServices::new();
-        let dispatcher = crate::root::dispatch::boot(1, &late);
-        crate::root::doors::install_dispatcher(dispatcher);
         let (credentials, _handle) = crate::root::credentials::AppCredentials::late();
         super::compose(judge.clone(), &late, credentials);
-        crate::register_protocols();
-        crate::register_planes();
-        crate::register_diagnostics();
         crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
         if crate::root::connector::installed().is_none() {
             let on = crate::root::dispatch::dispatcher();
