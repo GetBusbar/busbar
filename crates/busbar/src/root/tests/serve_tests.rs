@@ -1708,13 +1708,18 @@ pub(super) mod session_door {
         .expect("a hook document")
     }
 
+    struct MediaPeer {
+        ready: bool,
+        received: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    }
+
     pub(in crate::root::serve) struct SessionDoor {
         _handle: Arc<busbar_kernel::state::AppHandle>,
         framer: crate::root::listener::framed::DataFramer,
         connector: Arc<busbar_core_connector::Connector>,
         media: MediaStop,
         peers: Arc<RtcTasks>,
-        media_messages: tokio::sync::Mutex<Vec<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>>>,
+        media_messages: tokio::sync::Mutex<Vec<MediaPeer>>,
         router: axum::Router,
         heard: tokio::sync::mpsc::UnboundedReceiver<String>,
         gov: Arc<GovState>,
@@ -2575,16 +2580,22 @@ pub(super) mod session_door {
                 peer.answer(&body);
                 let (task, received) = peer.run(self.media.0.subscribe(), None);
                 self.peers.keep(task);
-                self.media_messages.lock().await.push(received);
+                self.media_messages.lock().await.push(MediaPeer {
+                    ready: false,
+                    received,
+                });
             }
             (status, head)
         }
 
         async fn wait_media_ready(&self) {
             let mut all = self.media_messages.lock().await;
-            let received = all
+            let MediaPeer { ready, received } = all
                 .last_mut()
                 .expect("an actual browser media peer is retained");
+            if *ready {
+                return;
+            }
             tokio::time::timeout(ANSWER_BOUND, async {
                 while let Some(bytes) = received.recv().await {
                     if serde_json::from_slice::<serde_json::Value>(&bytes)
@@ -2605,6 +2616,7 @@ pub(super) mod session_door {
             })
             .await
             .expect("actual ICE, DTLS, SCTP and provider media establish");
+            *ready = true;
         }
 
         async fn finish_media(&self) {
@@ -2732,8 +2744,15 @@ pub(super) mod session_door {
         let ticket = s.local_ticket().await;
         assert_eq!(s.requests(), 1, "local issuance is the one admission");
         let issuance = s.audit_records();
-        assert_eq!(issuance.len(), 1, "issuance sealed before its ticket is usable");
-        assert_eq!(issuance[0].usage.fee_count, 0, "local issuance reports no session fee");
+        assert_eq!(
+            issuance.len(),
+            1,
+            "issuance sealed before its ticket is usable"
+        );
+        assert_eq!(
+            issuance[0].usage.fee_count, 0,
+            "local issuance reports no session fee"
+        );
         let (status, _response) = s.signal(&ticket).await;
         assert_eq!(status.as_u16(), 201, "the actual ticket opens its SDP call");
 
@@ -2769,30 +2788,68 @@ pub(super) mod session_door {
         assert_eq!(s.money.open_units(), 0, "its money facts closed");
         assert_eq!(s.post.open_units(), 0, "its node facts closed");
         let records = s.audit_records();
-        assert_eq!(records.len(), issuance.len() + 1, "one new media terminal receipt");
-        assert!(records[0] == issuance[0], "the issuance receipt is unchanged");
+        assert_eq!(
+            records.len(),
+            issuance.len() + 1,
+            "one new media terminal receipt"
+        );
+        assert!(
+            records[0] == issuance[0],
+            "the issuance receipt is unchanged"
+        );
         let (mint, media) = (&records[0], &records[1]);
-        assert_ne!(mint.what.unit_key, media.what.unit_key, "distinct physical units");
+        assert_ne!(
+            mint.what.unit_key, media.what.unit_key,
+            "distinct physical units"
+        );
         assert_eq!(media.seq, mint.seq + 1, "contiguous phase receipts");
-        assert!(media.prev_hash == mint.hash, "the media receipt follows issuance");
-        assert!(mint.what.op_class == media.what.op_class, "one session operation class");
-        assert!(mint.what.destination == media.what.destination, "one verified route");
+        assert!(
+            media.prev_hash == mint.hash,
+            "the media receipt follows issuance"
+        );
+        assert!(
+            mint.what.op_class == media.what.op_class,
+            "one session operation class"
+        );
+        assert!(
+            mint.what.destination == media.what.destination,
+            "one verified route"
+        );
         for record in &records {
             assert!(
                 record.subject == busbar_kernel_audit::Subject::PrincipalId(s.key.id.clone()),
                 "both phases belong to the presenting key"
             );
-            assert!(record.what.parent.is_none(), "each phase is an external request");
-            assert!(record.outcome.unit_end.is_completed(), "both phases completed");
             assert!(
-                record.what.destination.as_deref().is_some_and(|lane| lane.ends_with("m-cap")),
+                record.what.parent.is_none(),
+                "each phase is an external request"
+            );
+            assert!(
+                record.outcome.unit_end.is_completed(),
+                "both phases completed"
+            );
+            assert!(
+                record
+                    .what
+                    .destination
+                    .as_deref()
+                    .is_some_and(|lane| lane.ends_with("m-cap")),
                 "both receipts retain the locked model"
             );
-            assert!(record.usage.lines.is_empty(), "this session reported no usage quantities");
+            assert!(
+                record.usage.lines.is_empty(),
+                "this session reported no usage quantities"
+            );
         }
-        assert_eq!(media.usage.fee_count, 1, "the actual session reports its fee once");
         assert_eq!(
-            records.iter().map(|record| record.usage.fee_count).sum::<u32>(),
+            media.usage.fee_count, 1,
+            "the actual session reports its fee once"
+        );
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.usage.fee_count)
+                .sum::<u32>(),
             1,
             "one fee across both phase receipts"
         );
@@ -2963,6 +3020,9 @@ pub(super) mod session_door {
         let answer_bound = tokio::time::Instant::now() + ANSWER_BOUND;
         let (status, _signal) = s.signal(&ticket).await;
         assert_eq!(status.as_u16(), 201, "the admitted ticket places its call");
+        tokio::time::timeout_at(answer_bound, s.wait_media_ready())
+            .await
+            .expect("the actual caller and provider establish within the original answer bound");
         // The local SDP answer precedes the browser's real SCTP channel opening.
         // Observe its provider request without consuming the assertion's item or starting a new bound.
         tokio::time::timeout_at(answer_bound, async {
@@ -3698,6 +3758,10 @@ pub(super) mod session_door {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
         );
+        // The 201 places the local call; the provider dial waits for the actual
+        // caller channel metadata. Establish that media precondition before
+        // asserting the provider's queued HTTP report or opening its sideband.
+        s.wait_media_ready().await;
         let posted = next_report(&mut s.heard)
             .await
             .expect("the offer reached the provider");
