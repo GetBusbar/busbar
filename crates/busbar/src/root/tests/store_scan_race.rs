@@ -18,6 +18,7 @@ struct MixedScan {
     lower_snapshot: AtomicBool,
     upper_seen: AtomicBool,
     first_upper: AtomicBool,
+    node_probes: AtomicUsize,
 }
 impl StoreCalls for MixedScan {
     fn add_usage_batch<'a>(
@@ -102,6 +103,9 @@ impl StoreCalls for MixedScan {
         limit: u32,
     ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
         Box::pin(async move {
+            if prefix == self.node.to_be_bytes() && limit == 4096 {
+                self.node_probes.fetch_add(1, Ordering::SeqCst);
+            }
             let upper = prefix == &part_key(self.node, 302, 0)[..16]
                 && !self.first_upper.swap(true, Ordering::SeqCst);
             if upper {
@@ -263,6 +267,7 @@ fn genuine_saturated_mixed_prefix_proof(sealed_retry: bool) {
         lower_snapshot: AtomicBool::new(false),
         upper_seen: AtomicBool::new(false),
         first_upper: AtomicBool::new(false),
+        node_probes: AtomicUsize::new(0),
     };
     let result = if sealed_retry {
         // These original observations include both sides of the mixed append. The
