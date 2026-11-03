@@ -1358,6 +1358,14 @@ fn admitted_child_prices_nonzero_usage_under_exactly_one_real_fee() {
         "one fee and one priced media line"
     );
     assert_eq!(r.money.open_units(), 0);
+    let totals = r
+        .gov
+        .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+        .unwrap();
+    assert_eq!(
+        totals.requests, 1,
+        "the real governor admitted exactly one request"
+    );
 }
 
 #[test]
@@ -1546,5 +1554,48 @@ fn child_exit_authority_requires_a_real_matching_live_child_even_after_parent_cl
             .validate_child(&parent, UnitKey::new(2), &r.key)
             .is_err(),
         "a new ordinary registration cannot impersonate the actual child"
+    );
+}
+
+#[test]
+fn the_real_governor_concurrency_grant_lives_through_child_and_parent_authority() {
+    let mut r = rig(None, 5, ExhaustionMode::FinishUnit);
+    let groups = BTreeMap::from([(
+        "g".to_string(),
+        GroupCfg {
+            enabled: true,
+            limits: vec![LimitCfg {
+                metric: LimitMetric::Concurrent,
+                amount: 1,
+                per: None,
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
+            }],
+            ..Default::default()
+        },
+    )]);
+    r.cost = Arc::new(CostModel::resolve_parts(None, 5, &groups));
+    r.unit.cost = r.cost.clone();
+    let parent = admit_parent(&r);
+    assert_eq!(parent.grant.held(), 1, "an actual concurrent hold exists");
+    child(&r, &parent, 2).unwrap();
+    assert!(r.gov.try_admit(&r.cost, &r.key, "", NOW).is_err());
+    r.money.settle_end(UnitKey::new(1), 200);
+    assert!(
+        r.gov.try_admit(&r.cost, &r.key, "", NOW).is_err(),
+        "the child's real grant holds the cap"
+    );
+    r.money.settle_end(UnitKey::new(2), 200);
+    assert!(
+        r.gov.try_admit(&r.cost, &r.key, "", NOW).is_err(),
+        "live host parent authority retains custody too"
+    );
+    drop(parent);
+    assert!(
+        r.gov.try_admit(&r.cost, &r.key, "", NOW).is_ok(),
+        "the last real authority releases the actual gauge"
     );
 }
