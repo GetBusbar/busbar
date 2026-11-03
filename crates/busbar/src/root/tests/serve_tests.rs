@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
     busbar_kernel::snapshot::snapshot()
         .expect("the real metrics recorder is installed")
         .iter()
@@ -17,6 +18,7 @@ fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
 }
 
 fn render_metrics() -> String {
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
     use crate::root::loader::dispatch::{
         kinds::export::Export, load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig,
         Dispatcher, NoSink,
@@ -48,9 +50,12 @@ fn render_metrics() -> String {
         },
     )
     .expect("the actual exporter loads through its memory ABI");
-    let exporter =
-        crate::root::loader::export_door::ExportInstance::open(plugin, dispatcher, b"{}")
-            .expect("the actual exporter opens");
+    let exporter = crate::root::loader::export_door::ExportInstance::open(
+        plugin,
+        dispatcher,
+        br#"{"buffer_seconds":60}"#,
+    )
+    .expect("the actual exporter opens");
     let families =
         busbar_kernel::snapshot::snapshot().expect("the real metrics recorder is installed");
     String::from_utf8(
@@ -62,6 +67,7 @@ fn render_metrics() -> String {
 }
 
 fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteTable> {
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
     use crate::root::loader::dispatch::{
         kinds::export::{Export, ExportFacts},
         load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
@@ -102,8 +108,12 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
         "the actual exporter declares the scrape route"
     );
     let exporter = std::sync::Arc::new(
-        crate::root::loader::export_door::ExportInstance::open(plugin, dispatcher, b"{}")
-            .expect("the actual HTTP exporter opens"),
+        crate::root::loader::export_door::ExportInstance::open(
+            plugin,
+            dispatcher,
+            br#"{"buffer_seconds":60}"#,
+        )
+        .expect("the actual HTTP exporter opens"),
     );
     let dispatch = busbar_kernel::export::serve_test_sink(exporter);
     let declarations = routes
