@@ -218,13 +218,15 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         "every BODYLESS entry must name a real operation; saw {bodyless_seen:?}"
     );
     assert_eq!(
-        declared, 34,
-        "34 mutating operations take a body; a change here is a deliberate API change. 34 = 22 \
+        declared, 36,
+        "36 mutating operations take a body; a change here is a deliberate API change. 36 = 22 \
          + each plane section's PUT and PATCH-settings (both DELETEs are bodyless, above) + the \
          agents plane's approve verb, whose body carries the fingerprint the \
          operator is attesting they read + the seven 1.6.0 kernel verbs that read one \
          (`store-restore`, `adjust`, `ledger/amend-rate-history`, since owner answer Q71(2) \
          `plane-record-write` and `commit-upgrade`, and the ARCHITECT's 2026-10-06 \
-         `trust/approve` and `trust/revoke`, whose body names the trust key)"
+         `trust/approve` and `trust/revoke`, whose body names the trust key) + the two ledger \
+         recovery operations (`recovery/list` and `recovery/resolve`), whose request bodies \
+         name the namespace/cursor and the record/disposition respectively"
     );
 }
