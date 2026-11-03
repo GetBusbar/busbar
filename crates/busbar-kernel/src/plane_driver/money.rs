@@ -104,6 +104,28 @@ pub struct ParentMoney {
     account: Arc<FeeAccount>,
 }
 
+/// One actual admission reserved for a later child. Its financial participation is linear:
+/// dropping it releases the reservation; adopting it transfers that same participation.
+/// The composition root separately binds its capsule and original admission proof.
+pub struct ReservationMoney {
+    money: Arc<UnitMoney>,
+    grant: Arc<AdmitGrant>,
+    fee: FeeParticipation,
+    book: Arc<()>,
+}
+
+/// An unsuccessful adoption returns the unchanged financial reservation for retry or cleanup.
+pub struct ReturnedReservation {
+    reason: ReasonCode,
+    reservation: ReservationMoney,
+}
+
+impl ReturnedReservation {
+    pub fn into_parts(self) -> (ReasonCode, ReservationMoney) {
+        (self.reason, self.reservation)
+    }
+}
+
 struct FeeState {
     children: usize,
     parent_refund: Option<bool>,
@@ -198,6 +220,7 @@ const SHARDS: usize = 16;
 type Shard = HashMap<UnitKey, Open>;
 
 pub struct PlaneMoney {
+    book: Arc<()>,
     gov: Arc<GovState>,
     post: Arc<dyn EndPost>,
 
@@ -208,6 +231,7 @@ impl PlaneMoney {
     #[must_use]
     pub fn new(gov: Arc<GovState>, post: Arc<dyn EndPost>) -> Self {
         PlaneMoney {
+            book: Arc::new(()),
             gov,
             post,
             units: std::array::from_fn(|_| Mutex::new(HashMap::new())),
@@ -285,6 +309,79 @@ impl PlaneMoney {
             grant: grant.clone(),
             account: open.fee.account.clone(),
         })
+    }
+
+    /// Reserve real admission custody while the original unit remains live. The reservation
+    /// may later become one child after that original unit has settled and left this book.
+    pub fn reserve_admission(
+        &self,
+        parent: UnitKey,
+        expected_key: &VirtualKey,
+    ) -> Result<ReservationMoney, ReasonCode> {
+        let all = self.shard(parent);
+        let open = all.get(&parent).ok_or(ReasonCode::Unpriced)?;
+        if open.finished
+            || open.ledgered
+            || open.abandoned
+            || !open.fee.owner
+            || open.money.key.as_ref() != expected_key
+        {
+            return Err(ReasonCode::Unpriced);
+        }
+        let grant = open.grant.as_ref().ok_or(ReasonCode::Unpriced)?;
+        let account = open.fee.account.clone();
+        locked(&account.state).children += 1;
+        Ok(ReservationMoney {
+            money: open.money.clone(),
+            grant: grant.clone(),
+            fee: FeeParticipation {
+                account,
+                owner: false,
+                // Expiry incurs nothing and preserves the original unit's refund decision.
+                refundable: true,
+            },
+            book: self.book.clone(),
+        })
+    }
+
+    /// Consume a real reserved admission once, without another governor admission. Errors
+    /// return the unchanged reservation. The root must first verify its capsule and bound proof.
+    pub fn adopt_reserved(
+        &self,
+        reservation: ReservationMoney,
+        child: UnitKey,
+        lane: String,
+        classes: Arc<[String]>,
+        fee: FeeRefund,
+        expected_key: &VirtualKey,
+    ) -> Result<(), ReturnedReservation> {
+        if !Arc::ptr_eq(&self.book, &reservation.book)
+            || reservation.money.key.as_ref() != expected_key
+        {
+            return Err(ReturnedReservation {
+                reason: ReasonCode::Unpriced,
+                reservation,
+            });
+        }
+        let mut all = self.shard(child);
+        if all.contains_key(&child) {
+            drop(all);
+            return Err(ReturnedReservation {
+                reason: ReasonCode::Unpriced,
+                reservation,
+            });
+        }
+        let mut money = reservation.money.as_ref().clone();
+        money.lane = lane;
+        money.classes = classes;
+        money.fee = fee;
+        let ReservationMoney { grant, mut fee, .. } = reservation;
+        // From this point it is an actual child, whose unterminated drop retains the fee.
+        fee.refundable = false;
+        let open = Open::new(Arc::new(money), Some(grant), fee);
+        all.insert(child, open);
+        drop(all);
+        Ok(())
     }
 
     /// Revalidate the captured parent's actual live admission and complete billing identity.

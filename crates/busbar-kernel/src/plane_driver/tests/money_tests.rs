@@ -1662,3 +1662,301 @@ fn a_units_own_exit_authority_requires_its_actual_registered_governor_grant() {
         "reused unit key cannot revive the settled authority"
     );
 }
+
+fn reserve_parent(r: &Rig) -> ReservationMoney {
+    let grant = Arc::new(
+        r.gov
+            .try_admit(&r.cost, &r.key, "", NOW)
+            .expect("real admission"),
+    );
+    r.money
+        .open_admitted(UnitKey::new(1), r.unit.clone(), grant);
+    r.money
+        .reserve_admission(UnitKey::new(1), &r.key)
+        .expect("reserve actual live admission")
+}
+
+fn adopt(r: &Rig, reservation: ReservationMoney, id: u64) -> Result<(), ReturnedReservation> {
+    r.money.adopt_reserved(
+        reservation,
+        UnitKey::new(id),
+        "m".into(),
+        r.unit.classes.clone(),
+        r.unit.fee.clone(),
+        &r.key,
+    )
+}
+
+#[test]
+fn reserved_admission_becomes_priced_media_after_the_original_mint_has_settled() {
+    let baseline = rig_with(None, 0, ExhaustionMode::FinishUnit, plane_fees());
+    let _ = baseline.money.checkpoint(&ctx(1), &reported(1_000_000));
+    baseline.money.settle_end(UnitKey::new(1), 200);
+    let priced = usage(&baseline).1;
+    assert!(priced > 0);
+
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+    let reservation = reserve_parent(&r);
+    let parent = r.money.parent_money(UnitKey::new(1), &r.key).unwrap();
+    let _ = r.money.checkpoint(&ctx(1), &[fee_reported(1)]);
+    r.money.settle_end(UnitKey::new(1), 200);
+    assert_eq!(
+        r.money.open_units(),
+        0,
+        "the mint's actual registration has ended"
+    );
+    assert!(
+        child(&r, &parent, 2).is_err(),
+        "a live-parent token cannot revive the closed mint"
+    );
+    drop(parent);
+    // The child deliberately has different class indices. Fee and media resolve by its names.
+    let classes = Arc::from(vec![
+        busbar_contract::plane::PER_REQUEST.to_string(),
+        "input".into(),
+        "output".into(),
+    ]);
+    assert!(r
+        .money
+        .adopt_reserved(
+            reservation,
+            UnitKey::new(2),
+            "m".into(),
+            classes,
+            FeeRefund::PlaneFeeUnits(Arc::from(vec![0])),
+            &r.key
+        )
+        .is_ok());
+    assert_eq!(
+        usage(&r).1,
+        5,
+        "adoption never asks the governor for a second fee"
+    );
+    assert_eq!(r.money.session_opened(&ctx(2)), Ok(()));
+    let _ = r.money.checkpoint(
+        &ctx(2),
+        &[UnitCount {
+            class: 1,
+            source: UNITS_REPORTED,
+            amount: 1_000_000,
+        }],
+    );
+    r.money.session_ended(&ctx(2));
+    r.money.settle_end(UnitKey::new(2), 200);
+    r.money.settle_end(UnitKey::new(2), 200);
+    assert_eq!(usage(&r), (1_000_000, priced + 5));
+    let totals = r
+        .gov
+        .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+        .unwrap();
+    assert_eq!(
+        totals.requests, 1,
+        "settled mint plus media is still one actual admission"
+    );
+    assert_eq!(r.money.open_units(), 0);
+}
+
+#[test]
+fn unused_reservation_expiry_preserves_the_original_parents_fee_decision() {
+    for incurred in [false, true] {
+        let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+        let reservation = reserve_parent(&r);
+        let _ = r
+            .money
+            .checkpoint(&ctx(1), &[fee_reported(u64::from(incurred))]);
+        r.money.settle_end(UnitKey::new(1), 200);
+        assert_eq!(
+            usage(&r).1,
+            5,
+            "the real reservation keeps settlement pending"
+        );
+        assert_eq!(
+            r.money.open_units(),
+            0,
+            "reservation is not a synthetic unit"
+        );
+        drop(reservation);
+        assert_eq!(
+            usage(&r).1,
+            if incurred { 5 } else { 0 },
+            "expiry incurs no fee of its own"
+        );
+        let totals = r
+            .gov
+            .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+            .unwrap();
+        assert_eq!(
+            totals.requests, 1,
+            "expiry neither adds nor refunds a request"
+        );
+    }
+}
+
+#[test]
+fn rejected_reserved_adoption_returns_the_unchanged_real_token_for_retry_or_cleanup() {
+    for retry in [false, true] {
+        let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+        let reservation = reserve_parent(&r);
+        r.money.settle_end(UnitKey::new(1), 503);
+        let mut foreign_key = r.key.as_ref().clone();
+        foreign_key.generation_hash = "foreign".into();
+        let returned = match r.money.adopt_reserved(
+            reservation,
+            UnitKey::new(2),
+            "m".into(),
+            r.unit.classes.clone(),
+            r.unit.fee.clone(),
+            &foreign_key,
+        ) {
+            Err(returned) => returned,
+            Ok(()) => panic!("foreign key must return custody"),
+        };
+        let (reason, reservation) = returned.into_parts();
+        assert_eq!(reason, ReasonCode::Unpriced);
+        assert_eq!((r.money.open_units(), usage(&r).1), (0, 5));
+        let other = PlaneMoney::new(r.gov.clone(), Arc::new(Posted::default()));
+        let returned = match other.adopt_reserved(
+            reservation,
+            UnitKey::new(2),
+            "m".into(),
+            r.unit.classes.clone(),
+            r.unit.fee.clone(),
+            &r.key,
+        ) {
+            Err(returned) => returned,
+            Ok(()) => {
+                panic!("even the same governor and full key cannot substitute a foreign book")
+            }
+        };
+        let (_, reservation) = returned.into_parts();
+        assert_eq!(
+            (other.open_units(), r.money.open_units(), usage(&r).1),
+            (0, 0, 5)
+        );
+        r.money.open(UnitKey::new(2), r.unit.clone());
+        let returned = match adopt(&r, reservation, 2) {
+            Err(returned) => returned,
+            Ok(()) => panic!("existing destination must not be replaced"),
+        };
+        let (_, reservation) = returned.into_parts();
+        assert_eq!(r.money.serving(UnitKey::new(2)).as_deref(), Some("m"));
+        assert_eq!((r.money.open_units(), usage(&r).1), (1, 5));
+        r.money.settle_end(UnitKey::new(2), 503);
+        if retry {
+            assert!(adopt(&r, reservation, 3).is_ok());
+            let _ = r
+                .money
+                .checkpoint(&ctx(3), &[reported(7)[0], fee_reported(1)]);
+            r.money.settle_end(UnitKey::new(3), 503);
+            assert_eq!(
+                usage(&r),
+                (7, 5),
+                "returned authority genuinely adopts once and bills"
+            );
+        } else {
+            drop(reservation);
+            assert_eq!(
+                usage(&r),
+                (0, 0),
+                "returned unused authority cleans up and refunds once"
+            );
+        }
+        assert_eq!(r.money.open_units(), 0);
+        let totals = r
+            .gov
+            .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+            .unwrap();
+        assert_eq!(totals.requests, 1);
+    }
+}
+
+#[test]
+fn reserving_requires_the_actual_live_original_admission() {
+    let r = rig(None, 5, ExhaustionMode::FinishUnit);
+    assert!(
+        r.money.reserve_admission(UnitKey::new(1), &r.key).is_err(),
+        "ordinary open has no actual grant"
+    );
+    assert!(
+        r.money.reserve_admission(UnitKey::new(99), &r.key).is_err(),
+        "missing parent"
+    );
+    let parent = admit_parent(&r);
+    let mut foreign_key = r.key.as_ref().clone();
+    foreign_key.generation_hash = "foreign".into();
+    assert!(r
+        .money
+        .reserve_admission(UnitKey::new(1), &foreign_key)
+        .is_err());
+    child(&r, &parent, 2).unwrap();
+    assert!(
+        r.money.reserve_admission(UnitKey::new(2), &r.key).is_err(),
+        "a shared child is not an original admission"
+    );
+    r.money.finished(&ctx(1));
+    assert!(
+        r.money.reserve_admission(UnitKey::new(1), &r.key).is_err(),
+        "finished original cannot create new authority"
+    );
+    r.money.settle_end(UnitKey::new(1), 200);
+    assert!(
+        r.money.reserve_admission(UnitKey::new(1), &r.key).is_err(),
+        "closed original cannot create new authority"
+    );
+}
+
+#[test]
+fn the_actual_reservation_grant_holds_concurrency_across_settled_mint_and_adoption() {
+    for consume in [false, true] {
+        let mut r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+        let groups = BTreeMap::from([(
+            "g".to_string(),
+            GroupCfg {
+                enabled: true,
+                limits: vec![LimitCfg {
+                    metric: LimitMetric::Concurrent,
+                    amount: 1,
+                    per: None,
+                    scope: None,
+                    on_exhaust: None,
+                    downgrade_to: None,
+                    admission: None,
+                    on_exhaustion: None,
+                }],
+                ..Default::default()
+            },
+        )]);
+        r.cost = Arc::new(CostModel::resolve_parts(None, 5, &groups));
+        r.unit.cost = r.cost.clone();
+        let reservation = reserve_parent(&r);
+        assert_eq!(
+            reservation.grant.held(),
+            1,
+            "the reserved governor grant is real"
+        );
+        r.money.settle_end(UnitKey::new(1), 503);
+        assert!(
+            r.gov.try_admit(&r.cost, &r.key, "", NOW).is_err(),
+            "reservation alone retains the actual concurrent hold"
+        );
+        if consume {
+            assert!(adopt(&r, reservation, 2).is_ok());
+            assert!(
+                r.gov.try_admit(&r.cost, &r.key, "", NOW).is_err(),
+                "adoption transfers the same real hold to its child"
+            );
+            r.money.settle_end(UnitKey::new(2), 503);
+        } else {
+            drop(reservation);
+        }
+        assert_eq!(
+            usage(&r).1,
+            0,
+            "one pending parent fee refunded after its refundable child or unused expiry"
+        );
+        assert!(
+            r.gov.try_admit(&r.cost, &r.key, "", NOW).is_ok(),
+            "last child or unused expiry releases the actual concurrent hold"
+        );
+    }
+}
