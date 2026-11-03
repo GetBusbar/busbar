@@ -4,6 +4,33 @@
 [cargo-vet]
 version = "0.10"
 
+[policy.aws-lc-sys]
+audit-as-crates-io = true
+notes = "Exact-revision standalone published-package source fork; local nonimportable full Git audit only, no exemption or claim covering the unfixed registry archive."
+
+[policy.dunce]
+audit-as-crates-io = true
+notes = "Local full audits bind exact reviewed Git snapshots; published registry bases are not certified by those records."
+
+[policy.fs_extra]
+audit-as-crates-io = true
+notes = "Local full audit binds the exact reviewed fixed Git snapshot; the published registry base is not certified."
+
+[policy.h2]
+audit-as-crates-io = true
+
+[policy.jobserver]
+audit-as-crates-io = true
+notes = "Local full audits bind exact reviewed Git snapshots; published registry bases are not certified by those records."
+
+[policy.stringprep]
+audit-as-crates-io = true
+notes = "Local full audits bind exact reviewed Git snapshots; published registry bases are not certified by those records."
+
+[policy.tungstenite]
+audit-as-crates-io = true
+
+
 [[exemptions.adler2]]
 version = "2.0.1"
 criteria = "safe-to-deploy"
