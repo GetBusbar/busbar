@@ -260,6 +260,7 @@ mod store_door_conformance_tests;
 mod secret_door_conformance_tests;
 
 #[cfg(test)]
+#[allow(unsafe_code)]
 #[path = "tests/transport_door_conformance_tests.rs"]
 mod transport_door_conformance_tests;
 
