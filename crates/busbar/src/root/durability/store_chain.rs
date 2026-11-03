@@ -514,9 +514,150 @@ pub fn read_chain(calls: &dyn StoreCalls, node: u64) -> Result<Vec<Record>, Stri
     Ok(records)
 }
 
+type JournalPage = Vec<(Vec<u8>, RecordBytes)>;
+const JOURNAL_PAGE_ROWS: u32 = 256;
+const JOURNAL_PREFETCH: usize = 4;
+enum JournalReadWork {
+    Prefix(Vec<u8>),
+    Page(JournalPage),
+}
+
+fn valid_journal_page(prefix: &[u8], page: &JournalPage) -> Result<(), String> {
+    if page.len() > JOURNAL_PAGE_ROWS as usize
+        || page
+            .iter()
+            .any(|(key, _)| key.len() != 18 || !key.starts_with(prefix))
+        || page.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+    {
+        return Err("invalid Store journal page".into());
+    }
+    // Check fatal part-envelope errors even in a sibling whose read budget was refused.
+    // No successful answer may be discarded/re-read into apparently valid data.
+    if page.iter().any(|(_, value)| {
+        value
+            .as_slice()
+            .get(..2)
+            .and_then(|bytes| <[u8; 2]>::try_from(bytes).ok())
+            .map(u16::from_be_bytes)
+            .is_none_or(|count| count == 0)
+    }) {
+        return Err("invalid journal part count".into());
+    }
+    Ok(())
+}
+
+fn journal_page_window(
+    calls: &dyn StoreCalls,
+    prefixes: &[Vec<u8>],
+) -> Vec<Result<JournalPage, busbar_contract::store_calls::StoreFailure>> {
+    let mut pending: Vec<_> = prefixes
+        .iter()
+        .map(|prefix| calls.record_scan(JOURNAL_SCHEMA, prefix, JOURNAL_PAGE_ROWS))
+        .collect();
+    let mut answers: Vec<_> = (0..pending.len()).map(|_| None).collect();
+    // Poll existing owned Store futures together; no tasks, threads, timers or borrowed ABI
+    // buffers survive a call. Every future is complete before any answer is visited.
+    wait_for(std::future::poll_fn(|cx| {
+        for (index, future) in pending.iter_mut().enumerate() {
+            if answers[index].is_none() {
+                if let Poll::Ready(answer) = future.as_mut().poll(cx) {
+                    answers[index] = Some(answer);
+                }
+            }
+        }
+        if answers.iter().all(Option::is_some) {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }));
+    answers
+        .into_iter()
+        .map(|answer| answer.expect("every page future completed"))
+        .collect()
+}
+
+fn visit_journal_pages(
+    calls: &dyn StoreCalls,
+    prefix: Vec<u8>,
+    mut visit: impl FnMut(JournalPage) -> Result<(), String>,
+) -> Result<(), String> {
+    use busbar_contract::store_calls::StoreFailure;
+    let mut work = vec![JournalReadWork::Prefix(prefix)];
+    let mut ready_pages = 0usize;
+    let mut serial = false;
+    while let Some(next) = work.pop() {
+        match next {
+            JournalReadWork::Page(page) => {
+                ready_pages = ready_pages
+                    .checked_sub(1)
+                    .ok_or("invalid journal page budget")?;
+                visit(page)?;
+            }
+            JournalReadWork::Prefix(prefix) => {
+                let available = JOURNAL_PREFETCH
+                    .checked_sub(ready_pages)
+                    .filter(|n| *n > 0)
+                    .ok_or("journal page budget exhausted before ordered consumption")?;
+                let limit = if serial { 1 } else { available };
+                let mut prefixes = vec![prefix];
+                while prefixes.len() < limit {
+                    if !matches!(work.last(), Some(JournalReadWork::Prefix(_))) {
+                        break;
+                    }
+                    if let Some(JournalReadWork::Prefix(prefix)) = work.pop() {
+                        prefixes.push(prefix);
+                    }
+                }
+                let answers = journal_page_window(calls, &prefixes);
+                let mut overloaded = false;
+                // Inspect the ENTIRE untouched window before falling back. Failed/Fault,
+                // named Refused, conflicting opids or malformed successful pages are fatal.
+                for (prefix, answer) in prefixes.iter().zip(&answers) {
+                    match answer {
+                        Ok(page) => valid_journal_page(prefix, page)?,
+                        Err(StoreFailure::Overloaded) if !serial => overloaded = true,
+                        Err(why) => {
+                            return Err(format!("the Store journal page is unreadable: {why}"))
+                        }
+                    }
+                }
+                if overloaded {
+                    serial = true;
+                }
+                // A depth-first stack preserves exactly the old lexicographic consumption.
+                // At most four pages/futures TOTAL belong to this traversal, independent of
+                // prefix depth. Empty pages and saturated parent pages release slots now;
+                // nonempty later siblings remain behind every child of an earlier parent.
+                for (prefix, answer) in prefixes.into_iter().zip(answers).rev() {
+                    match answer {
+                        Err(StoreFailure::Overloaded) => work.push(JournalReadWork::Prefix(prefix)),
+                        Err(_) => unreachable!("all fatal page answers were rejected"),
+                        Ok(page) if page.is_empty() => {}
+                        Ok(page)
+                            if page.len() == JOURNAL_PAGE_ROWS as usize && prefix.len() < 17 =>
+                        {
+                            for byte in (0..=u8::MAX).rev() {
+                                let mut child = prefix.clone();
+                                child.push(byte);
+                                work.push(JournalReadWork::Prefix(child));
+                            }
+                        }
+                        Ok(page) => {
+                            ready_pages += 1;
+                            work.push(JournalReadWork::Page(page));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Fold bounded Store pages in key order. Neither a node's journal nor its historical bodies
-/// accumulate here: at most one record's bounded parts are assembled beside one 256-row page.
-fn fold_stored_records(
+/// accumulate here: one record is assembled beside at most four 256-row pages/futures.
+pub(super) fn fold_stored_records(
     calls: &dyn StoreCalls,
     node: u64,
     prefix: Vec<u8>,
@@ -541,30 +682,9 @@ fn fold_stored_records(
         }
         Ok(())
     }
-    const PAGE: u32 = 256;
-    let mut prefixes = vec![prefix];
     let mut previous_key: Option<Vec<u8>> = None;
     let mut pending: Option<Partial> = None;
-    while let Some(prefix) = prefixes.pop() {
-        let page = wait_for(calls.record_scan(JOURNAL_SCHEMA, &prefix, PAGE))
-            .map_err(|why| format!("the Store journal page is unreadable: {why}"))?;
-        if page.len() > PAGE as usize
-            || page
-                .iter()
-                .any(|(key, _)| key.len() != 18 || !key.starts_with(&prefix))
-            || page.windows(2).any(|pair| pair[0].0 >= pair[1].0)
-        {
-            return Err("invalid Store journal page".into());
-        }
-        // With one selector byte left, 256 distinct exact-length keys exhaust the namespace.
-        if page.len() == PAGE as usize && prefix.len() < 17 {
-            for byte in (0..=u8::MAX).rev() {
-                let mut child = prefix.clone();
-                child.push(byte);
-                prefixes.push(child);
-            }
-            continue;
-        }
+    visit_journal_pages(calls, prefix, |page| {
         for (key, value) in page {
             if previous_key
                 .as_ref()
@@ -614,7 +734,8 @@ fn fold_stored_records(
             }
             record.next = part + 1;
         }
-    }
+        Ok(())
+    })?;
     finish(node, &mut pending, &mut visit)
 }
 

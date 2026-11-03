@@ -529,3 +529,6 @@ mod group_atomic_tests;
 
 #[path = "audit_group_lane.rs"]
 mod group_lane_tests;
+
+#[path = "store_scan_prefetch.rs"]
+mod scan_prefetch_tests;
