@@ -1600,3 +1600,65 @@ fn the_real_governor_concurrency_grant_lives_through_child_and_parent_authority(
         "the last real authority releases the actual gauge"
     );
 }
+
+#[test]
+fn a_units_own_exit_authority_requires_its_actual_registered_governor_grant() {
+    let r = rig(None, 5, ExhaustionMode::FinishUnit);
+    let grant = Arc::new(r.gov.try_admit(&r.cost, &r.key, "", NOW).unwrap());
+    assert!(
+        r.money
+            .validate_admitted(UnitKey::new(1), &r.key, &grant)
+            .is_err(),
+        "ordinary open is not admitted custody"
+    );
+    r.money
+        .open_admitted(UnitKey::new(1), r.unit.clone(), grant.clone());
+    let wrong = Arc::new(r.gov.try_admit(&r.cost, &r.key, "", NOW).unwrap());
+    assert!(
+        r.money
+            .validate_admitted(UnitKey::new(1), &r.key, &wrong)
+            .is_err(),
+        "another actual grant for the same billing key is not this admission"
+    );
+    assert!(r
+        .money
+        .validate_admitted(UnitKey::new(99), &r.key, &grant)
+        .is_err());
+    let mut foreign = r.key.as_ref().clone();
+    foreign.generation_hash = "foreign".into();
+    assert!(r
+        .money
+        .validate_admitted(UnitKey::new(1), &foreign, &grant)
+        .is_err());
+    let parent = r.money.parent_money(UnitKey::new(1), &r.key).unwrap();
+    child(&r, &parent, 2).unwrap();
+    assert!(
+        r.money
+            .validate_admitted(UnitKey::new(2), &r.key, &grant)
+            .is_err(),
+        "shared child cannot impersonate its own governor admission"
+    );
+    assert_eq!(
+        r.money.validate_admitted(UnitKey::new(1), &r.key, &grant),
+        Ok(())
+    );
+    r.money.finished(&ctx(1));
+    assert_eq!(
+        r.money.validate_admitted(UnitKey::new(1), &r.key, &grant),
+        Ok(()),
+        "finished precedes the teller's terminal authority check"
+    );
+    r.money.settle_end(UnitKey::new(1), 200);
+    assert!(r
+        .money
+        .validate_admitted(UnitKey::new(1), &r.key, &grant)
+        .is_err());
+    r.money
+        .open_admitted(UnitKey::new(1), r.unit.clone(), wrong);
+    assert!(
+        r.money
+            .validate_admitted(UnitKey::new(1), &r.key, &grant)
+            .is_err(),
+        "reused unit key cannot revive the settled authority"
+    );
+}

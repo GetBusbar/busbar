@@ -312,6 +312,27 @@ impl PlaneMoney {
         Ok(())
     }
 
+    /// Verify a unit's own governor admission at the teller's terminal authority check.
+    /// Finished is expected there; billed, abandoned, or shared-child registrations do not qualify.
+    pub fn validate_admitted(
+        &self,
+        unit: UnitKey,
+        expected_key: &VirtualKey,
+        grant: &Arc<AdmitGrant>,
+    ) -> Result<(), ReasonCode> {
+        let all = self.shard(unit);
+        let open = all.get(&unit).ok_or(ReasonCode::Unpriced)?;
+        if open.ledgered
+            || open.abandoned
+            || !open.fee.owner
+            || open.money.key.as_ref() != expected_key
+            || !open.grant.as_ref().is_some_and(|g| Arc::ptr_eq(g, grant))
+        {
+            return Err(ReasonCode::Unpriced);
+        }
+        Ok(())
+    }
+
     /// A registered child keeps its real admission after the parent closes. The driver marks
     /// it finished before the teller's terminal authority check, so finished is permitted here.
     /// The actual unsettled registration must still exist; a token alone cannot satisfy this.
