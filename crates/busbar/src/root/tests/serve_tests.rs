@@ -2934,11 +2934,12 @@ pub(super) mod session_door {
         .expect("the build links the session door");
         let ticket = s.local_ticket().await;
         assert_eq!(s.requests(), 1, "the local ticket is the one admission");
+        let answer_bound = tokio::time::Instant::now() + ANSWER_BOUND;
         let (status, _signal) = s.signal(&ticket).await;
         assert_eq!(status.as_u16(), 201, "the admitted ticket places its call");
         // The local SDP answer precedes the browser's real SCTP channel opening.
-        // Observe the resulting provider request without consuming the original assertion's item.
-        tokio::time::timeout(ANSWER_BOUND, async {
+        // Observe its provider request without consuming the assertion's item or starting a new bound.
+        tokio::time::timeout_at(answer_bound, async {
             while s.heard.is_empty() {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
