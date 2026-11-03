@@ -318,6 +318,7 @@ fn pending_facts_write_nothing_then_secure_facts_and_partial_resume_send_exactly
         2,
         "completed facts are retained across writes"
     );
+    assert_eq!(pool.live(), 1, "one retained connection is live");
     assert_eq!(pool.idle(), 1);
     drop(parked);
     drop(pool);
@@ -365,6 +366,7 @@ fn replacing_a_refused_connection_checks_fresh_upgrade_facts_and_can_be_kept() {
     assert_eq!(script(|s| s.accepted.clone()), CANARY);
     assert_eq!(script(|s| s.established), 2);
     assert_eq!(script(|s| s.facts), 2);
+    assert_eq!(pool.live(), 1, "one retained connection is live");
     assert_eq!(pool.idle(), 1);
     drop(parked);
     drop(pool);
