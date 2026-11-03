@@ -1037,11 +1037,31 @@ fn downgrade_book(
         );
         let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+            "providers": {"downgrade-upstream": {}},
+            "models": {
+                "big": {"provider": "downgrade-upstream"},
+                "small": {"provider": "downgrade-upstream"},
+                "tiny": {"provider": "downgrade-upstream"}
+            },
+            "pools": {
+                "frontier": {"members": ["big"]},
+                "value": {"members": ["small"]},
+                "first": {"members": ["big"]},
+                "second": {"members": ["small"]},
+                "third": {"members": ["tiny"]}
+            },
+            "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
         }))
         .expect("the door deployment parses");
-        let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+        let providers = std::collections::HashMap::from([(
+            "downgrade-upstream".to_string(),
+            serde_yaml::from_str::<busbar_kernel::config::ProviderDef>(
+                "protocol: anthropic\nbase_url: https://api.anthropic.com\n",
+            )
+            .expect("the actual provider declaration parses"),
+        )]);
+        let mut cfg = busbar_kernel::config::resolve(&deploy, &providers)
             .expect("the door deployment resolves");
         // Admission reads the kept, dated card, so the configured authority must
         // carry the same ten-cent fee and group tree as this boundary's CostModel.
@@ -1208,8 +1228,10 @@ fn a_downgrade_cycle_ends_in_the_plain_refusal_naming_the_last_pool_walked() {
     let (app, key) = downgrade_book(
         vec![
             downgrading("first", 10, "second"),
-            downgrading("second", 0, "third"),
-            downgrading("third", 0, "second"),
+            // A positive cap smaller than one ten-cent request is already exhausted;
+            // unlike zero it is a valid configured budget.
+            downgrading("second", 1, "third"),
+            downgrading("third", 1, "second"),
         ],
         None,
     );
