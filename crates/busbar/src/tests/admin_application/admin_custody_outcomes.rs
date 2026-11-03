@@ -11,8 +11,7 @@ use busbar_kernel::state::AppHandle;
 use serde_json::{json, Value};
 use tokio::sync::Notify;
 
-#[path = "../../../../../dist/default/tests/common/mod.rs"]
-mod common;
+use crate::test_common as common;
 #[path = "../../root/tests/test_plugins.rs"]
 mod plugins;
 

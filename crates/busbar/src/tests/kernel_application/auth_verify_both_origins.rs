@@ -8,8 +8,7 @@ use busbar_contract::auth_calls::{AuthCalls, Verified, VerifyAnswer, VerifyReque
 use busbar_contract::Secret;
 use busbar_plugin_loader::{auth_axis::AuthRows, LinkedPlugin, PluginRegistry};
 use std::sync::Arc;
-#[path = "../../../../../dist/default/tests/common/mod.rs"]
-mod common;
+use crate::test_common as common;
 #[path = "../../root/tests/test_plugins.rs"]
 mod plugins;
 

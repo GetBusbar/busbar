@@ -2,8 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::sync::Arc;
-#[path = "../../../../../dist/default/tests/common/mod.rs"]
-mod common;
+use crate::test_common as common;
 #[path = "../../root/tests/test_plugins.rs"]
 mod plugins;
 

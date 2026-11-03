@@ -4,8 +4,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-#[path = "../../../../../dist/default/tests/common/mod.rs"]
-mod common;
+use crate::test_common as common;
 use crate::root::doors::{bind_on, Dispatched};
 use crate::root::inbound;
 use crate::root::listener::framed::{self as listener_framed, FramerFor, DATA_SCHEME};

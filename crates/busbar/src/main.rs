@@ -1600,6 +1600,10 @@ fn purge_idle_arenas() {
 mod root;
 
 #[cfg(test)]
+#[path = "../../../dist/default/tests/common/mod.rs"]
+pub(crate) mod test_common;
+
+#[cfg(test)]
 mod build_stamp;
 
 #[cfg(test)]

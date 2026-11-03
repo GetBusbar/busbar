@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-#[path = "../../../../../dist/default/tests/common/mod.rs"]
-mod common;
+use crate::test_common as common;
 
 use busbar_kernel::auth::{AuthMiddleware, ChainVerdict};
 
