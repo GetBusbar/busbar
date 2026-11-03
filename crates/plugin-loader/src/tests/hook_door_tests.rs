@@ -741,12 +741,28 @@ mod metadata_boundary;
 mod actual_boundary {
     use super::*;
     use busbar_contract::abi::mechanism::call::{AbiStr, Op, Outcome, RawOutcome};
-    use busbar_contract::abi::sdk::door::Entry;
     use busbar_contract::abi::sdk::life::Leases;
     use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
     use std::collections::BTreeMap;
     use std::ffi::c_void;
     use std::sync::{Mutex, OnceLock};
+
+    // Use the full SDK trampoline: Entry::enter alone does not stamp the ABI out head.
+    struct LoanCapture;
+    impl busbar_contract::abi::sdk::capture::CaptureHome for LoanCapture {
+        fn with<R>(f: impl FnOnce(&mut busbar_contract::abi::sdk::capture::CaptureSlot) -> R) -> R {
+            std::thread_local! {
+                static CAPTURE: std::cell::RefCell<busbar_contract::abi::sdk::capture::CaptureSlot> =
+                    std::cell::RefCell::new(busbar_contract::abi::sdk::capture::CaptureSlot::new());
+            }
+            CAPTURE.with(|slot| f(&mut slot.borrow_mut()))
+        }
+        fn retention() -> &'static busbar_contract::abi::sdk::capture::CaptureRetention {
+            static RETENTION: OnceLock<busbar_contract::abi::sdk::capture::CaptureRetention> =
+                OnceLock::new();
+            RETENTION.get_or_init(Default::default)
+        }
+    }
 
     static RELEASE: [OnceLock<Op>; 2] = [OnceLock::new(), OnceLock::new()];
     static DECIDE: [OnceLock<Op>; 2] = [OnceLock::new(), OnceLock::new()];
@@ -890,8 +906,18 @@ mod actual_boundary {
         let lease = unsafe {
             (*input.cast::<busbar_contract::abi::mechanism::lifecycle::ReleaseIn>()).lease
         };
-        if lease == 1 && LOANS.lock().unwrap().remove(&(instance as usize)).is_some() {
-            return RawOutcome::of(Outcome::Ready);
+        if lease == 1 && LOANS.lock().unwrap().contains_key(&(instance as usize)) {
+            CURRENT.with(|key| key.set(instance as usize));
+            let operation = busbar_contract::abi::sdk::door::kind_op::<
+                busbar_contract::abi::sdk::door::Lifecycle,
+                Safe<ReleaseLoan>,
+                LoanCapture,
+                { busbar_contract::abi::mechanism::lifecycle::slot::RELEASE },
+            >()
+            .expect("the SDK release trampoline");
+            // SAFETY: this is a checked RELEASE frame. The auxiliary SDK body reads no
+            // instance, so NULL keeps the actual product state entirely opaque.
+            return unsafe { operation(std::ptr::null_mut(), input, out) };
         }
         // SAFETY: a non-boundary loan belongs to the original image's RELEASE and actual state.
         unsafe { RELEASE[way].get().unwrap()(instance, input, out) }
@@ -923,16 +949,32 @@ mod actual_boundary {
         CURRENT.with(|key| key.set(instance as usize));
         // SAFETY: the dispatcher checked the SERVE frame. The auxiliary SDK writer takes no
         // state, so NULL prevents any cast or access to the opaque actual product instance.
-        let answer = unsafe {
-            <Safe<Loan> as Entry>::enter(
-                std::ptr::null_mut(),
-                busbar_contract::abi::hook::slot::SERVE,
-                &*input.cast::<busbar_contract::abi::hook::ServeIn>(),
-                &mut *out.cast::<busbar_contract::abi::hook::ServeOut>(),
-            )
-        };
-        RawOutcome::of(answer)
+        let operation = busbar_contract::abi::sdk::door::kind_op::<
+            busbar_contract::abi::hook::Ops,
+            Safe<Loan>,
+            LoanCapture,
+            { busbar_contract::abi::hook::slot::SERVE },
+        >()
+        .expect("the SDK serve trampoline");
+        // SAFETY: the original checked SERVE frame is passed through the SDK trampoline;
+        // its auxiliary writer uses no state and never interprets the product instance.
+        unsafe { operation(std::ptr::null_mut(), input, out) }
     }
+    struct ReleaseLoan;
+    impl SafeSlot for ReleaseLoan {
+        type In = busbar_contract::abi::mechanism::lifecycle::ReleaseIn;
+        type Out = busbar_contract::abi::mechanism::call::OutHead;
+        type State = ();
+        fn call(_: Instance<'_, ()>, _: Lent<'_, Self::In>, _: Out<'_, Self::Out>) -> Outcome {
+            let key = CURRENT.with(std::cell::Cell::get);
+            if LOANS.lock().unwrap().remove(&key).is_some() {
+                Outcome::Ready
+            } else {
+                Outcome::Refused
+            }
+        }
+    }
+
     struct Loan;
     impl SafeSlot for Loan {
         type In = busbar_contract::abi::hook::ServeIn;
