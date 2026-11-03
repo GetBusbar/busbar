@@ -693,7 +693,7 @@ fn malformed_saturated_probe_fails_before_any_descent() {
 
 #[test]
 fn overloaded_probe_preserves_the_exhaustive_small_page_fallback() {
-    let slots = probe_rows(300);
+    let slots = probe_rows(512);
     let view = ProbeView::new(&slots, ProbeMode::Overloaded);
     let mut keys = Vec::new();
     visit_journal_pages(&view, 9u64.to_be_bytes().to_vec(), |page| {
@@ -703,7 +703,7 @@ fn overloaded_probe_preserves_the_exhaustive_small_page_fallback() {
     .unwrap();
     assert_eq!(
         keys,
-        (1..=300)
+        (1..=512)
             .map(|sequence| part_key(9, sequence, 0).to_vec())
             .collect::<Vec<_>>()
     );
