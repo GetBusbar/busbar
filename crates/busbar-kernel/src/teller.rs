@@ -729,10 +729,31 @@ pub async fn open_unit<U: Units + ?Sized>(
     ctx: &UnitCtx,
     run: Run<'_>,
 ) -> SessionOpen {
+    open_unit_with_screen(kernel, units, ctx, run, None).await
+}
+
+/// Open through the actual route's pre-admission screen, before any Own hold is admitted.
+pub async fn open_unit_screened<U: Units + ?Sized, R: RouteAwait + Sync>(
+    kernel: &Kernel,
+    units: &U,
+    ctx: &UnitCtx,
+    run: Run<'_>,
+    route: &R,
+) -> SessionOpen {
+    open_unit_with_screen(kernel, units, ctx, run, Some(route)).await
+}
+
+async fn open_unit_with_screen<U: Units + ?Sized>(
+    kernel: &Kernel,
+    units: &U,
+    ctx: &UnitCtx,
+    run: Run<'_>,
+    screens: Option<&(dyn RouteAwait + Sync)>,
+) -> SessionOpen {
     let seal = &kernel.seal;
     let bound_ctx = bound(kernel, ctx);
     let ctx = &bound_ctx;
-    match open_to_door(seal, units, ctx, &run, None).await {
+    match open_to_door(seal, units, ctx, &run, screens).await {
         Err(refusal) => {
             let outcome =
                 Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
