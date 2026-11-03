@@ -963,10 +963,12 @@ fn http_response(
                 .or_default()
                 .push(value.as_bytes().to_vec());
         }
-        let text = resp
-            .text()
+        let bytes = resp
+            .bytes()
             .await
             .map_err(|e| format!("{url}: response body: {e}"))?;
+        let text = String::from_utf8(bytes.to_vec())
+            .map_err(|e| format!("{url}: response body is not UTF-8: {e}"))?;
         Ok((status, text, response_headers))
     })
 }
