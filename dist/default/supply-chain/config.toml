@@ -1374,3 +1374,119 @@ criteria = "safe-to-deploy"
 [[exemptions.zmij]]
 version = "1.0.21"
 criteria = "safe-to-deploy"
+
+[[exemptions.allocator-api2]]
+version = "0.2.21"
+criteria = "safe-to-deploy"
+
+[[exemptions.bit-set]]
+version = "0.8.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.bit-vec]]
+version = "0.8.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.borrow-or-share]]
+version = "0.2.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.bytecount]]
+version = "0.6.9"
+criteria = "safe-to-deploy"
+
+[[exemptions.email_address]]
+version = "0.2.9"
+criteria = "safe-to-deploy"
+
+[[exemptions.fluent-uri]]
+version = "0.4.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.fraction]]
+version = "0.15.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.jsonschema]]
+version = "0.49.9"
+criteria = "safe-to-deploy"
+
+[[exemptions.jsonschema-regex]]
+version = "0.49.9"
+criteria = "safe-to-deploy"
+
+[[exemptions.jsonschema-value]]
+version = "0.49.9"
+criteria = "safe-to-deploy"
+
+[[exemptions.lock_api]]
+version = "0.4.14"
+criteria = "safe-to-deploy"
+
+[[exemptions.micromap]]
+version = "0.3.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.num]]
+version = "0.4.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.num-cmp]]
+version = "0.1.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.num-complex]]
+version = "0.4.6"
+criteria = "safe-to-deploy"
+
+[[exemptions.num-iter]]
+version = "0.1.46"
+criteria = "safe-to-deploy"
+
+[[exemptions.num-rational]]
+version = "0.4.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.outref]]
+version = "0.5.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.parking_lot]]
+version = "0.12.5"
+criteria = "safe-to-deploy"
+
+[[exemptions.parking_lot_core]]
+version = "0.9.12"
+criteria = "safe-to-deploy"
+
+[[exemptions.redox_syscall]]
+version = "0.5.18"
+criteria = "safe-to-deploy"
+
+[[exemptions.referencing]]
+version = "0.49.9"
+criteria = "safe-to-deploy"
+
+[[exemptions.scopeguard]]
+version = "1.2.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.strum]]
+version = "0.28.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.strum_macros]]
+version = "0.28.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.unicode-general-category]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.uuid-simd]]
+version = "0.8.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.vsimd]]
+version = "0.8.0"
+criteria = "safe-to-deploy"
