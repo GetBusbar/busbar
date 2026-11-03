@@ -52,7 +52,7 @@ fn linked() -> (Plugin<Export>, Arc<Dispatcher>) {
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher.adopter(),
-        conns: crate::dispatch::ConnTable::NoNeeds,
+        conns: crate::dispatch::ConnTable::Host(crate::actual_exports::prometheus_inbound::table()),
     };
     let plugin = load_linked::<Export>(&row, bind).expect("the linked door loads");
     (plugin, dispatcher)
@@ -264,7 +264,9 @@ fn stopping_counts_queued_lines_and_releases_their_holds_outside_the_queue_lock(
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: crate::dispatch::ConnTable::NoNeeds,
+            conns: crate::dispatch::ConnTable::Host(
+                crate::actual_exports::prometheus_inbound::table(),
+            ),
         },
     )
     .unwrap();
@@ -437,7 +439,7 @@ fn an_instance_let_go_has_its_io_handles_reaped() {
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher.adopter(),
-        conns: crate::dispatch::ConnTable::NoNeeds,
+        conns: crate::dispatch::ConnTable::Host(crate::actual_exports::prometheus_inbound::table()),
     };
     let plugin = load_linked::<Export>(&row, bind).expect("the linked door loads");
     let owner = plugin.inner.ctx().handle;
@@ -492,7 +494,9 @@ fn a_door_that_states_span_records_takes_them() {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: crate::dispatch::ConnTable::NoNeeds,
+            conns: crate::dispatch::ConnTable::Host(
+                crate::actual_exports::prometheus_inbound::table(),
+            ),
         };
         let plugin = load_linked::<Export>(&row, bind).expect("the linked door loads");
         ExportInstance::open(plugin, dispatcher, br#"{"buffer_seconds":60}"#)

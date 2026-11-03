@@ -133,7 +133,7 @@ fn red_a_fault_answers_garbage_and_the_script_reads_none_of_it() {
             max_inflight_cap: 16,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
-            conns: ConnTable::NoNeeds,
+            conns: ConnTable::Host(crate::actual_exports::prometheus_inbound::table()),
         },
     )
     .expect("the restated actual door loads");
