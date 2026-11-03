@@ -441,9 +441,44 @@ fn bridge_covers(
     Ok(covered)
 }
 
+/// An exact record used by one read operation, bound to the final fresh node verification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct RecordSeal {
+    pub node: u64,
+    pub sequence: u64,
+    pub hash: [u8; 32],
+}
+impl RecordSeal {
+    pub(super) fn of(record: &JournalRecord) -> Self {
+        Self {
+            node: record.node,
+            sequence: record.node_seq,
+            hash: record.hash,
+        }
+    }
+}
+
 /// The same sealed hash/sequence authority as the ordinary journal reader, folded without a
 /// history Vec. Quarantine bridge lookup rescans only on an actual gap, retaining no bridge log.
 pub(super) fn verify_stored_chain(calls: &dyn StoreCalls, node: u64) -> Result<(), String> {
+    verify_stored_chain_with_seals(calls, node, &[])
+}
+
+/// Verify the entire node exactly as before, and bind every requested, sorted record seal to
+/// that fresh fold. The caller bounds the transcript; no historical payloads are retained.
+pub(super) fn verify_stored_chain_with_seals(
+    calls: &dyn StoreCalls,
+    node: u64,
+    seals: &[RecordSeal],
+) -> Result<(), String> {
+    if seals.iter().any(|seal| seal.node != node)
+        || seals
+            .windows(2)
+            .any(|pair| pair[0].sequence >= pair[1].sequence)
+    {
+        return Err("invalid same-read journal seal transcript".into());
+    }
+    let mut matched = 0;
     let mut previous: Option<ChainPoint> = None;
     fold_stored_records(calls, node, node.to_be_bytes().to_vec(), |record| {
         let record = checked_record(record)?;
@@ -461,9 +496,26 @@ pub(super) fn verify_stored_chain(calls: &dyn StoreCalls, node: u64) -> Result<(
                 return Err("the streamed Store journal has a broken hash link or sequence".into());
             }
         }
+        if let Some(seal) = seals.get(matched) {
+            if seal.sequence < current.sequence {
+                return Err("a same-read recovery record is missing from its verified node".into());
+            }
+            if seal.sequence == current.sequence {
+                if seal.hash != current.hash {
+                    return Err(
+                        "a same-read recovery record changed before node verification".into(),
+                    );
+                }
+                matched += 1;
+            }
+        }
         previous = Some(current);
         Ok(())
-    })
+    })?;
+    if matched != seals.len() {
+        return Err("a same-read recovery record is missing from its verified node".into());
+    }
+    Ok(())
 }
 
 fn warn_torn(node: u64, seq: Option<u64>) {
