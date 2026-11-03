@@ -2102,9 +2102,6 @@ mod validate_tests;
 #[path = "tests/store_v3_wrap.rs"]
 pub(crate) mod wrap;
 
-#[cfg(test)]
-#[path = "tests/store_v3_pend_tests.rs"]
-mod pend_tests;
 
 #[cfg(test)]
 #[path = "tests/store_v3_wire_tests.rs"]
@@ -2133,3 +2130,8 @@ mod rewrap_tests;
 #[cfg(test)]
 #[path = "tests/store_actual_table_tests.rs"]
 mod actual_table;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/store_actual_open_pending_tests.rs"]
+mod store_actual_open_pending_tests;
