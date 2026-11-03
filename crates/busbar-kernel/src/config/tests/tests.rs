@@ -1716,17 +1716,32 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     std::fs::write(&path, "file-secret\n").unwrap();
     let sref = SecretRef::file(path.to_str().unwrap());
     assert_eq!(
-        actual_product_resolver().resolve(&sref).unwrap(),
+        actual_product_resolver()
+            .resolve_at_config(
+                &sref,
+                &busbar_contract::config_time::ConfigScope::config_time()
+            )
+            .unwrap(),
         busbar_contract::redacted::Secret::new(b"file-secret\n".to_vec())
     );
     assert_eq!(
-        actual_product_resolver().resolve_string(&sref).unwrap(),
+        actual_product_resolver()
+            .resolve_string_at_config(
+                &sref,
+                &busbar_contract::config_time::ConfigScope::config_time()
+            )
+            .unwrap(),
         busbar_contract::redacted::Secret::new("file-secret".to_string())
     );
     std::fs::remove_file(&path).unwrap();
 
     let missing = SecretRef::file("/nonexistent/busbar-secret-test");
-    assert!(actual_product_resolver().resolve(&missing).is_err());
+    assert!(actual_product_resolver()
+        .resolve_at_config(
+            &missing,
+            &busbar_contract::config_time::ConfigScope::config_time()
+        )
+        .is_err());
 
     let mut settings = serde_json::Map::new();
     settings.insert("path".to_string(), serde_json::Value::String("x".into()));

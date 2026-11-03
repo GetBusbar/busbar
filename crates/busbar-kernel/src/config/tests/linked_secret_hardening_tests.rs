@@ -6,7 +6,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 fn resolve_linked(secret: &SecretRef) -> Result<Vec<u8>, String> {
     actual_product_resolver()
-        .resolve(secret)
+        .resolve_at_config(
+            secret,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
         .map(|held| held.expose(&crate::seal::lend()).clone())
 }
 
@@ -81,6 +84,13 @@ fn temp_path(tag: &str) -> std::path::PathBuf {
 fn resolve_linked_file_happy_path_reads_the_file() {
     let path = temp_path("FILE_HAPPY");
     std::fs::write(&path, b"file-secret-bytes").unwrap();
+    let refused = actual_product_resolver()
+        .resolve_with(&SecretRef::file(path.to_str().unwrap()), None)
+        .expect_err("a disk-reading Secret cannot resolve outside config time");
+    assert_eq!(
+        refused.error_kind,
+        busbar_contract::abi::secret::ERROR_KIND_DENIED
+    );
     let got = resolve_linked(&SecretRef::file(path.to_str().unwrap())).unwrap();
     assert_eq!(got, b"file-secret-bytes");
     let _ = std::fs::remove_file(&path);
@@ -141,7 +151,10 @@ fn resolve_linked_string_trims_trailing_newlines() {
     let var = unique("STR_TRIM");
     std::env::set_var(&var, "top-secret\r\n");
     let got = actual_product_resolver()
-        .resolve_string(&SecretRef::env(&var))
+        .resolve_string_at_config(
+            &SecretRef::env(&var),
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
         .unwrap();
     assert_eq!(got.expose(&crate::seal::lend()), "top-secret");
     std::env::remove_var(&var);
@@ -153,7 +166,10 @@ fn resolve_linked_string_empty_after_trim_is_fail_closed() {
 
     std::env::set_var(&var, "\n\r\n");
     let err = actual_product_resolver()
-        .resolve_string(&SecretRef::env(&var))
+        .resolve_string_at_config(
+            &SecretRef::env(&var),
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
         .unwrap_err();
     assert!(
         err.contains("empty") || err.contains("BLANK"),
@@ -168,7 +184,10 @@ fn resolve_linked_string_non_utf8_is_an_error() {
     let path = temp_path("STR_NON_UTF8");
     std::fs::write(&path, [0xFF, 0xFE, 0xFD]).unwrap();
     let err = actual_product_resolver()
-        .resolve_string(&SecretRef::file(path.to_str().unwrap()))
+        .resolve_string_at_config(
+            &SecretRef::file(path.to_str().unwrap()),
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
         .unwrap_err();
     assert!(err.contains("non-UTF-8"), "{err}");
     let _ = std::fs::remove_file(&path);
@@ -178,7 +197,10 @@ fn resolve_linked_string_non_utf8_is_an_error() {
 fn resolve_linked_string_propagates_the_underlying_resolve_error() {
     let path = temp_path("STR_MISSING");
     let err = actual_product_resolver()
-        .resolve_string(&SecretRef::file(path.to_str().unwrap()))
+        .resolve_string_at_config(
+            &SecretRef::file(path.to_str().unwrap()),
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
         .unwrap_err();
     assert!(err.contains("cannot resolve"), "{err}");
 }

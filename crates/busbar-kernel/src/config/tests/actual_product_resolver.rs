@@ -30,10 +30,13 @@ fn product(variable: &str, cell: &'static OnceLock<Arc<LoadedSecret>>) -> Arc<Lo
             },
         )
         .expect("the actual Secret image loads");
-        Arc::new(
-            LoadedSecret::open(plugin, dispatcher, b"{}", &[])
-                .expect("the actual Secret product opens"),
-        )
+        let opened = LoadedSecret::open(plugin, dispatcher, b"{}", &[])
+            .expect("the actual Secret product opens");
+        Arc::new(if variable == "BUSBAR_TEST_SECRET_FILE_CDYLIB" {
+            opened.reading_disk(Some(disk_run))
+        } else {
+            opened
+        })
     }))
 }
 
@@ -60,4 +63,11 @@ pub(crate) fn resolver() -> SecretResolver {
             None => calls.resolve(settings.as_bytes()),
         }
     }))
+}
+
+fn disk_run(job: Box<dyn FnOnce() + Send>) -> Result<(), String> {
+    static LANE: OnceLock<crate::host_disk::DiskLane> = OnceLock::new();
+    LANE.get_or_init(Default::default)
+        .run(job)
+        .map_err(str::to_string)
 }
