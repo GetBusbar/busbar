@@ -194,6 +194,166 @@ async fn session_delivery_and_close_allow_the_receiver_waker_to_reenter_the_leg(
     }
 }
 
+// Peer-only WebRTC controls: the caller supplies the real framer door, while
+// admission remains entirely with the HTTP fixture using this peer.
+pub(crate) mod peer {
+    use std::collections::VecDeque;
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    use busbar_core_connector::datagram::DatagramFraming;
+    use busbar_core_connector::dtls::SessionCert;
+    use busbar_core_connector::framer::{FramerDoor, Yielded};
+    use busbar_core_connector::{DialJudge, Judged, Verdict};
+    use tokio::net::UdpSocket;
+    use tokio::sync::{mpsc, watch};
+    use tokio::task::JoinHandle;
+
+    struct Loopback;
+
+    impl DialJudge for Loopback {
+        fn judge_dial(&self, dest: &str, _: u32, _: Judged) -> Option<Result<SocketAddr, Verdict>> {
+            Some(
+                dest.parse::<SocketAddr>()
+                    .ok()
+                    .filter(|addr| addr.ip().is_loopback())
+                    .ok_or(1),
+            )
+        }
+    }
+
+    pub(crate) struct Peer {
+        socket: UdpSocket,
+        framing: DatagramFraming,
+        pending: VecDeque<Yielded>,
+    }
+
+    fn description(yielded: &Yielded) -> Vec<u8> {
+        yielded
+            .pieces
+            .iter()
+            .find(|piece| piece.stream == 0 && !piece.fields && !piece.failed)
+            .expect("the actual WebRTC framer produces its SDP")
+            .bytes
+            .clone()
+    }
+
+    impl Peer {
+        pub(crate) async fn offer(framer: Arc<dyn FramerDoor>) -> (Self, Vec<u8>) {
+            let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let (framing, yielded) = DatagramFraming::dial(
+                framer,
+                Arc::new(SessionCert::mint().unwrap()),
+                socket.local_addr().unwrap(),
+                &[("channel".into(), b"events".to_vec())],
+                Arc::new(Loopback),
+                0,
+            )
+            .unwrap();
+            let offer = description(&yielded);
+            (
+                Self {
+                    socket,
+                    framing,
+                    pending: VecDeque::from([yielded]),
+                },
+                offer,
+            )
+        }
+
+        pub(crate) async fn accept(framer: Arc<dyn FramerDoor>, offer: &[u8]) -> (Self, Vec<u8>) {
+            let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let (mut framing, first) =
+                DatagramFraming::accept_minted(framer, socket.local_addr().unwrap()).unwrap();
+            let yielded = framing.rendezvous(offer, Instant::now()).unwrap();
+            let answer = description(&yielded);
+            (
+                Self {
+                    socket,
+                    framing,
+                    pending: VecDeque::from([first, yielded]),
+                },
+                answer,
+            )
+        }
+
+        pub(crate) fn answer(&mut self, answer: &[u8]) {
+            self.pending
+                .push_back(self.framing.rendezvous(answer, Instant::now()).unwrap());
+        }
+
+        pub(crate) fn run(
+            mut self,
+            mut stopped: watch::Receiver<bool>,
+            mut announce: Option<&'static [u8]>,
+        ) -> (JoinHandle<()>, mpsc::UnboundedReceiver<Vec<u8>>) {
+            let (output, received) = mpsc::unbounded_channel();
+            let task = tokio::spawn(async move {
+                let mut bytes = vec![0; 65536];
+                loop {
+                    if *stopped.borrow() {
+                        break;
+                    }
+                    let mut ended = false;
+                    while let Some(mut yielded) = self.pending.pop_front() {
+                        ended |= yielded.ended;
+                        for piece in yielded.pieces.drain(..) {
+                            assert!(
+                                !piece.failed,
+                                "actual WebRTC peer stream failed: {:?}",
+                                piece.reason
+                            );
+                            if piece.stream == 0 {
+                                continue;
+                            }
+                            if piece.fields && !piece.end && piece.bytes.starts_with(b"label: ") {
+                                if let Some(message) = announce.take() {
+                                    self.pending.push_back(
+                                        self.framing
+                                            .emit(piece.stream, message, true, true, Instant::now())
+                                            .unwrap(),
+                                    );
+                                }
+                            } else if !piece.fields && !piece.end {
+                                let _ = output.send(piece.bytes);
+                            }
+                        }
+                    }
+                    while let Some((to, bytes)) = self.framing.poll_send() {
+                        self.socket.send_to(&bytes, to).await.unwrap();
+                    }
+                    if ended {
+                        break;
+                    }
+                    let deadline = self.framing.deadline();
+                    let yielded = tokio::select! {
+                        changed = stopped.changed() => {
+                            if changed.is_err() || *stopped.borrow() {
+                                break;
+                            }
+                            continue;
+                        }
+                        got = self.socket.recv_from(&mut bytes) => {
+                            let (len, from) = got.unwrap();
+                            self.framing.datagram(from, &bytes[..len], Instant::now()).unwrap()
+                        }
+                        () = async move {
+                            if let Some(deadline) = deadline {
+                                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                            } else {
+                                std::future::pending::<()>().await;
+                            }
+                        } => self.framing.timeout(Instant::now()).unwrap(),
+                    };
+                    self.pending.push_back(yielded);
+                }
+            });
+            (task, received)
+        }
+    }
+}
+
 // These controls drive genuine WebRTC bytes over the root's UDP socket. The
 // observer never fabricates a yield or alters the product's returned ABI data.
 #[cfg(feature = "transport-webrtc")]

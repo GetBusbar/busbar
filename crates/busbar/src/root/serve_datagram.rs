@@ -995,7 +995,7 @@ impl Joining {
 
 #[cfg(test)]
 #[path = "tests/serve_datagram.rs"]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 #[path = "tests/datagram_opening_retirement.rs"]

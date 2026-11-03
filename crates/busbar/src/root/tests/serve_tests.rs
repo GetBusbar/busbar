@@ -1368,8 +1368,6 @@ pub(super) mod session_door {
     const REALTIME: &str = "/v1/realtime?model=m-cap";
 
     const SIGNAL: &str = "/v1/realtime/calls";
-    const OFFER: &str = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=root-offer\r\nt=0 0\r\n";
-    const ANSWER: &str = "v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=root-answer\r\nt=0 0\r\n";
 
     const PUBLIC: &str = "http://gw.test";
 
@@ -1415,12 +1413,98 @@ pub(super) mod session_door {
         Says(&'static str, &'static str),
         /// Nothing: the request is read and the connection held open, unanswered.
         Holds,
+        Rtc,
     }
 
     type FarScript = Arc<dyn Fn(usize) -> Far + Send + Sync>;
 
+    use crate::root::serve::serve_datagram::tests::peer::Peer as RtcPeer;
+
+    #[derive(Default)]
+    struct RtcTasks(std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>);
+    impl RtcTasks {
+        fn keep(&self, task: tokio::task::JoinHandle<()>) {
+            self.0.lock().expect("the peer tasks").push(task);
+        }
+    }
+    impl Drop for RtcTasks {
+        fn drop(&mut self) {
+            for task in self.0.get_mut().expect("the peer tasks").drain(..) {
+                task.abort();
+            }
+        }
+    }
+
+    struct MediaStop(tokio::sync::watch::Sender<bool>);
+    impl Drop for MediaStop {
+        fn drop(&mut self) {
+            let _ = self.0.send(true);
+        }
+    }
+
+    // The external provider receives the product's two-part HTTP form. Parse only
+    // this fixture envelope; SDP validation and crypto remain in the real framer.
+    fn provider_offer(request: &str) -> Vec<u8> {
+        let (head, body) = request
+            .split_once("\r\n\r\n")
+            .expect("the provider HTTP head");
+        let boundary = head
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-type")
+                    .then(|| value.split("boundary=").nth(1))
+                    .flatten()
+            })
+            .expect("the product multipart boundary")
+            .trim()
+            .trim_matches('"');
+        let marker = format!("--{boundary}");
+        let parts: Vec<_> = body.split(&marker).collect();
+        assert_eq!(
+            parts.len(),
+            4,
+            "the actual provider form has exactly two parts"
+        );
+        assert!(parts[0].is_empty(), "the form starts at its boundary");
+        assert!(parts[3] == "--\r\n", "the form closes its actual boundary");
+        let (session_fields, session) = parts[1]
+            .strip_prefix("\r\n")
+            .expect("the session part delimiter")
+            .split_once("\r\n\r\n")
+            .expect("the session part head");
+        assert!(session_fields
+            .lines()
+            .any(|line| line == "Content-Disposition: form-data; name=\"session\""));
+        assert!(session_fields
+            .lines()
+            .any(|line| line.eq_ignore_ascii_case("Content-Type: application/json")));
+        let session: serde_json::Value =
+            serde_json::from_str(session.strip_suffix("\r\n").expect("the session part ends"))
+                .expect("the actual locked session is JSON");
+        assert!(session.is_object(), "the locked session is an object");
+        let (sdp_fields, sdp) = parts[2]
+            .strip_prefix("\r\n")
+            .expect("the SDP part delimiter")
+            .split_once("\r\n\r\n")
+            .expect("the SDP part head");
+        assert!(sdp_fields
+            .lines()
+            .any(|line| line == "Content-Disposition: form-data; name=\"sdp\""));
+        assert!(sdp_fields
+            .lines()
+            .any(|line| line.eq_ignore_ascii_case("Content-Type: application/sdp")));
+        sdp.strip_suffix("\r\n")
+            .expect("the SDP part ends")
+            .as_bytes()
+            .to_vec()
+    }
+
     async fn far_end_scripted(
         script: FarScript,
+        connector: Arc<busbar_core_connector::Connector>,
+        mut stopped: tokio::sync::watch::Receiver<bool>,
+        peers: std::sync::Weak<RtcTasks>,
     ) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -1429,10 +1513,20 @@ pub(super) mod session_door {
         let (sent, heard) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
             let mut accepted = 0usize;
-            while let Ok((mut socket, _)) = listener.accept().await {
+            loop {
+                let accepted_socket = tokio::select! {
+                    got = listener.accept() => got,
+                    _ = stopped.changed() => return,
+                };
+                let Ok((mut socket, _)) = accepted_socket else {
+                    return;
+                };
                 let answer = script(accepted);
                 accepted += 1;
                 let sent = sent.clone();
+                let connector = Arc::clone(&connector);
+                let mut stopped = stopped.clone();
+                let peers = peers.clone();
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 16 * 1024];
                     let mut got = Vec::new();
@@ -1457,15 +1551,73 @@ pub(super) mod session_door {
                                 })
                                 .unwrap_or(0);
                             if got.len() >= at + 4 + length {
-                                let _ = sent.send(text);
                                 break;
                             }
                         }
                     }
+                    let request = String::from_utf8_lossy(&got);
+                    let websocket_key = request.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("sec-websocket-key")
+                            .then(|| value.trim().to_owned())
+                    });
+                    if matches!(&answer, Far::Rtc) {
+                        if let Some(key) = websocket_key {
+                            let _ = sent.send(format!(
+                                "DIAL {}",
+                                request.lines().next().unwrap_or_default()
+                            ));
+                            let response = format!("HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: {}\r\n\r\n", ws_accept(&key));
+                            if socket.write_all(response.as_bytes()).await.is_err() {
+                                return;
+                            }
+                            if socket.write_all(&server_text(FAR_OPENING)).await.is_err() {
+                                return;
+                            }
+                            while let Some((opcode, payload)) = read_frame(&mut socket).await {
+                                match opcode {
+                                    0x1 => {
+                                        let _ = sent.send(format!(
+                                            "TEXT {}",
+                                            String::from_utf8_lossy(&payload)
+                                        ));
+                                    }
+                                    0x8 => return,
+                                    _ => {}
+                                }
+                            }
+                            return;
+                        }
+                    }
+                    let _ = sent.send(request.to_string());
                     let (line, body) = match answer {
-                        Far::Says(line, body) => (line, body),
+                        Far::Says(line, body) => (line, body.to_owned()),
+                        Far::Rtc => {
+                            let request = String::from_utf8_lossy(&got);
+                            let offer = provider_offer(&request);
+                            let (peer, answer) = RtcPeer::accept(
+                                connector
+                                    .framer_for("webrtc")
+                                    .expect("the actual provider WebRTC framer"),
+                                &offer,
+                            )
+                            .await;
+                            let (task, _) = peer.run(stopped, Some(FAR_OPENING.as_bytes()));
+                            peers
+                                .upgrade()
+                                .expect("the provider fixture is retained")
+                                .keep(task);
+                            (
+                                "201 Created",
+                                String::from_utf8(answer)
+                                    .expect("the actual provider SDP is UTF-8"),
+                            )
+                        }
                         Far::Holds => {
-                            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                            tokio::select! {
+                                () = tokio::time::sleep(std::time::Duration::from_secs(3600)) => {},
+                                _ = stopped.changed() => {},
+                            }
                             return;
                         }
                     };
@@ -1548,6 +1700,10 @@ pub(super) mod session_door {
     pub(in crate::root::serve) struct SessionDoor {
         _handle: Arc<busbar_kernel::state::AppHandle>,
         framer: crate::root::listener::framed::DataFramer,
+        connector: Arc<busbar_core_connector::Connector>,
+        media: MediaStop,
+        peers: Arc<RtcTasks>,
+        media_messages: tokio::sync::Mutex<Vec<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>>>,
         router: axum::Router,
         heard: tokio::sync::mpsc::UnboundedReceiver<String>,
         gov: Arc<GovState>,
@@ -1691,13 +1847,22 @@ pub(super) mod session_door {
         crate::dist_root_install::install();
         busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
         let budget = opts.budget;
-        let (port, heard) = match (opts.far_end, opts.far) {
-            (Some(far_end), _) => far_end,
-            (None, Some(script)) => far_end_scripted(script).await,
-            (None, None) => far_end_scripted(Arc::new(|_| Far::Says("201 Created", ANSWER))).await,
-        };
         let _ = crate::root::inbound::install(crate::root::doors::dispatcher());
         let connector = connector();
+        let (media_stop, media_stopped) = tokio::sync::watch::channel(false);
+        let peers = Arc::new(RtcTasks::default());
+        let (port, heard) = match (opts.far_end, opts.far) {
+            (Some(far_end), _) => far_end,
+            (None, script) => {
+                far_end_scripted(
+                    script.unwrap_or_else(|| Arc::new(|_| Far::Rtc)),
+                    Arc::clone(&connector),
+                    media_stopped.clone(),
+                    Arc::downgrade(&peers),
+                )
+                .await
+            }
+        };
         let services = composed_services();
         let dispatcher = Arc::new(crate::root::dispatch::build(1, &services));
         let plane = session_door(
@@ -1838,7 +2003,8 @@ pub(super) mod session_door {
         let mut sections = BTreeMap::new();
         sections.insert(
             section_key,
-            serde_yaml::from_str("session: {model: m-cap}").expect("a section"),
+            serde_yaml::from_str("session: {model: m-cap}\nmedia: {listen: '127.0.0.1:0'}")
+                .expect("a section"),
         );
 
         sections.insert(
@@ -1864,8 +2030,17 @@ pub(super) mod session_door {
         });
 
         let tables = busbar_kernel::plane_driver::serve::ServeTables::default();
+        let doors = [(instance.to_string(), Arc::new(plane))];
+        let media_binds = crate::root::serve::datagram_binds(&doors, &sections)
+            .expect("the real deployment's datagram binds");
+        assert!(
+            media_binds
+                .iter()
+                .any(|bind| bind.transport == "webrtc" && bind.listen.ip().is_loopback()),
+            "the actual media declaration binds a loopback WebRTC claim door"
+        );
         let mut served = match compose_planes(
-            &[(instance.to_string(), Arc::new(plane))],
+            &doors,
             &dispatcher,
             &services,
             &sections,
@@ -1885,6 +2060,33 @@ pub(super) mod session_door {
             served.planes[0].live.current().egress.is_some(),
             "the composition sealed its egress"
         );
+        let runtime = tokio::runtime::Handle::current();
+        let media_connector = Arc::clone(&connector);
+        let stopped = media_stopped.clone();
+        let tracker = busbar_kernel::detached::worker_detached();
+        served.claim_doors = std::thread::spawn(move || {
+            let _entered = runtime.enter();
+            busbar_kernel::detached::set_worker_shutdown(stopped);
+            if let Some(tracker) = tracker {
+                busbar_kernel::detached::set_worker_detached(tracker);
+            }
+            crate::root::serve::serve_datagram::ClaimDoors::bind(&media_binds, |scheme| {
+                media_connector.framer_for(scheme)
+            })
+        })
+        .join()
+        .expect("the ordinary media worker initializes")
+        .expect("the actual media claim doors bind");
+        if let Some(shutdown) = busbar_kernel::detached::worker_shutdown() {
+            let stop = media_stop.clone();
+            let mut stopped = media_stopped.clone();
+            tokio::spawn(async move {
+                tokio::select! {
+                    () = busbar_kernel::detached::shutdown_fired(Some(shutdown)) => { let _ = stop.send(true); },
+                    _ = stopped.changed() => {},
+                }
+            });
+        }
         let live = Arc::clone(&served.planes[0].live);
         served.post = Some(Arc::clone(&post));
         crate::dist_root_install::install();
@@ -2141,12 +2343,17 @@ pub(super) mod session_door {
                 &handle,
             ))));
         crate::root::inbound::publish(&app).expect("the actual session claims publish");
+        let inbound_connector = Arc::clone(&connector);
         let framer = crate::root::listener::framed::data_framer(Arc::new(move |scheme| {
-            connector.framer_for(scheme)
+            inbound_connector.framer_for(scheme)
         }))
         .expect("the actual HTTP and WebSocket framers are linked");
         Some(Ok(SessionDoor {
             framer,
+            connector,
+            media: MediaStop(media_stop),
+            peers,
+            media_messages: tokio::sync::Mutex::new(Vec::new()),
             _handle: handle,
             router,
             heard,
@@ -2273,6 +2480,12 @@ pub(super) mod session_door {
         }
 
         async fn signal(&self, token: &str) -> (StatusCode, String) {
+            let (mut peer, offer) = RtcPeer::offer(
+                self.connector
+                    .framer_for("webrtc")
+                    .expect("the actual browser WebRTC framer"),
+            )
+            .await;
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
                 .await
                 .expect("a signal listener");
@@ -2286,11 +2499,15 @@ pub(super) mod session_door {
                 let mut socket = tokio::net::TcpStream::connect(address)
                     .await
                     .expect("the signal connection");
-                let request = format!("POST {SIGNAL} HTTP/1.1\r\nhost: {address}\r\nauthorization: Bearer {token}\r\ncontent-type: application/sdp\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{OFFER}", OFFER.len());
+                let request = format!("POST {SIGNAL} HTTP/1.1\r\nhost: {address}\r\nauthorization: Bearer {token}\r\ncontent-type: application/sdp\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", offer.len());
                 socket
                     .write_all(request.as_bytes())
                     .await
-                    .expect("the SDP offer");
+                    .expect("the SDP head");
+                socket
+                    .write_all(&offer)
+                    .await
+                    .expect("the actual peer SDP offer");
                 let head = read_head(&mut socket)
                     .await
                     .expect("the signal response head");
@@ -2307,24 +2524,103 @@ pub(super) mod session_door {
                     .expect("the signal response ends");
                 (
                     StatusCode::from_u16(code).expect("a valid HTTP status"),
-                    format!("{head}{}", String::from_utf8_lossy(&body)),
+                    head,
+                    body,
                 )
             };
             let result = tokio::time::timeout(ANSWER_BOUND, exchange).await;
             serving.abort();
-            result.expect("the signal answers within its bound")
+            let (status, head, body) = result.expect("the signal answers within its bound");
+            if status.is_success() {
+                assert!(
+                    head.lines()
+                        .any(|line| line.eq_ignore_ascii_case("content-type: application/sdp")),
+                    "the actual media signal returns SDP"
+                );
+                peer.answer(&body);
+                let (task, received) = peer.run(self.media.0.subscribe(), None);
+                self.peers.keep(task);
+                self.media_messages.lock().await.push(received);
+            }
+            (status, head)
         }
 
-        async fn signal_once(&mut self) -> (StatusCode, bool) {
+        async fn wait_media_ready(&self) {
+            let mut all = self.media_messages.lock().await;
+            let received = all
+                .last_mut()
+                .expect("an actual browser media peer is retained");
+            tokio::time::timeout(ANSWER_BOUND, async {
+                while let Some(bytes) = received.recv().await {
+                    if serde_json::from_slice::<serde_json::Value>(&bytes)
+                        .ok()
+                        .and_then(|value| {
+                            value
+                                .get("type")
+                                .and_then(|kind| kind.as_str())
+                                .map(str::to_owned)
+                        })
+                        .as_deref()
+                        == Some("session.created")
+                    {
+                        return;
+                    }
+                }
+                panic!("the actual media peer ended before the provider's opening event");
+            })
+            .await
+            .expect("actual ICE, DTLS, SCTP and provider media establish");
+        }
+
+        async fn finish_media(&self) {
+            self.wait_media_ready().await;
+            let _ = self.media.0.send(true);
+            tokio::time::timeout(ANSWER_BOUND, async {
+                while self.money.open_units() != 0 || self.post.open_units() != 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the actual media shutdown settles its one lifecycle");
+        }
+
+        async fn signal_once(&mut self) -> (bool, bool) {
             let ticket = self.local_ticket().await;
             let admitted = self.requests();
+            let after_mint = self.audit_records().last().map_or(0, |record| record.seq);
             let (status, _) = self.signal(&ticket).await;
+            let failed = if status.is_success() {
+                tokio::time::timeout(ANSWER_BOUND, async {
+                    loop {
+                        if self.money.open_units() == 0 && self.post.open_units() == 0 {
+                            if let Some(record) = self
+                                .audit_records()
+                                .into_iter()
+                                .find(|record| record.seq > after_mint)
+                            {
+                                return !record.outcome.unit_end.is_completed()
+                                    || record.outcome.finish
+                                        == busbar_kernel_audit::FinishClass::Error;
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("the actual upstream failure terminates the admitted session")
+            } else {
+                assert!(
+                    status.is_server_error(),
+                    "a failed provider or tripped route is a server failure"
+                );
+                true
+            };
             assert_eq!(
                 self.requests(),
                 admitted,
                 "consuming the ticket never adds a second admission"
             );
-            (status, self.heard.try_recv().is_ok())
+            (failed, self.heard.try_recv().is_ok())
         }
 
         async fn mint_once(&mut self) -> (StatusCode, bool) {
@@ -2356,8 +2652,8 @@ pub(super) mod session_door {
 
     async fn trip(s: &mut SessionDoor) -> Option<usize> {
         for n in 0..=MAX_FAILURES {
-            let (status, heard) = s.signal_once().await;
-            assert!(!status.is_success(), "signal {n} is not served");
+            let (failed, heard) = s.signal_once().await;
+            assert!(failed, "the actual upstream session {n} is not served");
             if !heard {
                 assert!(
                     n > 0,
@@ -2400,12 +2696,8 @@ pub(super) mod session_door {
 
         let ticket = s.local_ticket().await;
         assert_eq!(s.requests(), 1, "local issuance is the one admission");
-        let (status, response) = s.signal(&ticket).await;
-        assert_eq!(
-            status.as_u16(),
-            201,
-            "the actual ticket opens its SDP call: {response}"
-        );
+        let (status, _response) = s.signal(&ticket).await;
+        assert_eq!(status.as_u16(), 201, "the actual ticket opens its SDP call");
 
         let head = tokio::time::timeout(ANSWER_BOUND, s.heard.recv())
             .await
@@ -2430,6 +2722,7 @@ pub(super) mod session_door {
             "the locked session on the catalog model: {head}"
         );
 
+        s.finish_media().await;
         assert_eq!(
             s.requests(),
             1,
@@ -2522,12 +2815,12 @@ pub(super) mod session_door {
 
         holding.store(true, std::sync::atomic::Ordering::SeqCst);
         let started = std::time::Instant::now();
-        let (status, heard) =
+        let (failed, heard) =
             tokio::time::timeout(std::time::Duration::from_secs(5), s.signal_once())
                 .await
                 .expect("the tripped route's signal is answered, not held at its provider");
         let took = started.elapsed();
-        assert!(!status.is_success(), "the signal is refused");
+        assert!(failed, "the actual tripped session is refused");
         assert!(!heard, "the refused signal never reached the provider");
         assert!(
             took < std::time::Duration::from_secs(1),
@@ -2601,12 +2894,8 @@ pub(super) mod session_door {
         .expect("the build links the session door");
         let ticket = s.local_ticket().await;
         assert_eq!(s.requests(), 1, "the local ticket is the one admission");
-        let (status, signal) = s.signal(&ticket).await;
-        assert_eq!(
-            status.as_u16(),
-            201,
-            "the admitted ticket places its call: {signal}"
-        );
+        let (status, _signal) = s.signal(&ticket).await;
+        assert_eq!(status.as_u16(), 201, "the admitted ticket places its call");
         assert!(
             s.heard.try_recv().is_ok(),
             "the signal reached its provider"
@@ -2616,6 +2905,7 @@ pub(super) mod session_door {
             1,
             "ticket consumption never charges a second admission"
         );
+        s.finish_media().await;
         let (status, heard) = s.mint_once().await;
         assert_ne!(status, StatusCode::OK, "the second is refused by the limit");
         assert!(!heard, "before its dial");
@@ -2690,8 +2980,20 @@ pub(super) mod session_door {
             &s.scrape().await,
             busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
         );
-        let (status, heard) = s.signal_once().await;
+        let ticket = s.local_ticket().await;
+        let admitted = s.requests();
+        let (status, _) = s.signal(&ticket).await;
         assert_eq!(status.as_u16(), 201, "the actual signal is served");
+        let heard = tokio::time::timeout(ANSWER_BOUND, s.heard.recv())
+            .await
+            .expect("the actual upstream attempt is heard")
+            .is_some();
+        s.finish_media().await;
+        assert_eq!(
+            s.requests(),
+            admitted,
+            "ticket consumption adds no second admission"
+        );
         assert!(heard, "dialled");
         let exposition = s.scrape().await;
         assert_eq!(
@@ -3239,81 +3541,6 @@ pub(super) mod session_door {
         );
     }
 
-    const PLACED_CALL: &str = "rtc_root0001";
-
-    async fn far_calls_and_socket() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
-        const ANSWER: &str = "v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=root-answer\r\nt=0 0\r\n";
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("a loopback port");
-        let port = listener.local_addr().expect("its address").port();
-        let (sent, heard) = tokio::sync::mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            while let Ok((mut socket, _)) = listener.accept().await {
-                let sent = sent.clone();
-                tokio::spawn(async move {
-                    let Some(head) = read_head(&mut socket).await else {
-                        return;
-                    };
-                    let line = head.lines().next().unwrap_or_default().to_string();
-                    let key = head.lines().find_map(|l| {
-                        let (name, value) = l.split_once(':')?;
-                        name.eq_ignore_ascii_case("sec-websocket-key")
-                            .then(|| value.trim().to_string())
-                    });
-                    let Some(key) = key else {
-                        let length = head
-                            .lines()
-                            .find_map(|l| {
-                                let (name, value) = l.split_once(':')?;
-                                name.eq_ignore_ascii_case("content-length")
-                                    .then(|| value.trim().parse::<usize>().ok())
-                                    .flatten()
-                            })
-                            .unwrap_or(0);
-                        let mut body = vec![0u8; length];
-                        if socket.read_exact(&mut body).await.is_err() {
-                            return;
-                        }
-                        let _ = sent.send(format!("OFFER {head}"));
-                        let reply = format!(
-                            "HTTP/1.1 201 Created\r\ncontent-type: application/sdp\r\n\
-                             location: /v1/realtime/calls/{PLACED_CALL}\r\ncontent-length: {}\r\n\
-                             connection: close\r\n\r\n{ANSWER}",
-                            ANSWER.len()
-                        );
-                        let _ = socket.write_all(reply.as_bytes()).await;
-                        let _ = socket.shutdown().await;
-                        return;
-                    };
-                    let _ = sent.send(format!("DIAL {line}"));
-                    let reply = format!(
-                        "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\n\
-                         connection: Upgrade\r\nsec-websocket-accept: {}\r\n\r\n",
-                        ws_accept(&key)
-                    );
-                    if socket.write_all(reply.as_bytes()).await.is_err() {
-                        return;
-                    }
-                    if socket.write_all(&server_text(FAR_OPENING)).await.is_err() {
-                        return;
-                    }
-                    while let Some((opcode, payload)) = read_frame(&mut socket).await {
-                        match opcode {
-                            0x1 => {
-                                let _ = sent
-                                    .send(format!("TEXT {}", String::from_utf8_lossy(&payload)));
-                            }
-                            0x8 => return,
-                            _ => {}
-                        }
-                    }
-                });
-            }
-        });
-        (port, heard)
-    }
-
     async fn next_report(
         heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
     ) -> Option<String> {
@@ -3347,18 +3574,10 @@ pub(super) mod session_door {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_session_door_sideband_attaches_only_to_a_placed_call() {
-        use tower::ServiceExt as _;
         let _one = PUBLISHING.lock().await;
-        let far_end = far_calls_and_socket().await;
-        let mut s = session_with(
-            "serve-door-session-sideband",
-            Opts {
-                far_end: Some(far_end),
-                ..Opts::default()
-            },
-        )
-        .await
-        .expect("the build links the session door");
+        let mut s = session_with("serve-door-session-sideband", Opts { ..Opts::default() })
+            .await
+            .expect("the build links the session door");
         let (router, plain) = (s.router.clone(), s.plain.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -3384,38 +3603,31 @@ pub(super) mod session_door {
         );
         drop(caller);
 
-        let offer = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=root-offer\r\nt=0 0\r\n";
-        let req = axum::http::Request::builder()
-            .method("POST")
-            .uri("/v1/realtime/calls")
-            .header("content-type", "application/sdp")
-            .header("authorization", format!("Bearer {plain}"))
-            .body(axum::body::Body::from(offer))
-            .expect("a request");
-        let placed = tokio::time::timeout(ANSWER_BOUND, router.clone().oneshot(req))
-            .await
-            .expect("the SDP door answers within the bound")
-            .expect("the router answers");
-        assert_eq!(placed.status().as_u16(), 201, "the offer placed a call");
-        let location = placed
-            .headers()
-            .get("location")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
-        assert_eq!(
-            location.as_deref(),
-            Some(format!("/v1/realtime/calls/{PLACED_CALL}").as_str()),
-            "the caller is told where the call lives"
+        let (status, response) = s.signal(&plain).await;
+        assert_eq!(status.as_u16(), 201, "the actual peer offer placed a call");
+        let location = response
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("location")
+                    .then(|| value.trim().to_owned())
+            })
+            .expect("the caller is told where its owned call lives");
+        let call = location
+            .strip_prefix("/v1/realtime/calls/")
+            .expect("the call location stays on this door");
+        assert!(
+            call.starts_with("rtc_")
+                && call
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
         );
         let posted = next_report(&mut s.heard)
             .await
             .expect("the offer reached the provider");
-        assert!(
-            posted.starts_with("OFFER POST /v1/realtime/calls "),
-            "{posted}"
-        );
+        assert!(posted.starts_with("POST /v1/realtime/calls "), "{posted}");
 
-        let attached = SIDEBAND.replace("{call_id}", PLACED_CALL);
+        let attached = SIDEBAND.replace("{call_id}", call);
         let (mut caller, head) = open_socket(addr, &attached, &plain).await;
         assert!(
             head.as_deref()
@@ -3440,6 +3652,12 @@ pub(super) mod session_door {
             carried.starts_with("TEXT ") && carried.contains("input_audio_buffer.append"),
             "{carried}"
         );
+        caller
+            .shutdown()
+            .await
+            .expect("the actual sideband caller closes");
+        drop(caller);
+        s.finish_media().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
