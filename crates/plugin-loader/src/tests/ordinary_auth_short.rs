@@ -425,6 +425,71 @@ fn an_actual_held_short_lease_is_released_exactly_once_when_its_token_drops() {
         Outcome::Refused,
         "token drop already returned this SDK lease"
     );
+    for cancel in [false, true] {
+        use busbar_contract::abi::mechanism::call::DeadlineClass;
+        use busbar_contract::abi::mechanism::lifecycle::{
+            slot as life, ReleaseIn, TickIn, TickOut,
+        };
+        let mut input: VerifyIn = blank_in();
+        input.point = POINT_HEAD;
+        let ticket = dispatcher.mint(0).unwrap();
+        let done = dispatcher
+            .submit(
+                &plugin,
+                ticket,
+                slot::VERIFY,
+                Frame::new(input, blank_out::<IdentifyOut>()),
+                DeadlineClass::Call,
+                0,
+            )
+            .wait(Duration::from_secs(10))
+            .expect("actual short call answers");
+        assert!(done.short);
+        assert_eq!(done.lease, 0, "negotiated storage remains private");
+        let lease = done.frame.unwrap().out.head.lease;
+        if cancel {
+            dispatcher.drop_client(ticket);
+        } else {
+            dispatcher.recycle(ticket);
+        }
+        for _ in 0..2 {
+            let barrier = dispatcher.mint(0).unwrap();
+            let tick = Frame::new(
+                TickIn {
+                    head: crate::dispatch::in_head(),
+                    now_ns: 0,
+                },
+                TickOut {
+                    head: crate::dispatch::out_head(),
+                    next_tick_ns: 0,
+                },
+            );
+            assert_eq!(
+                dispatcher
+                    .submit(&plugin, barrier, life::TICK, tick, DeadlineClass::Call, 0)
+                    .wait(Duration::from_secs(10))
+                    .expect("ordered cleanup barrier answers")
+                    .outcome,
+                Outcome::Ready
+            );
+            dispatcher.recycle(barrier);
+        }
+        let mut release = Frame::new(
+            ReleaseIn {
+                head: crate::dispatch::in_head(),
+                lease,
+            },
+            crate::dispatch::out_head(),
+        );
+        assert_eq!(
+            plugin.call(life::RELEASE, &mut release).outcome,
+            Outcome::Refused,
+            "ticket recycling or client abandonment already returned its short lease"
+        );
+        if cancel {
+            dispatcher.recycle(ticket);
+        }
+    }
     let mut next_input: VerifyIn = blank_in();
     next_input.point = POINT_HEAD;
     let mut next = Frame::new(next_input, blank_out::<IdentifyOut>());
