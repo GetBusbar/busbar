@@ -108,7 +108,8 @@ async fn the_first_checkpoint_prices_its_answer_lane_on_the_admitted_card() {
             &groups,
         ));
         let gov = Arc::new(
-            busbar_kernel::governance::GovState::new(actual_store(), None).expect("governance"),
+            busbar_kernel::governance::GovState::new_with_signer(actual_store(), None, None)
+                .expect("governance"),
         );
         let key = Arc::new(busbar_contract::records::VirtualKey {
             id: "k".into(),

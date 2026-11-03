@@ -1102,18 +1102,34 @@ fn test_validate_rejects_admin_token_without_module() {
     let mut entry = config::AuthChainEntry::bare(config::operator_provider());
     entry.token = Some(config::SecretRef::env("BUSBAR_ADMIN_TOKEN"));
     auth.admin_auth = vec![entry];
-    cfg.auth = Some(auth);
-    let errs = validate(&cfg).expect_err("must be a boot error");
+    cfg.auth = Some(auth.clone());
+    // The actual distribution includes its operator door. Shape validation is therefore
+    // allowed; absence of an external module is decided by the boot constructor's registry.
+    validate(&cfg).expect("the distribution includes the configured operator module");
+    let directory = crate::root::test_plugins::scratch("missing-admin-auth-module");
+    let plugins = crate::root::test_plugins::trusted_config(&directory);
+    let registry = busbar_kernel::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &plugins,
+        &Default::default(),
+    )
+    .expect("the actual linked plugin registry opens");
+    let secrets = config::secret::SecretResolver::builtins_only();
+    busbar_kernel::auth::AdminAuthChain::build(&auth, &registry, &secrets)
+        .expect("the registered operator module is available");
 
-    let op = config::operator_provider();
+    let missing = "absent-admin-auth-module";
+    let mut entry = config::AuthChainEntry::bare(missing);
+    entry.token = Some(config::SecretRef::env("BUSBAR_ADMIN_TOKEN"));
+    auth.admin_auth = vec![entry];
+    let err = busbar_kernel::auth::AdminAuthChain::build(&auth, &registry, &secrets)
+        .expect_err("a configured admin token must never hide an absent auth module");
     assert!(
-        errs.iter().any(|e| *e
-            == format!(
-                "an {op} token is configured but this binary was built WITHOUT the \
-                 `auth-{op}` feature — the admin API would be silently disabled. Rebuild \
-                 with default features or wire an external admin auth module."
-            )),
-        "{errs:?}"
+        err.contains(missing) && err.contains("kind: auth") && err.contains("could not be loaded"),
+        "the boot refusal names the missing admin auth module: {err}"
     );
 }
 
@@ -3385,6 +3401,29 @@ fn test_validate_all_zero_rate_card_warns_but_does_not_fail() {
         !msgs.iter().any(|m| m.contains("priced-model")),
         "a model with non-zero rates must NOT warn: {msgs:?}"
     );
+    let card = cfg.rate_card.as_mut().expect("the configured rate card");
+    let unit = card["free-by-accident"]
+        .units
+        .keys()
+        .next()
+        .expect("the actual plane declares a non-token billable unit")
+        .clone();
+    card.get_mut("free-by-accident").unwrap().units.insert(
+        unit,
+        serde_json::from_value(serde_json::json!(1)).expect("an exact non-zero unit rate"),
+    );
+    let paid_units = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(paid_units.clone());
+    tracing::subscriber::with_default(subscriber, || validate(&cfg))
+        .expect("a model with a priced non-token unit remains legal");
+    assert!(
+        !paid_units
+            .messages()
+            .iter()
+            .any(|m| m.contains("free-by-accident") && m.contains("every tier at zero")),
+        "a non-zero unit price must suppress the all-free warning: {:?}",
+        paid_units.messages()
+    );
 }
 
 #[test]
@@ -3937,7 +3976,8 @@ store:
 advanced:
   rate_sweep_interval: 256
 "#;
-    let cfg = resolve_yaml(yaml).expect("the clean config must resolve");
+    let mut cfg = resolve_yaml(yaml).expect("the clean config must resolve");
+    cfg.rate_card = cfg.rate_card.map(rate_card_for_actual_plane);
     assert!(
         validate(&cfg).is_ok(),
         "the resolved clean config must validate; got: {:?}",

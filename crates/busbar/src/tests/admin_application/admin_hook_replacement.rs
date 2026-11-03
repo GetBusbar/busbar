@@ -111,6 +111,28 @@ async fn test_admin_v1_put_hook_replaces_live_with_guards() {
     );
     std::fs::write(directory.join("hook.tar.gz"), archive)
         .expect("stage actual signed hook product");
+    let ranking_library = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_TEST_RANKING_CDYLIB")
+            .expect("the hook replacement requires the actual Ranking product"),
+    );
+    let ranking_statement = busbar_plugin_loader::dispatch::rendering_of_library(&ranking_library)
+        .expect("the actual Ranking statement reads")
+        .expect("the actual Ranking product states its door");
+    let ranking_facts = busbar_contract::abi::mechanism::rendering::read(&ranking_statement)
+        .expect("the actual Ranking statement parses");
+    let ranking_module = ranking_facts.name;
+    let mut ranking_manifest =
+        plugins::manifest("hook", &ranking_module, plugins::FIXTURE_PUBLISHER);
+    ranking_manifest.alias = "ranking".into();
+    ranking_manifest.version = ranking_facts.version;
+    ranking_manifest.statement = Some(hex::encode(ranking_statement));
+    let ranking_archive = plugins::signed(
+        &crate::dist_root_install::release_key(),
+        ranking_manifest,
+        &std::fs::read(ranking_library).expect("the actual Ranking library reads"),
+    );
+    std::fs::write(directory.join("ranking.tar.gz"), ranking_archive)
+        .expect("stage the actual signed Ranking replacement");
     let signing_key = directory.join("signing-key");
     let operator_token = directory.join("operator-token");
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
@@ -172,12 +194,13 @@ async fn test_admin_v1_put_hook_replaces_live_with_guards() {
         .hook_env
         .registry
         .resolve("ranking")
-        .expect("the actual default-linked ranking hook row is required");
+        .expect("the actual signed Ranking replacement is required");
     assert!(
-        replacement.linked,
-        "the replacement must be the actual linked product"
+        !replacement.linked,
+        "the replacement must be the actual signed dropped product"
     );
     assert_eq!(replacement.kind, "hook");
+    assert_eq!(replacement.name, ranking_module);
     let replacement_module = replacement.name;
     assert_ne!(
         replacement_module, hook_module,

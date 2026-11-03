@@ -386,15 +386,24 @@ pub(crate) fn hook_plugins_compiled_in() -> Vec<&'static str> {
 const MAX_PLUGIN_FILENAME_LEN: usize = 256;
 
 fn validate_plugin_filename(app: &App, file: &str) -> Result<String, AdminError> {
-    validate_plugin_filename_with(file, |file| {
-        app.plugin_admission
-            .is_some_and(|admission| admission.is_tarball(file))
+    validate_plugin_filename_judged(file, |file| {
+        operations::admission(app)
+            .map(|admission| admission.is_tarball(file))
+            .map_err(AdminError::Validation)
     })
 }
 
+#[cfg(test)]
 fn validate_plugin_filename_with(
     file: &str,
     is_tarball: impl FnOnce(&str) -> bool,
+) -> Result<String, AdminError> {
+    validate_plugin_filename_judged(file, |file| Ok(is_tarball(file)))
+}
+
+fn validate_plugin_filename_judged(
+    file: &str,
+    is_tarball: impl FnOnce(&str) -> Result<bool, AdminError>,
 ) -> Result<String, AdminError> {
     if file.is_empty() || file.len() > MAX_PLUGIN_FILENAME_LEN {
         return Err(AdminError::Validation(format!(
@@ -418,7 +427,7 @@ fn validate_plugin_filename_with(
             ));
         }
     }
-    if !is_tarball(file) {
+    if !is_tarball(file)? {
         return Err(AdminError::Validation(
             "plugin filename must be a `.tar.gz` (or `.tgz`) signed plugin tarball".into(),
         ));
@@ -1066,3 +1075,41 @@ fn plane_named_def_get(
 #[cfg(test)]
 #[path = "tests/service_tests.rs"]
 pub(crate) mod tests;
+
+#[cfg(test)]
+mod filename_policy_order_tests {
+    use super::*;
+
+    #[test]
+    fn unsafe_plugin_names_are_refused_before_admission_is_consulted() {
+        let consulted = std::cell::Cell::new(false);
+        for file in [
+            "",
+            "../plain.tar.gz",
+            "sub/plain.tar.gz",
+            "sub\\plain.tar.gz",
+        ] {
+            let error = validate_plugin_filename_judged(file, |_| {
+                consulted.set(true);
+                Err(AdminError::Internal)
+            });
+            assert!(matches!(error, Err(AdminError::Validation(_))), "{file}");
+            assert!(
+                !consulted.get(),
+                "unsafe names never reach the policy lookup"
+            );
+        }
+    }
+
+    #[test]
+    fn a_safe_plugin_name_reports_the_missing_installed_policy() {
+        let cfg = busbar_kernel::config::PluginsCfg::default();
+        let error = validate_plugin_filename_judged("plain.tar.gz", |file| {
+            operations::resolve_admission(&cfg, None)
+                .map(|admission| admission.is_tarball(file))
+                .map_err(AdminError::Validation)
+        });
+        assert!(matches!(error, Err(AdminError::Validation(ref message))
+            if message == "no plugin trust policy is installed (the composition root's)"));
+    }
+}

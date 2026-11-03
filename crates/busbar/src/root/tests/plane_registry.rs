@@ -6,6 +6,21 @@ pub(crate) fn fallback() -> &'static busbar_kernel::plane_driver::registry::Plan
     static ROW: std::sync::OnceLock<&'static busbar_kernel::plane_driver::registry::PlaneDecl> =
         std::sync::OnceLock::new();
     ROW.get_or_init(|| {
+        #[cfg(distribution_root)]
+        {
+            crate::dist_root_install::install();
+            let mut published = busbar_kernel::plane_driver::registry::plane_decls()
+                .iter()
+                .copied()
+                .filter(|row| row.fallback);
+            if let Some(actual) = published.next() {
+                assert!(
+                    published.next().is_none(),
+                    "one product plane owns fallback"
+                );
+                return actual;
+            }
+        }
         let mut fallback = crate::LINKED
             .plane_doors
             .iter()

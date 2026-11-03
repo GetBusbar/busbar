@@ -83,6 +83,7 @@ pub(crate) fn kernel_refusal_response(
             text: message,
             path,
             target,
+            selected_line: None,
         };
         let rendered = PHYSICAL_REFUSER
             .try_with(|(_, render)| render.as_ref().and_then(|render| render(&refusal)))
@@ -141,6 +142,7 @@ pub(crate) async fn reshape_body_limit_413(
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
+    let method = req.method().clone();
     let path = req.uri().path().to_owned();
     let target = target_of(req.uri()).to_owned();
     let resp = next.run(req).await;
@@ -150,6 +152,12 @@ pub(crate) async fn reshape_body_limit_413(
     }
 
     let render = || {
+        // The registered legacy admin verbs retain their frozen v1 envelope.
+        // This closure runs only for the actual plain-text body-cap marker;
+        // authentication failures, JSON errors and upstream responses pass through.
+        if crate::admin::seam::admin_verb_is_legacy(method.as_str(), &path) {
+            return crate::admin::gate::err_json(&crate::admin::gate::ApiError::NotFound);
+        }
         kernel_refusal_response(
             &handle,
             &app.planes,
@@ -1159,6 +1167,11 @@ impl PreparedListener {
             root_surface,
             dispatch_layer: unchanged_dispatch_layer,
         })
+    }
+
+    /// The refusal producer captured with this prepared listener's route snapshot.
+    pub fn refusal_renderer(&self) -> Option<crate::plane_routes::PlaneRefuseByPathFn> {
+        self.refuse_by_path.clone()
     }
 
     /// Apply the composition's dispatch preparation after auth, under the listener's one cap.

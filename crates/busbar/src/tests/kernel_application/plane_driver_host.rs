@@ -73,6 +73,18 @@ fn a_role_bound_standing_is_rechecked_against_the_live_snapshot_bindings() {
         &rules,
     )
     .expect("the actual product builds the host deployment");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the application has its configured governance Store")
+            .store_calls()
+            .expect("the configured product Store exposes actual calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the configured product Store boots its rate-card history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -163,6 +175,18 @@ fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal() {
             &rules,
         )
         .expect("the actual product builds the host deployment");
+        limits.stage_boot();
+        crate::root::kernel::ROOT_CARD.keep_in_store(
+            app.governance
+                .as_ref()
+                .expect("the application has its configured governance Store")
+                .store_calls()
+                .expect("the configured product Store exposes actual calls"),
+            busbar_kernel::door::op_id().counter(),
+        );
+        crate::root::kernel::ROOT_CARD
+            .boot_in_store(None)
+            .expect("the configured product Store boots its rate-card history");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();

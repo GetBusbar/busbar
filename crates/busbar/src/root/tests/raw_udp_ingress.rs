@@ -289,6 +289,20 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
 
     let pair = Pair::with_audio().await;
     assert_eq!(pair.caller.read().await, Some(Vec::new()));
+    // Finish a real application exchange while the peer can still process SCTP
+    // control packets and retransmit. The root's channel-open event alone does
+    // not say that the peer has finished that reciprocal protocol work.
+    pair.send(b"SRTP ingress window").await;
+    assert_eq!(
+        tokio::time::timeout(WAIT, pair.caller.read())
+            .await
+            .unwrap(),
+        Some(b"SRTP ingress window".to_vec())
+    );
+    // Only then pause autonomous caller ICE/timers, before pairing upstream.
+    // Capture the counter baseline after upstream readiness below; explicit SRTP
+    // still crosses the real wire while autonomous caller work remains paused.
+    pair.pause().await;
     let mut entries = crate::root::connector::entries(
         crate::LINKED_TRANSPORT_DOORS,
         &TransportSettings::default(),
@@ -463,9 +477,18 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
         .await
         .expect("actual upstream ICE/DTLS/SCTP opens")
         .unwrap();
+    let dropped_before_media = pair.door.assocs.raw_busy_dropped();
     pair.input.send(Input::Audio(OPUS.to_vec())).await.unwrap();
     assert_eq!(
-        tokio::time::timeout(WAIT, received.recv()).await.unwrap(),
+        tokio::time::timeout(WAIT, received.recv())
+            .await
+            .unwrap_or_else(|_| panic!(
+                "actual paced SRTP did not reach the upstream: drops {} -> {}, publication {:?}, upstream emits {:?}",
+                dropped_before_media,
+                pair.door.assocs.raw_busy_dropped(),
+                pair.pairing.publication_outcome(),
+                observed.emitted.lock().unwrap()
+            )),
         Some(OPUS.to_vec())
     );
     let outcome = pair.pairing.published().await;
@@ -494,7 +517,11 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
         received.try_recv().is_err(),
         "one accepted SRTP frame is forwarded once"
     );
-    assert_eq!(pair.door.assocs.raw_busy_dropped(), 0);
+    assert_eq!(
+        pair.door.assocs.raw_busy_dropped(),
+        dropped_before_media,
+        "the explicit SRTP frame incurs no receive-readiness drop in the paused-peer window"
+    );
     assert_eq!(
         heads.load(std::sync::atomic::Ordering::SeqCst),
         1,

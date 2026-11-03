@@ -93,11 +93,15 @@ async fn test_admin_v1_mutation_rate_limit_config_class() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
+    let plugin_document = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     let mut document = serde_json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
+        "plugins": plugin_document,
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
@@ -266,11 +270,15 @@ async fn test_admin_v1_put_auth_applies_an_empty_chain_as_1_5_5_did() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
+    let plugin_document = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     let mut document = serde_json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
+        "plugins": plugin_document,
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
@@ -433,11 +441,15 @@ async fn test_admin_v1_config_validate_dry_run() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
+    let plugin_document = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     let mut document = serde_json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
+        "plugins": plugin_document,
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
@@ -504,6 +516,7 @@ async fn test_admin_v1_config_validate_dry_run() {
         "config": {
             "providers": { "acme": { "api_key": { "env": "ACME_KEY" } } },
             "store": {"module": module, "settings": settings},
+            "plugins": plugin_document,
             "models": {}
         },
         "providers": {}
@@ -533,6 +546,7 @@ async fn test_admin_v1_config_validate_dry_run() {
             "secrets": { "acme-vault": { "settings": {} } },
             "providers": {},
             "store": {"module": module, "settings": settings},
+            "plugins": plugin_document,
             "models": {}
         },
         "providers": {}
@@ -653,11 +667,15 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
+    let plugin_document = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     let mut document = serde_json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
+        "plugins": plugin_document,
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
@@ -713,6 +731,7 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
             "oauth_as": null,
             "providers": {},
             "store": {"module": module, "settings": settings},
+            "plugins": plugin_document,
             "models": {}
         },
         "providers": {}
@@ -828,11 +847,15 @@ async fn test_admin_v1_config_apply_accepts_the_boot_shape_and_refuses_an_unknow
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
+    let plugin_document = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     let mut document = serde_json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
+        "plugins": plugin_document,
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
@@ -895,6 +918,7 @@ async fn test_admin_v1_config_apply_accepts_the_boot_shape_and_refuses_an_unknow
         "oauth_as": null,
         "providers": {},
         "store": {"module": module, "settings": settings},
+        "plugins": plugin_document,
         "models": {}
     }))
     .await
@@ -907,6 +931,7 @@ async fn test_admin_v1_config_apply_accepts_the_boot_shape_and_refuses_an_unknow
         "not_a_config_key": true,
         "providers": {},
         "store": {"module": module, "settings": settings},
+        "plugins": plugin_document,
         "models": {}
     }))
     .await
@@ -1008,11 +1033,15 @@ async fn test_admin_v1_overlay_reset_unknown_section_400() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
+    let plugin_document = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     let mut document = serde_json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
+        "plugins": plugin_document,
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });

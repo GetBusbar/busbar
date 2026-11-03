@@ -117,7 +117,10 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
     if let Some(rotate) = rotate {
         rotate();
     }
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::boot::hydrate_all(&app)
+        .expect("the actual root hydrates audit before restart refusals");
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let _h = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

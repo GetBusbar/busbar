@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
     busbar_kernel::snapshot::snapshot()
         .expect("the real metrics recorder is installed")
         .iter()
@@ -17,6 +18,7 @@ fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
 }
 
 fn render_metrics() -> String {
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
     use crate::root::loader::dispatch::{
         kinds::export::Export, load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig,
         Dispatcher, NoSink,
@@ -29,7 +31,12 @@ fn render_metrics() -> String {
     let statement = rendering_of_library(&path)
         .expect("the actual exporter statement reads")
         .expect("the actual exporter carries its statement");
+    #[cfg(distribution_root)]
+    crate::dist_root_install::install();
+    let connector = crate::root::connector::installed()
+        .expect("the normal root installs the actual transport connector");
     let dispatcher = std::sync::Arc::new(Dispatcher::new(DispatchConfig::default()));
+    crate::root::connector::install_io(&dispatcher);
     let plugin = load_dropped::<Export>(
         &path,
         &statement,
@@ -38,13 +45,17 @@ fn render_metrics() -> String {
             max_inflight_cap: 64,
             sink: std::sync::Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: ConnTable::NoNeeds,
+            conns: ConnTable::Host(std::sync::Arc::clone(connector)
+                as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
         },
     )
     .expect("the actual exporter loads through its memory ABI");
-    let exporter =
-        crate::root::loader::export_door::ExportInstance::open(plugin, dispatcher, b"{}")
-            .expect("the actual exporter opens");
+    let exporter = crate::root::loader::export_door::ExportInstance::open(
+        plugin,
+        dispatcher,
+        br#"{"buffer_seconds":60}"#,
+    )
+    .expect("the actual exporter opens");
     let families =
         busbar_kernel::snapshot::snapshot().expect("the real metrics recorder is installed");
     String::from_utf8(
@@ -56,6 +67,7 @@ fn render_metrics() -> String {
 }
 
 fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteTable> {
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
     use crate::root::loader::dispatch::{
         kinds::export::{Export, ExportFacts},
         load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
@@ -67,7 +79,17 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
     let statement = rendering_of_library(&path)
         .expect("the actual exporter statement reads")
         .expect("the actual exporter carries its statement");
-    let dispatcher = std::sync::Arc::new(Dispatcher::new(DispatchConfig::default()));
+    #[cfg(distribution_root)]
+    crate::dist_root_install::install();
+    let connector = crate::root::connector::installed()
+        .expect("the normal root installs the actual transport connector");
+    // The actual exporter serves its scrape by reading the snapshot host service.
+    // The route's grant and the dispatcher must both carry the normal service path.
+    let dispatcher = std::sync::Arc::new(Dispatcher::with_services(
+        DispatchConfig::default(),
+        std::sync::Arc::new(busbar_kernel::host_services::KernelServices::new()),
+    ));
+    crate::root::connector::install_io(&dispatcher);
     let plugin = load_dropped::<Export>(
         &path,
         &statement,
@@ -76,22 +98,32 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
             max_inflight_cap: 64,
             sink: std::sync::Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: ConnTable::NoNeeds,
+            conns: ConnTable::Host(std::sync::Arc::clone(connector)
+                as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
         },
     )
     .expect("the actual HTTP exporter loads through its memory ABI");
-    let routes = plugin
+    let facts = plugin
         .context::<ExportFacts>()
-        .expect("the actual exporter declares its routes")
-        .routes
-        .clone();
+        .expect("the actual exporter declares its routes");
+    let routes = facts.routes.clone();
+    let public_routes = facts.public_routes.clone();
+    assert!(
+        public_routes.iter().any(|path| path == "/metrics")
+            && public_routes.iter().any(|path| path == "/metrics/hooks"),
+        "the qualified actual Prometheus image declares both public scrape grants"
+    );
     assert!(
         routes.iter().any(|route| route.path == "/metrics"),
         "the actual exporter declares the scrape route"
     );
     let exporter = std::sync::Arc::new(
-        crate::root::loader::export_door::ExportInstance::open(plugin, dispatcher, b"{}")
-            .expect("the actual HTTP exporter opens"),
+        crate::root::loader::export_door::ExportInstance::open(
+            plugin,
+            dispatcher,
+            br#"{"buffer_seconds":60}"#,
+        )
+        .expect("the actual HTTP exporter opens"),
     );
     let dispatch = busbar_kernel::export::serve_test_sink(exporter);
     let declarations = routes
@@ -101,7 +133,8 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
             source_instance: "serve-http-metrics".into(),
             dispatch_available: true,
             kind: busbar_kernel::plugin_routes::RouteKind::Export,
-            scrape: route.path == "/metrics",
+            // Match production's first-party scrape grant for this qualified actual image.
+            scrape: public_routes.contains(&route.path),
             persistent: false,
             route,
             dispatch: dispatch.clone(),
@@ -334,7 +367,11 @@ impl ProviderEndpoint {
                         }
                     };
                     let length = body.len() + usize::from(transport_error);
-                    let head = format!("HTTP/1.1 {} {}\r\ncontent-type: {content_type}\r\ncontent-length: {length}\r\n{extra}connection: close\r\n\r\n", status.as_u16(), status.canonical_reason().unwrap_or("response"));
+                    let head = format!(
+                        "HTTP/1.1 {} {}\r\ncontent-type: {content_type}\r\ncontent-length: {length}\r\n{extra}connection: close\r\n\r\n",
+                        status.as_u16(),
+                        status.canonical_reason().unwrap_or("response")
+                    );
                     if socket.write_all(head.as_bytes()).await.is_err() {
                         return;
                     }
@@ -409,6 +446,18 @@ async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
         &rules,
     )
     .expect("the actual product builds the empty-plane deployment");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the serving application has its configured Store")
+            .store_calls()
+            .expect("the configured Store exposes its actual rate-history calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the serving application's actual Store boots its rate history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -700,6 +749,7 @@ async fn far_end_answering(script: Script) -> (u16, tokio::sync::mpsc::Unbounded
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     let _one = PUBLISHING.lock().await;
+    crate::dist_root_install::install();
     let instance = "serve-door-served";
     let (port, mut heard) = far_end().await;
 
@@ -791,6 +841,8 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         )]),
         &busbar_kernel::config_validate::MetadataPosture::default(),
     );
+    #[cfg(distribution_root)]
+    crate::dist_root_install::install();
     let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
         Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     let auths = OutboundAuths::new(
@@ -865,10 +917,12 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
     let settings = crate::root::test_plugins::application_store_settings(&directory);
+    let signing_file = directory.join("signing.key");
+    std::fs::write(&signing_file, [7u8; 32]).expect("the actual token signing secret");
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
-        "auth": { "chain": ["keys"], "admin_auth": [] },
+        "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": {"file": signing_file} },
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
@@ -889,6 +943,18 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         &rules,
     )
     .expect("the actual product builds the door deployment");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the serving application has its configured Store")
+            .store_calls()
+            .expect("the configured Store exposes its actual rate-history calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the serving application's actual Store boots its rate history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1019,6 +1085,18 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
         &rules,
     )
     .expect("the actual product builds the door deployment");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the serving application has its configured Store")
+            .store_calls()
+            .expect("the configured Store exposes its actual rate-history calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the serving application's actual Store boots its rate history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1156,6 +1234,18 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
         &rules,
     )
     .expect("the actual product builds the door deployment");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the serving application has its configured Store")
+            .store_calls()
+            .expect("the configured Store exposes its actual rate-history calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the serving application's actual Store boots its rate history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1277,7 +1367,9 @@ pub(super) mod session_door {
 
     const REALTIME: &str = "/v1/realtime?model=m-cap";
 
-    const MINTED: &str = r#"{"value":"ek_door_0001","expires_at":1767225600}"#;
+    const SIGNAL: &str = "/v1/realtime/calls";
+    const OFFER: &str = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=root-offer\r\nt=0 0\r\n";
+    const ANSWER: &str = "v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=root-answer\r\nt=0 0\r\n";
 
     const PUBLIC: &str = "http://gw.test";
 
@@ -1326,12 +1418,6 @@ pub(super) mod session_door {
     }
 
     type FarScript = Arc<dyn Fn(usize) -> Far + Send + Sync>;
-
-    async fn far_end_answering(
-        answer: &'static str,
-    ) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
-        far_end_scripted(Arc::new(move |_| Far::Says("200 OK", answer))).await
-    }
 
     async fn far_end_scripted(
         script: FarScript,
@@ -1383,8 +1469,18 @@ pub(super) mod session_door {
                             return;
                         }
                     };
+                    let kind = if body.starts_with("v=0") {
+                        "application/sdp"
+                    } else {
+                        "application/json"
+                    };
+                    let location = if body.starts_with("v=0") {
+                        "location: /v1/realtime/calls/rtc_provider0001\r\n"
+                    } else {
+                        ""
+                    };
                     let reply = format!(
-                        "HTTP/1.1 {line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+                        "HTTP/1.1 {line}\r\ncontent-type: {kind}\r\n{location}content-length: {}\r\n\
                          connection: close\r\n\r\n{body}",
                         body.len()
                     );
@@ -1396,7 +1492,10 @@ pub(super) mod session_door {
         (port, heard)
     }
 
-    async fn global_gate(reply: serde_json::Value) -> busbar_kernel::config::HookCfg {
+    async fn global_gate(
+        reply: serde_json::Value,
+        armed: Arc<std::sync::atomic::AtomicBool>,
+    ) -> busbar_kernel::config::HookCfg {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("the hook endpoint binds");
@@ -1405,7 +1504,16 @@ pub(super) mod session_door {
             "/hook",
             axum::routing::post(move || {
                 let reply = reply.clone();
-                async move { axum::Json(reply) }
+                let armed = Arc::clone(&armed);
+                async move {
+                    use axum::response::IntoResponse as _;
+                    if armed.load(std::sync::atomic::Ordering::SeqCst) {
+                        axum::Json(reply).into_response()
+                    } else {
+                        // The actual webrequest hook defines 204 as no opinion.
+                        StatusCode::NO_CONTENT.into_response()
+                    }
+                }
             }),
         );
         tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1438,6 +1546,8 @@ pub(super) mod session_door {
     }
 
     pub(in crate::root::serve) struct SessionDoor {
+        _handle: Arc<busbar_kernel::state::AppHandle>,
+        framer: crate::root::listener::framed::DataFramer,
         router: axum::Router,
         heard: tokio::sync::mpsc::UnboundedReceiver<String>,
         gov: Arc<GovState>,
@@ -1462,7 +1572,7 @@ pub(super) mod session_door {
         limits: Vec<busbar_kernel::config::groups::LimitCfg>,
         /// The pools the caller's key is minted with; `None` = every pool.
         allowed_pools: Option<Vec<String>>,
-        /// How the provider answers; `None` = every mint answered 200 with [`MINTED`].
+        /// How the provider answers; `None` = an accepted SDP answer.
         far: Option<FarScript>,
         /// Hooks the deployment defines, each `global` (run on every plane's units), with the hook
         /// stage composed over the generation; empty = no hook stage.
@@ -1578,15 +1688,18 @@ pub(super) mod session_door {
         opts: Opts,
         api_key: &str,
     ) -> Option<Result<SessionDoor, String>> {
+        crate::dist_root_install::install();
         busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
         let budget = opts.budget;
         let (port, heard) = match (opts.far_end, opts.far) {
             (Some(far_end), _) => far_end,
             (None, Some(script)) => far_end_scripted(script).await,
-            (None, None) => far_end_answering(MINTED).await,
+            (None, None) => far_end_scripted(Arc::new(|_| Far::Says("201 Created", ANSWER))).await,
         };
+        let _ = crate::root::inbound::install(crate::root::doors::dispatcher());
         let connector = connector();
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let services = composed_services();
+        let dispatcher = Arc::new(crate::root::dispatch::build(1, &services));
         let plane = session_door(
             instance,
             &dispatcher,
@@ -1614,7 +1727,9 @@ pub(super) mod session_door {
         if let Some(amount) = budget {
             limits.push(busbar_kernel::config::groups::LimitCfg {
                 metric: busbar_kernel::config::groups::LimitMetric::Budget,
-                amount,
+                // A spent-key cell uses a valid one-unit cap, consumed below by a
+                // separate admitted caller before the tested key reaches the door.
+                amount: amount.max(1),
                 per: Some(busbar_kernel::config::groups::LimitWindow::Total),
                 scope: None,
                 on_exhaust: None,
@@ -1641,8 +1756,8 @@ pub(super) mod session_door {
                 let fees: busbar_kernel::config::PlaneFeesMap = [(
                     plane_name.clone(),
                     busbar_kernel_ledger::cost::PlaneFees {
-                        per_request: 1,
-                        per_session: 0,
+                        per_request: 0,
+                        per_session: 1,
                     },
                 )]
                 .into_iter()
@@ -1655,6 +1770,7 @@ pub(super) mod session_door {
             GovState::new_with_signer(crate::root::real_store::records(), None, Some(signer))
                 .expect("governance"),
         );
+        super::super::door_rig::attach_late(&services, &gov);
         let (key, plain) = gov
             .mint_signed(
                 NewKeySpec {
@@ -1695,6 +1811,8 @@ pub(super) mod session_door {
         };
         let catalog: std::collections::HashMap<String, busbar_contract::config::ModelCfg> =
             serde_yaml::from_str(&models_yaml).expect("the models catalog");
+        #[cfg(distribution_root)]
+        crate::dist_root_install::install();
         let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
             Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
         let auths = OutboundAuths::new(
@@ -1728,16 +1846,17 @@ pub(super) mod session_door {
             serde_yaml::from_str(&models_yaml).expect("the models section"),
         );
 
-        let live_app: Arc<std::sync::OnceLock<Arc<busbar_kernel::state::App>>> = Arc::default();
+        let live_app: Arc<std::sync::OnceLock<std::sync::Weak<busbar_kernel::state::AppHandle>>> =
+            Arc::default();
         let stage = (!opts.hooks.is_empty()).then(|| crate::root::serve::HookStage {
             host: {
                 let live_app = Arc::clone(&live_app);
                 Arc::new(move || {
-                    busbar_kernel::plane_driver::engine_host(
-                        live_app
-                            .get()
-                            .expect("the cell's App is built before any unit"),
-                    )
+                    let handle = live_app
+                        .get()
+                        .and_then(std::sync::Weak::upgrade)
+                        .expect("the session AppHandle outlives its requests");
+                    busbar_kernel::plane_driver::engine_host(&handle.load())
                 })
             },
             gov: Arc::clone(&gov),
@@ -1748,7 +1867,7 @@ pub(super) mod session_door {
         let mut served = match compose_planes(
             &[(instance.to_string(), Arc::new(plane))],
             &dispatcher,
-            &composed_services(),
+            &services,
             &sections,
             Some(PUBLIC),
             &move || Arc::clone(&one),
@@ -1820,19 +1939,60 @@ pub(super) mod session_door {
                 .expect("stage the actual webrequest hook");
         }
         let settings = crate::root::test_plugins::application_store_settings(&directory);
+        let signing_file = directory.join("signing.key");
+        std::fs::write(&signing_file, [7u8; 32]).expect("the actual token signing secret");
+        let hooks: BTreeMap<_, _> = opts
+            .hooks
+            .iter()
+            .map(|(name, hook)| {
+                // The public named-hook grammar carries scope and phase in each definition.
+                // Runtime-only legacy attachment fields are not configuration keys.
+                (
+                    *name,
+                    serde_json::json!({
+                        "module": hook.plugin,
+                        "settings": hook.settings,
+                        "groups": hook.groups,
+                        "phase": hook.resolved_stages(),
+                        "kind": hook.kind,
+                        "timeout_ms": hook.timeout_ms,
+                        "on_error": hook.on_error,
+                        "on_empty": hook.on_empty,
+                        "prompt": hook.prompt,
+                        "user": hook.user,
+                        "priority": hook.priority,
+                    }),
+                )
+            })
+            .collect();
         let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
             "providers": {},
             "models": {},
             "groups": groups,
-            "hooks": opts.hooks.iter().cloned().collect::<std::collections::BTreeMap<_, _>>(),
-            "global_hooks": opts.hooks.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
-            "auth": { "chain": ["keys"], "admin_auth": [] },
+            "hooks": hooks,
+            "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": {"file": signing_file} },
             "store": { "module": module, "settings": settings },
             "advanced": { "allow_destinations": ["127.0.0.1"] },
         }))
         .expect("the session deployment parses");
-        let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        let mut config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the session deployment resolves");
+        if budget.is_some() {
+            // Admission and dated spend must consult the same configured plane fee.
+            config.plane_fees.insert(
+                plane_name.clone(),
+                busbar_kernel_ledger::cost::PlaneFees {
+                    per_request: 0,
+                    per_session: 1,
+                },
+            );
+        }
+        let data_chain_names: Vec<_> = config
+            .auth
+            .as_ref()
+            .into_iter()
+            .flat_map(|auth| auth.chain.iter().map(|entry| entry.name.clone()))
+            .collect();
         let plugins = crate::root::test_plugins::trusted_config(&directory);
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
@@ -1847,23 +2007,77 @@ pub(super) mod session_door {
             &rules,
         )
         .expect("the actual product builds the session deployment");
+        limits.stage_boot();
+        crate::root::kernel::ROOT_CARD.keep_in_store(
+            app.governance
+                .as_ref()
+                .expect("the serving application has its configured Store")
+                .store_calls()
+                .expect("the configured Store exposes its actual rate-history calls"),
+            busbar_kernel::door::op_id().counter(),
+        );
+        crate::root::kernel::ROOT_CARD
+            .boot_in_store(None)
+            .expect("the serving application's actual Store boots its rate history");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
+        }
+        if budget == Some(0) {
+            let (warm, _) = gov
+                .mint_signed(
+                    NewKeySpec {
+                        name: "pre-exhausted-session-group".to_string(),
+                        group: groups.keys().next().cloned(),
+                        ..Default::default()
+                    },
+                    4_000_000_000,
+                    1_700_000_000,
+                )
+                .expect("the prior caller shares the actual configured session group");
+            let pool = crate::root::door_steps::plane_lane(&plane_name, "m-cap");
+            drop(
+                gov.try_admit(&cost, &warm, &pool, busbar_kernel::store::now())
+                    .expect("the prior caller is admitted before opening its session"),
+            );
+            // This plane counts its opened session, not a per-request fee.
+            gov.record_usage(
+                &cost,
+                &warm,
+                &pool,
+                &busbar_kernel_ledger::cost::plane_fee_lane(&plane_name),
+                &BTreeMap::from([(busbar_kernel_ledger::cost::PER_SESSION.to_owned(), 1)]),
+                busbar_kernel::store::now(),
+            );
+            assert!(
+                gov.try_admit(&cost, &warm, &pool, busbar_kernel::store::now())
+                    .is_err(),
+                "the actual session group is exhausted before the tested request"
+            );
         }
         app.governance = Some(Arc::clone(&gov));
         app.cost = Arc::new(cost);
         app.serve_tables = tables.clone();
         app.plugin_routes = super::metrics_routes();
         let app = std::sync::Arc::new(app);
-        let _ = live_app.set(Arc::clone(&app));
 
         let upgrades = crate::root::serve::upgrade_carriers(crate::LINKED.transports, &[]);
         let offers = crate::root::serve::transport_offers(crate::LINKED.transports, &[]);
-        let mounts =
-            crate::root::serve::door_mounts(served, || CARD.pin(), &[], &[], &upgrades, &offers)
-                .expect("its claims mount");
-        let (router, _admin, _handle) = busbar_kernel::build_split_routers_serving_doors(
+        // The real transport judges the same configured chain as the application.
+        let data_chain: Vec<_> = data_chain_names
+            .iter()
+            .map(|name| (name.clone(), app.auth.position_points(name)))
+            .collect();
+        let mounts = crate::root::serve::door_mounts(
+            served,
+            || CARD.pin(),
+            &data_chain,
+            &[],
+            &upgrades,
+            &offers,
+        )
+        .expect("its claims mount");
+        let (router, _admin, handle) = busbar_kernel::build_split_routers_serving_doors(
             Arc::clone(&app),
             mounts.routes,
             mounts.sessions,
@@ -1872,7 +2086,23 @@ pub(super) mod session_door {
             0,
             false,
         );
+        live_app
+            .set(Arc::downgrade(&handle))
+            .expect("the session handle installs once");
+        services
+            .kernel()
+            .expect("the actual kernel is installed")
+            .attach_tickets(Arc::new(crate::root::serve::LiveTickets(Arc::downgrade(
+                &handle,
+            ))));
+        crate::root::inbound::publish(&app).expect("the actual session claims publish");
+        let framer = crate::root::listener::framed::data_framer(Arc::new(move |scheme| {
+            connector.framer_for(scheme)
+        }))
+        .expect("the actual HTTP and WebSocket framers are linked");
         Some(Ok(SessionDoor {
+            framer,
+            _handle: handle,
             router,
             heard,
             gov,
@@ -1884,6 +2114,22 @@ pub(super) mod session_door {
             post,
             book,
         }))
+    }
+
+    async fn serve_listener(
+        listener: tokio::net::TcpListener,
+        router: axum::Router,
+        framer: crate::root::listener::framed::DataFramer,
+    ) {
+        let _ = crate::root::listener::serve_admitted_framed(
+            crate::root::listener::SocketAdmits::new(listener),
+            router,
+            None,
+            std::future::pending::<()>(),
+            None,
+            Some(framer),
+        )
+        .await;
     }
 
     impl SessionDoor {
@@ -1949,6 +2195,93 @@ pub(super) mod session_door {
                 .clone()
         }
 
+        async fn local_ticket(&mut self) -> String {
+            let before = busbar_kernel::store::now();
+            let response = self.mint().await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "the local ticket is issued"
+            );
+            let body: serde_json::Value = serde_json::from_slice(&body_of(response).await)
+                .expect("the local ticket response is JSON");
+            let ticket = body["value"]
+                .as_str()
+                .expect("the issued ticket")
+                .to_owned();
+            let expires = body["expires_at_unix"].as_u64().expect("its expiry");
+            assert!(
+                ticket.starts_with("ek_"),
+                "a browser ticket, never the real provider key"
+            );
+            assert_ne!(ticket, CREDENTIAL);
+            assert_ne!(ticket, self.plain);
+            assert!(
+                expires > before && expires <= busbar_kernel::store::now() + 600,
+                "a short-lived browser ticket: {expires}"
+            );
+            assert!(
+                self.heard.try_recv().is_err(),
+                "local issuance never dials a provider"
+            );
+            ticket
+        }
+
+        async fn signal(&self, token: &str) -> (StatusCode, String) {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("a signal listener");
+            let address = listener.local_addr().expect("its address");
+            let serving = tokio::spawn(serve_listener(
+                listener,
+                self.router.clone(),
+                self.framer.clone(),
+            ));
+            let exchange = async {
+                let mut socket = tokio::net::TcpStream::connect(address)
+                    .await
+                    .expect("the signal connection");
+                let request = format!("POST {SIGNAL} HTTP/1.1\r\nhost: {address}\r\nauthorization: Bearer {token}\r\ncontent-type: application/sdp\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{OFFER}", OFFER.len());
+                socket
+                    .write_all(request.as_bytes())
+                    .await
+                    .expect("the SDP offer");
+                let head = read_head(&mut socket)
+                    .await
+                    .expect("the signal response head");
+                let code = head
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .and_then(|code| code.parse::<u16>().ok())
+                    .expect("the HTTP status");
+                let mut body = Vec::new();
+                socket
+                    .read_to_end(&mut body)
+                    .await
+                    .expect("the signal response ends");
+                (
+                    StatusCode::from_u16(code).expect("a valid HTTP status"),
+                    format!("{head}{}", String::from_utf8_lossy(&body)),
+                )
+            };
+            let result = tokio::time::timeout(ANSWER_BOUND, exchange).await;
+            serving.abort();
+            result.expect("the signal answers within its bound")
+        }
+
+        async fn signal_once(&mut self) -> (StatusCode, bool) {
+            let ticket = self.local_ticket().await;
+            let admitted = self.requests();
+            let (status, _) = self.signal(&ticket).await;
+            assert_eq!(
+                self.requests(),
+                admitted,
+                "consuming the ticket never adds a second admission"
+            );
+            (status, self.heard.try_recv().is_ok())
+        }
+
         async fn mint_once(&mut self) -> (StatusCode, bool) {
             let response = self.mint().await;
             let status = response.status();
@@ -1978,9 +2311,13 @@ pub(super) mod session_door {
 
     async fn trip(s: &mut SessionDoor) -> Option<usize> {
         for n in 0..=MAX_FAILURES {
-            let (status, heard) = s.mint_once().await;
-            assert_ne!(status, StatusCode::OK, "mint {n} is not served");
+            let (status, heard) = s.signal_once().await;
+            assert!(!status.is_success(), "signal {n} is not served");
             if !heard {
+                assert!(
+                    n > 0,
+                    "the breaker can only open after a real failed provider attempt"
+                );
                 return Some(n);
             }
         }
@@ -2016,21 +2353,20 @@ pub(super) mod session_door {
         assert!(s.heard.try_recv().is_err(), "nothing was dialled for it");
         assert_eq!(s.requests(), 0, "nor charged");
 
-        let response = send_body(&s.router, MINT, Some(&s.plain), "{}").await;
-        assert_eq!(response.status(), StatusCode::OK, "served through the door");
-        let body = body_of(response).await;
-        let body: serde_json::Value = serde_json::from_slice(&body).expect("the door's JSON");
+        let ticket = s.local_ticket().await;
+        assert_eq!(s.requests(), 1, "local issuance is the one admission");
+        let (status, response) = s.signal(&ticket).await;
         assert_eq!(
-            body,
-            serde_json::json!({"value": "ek_door_0001", "expires_at_unix": 1_767_225_600_u64}),
-            "the minted secret and its expiry"
+            status.as_u16(),
+            201,
+            "the actual ticket opens its SDP call: {response}"
         );
 
         let head = tokio::time::timeout(ANSWER_BOUND, s.heard.recv())
             .await
             .expect("the provider's dial is heard within the bound")
             .expect("the provider was dialled");
-        assert!(head.starts_with(&format!("POST {MINT} ")), "{head}");
+        assert!(head.starts_with(&format!("POST {SIGNAL} ")), "{head}");
         assert!(
             head.lines()
                 .any(|l| l.eq_ignore_ascii_case(&format!("authorization: Bearer {CREDENTIAL}"))),
@@ -2039,6 +2375,10 @@ pub(super) mod session_door {
         assert!(
             !head.contains(&s.plain),
             "the caller's token never reaches the provider: {head}"
+        );
+        assert!(
+            !head.contains(&ticket),
+            "the browser ticket never reaches the provider: {head}"
         );
         assert!(
             head.contains(r#""model":"m-cap""#),
@@ -2098,7 +2438,7 @@ pub(super) mod session_door {
 
         let dialled = trip(&mut s)
             .await
-            .unwrap_or_else(|| panic!("{MAX_FAILURES} failing mints never opened the cell"));
+            .unwrap_or_else(|| panic!("{MAX_FAILURES} failing signals never opened the cell"));
         assert!(dialled >= 1, "the cell opened on a failure it recorded");
         assert!(
             counted(
@@ -2133,19 +2473,17 @@ pub(super) mod session_door {
         .expect("the build links the session door");
         trip(&mut s)
             .await
-            .unwrap_or_else(|| panic!("{MAX_FAILURES} failing mints never opened the cell"));
+            .unwrap_or_else(|| panic!("{MAX_FAILURES} failing signals never opened the cell"));
 
         holding.store(true, std::sync::atomic::Ordering::SeqCst);
         let started = std::time::Instant::now();
-        let response = tokio::time::timeout(std::time::Duration::from_secs(5), s.mint())
-            .await
-            .expect("the tripped route's mint is answered, not held at its provider");
+        let (status, heard) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), s.signal_once())
+                .await
+                .expect("the tripped route's signal is answered, not held at its provider");
         let took = started.elapsed();
-        assert_ne!(response.status(), StatusCode::OK, "the mint is refused");
-        assert!(
-            s.heard.try_recv().is_err(),
-            "the refused mint never reached the provider"
-        );
+        assert!(!status.is_success(), "the signal is refused");
+        assert!(!heard, "the refused signal never reached the provider");
         assert!(
             took < std::time::Duration::from_secs(1),
             "refused before the dial, in milliseconds: {took:?}"
@@ -2155,14 +2493,18 @@ pub(super) mod session_door {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_gate_hook_refuses_the_mint_before_the_provider_is_dialled() {
         let _one = PUBLISHING.lock().await;
+        let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut s = session_with(
             "serve-door-session-gated",
             Opts {
                 hooks: vec![(
                     "closed",
-                    global_gate(serde_json::json!({
-                        "reject": {"status": 409, "message": "no new sessions"}
-                    }))
+                    global_gate(
+                        serde_json::json!({
+                            "reject": {"status": 409, "message": "no new sessions"}
+                        }),
+                        Arc::clone(&armed),
+                    )
                     .await,
                 )],
                 ..Opts::default()
@@ -2170,9 +2512,19 @@ pub(super) mod session_door {
         )
         .await
         .expect("the build links the session door");
-        let (status, heard) = s.mint_once().await;
+        let ticket = s.local_ticket().await;
+        let admitted = s.requests();
+        let completed_before_signal = s.lines();
+        armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let (status, _) = s.signal(&ticket).await;
+        let heard = s.heard.try_recv().is_ok();
+        assert_eq!(
+            s.requests(),
+            admitted,
+            "a gated signal adds no second admission"
+        );
         assert_eq!(status.as_u16(), 409, "the hook's own status");
-        assert!(!heard, "the gated mint never reached the provider");
+        assert!(!heard, "the gated signal never reached the provider");
         assert_eq!(
             s.money.open_units(),
             0,
@@ -2183,7 +2535,11 @@ pub(super) mod session_door {
             0,
             "the refused unit's node facts closed"
         );
-        assert_eq!(s.lines(), 0, "no record carries counts");
+        assert_eq!(
+            s.lines(),
+            completed_before_signal,
+            "the gated signal adds no completed record carrying counts"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2198,16 +2554,47 @@ pub(super) mod session_door {
         )
         .await
         .expect("the build links the session door");
-        let (status, heard) = s.mint_once().await;
-        assert_eq!(status, StatusCode::OK, "the first mint is served");
-        assert!(heard, "and dialled");
+        let ticket = s.local_ticket().await;
+        assert_eq!(s.requests(), 1, "the local ticket is the one admission");
+        let (status, signal) = s.signal(&ticket).await;
+        assert_eq!(
+            status.as_u16(),
+            201,
+            "the admitted ticket places its call: {signal}"
+        );
+        assert!(
+            s.heard.try_recv().is_ok(),
+            "the signal reached its provider"
+        );
+        assert_eq!(
+            s.requests(),
+            1,
+            "ticket consumption never charges a second admission"
+        );
         let (status, heard) = s.mint_once().await;
         assert_ne!(status, StatusCode::OK, "the second is refused by the limit");
         assert!(!heard, "before its dial");
 
         let records = s.audit_records();
-        assert_eq!(records.len(), 2, "one record per unit: {records:?}");
-        let (served, refused) = (&records[0], &records[1]);
+        assert_eq!(
+            records.len(),
+            3,
+            "one record for local issuance, its signal, and the refused issuance: {records:?}"
+        );
+        let (served, signal, refused) = (&records[0], &records[1], &records[2]);
+        for record in &records {
+            assert_eq!(
+                record.subject,
+                busbar_kernel_audit::Subject::PrincipalId(s.key.id.clone()),
+                "one presenting/billing key across issuance and consumption"
+            );
+        }
+        assert_eq!(
+            signal.outcome.unit_end,
+            busbar_contract::caps::Outcome::Completed
+        );
+        assert_eq!(signal.seq, served.seq + 1);
+        assert_eq!(signal.prev_hash, served.hash);
         assert_eq!(
             served.what.op_class.as_str(),
             refused.what.op_class.as_str(),
@@ -2225,9 +2612,9 @@ pub(super) mod session_door {
             "the refusal is chained as one: {:?}",
             refused.outcome
         );
-        assert_eq!(refused.seq, served.seq + 1, "contiguous");
+        assert_eq!(refused.seq, signal.seq + 1, "contiguous");
         assert_eq!(
-            refused.prev_hash, served.hash,
+            refused.prev_hash, signal.hash,
             "linked to the record before"
         );
         assert!(busbar_kernel_audit::AuditChain::verify_window(&records).is_ok());
@@ -2258,8 +2645,8 @@ pub(super) mod session_door {
             &s.scrape().await,
             busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
         );
-        let (status, heard) = s.mint_once().await;
-        assert_eq!(status, StatusCode::OK, "served");
+        let (status, heard) = s.signal_once().await;
+        assert_eq!(status.as_u16(), 201, "the actual signal is served");
         assert!(heard, "dialled");
         let exposition = s.scrape().await;
         assert_eq!(
@@ -2294,6 +2681,18 @@ pub(super) mod session_door {
         assert_eq!(s.money.open_units(), 0);
         assert_eq!(s.post.open_units(), 0);
         assert_eq!(s.lines(), 0, "no record carries counts");
+        let (signal, response) = s.signal(&s.plain).await;
+        assert!(
+            signal.is_client_error(),
+            "the same denied grant cannot open a signal: {response}"
+        );
+        assert!(
+            s.heard.try_recv().is_err(),
+            "nor can the denied signal dial"
+        );
+        assert_eq!(s.requests(), 0, "neither denied entry charges the caller");
+        assert_eq!(s.money.open_units(), 0);
+        assert_eq!(s.post.open_units(), 0);
     }
 
     fn sha1(data: &[u8]) -> [u8; 20] {
@@ -2518,9 +2917,7 @@ pub(super) mod session_door {
             .await
             .expect("a loopback port");
         let addr = listener.local_addr().expect("its address");
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, router.into_make_service()).await;
-        });
+        tokio::spawn(serve_listener(listener, router, s.framer.clone()));
 
         let route = REALTIME;
         let mut caller = tokio::net::TcpStream::connect(addr).await.expect("a dial");
@@ -2595,14 +2992,13 @@ pub(super) mod session_door {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let router = s.router.clone();
-        let serving = tokio::spawn(async move {
-            let _ = axum::serve(listener, router.into_make_service()).await;
-        });
+        let serving = tokio::spawn(serve_listener(listener, router, s.framer.clone()));
         let mut caller = tokio::net::TcpStream::connect(address).await.unwrap();
         let open = format!(
             "GET {REALTIME} HTTP/1.1\r\nhost: {address}\r\nupgrade: websocket\r\nconnection: Upgrade\r\n\
              sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\
-             authorization: Bearer {}\r\n\r\n", s.plain,
+             authorization: Bearer {}\r\n\r\n",
+            s.plain,
         );
         caller.write_all(open.as_bytes()).await.unwrap();
         let head = tokio::time::timeout(
@@ -2667,9 +3063,7 @@ pub(super) mod session_door {
             .await
             .expect("a loopback port");
         let addr = listener.local_addr().expect("its address");
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, router.into_make_service()).await;
-        });
+        tokio::spawn(serve_listener(listener, router, s.framer.clone()));
 
         let route = REALTIME;
         let mut caller = tokio::net::TcpStream::connect(addr).await.expect("a dial");
@@ -2731,9 +3125,7 @@ pub(super) mod session_door {
             .await
             .expect("a loopback port");
         let addr = listener.local_addr().expect("its address");
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, router.into_make_service()).await;
-        });
+        tokio::spawn(serve_listener(listener, router, s.framer.clone()));
 
         let route = REALTIME;
         let mut caller = tokio::net::TcpStream::connect(addr).await.expect("a dial");
@@ -2928,9 +3320,7 @@ pub(super) mod session_door {
             .expect("a loopback port");
         let addr = listener.local_addr().expect("its address");
         let served = router.clone();
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, served.into_make_service()).await;
-        });
+        tokio::spawn(serve_listener(listener, served, s.framer.clone()));
         let append = r#"{"type":"input_audio_buffer.append","audio":"AAAA"}"#;
 
         let unplaced = SIDEBAND.replace("{call_id}", "rtc_unplaced0001");
@@ -3026,9 +3416,7 @@ pub(super) mod session_door {
             .await
             .expect("a loopback port");
         let addr = listener.local_addr().expect("its address");
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, router.into_make_service()).await;
-        });
+        tokio::spawn(serve_listener(listener, router, s.framer.clone()));
         let (mut caller, head) = open_socket(addr, REALTIME, &plain).await;
         assert!(
             head.as_deref()
@@ -3843,6 +4231,8 @@ mod tools_door {
             registration("audited", &port_server, ""),
             &|app| app,
         );
+        busbar_kernel::boot::hydrate_all(&rig.app)
+            .expect("the actual boot registers the durable audit stream before serving units");
         let upstream_calls =
             |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
 
@@ -4262,9 +4652,15 @@ mod tools_door {
         };
         let mut port_server = TlsToolServer::new().await;
         let mut heard = take_heard(&mut port_server);
-        let rig = port_server.rig(
+        let rig = port_server.rig_with_footing(
             instance,
             registration("metered", &port_server, ""),
+            crate::root::door_steps::tests::tool_door::Footing {
+                groups: Some(&groups),
+                plane_fees: Some(&fees),
+                fee_cents: Some(0),
+                ..port_server.footing()
+            },
             &|mut app| {
                 app.cost = Arc::new(cost());
                 app
@@ -4871,14 +5267,22 @@ mod tools_door {
                     .collect(),
                 ..busbar_kernel::config::AuthCfg::default_none()
             };
-            app.admin_modules = Arc::new(
-                busbar_kernel::auth::AdminAuthChain::build(
-                    &auth,
-                    &app.hook_env.registry,
-                    &app.secret_resolver,
-                )
-                .expect("the real operator admin chain opens"),
-            );
+            let mut modules = busbar_kernel::auth::AdminAuthChain::build(
+                &auth,
+                &app.hook_env.registry,
+                &app.secret_resolver,
+            )
+            .expect("the real operator admin chain opens");
+            modules.operator = busbar_kernel::auth::open_operator(
+                &app.hook_env.registry,
+                app.governance
+                    .as_ref()
+                    .expect("the configured governance book")
+                    .admin_token_hash(),
+                &Default::default(),
+            )
+            .expect("the actual operator authenticates the configured governance credential");
+            app.admin_modules = Arc::new(modules);
             app.admin_chain = chain.clone();
             app
         });
@@ -5524,6 +5928,7 @@ async fn serve_configured(
     allowed_pools: Option<Vec<String>>,
     api_key: &str,
 ) -> Result<Serving, String> {
+    crate::dist_root_install::install();
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: false,
@@ -5639,6 +6044,8 @@ async fn serve_configured(
         )]),
         &busbar_kernel::config_validate::MetadataPosture::default(),
     );
+    #[cfg(distribution_root)]
+    crate::dist_root_install::install();
     let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
         Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     let auths = OutboundAuths::new(
@@ -5717,17 +6124,26 @@ async fn serve_configured(
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
     let settings = crate::root::test_plugins::application_store_settings(&directory);
+    let signing_file = directory.join("signing.key");
+    std::fs::write(&signing_file, [7u8; 32]).expect("the actual token signing secret");
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
         "groups": groups,
-        "auth": { "chain": ["keys"], "admin_auth": [] },
+        "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": {"file": signing_file} },
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the door deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let mut config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the door deployment resolves");
+    config.plane_fees.insert(
+        plane.clone(),
+        busbar_kernel_ledger::cost::PlaneFees {
+            per_request: fee,
+            per_session: 0,
+        },
+    );
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
@@ -5742,6 +6158,18 @@ async fn serve_configured(
         &rules,
     )
     .expect("the actual product builds the door deployment");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the serving application has its configured Store")
+            .store_calls()
+            .expect("the configured Store exposes its actual rate-history calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the serving application's actual Store boots its rate history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -6509,6 +6937,8 @@ async fn the_pools_door_audits_a_control_the_far_dialect_cannot_carry() {
         },
     )
     .await;
+    busbar_kernel::boot::hydrate_all(&rig.app)
+        .expect("the actual boot registers the durable audit stream before serving units");
     let rows = |resource: &str| {
         busbar_kernel::audit::auditlog::AUDIT_LOG
             .list_filtered(
@@ -6858,6 +7288,8 @@ mod pools_door_walk_and_breaker {
             },
         )
         .await;
+        busbar_kernel::boot::hydrate_all(&rig.app)
+            .expect("the actual boot registers the durable audit stream before serving units");
         let (status, _, body) = rig
             .send(
                 "POST",
@@ -7299,10 +7731,7 @@ mod pools_door_walk_and_breaker {
         assert_eq!(answer["error"]["type"], "authentication_error", "{answer}");
         let message = answer["error"]["message"].as_str().unwrap_or("");
         assert_eq!(
-            message,
-            busbar_kernel::ingress::protocols::vendor_auth_failure_message(door_word(
-                "messages_dialect"
-            )),
+            message, "invalid x-api-key",
             "the dialect's own sentence: {answer}"
         );
         assert!(!message.contains("lane"), "{answer}");
@@ -9236,7 +9665,7 @@ mod pools_door_money {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_keeps_the_budget_unit_of_an_over_cap_answer() {
         let _one = ONE_PUBLISHER.lock().await;
-        const CAP: usize = 4096;
+        const CAP: usize = 65_536;
         struct RestoreLimits(Option<busbar_kernel::config::limits::LimitsResolved>);
         impl Drop for RestoreLimits {
             fn drop(&mut self) {
@@ -11683,12 +12112,15 @@ async fn the_model_plane_families_stay_v1_5_4_shaped_on_a_real_scrape() {
     let exposition = crate::root::serve::door_tests::render_metrics();
     let model_counters = exposition_family(&exposition, busbar_kernel::snapshot::REQUESTS_TOTAL);
     assert!(
-        model_counters.iter().any(|line| line.contains("pool=\"t065-model-family-pool\"") && exposition_label_keys(line)
-            == vec![
-                "ingress_protocol".to_string(),
-                "outcome".to_string(),
-                "pool".to_string()
-            ]),
+        model_counters
+            .iter()
+            .any(|line| line.contains("pool=\"t065-model-family-pool\"")
+                && exposition_label_keys(line)
+                    == vec![
+                        "ingress_protocol".to_string(),
+                        "outcome".to_string(),
+                        "pool".to_string()
+                    ]),
         "no v1.5.4-shaped `{}` series {{ingress_protocol,pool,outcome}} after driving model traffic \
          (model {model_status}). Exposition:\n{exposition}",
         busbar_kernel::snapshot::REQUESTS_TOTAL,

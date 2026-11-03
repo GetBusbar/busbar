@@ -133,6 +133,9 @@ pub fn canonical_key_pin(written: &str) -> Result<String, BadKeyPin> {
 /// connection's facts either way ([`crate::transport::ConnFacts`]). The default anchors nothing.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Anchors {
+    /// Additional DER trust anchors scoped to this registration. These supplement PKI roots;
+    /// they do not replace name, validity or key-pin checks.
+    pub extra_anchors: Vec<Vec<u8>>,
     /// The far end's key pin; `None` = no pin.
     pub key_pin: Option<String>,
     /// The client identity to present; `None` = present none.
@@ -150,10 +153,10 @@ impl Anchors {
         !self.secures()
     }
 
-    /// Whether these hold the connection's security to anything (a key pin or a client identity).
+    /// Whether these hold the connection's security to anything (additional roots, a key pin or a client identity).
     #[must_use]
     pub fn secures(&self) -> bool {
-        self.key_pin.is_some() || self.client_identity.is_some()
+        !self.extra_anchors.is_empty() || self.key_pin.is_some() || self.client_identity.is_some()
     }
 }
 
@@ -161,6 +164,7 @@ impl core::fmt::Debug for Anchors {
     /// The identity's private key is redacted through [`ClientIdentity`]'s own `Debug`.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Anchors")
+            .field("extra_anchors", &self.extra_anchors)
             .field("key_pin", &self.key_pin)
             .field("client_identity", &self.client_identity)
             .field("private_reach", &self.private_reach)

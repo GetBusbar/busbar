@@ -63,6 +63,15 @@ pub fn build_client_config(trust: &EgressTrust) -> Result<rustls::ClientConfig, 
 
 /// The client config for a need whose `trust_from` names an operator CA (`pem`, the PEM the need's
 pub fn operator_ca_config(pem: &[u8]) -> Result<rustls::ClientConfig, String> {
+    let trust = EgressTrust {
+        extra_anchors: operator_ca_anchors(pem)?,
+        ..EgressTrust::default()
+    };
+    build_client_config(&trust).map_err(|e| e.to_string())
+}
+
+/// Parse and validate the public certificate roots in an operator PEM bundle.
+pub fn operator_ca_anchors(pem: &[u8]) -> Result<Vec<Vec<u8>>, String> {
     use rustls::pki_types::pem::PemObject as _;
     let certs = rustls_pki_types::CertificateDer::pem_slice_iter(pem)
         .collect::<Result<Vec<_>, _>>()
@@ -76,11 +85,7 @@ pub fn operator_ca_config(pem: &[u8]) -> Result<rustls::ClientConfig, String> {
             .add(cert.clone())
             .map_err(|e| format!("the operator CA is not a usable trust anchor: {e}"))?;
     }
-    let trust = EgressTrust {
-        extra_anchors: certs.into_iter().map(|c| c.to_vec()).collect(),
-        ..EgressTrust::default()
-    };
-    build_client_config(&trust).map_err(|e| e.to_string())
+    Ok(certs.into_iter().map(|c| c.to_vec()).collect())
 }
 
 /// The verifier half of the client config, before the client-auth choice: platform roots plus any
@@ -239,6 +244,8 @@ impl rustls::client::danger::ServerCertVerifier for PinnedKeyVerifier {
     }
 }
 
+type RebasedPolicy = std::sync::Mutex<Option<(EgressTrust, std::sync::Weak<Sealed>)>>;
+
 /// ONE DESTINATION'S TRUST ANCHORS, sealed for dialling (the transport pin): the far end's key pin
 /// to hold every connection to, and busbar's client identity, parsed once, to present.
 #[derive(Debug, Clone, Default)]
@@ -248,6 +255,12 @@ pub struct Sealed {
     pub key_pin: Option<String>,
     /// The client identity to present when the far end asks for one.
     pub identity: Option<Arc<rustls::sign::CertifiedKey>>,
+    /// Validated member roots; also participate in destination seal equality.
+    pub extra_anchors: Vec<Vec<u8>>,
+    /// The exact effective policy, with only the member roots added.
+    pub tls: Option<Arc<rustls::ClientConfig>>,
+    pub(crate) policy: Option<EgressTrust>,
+    rebased: Arc<RebasedPolicy>,
 }
 
 /// Anchors that cannot be sealed: a client identity the stack cannot use, or a key pin that names
@@ -256,6 +269,8 @@ pub struct Sealed {
 pub enum BadAnchors {
     /// The client identity does not parse.
     Identity(BadClientIdentity),
+    /// Member roots require a known, reconstructible effective TLS policy.
+    Trust(String),
     /// The key pin is neither `sha256/<base64>` nor its plain base64 alias of one digest.
     KeyPin(busbar_contract::transport::trust::BadKeyPin),
 }
@@ -264,6 +279,7 @@ impl std::fmt::Display for BadAnchors {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Identity(e) => e.fmt(f),
+            Self::Trust(e) => f.write_str(e),
             Self::KeyPin(e) => e.fmt(f),
         }
     }
@@ -312,7 +328,16 @@ pub fn seal(
             Some(Arc::new(certified))
         }
     };
-    Ok(Sealed { key_pin, identity })
+    if !anchors.extra_anchors.is_empty() {
+        return Err(BadAnchors::Trust(
+            "member CA requires a known effective TLS policy".into(),
+        ));
+    }
+    Ok(Sealed {
+        key_pin,
+        identity,
+        ..Sealed::default()
+    })
 }
 
 /// The client-certificate resolver of one dial under sealed anchors: it presents the identity when
@@ -516,3 +541,65 @@ impl ConnectionSecurity for TlsDial {
 #[cfg(test)]
 #[path = "client_tests.rs"]
 mod tests;
+
+/// Seal a member against the policy that its connection would otherwise use.
+pub fn seal_with_policy(
+    base: Option<&rustls::ClientConfig>,
+    policy: Option<&EgressTrust>,
+    anchors: &busbar_contract::transport::trust::Anchors,
+) -> Result<Sealed, BadAnchors> {
+    let mut without_roots = anchors.clone();
+    without_roots.extra_anchors.clear();
+    let mut sealed = seal(base, &without_roots)?;
+    if anchors.extra_anchors.is_empty() {
+        return Ok(sealed);
+    }
+    let mut policy = policy.cloned().ok_or_else(|| {
+        BadAnchors::Trust("member CA requires a known effective TLS policy".into())
+    })?;
+    let mut roots = rustls::RootCertStore::empty();
+    for der in &anchors.extra_anchors {
+        roots
+            .add(rustls_pki_types::CertificateDer::from(der.clone()))
+            .map_err(|_| BadAnchors::Trust("member CA is not a usable trust anchor".into()))?;
+    }
+    sealed.policy = Some(policy.clone());
+    policy
+        .extra_anchors
+        .extend(anchors.extra_anchors.iter().cloned());
+    sealed.tls = Some(Arc::new(
+        build_client_config(&policy).map_err(BadAnchors::Identity)?,
+    ));
+    sealed.extra_anchors = anchors.extra_anchors.clone();
+    Ok(sealed)
+}
+
+/// Rebind a retained member seal when the same Need is declared under a changed TLS policy.
+pub(crate) fn rebase(
+    sealed: &Sealed,
+    policy: Option<&EgressTrust>,
+) -> Result<Arc<Sealed>, BadAnchors> {
+    let mut policy = policy.cloned().ok_or_else(|| {
+        BadAnchors::Trust("member CA requires a known effective TLS policy".into())
+    })?;
+    let mut cached = sealed.rebased.lock().expect("member TLS policy");
+    if let Some((held, weak)) = cached.as_ref() {
+        if held == &policy {
+            if let Some(current) = weak.upgrade() {
+                return Ok(current);
+            }
+        }
+    }
+    let current = policy.clone();
+    let mut refreshed = sealed.clone();
+    refreshed.policy = Some(policy.clone());
+    policy
+        .extra_anchors
+        .extend(sealed.extra_anchors.iter().cloned());
+    refreshed.tls = Some(Arc::new(
+        build_client_config(&policy).map_err(BadAnchors::Identity)?,
+    ));
+    let refreshed = Arc::new(refreshed);
+    *cached = Some((current, Arc::downgrade(&refreshed)));
+    Ok(refreshed)
+}

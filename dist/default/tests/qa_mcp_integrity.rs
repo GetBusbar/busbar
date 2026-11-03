@@ -37,6 +37,7 @@
 
 mod common;
 
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -112,10 +113,40 @@ fn wire(key: &str) -> &'static str {
 struct Upstream {
     port: u16,
     served: Arc<Mutex<Served>>,
+    pin: String,
+    ca_pem: String,
 }
 
 impl Upstream {
     fn start() -> Upstream {
+        use rcgen::PublicKeyData as _;
+
+        // Authenticate the actual loopback peer as well as the tool content it serves.
+        // A fabricated manifest key authenticates neither and cannot carry an approval.
+        let ca_key = rcgen::KeyPair::generate().expect("a CA key");
+        let mut ca_params = rcgen::CertificateParams::new(Vec::new()).expect("CA parameters");
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca = ca_params.self_signed(&ca_key).expect("the CA certificate");
+        let issuer = rcgen::Issuer::new(ca_params, ca_key);
+        let key = rcgen::KeyPair::generate().expect("an upstream key");
+        let leaf = rcgen::CertificateParams::new(vec!["127.0.0.1".into()])
+            .expect("the upstream SAN")
+            .signed_by(&key, &issuer)
+            .expect("the upstream certificate");
+        let pin = busbar_contract::transport::trust::key_pin(&key.subject_public_key_info());
+        let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("TLS protocol versions")
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![leaf.der().clone()],
+            rustls_pki_types::PrivateKeyDer::try_from(key.serialize_der())
+                .expect("upstream key DER"),
+        )
+        .expect("upstream TLS configuration");
+        let tls = Arc::new(tls);
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind the upstream");
         let port = listener.local_addr().unwrap().port();
         let served = Arc::new(Mutex::new(Served {
@@ -128,14 +159,27 @@ impl Upstream {
         std::thread::spawn(move || {
             for conn in listener.incoming().flatten() {
                 let state = state.clone();
-                std::thread::spawn(move || serve_one(conn, &state));
+                let tls = Arc::clone(&tls);
+                std::thread::spawn(move || {
+                    conn.set_read_timeout(Some(Duration::from_secs(20)))
+                        .unwrap();
+                    conn.set_write_timeout(Some(Duration::from_secs(20)))
+                        .unwrap();
+                    let session = rustls::ServerConnection::new(tls).expect("a TLS session");
+                    serve_one(rustls::StreamOwned::new(session, conn), &state);
+                });
             }
         });
-        Upstream { port, served }
+        Upstream {
+            port,
+            served,
+            pin,
+            ca_pem: ca.pem(),
+        }
     }
 
     fn url(&self) -> String {
-        format!("http://127.0.0.1:{}{}", self.port, wire("door_path"))
+        format!("https://127.0.0.1:{}{}", self.port, wire("door_path"))
     }
 
     fn calls(&self) -> usize {
@@ -147,9 +191,40 @@ impl Upstream {
     }
 }
 
-use common::upstream::{read_request, respond};
+fn read_request(conn: &mut impl Read) -> Option<(String, Vec<u8>)> {
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        let mut byte = [0];
+        conn.read_exact(&mut byte).ok()?;
+        head.push(byte[0]);
+    }
+    let head = String::from_utf8(head).ok()?;
+    let len = head.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<usize>().ok())
+            .flatten()
+    })?;
+    let mut body = vec![0; len];
+    conn.read_exact(&mut body).ok()?;
+    Some((head, body))
+}
 
-fn serve_one(mut conn: TcpStream, state: &Mutex<Served>) {
+fn respond(conn: &mut impl Write, status: u16, body: &Value) {
+    let raw = body.to_string();
+    let _ = write!(
+        conn,
+        "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+         connection: close\r\n\r\n{raw}",
+        raw.len()
+    );
+    let _ = conn.flush();
+}
+
+fn serve_one(
+    mut conn: rustls::StreamOwned<rustls::ServerConnection, TcpStream>,
+    state: &Mutex<Served>,
+) {
     let Some((head, body)) = read_request(&mut conn) else {
         return;
     };
@@ -287,8 +362,10 @@ auth:
     allow_private: true
     verify_ttl: "0s"
     pin:
-      mechanism: pinned_pubkey
-      key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      mechanism: cert_spki
+      key: "{pin}"
+    tls:
+      ca_cert_pem: {ca_pem}
     tools_allow:
       {TOOL}:
         schema_hash: "{approved_digest}"
@@ -299,6 +376,8 @@ auth:
                 .replace("{data_port}", &data_port.to_string())
                 .replace("{admin_port}", &admin_port.to_string()),
             upstream = upstream.url(),
+            pin = upstream.pin,
+            ca_pem = serde_json::to_string(&upstream.ca_pem).expect("a YAML-compatible PEM string"),
         ),
     )
     .unwrap();

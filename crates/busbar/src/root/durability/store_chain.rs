@@ -89,9 +89,16 @@ fn fenced_mutation(
     calls: &dyn StoreCalls,
     lease: &HeldLease,
     mutation: Mutation,
+    mut initial_fence: Option<Predicate>,
 ) -> Result<(), String> {
     loop {
-        let Some(predicate) = lease.predicate(calls)? else {
+        // Consume an already-read exact fence only once. A conflict always re-reads the
+        // current lease; renewal never turns this into a stale-predicate retry loop.
+        let current = match initial_fence.take() {
+            Some(predicate) => Some(predicate),
+            None => lease.predicate(calls)?,
+        };
+        let Some(predicate) = current else {
             return Err("a journal fence was released while its writer was active".into());
         };
         let request = super::conditional::candidate(vec![predicate], vec![mutation.clone()]);
@@ -117,8 +124,29 @@ pub(super) fn put_record(
         super::audit_heads::Write::New(advance) => Some(advance),
     };
     let parts = parts_of(record)?;
-    let fenced = lease.predicate(calls)?.is_some();
-    if fenced {
+    let first_fence = lease.predicate(calls)?;
+    let fenced = first_fence.is_some();
+    // Preflight before cleanup. Oversized conditional frames retain the original split path.
+    let atomic_parts = audit.as_ref().and_then(|advance| {
+        let mutations: Vec<_> = parts
+            .iter()
+            .enumerate()
+            .map(|(part, value)| Mutation::Put {
+                schema: JOURNAL_SCHEMA.into(),
+                key: part_key(
+                    record.node,
+                    record.node_seq,
+                    u16::try_from(part).expect("parts_of already bounded the part count"),
+                )
+                .to_vec(),
+                value: value.as_slice().to_vec(),
+            })
+            .collect();
+        advance
+            .parts_fit(&mutations, first_fence.clone())
+            .then_some(mutations)
+    });
+    if let Some(first_fence) = first_fence {
         fenced_mutation(
             calls,
             lease,
@@ -127,7 +155,14 @@ pub(super) fn put_record(
                 prefix: part_key(record.node, record.node_seq, 0)[..16].to_vec(),
                 exact_key_length: 18,
             },
+            Some(first_fence),
         )?;
+    }
+    if let Some(mutations) = atomic_parts {
+        return audit
+            .take()
+            .expect("preflighted audit advance")
+            .commit_parts(calls, lease, mutations);
     }
     for (part, value) in parts.iter().enumerate() {
         let part = u16::try_from(part).map_err(|_| "too many parts".to_string())?;
@@ -147,6 +182,7 @@ pub(super) fn put_record(
                     key: key.to_vec(),
                     value: value.as_slice().to_vec(),
                 },
+                None,
             )?;
         } else {
             wait_for(calls.record_put(JOURNAL_SCHEMA, &key, value)).map_err(|f| f.to_string())?;
@@ -213,11 +249,11 @@ fn confirm_immutable_record(
     record: &Record,
     parts: &[RecordBytes],
 ) -> Result<(), String> {
-    if lease.recovery_predicates(calls, record.node)?.as_slice() != fences {
+    if !lease.recovery_fence_matches(calls, record.node, fences)? {
         return Err("the node fence changed before recovery readback".into());
     }
     confirm_record_parts(calls, record, parts)?;
-    if lease.recovery_predicates(calls, record.node)?.as_slice() != fences {
+    if !lease.recovery_fence_matches(calls, record.node, fences)? {
         return Err("the node fence changed during recovery readback".into());
     }
     Ok(())
@@ -431,9 +467,44 @@ fn bridge_covers(
     Ok(covered)
 }
 
+/// An exact record used by one read operation, bound to the final fresh node verification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct RecordSeal {
+    pub node: u64,
+    pub sequence: u64,
+    pub hash: [u8; 32],
+}
+impl RecordSeal {
+    pub(super) fn of(record: &JournalRecord) -> Self {
+        Self {
+            node: record.node,
+            sequence: record.node_seq,
+            hash: record.hash,
+        }
+    }
+}
+
 /// The same sealed hash/sequence authority as the ordinary journal reader, folded without a
 /// history Vec. Quarantine bridge lookup rescans only on an actual gap, retaining no bridge log.
 pub(super) fn verify_stored_chain(calls: &dyn StoreCalls, node: u64) -> Result<(), String> {
+    verify_stored_chain_with_seals(calls, node, &[])
+}
+
+/// Verify the entire node exactly as before, and bind every requested, sorted record seal to
+/// that fresh fold. The caller bounds the transcript; no historical payloads are retained.
+pub(super) fn verify_stored_chain_with_seals(
+    calls: &dyn StoreCalls,
+    node: u64,
+    seals: &[RecordSeal],
+) -> Result<(), String> {
+    if seals.iter().any(|seal| seal.node != node)
+        || seals
+            .windows(2)
+            .any(|pair| pair[0].sequence >= pair[1].sequence)
+    {
+        return Err("invalid same-read journal seal transcript".into());
+    }
+    let mut matched = 0;
     let mut previous: Option<ChainPoint> = None;
     fold_stored_records(calls, node, node.to_be_bytes().to_vec(), |record| {
         let record = checked_record(record)?;
@@ -451,9 +522,26 @@ pub(super) fn verify_stored_chain(calls: &dyn StoreCalls, node: u64) -> Result<(
                 return Err("the streamed Store journal has a broken hash link or sequence".into());
             }
         }
+        if let Some(seal) = seals.get(matched) {
+            if seal.sequence < current.sequence {
+                return Err("a same-read recovery record is missing from its verified node".into());
+            }
+            if seal.sequence == current.sequence {
+                if seal.hash != current.hash {
+                    return Err(
+                        "a same-read recovery record changed before node verification".into(),
+                    );
+                }
+                matched += 1;
+            }
+        }
         previous = Some(current);
         Ok(())
-    })
+    })?;
+    if matched != seals.len() {
+        return Err("a same-read recovery record is missing from its verified node".into());
+    }
+    Ok(())
 }
 
 fn warn_torn(node: u64, seq: Option<u64>) {
@@ -828,6 +916,19 @@ impl JournalLane {
             .recovery_predicates(self.lane.calls.as_ref(), node)
     }
 
+    pub(super) fn recovery_fence_matches(
+        &self,
+        node: u64,
+        before: &[Predicate],
+    ) -> Result<bool, String> {
+        if self.lane.lock().stopped {
+            return Err("the recovery journal writer has retired".into());
+        }
+        self.lane
+            .lease
+            .recovery_fence_matches(self.lane.calls.as_ref(), node, before)
+    }
+
     pub(super) fn confirm_recovery_record(&self, record: &Record) -> Result<(), String> {
         let predicates = self.recovery_predicates(record.node)?;
         confirm_immutable_record(
@@ -1052,6 +1153,55 @@ mod recovery_record_tests {
             .bind_recovery_identity(slots.calls().as_ref(), host, taken.id)
             .unwrap();
         (taken.id, lease)
+    }
+
+    #[test]
+    fn first_delete_fence_is_exact_and_a_conflict_rechecks_current_custody() {
+        use super::super::store_identity::{lease_row, set_lease_expiry};
+        use std::sync::atomic::AtomicUsize;
+
+        for release in [false, true] {
+            let slots = RecordSlots::new();
+            let host = format!("first-delete-fence-{release}");
+            let (node, lease) = identity(&slots, &host);
+            let first = lease.predicate(slots.calls().as_ref()).unwrap().unwrap();
+            let expected = first.expected.clone();
+            let probes = Arc::new(AtomicUsize::new(0));
+            let observed = Arc::clone(&probes);
+            let probe_slots = slots.clone();
+            slots.on_transaction(move |request| {
+                if !request.mutations.iter().any(|mutation| {
+                    matches!(mutation, Mutation::DeleteRange { schema, .. } if schema == JOURNAL_SCHEMA)
+                }) {
+                    return None;
+                }
+                if observed.fetch_add(1, Ordering::AcqRel) == 0 {
+                    assert_eq!(request.predicates[0].expected, expected);
+                    let calls = probe_slots.calls();
+                    let (_, expires) = lease_row(calls.as_ref(), &host).unwrap();
+                    set_lease_expiry(calls.as_ref(), &host, if release { 0 } else { expires + 1 });
+                } else {
+                    assert_ne!(request.predicates[0].expected, expected,
+                        "a conflicted first CAS must use the freshly read raw fence");
+                }
+                None
+            });
+            let record = Record::new(node, 17, vec![42; PART_BYTES + 1]);
+            let result = put_record(slots.calls().as_ref(), &lease, &record);
+            slots.on_transaction(|_| None);
+            if release {
+                assert!(
+                    result.is_err(),
+                    "released custody cannot delete or put any part"
+                );
+                assert_eq!(probes.load(Ordering::Acquire), 1);
+                assert_eq!(slots.rows_under(JOURNAL_SCHEMA), 0);
+            } else {
+                result.expect("normal renewal refreshes the exact conditional predicate");
+                assert_eq!(probes.load(Ordering::Acquire), 2);
+                confirm_record_bytes(slots.calls().as_ref(), &record).unwrap();
+            }
+        }
     }
 
     #[test]

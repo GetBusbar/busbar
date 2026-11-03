@@ -8,7 +8,7 @@
 //! well-known exposition.
 //!
 //! Driven through the real binary. The third party here is the scrape sink's own `cdylib` (found
-//! by what it carries — exactly the `metrics` stream — not by name), packed UNSIGNED under a
+//! by what it carries — exactly the `metrics` stream — not by name), signed under a configured
 //! third-party publisher and dropped into `plugins/`:
 //!
 //! 1. configured ALONE, subscribed to `metrics`: `/metrics` is not served — exactly 1.5.5, where no
@@ -63,7 +63,10 @@ fn free_port() -> u16 {
 }
 
 fn write_third_party(dir: &Path, lib: &[u8]) {
-    let bytes = common::plugins::pack_stated("export", THIRD_PARTY, lib, "acme");
+    let mut manifest =
+        common::plugins::manifest("export", THIRD_PARTY, common::plugins::FIXTURE_PUBLISHER);
+    common::plugins::state(&mut manifest, lib);
+    let bytes = common::plugins::signed(&common::plugins::key(0x5a), manifest, lib);
     std::fs::write(dir.join("plugins").join("tp.tar.gz"), bytes).unwrap();
 }
 
@@ -96,11 +99,7 @@ store: {{module: memory}}
 admin_require_mtls: false
 auth:
   chain: []
-plugins:
-  enabled: true
-  dir: '{plugins}'
-  trust:
-    allow_unsigned: true
+plugins: {plugins}
 export:
 {scrape}{tp}providers:
   mock:
@@ -110,7 +109,7 @@ models:
     provider: mock
 "#,
             admin_port = free_port(),
-            plugins = dir.join("plugins").display()
+            plugins = common::plugins::trusted_config_document(&dir.join("plugins"))
         ),
     )
     .unwrap();

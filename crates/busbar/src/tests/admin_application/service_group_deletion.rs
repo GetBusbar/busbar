@@ -101,6 +101,9 @@ async fn build_without_group_removes_leaf() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds the node book and rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -217,6 +220,9 @@ async fn build_without_group_conflict_when_still_a_parent() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds the node book and rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -330,6 +336,9 @@ async fn build_without_group_not_found() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds the node book and rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -446,6 +455,9 @@ async fn build_without_group_conflict_when_keys_still_bound() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds the node book and rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();

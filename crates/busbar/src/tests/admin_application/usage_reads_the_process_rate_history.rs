@@ -20,7 +20,7 @@ pub(super) fn complete_usage_fixture(
     document: &mut serde_json::Value,
     directory: &std::path::Path,
     model_providers: &[(&str, &str)],
-) {
+) -> std::collections::HashMap<String, busbar_kernel::config::ProviderDef> {
     const UNUSED_CLASSES: &[&str] = &[
         "search_units",
         "classifications",
@@ -72,6 +72,18 @@ pub(super) fn complete_usage_fixture(
                 .or_insert_with(|| serde_json::json!(0));
         }
     }
+    model_providers
+        .iter()
+        .map(|(_, provider)| {
+            (
+                (*provider).to_string(),
+                serde_json::from_value(serde_json::json!({
+                    "protocol": "openai", "base_url": "http://127.0.0.1:1",
+                }))
+                .expect("the usage provider's actual catalog definition parses"),
+            )
+        })
+        .collect()
 }
 
 #[tokio::test]
@@ -170,16 +182,16 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         )]),
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     });
-    complete_usage_fixture(&mut document, &directory, &[(LANE, PROVIDER)]);
+    let provider_defs = complete_usage_fixture(&mut document, &directory, &[(LANE, PROVIDER)]);
     let mut current_document = document.clone();
     current_document["rate_card"][LANE]["input_utok"] = serde_json::json!(1.0);
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the actual admin deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let config = busbar_kernel::config::resolve(&deploy, &provider_defs)
         .expect("the actual admin deployment resolves");
     let current_deploy = busbar_kernel::config::deploy_from_deserializer(current_document)
         .expect("the current lower-rate deployment parses");
-    let current_config = busbar_kernel::config::resolve(&current_deploy, &Default::default())
+    let current_config = busbar_kernel::config::resolve(&current_deploy, &provider_defs)
         .expect("the current lower-rate deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;

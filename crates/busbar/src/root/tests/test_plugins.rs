@@ -35,6 +35,42 @@ pub fn application_store_settings(directory: &Path) -> serde_json::Value {
     serde_json::json!({ "db_path": directory.join("application.sqlite") })
 }
 
+/// The explicit configuration document for the same fixture plugin policy used at boot.
+pub fn config_document(config: &busbar_kernel::config::PluginsCfg) -> serde_json::Value {
+    let publishers: Vec<_> = config
+        .trust
+        .publishers
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "name": p.name, "public_key": p.public_key
+            })
+        })
+        .collect();
+    let fetch: Vec<_> = config
+        .fetch
+        .iter()
+        .map(|entry| match entry {
+            busbar_kernel::config::PluginFetch::Url(value) => {
+                serde_json::json!({"url": value.url, "sha256": value.sha256})
+            }
+            busbar_kernel::config::PluginFetch::Github(value) => {
+                serde_json::json!({"github": value.github, "sha256": value.sha256})
+            }
+            busbar_kernel::config::PluginFetch::Env(value) => serde_json::json!({"env": value.env}),
+        })
+        .collect();
+    serde_json::json!({
+        "enabled": config.enabled, "dir": config.dir, "min_versions": config.min_versions,
+        "trust": {"publishers": publishers, "allow_unsigned": config.trust.allow_unsigned,
+            "allow_third_party": config.trust.allow_third_party}, "fetch": fetch
+    })
+}
+
+pub fn trusted_config_document(directory: &Path) -> serde_json::Value {
+    config_document(&trusted_config(directory))
+}
+
 /// Publisher explicitly configured by normal distribution fixtures.
 pub const FIXTURE_PUBLISHER: &str = "distribution-fixture";
 

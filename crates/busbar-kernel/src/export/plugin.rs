@@ -532,12 +532,27 @@ pub(crate) fn status() {
 }
 
 pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
-    route_decls_from(cfg, SINKS.get().map(Vec::as_slice).unwrap_or_default())
+    route_projection(cfg).0
 }
 
+pub(crate) fn route_projection(
+    cfg: &ExportCfg,
+) -> (Vec<RouteDecl>, std::collections::HashSet<String>) {
+    project_routes(cfg, SINKS.get().map(Vec::as_slice).unwrap_or_default())
+}
+
+#[cfg(test)]
 fn route_decls_from(cfg: &ExportCfg, boot_sinks: &[PluginSink]) -> Vec<RouteDecl> {
+    project_routes(cfg, boot_sinks).0
+}
+
+fn project_routes(
+    cfg: &ExportCfg,
+    boot_sinks: &[PluginSink],
+) -> (Vec<RouteDecl>, std::collections::HashSet<String>) {
     let (scrape, rest): (Vec<_>, Vec<_>) = cfg.plugins.iter().partition(|p| p.scrape);
     let mut out = Vec::new();
+    let mut withheld = std::collections::HashSet::new();
     for p in scrape.into_iter().chain(rest) {
         let owner = if p.scrape {
             p.def.module.trim().to_string()
@@ -581,6 +596,14 @@ fn route_decls_from(cfg: &ExportCfg, boot_sinks: &[PluginSink]) -> Vec<RouteDecl
             }
             None => continue,
         };
+        // Record only a wholly withheld, opened public surface. Mixed or empty
+        // declarations cannot excuse an otherwise missing SERVE route.
+        let wholly_withheld = opened.is_some()
+            && !p.scrape
+            && !routes.is_empty()
+            && routes.iter().all(|route| {
+                public_routes.contains(&route.path) && !persistent_routes.contains(&route.path)
+            });
         for route in routes {
             if persistent_routes.contains(&route.path) {
                 continue;
@@ -605,6 +628,9 @@ fn route_decls_from(cfg: &ExportCfg, boot_sinks: &[PluginSink]) -> Vec<RouteDecl
                 dispatch: dispatch.clone(),
             });
         }
+        if wholly_withheld {
+            withheld.insert(p.name.clone());
+        }
     }
     if let Some(s) = boot_sinks.iter().find(|s| s.scrape) {
         let served: Arc<dyn PluginHttpDispatch> = Arc::new(Served(s.sink.clone()));
@@ -626,7 +652,7 @@ fn route_decls_from(cfg: &ExportCfg, boot_sinks: &[PluginSink]) -> Vec<RouteDecl
                 }),
         );
     }
-    out
+    (out, withheld)
 }
 
 struct Unopened;

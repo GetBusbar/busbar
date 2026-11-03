@@ -1065,11 +1065,27 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
         &rules,
     )
     .expect("the product builds the actual admin application");
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        limits.stage_boot();
+        crate::root::kernel::ROOT_CARD.keep_in_store(
+            built
+                .governance
+                .as_ref()
+                .expect("the application has its configured governance Store")
+                .store_calls()
+                .expect("the configured Store exposes its actual rate-history calls"),
+            busbar_kernel::door::op_id().counter(),
+        );
+        crate::root::kernel::ROOT_CARD
+            .boot_in_store(None)
+            .expect("the actual configured Store boots its initial rate history");
+    }
     limits.keep().expect("the real application limits commit");
     if let Some(rotate) = rotate {
         rotate();
     }
     let _app = std::sync::Arc::new(built);
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&_app);
     let linked = |entry: &busbar_kernel::audit_ring::AuditEntry| {
         let ring =
             busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(0, usize::MAX, None, None);
@@ -1481,16 +1497,31 @@ fn answer_over_seeded_ledger(request: AdminRequest) -> AdminAnswer {
 }
 
 #[cfg(feature = "root-admin")]
+fn one_lane_rates() -> std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg> {
+    crate::dist_root_install::install();
+    let mut entry = busbar_kernel::config::RateEntryCfg {
+        input_utok: 2.5,
+        ..Default::default()
+    };
+    let plane = busbar_kernel::plane_driver::registry::plane_decl_for(
+        busbar_kernel::plane_driver::dispatch::fallback_key(),
+    )
+    .expect("the actual fallback plane declares its billable classes");
+    let zero = serde_json::from_value(serde_json::json!(0)).expect("an exact free unit rate");
+    for class in plane.billable_classes {
+        if !busbar_contract::records::RESERVED_UNITS.contains(&class.class)
+            && !plane.fee_units.contains(&class.class)
+        {
+            entry.units.insert(class.class.to_owned(), zero);
+        }
+    }
+    std::collections::BTreeMap::from([("m".to_string(), entry)])
+}
+
+#[cfg(feature = "root-admin")]
 fn one_lane_card() -> busbar_kernel::cost::CostModel {
-    let rates = std::collections::BTreeMap::from([(
-        "m".to_string(),
-        busbar_kernel::config::RateEntryCfg {
-            input_utok: 2.5,
-            ..Default::default()
-        },
-    )]);
     busbar_kernel::cost::CostModel::resolve_parts(
-        Some(&rates),
+        Some(&one_lane_rates()),
         0,
         &std::collections::BTreeMap::new(),
     )
@@ -1531,14 +1562,28 @@ fn answer_over_counts(
         settings.is_object(),
         "the actual Store settings are an object"
     );
+    let dialects: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/plane_node_dialects.json"
+    ))
+    .expect("the actual model dialects are recorded");
+    let dialect = dialects["body_model"]
+        .as_object()
+        .and_then(|rows| rows.keys().next())
+        .expect("the distribution links a model dialect");
+    let providers = busbar_kernel::config::providers::catalog_from_str(&format!(
+        "wire:\n  protocol: {dialect}\n  base_url: http://127.0.0.1:9\n"
+    ))
+    .expect("the actual wire provider has its catalog declaration");
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {}, "models": {},
+        "providers": {"wire": {"protocol": dialect, "base_url": "http://127.0.0.1:9", "api_key": "none"}},
+        "models": {"m": {"provider": "wire"}},
+        "rate_card": one_lane_rates(),
         "auth": {"chain": [], "admin_auth": []},
         "store": {"module": module, "settings": settings},
         "advanced": {"allow_destinations": ["127.0.0.1"]},
     }))
     .expect("the real admin deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let config = busbar_kernel::config::resolve(&deploy, &providers)
         .expect("the real admin deployment resolves");
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
@@ -1553,6 +1598,21 @@ fn answer_over_counts(
         &rules,
     )
     .expect("the product builds the actual admin application");
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        limits.stage_boot();
+        crate::root::kernel::ROOT_CARD.keep_in_store(
+            built
+                .governance
+                .as_ref()
+                .expect("the application has its configured governance Store")
+                .store_calls()
+                .expect("the configured Store exposes its actual rate-history calls"),
+            busbar_kernel::door::op_id().counter(),
+        );
+        crate::root::kernel::ROOT_CARD
+            .boot_in_store(None)
+            .expect("the actual configured Store boots its initial rate history");
+    }
     limits.keep().expect("the real application limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1757,6 +1817,21 @@ fn real_admin_dispatch() -> RouterDispatch {
         &rules,
     )
     .expect("the product builds the actual admin application");
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        limits.stage_boot();
+        crate::root::kernel::ROOT_CARD.keep_in_store(
+            built
+                .governance
+                .as_ref()
+                .expect("the application has its configured governance Store")
+                .store_calls()
+                .expect("the configured Store exposes its actual rate-history calls"),
+            busbar_kernel::door::op_id().counter(),
+        );
+        crate::root::kernel::ROOT_CARD
+            .boot_in_store(None)
+            .expect("the actual configured Store boots its initial rate history");
+    }
     limits.keep().expect("the real application limits commit");
     if let Some(rotate) = rotate {
         rotate();

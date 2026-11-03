@@ -178,3 +178,242 @@ fn retiring_a_member_waits_for_its_read_and_then_its_close_before_forgetting_its
 fn retiring_a_member_waits_for_its_spawn_and_then_its_close_before_forgetting_its_key() {
     worker().block_on(retirement_waits_for_crossing_and_close(true));
 }
+
+fn handoff_declare(
+    c: &Connector,
+    predecessor: InstanceId,
+    owner: InstanceId,
+    spec: &ReadNeed,
+    name: &str,
+    program: Program,
+) {
+    c.declare_member_programs_from(
+        predecessor,
+        owner,
+        NEED,
+        spec,
+        &[(name.to_owned(), program)],
+    )
+    .expect("the candidate declares its own program need");
+}
+
+async fn handoff_read(
+    c: &Connector,
+    owner: InstanceId,
+    id: ConnId,
+    buf: &mut [u8],
+) -> busbar_contract::conn::Piece {
+    handoff_read_before(
+        c,
+        owner,
+        id,
+        buf,
+        std::time::Instant::now() + Duration::from_secs(10),
+    )
+    .await
+}
+
+async fn handoff_read_before(
+    c: &Connector,
+    owner: InstanceId,
+    id: ConnId,
+    buf: &mut [u8],
+    deadline: std::time::Instant,
+) -> busbar_contract::conn::Piece {
+    loop {
+        match c.read(owner, id, 7, buf) {
+            Err(ConnError::Pending) if std::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            answer => return answer.expect("the actual child's bounded read succeeds"),
+        }
+    }
+}
+
+async fn handoff_open(c: &Connector, owner: InstanceId, name: &str) -> ConnId {
+    let id = c
+        .open(
+            owner,
+            NEED,
+            &OpenDesc {
+                target: name,
+                ..OpenDesc::default()
+            },
+        )
+        .unwrap();
+    let mut head = [0_u8; 512];
+    assert_eq!(
+        handoff_read(c, owner, id, &mut head).await.kind,
+        PieceKind::Fields
+    );
+    id
+}
+
+async fn handoff_pid(c: &Connector, owner: InstanceId, id: ConnId, text: &str) -> String {
+    handoff_pid_after_broadcasts(c, owner, id, text, &[]).await
+}
+
+async fn handoff_pid_after_broadcasts(
+    c: &Connector,
+    owner: InstanceId,
+    id: ConnId,
+    text: &str,
+    pending: &[(&str, &str)],
+) -> String {
+    let message = format!("{text}\n");
+    assert_eq!(
+        c.write(owner, id, message.as_bytes(), false, false),
+        Ok(message.len())
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut held = Vec::new();
+    let mut seen = 0;
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "correlated child reply deadline"
+        );
+        let mut buf = [0_u8; 256];
+        let piece = handoff_read_before(c, owner, id, &mut buf, deadline).await;
+        assert_eq!(piece.kind, PieceKind::Body);
+        held.extend_from_slice(&buf[..piece.len]);
+        while let Some(at) = held.iter().position(|b| *b == b'\n') {
+            let bytes: Vec<u8> = held.drain(..=at).collect();
+            let line = std::str::from_utf8(&bytes[..at]).unwrap();
+            let (pid, echoed) = line.split_once(' ').unwrap();
+            assert!(pid.parse::<u32>().is_ok_and(|pid| pid > 0));
+            if let Some((expected_pid, expected_text)) = pending.get(seen) {
+                assert_eq!(
+                    (pid, echoed),
+                    (*expected_pid, *expected_text),
+                    "exact previously emitted broadcast, in order"
+                );
+                seen += 1;
+            } else {
+                assert_eq!(echoed, text);
+                assert!(held.is_empty(), "no unrequested trailing child data");
+                return pid.to_owned();
+            }
+        }
+    }
+}
+
+#[test]
+fn program_custody_survives_two_owner_refreshes_candidate_rollback_and_old_owner_forget() {
+    worker().block_on(async {
+        let c = connector();
+        let spec = need(EGRESS_OPERATOR_INFRASTRUCTURE);
+        let program = sh(ECHO_PID, &[]);
+        declare(&c, &[("m", program.clone())]).unwrap();
+        let old = handoff_open(&c, OWNER, "m").await;
+        let pid = handoff_pid(&c, OWNER, old, "initial").await;
+        let second = InstanceId(2);
+        handoff_declare(&c, OWNER, second, &spec, "m", program.clone());
+        let middle = handoff_open(&c, second, "m").await;
+        assert_eq!(handoff_pid(&c, second, middle, "second").await, pid);
+        assert_eq!(
+            handoff_pid_after_broadcasts(&c, OWNER, old, "retained-old", &[(&pid, "second")]).await,
+            pid
+        );
+        let third = InstanceId(3);
+        handoff_declare(&c, second, third, &spec, "m", program.clone());
+        let current = handoff_open(&c, third, "m").await;
+        assert_eq!(handoff_pid(&c, third, current, "third").await, pid);
+        let rejected = InstanceId(4);
+        handoff_declare(&c, third, rejected, &spec, "m", program);
+        c.forget(rejected); // The candidate never publishes.
+        assert_eq!(handoff_pid(&c, third, current, "after-rollback").await, pid);
+        c.forget(second);
+        c.forget(OWNER);
+        assert_eq!(
+            handoff_pid(&c, third, current, "after-old-forget").await,
+            pid
+        );
+        c.forget(third);
+        assert!(
+            until_gone(&pid).await,
+            "the final declaring owner retires its actual child"
+        );
+    });
+}
+
+#[test]
+fn program_handoff_requires_the_same_need_member_and_program_and_is_not_global() {
+    worker().block_on(async {
+        let c = connector();
+        let spec = need(EGRESS_OPERATOR_INFRASTRUCTURE);
+        let program = sh(ECHO_PID, &[]);
+        declare(&c, &[("m", program.clone())]).unwrap();
+        let old = handoff_open(&c, OWNER, "m").await;
+        let original_pid = handoff_pid(&c, OWNER, old, "original").await;
+        let mut changed_need = spec.clone();
+        changed_need.timeout_ms = 1234;
+        let changes = [
+            (InstanceId(2), changed_need, "m", program.clone()),
+            (InstanceId(3), spec.clone(), "renamed", program.clone()),
+            (
+                InstanceId(4),
+                spec.clone(),
+                "m",
+                sh(ECHO_PID, &[("CHANGED", "1")]),
+            ),
+        ];
+        let mut separate = Vec::new();
+        for (owner, changed, name, program) in changes {
+            handoff_declare(&c, OWNER, owner, &changed, name, program);
+            let id = handoff_open(&c, owner, name).await;
+            let pid = handoff_pid(&c, owner, id, "separate").await;
+            assert_ne!(
+                pid, original_pid,
+                "a changed declaration starts its own actual child"
+            );
+            separate.push((owner, pid));
+        }
+        let unrelated = InstanceId(5);
+        c.declare_member_programs(unrelated, NEED, &spec, &[("m".to_owned(), program)])
+            .unwrap();
+        let id = handoff_open(&c, unrelated, "m").await;
+        let unrelated_pid = handoff_pid(&c, unrelated, id, "unrelated").await;
+        assert_ne!(
+            unrelated_pid, original_pid,
+            "normal declarations never search other owners"
+        );
+        separate.push((unrelated, unrelated_pid));
+        // Removing the original member retires only its declaration, even while its lease exists.
+        c.declare_member_programs(OWNER, NEED, &spec, &[]).unwrap();
+        assert!(
+            !gone(&original_pid),
+            "a retained lease keeps its removed child alive"
+        );
+        assert_eq!(
+            handoff_pid(&c, OWNER, old, "retained-after-removal").await,
+            original_pid
+        );
+        assert!(
+            c.open(
+                OWNER,
+                NEED,
+                &OpenDesc {
+                    target: "m",
+                    ..OpenDesc::default()
+                }
+            )
+            .is_err(),
+            "removal admits no new member lease"
+        );
+        c.close(OWNER, old).unwrap();
+        assert!(
+            until_gone(&original_pid).await,
+            "the removed child's final lease closes before retirement"
+        );
+        for (owner, pid) in separate {
+            assert!(
+                !gone(&pid),
+                "removing another declaration leaves this child live"
+            );
+            c.forget(owner);
+            assert!(until_gone(&pid).await, "forget retires each distinct child");
+        }
+        c.forget(OWNER);
+    });
+}

@@ -119,14 +119,14 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
-    super::admin_usage_history::complete_usage_fixture(
+    let provider_defs = super::admin_usage_history::complete_usage_fixture(
         &mut document,
         &directory,
         &[(LANE, PROVIDER)],
     );
     let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
         .expect("the product deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let config = busbar_kernel::config::resolve(&deploy, &provider_defs)
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -161,14 +161,14 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
         },
     )]))
     .unwrap();
-    super::admin_usage_history::complete_usage_fixture(
+    let provider_defs = super::admin_usage_history::complete_usage_fixture(
         &mut document,
         &directory,
         &[(LANE, PROVIDER)],
     );
     let current = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the current deployment parses");
-    let current = busbar_kernel::config::resolve(&current, &Default::default())
+    let current = busbar_kernel::config::resolve(&current, &provider_defs)
         .expect("the current deployment resolves");
     let (next, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         current,

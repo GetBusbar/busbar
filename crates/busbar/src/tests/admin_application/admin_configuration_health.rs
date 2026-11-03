@@ -94,11 +94,15 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
+    let plugin_document = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     let mut document = serde_json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
+        "plugins": plugin_document,
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
@@ -193,6 +197,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         "config": {
             "listen": "127.0.0.1:0",
             "store": {"module": module, "settings": settings},
+            "plugins": plugin_document,
             "providers": {"test-provider": {"api_key": {"file": upstream_key}}},
             "models": {
                 "m0": {"provider": "test-provider", "max_concurrent": 4},
@@ -226,7 +231,8 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         .header("if-match", "\"0\"")
         .body(
             serde_json::json!({
-                "config": {"listen": "127.0.0.1:0", "store": {"module": module, "settings": settings}, "providers": {}, "models": {}, "pools": {}},
+                "config": {"listen": "127.0.0.1:0", "store": {"module": module, "settings": settings},
+            "plugins": plugin_document, "providers": {}, "models": {}, "pools": {}},
             })
             .to_string(),
         )
@@ -239,7 +245,8 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         .header("if-match", "\"not-a-version\"")
         .body(
             serde_json::json!({
-                "config": {"listen": "127.0.0.1:0", "store": {"module": module, "settings": settings}, "providers": {}, "models": {}, "pools": {}},
+                "config": {"listen": "127.0.0.1:0", "store": {"module": module, "settings": settings},
+            "plugins": plugin_document, "providers": {}, "models": {}, "pools": {}},
             })
             .to_string(),
         )
@@ -340,11 +347,15 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
+    let plugin_document = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     let mut document = serde_json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
+        "plugins": plugin_document,
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });

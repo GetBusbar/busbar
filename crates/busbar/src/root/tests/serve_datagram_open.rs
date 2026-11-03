@@ -152,6 +152,8 @@ async fn deployment(instance: &'static str) -> Deployment {
         std::process::id()
     ));
     std::fs::write(&provider_key, b"test-provider-key").unwrap();
+    let signing_file = provider_key.with_extension("signing");
+    std::fs::write(&signing_file, [9u8; 32]).expect("the actual token signing secret");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let provider_addr = listener.local_addr().unwrap();
     let peer = tokio::spawn(async move {
@@ -228,7 +230,7 @@ async fn deployment(instance: &'static str) -> Deployment {
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
-        "auth": {"chain": ["keys"], "admin_auth": []},
+        "auth": {"chain": ["keys"], "admin_auth": [], "signing_key": {"file": signing_file}},
         "store": {"module": store.name(), "settings": settings},
     }))
     .expect("the ordinary governed deployment parses");
@@ -252,6 +254,7 @@ async fn deployment(instance: &'static str) -> Deployment {
         false,
     )
     .expect("the production builder owns the supplied actual Store");
+    std::fs::remove_file(&signing_file).expect("the signing secret was resolved at boot");
     let gov = Arc::new(
         GovState::new_with_signer(
             records.clone(),
@@ -310,8 +313,7 @@ async fn deployment(instance: &'static str) -> Deployment {
         std::collections::HashMap<String, busbar_contract::config::ModelCfg>,
     >(models_yaml)
     .unwrap();
-    let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
-        Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
+    let secrets: Arc<dyn busbar_contract::secret::SecretResolve> = app.secret_resolver.clone();
     let auths = OutboundAuths::new(
         dispatcher.clone(),
         crate::LINKED.auths,

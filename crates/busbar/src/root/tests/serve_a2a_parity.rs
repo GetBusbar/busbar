@@ -795,11 +795,18 @@ fn raw_relay_and_lifecycle(
         Some(Outcome::Ready)
     );
     let _ = driven.drain();
+    // Retire the background driver before direct lifecycle calls. The fresh tick is queued
+    // after retirement on the same worker, so REFRESH cannot race a later driver crossing.
+    dispatcher.recycle(driver);
+    let lifecycle = dispatcher
+        .mint(0)
+        .expect("the actual lifecycle tick ticket");
     let tick = dispatcher
-        .tick(plane, driver, 1000)
+        .tick(plane, lifecycle, 1000)
         .wait(Duration::from_secs(20))
         .expect("the real lifecycle tick settles");
     assert_eq!(tick.outcome, Outcome::Ready);
+    dispatcher.recycle(lifecycle);
     let mut cancel: Frame<PlaneCancelIn, PlaneCancelOut> = Frame::new(blank_in(), blank_out());
     assert_eq!(
         plane.call(life::slot::CANCEL, &mut cancel).outcome,
@@ -855,7 +862,6 @@ fn raw_relay_and_lifecycle(
         Outcome::Fault
     );
     // The after-CLOSE payload is deliberately never inspected.
-    dispatcher.recycle(driver);
     auxiliary
 }
 

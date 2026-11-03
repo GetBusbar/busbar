@@ -12,12 +12,14 @@ const AUDIENCE: &str = "api://admin-settings-audit";
 
 fn free_open_units() -> serde_json::Value {
     crate::dist_root_install::install();
-    busbar_kernel::plane_driver::registry::plane_decls()
+    let plane = busbar_kernel::plane_driver::registry::plane_decls()
         .iter()
         .find(|decl| decl.fallback)
-        .expect("the actual linked planes carry the fallback plane")
+        .expect("the actual linked planes carry the fallback plane");
+    plane
         .billable_classes
         .iter()
+        .filter(|c| !plane.fee_units.contains(&c.class))
         .map(|c| c.class)
         .filter(|c| !busbar_contract::records::RESERVED_UNITS.contains(c))
         .map(|c| (c.to_string(), serde_json::json!(0)))
@@ -134,6 +136,9 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -214,7 +219,10 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     if let Some(rotate) = rotate {
         rotate();
     }
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::boot::hydrate_all(&app)
+        .expect("the actual audit Store hydrates before mutations");
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -281,8 +289,8 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     );
 
     {
-        let config_path = dir.join("config.yaml");
-        let providers_path = dir.join("providers.yaml");
+        let config_path = dir.join("config.json");
+        let providers_path = dir.join("providers.json");
         let mut loaded = busbar_kernel::load_config_from_disk_with_store(
             &config_path,
             Some(&providers_path),
@@ -294,7 +302,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
         .expect("disk reload");
         assert_eq!(
             loaded.deploy.per_request_fee, 0,
-            "base config.yaml has no fee (the override lives only in the overlay)"
+            "base config.json has no fee (the override lives only in the overlay)"
         );
         if let Some(doc) = loaded.overlay_doc.as_ref() {
             busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
@@ -426,6 +434,9 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -672,6 +683,9 @@ async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -886,6 +900,9 @@ async fn test_admin_v1_config_settings_put_with_persist_true_still_persists_when
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -1084,6 +1101,9 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });

@@ -177,6 +177,9 @@ async fn install_answers_the_admissions_refusals_in_their_classes() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -290,6 +293,9 @@ async fn install_catalog_remove_roundtrip() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -306,9 +312,8 @@ async fn install_catalog_remove_roundtrip() {
         .unwrap();
 
     let upload_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN").expect(
-            "BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN names the actual distinct SQLite Store cdylib",
-        ),
+        std::env::var_os("BUSBAR_TEST_MYSQL_CDYLIB")
+            .expect("BUSBAR_TEST_MYSQL_CDYLIB names the actual distinct MySQL Store cdylib"),
     );
     let upload_statement = busbar_plugin_loader::dispatch::rendering_of_library(&upload_path)
         .expect("the actual upload Store statement reads")
@@ -454,6 +459,9 @@ async fn remove_filesystem_failure_is_internal_error() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -578,6 +586,9 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -624,9 +635,8 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
         "five unchanged GETs cost exactly one actual inventory scan"
     );
     let upload_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN").expect(
-            "BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN names the actual distinct SQLite Store cdylib",
-        ),
+        std::env::var_os("BUSBAR_TEST_MYSQL_CDYLIB")
+            .expect("BUSBAR_TEST_MYSQL_CDYLIB names the actual distinct MySQL Store cdylib"),
     );
     let upload_statement = busbar_plugin_loader::dispatch::rendering_of_library(&upload_path)
         .expect("the actual upload Store statement reads")
@@ -748,6 +758,9 @@ async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -895,6 +908,9 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1024,6 +1040,9 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1148,6 +1167,9 @@ async fn list_plugins_store_scan_does_not_park_the_reactor() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1286,6 +1308,9 @@ async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1442,6 +1467,9 @@ async fn the_store_catalog_heads_with_the_linked_store_rows() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1559,6 +1587,9 @@ async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1576,7 +1607,8 @@ async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
         .unwrap();
 
     let mut candidate = document;
-    candidate["plugins"] = serde_json::json!({"enabled":true, "dir":evil_dir});
+    candidate["plugins"] = fixture_config_document(&directory);
+    candidate["plugins"]["dir"] = serde_json::json!(evil_dir);
     let response = client
         .post(format!("http://{addr}/api/v1/admin/config/validate"))
         .header("x-admin-token", "admintok")
@@ -1665,6 +1697,9 @@ async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor(
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1813,6 +1848,9 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1905,10 +1943,13 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
         "filename validation refuses a snapshot without a production admission"
     );
     let error: serde_json::Value = response.json().await.unwrap();
-    assert!(error["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("no plugin trust policy is installed"));
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no plugin trust policy is installed"),
+        "the missing admission policy is named: {error}"
+    );
     other_server.abort();
 
     server.abort();
@@ -1984,6 +2025,9 @@ async fn rollback_reads_the_target_and_merges_pins() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -2008,10 +2052,6 @@ async fn rollback_reads_the_target_and_merges_pins() {
         .expect("actual governance")
         .store_calls()
         .expect("actual Store calls");
-    crate::root::kernel::ROOT_CARD.keep_in_store(calls.clone(), 91);
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
-        .expect("the actual rate history boots in its Store");
     let overlay =
         busbar_kernel::config::overlay::OverlayStore::new(calls).expect("actual Store overlay");
     let prior =
@@ -2023,7 +2063,19 @@ async fn rollback_reads_the_target_and_merges_pins() {
     manifest.publisher = "acme".into();
     manifest.version = module_version.clone();
     let target = plugins::signed(&publisher_key, manifest.clone(), &library);
-    std::fs::write(directory.join("old.tar.gz"), target).unwrap();
+    std::fs::write(directory.join("old.tar.gz"), &target).unwrap();
+    // The actual bootstrap Store may be reopened only under this exact operator base pin.
+    document["plugins"]["fetch"] = serde_json::json!([{
+        "url": "https://distribution-fixtures.example/old.tar.gz",
+        "sha256": busbar_contract::redacted::sha256_hex(&target),
+    }]);
+    app.plugins_cfg.fetch = serde_json::from_value(document["plugins"]["fetch"].clone())
+        .expect("the exact rollback archive pin parses");
+    std::fs::write(
+        app.config_path.as_ref().expect("the operator base config"),
+        serde_yaml::to_string(&document).unwrap(),
+    )
+    .unwrap();
     let rejected = plugins::seal(manifest, &library);
     std::fs::write(directory.join("unsigned.tar.gz"), rejected).unwrap();
     let router = busbar_kernel::build_router(Arc::new(app));
@@ -2159,6 +2211,9 @@ async fn install_filesystem_failures_are_internal_errors() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -2178,9 +2233,8 @@ async fn install_filesystem_failures_are_internal_errors() {
         .unwrap();
 
     let upload_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN").expect(
-            "BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN names the actual distinct SQLite Store cdylib",
-        ),
+        std::env::var_os("BUSBAR_TEST_MYSQL_CDYLIB")
+            .expect("BUSBAR_TEST_MYSQL_CDYLIB names the actual distinct MySQL Store cdylib"),
     );
     let upload_statement = busbar_plugin_loader::dispatch::rendering_of_library(&upload_path)
         .expect("the actual upload Store statement reads")

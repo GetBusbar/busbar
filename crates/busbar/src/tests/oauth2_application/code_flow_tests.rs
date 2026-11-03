@@ -23,7 +23,7 @@ async fn serve_with_scopes(scopes: &[&str]) -> (String, Arc<busbar_kernel::state
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
-    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let origin = format!("https://{}", listener.local_addr().unwrap());
     let config = OauthAsCfg {
         issuer: origin.clone(),
         default_grant: scopes.iter().map(|scope| (*scope).into()).collect(),
@@ -32,7 +32,7 @@ async fn serve_with_scopes(scopes: &[&str]) -> (String, Arc<busbar_kernel::state
     let app = application_with_resource_auth(Some(&config), None, true);
     let router = busbar_kernel::build_router(Arc::clone(&app));
     tokio::spawn(async move {
-        axum::serve(listener, router).await.expect("serve");
+        super::serve_tls(listener, router).await;
     });
     (origin, app)
 }
@@ -42,7 +42,7 @@ async fn register_client(origin: &str) -> String {
 }
 
 async fn register_client_with_scope(origin: &str, scope: &str) -> String {
-    let response = reqwest::Client::new().post(format!("{origin}/register")).json(&serde_json::json!({
+    let response = super::client().post(format!("{origin}/register")).json(&serde_json::json!({
         "redirect_uris":[REDIRECT_URI],"token_endpoint_auth_method":"none",
         "response_types":["code"],"grant_types":["authorization_code","refresh_token"],"scope":scope,"client_name":"Flow Test",
     })).send().await.expect("register actual public client");
@@ -90,12 +90,12 @@ pub(super) async fn verified_claims(
 async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
     let (origin, app) = serve().await;
     let client_id = register_client(&origin).await;
-    let client = reqwest::Client::builder()
+    let client = super::client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("client");
 
-    let mut jar = Jar::new(false);
+    let mut jar = Jar::new(true);
 
     let authorize = format!(
         "{origin}/authorize?response_type=code&client_id={client_id}\
@@ -219,11 +219,11 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
 }
 
 async fn mint_access_token(origin: &str, client_id: &str) -> String {
-    let client = reqwest::Client::builder()
+    let client = super::client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("client");
-    let mut jar = Jar::new(false);
+    let mut jar = Jar::new(true);
 
     let authorize = format!(
         "{origin}/authorize?response_type=code&client_id={}\
@@ -291,7 +291,7 @@ async fn mint_access_token(origin: &str, client_id: &str) -> String {
 async fn dynamic_client_registration_admits_a_client_end_to_end() {
     let (origin, app) = serve().await;
 
-    let resp = reqwest::Client::new()
+    let resp = super::client()
         .post(format!("{origin}/register"))
         .json(&serde_json::json!({
             "redirect_uris": [REDIRECT_URI],
@@ -335,11 +335,11 @@ async fn shown_and_granted(
     client_id: &str,
     scope_param: &str,
 ) -> (String, String) {
-    let client = reqwest::Client::builder()
+    let client = super::client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("client");
-    let mut jar = Jar::new(false);
+    let mut jar = Jar::new(true);
     let authorize = format!(
         "{origin}/authorize?response_type=code&client_id={}\
          &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1{scope_param}\

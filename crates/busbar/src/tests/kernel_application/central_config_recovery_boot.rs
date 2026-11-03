@@ -150,6 +150,9 @@ fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stale_app_
         false,
     )
     .unwrap();
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds the boot rate history before activation");
     limits.keep().expect("the actual limits commit");
     if let Some(rotate) = rotate {
         rotate();

@@ -52,14 +52,23 @@ fn data_router(doors: Vec<PlaneRouteSpec>) -> Router {
         settings.is_object(),
         "the actual store settings are an object"
     );
-    let deploy = kernel::config::deploy_from_deserializer(serde_json::json!({
+    let operator = kernel::config::operator_provider();
+    let operator_token = directory.join("operator-token");
+    std::fs::write(&operator_token, "router-door-operator")
+        .expect("the configured operator credential is available at boot");
+    let mut document = serde_json::json!({
         "providers": {},
         "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
+        "auth": { "chain": [], "admin_auth": [operator] },
+        "identity-providers": {},
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
-    .expect("the product deployment parses");
+    });
+    document["identity-providers"][operator] = serde_json::json!({
+        "module": operator, "token": {"file": operator_token},
+    });
+    let deploy =
+        kernel::config::deploy_from_deserializer(document).expect("the product deployment parses");
     let config = kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
@@ -76,6 +85,20 @@ fn data_router(doors: Vec<PlaneRouteSpec>) -> Router {
         &rules,
     )
     .expect("the actual product builds the host deployment");
+    std::fs::remove_file(&operator_token)
+        .expect("the actual operator module resolved its credential during boot");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the application has its configured governance Store")
+            .store_calls()
+            .expect("the configured product Store exposes actual calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the configured product Store boots its rate-card history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();

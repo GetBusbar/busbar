@@ -1573,6 +1573,10 @@ async fn a_duplex_session_answers_its_caller_and_cleans_up_once() {
             0,
             "{way:?}: nothing to cancel"
         );
+        assert!(
+            r.book.bills().is_empty(),
+            "{way:?}: a completed session is not cancelled"
+        );
     }
 }
 
@@ -1744,16 +1748,32 @@ async fn a_dropped_session_cleans_up_exactly_once() {
         };
         assert_eq!(ended(), 1, "{way:?}: the dropped session's one cleanup");
         assert_eq!(r.driver.buried(), 2, "{way:?}: one ticket per side, buried");
-        r.driver.sweep();
+        // Sweeping polls the real worker's asynchronous CANCEL answers; a first poll may only
+        // enqueue them. Observe both settled answers before checking the exactly-once counts.
+        eventually("both session ticket cancellations settle", || {
+            r.driver.sweep();
+            r.driver.buried() == 0
+        })
+        .await;
         assert_eq!(r.driver.buried(), 0, "{way:?}");
         assert_eq!(
             r.stats()[cases::stat::CANCELS],
             2,
             "{way:?}: each side cancelled once"
         );
+        assert_eq!(
+            r.book.bills().len(),
+            1,
+            "{way:?}: one logical cancellation bill"
+        );
         r.driver.sweep();
         assert_eq!(ended(), 1, "{way:?}: and never again");
         assert_eq!(r.stats()[cases::stat::CANCELS], 2, "{way:?}");
+        assert_eq!(
+            r.book.bills().len(),
+            1,
+            "{way:?}: the bill is never posted twice"
+        );
     }
 }
 

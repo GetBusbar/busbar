@@ -1882,7 +1882,16 @@ async fn a_final_body_emit_remains_alive_through_graceful_drain() {
     .unwrap();
     let (mut client, server) = tokio::io::duplex(1);
     let (stop, stopped) = tokio::sync::watch::channel(false);
-    let router = Router::new().route("/hello", axum::routing::get(|| async { "hi" }));
+    // An unknown-length response puts its final HTTP chunk on the wire. The peer can
+    // drain the payload while retaining pressure on that distinct terminal Emit.
+    let router = Router::new().route(
+        "/hello",
+        axum::routing::get(|| async {
+            axum::response::Response::new(axum::body::Body::from_stream(futures::stream::once(
+                async { Ok::<_, std::convert::Infallible>(bytes::Bytes::from_static(b"hi")) },
+            )))
+        }),
+    );
     let mut served = tokio::spawn(super::serve(
         server,
         framer,
@@ -1902,6 +1911,12 @@ async fn a_final_body_emit_remains_alive_through_graceful_drain() {
             assert_eq!(client.read(&mut byte).await.unwrap(), 1);
             got.push(byte[0]);
             assert!(got.len() < 16 * 1024, "bounded response head");
+        }
+        while !got.ends_with(b"\r\n2\r\nhi\r\n") {
+            let mut byte = [0; 1];
+            assert_eq!(client.read(&mut byte).await.unwrap(), 1);
+            got.push(byte[0]);
+            assert!(got.len() < 16 * 1024, "bounded payload chunk");
         }
         while observed.count(|call| {
             matches!(
@@ -1936,8 +1951,8 @@ async fn a_final_body_emit_remains_alive_through_graceful_drain() {
         .unwrap();
     let got = String::from_utf8(got).unwrap();
     assert!(got.starts_with("HTTP/1.1 200 OK\r\n"), "{got:?}");
-    assert!(got.contains("content-length: 2\r\n"), "{got:?}");
-    assert!(got.ends_with("\r\n\r\nhi"), "{got:?}");
+    assert!(got.contains("transfer-encoding: chunked\r\n"), "{got:?}");
+    assert!(got.ends_with("\r\n\r\n2\r\nhi\r\n0\r\n\r\n"), "{got:?}");
     assert_eq!(
         observed.count(|call| matches!(call, ObservedCall::Emit { status: 200, .. })),
         1
@@ -2175,6 +2190,18 @@ async fn a_session_waits_for_its_parked_message_before_emitting_the_next() {
         "the actual session handshake commits once"
     );
     let _ = stop.send(true);
+    // The real producer's closed channel finishes WS with a normal close frame. On a
+    // one-byte pipe the peer must drain that wire before the owning server can finish.
+    let mut close_wire = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), client.read_to_end(&mut close_wire))
+        .await
+        .expect("the real WS close frame drains before the server retires")
+        .unwrap();
+    assert_eq!(
+        close_wire,
+        [0x88, 0x02, 0x03, 0xe8],
+        "exact unmasked normal WS close"
+    );
     tokio::time::timeout(Duration::from_secs(10), served)
         .await
         .unwrap()
@@ -2815,7 +2842,18 @@ async fn cancelled_pending_adoption_and_commit_ignore_their_late_wakes() {
             before,
             "late readiness cannot emit a message or repeat a commit"
         );
-        assert_eq!(http.count(|call| matches!(call, ObservedCall::Finish)), 1);
+        assert_eq!(
+            http.count(|call| matches!(call, ObservedCall::Detach)),
+            usize::from(!adopting),
+            "only a committed transfer consumes the old HTTP framing"
+        );
+        assert_eq!(http.count(|call| matches!(call, ObservedCall::Finish)), usize::from(adopting),
+            "cancel before transfer finishes HTTP; terminal detach must not finish its consumed token again");
+        assert_eq!(
+            ws.count(|call| matches!(call, ObservedCall::Finish)),
+            usize::from(!adopting),
+            "after transfer the adopted WS framing owns exactly one finish"
+        );
         if adopting {
             assert!(
                 admitted.await.is_err(),
@@ -3051,6 +3089,20 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
     use busbar_contract::abi::transport::route::{METHOD_GET, METHOD_POST, PATH_CONTAINS};
     use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
     use ring::signature::KeyPair as _;
+    struct JwksPeer {
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        release: std::sync::mpsc::Sender<()>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Drop for JwksPeer {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::Release);
+            let _ = self.release.send(());
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
     let _publishing = crate::root::PUBLISHING.lock().await;
     crate::dist_root_install::install();
     for first_body in ["", "hi"] {
@@ -3085,14 +3137,32 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
             .unwrap(),
         );
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
         let jwks_url = format!("https://{}/jwks", listener.local_addr().unwrap());
         let (entered, waiting) = tokio::sync::oneshot::channel();
         let (release, held) = std::sync::mpsc::channel();
-        let peer = std::thread::spawn(move || {
+        let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let peer_armed = armed.clone();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let peer_stop = stop.clone();
+        let worker = std::thread::spawn(move || {
             use std::io::{Read as _, Write as _};
             let mut entered = Some(entered);
-            for attempt in 0..2 {
-                let (socket, _) = listener.accept().unwrap();
+            let mut released = false;
+            loop {
+                let socket = loop {
+                    if peer_stop.load(std::sync::atomic::Ordering::Acquire) {
+                        return;
+                    }
+                    match listener.accept() {
+                        Ok((socket, _)) => break socket,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(error) => panic!("the actual JWKS peer cannot accept: {error}"),
+                    }
+                };
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(10)))
                     .unwrap();
@@ -3111,11 +3181,15 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
                 assert!(head.starts_with(b"GET /jwks HTTP/1.1\r\n"));
                 // READY's best-effort warm-up receives an actual outage. The first VERIFY must
                 // fetch its real key document, and this peer withholds that response until EOF.
-                let (status, body) = if attempt == 0 {
+                let gated = peer_armed.load(std::sync::atomic::Ordering::Acquire);
+                let (status, body) = if !gated {
                     ("503 Service Unavailable", "{}")
                 } else {
-                    entered.take().unwrap().send(()).unwrap();
-                    held.recv_timeout(Duration::from_secs(10)).unwrap();
+                    if !released {
+                        entered.take().unwrap().send(()).unwrap();
+                        held.recv_timeout(Duration::from_secs(10)).unwrap();
+                        released = true;
+                    }
                     ("200 OK", jwks.as_str())
                 };
                 write!(socket, "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
@@ -3124,6 +3198,11 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
                 let _ = socket.flush();
             }
         });
+        let mut peer = JwksPeer {
+            stop,
+            release: release.clone(),
+            worker: Some(worker),
+        };
         let now = busbar_kernel::store::now();
         let header = b64.encode(
             serde_json::to_vec(
@@ -3193,7 +3272,7 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
         "identity-providers": {"held": {"module": auth_module.unwrap(), "settings": {
             "issuer": "https://listener-eof.invalid", "audience": "listener-eof",
             "jwks_url": jwks_url, "ca_cert_pem": cert_pem, "role_claim": "roles",
-            "jwks_min_refetch_secs": 0,
+            "jwks_min_refetch_secs": 1,
         }}},
         "auth": {"chain": ["held"], "admin_auth": [], "role_bindings": {"held": {"reader": {"allowed_pools": []}}}},
         "advanced": {"allow_destinations": ["127.0.0.1"]},
@@ -3218,6 +3297,10 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
             rotate();
         }
         let app = Arc::new(app);
+        armed.store(true, std::sync::atomic::Ordering::Release);
+        // READY's real 503 starts OIDC's mandatory refetch cooldown. Let that configured
+        // interval elapse so VERIFY can own the second fetch held below through EOF.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
         let points = app.auth.position_points("held");
         assert!(points.has(busbar_contract::abi::auth::AuthPoint::Head));
         let guests = GuestList::seal(vec![
@@ -3306,11 +3389,80 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
                 _ => None,
             })
             .unwrap();
+        let calls = observed.calls.lock().unwrap().clone();
+        let terminal = calls
+            .iter()
+            .enumerate()
+            .filter_map(|(index, call)| match call {
+                ObservedCall::Emit {
+                    status, end: true, ..
+                } => Some((index, *status)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         assert_eq!(
-            pending_status,
-            if first_body.is_empty() { 200 } else { 0 },
-            "empty responses retain their head; nonempty responses retain their final body Emit"
+            terminal.len(),
+            1,
+            "exactly one original terminal Emit owns the first answer"
         );
+        let (terminal_index, terminal_status) = terminal[0];
+        assert_eq!(
+            terminal_status,
+            if first_body.is_empty() { 200 } else { 0 },
+            "the original terminal operation retains the actual answer head or final body"
+        );
+        assert!(
+            matches!(calls.get(terminal_index + 1),
+            Some(ObservedCall::EmitResult { ticket, .. }) if *ticket == pending_ticket),
+            "the original terminal Emit and pending crossing retain the same concrete ticket"
+        );
+        let pending_index = calls
+            .iter()
+            .position(|call| {
+                matches!(
+                    call,
+                    ObservedCall::EmitResult {
+                        outcome: Outcome::Pending,
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            pending_status, 0,
+            "a body Emit or MORE recall carries no new answer status"
+        );
+        if pending_index == terminal_index + 1 {
+            assert!(
+                !first_body.is_empty(),
+                "the empty answer parks on its head's drain recall"
+            );
+            assert!(
+                matches!(
+                    calls.get(pending_index - 1),
+                    Some(ObservedCall::Emit {
+                        status: 0,
+                        end: true,
+                        ..
+                    })
+                ),
+                "the nonempty answer may park on its original final body operation"
+            );
+        } else {
+            // cross_ticketed clears status/bytes/end on a MORE recall while keeping the
+            // original operation and ticket. The real HTTP 200 remains in the owned wire.
+            assert!(
+                matches!(
+                    calls.get(pending_index - 1),
+                    Some(ObservedCall::Emit {
+                        status: 0,
+                        end: false,
+                        len: 0
+                    })
+                ),
+                "the pending recall is neutral rather than a second head or body"
+            );
+        }
         assert!(
             pending_ticket.is_some_and(|ticket| !ticket.is_none()),
             "a real callback owns a concrete native ticket"
@@ -3398,7 +3550,13 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
             b"whole",
             "the actual decoder's PIECE_END remains whole across pending authentication and EOF"
         );
-        peer.join()
-            .expect("the real TLS peer completes both requests");
+        // The product opens independent inbound and login verifier instances. Keep this real
+        // issuer available to both until the decoder and application body have completed.
+        peer.stop.store(true, std::sync::atomic::Ordering::Release);
+        peer.worker
+            .take()
+            .unwrap()
+            .join()
+            .expect("the owned real TLS peer completes all actual verifier requests");
     }
 }

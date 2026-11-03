@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use super::store_chain::{
     confirm_record_bytes, off_runtime, read_chain, read_record_exact, verify_stored_chain,
-    wait_for, ACK_DEADLINE,
+    verify_stored_chain_with_seals, wait_for, RecordSeal, ACK_DEADLINE,
 };
 use super::{Durability, JournalLane};
 
@@ -308,13 +308,60 @@ fn head(
 
 type Chains = BTreeMap<u64, Vec<JournalRecord>>;
 
+// An optimization budget, never a history/admission limit: larger or nonlocal reads use the
+// unchanged cold verifier. Only sealed identities are kept, never a history of payloads.
+const MAX_ORIGIN_FACTS: usize = 128;
+struct OriginFacts {
+    node: u64,
+    seals: Vec<RecordSeal>,
+}
+impl OriginFacts {
+    fn new(node: u64) -> Self {
+        Self {
+            node,
+            seals: Vec::new(),
+        }
+    }
+    fn capture(&mut self, record: &JournalRecord) -> Result<bool, RecoveryError> {
+        if record.node != self.node {
+            return Ok(false);
+        }
+        let seal = RecordSeal::of(record);
+        if let Some(previous) = self.seals.iter().find(|old| old.sequence == seal.sequence) {
+            if previous != &seal {
+                return Err(invalid(
+                    "selected recovery record changed during the same read",
+                ));
+            }
+            return Ok(true);
+        }
+        if self.seals.len() == MAX_ORIGIN_FACTS {
+            return Ok(false);
+        }
+        self.seals.push(seal);
+        Ok(true)
+    }
+}
+
 fn stream_selection(
     calls: &dyn StoreCalls,
     operation: &[u8; 16],
     tip: &Head,
     owner: u64,
-    mut visit: impl FnMut(&Head, &Candidate) -> Result<(), RecoveryError>,
+    visit: impl FnMut(&Head, &Candidate) -> Result<(), RecoveryError>,
 ) -> Result<RecoverySelection, RecoveryError> {
+    stream_selection_inner(calls, operation, tip, owner, None, visit)?
+        .ok_or_else(|| invalid("cold recovery selection unexpectedly deferred"))
+}
+
+fn stream_selection_inner(
+    calls: &dyn StoreCalls,
+    operation: &[u8; 16],
+    tip: &Head,
+    owner: u64,
+    mut facts: Option<&mut OriginFacts>,
+    mut visit: impl FnMut(&Head, &Candidate) -> Result<(), RecoveryError>,
+) -> Result<Option<RecoverySelection>, RecoveryError> {
     if tip.node != owner {
         return Err(invalid("recovery selection is not owned by this node"));
     }
@@ -329,13 +376,22 @@ fn stream_selection(
         }
         // A node segment is checked once, in pages, with no retained journal payload index.
         // Revisiting a former owner after another handover performs a new cold verification.
-        if verified_owner != Some(at.node) {
+        if let Some(facts) = facts.as_ref() {
+            if at.node != facts.node {
+                return Ok(None);
+            }
+        } else if verified_owner != Some(at.node) {
             verify_stored_chain(calls, at.node).map_err(invalid)?;
             verified_owner = Some(at.node);
         }
         let record = read_record_exact(calls, at.node, at.sequence).map_err(invalid)?;
         let candidate = candidate(&record)?
             .ok_or_else(|| invalid("selected record is not a recovery candidate"))?;
+        if let Some(facts) = facts.as_deref_mut() {
+            if candidate.adoption.is_some() || !facts.capture(&record)? {
+                return Ok(None);
+            }
+        }
         drop(record);
         if candidate.event.operation_id != *operation
             || candidate.event.revision != at.revision
@@ -377,10 +433,10 @@ fn stream_selection(
                 && candidate.adoption.is_none() =>
             {
                 candidate.event.follows(None)?;
-                return Ok(RecoverySelection {
+                return Ok(Some(RecoverySelection {
                     initial: candidate.event,
                     selected: selected.unwrap(),
-                });
+                }));
             }
             _ => return Err(invalid("invalid selected recovery predecessor")),
         }
@@ -405,24 +461,50 @@ fn selected_checkpoint(
     digest: [u8; 32],
     missing: &str,
 ) -> Result<RecoveryEvent, RecoveryError> {
+    selected_checkpoint_inner(calls, operation, tip, digest, missing, None)?
+        .ok_or_else(|| invalid("cold recovery checkpoint unexpectedly deferred"))
+}
+
+fn selected_checkpoint_inner(
+    calls: &dyn StoreCalls,
+    operation: &[u8; 16],
+    tip: &Head,
+    digest: [u8; 32],
+    missing: &str,
+    mut facts: Option<&mut OriginFacts>,
+) -> Result<Option<RecoveryEvent>, RecoveryError> {
     let mut found = None;
-    stream_selection(calls, operation, tip, tip.node, |at, _| {
-        if at.event_digest == digest {
-            found = Some(at.clone());
-        }
-        Ok(())
-    })?;
+    let walked = stream_selection_inner(
+        calls,
+        operation,
+        tip,
+        tip.node,
+        facts.as_deref_mut(),
+        |at, _| {
+            if at.event_digest == digest {
+                found = Some(at.clone());
+            }
+            Ok(())
+        },
+    )?;
+    if walked.is_none() {
+        return Ok(None);
+    }
     let at = found.ok_or_else(|| invalid(missing))?;
-    // Retain only the pointer while the fold continues. Materialize this one payload AFTER the
-    // full selected chain has verified, never alongside a retained historical payload list.
+    // Materialize only this one payload, after the selected lineage has verified.
     let record = read_record_exact(calls, at.node, at.sequence).map_err(invalid)?;
+    if let Some(facts) = facts.as_deref_mut() {
+        if !facts.capture(&record)? {
+            return Ok(None);
+        }
+    }
     let event = candidate(&record)?
         .ok_or_else(|| invalid("selected checkpoint is not a recovery candidate"))?
         .event;
     if event.fingerprint()? != at.event_digest || event.operation_id != *operation {
         return Err(invalid("selected checkpoint changed during readback"));
     }
-    Ok(event)
+    Ok(Some(event))
 }
 
 fn selected(
@@ -625,6 +707,48 @@ struct Pending {
     predecessor: Option<Vec<u8>>,
 }
 
+struct OriginRead {
+    lane: JournalLane,
+    node: u64,
+    fences: Vec<Predicate>,
+    operation: [u8; 16],
+    child: Option<Vec<u8>>,
+    parent: Option<([u8; 16], Vec<u8>)>,
+    facts: OriginFacts,
+}
+impl OriginRead {
+    fn finish(mut self) -> Result<(), RecoveryError> {
+        let calls = self.lane.calls();
+        if !self.facts.seals.is_empty() {
+            self.facts.seals.sort_unstable_by_key(|seal| seal.sequence);
+            verify_stored_chain_with_seals(calls.as_ref(), self.node, &self.facts.seals)
+                .map_err(invalid)?;
+        }
+        if head(calls.as_ref(), &self.operation)?.map(|(_, raw)| raw) != self.child {
+            return Err(RecoveryError::Conflict(
+                "recovery child selection advanced during origin verification".into(),
+            ));
+        }
+        if let Some((operation, raw)) = self.parent {
+            if head(calls.as_ref(), &operation)?.map(|(_, raw)| raw) != Some(raw) {
+                return Err(RecoveryError::Conflict(
+                    "recovery parent selection advanced during origin verification".into(),
+                ));
+            }
+        }
+        if !self
+            .lane
+            .recovery_fence_matches(self.node, &self.fences)
+            .map_err(unavailable)?
+        {
+            return Err(unavailable(
+                "the local node fence changed during child-origin verification",
+            ));
+        }
+        Ok(())
+    }
+}
+
 struct StoreRecovery {
     book: Arc<Mutex<Durability>>,
     token: Grant<DurableWrite>,
@@ -744,7 +868,10 @@ impl StoreRecovery {
                 });
             }
         }
-        if lane.recovery_predicates(node).map_err(unavailable)? != fences {
+        if !lane
+            .recovery_fence_matches(node, &fences)
+            .map_err(unavailable)?
+        {
             return Err(unavailable(
                 "the local node fence changed during foreign inspection",
             ));
@@ -753,6 +880,87 @@ impl StoreRecovery {
     }
 
     fn verify_origin_at(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        match self.read_origin_for_final_fold(event)? {
+            Some(read) => read.finish(),
+            None => self.verify_origin_cold_at(event),
+        }
+    }
+
+    fn read_origin_for_final_fold(
+        &self,
+        event: &RecoveryEvent,
+    ) -> Result<Option<OriginRead>, RecoveryError> {
+        let (lane, node) = self.inputs()?;
+        let fences = lane.recovery_predicates(node).map_err(unavailable)?;
+        let calls = lane.calls();
+        let mut facts = OriginFacts::new(node);
+        let child = head(calls.as_ref(), &event.operation_id)?;
+        let initial = match &child {
+            Some((tip, _)) => {
+                let Some(run) = stream_selection_inner(
+                    calls.as_ref(),
+                    &event.operation_id,
+                    tip,
+                    tip.node,
+                    Some(&mut facts),
+                    |_, _| Ok(()),
+                )?
+                else {
+                    return Ok(None);
+                };
+                run.initial
+            }
+            None => {
+                event.follows(None)?;
+                event.clone()
+            }
+        };
+        if event.kind != initial.kind
+            || event.body_fingerprint != initial.body_fingerprint
+            || event.first_sent_at_ms != initial.first_sent_at_ms
+            || (event.revision == 0 && event != &initial)
+        {
+            return Err(invalid(
+                "recovery child identity differs from selected genesis",
+            ));
+        }
+        let origin = initial.origin_reference()?;
+        if event.origin_reference()? != origin {
+            return Err(invalid(
+                "recovery checkpoint changed its immutable child origin",
+            ));
+        }
+        let parent = if let Some(origin) = origin {
+            let (tip, raw) = head(calls.as_ref(), &origin.operation_id)?
+                .ok_or_else(|| invalid("recovery origin parent has no selected head"))?;
+            let Some(parent) = selected_checkpoint_inner(
+                calls.as_ref(),
+                &origin.operation_id,
+                &tip,
+                origin.event_fingerprint,
+                "recovery origin checkpoint is not in the current selected parent chain",
+                Some(&mut facts),
+            )?
+            else {
+                return Ok(None);
+            };
+            parent.authorizes_child(&initial)?;
+            Some((origin.operation_id, raw))
+        } else {
+            None
+        };
+        Ok(Some(OriginRead {
+            lane,
+            node,
+            fences,
+            operation: event.operation_id,
+            child: child.map(|(_, raw)| raw),
+            parent,
+            facts,
+        }))
+    }
+
+    fn verify_origin_cold_at(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         let (lane, node) = self.inputs()?;
         let fences = lane.recovery_predicates(node).map_err(unavailable)?;
         let calls = lane.calls();
@@ -792,7 +1000,10 @@ impl StoreRecovery {
             )?;
             parent.authorizes_child(&initial)?;
         }
-        if lane.recovery_predicates(node).map_err(unavailable)? != fences {
+        if !lane
+            .recovery_fence_matches(node, &fences)
+            .map_err(unavailable)?
+        {
             return Err(unavailable(
                 "the local node fence changed during child-origin verification",
             ));
@@ -840,7 +1051,10 @@ impl StoreRecovery {
                 ));
             }
         }
-        if lane.recovery_predicates(node).map_err(unavailable)? != fences {
+        if !lane
+            .recovery_fence_matches(node, &fences)
+            .map_err(unavailable)?
+        {
             return Err(unavailable(
                 "the local node fence changed during checkpoint verification",
             ));
@@ -860,7 +1074,10 @@ impl StoreRecovery {
                 summaries.push(summary);
             }
         }
-        if lane.recovery_predicates(node).map_err(unavailable)? != fences {
+        if !lane
+            .recovery_fence_matches(node, &fences)
+            .map_err(unavailable)?
+        {
             return Err(unavailable(
                 "the local node fence changed during recovery replay",
             ));
@@ -911,7 +1128,9 @@ impl StoreRecovery {
                 .as_ref()
                 .map(|(_, value)| value)
                 != Some(&raw)
-                || lane.recovery_predicates(node).map_err(unavailable)? != fences
+                || !lane
+                    .recovery_fence_matches(node, &fences)
+                    .map_err(unavailable)?
             {
                 return Err(unavailable(
                     "handover authority changed during confirmation",
@@ -1066,7 +1285,9 @@ impl StoreRecovery {
                     .as_ref()
                     .map(|(_, value)| value)
                     != Some(observed_raw)
-                    || lane.recovery_predicates(node).map_err(unavailable)? != fences
+                    || !lane
+                        .recovery_fence_matches(node, &fences)
+                        .map_err(unavailable)?
                 {
                     return Err(unavailable(
                         "handover authority changed during confirmation",
@@ -1128,7 +1349,10 @@ impl StoreRecovery {
                         "recovery selection advanced during confirmation".into(),
                     ));
                 }
-                if lane.recovery_predicates(node).map_err(unavailable)? != initial_fences {
+                if !lane
+                    .recovery_fence_matches(node, &initial_fences)
+                    .map_err(unavailable)?
+                {
                     return Err(unavailable(
                         "the node fence changed during recovery confirmation",
                     ));
@@ -1271,10 +1495,8 @@ impl StoreRecovery {
                     ));
                 }
                 if lane
-                    .recovery_predicates(node)
+                    .recovery_fence_matches(node, &predicates[..predicates.len() - 1])
                     .map_err(unavailable)?
-                    .as_slice()
-                    == &predicates[..predicates.len() - 1]
                 {
                     self.state
                         .lock()
@@ -1367,7 +1589,10 @@ impl RecoverySink for StoreRecovery {
                     events.extend(run);
                 }
             }
-            if lane.recovery_predicates(node).map_err(unavailable)? != predicates {
+            if !lane
+                .recovery_fence_matches(node, &predicates)
+                .map_err(unavailable)?
+            {
                 return Err(unavailable(
                     "the local node fence changed during recovery replay",
                 ));
@@ -1391,7 +1616,7 @@ mod tests {
     use crate::root::store_double::RecordSlots;
     use busbar_kernel::governance::recovery::{RecoveryKind, RecoveryState};
 
-    fn opened(slots: &RecordSlots, host: &str) -> Arc<Mutex<Durability>> {
+    pub(super) fn opened(slots: &RecordSlots, host: &str) -> Arc<Mutex<Durability>> {
         let taken = super::super::take_node(slots.calls().as_ref(), host).unwrap();
         let lane = JournalLane::start(slots.calls(), "recovery-test").unwrap();
         if let Some(lease) = taken.lease {
@@ -1409,7 +1634,7 @@ mod tests {
         ))
     }
 
-    fn intent() -> RecoveryEvent {
+    pub(super) fn intent() -> RecoveryEvent {
         RecoveryEvent {
             operation_id: [1; 16],
             revision: 0,
@@ -1422,7 +1647,7 @@ mod tests {
         }
     }
 
-    fn transition(previous: &RecoveryEvent, state: RecoveryState) -> RecoveryEvent {
+    pub(super) fn transition(previous: &RecoveryEvent, state: RecoveryState) -> RecoveryEvent {
         RecoveryEvent {
             revision: previous.revision + 1,
             previous_event: Some(previous.fingerprint().unwrap()),
@@ -1445,7 +1670,7 @@ mod tests {
         }
     }
 
-    fn retire(book: &Arc<Mutex<Durability>>) {
+    pub(super) fn retire(book: &Arc<Mutex<Durability>>) {
         let lane = book.lock().unwrap().lane().unwrap().clone();
         assert!(lane.drain(ACK_DEADLINE));
         lane.release_held_lease();
@@ -1467,7 +1692,7 @@ mod tests {
         }
     }
 
-    fn linked_events() -> (RecoveryEvent, RecoveryEvent, RecoveryEvent) {
+    pub(super) fn linked_events() -> (RecoveryEvent, RecoveryEvent, RecoveryEvent) {
         let mut child = intent();
         child.operation_id = [9; 16];
         child.body_fingerprint = [8; 32];
@@ -1508,6 +1733,86 @@ mod tests {
             usage_recovery_sink(&restarted).replay().unwrap(),
             vec![sent, dead]
         );
+    }
+
+    #[test]
+    fn a_selected_recovery_head_survives_same_holder_renewal_after_a_lost_reply() {
+        use super::super::store_identity::{
+            lease_row, set_lease_expiry, LEASE_REFRESH_TICKS, NODE_SCHEMA,
+        };
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // The real Store lands the exact fenced head CAS. Only its reply is lost; the
+        // current holder's lease then renews before readback confirms that selected head.
+        for change in 0..3 {
+            let slots = RecordSlots::new();
+            let host = format!("selected-head-renewal-{change}");
+            let book = opened(&slots, &host);
+            set_lease_expiry(slots.calls().as_ref(), &host, 1);
+            let lane = book.lock().unwrap().lane().unwrap().clone();
+            let sink = usage_recovery_sink(&book);
+            let sent = intent();
+            let probe_slots = slots.clone();
+            let probe_host = host.clone();
+            let applied = Arc::new(AtomicBool::new(false));
+            let observed = Arc::clone(&applied);
+            slots.on_transaction(move |request| {
+                if !request
+                    .mutations
+                    .iter()
+                    .any(|m| m.address().0 == HEAD_SCHEMA)
+                    || observed.swap(true, Ordering::AcqRel)
+                {
+                    return None;
+                }
+                assert_eq!(
+                    probe_slots.apply_transaction(request),
+                    busbar_contract::abi::sdk::store::conditional::Decision::Applied,
+                );
+                let calls = probe_slots.calls();
+                let (holder, expires) = lease_row(calls.as_ref(), &probe_host).unwrap();
+                match change {
+                    0 => {
+                        for _ in 0..LEASE_REFRESH_TICKS {
+                            lane.refresh_held_lease();
+                        }
+                        let renewed = lease_row(calls.as_ref(), &probe_host).unwrap();
+                        assert_eq!(renewed.0, holder);
+                        assert_ne!(
+                            renewed.1, expires,
+                            "the actual lease refresh changed its bytes"
+                        );
+                    }
+                    1 => set_lease_expiry(calls.as_ref(), &probe_host, 0),
+                    _ => {
+                        let mut replacement = holder;
+                        replacement[0] ^= 1;
+                        let value = [replacement.as_slice(), &expires.to_be_bytes()].concat();
+                        let key = [b"lease:".as_slice(), probe_host.as_bytes()].concat();
+                        probe_slots.put_row(NODE_SCHEMA, &key, &value);
+                    }
+                }
+                Some(busbar_contract::store_calls::StoreFailure::Failed(
+                    "the real head CAS landed but its reply was lost".into(),
+                ))
+            });
+            let result = sink.persist(&sent);
+            // The fault probe owns a Store/lane handle; release it before fixture teardown.
+            slots.on_transaction(|_| None);
+            assert!(applied.load(Ordering::Acquire), "the actual head CAS ran");
+            if change == 0 {
+                result.expect("normal renewal preserves the selected head's read custody");
+                sink.persist(&sent)
+                    .expect("reconfirmation selects no second event");
+                assert_eq!(sink.replay().unwrap(), vec![sent]);
+                assert_eq!(slots.rows_under(HEAD_SCHEMA), 1);
+            } else {
+                assert!(
+                    result.is_err(),
+                    "release or replacement revokes confirmation"
+                );
+            }
+        }
     }
 
     #[test]
@@ -2313,3 +2618,7 @@ mod tests {
         new_sink.confirm_owned_checkpoint(&unknown).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/usage_origin_final_fold.rs"]
+mod origin_final_fold_tests;

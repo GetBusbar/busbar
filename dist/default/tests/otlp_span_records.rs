@@ -33,6 +33,8 @@ fn write_configs(
     upstream: u16,
     name_dropped: bool,
 ) {
+    let mut plugins = common::plugins::trusted_config_document(&dir.join("plugins"));
+    plugins["logs"] = serde_json::json!({ "dir": dir.join("plugin-logs") });
     let dropped = if name_dropped {
         format!(
             "  dropped: {{ module: {DROPPED}, settings: {{ url: \"http://127.0.0.1:{collector}{DROPPED_PATH}\" }} }}\n"
@@ -56,12 +58,7 @@ store: {{module: memory}}
 admin_require_mtls: false
 auth:
   chain: []
-plugins:
-  enabled: true
-  dir: '{plugins}'
-  trust:
-    allow_unsigned: true
-  logs: {{ dir: '{logs}' }}
+plugins: {plugins}
 export:
   linked: {{ module: otlp, settings: {{ url: "http://127.0.0.1:{collector}{LINKED_PATH}" }} }}
 {dropped}providers:
@@ -70,9 +67,11 @@ export:
 models:
   test-model:
     provider: mock
+pools:
+  span-pool:
+    members:
+      - model: test-model
 "#,
-            plugins = dir.join("plugins").display(),
-            logs = dir.join("plugin-logs").display(),
         ),
     )
     .unwrap();
@@ -91,8 +90,9 @@ fn request(port: u16, body: &str) -> Option<u16> {
     stream
         .set_read_timeout(Some(Duration::from_secs(20)))
         .ok()?;
+    // The named pool creates the real arrival parent; bare OpenAI ingress has none.
     let req = format!(
-        "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\ncontent-type: application/json\r\n\
+        "POST /span-pool/v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\ncontent-type: application/json\r\n\
          content-length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
@@ -109,20 +109,38 @@ fn real_producer_span_records_survive_both_otlp_doors() {
         .unwrap_or_else(|| common::plugins::missing(CDYLIB, common::plugins::BUILD_PINNED));
     let dir = common::plugins::scratch("otlp-span-records");
     std::fs::create_dir_all(dir.join("plugins")).unwrap();
-    let mut manifest = common::plugins::manifest("export", DROPPED, "acme");
+    let manifest_path = std::env::var_os("BUSBAR_TEST_EXPORT_OTLP_MANIFEST")
+        .expect("the actual OTLP package manifest is provided");
+    let mut manifest: busbar_plugin_loader::sign::Manifest = serde_json::from_slice(
+        &std::fs::read(manifest_path).expect("read the actual OTLP manifest"),
+    )
+    .expect("the OTLP manifest parses");
+    manifest.name = DROPPED.into();
+    manifest.alias = DROPPED.into();
+    manifest.former_names.clear();
+    manifest.publisher = common::plugins::FIXTURE_PUBLISHER.into();
+    // This re-publication is operator-trusted third party; reserved BUSBAR codes
+    // belong to the original first-party package, whose linked copy keeps them.
+    manifest.declares.diagnostics.clear();
     common::plugins::state(&mut manifest, &lib);
     assert!(
         manifest.statement.is_some(),
         "the dropped OTLP library must export its memory-ABI door"
     );
-    let tarball = common::plugins::seal(manifest, &lib);
+    let tarball = common::plugins::signed(&common::plugins::key(0x5a), manifest, &lib);
     std::fs::write(dir.join("plugins").join("otlp.tar.gz"), tarball).unwrap();
 
     if !LINKED_TRANSPORTS.iter().any(|w| w.key == WIRE) {
         let (lib, _) = common::plugins::transport_cdylib_under(&[WIRE]).unwrap_or_else(|| {
             common::plugins::missing(&format!("{WIRE} transport"), common::plugins::BUILD_PINNED)
         });
-        let bytes = common::plugins::pack("transport", "dropped-wire", &lib, "acme");
+        let mut manifest = common::plugins::manifest(
+            "transport",
+            "dropped-wire",
+            common::plugins::FIXTURE_PUBLISHER,
+        );
+        common::plugins::state(&mut manifest, &lib);
+        let bytes = common::plugins::signed(&common::plugins::key(0x5a), manifest, &lib);
         std::fs::write(dir.join("plugins").join("dropped-wire.tar.gz"), bytes).unwrap();
     }
     let (collector_port, seen) = common::otlp::collector();
@@ -190,19 +208,53 @@ fn real_producer_span_records_survive_both_otlp_doors() {
             .filter(|span| span.name == "forward")
             .collect::<Vec<_>>()
     };
+    let parents = |path| {
+        common::otlp::spans(&common::otlp::requests(&seen, Some(path)))
+            .into_iter()
+            .filter(|span| span.name == "named")
+            .collect::<Vec<_>>()
+    };
     let deadline = Instant::now() + Duration::from_secs(30);
-    while forwards(LINKED_PATH).len() < served || forwards(DROPPED_PATH).len() < served {
+    while forwards(LINKED_PATH).len() < served
+        || forwards(DROPPED_PATH).len() < served
+        || parents(LINKED_PATH).len() < served
+        || parents(DROPPED_PATH).len() < served
+    {
         assert!(
             Instant::now() < deadline,
-            "forward spans did not arrive at both collectors:\n{}",
+            "forward spans and their named arrival parents did not reach both collectors:\n{}",
             read_log()
         );
         std::thread::sleep(Duration::from_millis(50));
     }
     let linked = forwards(LINKED_PATH);
     let dropped = forwards(DROPPED_PATH);
+    let linked_parents = parents(LINKED_PATH);
+    let dropped_parents = parents(DROPPED_PATH);
     for span in &linked {
         assert_full_record(span);
+        let parent = linked_parents
+            .iter()
+            .find(|parent| {
+                parent.span_id == span.parent_span_id && parent.trace_id == span.trace_id
+            })
+            .expect("the forward's parent must be the real named-pool arrival on its trace");
+        assert_eq!(
+            attribute(&parent.attributes, "pool"),
+            Some(
+                &opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                    "span-pool".into()
+                )
+            )
+        );
+        let dropped_parent = dropped_parents
+            .iter()
+            .find(|peer| peer.span_id == parent.span_id)
+            .expect("the dropped door must preserve the same named arrival parent identity");
+        assert_eq!(
+            parent, dropped_parent,
+            "both doors must preserve the full named arrival parent"
+        );
         let peer = dropped
             .iter()
             .find(|peer| peer.span_id == span.span_id)

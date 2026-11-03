@@ -131,6 +131,13 @@ pub fn name_at(method: &str, path: &str) -> Option<&'static str> {
     resolve(method, path).map(|resolved| resolved.verb)
 }
 
+/// The frozen response projection belongs only to a served legacy request line.
+#[must_use]
+pub(crate) fn legacy_at(method: &str, path: &str) -> bool {
+    find_verb(method, path)
+        .is_some_and(|(entry, _)| entry.bound && entry.class == crate::verb::Class::Legacy)
+}
+
 /// Every row the closed table declares, in the order the table holds them.
 #[must_use]
 pub fn table() -> Vec<ResolvedVerb> {

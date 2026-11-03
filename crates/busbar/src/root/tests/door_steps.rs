@@ -107,6 +107,9 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
             false,
         )
         .expect("the actual root builds the door generation");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, &module)
+            .expect("the configured Store boots its rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -228,6 +231,9 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
                 false,
             )
             .expect("the actual root builds the door generation");
+            limits.stage_boot();
+            let _book = crate::root::boot::book(&app, &module)
+                .expect("the configured Store boots its rate history before activation");
             limits.keep().expect("the product limits commit");
             if let Some(rotate) = rotate {
                 rotate();
@@ -345,6 +351,9 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
             false,
         )
         .expect("the actual root builds the door generation");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, &module)
+            .expect("the configured Store boots its rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -898,6 +907,9 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
                         false,
                     )
                     .expect("the actual root builds the door generation");
+                limits.stage_boot();
+                let _book = crate::root::boot::book(&app, &module)
+                    .expect("the configured Store boots its rate history before activation");
                 limits.keep().expect("the product limits commit");
                 if let Some(rotate) = rotate {
                     rotate();
@@ -1025,12 +1037,36 @@ fn downgrade_book(
         );
         let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+            "providers": {"downgrade-upstream": {"api_key": "none"}},
+            "models": {
+                "big": {"provider": "downgrade-upstream"},
+                "small": {"provider": "downgrade-upstream"},
+                "tiny": {"provider": "downgrade-upstream"}
+            },
+            "pools": {
+                "frontier": {"members": ["big"]},
+                "value": {"members": ["small"]},
+                "first": {"members": ["big"]},
+                "second": {"members": ["small"]},
+                "third": {"members": ["tiny"]}
+            },
+            "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
         }))
         .expect("the door deployment parses");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+        let providers = std::collections::HashMap::from([(
+            "downgrade-upstream".to_string(),
+            serde_yaml::from_str::<busbar_kernel::config::ProviderDef>(
+                "protocol: anthropic\nbase_url: https://api.anthropic.com\n",
+            )
+            .expect("the actual provider declaration parses"),
+        )]);
+        let mut cfg = busbar_kernel::config::resolve(&deploy, &providers)
             .expect("the door deployment resolves");
+        // Admission reads the kept, dated card, so the configured authority must
+        // carry the same ten-cent fee and group tree as this boundary's CostModel.
+        cfg.per_request_fee = 10;
+        cfg.groups = groups.clone();
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let loaded = crate::root::real_store::store();
@@ -1054,6 +1090,9 @@ fn downgrade_book(
             false,
         )
         .expect("the actual root builds the door generation");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, &module)
+            .expect("the configured Store boots its rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -1189,8 +1228,10 @@ fn a_downgrade_cycle_ends_in_the_plain_refusal_naming_the_last_pool_walked() {
     let (app, key) = downgrade_book(
         vec![
             downgrading("first", 10, "second"),
-            downgrading("second", 0, "third"),
-            downgrading("third", 0, "second"),
+            // A positive cap smaller than one ten-cent request is already exhausted;
+            // unlike zero it is a valid configured budget.
+            downgrading("second", 1, "third"),
+            downgrading("third", 1, "second"),
         ],
         None,
     );
@@ -1956,6 +1997,8 @@ fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundA
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer() {
+    #[cfg(distribution_root)]
+    crate::dist_root_install::install();
     use busbar_contract::abi::host::conn::connector::{DIRECTION_OUTBOUND, EGRESS_PROVIDER};
     use busbar_contract::auth_calls::FieldsRequest;
     const TOKEN_URL: &str = "https://login.example.com/tenant/oauth2/v2.0/token";
@@ -2136,6 +2179,8 @@ fn jwt_bearer_routes(
     metadata: busbar_kernel::config_validate::MetadataPosture,
     table: &std::sync::Arc<TokenEndpoint>,
 ) -> Result<std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
+    #[cfg(distribution_root)]
+    crate::dist_root_install::install();
     use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
     let sa = serde_json::json!({
         "client_email": "svc@proj.iam.gserviceaccount.com",
@@ -2649,10 +2694,21 @@ pub(crate) mod tool_door {
         socket: &mut S,
         sent: tokio::sync::mpsc::UnboundedSender<String>,
     ) -> Option<String> {
+        tool_request_counted(socket, sent, None).await
+    }
+
+    async fn tool_request_counted<S: tokio::io::AsyncRead + Unpin>(
+        socket: &mut S,
+        sent: tokio::sync::mpsc::UnboundedSender<String>,
+        count: Option<&std::sync::atomic::AtomicUsize>,
+    ) -> Option<String> {
         let mut buf = vec![0u8; 16 * 1024];
         let mut got = Vec::new();
         loop {
             let n = socket.read(&mut buf).await.ok()?;
+            if let Some(count) = count {
+                count.fetch_add(n, std::sync::atomic::Ordering::SeqCst);
+            }
             if n == 0 {
                 return None;
             }
@@ -2721,6 +2777,11 @@ pub(crate) mod tool_door {
         pub(crate) pin: String,
         tls: Arc<rustls::ClientConfig>,
         ca_der: Vec<u8>,
+        pub(crate) ca_pem: String,
+        pub(crate) client_cert_pem: String,
+        pub(crate) client_key_pem: String,
+        pub(crate) client_presented: Arc<std::sync::atomic::AtomicBool>,
+        pub(crate) http_bytes: Arc<std::sync::atomic::AtomicUsize>,
         task: Option<tokio::task::JoinHandle<()>>,
     }
 
@@ -2793,7 +2854,71 @@ pub(crate) mod tool_door {
             Self::with_handler(handler, None).await
         }
 
+        pub(crate) async fn member_ca_fixture(name: &str, expired: bool, mutual: bool) -> Self {
+            Self::member_ca_fixture_gate(name, expired, mutual, None).await
+        }
+
+        pub(crate) async fn member_ca_gated(release: tokio::sync::watch::Receiver<bool>) -> Self {
+            Self::member_ca_fixture_gate("127.0.0.1", false, false, Some(release)).await
+        }
+
+        async fn member_ca_fixture_gate(
+            name: &str,
+            expired: bool,
+            mutual: bool,
+            gate: Option<tokio::sync::watch::Receiver<bool>>,
+        ) -> Self {
+            let answer: Replies = Arc::new(|request| {
+                (
+                    200,
+                    if request.contains("\"tools/list\"") {
+                        serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"tools":tool_listing()}}).to_string()
+                    } else {
+                        ANSWER.to_string()
+                    },
+                )
+            });
+            let http_bytes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let count = Arc::clone(&http_bytes);
+            let handler: TlsToolHandler = Arc::new(move |mut socket, sent| {
+                let answer = Arc::clone(&answer);
+                let count = Arc::clone(&count);
+                let gate = gate.clone();
+                Box::pin(async move {
+                    if let Some(request) =
+                        tool_request_counted(&mut socket, sent, Some(&count)).await
+                    {
+                        if request.contains("\"tools/call\"") {
+                            if let Some(mut gate) = gate {
+                                drop(
+                                    gate.wait_for(|ready| *ready)
+                                        .await
+                                        .expect("old response release remains alive"),
+                                );
+                            }
+                        }
+                        let (status, body) = answer(&request);
+                        tool_reply(&mut socket, status, body).await;
+                    }
+                })
+            });
+            let mut fixture =
+                Self::with_handler_security(handler, None, name, expired, mutual).await;
+            fixture.http_bytes = http_bytes;
+            fixture
+        }
+
         async fn with_handler(handler: TlsToolHandler, limit: Option<usize>) -> Self {
+            Self::with_handler_security(handler, limit, "127.0.0.1", false, false).await
+        }
+
+        async fn with_handler_security(
+            handler: TlsToolHandler,
+            limit: Option<usize>,
+            name: &str,
+            expired: bool,
+            mutual: bool,
+        ) -> Self {
             use rcgen::PublicKeyData as _;
             busbar_core_connector::tls::install_crypto_provider();
             let ca_key = rcgen::KeyPair::generate().expect("a CA key");
@@ -2802,14 +2927,32 @@ pub(crate) mod tool_door {
             let ca = ca_params.self_signed(&ca_key).expect("the CA");
             let issuer = rcgen::Issuer::new(ca_params, ca_key);
             let leaf_key = rcgen::KeyPair::generate().expect("a leaf key");
-            let leaf = rcgen::CertificateParams::new(vec!["127.0.0.1".into()])
-                .expect("IP SAN")
-                .signed_by(&leaf_key, &issuer)
-                .expect("the leaf");
+            let mut params = rcgen::CertificateParams::new(vec![name.into()]).expect("server SAN");
+            if expired {
+                params.not_before = rcgen::date_time_ymd(2000, 1, 1);
+                params.not_after = rcgen::date_time_ymd(2001, 1, 1);
+            }
+            let leaf = params.signed_by(&leaf_key, &issuer).expect("the leaf");
+            let client_key = rcgen::KeyPair::generate().expect("client key");
+            let client = rcgen::CertificateParams::new(vec!["member-client".into()])
+                .unwrap()
+                .signed_by(&client_key, &issuer)
+                .expect("client certificate");
             let pin =
                 busbar_contract::transport::trust::key_pin(&leaf_key.subject_public_key_info());
-            let server = rustls::ServerConfig::builder()
-                .with_no_client_auth()
+            let builder = rustls::ServerConfig::builder();
+            let builder = if mutual {
+                let mut roots = rustls::RootCertStore::empty();
+                roots.add(ca.der().clone()).expect("client root");
+                builder.with_client_cert_verifier(
+                    rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
+                        .build()
+                        .unwrap(),
+                )
+            } else {
+                builder.with_no_client_auth()
+            };
+            let server = builder
                 .with_single_cert(
                     vec![leaf.der().clone()],
                     rustls_pki_types::PrivateKeyDer::try_from(leaf_key.serialize_der())
@@ -2829,6 +2972,8 @@ pub(crate) mod tool_door {
                 .expect("a TLS port");
             let port = listener.local_addr().unwrap().port();
             let (sent, heard) = tokio::sync::mpsc::unbounded_channel();
+            let client_presented = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let observed_client = Arc::clone(&client_presented);
             let task = tokio::spawn(async move {
                 let mut connections = tokio::task::JoinSet::new();
                 let mut accepted = 0usize;
@@ -2836,8 +2981,17 @@ pub(crate) mod tool_door {
                     let acceptor = acceptor.clone();
                     let sent = sent.clone();
                     let handler = Arc::clone(&handler);
+                    let observed_client = Arc::clone(&observed_client);
                     connections.spawn(async move {
                         if let Ok(tls) = acceptor.accept(socket).await {
+                            if tls
+                                .get_ref()
+                                .1
+                                .peer_certificates()
+                                .is_some_and(|chain| !chain.is_empty())
+                            {
+                                observed_client.store(true, std::sync::atomic::Ordering::SeqCst);
+                            }
                             handler(tls, sent).await;
                         }
                     });
@@ -2856,6 +3010,11 @@ pub(crate) mod tool_door {
                 pin,
                 tls: Arc::new(tls),
                 ca_der: ca.der().to_vec(),
+                ca_pem: ca.pem(),
+                client_cert_pem: client.pem(),
+                client_key_pem: client_key.serialize_pem(),
+                client_presented,
+                http_bytes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 task: Some(task),
             }
         }
@@ -3302,8 +3461,15 @@ pub(crate) mod tool_door {
                     "store": {"module": module, "settings": settings},
                 }))
                 .expect("the door deployment parses");
-                let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+                let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
                     .expect("the door deployment resolves");
+                cfg.per_request_fee = footing.fee_cents.unwrap_or(1);
+                if let Some(groups) = footing.groups {
+                    cfg.groups = groups.clone();
+                }
+                if let Some(fees) = footing.plane_fees {
+                    cfg.plane_fees = fees.clone();
+                }
                 let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
                     as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
                 let loaded = crate::root::real_store::store();
@@ -3328,6 +3494,9 @@ pub(crate) mod tool_door {
                         false,
                     )
                     .expect("the actual root builds the door generation");
+                limits.stage_boot();
+                let _book = crate::root::boot::book(&app, &module)
+                    .expect("the configured Store boots its rate history before activation");
                 limits.keep().expect("the product limits commit");
                 if let Some(rotate) = rotate {
                     rotate();
@@ -3876,6 +4045,9 @@ pub(crate) mod tool_door {
     pub(crate) struct Footing<'a> {
         pub(crate) ledger: Ledger,
         pub(crate) book: Option<&'a Rig>,
+        pub(crate) groups: Option<&'a BTreeMap<String, busbar_kernel::config::GroupCfg>>,
+        pub(crate) plane_fees: Option<&'a busbar_kernel::config::PlaneFeesMap>,
+        pub(crate) fee_cents: Option<i64>,
 
         pub(crate) guarded: bool,
 
@@ -3887,6 +4059,9 @@ pub(crate) mod tool_door {
             Footing {
                 ledger: Ledger::Memory,
                 book: None,
+                groups: None,
+                plane_fees: None,
+                fee_cents: None,
                 guarded: false,
                 tls: None,
             }
@@ -5207,12 +5382,20 @@ pub(crate) mod door_boundary {
         row: &'static PlaneDecl,
         slot: &Arc<dyn std::any::Any + Send + Sync>,
     ) -> App {
+        // This fixture has actually built this configured section above. Retain
+        // appbuild's configured-section metadata as well as its mounted object,
+        // so the admin shim can distinguish it from an unopened declaration.
+        app.plane_sections
+            .get_or_insert_with(Default::default)
+            .insert(row.config_section);
         for (path, wire) in (row.claims)(&**slot) {
             app.planes = Arc::new((*app.planes).clone().mount(row.key, &path, wire));
         }
         if let Some(admission) = (row.admission)(&**slot) {
             app.planes = Arc::new((*app.planes).clone().admit(row.key, admission));
         }
+        // Keep the built object under its declaration key, as appbuild does.
+        app.plane_slots.insert(row.key, Arc::clone(slot));
         app.plane_slots.insert(
             busbar_kernel::state::runtime_slot_key(row.key),
             Arc::clone(slot),
@@ -5702,6 +5885,30 @@ pub(crate) mod door_boundary {
         server.close().await;
     }
 
+    fn fixture_operator_chain(
+        app: &busbar_kernel::state::App,
+        auth_cfg: &busbar_kernel::config::AuthCfg,
+    ) -> Arc<busbar_kernel::auth::AdminAuthChain> {
+        let mut modules = busbar_kernel::auth::AdminAuthChain::build(
+            auth_cfg,
+            &app.hook_env.registry,
+            &app.secret_resolver,
+        )
+        .expect("the actual root opens the admin chain");
+        // Match appbuild: opening the chain alone does not install its operator
+        // credential. Keep the actual configured governor's credential, not an
+        // uncredentialed placeholder Operator.
+        modules.operator = busbar_kernel::auth::open_operator(
+            &app.hook_env.registry,
+            app.governance
+                .as_ref()
+                .and_then(|gov| gov.admin_token_hash()),
+            &app.identity_providers,
+        )
+        .expect("the actual operator opens against its configured credential");
+        Arc::new(modules)
+    }
+
     async fn admin(
         rig: &super::tool_door::Rig,
         method: &str,
@@ -5761,14 +5968,7 @@ pub(crate) mod door_boundary {
                     .collect(),
                 ..busbar_kernel::config::AuthCfg::default_none()
             };
-            app.admin_modules = Arc::new(
-                busbar_kernel::auth::AdminAuthChain::build(
-                    &auth_cfg,
-                    &app.hook_env.registry,
-                    &app.secret_resolver,
-                )
-                .expect("the actual root opens the admin chain"),
-            );
+            app.admin_modules = fixture_operator_chain(&app, &auth_cfg);
             app.admin_chain = chain.clone();
             dispatched(app, row, &slot)
         });
@@ -5908,14 +6108,7 @@ pub(crate) mod door_boundary {
                         .collect(),
                     ..busbar_kernel::config::AuthCfg::default_none()
                 };
-                app.admin_modules = Arc::new(
-                    busbar_kernel::auth::AdminAuthChain::build(
-                        &auth_cfg,
-                        &app.hook_env.registry,
-                        &app.secret_resolver,
-                    )
-                    .expect("the actual root opens the admin chain"),
-                );
+                app.admin_modules = fixture_operator_chain(&app, &auth_cfg);
                 app.admin_chain = chain.clone();
                 dispatched(app, row, &slot)
             });
@@ -5952,14 +6145,7 @@ pub(crate) mod door_boundary {
                     .collect(),
                 ..busbar_kernel::config::AuthCfg::default_none()
             };
-            app.admin_modules = Arc::new(
-                busbar_kernel::auth::AdminAuthChain::build(
-                    &auth_cfg,
-                    &app.hook_env.registry,
-                    &app.secret_resolver,
-                )
-                .expect("the actual root opens the admin chain"),
-            );
+            app.admin_modules = fixture_operator_chain(&app, &auth_cfg);
             app.admin_chain = chain.clone();
             app
         }) {
@@ -6016,25 +6202,37 @@ pub(crate) mod door_boundary {
                     .collect(),
                 ..busbar_kernel::config::AuthCfg::default_none()
             };
-            app.admin_modules = Arc::new(
-                busbar_kernel::auth::AdminAuthChain::build(
-                    &auth_cfg,
-                    &app.hook_env.registry,
-                    &app.secret_resolver,
-                )
-                .expect("the actual root opens the admin chain"),
-            );
+            app.admin_modules = fixture_operator_chain(&app, &auth_cfg);
             app.admin_chain = chain.clone();
             dispatched(app, row, &booted)
         });
+        // Complete an actual pre-apply connect before separating its traffic
+        // from the applied generation's connect. Composition may already have
+        // asked for the initial tool list without the binding added below.
+        let (before_status, before_body) = admin(&rig, "POST", "/tools/fs/connect").await;
+        assert_eq!(
+            before_status, 200,
+            "the pre-apply connect settles: {before_body}"
+        );
+        while server.heard.try_recv().is_ok() {}
         let generation = rig.live.current().generation;
 
-        let applied = Arc::new(dispatched((*rig.app).clone(), row, &slot_over(row, after)));
+        let next_slot = slot_over(row, after.clone());
+        let mut applied = dispatched((*rig.app).clone(), row, &next_slot);
+        // The rig names its serving instance separately from the declaration.
+        // Apply resolves that instance's actual configured slot, not row.key.
+        applied.plane_slots.insert(instance, next_slot);
+        let applied = Arc::new(applied);
         rig.live.apply(&applied);
         assert_eq!(
             rig.live.current().generation,
             generation + 1,
             "the door took the apply"
+        );
+        assert_eq!(
+            rig.live.current().section["fs"],
+            after["fs"],
+            "the serving generation took the applied member and its binding"
         );
         let (status, body) = admin_on(&applied, "POST", "/tools/fs/connect").await;
         let list = server
@@ -6183,8 +6381,7 @@ mod spent_ledger {
             Footing {
                 ledger,
                 book,
-                guarded: false,
-                tls: None,
+                ..Footing::own()
             },
             &|app| app,
         )
@@ -7143,8 +7340,7 @@ mod task_continuation {
             Footing {
                 ledger: Ledger::Rows(std::sync::Arc::clone(rows), max_live),
                 book,
-                guarded: false,
-                tls: None,
+                ..Footing::own()
             },
             &|app| app,
         )
@@ -7345,7 +7541,13 @@ pub(crate) mod hook_parity {
                             .cloned()
                             .unwrap_or_else(|| serde_json::json!({}))
                     };
-                    axum::Json(reply)
+                    let status = settings
+                        .get("http_status")
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|status| u16::try_from(status).ok())
+                        .and_then(|status| axum::http::StatusCode::from_u16(status).ok())
+                        .unwrap_or(axum::http::StatusCode::OK);
+                    (status, axum::Json(reply))
                 }
             }),
         );
@@ -7682,7 +7884,9 @@ pub(crate) mod hook_parity {
             &server,
             vec![(
                 "optional-outcome",
-                gate("rw", serde_json::json!({ "raw_transform_reply": {} })),
+                // A real target error makes the actual webrequest operation fail;
+                // its optional disposition must preserve the original request.
+                gate("rw", serde_json::json!({ "http_status": 503 })),
             )],
         );
         let (status, answer) = send_as(
@@ -7703,14 +7907,9 @@ pub(crate) mod hook_parity {
 
         let mut required = gate(
             "rw",
-            serde_json::json!({
-                "raw_transform_reply": {
-                    "reject": {
-                        "status": busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
-                        "message": busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
-                    }
-                }
-            }),
+            // The same actual operation failure now follows on_error: reject.
+            // Explicit hook rejects are client errors, not host unavailability.
+            serde_json::json!({ "http_status": 503 }),
         );
         required.on_error =
             serde_json::from_value(serde_json::json!("reject")).expect("an on_error disposition");
@@ -8491,7 +8690,12 @@ fn per_hop_over(
     #[cfg(distribution_root)]
     crate::dist_root_install::install();
     let secret = busbar_contract::secret_ref::SecretRef::file(path.display().to_string());
-    let value = secrets.resolve_string(&secret).expect("it resolves");
+    let value = secrets
+        .resolve_string_at_config(
+            &secret,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .expect("it resolves while the binding is built");
     let seal = busbar_kernel::seal::lend();
     let value = value.expose(&seal);
     let settings = serde_json::json!({});
@@ -8689,6 +8893,26 @@ impl busbar_contract::secret::SecretResolve for CountingResolves {
         self.resolved
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         busbar_contract::secret::SecretResolve::resolve_string(&self.inner, secret)
+    }
+
+    fn resolve_at_config(
+        &self,
+        secret: &busbar_contract::secret_ref::SecretRef,
+        scope: &busbar_contract::config_time::ConfigScope,
+    ) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
+        self.resolved
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        busbar_contract::secret::SecretResolve::resolve_at_config(&self.inner, secret, scope)
+    }
+
+    fn resolve_string_at_config(
+        &self,
+        secret: &busbar_contract::secret_ref::SecretRef,
+        scope: &busbar_contract::config_time::ConfigScope,
+    ) -> Result<busbar_contract::redacted::Secret<String>, String> {
+        self.resolved
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        busbar_contract::secret::SecretResolve::resolve_string_at_config(&self.inner, secret, scope)
     }
 }
 
@@ -9261,6 +9485,9 @@ fn the_configured_error_body_cap_reaches_both_egress_constructors() {
                 false,
             )
             .expect("the actual root builds the door generation");
+            limits.stage_boot();
+            let _book = crate::root::boot::book(&app, &module)
+                .expect("the configured Store boots its rate history before activation");
             limits.keep().expect("the product limits commit");
             if let Some(rotate) = rotate {
                 rotate();
@@ -9420,7 +9647,11 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
         super::DoorSteps::new(
             &facts,
             &p,
-            std::sync::Arc::new(|_: &str| None),
+            std::sync::Arc::new(|name: &str| match name {
+                "p\u{1f}a" => Some(busbar_contract::LaneId::new("p\u{1f}a")),
+                "p\u{1f}b" => Some(busbar_contract::LaneId::new("p\u{1f}b")),
+                _ => None,
+            }),
             std::sync::Arc::new({
                 #[cfg(distribution_root)]
                 crate::dist_root_install::install();
@@ -9483,6 +9714,9 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
                         false,
                     )
                     .expect("the actual root builds the door generation");
+                limits.stage_boot();
+                let _book = crate::root::boot::book(&app, &module)
+                    .expect("the configured Store binds the boot rate authority");
                 limits.keep().expect("the product limits commit");
                 if let Some(rotate) = rotate {
                     rotate();
@@ -9526,7 +9760,12 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
 
     let one = steps(&["a"]);
     let sealed = verified(&one, ROUTE_SCOPE_LOCAL);
-    assert!(sealed.is_empty(), "no destination is sealed");
+    assert_eq!(
+        sealed.len(),
+        1,
+        "the granted local entry is sealed for audit"
+    );
+    assert_eq!(sealed[0].lane().as_str(), "p\u{1f}a");
     assert_eq!(one.resolved(&ctx), Some(b"a".to_vec()), "the one entry");
     assert_eq!(
         one.scope_entry(),
@@ -9551,7 +9790,16 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
 
     for reach in [&[][..], &["a", "b"][..]] {
         let s = steps(reach);
-        let _ = verified(&s, ROUTE_SCOPE_LOCAL);
+        let sealed = verified(&s, ROUTE_SCOPE_LOCAL);
+        assert!(
+            sealed.is_empty(),
+            "{reach:?}: no unique granted entry is sealed"
+        );
+        assert_eq!(
+            s.routed(),
+            None,
+            "{reach:?}: local units never acquire a walk"
+        );
         assert_eq!(s.resolved(&ctx), None, "{reach:?}");
         assert_eq!(s.scope_entry(), None, "{reach:?}");
         let refused = s.admit(
@@ -9826,8 +10074,10 @@ fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
             "store": {"module": module, "settings": settings},
         }))
         .expect("the door deployment parses");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+        let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the door deployment resolves");
+        cfg.per_request_fee = 1;
+        cfg.groups = groups.clone();
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let loaded = crate::root::real_store::store();
@@ -9851,6 +10101,9 @@ fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
             false,
         )
         .expect("the actual root builds the door generation");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, &module)
+            .expect("the configured Store boots its rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -9992,6 +10245,9 @@ fn asking_whether_a_name_is_configured_allocates_nothing() {
             false,
         )
         .expect("the actual root builds the door generation");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, &module)
+            .expect("the configured Store boots its rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();

@@ -84,6 +84,9 @@ async fn an_unmounted_plane_claims_no_path_by_url_shape() {
             &rules,
         )
         .expect("the actual product builds the door deployment");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, "configured-store")
+            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();

@@ -22,20 +22,22 @@ pub(super) async fn run() {
         "the build must carry the node's actual root unit"
     );
     let signing_key = crate::root::loader::sign::SigningKey::from_bytes(&[0x5a; 32]);
+    crate::root::linked::register_stores(&crate::LINKED);
+    let late = super::super::LateServices::new();
+    let dispatcher = crate::root::dispatch::boot(1, &late);
+    crate::root::doors::install_dispatcher(dispatcher);
+    // Like main, publish the real declarations before configuration freezes the registry.
+    crate::register_protocols();
+    crate::register_planes();
+    crate::register_diagnostics();
     let initial = busbar_kernel::config::deploy_from_yaml_str(
         "providers: {}\nmodels: {}\nadvanced:\n  allow_destinations: [127.0.0.1]\n",
     )
     .expect("the loopback deployment parses");
     let initial = busbar_kernel::config::resolve(&initial, &Default::default()).unwrap();
     let judge = crate::root::connector::dest_judge(&initial);
-    let late = super::super::LateServices::new();
-    let dispatcher = crate::root::dispatch::boot(1, &late);
-    crate::root::doors::install_dispatcher(dispatcher);
     let (credentials, _credentials_handle) = crate::root::credentials::AppCredentials::late();
     super::super::compose(judge.clone(), &late, credentials);
-    crate::register_protocols();
-    crate::register_planes();
-    crate::register_diagnostics();
     crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
     let on = crate::root::dispatch::dispatcher();
     crate::root::connector::install_io(&on);
@@ -102,10 +104,12 @@ pub(super) async fn run() {
     );
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
     let settings = crate::root::test_plugins::application_store_settings(&directory);
+    let token_signing_file = directory.join("token-signing.key");
+    std::fs::write(&token_signing_file, [9u8; 32]).expect("the boot signing secret");
     assert!(settings.is_object());
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {}, "models": {},
-        "auth": {"chain": ["keys"], "admin_auth": []},
+        "auth": {"chain": ["keys"], "admin_auth": [], "signing_key": {"file": token_signing_file}},
         "store": {"module": module, "settings": settings},
         "advanced": {"allow_destinations": ["127.0.0.1"]}
     }))
@@ -275,7 +279,7 @@ pub(super) async fn run() {
     ));
     let reach = crate::root::door_steps::DoorReach {
         providers: &providers,
-        secrets: Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
+        secrets: app.secret_resolver.clone(),
         auths: Arc::new(crate::root::door_steps::OutboundAuths::new(
             dispatcher.clone(),
             crate::LINKED.auths,

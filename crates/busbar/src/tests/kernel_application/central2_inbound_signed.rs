@@ -229,6 +229,8 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
         rotate();
     }
     let app = Arc::new(app);
+    let credential_owner = Arc::new(busbar_kernel::state::AppHandle::new(app.clone()));
+    crate::dist_root_install::bind_credentials_once(credential_owner.clone());
     let gov = app
         .governance
         .as_ref()

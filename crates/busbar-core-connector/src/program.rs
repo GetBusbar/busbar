@@ -852,7 +852,37 @@ impl Member {
 }
 
 /// EVERY MEMBER of one member-program need, by member name.
-pub(crate) type Members = HashMap<String, Arc<Member>>;
+pub(crate) struct Declaration {
+    member: Arc<Member>,
+}
+
+impl Declaration {
+    pub(crate) fn new(member: Member) -> Self {
+        Self {
+            member: Arc::new(member),
+        }
+    }
+    pub(crate) fn member(&self) -> Arc<Member> {
+        Arc::clone(&self.member)
+    }
+}
+
+impl std::ops::Deref for Declaration {
+    type Target = Member;
+    fn deref(&self) -> &Member {
+        &self.member
+    }
+}
+
+impl Drop for Declaration {
+    fn drop(&mut self) {
+        self.member.retire();
+    }
+}
+
+/// Declaration custody is distinct from active leases: the last declaring record retires the
+/// child even when a lease still holds its Member until the existing exchange finishes.
+pub(crate) type Members = HashMap<String, Arc<Declaration>>;
 
 /// The member an open's target names: its text up to the first `/` (a path the plugin spelled
 pub(crate) fn member_of(target: &str) -> &str {

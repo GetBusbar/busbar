@@ -383,6 +383,124 @@ pub struct ServedPlane {
     pub dialects: Vec<&'static str>,
 }
 
+// Egress snapshots can outlive their DoorLive (for example, a retained probe).
+// Keep the exact loader generation with the connection table they retain.
+struct BoundConns {
+    inner: Arc<dyn busbar_contract::conn::PollConns>,
+    _binding: crate::root::loader::dispatch::plugin::ConnectionBinding,
+}
+
+impl busbar_contract::conn::Conns for BoundConns {
+    fn open(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        desc: &busbar_contract::conn::OpenDesc<'_>,
+    ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+        self.inner.open(caller, need, desc)
+    }
+    fn open_with_security(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        desc: &busbar_contract::conn::OpenDesc<'_>,
+        secure: bool,
+    ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+        self.inner.open_with_security(caller, need, desc, secure)
+    }
+    fn write(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+        bytes: &[u8],
+        end: bool,
+        text: bool,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        self.inner.write(caller, conn, bytes, end, text)
+    }
+    fn read(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+        ticket: busbar_contract::conn::Ticket,
+        buf: &mut [u8],
+    ) -> Result<busbar_contract::conn::Piece, busbar_contract::conn::ConnError> {
+        self.inner.read(caller, conn, ticket, buf)
+    }
+    fn wait(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        set: &[busbar_contract::conn::ConnId],
+        ticket: busbar_contract::conn::Ticket,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        self.inner.wait(caller, set, ticket)
+    }
+    fn facts(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+    ) -> Result<busbar_contract::transport::ConnFacts, busbar_contract::conn::ConnError> {
+        self.inner.facts(caller, conn)
+    }
+    fn close(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        self.inner.close(caller, conn)
+    }
+}
+impl busbar_contract::conn::PollConns for BoundConns {
+    fn poll_read(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut [u8],
+    ) -> std::task::Poll<Result<busbar_contract::conn::Piece, busbar_contract::conn::ConnError>>
+    {
+        self.inner.poll_read(caller, conn, cx, buf)
+    }
+    fn anchor(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        member: &str,
+        target: &str,
+        anchors: &busbar_contract::transport::trust::Anchors,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        self.inner.anchor(owner, need, member, target, anchors)
+    }
+    fn head_defaults(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        target: &str,
+    ) -> busbar_contract::conn::HeadDefaults {
+        self.inner.head_defaults(owner, need, target)
+    }
+    fn seal_reach(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        member: &str,
+        target: &str,
+        reach: bool,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        self.inner.seal_reach(owner, need, member, target, reach)
+    }
+}
+
+fn bound_conns(
+    binding: crate::root::loader::dispatch::plugin::ConnectionBinding,
+    inner: Arc<dyn busbar_contract::conn::PollConns>,
+) -> Arc<dyn busbar_contract::conn::PollConns> {
+    Arc::new(BoundConns {
+        inner,
+        _binding: binding,
+    })
+}
+
 pub struct DoorLive {
     pub section: serde_yaml::Value,
 
@@ -505,6 +623,7 @@ impl DoorApply {
         secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
         scope: &busbar_contract::config_time::ConfigScope,
     ) -> Result<DoorLive, String> {
+        crate::root::door_steps::member_tls_refusal(&self.served_facts, section)?;
         let admission = self
             .driver
             .prepare_section((self.served_facts.section, section))?;
@@ -519,12 +638,20 @@ impl DoorApply {
             &owned_bytes(owned)?,
             generation,
         )?;
-        let table = routes_of(
+        let binding = self.plugin.connection_binding();
+        let (table, catalog_entry) = routes_of(
             section,
             self.reach.as_ref().and_then(|r| r.catalog.as_ref()),
         );
         let pools = DoorPools::of(&table, self.served_facts.section)
             .map_err(|e| format!("{}: {e}", self.facts.plane.as_str()))?;
+        let mut facts = self.facts.clone();
+        seal_secondary_scopes(
+            &mut facts,
+            &self.scope_kinds,
+            &pools,
+            catalog_entry.as_deref(),
+        );
         let mut fetches = None;
         let egress = match &self.reach {
             Some(r) => {
@@ -546,10 +673,10 @@ impl DoorApply {
                     scope,
                 )?;
                 let egress = crate::root::door_steps::compose_egress(
-                    &self.facts,
+                    &facts,
                     &pools,
-                    self.plugin.instance(),
-                    Arc::clone(&r.conns),
+                    binding.owner(),
+                    bound_conns(binding.clone(), Arc::clone(&r.conns)),
                     &routes,
                     Arc::clone(&r.journal),
                     Arc::clone(&self.clock),
@@ -563,14 +690,20 @@ impl DoorApply {
         };
         admission.commit()?;
         if let Some(routes) = fetches {
-            bind_fetches(&self.plugin, &self.served_facts, &routes, &self.units);
+            bind_fetches(
+                &self.plugin,
+                binding.owner(),
+                &self.served_facts,
+                &routes,
+                &self.units,
+            );
         }
         Ok(DoorLive {
             section: section.clone(),
             generation,
             pools,
             egress,
-            facts: self.facts.clone(),
+            facts,
             probes: None,
             shown: None,
         })
@@ -639,6 +772,10 @@ impl DoorAppliers {
                 }
             };
             let walked = walked_section(facts, section, sections);
+            if let Err(e) = crate::root::door_steps::member_tls_refusal(facts, &walked) {
+                tracing::error!(plane = name, error = %e, "door plane's TLS configuration is invalid; it keeps serving the previous one");
+                continue;
+            }
             let now = p.current();
             let next = now.generation + 1;
             let owned = match owned_bytes(&owned_sections(facts, sections)) {
@@ -767,6 +904,22 @@ impl Served {
         self.planes
             .iter()
             .flat_map(|p| p.live.served_facts.need_trust.iter().copied())
+            .collect()
+    }
+
+    #[must_use]
+    pub fn member_tls_sections(&self) -> Vec<&'static str> {
+        self.planes
+            .iter()
+            .filter(|plane| {
+                plane
+                    .live
+                    .served_facts
+                    .need_trust
+                    .iter()
+                    .any(|path| busbar_contract::section::member_target(path) == Some("tls"))
+            })
+            .map(|plane| plane.live.served_facts.section)
             .collect()
     }
 
@@ -1365,6 +1518,8 @@ pub(crate) fn compose_planes_over(
         let dialects = egress
             .map(|e| crate::root::door_steps::dialect_facts(&walked, e.reach.providers))
             .unwrap_or_default();
+        crate::root::door_steps::member_tls_refusal(&served_facts, &walked)
+            .map_err(|e| format!("{instance}: {e}"))?;
         let opened = open(
             plugin,
             settings_path(&served_facts),
@@ -1546,6 +1701,13 @@ pub fn catalog_routes(
     section: &serde_yaml::Value,
     catalog: &std::collections::HashMap<String, busbar_contract::config::ModelCfg>,
 ) -> serde_yaml::Value {
+    fold_catalog_routes(section, catalog).0
+}
+
+fn fold_catalog_routes(
+    section: &serde_yaml::Value,
+    catalog: &std::collections::HashMap<String, busbar_contract::config::ModelCfg>,
+) -> (serde_yaml::Value, Option<String>) {
     use serde_yaml::{Mapping, Value};
     let mut routes = section.clone();
     let named = section
@@ -1553,14 +1715,14 @@ pub fn catalog_routes(
         .and_then(|s| s.get(MODEL_KEY))
         .and_then(Value::as_str);
     let (Some(map), Some(model)) = (routes.as_mapping_mut(), named) else {
-        return routes;
+        return (routes, None);
     };
     let models_key = Value::from(busbar_contract::section::RESERVED_MODELS_KEY);
     let Some(entry) = catalog
         .get(model)
         .filter(|_| !map.contains_key(&models_key))
     else {
-        return routes;
+        return (routes, None);
     };
     let mut folded = Mapping::new();
     folded.insert("provider".into(), entry.provider.clone().into());
@@ -1573,14 +1735,43 @@ pub fn catalog_routes(
     let mut models = Mapping::new();
     models.insert(model.into(), Value::Mapping(folded));
     map.insert(models_key, Value::Mapping(models));
-    routes
+    (routes, Some(model.to_string()))
 }
 
 fn routes_of(
     section: &serde_yaml::Value,
     catalog: Option<&std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
-) -> serde_yaml::Value {
-    catalog.map_or_else(|| section.clone(), |c| catalog_routes(section, c))
+) -> (serde_yaml::Value, Option<String>) {
+    catalog.map_or_else(
+        || (section.clone(), None),
+        |c| fold_catalog_routes(section, c),
+    )
+}
+
+/// A route synthesized from the catalog and a matching declared secondary kind are host facts.
+/// Neither an ARRIVE candidate nor a trust counterparty can create this obligation.
+fn seal_secondary_scopes(
+    facts: &mut DoorFacts,
+    scope_kinds: &[&str],
+    pools: &DoorPools,
+    catalog_entry: Option<&str>,
+) {
+    facts.secondary_scopes.clear();
+    let Some(entry) = catalog_entry.filter(|entry| pools.entries().iter().any(|e| e == entry))
+    else {
+        return;
+    };
+    let catalog_scope = busbar_kernel::plane_driver::registry::plane_decl_for_config_section(
+        busbar_contract::section::RESERVED_POOLS_KEY,
+    )
+    .and_then(|decl| decl.scope_kinds.first().copied());
+    let Some(kind) = catalog_scope.filter(|kind| scope_kinds.iter().skip(1).any(|k| k == kind))
+    else {
+        return;
+    };
+    facts
+        .secondary_scopes
+        .insert(entry.to_string(), kind.to_string());
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1649,9 +1840,11 @@ fn seal_live(
         );
     }
 
-    let table = routes_of(section, egress.and_then(|e| e.reach.catalog));
+    let binding = plugin.connection_binding();
+    let (table, catalog_entry) = routes_of(section, egress.and_then(|e| e.reach.catalog));
     let pools =
         DoorPools::of(&table, served_facts.section).map_err(|e| format!("{instance}: {e}"))?;
+    seal_secondary_scopes(&mut facts, scope_kinds, &pools, catalog_entry.as_deref());
     let egress = match egress {
         Some(egress) => {
             let routes = crate::root::door_steps::member_routes(
@@ -1666,8 +1859,8 @@ fn seal_live(
                 Some(models) if models_plane => crate::root::model_egress::compose(
                     &facts,
                     models,
-                    plugin.instance(),
-                    Arc::clone(&egress.reach.conns),
+                    binding.owner(),
+                    bound_conns(binding.clone(), Arc::clone(&egress.reach.conns)),
                     &routes,
                     Arc::clone(&egress.journal),
                     Arc::clone(clock),
@@ -1677,8 +1870,8 @@ fn seal_live(
                 _ => crate::root::door_steps::compose_egress(
                     &facts,
                     &pools,
-                    plugin.instance(),
-                    Arc::clone(&egress.reach.conns),
+                    binding.owner(),
+                    bound_conns(binding.clone(), Arc::clone(&egress.reach.conns)),
                     &routes,
                     Arc::clone(&egress.journal),
                     Arc::clone(clock),
@@ -1688,7 +1881,7 @@ fn seal_live(
             };
             let (sealed, shown) = sealed.map_err(|e| format!("{instance}: {e}"))?;
 
-            bind_fetches(plugin, served_facts, &routes, units);
+            bind_fetches(plugin, binding.owner(), served_facts, &routes, units);
             Some((Arc::new(sealed), shown))
         }
         None => None,
@@ -1710,6 +1903,7 @@ fn seal_live(
 
 fn bind_fetches(
     plugin: &DoorPlane,
+    owner: busbar_contract::conn::InstanceId,
     served_facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     routes: &BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>,
     units: &Arc<busbar_kernel::host_units::UnitRecords>,
@@ -1718,7 +1912,7 @@ fn bind_fetches(
         crate::root::door_steps::bind_member_fetches(
             served_facts,
             routes,
-            plugin.instance(),
+            owner,
             &*conn_table,
             units,
         );
@@ -2592,6 +2786,50 @@ impl ListenerPlan {
         Ok(auths)
     }
 
+    fn withheld_public_export_need(
+        app: &busbar_kernel::state::App,
+        need: &crate::root::boot::ListenerNeed,
+    ) -> bool {
+        use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
+        use busbar_contract::abi::mechanism::KindCode;
+        if need.kind != KindCode::Export
+            || need.at != "listen"
+            || need.transport != "http"
+            || !need.auth.is_empty()
+            || !app.plugin_routes.public_export_withheld(&need.instance)
+        {
+            return false;
+        }
+        let Some(def) = app.export_defs.get(&need.instance) else {
+            return false;
+        };
+        let Some(row) = crate::root::boot::dropped_registry()
+            .and_then(|registry| registry.resolve(def.module.trim()))
+        else {
+            return false;
+        };
+        let Ok(Some(candidate)) = row.candidate() else {
+            return false;
+        };
+        if candidate.kind != KindCode::Export || candidate.name != need.module {
+            return false;
+        }
+        // Only the exact single root-HTTP inbound declaration can be retired with
+        // this wholly withheld surface. Unrelated or private Needs remain strict.
+        candidate
+            .needs
+            .iter()
+            .filter(|decl| decl.direction == DIRECTION_INBOUND)
+            .count()
+            == 1
+            && candidate.needs.get(need.need as usize).is_some_and(|decl| {
+                decl.direction == DIRECTION_INBOUND
+                    && decl.transport == need.transport
+                    && decl.target_from == "listen"
+                    && decl.auth.is_empty()
+            })
+    }
+
     fn lists(
         &self,
         app: &busbar_kernel::state::App,
@@ -2601,7 +2839,9 @@ impl ListenerPlan {
         use busbar_contract::abi::transport::route::{PATH_EXACT, PATH_PATTERN};
         use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
         let cfg = self.config(app)?;
-        let next = self.needs(app)?;
+        let mut next = self.needs(app)?;
+        next.needs
+            .retain(|need| !Self::withheld_public_export_need(app, need));
         let physical_bind = |at: &str| {
             let proposed = next.binds.iter().find(|bind| bind.at == at);
             self.initial
@@ -2634,7 +2874,7 @@ impl ListenerPlan {
         for need in &next.needs {
             if need.kind == KindCode::Plane && self.planes.get().is_some_and(|lines|
                 !lines.iter().any(|route| matches!(&route.line.claimant, Claimant::Plane(owner) if owner == &need.instance)
-                    && !route.root_only && (route.transport == need.transport || route.line.upgrade.is_some()))) {
+                    && !route.root_only && route.transport == need.transport)) {
                 return Err(format!("{}: inbound need {} has no served plane claim", need.instance, need.need));
             }
             let Some((owner, datagram)) = self.framers.get(&need.transport) else {
@@ -2669,11 +2909,37 @@ impl ListenerPlan {
                 } else {
                     &bind.transport
                 };
-                if bind.at == "admin_listen"
-                    || self
+                let physical = self.framers.get(scheme);
+                // App construction checks physical framing before OPEN has mounted plane
+                // claims. Defer only that claim proof; mount_planes checks again with both
+                // snapshots installed, before any listener is published.
+                let upgrade_claims_match = match (self.planes.get(), self.upgrades.get()) {
+                    (None, None) => true,
+                    (Some(lines), Some(upgrades)) => upgrades.contains(&need.transport)
+                        && lines.iter().any(|route| {
+                            matches!(&route.line.claimant, Claimant::Plane(instance) if instance == &need.instance)
+                                && !route.root_only
+                                && route.transport == need.transport
+                                && route.line.upgrade.as_deref() == Some(need.transport.as_str())
+                        }),
+                    _ => false,
+                };
+                let upgrades_here = bind.owner == BindOwner::Root
+                    && bind.at == "listen"
+                    && need.kind == KindCode::Plane
+                    && !*datagram
+                    && physical.is_some_and(|(_, datagram)| !datagram)
+                    && self
                         .framers
-                        .get(scheme)
-                        .is_none_or(|(physical, _)| physical != owner)
+                        .get(crate::root::listener::framed::upgrade_claim(
+                            bind.tls.is_some(),
+                        ))
+                        .is_some_and(|(upgrade_owner, datagram)| {
+                            upgrade_owner == owner && !datagram
+                        })
+                    && upgrade_claims_match;
+                if bind.at == "admin_listen"
+                    || (physical.is_none_or(|(physical, _)| physical != owner) && !upgrades_here)
                 {
                     return Err(format!(
                         "{}: inbound need {} has incompatible physical framing at {}",
@@ -2706,15 +2972,20 @@ impl ListenerPlan {
             .iter()
             .map(|name| (name.clone(), app.auth.position_points(name)))
             .collect();
-        let default_auth =
-            |mut line: Line, need: &crate::root::boot::ListenerNeed| -> Result<Line, String> {
-                if cfg.data_chain.is_empty() && matches!(line.auth, LineAuth::Chain(..)) {
-                    if let Some(default) = app.inbound_default_auth(&need.auth)? {
-                        line.auth = chain_auth(&[(default.provider, default.points)]);
-                    }
+        let data_mode = DataChainMode::for_candidate(app, &chain);
+        let default_auth = |mut line: Line,
+                            need: &crate::root::boot::ListenerNeed,
+                            allow_operator_open: bool|
+         -> Result<Line, String> {
+            if cfg.data_chain.is_empty() && matches!(line.auth, LineAuth::Chain(..)) {
+                if let Some(default) = app.inbound_default_auth(&need.auth)? {
+                    line.auth = chain_auth(&[(default.provider, default.points)]);
+                } else if allow_operator_open {
+                    line.auth = inherited_data_auth(&chain, data_mode);
                 }
-                Ok(line)
-            };
+            }
+            Ok(line)
+        };
         let mut partitions: Vec<(String, Vec<Line>)> = self
             .initial
             .binds
@@ -2781,6 +3052,24 @@ impl ListenerPlan {
             let Claimant::Plane(owner) = &line.claimant else {
                 continue;
             };
+            let allow_operator_open = self
+                .served
+                .get()
+                .and_then(|served| served.planes.iter().find(|plane| plane.instance == *owner))
+                .and_then(|plane| {
+                    plane
+                        .snapshot
+                        .claims
+                        .get(line.route.rung as usize)
+                        .map(|claim| {
+                            operator_open_claim(
+                                data_mode,
+                                plane.live.served_facts.section,
+                                claim.flags,
+                            )
+                        })
+                })
+                .unwrap_or(false);
             if self
                 .plane_sections
                 .get()
@@ -2822,6 +3111,9 @@ impl ListenerPlan {
                         line.route.path
                     ));
                 }
+                if allow_operator_open && matches!(line.auth, LineAuth::Chain(..)) {
+                    line.auth = inherited_data_auth(&chain, data_mode);
+                }
                 place(&mut partitions, "listen", line.clone())?;
             } else {
                 for need in needs {
@@ -2830,9 +3122,17 @@ impl ListenerPlan {
                         .get(&need.transport)
                         .is_some_and(|(_, datagram)| *datagram)
                     {
-                        place(&mut partitions, "listen", default_auth(line.clone(), need)?)?;
+                        place(
+                            &mut partitions,
+                            "listen",
+                            default_auth(line.clone(), need, allow_operator_open)?,
+                        )?;
                     } else {
-                        place(&mut partitions, &need.at, default_auth(line.clone(), need)?)?;
+                        place(
+                            &mut partitions,
+                            &need.at,
+                            default_auth(line.clone(), need, allow_operator_open)?,
+                        )?;
                     }
                 }
             }
@@ -2855,10 +3155,10 @@ impl ListenerPlan {
                     },
                     claimant: Claimant::Clean(CORE_CLAIMANT.into()),
                     dialect: 0,
-                    auth: if auth == RouteAuth::None {
-                        LineAuth::None
-                    } else {
-                        chain_auth(&chain)
+                    auth: match auth {
+                        RouteAuth::None => LineAuth::None,
+                        RouteAuth::Key => inherited_data_auth(&chain, data_mode),
+                        RouteAuth::Admin => chain_auth(&chain),
                     },
                     upgrade: None,
                     offered: crate::root::doors::offers_unstated(),
@@ -2901,13 +3201,17 @@ impl ListenerPlan {
                 offered: crate::root::doors::offers_unstated(),
             };
             if needs.is_empty() {
-                place(&mut partitions, "listen", line(0))?;
+                let mut line = line(0);
+                if matches!(line.auth, LineAuth::Chain(..)) {
+                    line.auth = inherited_data_auth(&chain, data_mode);
+                }
+                place(&mut partitions, "listen", line)?;
             } else {
                 for need in needs {
                     place(
                         &mut partitions,
                         &need.at,
-                        default_auth(line(need.need), need)?,
+                        default_auth(line(need.need), need, true)?,
                     )?;
                 }
             }
@@ -2937,6 +3241,9 @@ impl ListenerPlan {
             let legacy_fallback = at == "listen";
             let scope = busbar_kernel::inbound::ListenerScope {
                 legacy_fallback,
+                refuse: plan
+                    .prepared(&source.app, &at)
+                    .and_then(|prepared| prepared.refusal_renderer()),
                 admission: Arc::new(move |app, head| {
                     use busbar_kernel::guest::{Claimant, Matched};
                     let fields: Vec<_> = head
@@ -2993,6 +3300,43 @@ impl ListenerPlan {
         })
     }
 }
+
+// A configured empty data chain is an explicit operator policy, not an empty
+// credential requirement. Keep the latter represented by chain_auth([]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DataChainMode {
+    Credentialed,
+    OpenRelay,
+}
+
+impl DataChainMode {
+    fn for_candidate(app: &busbar_kernel::state::App, chain: &[ChainAuth]) -> Self {
+        if chain.is_empty() && app.auth.is_open() {
+            Self::OpenRelay
+        } else {
+            Self::Credentialed
+        }
+    }
+}
+
+fn inherited_data_auth(chain: &[ChainAuth], mode: DataChainMode) -> busbar_kernel::guest::LineAuth {
+    if mode == DataChainMode::OpenRelay && chain.is_empty() {
+        busbar_kernel::guest::LineAuth::None
+    } else {
+        chain_auth(chain)
+    }
+}
+
+fn operator_open_claim(mode: DataChainMode, section: &str, flags: u32) -> bool {
+    use busbar_contract::abi::plane::{CLAIM_SIGNED_INGRESS, CLAIM_TICKET};
+    mode == DataChainMode::OpenRelay
+        && section == busbar_contract::section::RESERVED_POOLS_KEY
+        && flags & (CLAIM_SIGNED_INGRESS | CLAIM_TICKET) == 0
+}
+
+#[cfg(test)]
+#[path = "tests/open_relay_composition.rs"]
+mod open_relay_composition_tests;
 
 fn chain_auth(data_chain: &[ChainAuth]) -> busbar_kernel::guest::LineAuth {
     let points = data_chain.iter().fold(0, |set, (_, p)| set | p.bits());
@@ -3534,8 +3878,14 @@ fn door_mounts_planned(
     let refuse_by_path: busbar_kernel::plane_routes::PlaneRefuseByPathFn = {
         let routes = Arc::clone(&routes);
         Arc::new(move |r: &busbar_kernel::plane_routes::KernelRefusal<'_>| {
-            let Matched::MethodMiss(line) = routes.guests.matched("", r.path, &[]) else {
-                return None;
+            let line = match r.selected_line {
+                Some(selected) => routes.guests.lines().iter().find(|line| {
+                    line.claimant == selected.claimant && line.route == selected.route
+                })?,
+                None => match routes.guests.matched("", r.path, &[]) {
+                    Matched::MethodMiss(line) => line,
+                    _ => return None,
+                },
             };
             let Claimant::Plane(instance) = &line.claimant else {
                 return None;
@@ -5410,6 +5760,18 @@ mod framed_tests;
 #[path = "tests/secret_source.rs"]
 mod secret_source_tests;
 
+#[cfg(all(test, linked_section_pools, linked_axis_plane_door))]
+#[path = "tests/member_tls.rs"]
+mod member_tls_tests;
+
+#[cfg(all(test, linked_section_pools, linked_axis_plane_door))]
+#[path = "tests/member_tls_negative.rs"]
+mod member_tls_negative_tests;
+
 #[cfg(test)]
 #[path = "tests/journal_live_retry.rs"]
 mod journal_live_retry_tests;
+
+#[cfg(test)]
+#[path = "tests/catalog_scope_provenance.rs"]
+mod catalog_scope_provenance_tests;

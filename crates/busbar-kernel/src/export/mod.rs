@@ -35,6 +35,12 @@ pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
     plugin::route_decls(cfg)
 }
 
+pub(crate) fn route_projection(
+    cfg: &ExportCfg,
+) -> (Vec<RouteDecl>, std::collections::HashSet<String>) {
+    plugin::route_projection(cfg)
+}
+
 pub(crate) struct RequestLogFacts<'a> {
     pub(crate) ts: u64,
     pub(crate) ingress_protocol: &'a str,

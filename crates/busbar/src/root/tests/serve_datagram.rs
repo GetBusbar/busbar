@@ -410,7 +410,32 @@ pub(crate) mod real {
                                 }
                                 yielded
                             },
-                            Some(Input::Audio(bytes)) => peer.emit(busbar_transport_webrtc::framing::MEDIA_BASE, &bytes, true, false, Instant::now()).unwrap(),
+                            Some(Input::Audio(bytes)) => {
+                                let yielded = peer.emit(busbar_transport_webrtc::framing::MEDIA_BASE, &bytes, true, false, Instant::now()).unwrap();
+                                // RTP is paced: emit can advertise a deadline before it owes a
+                                // wire packet. Drive its advertised deadlines until this explicit
+                                // frame reaches the wire, while the autonomous loop stays paused.
+                                let until = Instant::now() + WAIT;
+                                loop {
+                                    let mut media_sent = false;
+                                    while let Some((to, bytes)) = peer.poll_send() {
+                                        // Observe str0m's RTP/RTCP mux header; the far peer's
+                                        // decoded OPUS assertion remains the payload authority.
+                                        media_sent |= bytes.len() > 2
+                                            && (128..192).contains(&bytes[0])
+                                            && !(64..96).contains(&(bytes[1] & 0x7f));
+                                        socket.send_to(&bytes, to).await.unwrap();
+                                    }
+                                    if media_sent {
+                                        break;
+                                    }
+                                    let deadline = peer.deadline().expect("accepted media advertises its pacing deadline");
+                                    assert!(deadline < until && Instant::now() < until, "the actual media producer did not emit RTP within the existing wait");
+                                    tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                                    collect(peer.timeout(Instant::now()).unwrap(), &output);
+                                }
+                                yielded
+                            },
                             Some(Input::Pause(ack)) => { paused = true; let _ = ack.send(()); continue; },
                             Some(Input::Resume) => { paused = false; continue; },
                             Some(Input::Raw(bytes)) => { socket.send_to(&bytes, target).await.unwrap(); continue; }

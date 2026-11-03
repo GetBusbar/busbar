@@ -176,8 +176,8 @@ fn resolve_linked_env_mis_encoded_value_refuses_in_1_5_5s_words() {
         .expect_err("a mis-encoded variable cannot resolve to a usable secret");
     assert_eq!(
         err,
-        format!("secret env:{var} cannot resolve: environment variable '{var}' is unset"),
-        "1.5.5's words"
+        format!("secret env:{var} cannot resolve: environment variable '{var}' is not valid UTF-8"),
+        "1.6.0 distinguishes a present, mis-encoded value from an unset variable"
     );
     std::env::remove_var(&var);
 }

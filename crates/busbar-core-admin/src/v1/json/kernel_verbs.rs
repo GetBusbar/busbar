@@ -1253,6 +1253,17 @@ pub(crate) fn operations(
         for (status, description) in doc.errors {
             by_status.insert(status.into(), json!({ "description": description }));
         }
+        // Match the ordinary handler paths: declared client errors are projected from
+        // the same typed conditions the handlers report, rather than handwritten text.
+        let rel = path
+            .strip_prefix(crate::v1::contract::ADMIN_PREFIX)
+            .unwrap_or(&path);
+        if let Some(tag) = crate::v1::contract::taxonomy::MethodTag::from_op_key(&method) {
+            for (status, description) in crate::v1::contract::taxonomy::declared_responses(tag, rel)
+            {
+                by_status.insert(status, json!({ "description": description }));
+            }
+        }
         let http_method = match method.as_str() {
             "get" => axum::http::Method::GET,
             "post" => axum::http::Method::POST,

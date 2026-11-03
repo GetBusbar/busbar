@@ -185,6 +185,18 @@ async fn serve() -> (
         &rules,
     )
     .expect("the actual product builds the host deployment");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the application has its configured governance Store")
+            .store_calls()
+            .expect("the configured product Store exposes actual calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the configured product Store boots its rate-card history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -353,6 +365,18 @@ async fn a_websocket_plane_receives_no_scheme_derived_from_a_raw_credential() {
         &rules,
     )
     .expect("the actual product builds the host deployment");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the application has its configured governance Store")
+            .store_calls()
+            .expect("the configured product Store exposes actual calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the configured product Store boots its rate-card history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();

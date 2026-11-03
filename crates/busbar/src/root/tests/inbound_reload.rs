@@ -149,8 +149,12 @@ fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
     let directory = common::plugins::scratch(&format!("{}-store", provider.name));
     let library = std::fs::read(&library_path).expect("the actual Store image reads");
     let archive = common::plugins::signed(&common::plugins::key(0x33), manifest, &library);
-    std::fs::write(directory.join("store.tar.gz"), archive)
-        .expect("the actual signed Store is staged");
+    // The normal product can already link this Store. The supplied ABI instance
+    // remains the fixture's Store; do not introduce a second owner of its name.
+    if !crate::LINKED.stores.iter().any(|row| row.0 == store.name()) {
+        std::fs::write(directory.join("store.tar.gz"), archive)
+            .expect("the actual signed Store is staged");
+    }
     let mut store_plugins = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),

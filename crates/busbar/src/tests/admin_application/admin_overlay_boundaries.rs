@@ -116,6 +116,9 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -168,7 +171,10 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
     if let Some(rotate) = rotate {
         rotate();
     }
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::boot::hydrate_all(&app)
+        .expect("the actual audit Store hydrates before mutations");
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -398,6 +404,9 @@ async fn test_admin_v1_overlay_reset_stale_if_match_conflicts() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -586,6 +595,9 @@ async fn test_admin_v1_overlay_reset_empty_section_is_idempotent_noop() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -773,6 +785,9 @@ async fn test_admin_v1_overlay_reset_requires_full_scope() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -942,6 +957,9 @@ async fn test_admin_v1_config_settings_survives_a_real_store_reload() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -1128,6 +1146,9 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -1179,6 +1200,30 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
 
+    // The application remains on SQLite; the staged candidate names the actual linked Store
+    // whose Statement declares this credential slot.
+    let candidate_module = busbar_kernel::config::migrated_store_module();
+    let build = busbar_kernel::preflight::root_rows()
+        .registry_build
+        .expect("the actual root installs its registry builder");
+    let linked = build(
+        busbar_kernel::preflight::RegistryIn {
+            linked: busbar_kernel::preflight::linked_rows(),
+            plugins: None,
+            data_dir: None,
+            inventory_only: true,
+        },
+        &mut |_| {},
+    )
+    .expect("the actual linked registry resolves");
+    assert!(
+        linked
+            .secret_slots(candidate_module)
+            .into_iter()
+            .chain(linked.reference_slots(candidate_module))
+            .any(|slot| slot == "token"),
+        "the staged actual Store declares its token credential reference"
+    );
     let var = format!("BUSBAR_TEST_STORE_SECRET_MISSING_{}", std::process::id());
     std::env::remove_var(&var);
 
@@ -1188,7 +1233,7 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
-                "store": { "module": module, "settings": { "token": { "env": var } } }
+                "store": { "module": candidate_module, "settings": { "token": { "env": var } } }
             })
             .to_string(),
         )
@@ -1311,6 +1356,9 @@ async fn test_admin_v1_config_settings_reset_reverts_to_base() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });

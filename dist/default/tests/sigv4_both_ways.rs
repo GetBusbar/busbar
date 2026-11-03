@@ -232,12 +232,18 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
         ),
         ("content-type".to_string(), "application/json".to_string()),
     ];
+    let malformed = send(data_port, &host, &path, &bogus, &body);
+    assert_eq!(
+        (malformed.status, malformed.masked()),
+        (403, bad_sig.masked()),
+        "a malformed authorization on a bounded body keeps the opaque auth refusal"
+    );
     let over = vec![b'x'; BODY_CAP + 1];
     let at_cap = send(data_port, &host, &path, &bogus, &over);
     assert_eq!(
-        (at_cap.status, at_cap.masked()),
-        (403, bad_sig.masked()),
-        "a body over the cap under a malformed SigV4 line is refused with the opaque auth refusal: \
+        (at_cap.status, at_cap.header("x-amzn-errortype"), at_cap.body.as_slice()),
+        (413, Some("ValidationException"), br#"{"__type":"ValidationException","message":"request body exceeds the maximum allowed size"}"#.as_slice()),
+        "a body over the cap under a malformed SigV4 line is refused before a verifier: \
          {}\nlog:\n{}",
         at_cap.text,
         node.log()
@@ -252,8 +258,8 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
     let refused = send(data_port, &host, &path, &signed_over, &over);
     assert_eq!(
         (refused.status, refused.masked()),
-        (403, bad_sig.masked()),
-        "a correctly signed body over the cap is refused at the cap with the opaque auth refusal: \
+        (413, at_cap.masked()),
+        "a correctly signed body over the cap keeps the same exact size refusal: \
          {}\nlog:\n{}",
         refused.text,
         node.log()

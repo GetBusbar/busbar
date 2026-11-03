@@ -316,6 +316,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
     document["auth"]["role_bindings"] = serde_json::json!({
         "test-scope-module": { "admins": { "admin_scope": "full" } },
     });
+    document["plugins"] = crate::root::test_plugins::trusted_config_document(&directory);
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())

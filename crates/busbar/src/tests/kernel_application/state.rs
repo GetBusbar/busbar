@@ -66,6 +66,18 @@ fn every_swap_re_attaches_the_probers_the_root_bound() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the application has its configured governance Store")
+            .store_calls()
+            .expect("the configured product Store exposes actual calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the configured product Store boots its rate-card history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();

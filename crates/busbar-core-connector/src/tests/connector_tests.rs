@@ -2488,6 +2488,10 @@ mod transport_pin {
 
     /// A connector serving a door whose targets ask for connection security under the name
     fn trusting(pki: &Pki) -> Connector {
+        trusting_with_policy(pki, false)
+    }
+
+    fn trusting_with_policy(pki: &Pki, known: bool) -> Connector {
         let view = Transports::new(vec![
             Entry {
                 door: Arc::new(TestDoor::identity("plain")),
@@ -2507,17 +2511,22 @@ mod transport_pin {
             },
         ])
         .unwrap();
-        let tls = crate::tls::client::build_client_config(&EgressTrust {
+        let policy = EgressTrust {
             extra_anchors: vec![pki.ca_der.clone()],
-            ..EgressTrust::default()
-        })
-        .unwrap();
-        let c = Connector::serving(
-            view,
-            loopback_literals(),
-            Some(Arc::new(tls)),
-            Arc::new(|_, _| {}),
-        );
+            ..Default::default()
+        };
+        let c = if known {
+            Connector::serving_with_trust(view, loopback_literals(), policy, Arc::new(|_, _| {}))
+                .unwrap()
+        } else {
+            let tls = crate::tls::client::build_client_config(&policy).unwrap();
+            Connector::serving(
+                view,
+                loopback_literals(),
+                Some(Arc::new(tls)),
+                Arc::new(|_, _| {}),
+            )
+        };
         c.declare_over(OWNER, NeedId(0), "sec").unwrap();
         c.declare_over(OWNER, NeedId(1), "plain").unwrap();
         c
@@ -2553,6 +2562,7 @@ mod transport_pin {
             let (far, seen) = tls_far_end(&pki, &leaf, false).await;
             let c = trusting(&pki);
             let anchors = Anchors {
+                extra_anchors: Vec::new(),
                 key_pin: Some(format!(" {} ", leaf.pin)),
                 client_identity: None,
                 private_reach: false,
@@ -2581,6 +2591,7 @@ mod transport_pin {
             let (far, seen) = tls_far_end(&pki, &served, false).await;
             let c = trusting(&pki);
             let anchors = Anchors {
+                extra_anchors: Vec::new(),
                 key_pin: Some(pinned.pin.clone()),
                 client_identity: None,
                 private_reach: false,
@@ -2620,6 +2631,7 @@ mod transport_pin {
             let (_, got) = exchange(&c, &far).await;
             assert!(got.is_err(), "no identity: the mutual far end refuses");
             let anchors = Anchors {
+                extra_anchors: Vec::new(),
                 key_pin: Some(server.pin.clone()),
                 client_identity: Some(ClientIdentity {
                     cert_chain: vec![client.der.clone()],
@@ -2673,6 +2685,7 @@ mod transport_pin {
             let (far, _seen) = tls_far_end(&pki, &server, true).await;
             let c = trusting(&pki);
             let own = Anchors {
+                extra_anchors: Vec::new(),
                 key_pin: Some(server.pin.clone()),
                 client_identity: Some(ClientIdentity {
                     cert_chain: vec![client.der.clone()],
@@ -2705,6 +2718,7 @@ mod transport_pin {
             let (_listening, far) = far_end().await;
             let c = trusting(&pki);
             let anchors = Anchors {
+                extra_anchors: Vec::new(),
                 key_pin: Some(leaf.pin.clone()),
                 client_identity: None,
                 private_reach: false,
@@ -2713,6 +2727,7 @@ mod transport_pin {
                 .expect("sealed");
             assert_eq!(open_in(&c, 1, &far), Err(ConnError::Refused));
             let bad = Anchors {
+                extra_anchors: Vec::new(),
                 key_pin: None,
                 client_identity: Some(ClientIdentity {
                     cert_chain: vec![leaf.der.clone()],
@@ -2814,6 +2829,7 @@ mod transport_pin {
             let far = keeping_tls_far_end(&served).await;
             let c = pooled_trusting(&pki);
             let pinned = |pin: &str| Anchors {
+                extra_anchors: Vec::new(),
                 key_pin: Some(pin.to_owned()),
                 client_identity: None,
                 private_reach: false,
@@ -2936,6 +2952,11 @@ mod transport_pin {
             let (far, accepted) = counting_tls_far_end(&pki.leaf("localhost")).await;
             let c = pooled_public_roots();
             declare_operator_ca(&c, &pki.ca_pem).expect("declared under its CA");
+            let member = Pki::new();
+            c.anchor(OWNER, NeedId(0), "", &far, &Anchors {
+                extra_anchors: vec![member.ca_der],
+                ..Default::default()
+            }).expect("member roots extend only this need's effective policy");
             assert_eq!(
                 pooled_exchange(&c, (OWNER, 0), &far, b"first", true).await,
                 (b"x".to_vec(), true, None),
@@ -2964,6 +2985,18 @@ mod transport_pin {
             let (far, accepted) = counting_tls_far_end(&pki.leaf("localhost")).await;
             let c = pooled_public_roots();
             declare_operator_ca(&c, &pki.ca_pem).expect("declared under its CA");
+            let member = Pki::new();
+            c.anchor(
+                OWNER,
+                NeedId(0),
+                "",
+                &far,
+                &Anchors {
+                    extra_anchors: vec![member.ca_der],
+                    ..Default::default()
+                },
+            )
+            .expect("member roots extend only this need's effective policy");
             assert_eq!(
                 pooled_exchange(&c, (OWNER, 0), &far, b"first", true).await,
                 (b"x".to_vec(), true, None),
@@ -2981,6 +3014,73 @@ mod transport_pin {
                 "the need's next open rode its kept line"
             );
         });
+    }
+
+    /// The public provenance constructor carries member CA into a real handshake, scoped by member.
+    #[test]
+    fn member_ca_public_connector_opens_only_its_sealed_member() {
+        worker().block_on(async {
+            let base = Pki::new();
+            let member = Pki::new();
+            let leaf = member.leaf("localhost");
+            let (far, seen) = tls_far_end(&member, &leaf, false).await;
+            let c = trusting_with_policy(&base, true);
+            c.anchor(
+                OWNER,
+                NeedId(0),
+                "member",
+                &far,
+                &Anchors {
+                    extra_anchors: vec![member.ca_der],
+                    key_pin: Some(leaf.pin),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            c.anchor(OWNER, NeedId(0), "sibling", &far, &Anchors::default())
+                .unwrap();
+            assert_eq!(
+                exchange_as(&c, &far, "member").await,
+                Ok(b"answer".to_vec())
+            );
+            assert_eq!(
+                seen.lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|(bytes, _)| bytes.as_slice()),
+                Some(&b"first"[..])
+            );
+            assert!(exchange_as(&c, &far, "sibling").await.is_err());
+        });
+    }
+
+    /// A CA requirement cannot be silently ignored by a plaintext carrier or unknown TLS policy.
+    #[test]
+    fn member_ca_fails_closed_for_plaintext_and_opaque_base() {
+        let pki = Pki::new();
+        let c = trusting(&pki);
+        let anchors = Anchors {
+            extra_anchors: vec![pki.ca_der.clone()],
+            ..Default::default()
+        };
+        assert_eq!(
+            c.anchor(OWNER, NeedId(0), "", "localhost:443", &anchors),
+            Err(ConnError::Refused)
+        );
+        let c = trusting_with_policy(&pki, true);
+        c.anchor(OWNER, NeedId(1), "", "127.0.0.1:80", &anchors)
+            .unwrap();
+        assert_eq!(
+            c.open(
+                OWNER,
+                NeedId(1),
+                &OpenDesc {
+                    target: "127.0.0.1:80",
+                    ..Default::default()
+                }
+            ),
+            Err(ConnError::Refused)
+        );
     }
 
     /// Every per-instance record `c` still holds for `owner`, by name.
@@ -3053,6 +3153,7 @@ mod transport_pin {
             let far = keeping_tls_far_end(&served).await;
             let c = pooled_trusting(&pki);
             let pinned = Anchors {
+                extra_anchors: Vec::new(),
                 key_pin: Some(served.pin.clone()),
                 client_identity: None,
                 private_reach: false,
@@ -3159,6 +3260,7 @@ mod transport_pin {
             c.anchor(OWNER, NeedId(0), "bare", &far, &Anchors::default())
                 .expect("sealed");
             let own = Anchors {
+                extra_anchors: Vec::new(),
                 key_pin: Some(server.pin.clone()),
                 client_identity: Some(ClientIdentity {
                     cert_chain: vec![client.der.clone()],
@@ -3191,6 +3293,7 @@ mod transport_pin {
             let (far, _seen) = tls_far_end(&pki, &server, true).await;
             let c = trusting(&pki);
             let own = Anchors {
+                extra_anchors: Vec::new(),
                 key_pin: Some(server.pin.clone()),
                 client_identity: Some(ClientIdentity {
                     cert_chain: vec![client.der.clone()],
@@ -3348,6 +3451,7 @@ mod transport_pin {
             );
 
             let anchors = Anchors {
+                extra_anchors: Vec::new(),
                 key_pin: Some(server.pin.clone()),
                 client_identity: Some(ClientIdentity {
                     cert_chain: vec![client.der.clone()],
@@ -3470,6 +3574,7 @@ mod transport_pin {
             assert!(served.pin.starts_with("sha256/"), "{}", served.pin);
             for written in [served.pin.clone(), plain(&served.pin)] {
                 let anchors = Anchors {
+                    extra_anchors: Vec::new(),
                     key_pin: Some(written.clone()),
                     client_identity: None,
                     private_reach: false,
@@ -3489,6 +3594,7 @@ mod transport_pin {
             }
             for written in [other.pin.clone(), plain(&other.pin)] {
                 let anchors = Anchors {
+                    extra_anchors: Vec::new(),
                     key_pin: Some(written.clone()),
                     client_identity: None,
                     private_reach: false,
@@ -3522,6 +3628,7 @@ mod transport_pin {
             let c = trusting(&pki);
             for bad in ["sha256/BASE=", "sha1/AAAA", "not a pin", "sha256/"] {
                 let anchors = Anchors {
+                    extra_anchors: Vec::new(),
                     key_pin: Some(bad.to_owned()),
                     client_identity: None,
                     private_reach: false,
@@ -3533,6 +3640,7 @@ mod transport_pin {
                 );
             }
             let good = Anchors {
+                extra_anchors: Vec::new(),
                 key_pin: Some(leaf.pin.clone()),
                 client_identity: None,
                 private_reach: false,

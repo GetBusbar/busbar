@@ -107,7 +107,7 @@ fn exact_opening_and_same_timestamp_cards_survive_later_day_and_restart() {
     holder.1.store(true, std::sync::atomic::Ordering::Relaxed);
     let store: Arc<dyn RecordStore> = real_store::store();
     let key = team_key(store.as_ref(), RAW_KEY);
-    let gov = GovState::new(store.clone(), None).unwrap();
+    let gov = GovState::new_with_signer(store.clone(), None, None).unwrap();
 
     let later = metering_bucket(busbar_kernel::store::now());
     let opening = raw_cost(1.0, OPENING_FEE);
@@ -188,7 +188,7 @@ fn exact_opening_and_same_timestamp_cards_survive_later_day_and_restart() {
         .contains("multiple raw rate entries"));
     assert_eq!(reads(&gov), (3 * RAW_COUNT, 3, TOTAL_CENTS - OPENING_FEE));
     drop(gov);
-    let restarted = GovState::new(store.clone(), None).unwrap();
+    let restarted = GovState::new_with_signer(store.clone(), None, None).unwrap();
     assert_eq!(
         reads(&restarted),
         (3 * RAW_COUNT, 3, TOTAL_CENTS - OPENING_FEE)
@@ -228,7 +228,7 @@ fn exact_opening_and_same_timestamp_cards_survive_later_day_and_restart() {
     );
     restarted.flush_budgets_final();
     drop(restarted);
-    let mixed = GovState::new(store, None).unwrap();
+    let mixed = GovState::new_with_signer(store, None, None).unwrap();
     mixed.hydrate_budgets(&second, later).unwrap();
     assert_eq!(
         mixed
@@ -281,7 +281,7 @@ fn malformed_versioned_budget_provenance_refuses_instead_of_repricing_as_legacy(
             },
         )
         .unwrap();
-    let gov = GovState::new(store, None).unwrap();
+    let gov = GovState::new_with_signer(store, None, None).unwrap();
     let cost = raw_cost(1.0, 0);
     let error = gov
         .usage_for(&cost, &key.id, busbar_kernel::store::now())
@@ -328,7 +328,7 @@ fn open_route_cancel_and_session_cleanup_keep_the_admissions_original_entry() {
     holder.1.store(true, std::sync::atomic::Ordering::Relaxed);
     let store: Arc<dyn RecordStore> = real_store::store();
     let key = Arc::new(team_key(store.as_ref(), "vk_open_raw_provenance"));
-    let gov = Arc::new(GovState::new(store, None).unwrap());
+    let gov = Arc::new(GovState::new_with_signer(store, None, None).unwrap());
     let money = PlaneMoney::new(gov.clone(), Arc::new(Post));
     let old_cost = Arc::new(raw_cost(1.0, OPENING_FEE));
     let arrived = metering_bucket(busbar_kernel::store::now()) + SECS_PER_DAY;
@@ -444,7 +444,7 @@ fn scoped_pool_and_ancestor_buckets_keep_exact_raw_counts_and_partial_correction
     let old = raw_cost(1.0, OPENING_FEE).with_groups(&groups);
     let store: Arc<dyn RecordStore> = real_store::store();
     let key = team_key(store.as_ref(), "vk_scoped_raw_identity");
-    let gov = GovState::new(store.clone(), None).unwrap();
+    let gov = GovState::new_with_signer(store.clone(), None, None).unwrap();
     let now = busbar_kernel::store::now();
     let charged = gov.try_admit(&old, &key, POOL, now).unwrap();
     let era = charged.charge().raw_era();
@@ -523,7 +523,7 @@ fn scoped_pool_and_ancestor_buckets_keep_exact_raw_counts_and_partial_correction
     assert_eq!(adjustment[0].era, era.effective_from);
     assert_eq!(adjustment[0].delta.get(UNIT_INPUT), Some(&-10_000));
     gov.flush_budgets_final();
-    let restarted = GovState::new(store, None).unwrap();
+    let restarted = GovState::new_with_signer(store, None, None).unwrap();
     restarted.hydrate_budgets(&current, now).unwrap();
     let usage = restarted
         .usage_for(&current, &key.id, now)

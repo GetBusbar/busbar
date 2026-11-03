@@ -193,6 +193,19 @@ fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_the_old
         &accepting,
     )
     .expect("the original generation builds");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        prior
+            .governance
+            .as_ref()
+            .expect("the application has its configured governance Store")
+            .store_calls()
+            .expect("the configured product Store exposes actual calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the configured product Store boots its rate-card history");
     limits.keep().expect("the original limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -290,7 +303,7 @@ fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
         "a build dropped unkept raises nothing"
     );
 
-    let (_app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
         plugin_config,
         None,
@@ -301,6 +314,18 @@ fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
         &rules,
     )
     .expect("the configuration builds");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the application has its configured governance Store")
+            .store_calls()
+            .expect("the configured product Store exposes actual calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the configured product Store boots its rate-card history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();

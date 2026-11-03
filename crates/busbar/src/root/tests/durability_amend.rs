@@ -129,6 +129,11 @@ fn application(slots: &crate::root::store_double::RecordSlots) -> Arc<busbar_ker
         false,
     )
     .expect("the product builds the amendment deployment over its actual store");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(slots.calls(), STORE_NODE);
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the amendment Store boots its rate-card history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();

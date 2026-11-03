@@ -240,12 +240,14 @@ struct DeclaredNeed {
     /// with that CA added on top (spec section 5, the host connector: "an extra trusted root added
     /// on top of the public roots, as in 1.5.5"); `None` = the connector's default trust.
     tls: Option<Arc<rustls::ClientConfig>>,
+    tls_policy: Option<busbar_contract::transport::trust::EgressTrust>,
     /// The program the need's `target_from` resolved to, its environment references held as its
     /// declaration resolved them: every open spawns it.
     program: Option<(busbar_contract::conn::Program, spawn_env::HeldEnv)>,
     /// A member-program need's members (`busbar_contract::section::MEMBER_PROGRAM`): every open
     /// names one and leases its one long-lived program connection.
     members: Option<Arc<program::Members>>,
+    member_spec: Option<ReadNeed>,
 }
 
 /// A judgement's answer once it came, and the waker of the read or wait that found none.
@@ -305,7 +307,9 @@ fn same_anchors(
         (Some(x), Some(y)) => x.cert == y.cert,
         _ => false,
     };
-    pins && identities
+    let roots = a.map(|s| s.extra_anchors.as_slice()).unwrap_or_default()
+        == b.map(|s| s.extra_anchors.as_slice()).unwrap_or_default();
+    pins && identities && roots
 }
 
 /// The trust anchors sealed per REGISTRATION, by the need's owner, the need and the registration's
@@ -820,6 +824,11 @@ impl std::fmt::Debug for Held {
 /// A need as an instance declared it, whole, and the answer its declaration got.
 type Declared = (ReadNeed, Result<(), ConnError>);
 
+type TlsPolicy = (
+    Arc<rustls::ClientConfig>,
+    busbar_contract::transport::trust::EgressTrust,
+);
+
 /// THE CONNECTOR: the host side of the connection table.
 pub struct Connector {
     slab: ConnSlab<Held>,
@@ -829,6 +838,7 @@ pub struct Connector {
     declared: Mutex<HashMap<(InstanceId, NeedId), Declared>>,
     transports: RwLock<Transports>,
     tls: Option<Arc<rustls::ClientConfig>>,
+    tls_policy: Option<busbar_contract::transport::trust::EgressTrust>,
     wake: WakeTicket,
     judge: Arc<dyn DialJudge>,
     /// One listener per inbound need.
@@ -871,6 +881,7 @@ impl Default for Connector {
             declared: Mutex::new(HashMap::new()),
             transports: RwLock::new(Transports::default()),
             tls: None,
+            tls_policy: None,
             wake: Arc::new(|_, _| {}),
             judge: Arc::new(LiteralsOnly(guard::Guard::default())),
             listeners: Mutex::new(HashMap::new()),
@@ -947,6 +958,19 @@ impl Connector {
             judge,
             ..Self::default()
         }
+    }
+
+    /// A connector with explicit TLS policy provenance, permitting member-local CA additions.
+    pub fn serving_with_trust(
+        transports: Transports,
+        judge: Arc<dyn DialJudge>,
+        trust: busbar_contract::transport::trust::EgressTrust,
+        wake: WakeTicket,
+    ) -> Result<Self, tls::client::BadClientIdentity> {
+        let config = Arc::new(tls::client::build_client_config(&trust)?);
+        let mut connector = Self::serving(transports, judge, Some(config), wake);
+        connector.tls_policy = Some(trust);
+        Ok(connector)
     }
 
     /// The same connector resolving its programs' environment references through `secrets`, at
@@ -1170,8 +1194,11 @@ impl Connector {
         transport: &str,
         egress_class: u32,
         declared_target: Option<&str>,
-        tls: Option<Arc<rustls::ClientConfig>>,
+        security: Option<TlsPolicy>,
     ) -> Result<(), ConnError> {
+        let (tls, tls_policy) = security.map_or((None, None), |(config, policy)| {
+            (Some(config), Some(policy))
+        });
         let served = {
             let view = self.transports.read().expect("transports");
             view.serving(transport)
@@ -1191,8 +1218,10 @@ impl Connector {
                 egress_class,
                 declared_target: declared_target.map(str::to_owned),
                 tls,
+                tls_policy,
                 program: None,
                 members: None,
+                member_spec: None,
             }),
         );
         Ok(())
@@ -1249,7 +1278,6 @@ impl Connector {
 
     /// Record (or, with `None`, drop) what the connector holds for `owner`'s `need`: a member of an
     fn set_need(&self, owner: InstanceId, need: NeedId, record: Option<DeclaredNeed>) {
-        let kept = record.as_ref().and_then(|r| r.members.clone());
         let before = {
             let mut over = self.over.lock().expect("needs");
             match record {
@@ -1257,15 +1285,9 @@ impl Connector {
                 None => over.remove(&(owner, need)),
             }
         };
-        for (name, member) in before.and_then(|b| b.members).iter().flat_map(|m| m.iter()) {
-            if !kept
-                .as_ref()
-                .and_then(|k| k.get(name))
-                .is_some_and(|k| Arc::ptr_eq(k, member))
-            {
-                member.retire();
-            }
-        }
+        // Final declaration custody can retire a child and invoke the carrier. Never do so
+        // while holding the connector's declaration map lock.
+        drop(before);
     }
 
     /// THE MEMBER-PROGRAM NEED (`busbar_contract::section::MEMBER_PROGRAM`): `owner`'s outbound
@@ -1276,6 +1298,7 @@ impl Connector {
         spec: &ReadNeed,
         programs: &[(String, busbar_contract::conn::Program)],
         scope: &busbar_contract::config_time::ConfigScope,
+        predecessor: Option<InstanceId>,
     ) -> Result<(), ConnError> {
         let served = {
             let view = self.transports.read().expect("transports");
@@ -1294,12 +1317,19 @@ impl Connector {
             self.set_need(owner, need, None);
             return Err(ConnError::Refused);
         };
-        let before = self
-            .over
-            .lock()
-            .expect("needs")
-            .get(&(owner, need))
-            .and_then(|d| d.members.clone());
+        let before = {
+            let over = self.over.lock().expect("needs");
+            // An existing successor can only redeclare its own members, never select a
+            // different predecessor. Provenance is used once for a fresh generation.
+            let source = over.get(&(owner, need)).or_else(|| {
+                predecessor
+                    .filter(|previous| *previous != owner)
+                    .and_then(|previous| over.get(&(previous, need)))
+            });
+            source
+                .filter(|d| d.member_spec.as_ref() == Some(spec))
+                .and_then(|d| d.members.clone())
+        };
         let members: program::Members = programs
             .iter()
             .map(|(name, p)| {
@@ -1314,7 +1344,7 @@ impl Connector {
                 }
                 let member = match kept {
                     Some(kept) => kept,
-                    None => Arc::new(program::Member::new(
+                    None => Arc::new(program::Declaration::new(program::Member::new(
                         p.clone(),
                         spawn_env::HeldEnv::load(&p.env_refs, self.spawn_secrets, scope),
                         Via {
@@ -1322,7 +1352,7 @@ impl Connector {
                             io: Arc::clone(&self.io),
                         },
                         alpn.clone(),
-                    )?),
+                    )?)),
                 };
                 Ok((name.clone(), member))
             })
@@ -1337,8 +1367,10 @@ impl Connector {
                 egress_class: spec.egress_class,
                 declared_target: None,
                 tls: None,
+                tls_policy: None,
                 program: None,
                 members: Some(Arc::new(members)),
+                member_spec: Some(spec.clone()),
             }),
         );
         Ok(())
@@ -1377,11 +1409,13 @@ impl Connector {
                 egress_class: spec.egress_class,
                 declared_target: None,
                 tls: None,
+                tls_policy: None,
                 program: Some((
                     program.clone(),
                     spawn_env::HeldEnv::load(&program.env_refs, self.spawn_secrets, scope),
                 )),
                 members: None,
+                member_spec: None,
             }),
         );
         Ok(())
@@ -1594,7 +1628,7 @@ impl Connector {
             if !p.target_judged {
                 match got {
                     Err(v) if !unresolved_here(v) => {
-                        return Err(held.fail(judging, pended_verdict(v)))
+                        return Err(held.fail(judging, pended_verdict(v)));
                     }
                     Ok(at) if !class_admits(j.egress_class, secure, &[], &target, at) => {
                         return Err(held.fail(judging, ConnError::Refused));
@@ -1811,7 +1845,7 @@ impl Connector {
                             answer,
                             proxied: Some(proxied),
                         }),
-                    ))
+                    ));
                 }
                 Some(Err(v)) if !unresolved_here(v) => return Err(ConnError::Refused),
                 Some(Ok(at))
@@ -1823,7 +1857,7 @@ impl Connector {
                         at,
                     ) =>
                 {
-                    return Err(ConnError::Refused)
+                    return Err(ConnError::Refused);
                 }
                 Some(_) => {}
             }
@@ -1862,7 +1896,7 @@ impl Connector {
                     addr,
                 ) =>
             {
-                return Err(ConnError::Refused)
+                return Err(ConnError::Refused);
             }
             Some(Ok(addr)) => (Some(planned.dial_at(addr).map_err(|f| map(&f))?), None),
             None => (
@@ -2219,7 +2253,15 @@ impl DeclaredConns for Connector {
         let credentialed = target.is_some_and(carries_userinfo);
         let anchored = match trust.filter(|_| outbound) {
             None => Ok(None),
-            Some(pem) => tls::client::operator_ca_config(pem.as_bytes()).map(|c| Some(Arc::new(c))),
+            Some(pem) => tls::client::operator_ca_anchors(pem.as_bytes()).and_then(|roots| {
+                let policy = busbar_contract::transport::trust::EgressTrust {
+                    extra_anchors: roots,
+                    ..Default::default()
+                };
+                tls::client::build_client_config(&policy)
+                    .map(|config| Some((Arc::new(config), policy)))
+                    .map_err(|e| e.to_string())
+            }),
         };
         let answer = match anchored {
             Ok(_) if !outbound => {
@@ -2430,7 +2472,30 @@ impl DeclaredConns for Connector {
         programs: &[(String, busbar_contract::conn::Program)],
     ) -> Result<(), ConnError> {
         let scope = busbar_contract::config_time::ConfigScope::config_time();
-        let answer = self.record_members(owner, need, spec, programs, &scope);
+        let answer = self.record_members(owner, need, spec, programs, &scope, None);
+        self.declared
+            .lock()
+            .expect("declared needs")
+            .insert((owner, need), (spec.clone(), answer));
+        answer
+    }
+
+    fn declare_member_programs_from(
+        &self,
+        predecessor: InstanceId,
+        owner: InstanceId,
+        need: NeedId,
+        spec: &ReadNeed,
+        programs: &[(String, busbar_contract::conn::Program)],
+    ) -> Result<(), ConnError> {
+        let scope = busbar_contract::config_time::ConfigScope::config_time();
+        let fresh = !self
+            .declared
+            .lock()
+            .expect("declared needs")
+            .contains_key(&(owner, need));
+        let previous = (fresh && predecessor != owner).then_some(predecessor);
+        let answer = self.record_members(owner, need, spec, programs, &scope, previous);
         self.declared
             .lock()
             .expect("declared needs")
@@ -2671,11 +2736,26 @@ impl Connector {
             }
         };
 
-        let sealed = anchors.clone().map(Same);
-        if anchors
-            .as_ref()
-            .is_some_and(|a| a.key_pin.is_some() && !planned.secure())
+        let anchors = if let Some(sealed) = anchors.as_ref().filter(|s| !s.extra_anchors.is_empty())
         {
+            let needs = self.over.lock().expect("needs");
+            let current = match needs.get(&(caller, need)) {
+                Some(d) if d.tls.is_some() => d.tls_policy.as_ref(),
+                _ => self.tls_policy.as_ref(),
+            };
+            if sealed.policy.as_ref() != current {
+                Some(tls::client::rebase(sealed, current).map_err(|_| ConnError::Refused)?)
+            } else {
+                anchors
+            }
+        } else {
+            anchors
+        };
+
+        let sealed = anchors.clone().map(Same);
+        if anchors.as_ref().is_some_and(|a| {
+            (a.key_pin.is_some() || !a.extra_anchors.is_empty()) && !planned.secure()
+        }) {
             return Err(ConnError::Refused);
         }
         let planned = planned.anchored(anchors);
@@ -2812,8 +2892,10 @@ impl Connector {
             egress_class,
             declared_target,
             tls,
+            tls_policy: _,
             program,
             members,
+            member_spec: _,
         } = self
             .over
             .lock()
@@ -2837,8 +2919,11 @@ impl Connector {
             let expected = program::Expected::of(desc.fields)?;
             let member = members
                 .get(program::member_of(desc.target))
-                .cloned()
+                .map(|declaration| declaration.member())
                 .ok_or(ConnError::Refused)?;
+            // An in-flight open owns the Member, not declaration custody. Replacement must
+            // retire a member even while its carrier spawn is blocked.
+            drop(members);
             let lease = member.lease(&desc.body, expected)?;
             let mut held = Held::over(None, None, None).bounded(desc.timeout_ms);
             held.lease = Some((member, lease));
@@ -3188,19 +3273,29 @@ impl PollConns for Connector {
         target: &str,
         anchors: &busbar_contract::transport::trust::Anchors,
     ) -> Result<(), ConnError> {
-        let door = self
+        let declared = self
             .over
             .lock()
             .expect("needs")
             .get(&(owner, need))
-            .map(|d| Arc::clone(&d.door));
+            .cloned();
+        let door = declared.as_ref().map(|d| Arc::clone(&d.door));
+        let base = declared
+            .as_ref()
+            .and_then(|d| d.tls.as_deref())
+            .or(self.tls.as_deref());
+        let policy = match declared.as_ref() {
+            Some(d) if d.tls.is_some() => d.tls_policy.as_ref(),
+            _ => self.tls_policy.as_ref(),
+        };
         let located = door.as_ref().and_then(|door| self.located(door, target));
         let at = located.map(|l| (owner, need, l.authority.to_ascii_lowercase()));
         let sealed = match (&at, anchors.is_empty()) {
             (_, true) => None,
             (None, false) => return Err(ConnError::Refused),
             (Some(_), false) => Some(Arc::new(
-                tls::client::seal(self.tls.as_deref(), anchors).map_err(|_| ConnError::Refused)?,
+                tls::client::seal_with_policy(base, policy, anchors)
+                    .map_err(|_| ConnError::Refused)?,
             )),
         };
 

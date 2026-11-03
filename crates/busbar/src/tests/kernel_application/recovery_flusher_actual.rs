@@ -105,8 +105,8 @@ fn input(store: &dyn RecordStore, bucket: &str, window: u64) -> u64 {
         .sum()
 }
 
-#[derive(Default)]
 struct Journal {
+    inner: Arc<dyn RecoverySink>,
     selected: std::sync::Mutex<Vec<RecoveryEvent>>,
     fail_after_write: std::sync::atomic::AtomicBool,
 }
@@ -124,9 +124,26 @@ impl Journal {
 }
 impl RecoverySink for Journal {
     fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError> {
-        Ok(self.selected.lock().unwrap().clone())
+        self.inner.replay()
+    }
+    fn replay_selections(
+        &self,
+    ) -> Result<Vec<busbar_kernel::governance::recovery::RecoverySelection>, RecoveryError> {
+        self.inner.replay_selections()
+    }
+    fn verify_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        self.inner.verify_checkpoint(event)
+    }
+    fn confirm_owned_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        self.inner.confirm_owned_checkpoint(event)
+    }
+    fn verify_origin(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        self.inner.verify_origin(event)
     }
     fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        // The real Store selects and verifies custody; this wrapper only loses
+        // the reply after durable success and observes the selected test events.
+        self.inner.persist(event)?;
         let mut selected = self.selected.lock().unwrap();
         if !selected.contains(event) {
             selected.push(event.clone());
@@ -196,6 +213,7 @@ fn era_now() -> u64 {
     busbar_kernel::rate_apply::effective_from_at(busbar_kernel::store::now_ms())
 }
 fn metered(store: &dyn RecordStore, key_id: &str, model: &str, n: u64, now: u64) {
+    let era = busbar_kernel::rate_apply::era_at(busbar_kernel::store::now_ms());
     store
         .add_metering(&MeteringDelta {
             key_id: key_id.into(),
@@ -209,8 +227,11 @@ fn metered(store: &dyn RecordStore, key_id: &str, model: &str, n: u64, now: u64)
             requests: 1,
             billable_requests: 1,
             key_group_at_use: String::new(),
-            pricing_version: String::new(),
-            priced_from_ms: era_now(),
+            pricing_version: era
+                .entry_id
+                .map(|id| id.metering_version())
+                .unwrap_or_default(),
+            priced_from_ms: era.effective_from,
             usage_units: Default::default(),
         })
         .unwrap();
@@ -323,7 +344,11 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
         replies: Default::default(),
         before_batch: Default::default(),
     });
-    let journal = Arc::new(Journal::default());
+    let journal = Arc::new(Journal {
+        inner: crate::root::durability::usage_recovery_sink(&_book.durability),
+        selected: Default::default(),
+        fail_after_write: Default::default(),
+    });
     let old_cost = model(&[(
         "g",
         group_cfg(

@@ -30,9 +30,30 @@ impl PluginHttpDispatch for Counter {
 fn app(auth: RouteAuth, calls: &Arc<AtomicUsize>) -> Arc<busbar_kernel::state::App> {
     crate::dist_root_install::install();
     crate::root::test_plane_registry::register();
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(
-        "store: {module: memory}\nauth: {chain: [], admin_auth: []}\nproviders: {}\nmodels: {}\n",
-    )
+    let (auth_config, providers) = if matches!(&auth, RouteAuth::Admin) {
+        let directory = crate::root::test_plugins::scratch("listener-admin-admission");
+        let credential = directory.join("operator-credential");
+        std::fs::write(&credential, b"listener-admission-operator")
+            .expect("write the actual operator's normal credential input");
+        let operator = busbar_kernel::config::operator_provider();
+        assert!(
+            !operator.is_empty(),
+            "the actual root registers its operator product"
+        );
+        (
+            serde_json::json!({"chain": [], "admin_auth": [operator]}),
+            serde_json::json!({(operator): {"module": operator, "token": {"file": credential}}}),
+        )
+    } else {
+        (
+            serde_json::json!({"chain": [], "admin_auth": []}),
+            serde_json::json!({}),
+        )
+    };
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "store": {"module": "memory"}, "auth": auth_config,
+        "identity-providers": providers, "providers": {}, "models": {},
+    }))
     .expect("the admission deployment parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the admission deployment resolves");

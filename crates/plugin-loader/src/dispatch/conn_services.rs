@@ -1554,18 +1554,10 @@ extern "C" fn write_request(
                     let bound = if waived {
                         None
                     } else {
-                        // Root member-auth registrations belong to the original instance,
-                        // independently of the generation which owns this connection's I/O.
-                        let original = st
-                            .context
-                            .get()
-                            .and_then(|ctx| super::handle::resolve(*ctx))
-                            .and_then(|wake| wake.conn.get());
-                        let Some((owner, original_table)) = original else {
-                            install(st, id, i.stream, table, Conn::Failed(ConnError::Unarmed));
-                            return refusal(ConnError::Unarmed);
-                        };
-                        original_table.auth_of(*owner, need, &member, &target)
+                        // Member auth belongs to the same captured generation as this
+                        // request's I/O. Retained streams keep their old authority;
+                        // new streams must not inherit a removed or rotated binding.
+                        table.auth_of(id, need, &member, &target)
                     };
 
                     let handle = bound.as_ref().and_then(|b| match &b.per_request {
@@ -2216,12 +2208,16 @@ mod creating_authority_tests {
     use busbar_contract::conn::{ConnSlab, Conns, Piece};
     use busbar_contract::transport::ConnFacts;
 
+    type OpenedFields = Vec<(InstanceId, Vec<(String, Vec<u8>)>)>;
+
     #[derive(Default)]
     struct Table {
         slab: ConnSlab<()>,
         closed: Mutex<Vec<(InstanceId, ConnId)>>,
         forgotten: Mutex<Vec<InstanceId>>,
         auth_lookups: Mutex<Vec<InstanceId>>,
+        auth_bindings: Mutex<HashMap<InstanceId, busbar_contract::conn::ConnAuth>>,
+        opened_fields: Mutex<OpenedFields>,
         state: OnceLock<&'static ConnState>,
     }
 
@@ -2230,8 +2226,15 @@ mod creating_authority_tests {
             &self,
             owner: InstanceId,
             need: NeedId,
-            _: &OpenDesc<'_>,
+            desc: &OpenDesc<'_>,
         ) -> Result<ConnId, ConnError> {
+            lock(&self.opened_fields).push((
+                owner,
+                desc.fields
+                    .iter()
+                    .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
+                    .collect(),
+            ));
             self.slab.insert(owner, need, ())
         }
         fn write(
@@ -2299,7 +2302,7 @@ mod creating_authority_tests {
             _: &str,
         ) -> Option<busbar_contract::conn::ConnAuth> {
             lock(&self.auth_lookups).push(owner);
-            None
+            lock(&self.auth_bindings).get(&owner).cloned()
         }
         fn forget(&self, owner: InstanceId) {
             lock(&self.forgotten).push(owner);
@@ -2387,8 +2390,7 @@ mod creating_authority_tests {
         wake.exports.publish(new.clone());
         // The following services execute in the newly published operation context.
         super::super::export_bindings::crossing(Some(new.clone()), || {
-            // A new generation owns the request I/O, while member auth stays rooted at the
-            // original registered instance.
+            // A new generation owns both this request's I/O and its member-auth lookup.
             let framed = held_id();
             wake.conn_state.streams().insert(
                 framed,
@@ -2427,7 +2429,7 @@ mod creating_authority_tests {
             result.size = size_of::<ServiceOut>() as u32;
             write_request(ctx, std::ptr::from_ref(&request).cast(), &mut result);
             assert_eq!(result.outcome, RawOutcome::of(Outcome::Ready));
-            assert_eq!(*lock(&actual.auth_lookups), vec![old_owner]);
+            assert_eq!(*lock(&actual.auth_lookups), vec![new_owner]);
             let streams = wake.conn_state.streams();
             let framed = streams.get(&framed).unwrap();
             assert_eq!(framed.authority.conn.0, new_owner);
@@ -2625,6 +2627,159 @@ mod creating_authority_tests {
             &wake.exports.pin(operation).unwrap(),
             &candidate
         ));
+        wake.exports.clear();
+    }
+
+    struct HeaderAuth;
+
+    impl busbar_contract::auth_calls::OutboundAuth for HeaderAuth {
+        fn open_outbound(&self, _: &str, _: &[u8], _: &serde_json::Value) -> Result<u64, String> {
+            unreachable!("this boundary test installs already-opened generation handles")
+        }
+        fn fields_now(&self, handle: u64, _: &FieldsRequest) -> Option<Fields> {
+            Some(Fields::Ready(vec![
+                busbar_contract::auth_calls::AuthField {
+                    name: b"authorization".to_vec(),
+                    value: format!("Bearer generation-{handle}").into_bytes().into(),
+                    sensitive: true,
+                    query: false,
+                    require_secure: false,
+                },
+            ]))
+        }
+        fn fields(
+            &self,
+            _: u64,
+            _: FieldsRequest,
+            _: u64,
+        ) -> Box<dyn busbar_contract::auth_calls::Fielding> {
+            unreachable!("the boundary auth answers synchronously")
+        }
+    }
+
+    struct HeaderSealRoute;
+
+    impl super::super::ticket::WakeRoute for HeaderSealRoute {
+        fn wake(&self, _: Ticket, _: Option<&'static InstanceWake>) {}
+        fn seal(&self) -> Option<Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>> {
+            Some(Arc::new(busbar_contract::plugin::TestKernelSeal))
+        }
+    }
+
+    fn header_binding(handle: u64) -> busbar_contract::conn::ConnAuth {
+        busbar_contract::conn::ConnAuth {
+            auth: Arc::new(HeaderAuth),
+            handle,
+            style_flags: 0,
+            points: busbar_contract::abi::auth::AuthPoints::HEAD,
+            passthrough: false,
+            lender: None,
+            per_request: None,
+        }
+    }
+
+    fn held_header_request(
+        wake: &'static InstanceWake,
+        owner: InstanceId,
+        table: &Arc<dyn DeclaredConns>,
+    ) -> u64 {
+        let stream = held_id();
+        wake.conn_state.streams().insert(
+            stream,
+            Stream {
+                conn: Conn::Held {
+                    need: NeedId(0),
+                    target: "https://upstream.example/rpc".to_owned(),
+                    within: Vec::new(),
+                    member: "member".to_owned(),
+                    dial_timeout_ms: 0,
+                    head: Some(Head {
+                        method: b"POST".to_vec(),
+                        target: b"/rpc".to_vec(),
+                        fields: Vec::new(),
+                        timeout_ms: 0,
+                        dial_timeout_ms: 0,
+                    }),
+                    body: Vec::new(),
+                },
+                headed: false,
+                ended: false,
+                reply_timeout_ms: 0,
+                authority: Authority::capture(owner, table),
+            },
+        );
+        stream
+    }
+
+    fn end_header_request(ctx: HostCtx, stream: u64) {
+        // SAFETY: these plain ABI frames are zero-valid; all loaned values and sizes
+        // are supplied before the actual connector request service crosses them.
+        let mut piece: RequestPiece = unsafe { std::mem::zeroed() };
+        piece.kind = REQUEST_END;
+        let mut input: RequestIn = unsafe { std::mem::zeroed() };
+        input.head.size = size_of::<RequestIn>() as u32;
+        input.head.op = service::WRITE_REQUEST;
+        input.stream = stream;
+        input.piece = &piece;
+        let mut output: ServiceOut = unsafe { std::mem::zeroed() };
+        output.size = size_of::<ServiceOut>() as u32;
+        write_request(ctx, std::ptr::from_ref(&input).cast(), &mut output);
+        assert_eq!(output.outcome, RawOutcome::of(Outcome::Ready));
+    }
+
+    #[test]
+    fn retained_framed_requests_keep_old_auth_while_new_requests_rotate_remove_and_add_it() {
+        let wake = Box::leak(Box::<InstanceWake>::default());
+        let ctx = super::super::handle::mint(wake).unwrap();
+        let owners = [
+            super::super::handle::instance_id(ctx),
+            InstanceId(u64::MAX - 1),
+            InstanceId(u64::MAX - 2),
+            InstanceId(u64::MAX - 3),
+        ];
+        let actual = Arc::new(Table::default());
+        let table: Arc<dyn DeclaredConns> = actual.clone();
+        assert!(wake.conn.set((owners[0], table.clone())).is_ok());
+        let route: Arc<dyn super::super::ticket::WakeRoute> = Arc::new(HeaderSealRoute);
+        assert!(wake.route.set(Arc::downgrade(&route)).is_ok());
+        wake.conn_state.declare_needs(ctx, &[]);
+        for owner in owners {
+            actual.slab.declare(owner, NeedId(0));
+        }
+        for (owner, handle) in [(owners[0], 11), (owners[1], 22), (owners[3], 33)] {
+            lock(&actual.auth_bindings).insert(owner, header_binding(handle));
+        }
+        let generations = owners.map(|owner| generation(owner, &table));
+        wake.exports.publish(generations[0].clone());
+        let old = super::super::export_bindings::crossing(Some(generations[0].clone()), || {
+            held_header_request(wake, owners[0], &table)
+        });
+        wake.exports.publish(generations[1].clone());
+        let rotated = super::super::export_bindings::crossing(Some(generations[1].clone()), || {
+            held_header_request(wake, owners[1], &table)
+        });
+        wake.exports.publish(generations[2].clone());
+        super::super::export_bindings::crossing(Some(generations[2].clone()), || {
+            // Both frames were opened before this publication and end afterward.
+            end_header_request(ctx, old);
+            end_header_request(ctx, rotated);
+            let removed = held_header_request(wake, owners[2], &table);
+            end_header_request(ctx, removed);
+        });
+        wake.exports.publish(generations[3].clone());
+        super::super::export_bindings::crossing(Some(generations[3].clone()), || {
+            let added = held_header_request(wake, owners[3], &table);
+            end_header_request(ctx, added);
+        });
+        assert_eq!(*lock(&actual.opened_fields), vec![
+            (owners[0], vec![("authorization".to_owned(), b"Bearer generation-11".to_vec())]),
+            (owners[1], vec![("authorization".to_owned(), b"Bearer generation-22".to_vec())]),
+            (owners[2], Vec::new()),
+            (owners[3], vec![("authorization".to_owned(), b"Bearer generation-33".to_vec())]),
+        ], "the actual request service must send each captured generation's fields, with no old-binding fallback");
+        for generation in &generations {
+            drop(wake.conn_state.retire_binding(generation));
+        }
         wake.exports.clear();
     }
 }

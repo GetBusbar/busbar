@@ -127,20 +127,6 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
         )
         .unwrap();
 
-    let mut in_team = minted.clone();
-    in_team.group = Some("team".to_string());
-    let units = std::collections::BTreeMap::from([
-        (busbar_contract::records::UNIT_INPUT.to_string(), 700u64),
-        (busbar_contract::records::UNIT_OUTPUT.to_string(), 200u64),
-    ]);
-    gov.record_usage(&cost, &in_team, "", "m", &units, now);
-    let usage = busbar_contract::billing::TokenUsage {
-        input: 700,
-        output: 200,
-        ..Default::default()
-    };
-    gov.record_metering(&minted.id, "m", "vendor", Some(&usage), now);
-    gov.flush_metering();
     let app = {
         crate::distribution::admin_cross_plane::ensure_seam();
         let directory = super::plugins::scratch(&format!(
@@ -171,6 +157,8 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["plugins"] =
+            super::plugins::config_document(&super::plugins::trusted_config(&directory));
         document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -193,6 +181,9 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
             &rules,
         )
         .expect("the product root builds the actual admin application");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, "configured-store")
+            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -207,6 +198,35 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
             )
             .expect("the actual Store opens its overlay"),
         );
+        // Model the historical unpriced card through the actual Store-backed rate holder;
+        // the normal boot configuration remains valid and receives its ordinary validation.
+        let historical = busbar_kernel::config::card::CardFields {
+            rate_card: Some(card.clone()),
+            ..Default::default()
+        };
+        let rates = historical.rates();
+        busbar_kernel::rate_apply::with_origin("historical unpriced usage fixture", || {
+            busbar_kernel::rate_apply::prepare(&historical, &rates.raw())
+        })
+        .expect("the actual Store prepares the historical unpriced card")
+        .confirm_activation()
+        .expect("the actual Store confirms the historical card's activation")
+        .commit();
+        let now = busbar_kernel::store::now();
+        let mut in_team = minted.clone();
+        in_team.group = Some("team".to_string());
+        let units = std::collections::BTreeMap::from([
+            (busbar_contract::records::UNIT_INPUT.to_string(), 700u64),
+            (busbar_contract::records::UNIT_OUTPUT.to_string(), 200u64),
+        ]);
+        gov.record_usage(&cost, &in_team, "", "m", &units, now);
+        let usage = busbar_contract::billing::TokenUsage {
+            input: 700,
+            output: 200,
+            ..Default::default()
+        };
+        gov.record_metering(&minted.id, "m", "vendor", Some(&usage), now);
+        gov.flush_metering();
         app.governance = Some(gov);
         app.cost = std::sync::Arc::new(cost);
 
@@ -292,6 +312,8 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["plugins"] =
+            super::plugins::config_document(&super::plugins::trusted_config(&directory));
         document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -314,6 +336,9 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
             &rules,
         )
         .expect("the product root builds the actual admin application");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, "configured-store")
+            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -431,6 +456,8 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["plugins"] =
+            super::plugins::config_document(&super::plugins::trusted_config(&directory));
         document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -453,6 +480,9 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
             &rules,
         )
         .expect("the product root builds the actual admin application");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, "configured-store")
+            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -620,6 +650,8 @@ async fn drive_key_cap_and_delegation_errors() {
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["plugins"] =
+            super::plugins::config_document(&super::plugins::trusted_config(&directory));
         document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -642,6 +674,9 @@ async fn drive_key_cap_and_delegation_errors() {
             &rules,
         )
         .expect("the product root builds the actual admin application");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, "configured-store")
+            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -664,6 +699,7 @@ async fn drive_key_cap_and_delegation_errors() {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.max_keys_per_principal = 2;
     }
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&app);
     let router = crate::distribution::admin_cross_plane::build_router(app);
     let (addr, server, client) = spin_up(router).await;
     let keys_url = format!("http://{addr}/api/v1/admin/keys");
@@ -835,7 +871,19 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
         let mut document = serde_json::json!({});
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
+        // These positive named-map surfaces are served only for configured planes.
+        // Use the same actual plane definitions as the file-backed fixture below.
+        document["tools"] = serde_json::json!({"base-tools": {
+            "url": "https://tools.internal/fs",
+            "pin": {"mechanism": "cert_spki", "key": "sha256/BASE="}
+        }});
+        document["agents"] = serde_json::json!({"base-agent": {
+            "url": "https://agents.example/planner",
+            "pin": {"mechanism": "unpinned"}
+        }});
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["plugins"] =
+            super::plugins::config_document(&super::plugins::trusted_config(&directory));
         document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -845,6 +893,10 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
             .expect("the actual admin deployment parses");
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the actual admin deployment resolves");
+        assert!(
+            cfg.plane_sections.contains("tools") && cfg.plane_sections.contains("agents"),
+            "the actual parser configures both positive named-map planes"
+        );
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -858,6 +910,9 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
             &rules,
         )
         .expect("the product root builds the actual admin application");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, "configured-store")
+            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -1075,6 +1130,8 @@ async fn serve_keys_fixture(
                 document["providers"] = serde_json::json!({});
                 document["models"] = serde_json::json!({});
                 document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+                document["plugins"] =
+                    super::plugins::config_document(&super::plugins::trusted_config(&directory));
                 document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
                 document["identity-providers"] = serde_json::json!({"admin-tokens": {
                     "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -1097,6 +1154,10 @@ async fn serve_keys_fixture(
                     &rules,
                 )
                 .expect("the product root builds the actual admin application");
+                limits.stage_boot();
+                let _book = crate::root::boot::book(&app, "configured-store").expect(
+                    "the actual configured Store binds boot rate history before activation",
+                );
                 limits.keep().expect("the product limits commit");
                 if let Some(rotate) = rotate {
                     rotate();
@@ -1153,6 +1214,8 @@ async fn serve_keys_fixture(
                 document["providers"] = serde_json::json!({});
                 document["models"] = serde_json::json!({});
                 document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+                document["plugins"] =
+                    super::plugins::config_document(&super::plugins::trusted_config(&directory));
                 document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
                 document["identity-providers"] = serde_json::json!({"admin-tokens": {
                     "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -1175,6 +1238,10 @@ async fn serve_keys_fixture(
                     &rules,
                 )
                 .expect("the product root builds the actual admin application");
+                limits.stage_boot();
+                let _book = crate::root::boot::book(&app, "configured-store").expect(
+                    "the actual configured Store binds boot rate history before activation",
+                );
                 limits.keep().expect("the product limits commit");
                 if let Some(rotate) = rotate {
                     rotate();
@@ -1225,6 +1292,8 @@ async fn serve_keys_fixture(
             document["providers"] = serde_json::json!({});
             document["models"] = serde_json::json!({});
             document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+            document["plugins"] =
+                super::plugins::config_document(&super::plugins::trusted_config(&directory));
             document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
             document["identity-providers"] = serde_json::json!({"admin-tokens": {
                 "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -1247,6 +1316,9 @@ async fn serve_keys_fixture(
                 &rules,
             )
             .expect("the product root builds the actual admin application");
+            limits.stage_boot();
+            let _book = crate::root::boot::book(&app, "configured-store")
+                .expect("the actual configured Store binds boot rate history before activation");
             limits.keep().expect("the product limits commit");
             if let Some(rotate) = rotate {
                 rotate();
@@ -1741,15 +1813,62 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
             .expect("stage the actual Store product");
         std::fs::write(directory.join("admin.token"), "admintok")
             .expect("write the operator credential");
+        let ranking_library = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_TEST_RANKING_CDYLIB")
+                .expect("the admin hook witnesses require the actual Ranking product"),
+        );
+        let ranking_statement =
+            busbar_plugin_loader::dispatch::rendering_of_library(&ranking_library)
+                .expect("the actual Ranking statement reads")
+                .expect("the actual Ranking product states its door");
+        let ranking_facts = busbar_contract::abi::mechanism::rendering::read(&ranking_statement)
+            .expect("the actual Ranking statement parses");
+        let mut ranking_manifest = super::plugins::manifest(
+            "hook",
+            &ranking_facts.name,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
+        ranking_manifest.alias = "hooks-ranking".into();
+        ranking_manifest.version = ranking_facts.version;
+        ranking_manifest.statement = Some(hex::encode(ranking_statement));
+        let ranking_archive = super::plugins::signed(
+            &crate::dist_root_install::release_key(),
+            ranking_manifest,
+            &std::fs::read(ranking_library).expect("the actual Ranking library reads"),
+        );
+        std::fs::write(directory.join("ranking.tar.gz"), ranking_archive)
+            .expect("stage the actual signed Ranking product");
+        let oidc_path = super::plugins::token_verifier_cdylib_path()
+            .expect("the lockout witness requires the actual OIDC product");
+        let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
+            .expect("the actual OIDC statement reads")
+            .expect("the actual OIDC product states its door");
+        let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+            .expect("the actual OIDC statement parses")
+            .name;
+        crate::test_common::credentials::install_auth_plugin(
+            &directory,
+            &oidc_module,
+            "test-scope-module",
+            true,
+        );
         let settings = crate::root::test_plugins::application_store_settings(&directory);
         let mut document = serde_json::json!({"groups": {"team": {"enabled": true, "limits": []}}, "hooks": {"basehook": {"kind":"gate","module":"hooks-ranking","settings":{"policy":"cheapest"},"timeout_ms":25,"on_error":"reject"}}});
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
-        document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
+        document["plugins"] =
+            super::plugins::config_document(&super::plugins::trusted_config(&directory));
+        document["auth"] =
+            serde_json::json!({"chain": [], "admin_auth": ["test-scope-module", "admin-tokens"]});
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
+        document["identity-providers"]["test-scope-module"] = serde_json::json!({
+            "module": oidc_module,
+            "settings": crate::test_common::credentials::settings("admin-lockout-witness"),
+            "max_admin_scope": "full",
+        });
         document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
         let deploy = busbar_kernel::config::deploy_from_deserializer(document)
             .expect("the actual admin deployment parses");
@@ -1768,6 +1887,9 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
             &rules,
         )
         .expect("the product root builds the actual admin application");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, "configured-store")
+            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -2599,6 +2721,8 @@ async fn drive_plugin_reload_errors() {
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["plugins"] =
+            super::plugins::config_document(&super::plugins::trusted_config(&directory));
         document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -2621,6 +2745,9 @@ async fn drive_plugin_reload_errors() {
             &rules,
         )
         .expect("the product root builds the actual admin application");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, "configured-store")
+            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -2710,6 +2837,8 @@ async fn drive_plugin_rollback_errors() {
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["plugins"] =
+            super::plugins::config_document(&super::plugins::trusted_config(&directory));
         document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -2732,6 +2861,9 @@ async fn drive_plugin_rollback_errors() {
             &rules,
         )
         .expect("the product root builds the actual admin application");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, "configured-store")
+            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -2896,6 +3028,8 @@ async fn drive_plugin_inspect_errors() {
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["plugins"] =
+            super::plugins::config_document(&super::plugins::trusted_config(&directory));
         document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -2918,6 +3052,9 @@ async fn drive_plugin_inspect_errors() {
             &rules,
         )
         .expect("the product root builds the actual admin application");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, "configured-store")
+            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -3311,6 +3448,10 @@ async fn named_map_app_opts(
     disk["store"] =
         serde_yaml::to_value(serde_json::json!({"module": facts.name, "settings": settings}))
             .unwrap();
+    disk["plugins"] = serde_yaml::to_value(super::plugins::config_document(
+        &super::plugins::trusted_config(&plugin_dir),
+    ))
+    .expect("the disk baseline retains the actual signed Store configuration");
     std::fs::write(&config_path, serde_yaml::to_string(&disk).unwrap())
         .expect("write the actual Store selection");
     // The reset witness intentionally leaves corp-ad referenced only in the disk baseline;
@@ -3346,12 +3487,17 @@ async fn named_map_app_opts(
         false,
     )
     .expect("the actual product builds the named-map application");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, "configured-store")
+        .expect("the actual configured Store binds boot rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
     }
     app.serve_tables = tables;
-    let router = crate::distribution::admin_cross_plane::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&app);
+    let router = crate::distribution::admin_cross_plane::build_router(app);
     let (addr, handle, _) = spin_up(router).await;
     (dir, overlay, addr, handle)
 }
@@ -3650,6 +3796,18 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
 #[tokio::test]
 async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
     linked_export_axis();
+    use busbar_contract::export_calls::ExportAxis as _;
+    const REQLOG_RESTART_NOTE: &str = "stored, but the export instance(s) export.reqlog require a \
+RESTART to apply membership, module or streams/fields projection changes to push delivery; this \
+process keeps its boot-opened sinks and their projections until then. Settings refreshes for \
+existing instances of the same module still apply live";
+    assert!(crate::root::exports::EXPORTS.linked("request-log-file"));
+    assert!(
+        crate::root::exports::EXPORTS
+            .routes("request-log-file")
+            .is_empty(),
+        "the actual file sink declares no route; its restart requirement is push membership"
+    );
 
     let (dir, _overlay, addr, handle) =
         named_map_app_opts("bootfrozen", false, false, ServeTables::default()).await;
@@ -3672,9 +3830,18 @@ async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
     let put_body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(put_body["note"], REQLOG_RESTART_NOTE);
+    assert_eq!(
+        put_body["reload_to_apply"],
+        serde_json::json!(["export.reqlog"])
+    );
     assert!(
-        put_body.get("reload_to_apply").is_none(),
-        "the route-free sink's PUT itself reports no restart requirement: {put_body}"
+        put_body["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("RESTART")
+                && note.contains("membership")
+                && note.contains("push delivery")),
+        "the route-free sink names its boot-bound push membership: {put_body}"
     );
     let body: serde_json::Value =
         admin(client.get(format!("http://{addr}/api/v1/admin/export/reqlog")))
@@ -3684,9 +3851,13 @@ async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
             .json()
             .await
             .unwrap();
-    assert!(
-        body.get("reload_to_apply").is_none(),
-        "a sink that declares no route needs no restart: {body}"
+    assert_eq!(
+        body["reload_to_apply"],
+        serde_json::json!(["export.reqlog"])
+    );
+    assert_eq!(
+        body["note"], REQLOG_RESTART_NOTE,
+        "GET retains the pending push-delivery membership independently of routes"
     );
 
     let r = admin(client.put(format!("http://{addr}/api/v1/admin/export/prom")))
@@ -3702,11 +3873,16 @@ async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
     assert_eq!(r.status().as_u16(), 200, "the definition is still stored");
     let body: serde_json::Value = r.json().await.unwrap();
     let empty = Vec::new();
+    assert_eq!(
+        body["reload_to_apply"],
+        serde_json::json!(["/metrics", "export.prom"])
+    );
     let flagged: Vec<&str> = body["reload_to_apply"]
         .as_array()
         .unwrap_or(&empty)
         .iter()
         .filter_map(|v| v.as_str())
+        .filter(|name| name.starts_with('/'))
         .collect();
     assert_eq!(
         flagged,
@@ -3733,6 +3909,9 @@ async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
         "`/metrics` is not mounted, exactly as the response just said"
     );
 
+    // This instance is still newly added, so a settings-only edit cannot clear its pending
+    // membership. The existing-instance live-settings control is retained in the actual kernel's
+    // `export_restart_metadata_compares_boot_membership_module_and_effective_projection` test.
     let r = admin(client.patch(format!("http://{addr}/api/v1/admin/export/reqlog/settings")))
         .body(
             serde_json::json!({"settings": {"path": dir.join("req2.jsonl").to_string_lossy()}})
@@ -3743,9 +3922,13 @@ async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
     let body: serde_json::Value = r.json().await.unwrap();
-    assert!(
-        body.get("reload_to_apply").is_none(),
-        "an edit that adds no path must not re-flag an already-pending route: {body}"
+    assert_eq!(
+        body["reload_to_apply"],
+        serde_json::json!(["export.reqlog"])
+    );
+    assert_eq!(
+        body["note"], REQLOG_RESTART_NOTE,
+        "settings cannot open a newly added sink; no unrelated pending route is re-flagged"
     );
 
     let r = admin(client.delete(format!("http://{addr}/api/v1/admin/export/prom")))
@@ -3969,7 +4152,11 @@ async fn test_admin_v1_identity_provider_delete_rejects_a_dangling_reference() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-fn publish_door(section: &str, settings: &str) -> ServeTables {
+fn try_publish_door(
+    section: &str,
+    settings: &str,
+) -> Result<(ServeTables, Arc<busbar_kernel::plane_driver::PlaneDriver>), String> {
+    use busbar_contract::plane_calls::PlaneCalls;
     use busbar_plugin_loader::dispatch::kinds::plane::{open_door, Plane};
     use busbar_plugin_loader::dispatch::{
         load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
@@ -3977,7 +4164,32 @@ fn publish_door(section: &str, settings: &str) -> ServeTables {
     crate::distribution::admin_cross_plane::ensure_seam();
     let owner = busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
         .unwrap_or_else(|| panic!("a test-linked plane owns `{section}:`"));
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    // These are serving instances, so their advertised conditional-record protocol needs
+    // the actual Store-backed host services used by the composition root.
+    let store = crate::root::real_store::store();
+    let gov = gov_with_signer(store.clone(), None);
+    assert!(gov.attach_store_calls(store.clone()));
+    let services = crate::root::serve::LateServices::new();
+    let kernel = Arc::new(
+        busbar_kernel::host_services::KernelServices::new()
+            .with_signer(gov.clone())
+            .with_pool(Arc::new(busbar_kernel::host_services::BlockingPool::new(
+                tokio::runtime::Handle::current(),
+                busbar_kernel::host_records::QUEUE_CAP,
+            )))
+            .with_records(Arc::new(busbar_kernel::host_records::StoreRows(store))),
+    );
+    services
+        .install_kernel(kernel.clone(), kernel.clone())
+        .unwrap();
+    let dispatcher = Arc::new(Dispatcher::with_services(
+        DispatchConfig::default(),
+        services.served(),
+    ));
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
+    let conns = crate::root::connector::installed()
+        .expect("the actual root installs its declared connection table")
+        .clone();
     let (instance, plane) = crate::distribution::admin_cross_plane::test_seams::linked_doors()
         .iter()
         .find_map(|(label, door)| {
@@ -3990,14 +4202,14 @@ fn publish_door(section: &str, settings: &str) -> ServeTables {
                     max_inflight_cap: 64,
                     sink: Arc::new(NoSink),
                     dispatcher: dispatcher.adopter(),
-                    conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
+                    conns: busbar_plugin_loader::dispatch::ConnTable::Host(conns.clone()),
                 },
             )
             .ok()?;
             (plane.served().section == owner.config_section).then_some((instance, plane))
         })
         .expect("the owning plane's door is test-linked");
-    let snapshot = open_door(&plane, settings.as_bytes(), b"", None).expect("the door opens");
+    let snapshot = open_door(&plane, settings.as_bytes(), b"", None)?;
     let routes = snapshot
         .admin_routes
         .iter()
@@ -4009,9 +4221,39 @@ fn publish_door(section: &str, settings: &str) -> ServeTables {
         })
         .collect();
     let audit_kind = plane.served().audit_kind.to_string();
+    let op_classes = plane
+        .served()
+        .op_classes
+        .iter()
+        .map(|class| busbar_contract::ids::OpClassId::new(class))
+        .collect();
     let calls = Arc::new(
         busbar_plugin_loader::dispatch::plane_calls::PlaneInstance::new(plane, dispatcher, 0),
     );
+    let refusal_statuses = calls.refusal_statuses();
+    let calls: Arc<dyn PlaneCalls> = calls;
+    let node = Arc::new(crate::root::plane_node::Node::new());
+    let money = Arc::new(busbar_kernel::plane_driver::PlaneMoney::new(
+        gov,
+        Arc::new(crate::root::plane_node::NodeEndPost::new(node)),
+    ));
+    let settings = serde_yaml::from_str(settings)
+        .expect("the exact opened section also supplies the normal host admission");
+    // The real trust verbs read admitted counterparties. Keep normal driver custody until the
+    // generation's requests finish, rather than opening a raw unadmitted plugin and dropping it.
+    let admission = Arc::new(busbar_kernel::plane_driver::PlaneDriver::new(
+        calls.clone(),
+        busbar_kernel::plane_driver::DriverConfig {
+            caps: busbar_kernel::plane_driver::BufferCaps::default(),
+            op_classes,
+            status_of: busbar_kernel::plane_driver::refusal_status,
+            refusal_statuses,
+            caller_refs: money.caller_refs(),
+        },
+        money,
+        kernel,
+        (section, &settings),
+    )?);
     let tables = ServeTables::default();
     tables
         .publish(
@@ -4026,13 +4268,39 @@ fn publish_door(section: &str, settings: &str) -> ServeTables {
             &[],
         )
         .expect("its admin routes publish");
-    tables
+    Ok((tables, admission))
+}
+
+fn publish_door(
+    section: &str,
+    settings: &str,
+) -> (ServeTables, Arc<busbar_kernel::plane_driver::PlaneDriver>) {
+    try_publish_door(section, settings).expect("the door opens")
+}
+
+fn assert_passthrough_is_refused_before_publication() {
+    // This original registration formerly reached connect's 400 guard. The product now rejects
+    // credential forwarding while OPEN reads the section, before any route can be published.
+    let error = match try_publish_door(
+        "tools",
+        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "cert_spki", "key": "sha256/l5WGzHWyALvI/qjcwI1ctxb3Jp8+8Ztd0NTYTcL0Q4s="}, "upstream_credentials": "passthrough", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("a passthrough registration must not publish an admin route"),
+    };
+    assert!(
+        error.contains("upstream_credentials: passthrough"),
+        "{error}"
+    );
+    assert!(error.contains("is refused"), "{error}");
+    assert!(error.contains("caller"), "{error}");
 }
 
 async fn drive_door_verb_errors() {
-    let tables = publish_door(
+    assert_passthrough_is_refused_before_publication();
+    let (tables, _admission) = publish_door(
         "tools",
-        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "cert_spki", "key": "sha256/l5WGzHWyALvI/qjcwI1ctxb3Jp8+8Ztd0NTYTcL0Q4s="}, "upstream_credentials": "passthrough", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
+        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "cert_spki", "key": "sha256/l5WGzHWyALvI/qjcwI1ctxb3Jp8+8Ztd0NTYTcL0Q4s="}, "upstream_credentials": "own", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
     );
     let (_dir, _overlay, addr, handle) = named_map_app_serving("door-verbs", tables).await;
     let client = reqwest::Client::new();
@@ -4052,48 +4320,45 @@ async fn drive_door_verb_errors() {
         let body: serde_json::Value = r.json().await.unwrap();
         assert_eq!(body.pointer("/error/code").unwrap(), "not_found", "{body}");
     }
-    let r = send(reqwest::Method::POST, "/tools/base-tools/connect")
+    let r = send(reqwest::Method::GET, "/tools/base-tools/changes")
         .await
         .unwrap();
-    assert_eq!(r.status(), 400);
+    assert_eq!(r.status(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(
-        body.pointer("/error/code").unwrap(),
-        "invalid_request",
-        "{body}"
-    );
+    assert_eq!(body.get("name").unwrap(), "base-tools", "{body}");
+    assert!(body.get("error").is_none(), "{body}");
     handle.abort();
 }
 
 #[tokio::test]
 async fn a_door_admin_route_is_served_only_by_the_generation_lent_its_table() {
-    let tables = publish_door(
+    assert_passthrough_is_refused_before_publication();
+    let (tables, _admission) = publish_door(
         "tools",
-        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "cert_spki", "key": "sha256/l5WGzHWyALvI/qjcwI1ctxb3Jp8+8Ztd0NTYTcL0Q4s="}, "upstream_credentials": "passthrough", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
+        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "cert_spki", "key": "sha256/l5WGzHWyALvI/qjcwI1ctxb3Jp8+8Ztd0NTYTcL0Q4s="}, "upstream_credentials": "own", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
     );
     let (lent_dir, _lent_overlay, lent, lent_handle) =
         named_map_app_serving("door-table-lent", tables).await;
     let (unlent_dir, _unlent_overlay, unlent, unlent_handle) =
         named_map_app("door-table-unlent", false).await;
     let client = reqwest::Client::new();
-    let connect = |addr: std::net::SocketAddr| {
+    // A read observes this exact published generation without starting an unrelated
+    // operator refresh that requires a fully composed connector and trust writer.
+    let changes = |addr: std::net::SocketAddr| {
         client
-            .post(format!(
-                "http://{addr}/api/v1/admin/tools/base-tools/connect"
+            .get(format!(
+                "http://{addr}/api/v1/admin/tools/base-tools/changes"
             ))
             .header("x-admin-token", "admintok")
             .send()
     };
-    let r = connect(lent).await.unwrap();
+    let r = changes(lent).await.unwrap();
     let status = r.status().as_u16();
     let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(status, 400, "the lent generation serves the door: {body}");
-    assert_eq!(
-        body.pointer("/error/code").unwrap(),
-        "invalid_request",
-        "{body}"
-    );
-    let r = connect(unlent).await.unwrap();
+    assert_eq!(status, 200, "the lent generation serves the door: {body}");
+    assert_eq!(body.get("name").unwrap(), "base-tools", "{body}");
+    assert!(body.get("error").is_none(), "{body}");
+    let r = changes(unlent).await.unwrap();
     let status = r.status().as_u16();
     let body: serde_json::Value = r.json().await.unwrap();
     assert_eq!(
@@ -4125,7 +4390,7 @@ async fn drive_agent_door_verb_errors() {
             "pin": {"mechanism": "jws_issuer_key", "key": issuer_key_info(&issuer)}
         }
     });
-    let tables = publish_door("agents", &section.to_string());
+    let (tables, _admission) = publish_door("agents", &section.to_string());
     let (_dir, _overlay, addr, handle) = named_map_app_serving("agent-door-verbs", tables).await;
     let client = reqwest::Client::new();
     let send = |path: &str, body: &str| {
@@ -4456,7 +4721,19 @@ async fn drive_named_map_errors() {
             let mut document = serde_json::json!({});
             document["providers"] = serde_json::json!({});
             document["models"] = serde_json::json!({});
+            // These positive named-map surfaces are served only for configured planes.
+            // Use the same actual plane definitions as the file-backed fixture below.
+            document["tools"] = serde_json::json!({"base-tools": {
+                "url": "https://tools.internal/fs",
+                "pin": {"mechanism": "cert_spki", "key": "sha256/BASE="}
+            }});
+            document["agents"] = serde_json::json!({"base-agent": {
+                "url": "https://agents.example/planner",
+                "pin": {"mechanism": "unpinned"}
+            }});
             document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+            document["plugins"] =
+                super::plugins::config_document(&super::plugins::trusted_config(&directory));
             document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
             document["identity-providers"] = serde_json::json!({"admin-tokens": {
                 "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -4466,6 +4743,10 @@ async fn drive_named_map_errors() {
                 .expect("the actual admin deployment parses");
             let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
                 .expect("the actual admin deployment resolves");
+            assert!(
+                cfg.plane_sections.contains("tools") && cfg.plane_sections.contains("agents"),
+                "the actual parser configures both positive named-map planes"
+            );
             let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
                 as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
             let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -4479,6 +4760,9 @@ async fn drive_named_map_errors() {
                 &rules,
             )
             .expect("the product root builds the actual admin application");
+            limits.stage_boot();
+            let _book = crate::root::boot::book(&app, "configured-store")
+                .expect("the actual configured Store binds boot rate history before activation");
             limits.keep().expect("the product limits commit");
             if let Some(rotate) = rotate {
                 rotate();

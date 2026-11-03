@@ -57,6 +57,81 @@ impl ExportCalls for ListenerSentinel {
 }
 
 #[test]
+fn only_a_wholly_withheld_opened_public_surface_retires_its_listener_need() {
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    let run = |paths: &[&str], public: &[&str], persistent: &[&str], scrape: bool, opened: bool| {
+        let cfg = ExportCfg {
+            plugins: vec![crate::config::PluginExportSettings {
+                name: "tp".into(),
+                def: def("observer"),
+                projection: Projection::for_test(&[ExportStream::Metrics], &[]),
+                scrape,
+            }],
+            ..ExportCfg::default()
+        };
+        let sink = PluginSink {
+            name: "tp".into(),
+            module: "observer".into(),
+            sink: Arc::new(ListenerSentinel {
+                policy: ListenerPolicySink {
+                    routes: paths
+                        .iter()
+                        .map(|path| Route {
+                            path: (*path).into(),
+                            method: RouteMethod::Get,
+                            auth: RouteAuth::Key,
+                        })
+                        .collect(),
+                    public: public.iter().map(|path| (*path).into()).collect(),
+                    persistent: persistent.iter().map(|path| (*path).into()).collect(),
+                },
+                label: "unused",
+                called: Arc::new(std::sync::Mutex::new(Vec::new())),
+            }),
+            scrape,
+            projection: Projection::for_test(&[ExportStream::Metrics], &[]),
+            span_record: false,
+            admission: OnceLock::new(),
+            reads: OnceLock::new(),
+        };
+        let boot = if opened { vec![sink] } else { Vec::new() };
+        let (routes, withheld) = project_routes(&cfg, &boot);
+        (routes.len(), withheld.contains("tp"))
+    };
+    assert_eq!(
+        run(&["/metrics"], &["/metrics"], &[], false, true),
+        (0, true)
+    );
+    assert_eq!(run(&[], &[], &[], false, true), (0, false));
+    assert_eq!(
+        run(
+            &["/metrics", "/exports/tp/private"],
+            &["/metrics"],
+            &[],
+            false,
+            true
+        ),
+        (1, false)
+    );
+    assert_eq!(
+        run(&["/exports/tp/private"], &[], &[], false, true),
+        (1, false)
+    );
+    assert_eq!(
+        run(&["/metrics"], &["/metrics"], &["/metrics"], false, true),
+        (0, false)
+    );
+    assert_eq!(
+        run(&["/metrics"], &["/metrics"], &[], true, true),
+        (1, false)
+    );
+    assert_eq!(
+        run(&["/metrics"], &["/metrics"], &[], false, false),
+        (0, false)
+    );
+}
+
+#[test]
 fn replacement_export_cannot_lend_its_grant_to_the_old_named_instance() {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
     for old_module in ["third-party", "trusted-observer"] {

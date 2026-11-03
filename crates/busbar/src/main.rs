@@ -803,6 +803,7 @@ async fn run(
         .share_claim_doors(&mut served)
         .unwrap_or_else(|e| die(e));
     root_rules.hold_owned_anchors(&served.need_trust());
+    root_rules.hold_member_tls_sections(&served.member_tls_sections());
 
     if app.governance.is_some() {
         root_rules.hold_unopened(

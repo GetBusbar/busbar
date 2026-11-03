@@ -1382,14 +1382,43 @@ impl Ran {
         let sealed = |lane: &str| self.verified.iter().any(|v| v.as_str() == lane);
         let lane = match (self.dialled, served) {
             (Some(dialled), _) => Some(dialled.as_str()),
-            (None, Some(served)) => sealed(served).then_some(served),
-            (None, None) => match self.verified.as_slice() {
+            (None, Some(served)) if sealed(served) => Some(served),
+            // A plane's ledger lane may differ from its route entry. It cannot erase
+            // the one verified entry of a local unit, or choose among several entries.
+            (None, _) => match self.verified.as_slice() {
                 [only] => Some(only.as_str()),
                 _ => None,
             },
         };
         lane.map(str::to_owned)
     }
+}
+
+#[cfg(test)]
+#[test]
+fn a_local_billing_lane_keeps_only_a_unique_verified_route_destination() {
+    let a = LaneId::new("a2a\u{1f}planner-a");
+    let b = LaneId::new("a2a\u{1f}planner-b");
+    let billing = Some("a2a\u{1f}agent:planner-b");
+    let mut ran = Ran::default();
+    assert_eq!(ran.destination(billing), None, "no unverified attribution");
+    ran.verified = vec![b];
+    assert_eq!(ran.destination(billing), Some(b.as_str().to_owned()));
+    ran.verified = vec![a, b];
+    assert_eq!(
+        ran.destination(billing),
+        None,
+        "no choice between verified entries"
+    );
+    assert_eq!(
+        ran.destination(Some(a.as_str())),
+        Some(a.as_str().to_owned())
+    );
+    ran.dialled = Some(b);
+    assert_eq!(
+        ran.destination(Some(a.as_str())),
+        Some(b.as_str().to_owned())
+    );
 }
 
 impl Sealing {

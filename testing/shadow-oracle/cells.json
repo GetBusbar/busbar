@@ -55,16 +55,16 @@
     }
   ],
   "counts": {
-    "total": 2590,
+    "total": 2596,
     "by_plane": {
       "a2a": 468,
-      "core": 1007,
+      "core": 1013,
       "llm": 203,
       "mcp": 912
     },
     "by_family": {
       "a2a": 469,
-      "admin.ops": 327,
+      "admin.ops": 333,
       "admin.plugins": 7,
       "auth.lifecycle": 4,
       "billing": 16,
@@ -10299,6 +10299,111 @@
           "Content-Type": "application/json"
         },
         "body": "{\"effective_from\":0,\"operator_fingerprint\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"per_request_fee\":1,\"reason\":\"oracle correction\",\"signature\":\"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}",
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostLedgerRecoveryList|bad-body",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/ledger/recovery/list",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"limit\":0}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "expect [400]"
+    },
+    {
+      "id": "admin.ops|PostLedgerRecoveryList|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/ledger/recovery/list",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"limit\":1}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "1.6.0-additive observation-only ledger recovery list. A bounded authenticated request reads retained operation identities without granting resolution authority;"
+    },
+    {
+      "id": "admin.ops|PostLedgerRecoveryList|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/ledger/recovery/list",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"limit\":1}",
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostLedgerRecoveryResolve|bad-body",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/ledger/recovery/resolve",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "expect [400]"
+    },
+    {
+      "id": "admin.ops|PostLedgerRecoveryResolve|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/ledger/recovery/resolve",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "needs fixture: native_route_verified component evidence is in fixtures/ledger-recovery-positive-proof.json; Oracle positive remains Gap until the required real retained-operat",
+      "needs_fixture": true
+    },
+    {
+      "id": "admin.ops|PostLedgerRecoveryResolve|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/ledger/recovery/resolve",
+        "headers": {},
+        "body": null,
         "auth": "none",
         "listener": "admin"
       },

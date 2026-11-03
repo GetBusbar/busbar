@@ -588,9 +588,16 @@ impl Planned {
         let presented = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut alpn_offer = Vec::new();
         let tls = if located.secure {
-            let base = dial.tls.clone().ok_or_else(|| {
-                Failure::Refused("the target asks for connection security and none is set".into())
-            })?;
+            let base = dial
+                .anchors
+                .as_ref()
+                .and_then(|a| a.tls.clone())
+                .or_else(|| dial.tls.clone())
+                .ok_or_else(|| {
+                    Failure::Refused(
+                        "the target asks for connection security and none is set".into(),
+                    )
+                })?;
             let mut config = (*base).clone();
 
             config.alpn_protocols = if located.offer.is_empty() {
@@ -1266,7 +1273,7 @@ impl Connection {
                 Phase::Failed(f) => return Poll::Ready(Err(f.clone())),
                 Phase::Ended => return Poll::Ready(Err(Failure::Closed)),
                 Phase::Open if !self.handshaking() && !self.opening_owed => {
-                    return Poll::Ready(Ok(()))
+                    return Poll::Ready(Ok(()));
                 }
                 _ => {}
             }
@@ -1360,7 +1367,7 @@ impl Connection {
                 Ok(true) => {}
 
                 Ok(false) if self.read_end && self.inbox.is_empty() => {
-                    return Poll::Ready(Ok(None))
+                    return Poll::Ready(Ok(None));
                 }
                 Ok(false) => return Poll::Pending,
                 Err(f) => self.fail(f),
@@ -1552,7 +1559,7 @@ impl Connection {
             Poll::Ready(Ok((0, _))) => {
                 return Err(Failure::Failed(
                     "proxy closed the connection during CONNECT".into(),
-                ))
+                ));
             }
             Poll::Ready(Ok((n, _))) => n,
         };

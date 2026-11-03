@@ -92,7 +92,7 @@
     {
       "repo": "busbar-plane-llm",
       "url": "https://github.com/GetBusbar/busbar-plane-llm",
-      "commit": "13b4360ef8f36a6d779c3f12887f82fc03245ad7",
+      "commit": "47733adda3b1ab66c8df1d2f055f295be4bbfbeb",
       "package": "busbar-plane-llm-plugin",
       "kind": "plane",
       "alias": "llm",
@@ -125,24 +125,26 @@
     {
       "repo": "busbar-store-memory",
       "url": "https://github.com/GetBusbar/busbar-store-memory",
-      "commit": "afa6267d0e34a1cb328e286d3d1ec6f95a83808f",
+      "commit": "569f08d683cf20bba1eac21614a92e81a8c0de23",
       "package": "busbar-store-memory-plugin",
       "kind": "store",
       "alias": "memory",
       "image": "libbusbar_store_memory_plugin.so",
       "declares": "store-memory/declares.json",
-      "lock_sha256": "f5dbc02deff663e565e9bd5d72374a43633566bfbbedf3844f89ba09e0266e39"
+      "lock_sha256": "97970300b94ed62da9cb0625390c5a970bacf395661308a6c3ae05a07403ab01",
+      "sdk": "16530bfbda93e34caa5bbf81b8e6c65307305477"
     },
     {
       "repo": "busbar-store-sqlite",
       "url": "https://github.com/GetBusbar/busbar-store-sqlite",
-      "commit": "aec7d834f862713ff1ce21595008a9ea08bff512",
+      "commit": "77e26f72a86266ece8e3e00468cf90099499c18e",
       "package": "busbar-store-sqlite-plugin",
       "kind": "store",
       "alias": "sqlite",
       "image": "libbusbar_store_sqlite_plugin.so",
       "declares": "store-sqlite/declares.json",
-      "lock_sha256": "951c965e221d9be9e130135e789388aac46868557940ae98040d9a73ba803118"
+      "lock_sha256": "85c7388f6c3b4508a275fd0cc41f76f9a2e1fa4ffdf6d2bf0f4a31a46d374061",
+      "sdk": "16530bfbda93e34caa5bbf81b8e6c65307305477"
     },
     {
       "repo": "busbar-transport-grpc",
@@ -158,7 +160,7 @@
     {
       "repo": "busbar-transport-http",
       "url": "https://github.com/GetBusbar/busbar-transport-http",
-      "commit": "337b8c0763247f9a0d7d9169f0ee129b412d405f",
+      "commit": "b5d7ef20700c806276b67e7cb87c73b6c25bdc06",
       "package": "busbar-transport-http-plugin",
       "kind": "transport",
       "alias": "http",
@@ -180,13 +182,14 @@
     {
       "repo": "busbar-transport-tcp",
       "url": "https://github.com/GetBusbar/busbar-transport-tcp",
-      "commit": "6c804d968737f39ea435c81ef22d16cd7ffcaf59",
+      "commit": "7cdbb13a62e15216fd9d2b89ef42c3646b6c2a72",
       "package": "busbar-transport-tcp-plugin",
       "kind": "transport",
       "alias": "tcp",
       "image": "libbusbar_transport_tcp_plugin.so",
       "declares": "transport-tcp/declares.json",
-      "lock_sha256": "2395ac672a5193b482b30af439dba3463951d58c5ab4ce1b130f53db1d61a6a3"
+      "lock_sha256": "fa4449c3533d46c79cacdfac06fb1d330be0ef74621bb423859a0070209eb8d0",
+      "sdk": "16530bfbda93e34caa5bbf81b8e6c65307305477"
     },
     {
       "repo": "busbar-transport-webrtc",
@@ -279,7 +282,7 @@
     {
       "repo": "busbar-plane-a2a",
       "url": "https://github.com/GetBusbar/busbar-plane-a2a",
-      "commit": "f1b214c3920bd2a76bcf8e880e87f831877d38d3",
+      "commit": "42d6f31042391903becc6c85a901ee666222d624",
       "package": "busbar-plane-a2a-plugin",
       "kind": "plane",
       "alias": "a2a",
@@ -301,18 +304,18 @@
     {
       "repo": "busbar-plane-mcp",
       "url": "https://github.com/GetBusbar/busbar-plane-mcp",
-      "commit": "9d2f8138e93f6d8710e7b3f2240f300d5b0f9b7e",
+      "commit": "049f75986a12ddde0d5648596e535de09b528edd",
       "package": "busbar-plane-mcp-plugin",
       "kind": "plane",
       "alias": "mcp",
       "image": "libbusbar_plane_mcp_plugin.so",
       "declares": "plane-mcp/declares.json",
-      "lock_sha256": "d25733201a2b64bf6190d588528d2e395d33722e52ac3d1d101d10a4f0414282"
+      "lock_sha256": "38e437e5f534df737d96baa87f72c173533c0b552f8b74285a6ec4c1bdc5c139"
     },
     {
       "repo": "busbar-plane-streaming",
       "url": "https://github.com/GetBusbar/busbar-plane-streaming",
-      "commit": "18f07288477b3ad2ba67cbc25ed3ed076e9e599c",
+      "commit": "a12e66818739c2890b3ad3dc72248928824a86b2",
       "package": "busbar-plane-streaming-plugin",
       "kind": "plane",
       "alias": "streaming",
@@ -334,35 +337,38 @@
     {
       "repo": "busbar-store-mysql",
       "url": "https://github.com/GetBusbar/busbar-store-mysql",
-      "commit": "c30ffb81c919a9d82ea1fc8604ba9f8789f3ff30",
+      "commit": "7234096085310f8f8b11cc004f3272ab2dc553e9",
       "package": "busbar-store-mysql-plugin",
       "kind": "store",
       "alias": "mysql",
       "image": "libbusbar_store_mysql_plugin.so",
       "declares": "store-mysql/declares.json",
-      "lock_sha256": "371d70a07a88a6fc4843241643b7d67690edf922fbd5ec79b163a9e73031429f"
+      "lock_sha256": "90c7730ee74736019b12db41494dbecd76538f9db80cb4bf0be264fe499e600d",
+      "sdk": "16530bfbda93e34caa5bbf81b8e6c65307305477"
     },
     {
       "repo": "busbar-store-postgres",
       "url": "https://github.com/GetBusbar/busbar-store-postgres",
-      "commit": "738ac8117623b3c9b6900b50051c957cb6d0746b",
+      "commit": "d796121fe5ab6c676e13c3a0d244839f300d59bc",
       "package": "busbar-store-postgres-plugin",
       "kind": "store",
       "alias": "postgres",
       "image": "libbusbar_store_postgres_plugin.so",
       "declares": "store-postgres/declares.json",
-      "lock_sha256": "7264321c2de9ac2ba8a877f644870e5d31536ad5b796a25310d95d44896cea8d"
+      "lock_sha256": "72e38b7ec77e84a4c7fcdd889b4257295f2b57143bb152bbabf60897a73957be",
+      "sdk": "16530bfbda93e34caa5bbf81b8e6c65307305477"
     },
     {
       "repo": "busbar-store-valkey",
       "url": "https://github.com/GetBusbar/busbar-store-valkey",
-      "commit": "cd76bd142e428da6c8c7a0f3a5817884ab4f5e89",
+      "commit": "45db668733366741f52b4ded28fa58064b643948",
       "package": "busbar-store-valkey-plugin",
       "kind": "store",
       "alias": "valkey",
       "image": "libbusbar_store_valkey_plugin.so",
       "declares": "store-valkey/declares.json",
-      "lock_sha256": "3e452925603468514a647b65206cf54d597d2b2d440937e3578952c7fc3a3b81"
+      "lock_sha256": "b4130774ccf0924f6d43286485a0ce4f98dc8ddfa507d0c49be5274d417427e3",
+      "sdk": "16530bfbda93e34caa5bbf81b8e6c65307305477"
     }
   ]
 }

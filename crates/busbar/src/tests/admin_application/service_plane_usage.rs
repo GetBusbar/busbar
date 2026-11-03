@@ -145,7 +145,12 @@ fn app(cost: CostModel) -> busbar_kernel::state::App {
         &rules,
     )
     .expect("the actual root builds the Store and admin application");
-    limits.keep().unwrap();
+    // These read-seam cases deliberately precede rate-history publication: two cases assert
+    // that no source exists, and the dated case supplies its own history below. Stage the actual
+    // configured root without activating a history that would invalidate that fixture state.
+    // This is the pre-activation read seam; normal boot publication is covered separately.
+    limits.stage_boot();
+    drop(limits);
     if let Some(rotate) = rotate {
         rotate();
     }

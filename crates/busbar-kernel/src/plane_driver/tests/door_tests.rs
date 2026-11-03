@@ -122,6 +122,101 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
 }
 
 #[test]
+fn a_model_serving_doors_ledger_lanes_are_its_actual_model_names() {
+    let mut reg = registration("third-party-models", "third_party_models");
+    let section = DoorSection::new(
+        None,
+        reg.section,
+        serde_yaml::from_str(
+            "models:\n  first-model: { provider: one }\n  second-model: { provider: two }\n\
+             hooks: [audit]\npools: { both: { members: [first-model, second-model] } }\n",
+        )
+        .unwrap(),
+    );
+    for kinds in [vec!["member"], Vec::new()] {
+        reg.scope_kinds = kinds;
+        let mut lanes = section.ledger_lanes_for(&declaration_of(&reg));
+        lanes.sort();
+        assert_eq!(
+            lanes,
+            [
+                "third-party-models\u{1f}first-model",
+                "third-party-models\u{1f}second-model",
+            ],
+            "model prices use direct-route names, independently of the grant scope kinds"
+        );
+    }
+}
+
+#[test]
+fn a_model_map_owns_the_routed_entries_even_when_empty() {
+    let reg = registration("third-party-models", "third_party_models");
+    let decl = declaration_of(&reg);
+    for (models, want) in [
+        ("{}", Vec::<&str>::new()),
+        (
+            "{ actual-model: { provider: upstream } }",
+            vec!["third-party-models\u{1f}actual-model"],
+        ),
+    ] {
+        let section = DoorSection::new(
+            None,
+            reg.section,
+            serde_yaml::from_str(&format!(
+                "models: {models}\nmetadata: {{ url: 'https://example.test' }}\n"
+            ))
+            .unwrap(),
+        );
+        assert_eq!(
+            section.ledger_lanes_for(&decl),
+            want,
+            "the served pool view uses the model map instead of top-level section keys"
+        );
+    }
+}
+
+#[test]
+fn named_doors_keep_their_explicit_scoped_registration_lanes() {
+    let reg = registration("third-party-members", "third_party_members");
+    let section = DoorSection::new(
+        None,
+        reg.section,
+        serde_yaml::from_str(
+            "first: { url: 'https://one.test' }\nsecond: { url: 'https://two.test' }\n\
+             hooks: [audit]\nupstream_credentials: own\nwork: { max_live: 2 }\n\
+             pools: { both: { members: [first, second] } }\nmodels: null\n",
+        )
+        .unwrap(),
+    );
+    let mut lanes = section.ledger_lanes_for(&declaration_of(&reg));
+    lanes.sort();
+    assert_eq!(
+        lanes,
+        [
+            "third-party-members\u{1f}member:first",
+            "third-party-members\u{1f}member:second",
+        ],
+    );
+}
+
+#[test]
+fn unpriced_and_fee_only_doors_add_no_resource_price_obligations() {
+    let mut reg = registration("third-party-fees", "third_party_fees");
+    for classes in [Vec::new(), vec![("request", "count")]] {
+        reg.billable_classes = classes;
+        let decl = declaration_of(&reg);
+        for written in [
+            "models: { actual-model: { provider: upstream } }\n",
+            "actual-member: { url: 'https://example.test' }\n",
+        ] {
+            let section =
+                DoorSection::new(None, reg.section, serde_yaml::from_str(written).unwrap());
+            assert!(section.ledger_lanes_for(&decl).is_empty());
+        }
+    }
+}
+
+#[test]
 fn a_door_registration_folds_into_a_row_every_word_of_which_is_the_doors() {
     let decl = fold(registration("door-fold-row", "door_fold_row")).expect("folds");
     assert_eq!(decl.key, "door-fold-row");
@@ -612,4 +707,154 @@ fn a_doors_probe_is_handed_its_referenced_providers_dialect_facts() {
         slot.facing.claims.is_empty(),
         "no resolved providers, none handed"
     );
+}
+
+#[test]
+fn a_refused_facing_keeps_only_the_same_successful_serving_slot() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Prior(&'static str, Arc<dyn std::any::Any + Send + Sync>);
+    impl crate::plane_driver::slots::PlaneSlots for Prior {
+        fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
+            (key == self.0).then_some(&self.1)
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    let refuse = Arc::new(AtomicBool::new(false));
+    let mut reg = registration("door-fold-refused-facing", NAMED);
+    reg.owns = vec!["refused_facing_owned"];
+    let facing = Arc::clone(&reg.facing);
+    reg.facing = Arc::new({
+        let refuse = Arc::clone(&refuse);
+        move |settings, owned, public_url, dialects| {
+            if refuse.load(Ordering::SeqCst) {
+                Err("the candidate facing is refused".into())
+            } else {
+                facing(settings, owned, public_url, dialects)
+            }
+        }
+    });
+    let decl = fold(reg).unwrap();
+    let section = |value| DoorSection::new(decl.door, NAMED, value);
+    let first = section(serde_yaml::from_str("first: {}\n").unwrap());
+    let next = section(serde_yaml::from_str("replacement: {}\n").unwrap());
+    let first_defs = first.as_defs();
+    let next_defs = next.as_defs();
+    fn ctx<'a>(
+        defs: &'a std::collections::BTreeMap<
+            &'static str,
+            Box<dyn crate::config::plane_sections::PlaneCfg>,
+        >,
+        prior: Option<&'a dyn crate::plane_driver::slots::PlaneSlots>,
+        public_url: Option<&'a str>,
+    ) -> BuildCtx<'a> {
+        BuildCtx {
+            endpoint_slot: None,
+            plane_defs: defs,
+            public_url,
+            prior,
+            providers: None,
+        }
+    }
+    let old = (decl.build)(decl, &ctx(&first_defs, None, Some("https://old.example"))).unwrap();
+    assert!(old.downcast_ref::<DoorSlot>().unwrap().opened);
+    let prior = Prior(decl.key, Arc::clone(&old));
+
+    // A valid public URL change must still produce its own new admission.
+    let valid = (decl.build)(
+        decl,
+        &ctx(&next_defs, Some(&prior), Some("https://new.example")),
+    )
+    .unwrap();
+    assert!(!Arc::ptr_eq(&old, &valid));
+    assert_eq!(
+        (decl.admission)(&*valid).unwrap().audience,
+        "https://new.example/fleet"
+    );
+
+    refuse.store(true, Ordering::SeqCst);
+    let kept = (decl.build)(
+        decl,
+        &ctx(&next_defs, Some(&prior), Some("https://new.example")),
+    )
+    .unwrap();
+    assert!(
+        Arc::ptr_eq(&old, &kept),
+        "the complete serving slot is retained"
+    );
+    assert_eq!(
+        kept.downcast_ref::<DoorSlot>().unwrap().section.value,
+        first.value
+    );
+    assert_eq!(
+        (decl.admission)(&*kept).unwrap().audience,
+        "https://old.example/fleet"
+    );
+    assert_eq!((decl.claims)(&*kept), (decl.claims)(&*old));
+
+    let mut closed = old.downcast_ref::<DoorSlot>().unwrap().clone();
+    closed.opened = false;
+    let mut wrong_section = old.downcast_ref::<DoorSlot>().unwrap().clone();
+    wrong_section.section.section = "another-section";
+    let other_decl = fold(registration("another-facing-door", NAMED)).unwrap();
+    let mut wrong_door = old.downcast_ref::<DoorSlot>().unwrap().clone();
+    wrong_door.section.door = other_decl.door;
+    for bad in [
+        Arc::new(closed) as Arc<dyn std::any::Any + Send + Sync>,
+        Arc::new(wrong_section),
+        Arc::new(wrong_door),
+        Arc::new(7u64),
+    ] {
+        let bad_prior = Prior(decl.key, bad);
+        let failed = (decl.build)(
+            decl,
+            &ctx(&next_defs, Some(&bad_prior), Some("https://new.example")),
+        )
+        .unwrap();
+        let failed = failed.downcast_ref::<DoorSlot>().unwrap();
+        assert!(!failed.opened);
+        assert!(failed.facing.claims.is_empty());
+        assert!(failed.facing.admission.is_none());
+        assert_eq!(failed.section.value, next.value);
+    }
+    let failed_boot =
+        (decl.build)(decl, &ctx(&next_defs, None, Some("https://new.example"))).unwrap();
+    assert!(!failed_boot.downcast_ref::<DoorSlot>().unwrap().opened);
+    assert!((decl.admission)(&*failed_boot).is_none());
+    // Removal never falls back to the previous configured plane.
+    let absent = std::collections::BTreeMap::new();
+    assert!((decl.build)(decl, &ctx(&absent, Some(&prior), None)).is_none());
+    let null_defs = section(serde_yaml::Value::Null).as_defs();
+    assert!((decl.build)(decl, &ctx(&null_defs, Some(&prior), None)).is_none());
+
+    // A configured owned endpoint still constitutes a configured plane, even when its
+    // named-map section is absent. Keep that existing build path and its refusal policy.
+    let owned_ctx = |value| BuildCtx {
+        endpoint_slot: Some(Arc::new(DoorOwned {
+            section: "refused_facing_owned",
+            value,
+        })),
+        plane_defs: &null_defs,
+        public_url: Some("https://owned.example"),
+        prior: Some(&prior),
+        providers: None,
+    };
+    let active_owned: serde_yaml::Value = serde_yaml::from_str("enabled: true\n").unwrap();
+    refuse.store(false, Ordering::SeqCst);
+    let owned = (decl.build)(decl, &owned_ctx(active_owned.clone())).unwrap();
+    assert!(!Arc::ptr_eq(&old, &owned));
+    let owned_slot = owned.downcast_ref::<DoorSlot>().unwrap();
+    assert!(owned_slot.opened);
+    assert!(owned_slot.section.value.is_null());
+    assert_eq!(
+        (decl.admission)(&*owned).unwrap().audience,
+        "https://owned.example/fleet"
+    );
+    refuse.store(true, Ordering::SeqCst);
+    let refused_owned = (decl.build)(decl, &owned_ctx(active_owned)).unwrap();
+    assert!(Arc::ptr_eq(&old, &refused_owned));
+    assert!((decl.build)(decl, &owned_ctx(serde_yaml::Value::Null)).is_none());
 }

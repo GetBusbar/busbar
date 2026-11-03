@@ -116,6 +116,9 @@ async fn hook_snapshot_builders_recompute_the_content_gate() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &store_module)
+        .expect("the actual Store binds the rate-card authority before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -284,6 +287,9 @@ async fn hook_derived_fields_follow_the_registry() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &store_module)
+        .expect("the actual Store binds the rate-card authority before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -439,6 +445,9 @@ async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &store_module)
+        .expect("the actual Store binds the rate-card authority before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();

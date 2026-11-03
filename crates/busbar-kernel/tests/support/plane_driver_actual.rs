@@ -2401,7 +2401,7 @@ async fn a_refusal_after_admission_within_limits_is_the_planes_and_nets_no_charg
     }
     const AT: u64 = 1_700_000_000;
 
-    let gov = Arc::new(GovState::new(actual_store(), None).expect("gov"));
+    let gov = Arc::new(GovState::new_with_signer(actual_store(), None, None).expect("gov"));
     let money = Arc::new(PlaneMoney::new(gov.clone(), Arc::new(NoPost)));
     let groups = std::collections::BTreeMap::from([(
         "g".to_string(),

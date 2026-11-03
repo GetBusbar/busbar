@@ -255,10 +255,7 @@ fn boot_lines_match_1_5_5_shape() {
 
     let expected = vec![
         "<TS>  INFO busbar starting version=\"<V>\"".to_string(),
-        format!(
-            "<TS>  INFO config is mutable; admin-API changes persist to the overlay backend (durable across restart) overlay={}",
-            dir.join("busbar-overlay.json").display()
-        ),
+        "<TS>  INFO config is mutable; admin-API changes persist to the configured Store (restart durability follows that Store) overlay=configured Store".to_string(),
         "<TS>  INFO metadata protection: 11 hosts blocked (--print-metadata-blocklist to view)"
             .to_string(),
         "<TS>  INFO plugins: disabled (plugins.enabled is false; tarballs in the directory are inert)"
@@ -270,8 +267,8 @@ fn boot_lines_match_1_5_5_shape() {
         format!("<TS>  INFO busbar listening listen=127.0.0.1:{data_port}"),
         format!("<TS>  INFO busbar listening listen=127.0.0.1:{admin_port}"),
         "<TS>  INFO shutdown signal received; draining in-flight requests".to_string(),
-        "<TS>  INFO budget counters flushed on shutdown flushed=0".to_string(),
-        "<TS>  INFO metering rows flushed on shutdown flushed=0".to_string(),
+        "<TS>  INFO budget shutdown flush completed flushed=0".to_string(),
+        "<TS>  INFO metering shutdown flush completed flushed=0".to_string(),
     ];
 
     let mut expected = expected;
@@ -284,6 +281,10 @@ fn boot_lines_match_1_5_5_shape() {
         "boot INFO+ line set/order drifted from the 1.5.5 shape (raw log follows):\n{log_text}"
     );
 
+    assert!(
+        !dir.join("busbar-overlay.json").exists(),
+        "the configured Store owns mutable configuration; no retired JSON overlay is created"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -17,7 +17,7 @@ use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::planes_tests::{composed_services, PUBLISHING};
-use super::{compose_planes_over, door_routes, DoorEgress, HookStage};
+use super::{compose_planes_over, door_mounts, DoorEgress, HookStage};
 use crate::root::door_steps::{kernel_sections, provider_routes, DoorReach, OutboundAuths};
 use crate::root::loader::dispatch::kinds::plane::Plane;
 use crate::root::loader::dispatch::{
@@ -69,22 +69,8 @@ pub(super) fn install_door_seams() {
     crate::dist_root_install::install();
 }
 
-static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
-    std::sync::LazyLock::new(|| {
-        let holder = crate::root::kernel::RootHistory::default();
-        holder.apply(
-            crate::root::kernel::card_from_config(
-                std::iter::empty::<(&str, busbar_contract::billing::RawTierRates)>(),
-                0,
-                true,
-            ),
-            1_000,
-        );
-        holder
-    });
-
 fn card_pin() -> Option<crate::root::kernel::PinnedHistory> {
-    CARD.pin()
+    crate::root::kernel::ROOT_CARD.pin()
 }
 
 pub(super) const REWRITTEN: &str = "rewritten-by-the-global-rewrite-seat";
@@ -451,7 +437,8 @@ pub(crate) struct RigOpts<'a> {
     pub model_yaml: &'a [&'a str],
     /// More pools beside `p`: each its name and its members as (member index, weight).
     pub more_pools: &'a [(&'a str, &'a [(usize, u32)])],
-    /// The key's group as configured: its name and its limits (replaces `budget_cents`' group).
+    /// The key's group and limits. A zero Budget/Requests test limit means a valid
+    /// one-unit limit already consumed by a separate admitted key before the tested request.
     pub group: Option<(&'a str, &'a [busbar_kernel::config::groups::LimitCfg])>,
     /// The group the key names, configured or not (`None`: the configured group, if any).
     pub key_group: Option<&'a str>,
@@ -481,7 +468,7 @@ pub(crate) struct RigOpts<'a> {
     /// The flat request fee, in cents (`None`: 1 cent).
     pub fee_cents: Option<i64>,
     /// The card history a unit is pinned to at its door, which the node's book prices its line
-    /// against (`None`: the rig's own priceless card).
+    /// against (`None`: the rig's configured, Store-backed card).
     pub pin: Option<fn() -> Option<crate::root::kernel::PinnedHistory>>,
     /// The walk's clock the door plane is composed on, which every generation's walk reads (`None`:
     /// the node's own, [`crate::root::egress_ports::NodeClock`]).
@@ -887,7 +874,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     }
     let defs: HashMap<String, busbar_kernel::config::ProviderDef> =
         serde_yaml::from_str(&defs_yaml).expect("the providers");
-    let cfg = busbar_kernel::config::resolve(&deploy, &defs).map_err(|e| e.join("; "))?;
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &defs).map_err(|e| e.join("; "))?;
     let providers = provider_routes(
         &cfg.providers,
         &busbar_kernel::config_validate::MetadataPosture::default(),
@@ -911,7 +898,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             },
         )
     });
-    let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = opts
+    let mut groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = opts
         .budget_cents
         .filter(|_| configured.is_none())
         .map(|amount| {
@@ -938,29 +925,52 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         .into_iter()
         .chain(configured)
         .collect();
+    let mut exhausted_groups = Vec::new();
+    for (name, group) in &mut groups {
+        if group.limits.iter().any(|limit| limit.amount == 0) {
+            // Product configuration rejects a zero cap. Express the same exhausted
+            // admission state with a valid cap, then consume it through real governance.
+            for limit in &mut group.limits {
+                if limit.amount == 0 {
+                    assert!(matches!(
+                        limit.metric,
+                        busbar_kernel::config::groups::LimitMetric::Budget
+                            | busbar_kernel::config::groups::LimitMetric::Requests
+                    ));
+                    limit.amount = 1;
+                }
+            }
+            exhausted_groups.push(name.clone());
+        }
+    }
+    // The deployed authority declares the same group tree the fixture's governor uses.
+    // A key deliberately naming an absent group is minted only after boot below, so
+    // those cells still exercise runtime admission's fail-closed refusal.
+    cfg.groups = groups.clone();
     let fee = opts.fee_cents.unwrap_or(1);
-    let cost = if groups.is_empty() && opts.rate_card.is_none() {
+    cfg.per_request_fee = fee;
+    let rate_card = opts.rate_card.cloned().map(|mut card| {
+        // These positive fixtures price only their named classes. Explicitly configure
+        // every other class the actual plane declares as free, as product validation requires.
+        for entry in card.values_mut() {
+            for class in &plane.served().billable_classes {
+                // Fee units are configured by per_request_fee/plane fees, not by
+                // the open-unit rate card. Listing one here would price it twice.
+                if !busbar_contract::records::RESERVED_UNITS.contains(class)
+                    && !plane.served().fee_units.contains(class)
+                {
+                    entry.units.entry((*class).to_string()).or_default();
+                }
+            }
+        }
+        card
+    });
+    cfg.rate_card = rate_card.clone();
+    let cost = if groups.is_empty() && rate_card.is_none() {
         CostModel::flat(fee)
     } else {
-        CostModel::resolve_parts(opts.rate_card, fee, &groups)
+        CostModel::resolve_parts(rate_card.as_ref(), fee, &groups)
     };
-    let (key, token) = gov
-        .mint_signed(
-            NewKeySpec {
-                name: "seats".to_string(),
-                group: opts
-                    .key_group
-                    .map(str::to_string)
-                    .or_else(|| groups.keys().next().cloned()),
-                allowed_pools: opts
-                    .allowed_pools
-                    .map(|pools| pools.iter().map(|p| (*p).to_string()).collect()),
-                ..Default::default()
-            },
-            4_000_000_000,
-            1_700_000_000,
-        )
-        .expect("mint");
     for (bucket, requests) in opts.seed {
         gov.store()
             .put_usage(
@@ -1028,6 +1038,48 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     limits.keep()?;
     if let Some(rotate) = rotate {
         rotate();
+    }
+    let (key, token) = gov
+        .mint_signed(
+            NewKeySpec {
+                name: "seats".to_string(),
+                group: opts
+                    .key_group
+                    .map(str::to_string)
+                    .or_else(|| groups.keys().next().cloned()),
+                allowed_pools: opts
+                    .allowed_pools
+                    .map(|pools| pools.iter().map(|p| (*p).to_string()).collect()),
+                ..Default::default()
+            },
+            4_000_000_000,
+            1_700_000_000,
+        )
+        .expect("mint");
+    for group in exhausted_groups {
+        let (warm, _) = gov
+            .mint_signed(
+                NewKeySpec {
+                    name: "pre-exhausted-group".to_string(),
+                    group: Some(group),
+                    ..Default::default()
+                },
+                4_000_000_000,
+                1_700_000_000,
+            )
+            .expect("the prior caller uses the actual configured group");
+        // This admission charges the shared group once without dialing a backend or
+        // writing usage on the tested key. Dropping its grant releases concurrency
+        // gauges; its successful request/fee remains consumed, as a completed request's.
+        drop(
+            gov.try_admit(&cost, &warm, "p", busbar_kernel::store::now())
+                .expect("the prior caller consumes the configured one-unit cap"),
+        );
+        assert!(
+            gov.try_admit(&cost, &warm, "p", busbar_kernel::store::now())
+                .is_err(),
+            "the actual configured group is exhausted before the tested request"
+        );
     }
     app.governance = Some(Arc::clone(&gov));
     app.cost = Arc::new(cost);
@@ -1196,14 +1248,29 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             );
         })
     };
-    let doors = door_routes(served, pin, &[], &busbar_kernel::base_data_core_lines(&app))
-        .expect("its claims mount");
-    let door_table = doors
+    let mounts = door_mounts(
+        served,
+        pin,
+        &[],
+        &busbar_kernel::base_data_core_lines(&app),
+        &[],
+        &[],
+    )
+    .expect("its claims and dialect refusal handlers mount");
+    let door_table = mounts
+        .routes
         .iter()
         .map(|d| (d.path.clone(), d.method.as_str().to_string(), d.auth))
         .collect();
-    let (router, _admin, _handle) =
-        busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
+    let (router, _admin, _handle) = busbar_kernel::build_split_routers_serving_doors(
+        Arc::clone(&app),
+        mounts.routes,
+        mounts.sessions,
+        mounts.refusals,
+        1 << 20,
+        0,
+        false,
+    );
     Ok(DoorRig {
         router,
         door_table,

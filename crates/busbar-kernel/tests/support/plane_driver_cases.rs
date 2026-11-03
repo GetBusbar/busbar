@@ -1028,7 +1028,7 @@ async fn a_served_unit_writes_exactly_one_metering_row() {
         )
         .expect("the actual store opens"),
     );
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    let gov = Arc::new(GovState::new_with_signer(store, None, None).expect("gov"));
     let money = Arc::new(PlaneMoney::new(gov.clone(), Arc::new(NoPost)));
     let at = 1_700_000_000;
     let unit = ctx(7);

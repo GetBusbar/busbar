@@ -109,12 +109,30 @@ fn boot_until(dir: &Path, done: impl Fn(&str) -> bool) -> (String, Option<i32>) 
 #[test]
 fn a_refusal_after_logging_is_up_reports_no_second_init() {
     let dir = fixture_dir("boot-130");
-    write_configs(&dir, "{module: durable}");
+    // The Store anchor opens before logging now. Keep it valid and refuse a real
+    // listener bind later in boot, while this socket still owns the exact address.
+    let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = occupied.local_addr().unwrap().to_string();
+    std::fs::write(dir.join("providers.yaml"), "{}\n").unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "listen": address,
+            "admin_listen": format!("127.0.0.1:{}", common::boot::free_port()),
+            "admin_require_mtls": false,
+            "store": {"module": "memory"},
+            "auth": {"chain": []},
+            "providers": {}, "models": {},
+            "export": {"metrics": {"module": "prometheus", "settings": {"buffer_seconds": 60}}}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let (out, code) = boot_until(&dir, |_| false);
     assert_eq!(code, Some(1), "the boot is refused; output:\n{out}");
     assert!(
-        out.contains("store.module: 'durable' requires the plugin subsystem"),
-        "the refusal is the store one; output:\n{out}"
+        out.contains("cannot bind") && out.contains(&address),
+        "the refusal is the occupied listener address; output:\n{out}"
     );
     assert!(
         out.contains("busbar starting"),

@@ -414,6 +414,9 @@ fn a_slow_auth_door_does_not_park_the_reactor() {
         .expect("the issuer endpoint is an actual loopback socket");
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind the one-connection external peer");
     listener.set_nonblocking(true).unwrap();
+    // READY warms the real cache; expire it before exercising request-path Pending.
+    settings.insert("jwks_ttl_secs".into(), serde_json::json!(1));
+    settings.insert("jwks_min_refetch_secs".into(), serde_json::json!(1));
     settings.insert(
         "jwks_url".into(),
         serde_json::json!(format!("https://{}/jwks", listener.local_addr().unwrap())),
@@ -422,76 +425,97 @@ fn a_slow_auth_door_does_not_park_the_reactor() {
     let (entered_tx, entered_rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
 
-    // One owned external wire peer. It holds the first genuine TLS byte, then forwards every
-    // byte unchanged to the existing real TLS/JWKS issuer; it fabricates no protocol or outcome.
+    // An owned wire peer forwards READY unchanged, then holds the next genuine TLS byte
+    // for expired-cache VERIFY; it fabricates no protocol or outcome.
     std::thread::scope(|peers| {
         let wire = peers.spawn(move || {
-            let accept_deadline = Instant::now() + Duration::from_secs(10);
-            let mut downstream = loop {
-                match listener.accept() {
-                    Ok((socket, _)) => break socket,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(
-                            Instant::now() < accept_deadline,
-                            "the actual verifier must connect"
-                        );
-                        std::thread::sleep(Duration::from_millis(2));
-                    }
-                    Err(error) => panic!("actual peer accept failed: {error}"),
+            std::thread::scope(|connections| {
+                let mut gate = Some((entered_tx, release_rx));
+                let mut transfers = Vec::new();
+                for turn in 0..2 {
+                    let accept_deadline = Instant::now() + Duration::from_secs(10);
+                    let mut downstream = loop {
+                        match listener.accept() {
+                            Ok((socket, _)) => break socket,
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                assert!(
+                                    Instant::now() < accept_deadline,
+                                    "the actual verifier must connect"
+                                );
+                                std::thread::sleep(Duration::from_millis(2));
+                            }
+                            Err(error) => panic!("actual peer accept failed: {error}"),
+                        }
+                    };
+                    let gate = if turn == 1 { gate.take() } else { None };
+                    transfers.push(connections.spawn(move || {
+                        downstream.set_nonblocking(false).unwrap();
+                        downstream
+                            .set_read_timeout(Some(Duration::from_secs(10)))
+                            .unwrap();
+                        downstream
+                            .set_write_timeout(Some(Duration::from_secs(10)))
+                            .unwrap();
+                        let mut first = [0u8; 1];
+                        downstream
+                            .read_exact(&mut first)
+                            .expect("the actual verifier starts TLS");
+                        let held = if let Some((entered_tx, release_rx)) = gate {
+                            let entered = Instant::now();
+                            entered_tx.send(entered).unwrap();
+                            release_rx.recv_timeout(Duration::from_secs(10)).expect(
+                                "release the actual pending VERIFY after the unrelated probe",
+                            );
+                            if let Some(remaining) =
+                                Duration::from_secs(3).checked_sub(entered.elapsed())
+                            {
+                                std::thread::sleep(remaining);
+                            }
+                            entered.elapsed()
+                        } else {
+                            Duration::ZERO
+                        };
+                        let mut upstream =
+                            TcpStream::connect_timeout(&target, Duration::from_secs(5))
+                                .expect("connect the existing actual TLS/JWKS issuer");
+                        upstream
+                            .set_read_timeout(Some(Duration::from_secs(10)))
+                            .unwrap();
+                        upstream
+                            .set_write_timeout(Some(Duration::from_secs(10)))
+                            .unwrap();
+                        upstream
+                            .write_all(&first)
+                            .expect("forward the held TLS byte unchanged");
+                        let mut downstream_read = downstream.try_clone().unwrap();
+                        let mut upstream_write = upstream.try_clone().unwrap();
+                        let (client_bytes, issuer_bytes) = std::thread::scope(|copies| {
+                            let forward = copies.spawn(move || {
+                                let count = std::io::copy(
+                                    &mut (&mut downstream_read).take(64 * 1024),
+                                    &mut upstream_write,
+                                )
+                                .expect("forward actual client TLS bytes");
+                                let _ = upstream_write.shutdown(Shutdown::Write);
+                                assert!(count < 64 * 1024, "client wire overflow is a failure");
+                                count + 1
+                            });
+                            let count = std::io::copy(
+                                &mut (&mut upstream).take(64 * 1024 + 1),
+                                &mut downstream,
+                            )
+                            .expect("forward actual issuer TLS bytes");
+                            let _ = downstream.shutdown(Shutdown::Both);
+                            assert!(count <= 64 * 1024, "issuer wire overflow is a failure");
+                            (forward.join().expect("the owned forwarder joins"), count)
+                        });
+                        (held, client_bytes, issuer_bytes)
+                    }));
                 }
-            };
-            downstream.set_nonblocking(false).unwrap();
-            downstream
-                .set_read_timeout(Some(Duration::from_secs(10)))
-                .unwrap();
-            downstream
-                .set_write_timeout(Some(Duration::from_secs(10)))
-                .unwrap();
-            let mut first = [0u8; 1];
-            downstream
-                .read_exact(&mut first)
-                .expect("the actual verifier starts TLS");
-            let entered = Instant::now();
-            entered_tx.send(entered).unwrap();
-            release_rx
-                .recv_timeout(Duration::from_secs(10))
-                .expect("the pending verifier is released after the unrelated-job observation");
-            if let Some(remaining) = Duration::from_secs(3).checked_sub(entered.elapsed()) {
-                std::thread::sleep(remaining);
-            }
-            let held = entered.elapsed();
-            let mut upstream = TcpStream::connect_timeout(&target, Duration::from_secs(5))
-                .expect("connect the existing actual TLS/JWKS issuer");
-            upstream
-                .set_read_timeout(Some(Duration::from_secs(10)))
-                .unwrap();
-            upstream
-                .set_write_timeout(Some(Duration::from_secs(10)))
-                .unwrap();
-            upstream
-                .write_all(&first)
-                .expect("forward the held TLS byte unchanged");
-            let mut downstream_read = downstream.try_clone().unwrap();
-            let mut upstream_write = upstream.try_clone().unwrap();
-            let (client_bytes, issuer_bytes) = std::thread::scope(|copies| {
-                let forward = copies.spawn(move || {
-                    let count = std::io::copy(
-                        &mut (&mut downstream_read).take(64 * 1024),
-                        &mut upstream_write,
-                    )
-                    .expect("forward actual client TLS bytes");
-                    let _ = upstream_write.shutdown(Shutdown::Write);
-                    assert!(count < 64 * 1024, "client wire overflow is a failure");
-                    count + 1
-                });
-                let count =
-                    std::io::copy(&mut (&mut upstream).take(64 * 1024 + 1), &mut downstream)
-                        .expect("forward actual issuer TLS bytes");
-                let _ = downstream.shutdown(Shutdown::Both);
-                assert!(count <= 64 * 1024, "issuer wire overflow is a failure");
-                (forward.join().expect("the owned forwarder joins"), count)
-            });
-            (held, client_bytes, issuer_bytes)
+                let verify = transfers.pop().unwrap().join().expect("VERIFY relay joins");
+                transfers.pop().unwrap().join().expect("READY relay joins");
+                verify
+            })
         });
         let mut provider = busbar_kernel::config::AuthChainEntry::bare(module);
         provider.name = "slow-idp".into();
@@ -506,8 +530,10 @@ fn a_slow_auth_door_does_not_park_the_reactor() {
                 &registry,
                 &busbar_kernel::config::secret::SecretResolver::builtins_only(),
             )
-            .expect("the actual OIDC verifier constructs without fetching its keys"),
+            .expect("the actual OIDC verifier warms its keys through the unheld READY relay"),
         );
+        // Wait for the configured real JWKS cache lifetime, not for a synthetic verifier.
+        std::thread::sleep(Duration::from_millis(1100));
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()

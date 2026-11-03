@@ -37,6 +37,7 @@ struct Fixture {
     day: u64,
     epoch: u64,
     era: u64,
+    entry_id: Option<busbar_kernel::cost::EntryId>,
 }
 
 impl Fixture {
@@ -74,14 +75,14 @@ impl Fixture {
             "rate_card": { (LANE): {"input_utok":0.0,"output_utok":0.0,"cache_read_utok":0.0,"cache_write_utok":0.0} },
             "advanced": { "allow_destinations": ["127.0.0.1"] },
         });
-        super::admin_usage_history::complete_usage_fixture(
+        let provider_defs = super::admin_usage_history::complete_usage_fixture(
             &mut document,
             &directory,
             &[(LANE, PROVIDER)],
         );
         let deploy = busbar_kernel::config::deploy_from_deserializer(document)
             .expect("the product deployment parses");
-        let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        let config = busbar_kernel::config::resolve(&deploy, &provider_defs)
             .expect("the product deployment resolves");
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -97,6 +98,9 @@ impl Fixture {
             &rules,
         )
         .expect("the actual product builds the usage range deployment");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, &module)
+            .expect("the actual application Store binds the dated rate history");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -117,7 +121,8 @@ impl Fixture {
         store.put_key(&key).expect("key");
         let epoch = busbar_kernel::store::now_ms();
         let now = std::time::Duration::from_millis(epoch).as_secs();
-        let era = busbar_kernel::rate_apply::effective_from_at(epoch);
+        let raw_era = busbar_kernel::rate_apply::era_at(epoch);
+        let era = raw_era.effective_from;
         let day = busbar_kernel::governance::metering_bucket(now);
         store
             .add_metering(&MeteringDelta {
@@ -132,21 +137,30 @@ impl Fixture {
                 requests: 1,
                 billable_requests: 1,
                 key_group_at_use: String::new(),
-                pricing_version: String::new(),
+                pricing_version: raw_era
+                    .entry_id
+                    .map(|id| id.metering_version())
+                    .unwrap_or_default(),
                 priced_from_ms: era,
                 usage_units: BTreeMap::new(),
             })
             .expect("metering row");
 
         let cost = zero_cost();
-        gov.record_usage(
+        let _admitted = gov
+            .try_admit(&cost, &key, "", now)
+            .expect("the actual enforcement book admits the seeded posting");
+        gov.record_usage_served_in_era(
             &cost,
             &key,
             "",
             LANE,
+            None,
             &BTreeMap::from([(UNIT_INPUT.into(), initial)]),
             now,
+            raw_era,
         );
+        drop(_admitted);
         Self {
             gov,
             key,
@@ -155,6 +169,7 @@ impl Fixture {
             day,
             epoch,
             era,
+            entry_id: raw_era.entry_id,
         }
     }
 
@@ -168,7 +183,7 @@ impl Fixture {
                     pool: "",
                     model: LANE,
                     entry_era: self.era,
-                    entry_id: None,
+                    entry_id: self.entry_id,
                     card_epoch_ms: self.epoch,
                     delta: &delta,
                     now: busbar_kernel::store::now(),

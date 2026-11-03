@@ -73,11 +73,7 @@ store: {{module: memory}}
 admin_require_mtls: false
 auth:
   chain: []
-plugins:
-  enabled: true
-  dir: '{plugins}'
-  trust:
-    allow_unsigned: true
+plugins: {plugins}
 export:
 {export}providers:
   mock:
@@ -86,7 +82,7 @@ models:
   test-model:
     provider: mock
 "#,
-            plugins = dir.join("plugins").display()
+            plugins = common::plugins::trusted_config_document(&dir.join("plugins"))
         ),
     )
     .unwrap();
@@ -122,7 +118,13 @@ fn linked_sinks() -> Vec<&'static str> {
 }
 
 fn drop_in_wire(dir: &Path, lib: &[u8]) {
-    let bytes = common::plugins::pack("transport", "dropped-wire", lib, "acme");
+    let mut manifest = common::plugins::manifest(
+        "transport",
+        "dropped-wire",
+        common::plugins::FIXTURE_PUBLISHER,
+    );
+    common::plugins::state(&mut manifest, lib);
+    let bytes = common::plugins::signed(&common::plugins::key(0x5a), manifest, lib);
     std::fs::write(dir.join("plugins").join("dropped-wire.tar.gz"), bytes).unwrap();
 }
 
@@ -169,14 +171,13 @@ fn every_linked_export_sink_loads_as_its_own_kind_in_the_shipped_binary() {
         .filter(|(module, _)| sinks.contains(module))
         .map(|(_, line)| line.replace("{dir}", &dir.display().to_string()))
         .collect();
-    write_configs(&dir, data_port, admin_port, &export);
-
     if !LINKED_TRANSPORTS.iter().any(|w| w.key == WIRE) {
         let (lib, _) = common::plugins::transport_cdylib_under(&[WIRE]).unwrap_or_else(|| {
             common::plugins::missing(&format!("{WIRE} transport"), common::plugins::BUILD_PINNED)
         });
         drop_in_wire(&dir, &lib);
     }
+    write_configs(&dir, data_port, admin_port, &export);
 
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();

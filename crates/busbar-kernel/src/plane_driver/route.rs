@@ -607,6 +607,9 @@ pub(crate) struct Pumping<'u> {
     flight: Option<Box<dyn PieceInFlight>>,
 
     closing: Option<super::cancel::CancelFuture>,
+    // Each side of a session owns its ticket's terminal answer or cancellation. The shared
+    // unit close state still closes the logical unit and the shared bill remains exactly once.
+    closed: bool,
     ended: bool,
 
     cancel_writes: Vec<busbar_contract::plane_calls::CancelWrite>,
@@ -642,6 +645,7 @@ impl<'u> Pumping<'u> {
             keep: Arc::new(Mutex::new(None)),
             flight: None,
             closing: None,
+            closed: false,
             ended: false,
             cancel_writes: Vec::new(),
             wait_member: None,
@@ -700,6 +704,7 @@ impl<'u> Pumping<'u> {
                     .as_ref()
                     .is_some_and(|o| o.says_done(p, self.final_answer));
             if answered.disposition.is_some() || answered.outcome == AbiOutcome::Fault || done {
+                self.closed = true;
                 self.lock().close.closed();
             }
         }
@@ -712,12 +717,12 @@ impl<'u> Pumping<'u> {
 
     pub(crate) async fn cancel(&mut self, cause: ReasonCode, done: Option<Answered>) -> CancelBill {
         let observed_terminal = done.is_some();
-        let cancelled_result = self.lock().close != Close::Closed;
+        let cancelled_result = !self.closed;
         let cancelled = match done.map(|d| (d.disposition, d.outcome)) {
             Some((Some(d), _)) => Some((d, std::mem::take(&mut self.cancel_writes))),
             Some((None, AbiOutcome::Fault)) => None,
 
-            _ if self.lock().close == Close::Closed => None,
+            _ if self.closed => None,
             _ => self.cancel_now().await.map(|c| (c.disposition, c.writes)),
         };
 
@@ -746,18 +751,15 @@ impl<'u> Pumping<'u> {
     }
 
     pub(crate) async fn cancel_now(&mut self) -> Option<busbar_contract::plane_calls::Cancelled> {
-        let owes = {
-            let mut st = self.lock();
-            let owes = st.close != Close::Closed;
-            st.close.closed();
-            if owes {
-                st.cancel_started
-                    .store(true, std::sync::atomic::Ordering::Release);
-            }
-            owes
-        };
-        if !owes {
+        if self.closed {
             return None;
+        }
+        self.closed = true;
+        {
+            let mut st = self.lock();
+            st.close.closed();
+            st.cancel_started
+                .store(true, std::sync::atomic::Ordering::Release);
         }
         self.closing = Some(self.driver.cancel_unit(self.ticket, self.ctx.key.get()));
         let cancelled = self.closing.as_mut().expect("queued cancel").await;
@@ -868,7 +870,7 @@ impl Drop for Pumping<'_> {
 
         let (facts, principal, closed, billed, started) = {
             let mut st = self.lock();
-            let closed = done || st.close == Close::Closed;
+            let closed = done || self.closed;
             st.close.closed();
             (
                 st.facts.clone(),
@@ -1283,6 +1285,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             let out = match (done.outcome, out) {
                 (AbiOutcome::Ready, Some(out)) => {
                     if out.says_done(&piece, run.final_answer) {
+                        run.closed = true;
                         run.lock().close.closed();
                     }
                     out

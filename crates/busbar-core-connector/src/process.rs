@@ -29,13 +29,11 @@ pub fn build_with_secrets(
     pool: PoolPosture,
     spawn_secrets: crate::spawn_env::SpawnSecretFn,
 ) -> Result<Arc<Connector>, String> {
-    let tls = crate::tls::client::build_client_config(&EgressTrust::default())
-        .map_err(|e| format!("its connection security: {e}"))?;
-
     let proxy = crate::proxy::from_env().map_err(|e| format!("its proxy environment: {e}"))?;
     let view = Transports::new(entries()?).map_err(|e| e.to_string())?;
     Ok(Arc::new(
-        Connector::serving(view, judge(dest, own_ports), Some(Arc::new(tls)), wake)
+        Connector::serving_with_trust(view, judge(dest, own_ports), EgressTrust::default(), wake)
+            .map_err(|e| format!("its connection security: {e}"))?
             .pooling(pool)
             .proxying(proxy)
             .resolving_spawn_secrets(spawn_secrets),

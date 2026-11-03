@@ -1962,3 +1962,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/admin_unit_records.rs"]
 mod admin_unit_records;
+
+#[cfg(all(test, feature = "root-admin"))]
+#[path = "tests/ledger_recovery_actual.rs"]
+mod ledger_recovery_actual;

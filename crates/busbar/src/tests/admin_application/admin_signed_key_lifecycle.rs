@@ -1316,7 +1316,9 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
     if let Some(rotate) = rotate {
         rotate();
     }
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::boot::hydrate_all(&app).expect("the actual root hydrates its audit stream");
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1499,7 +1501,9 @@ async fn test_admin_v1_audit_records_key_mutations() {
     if let Some(rotate) = rotate {
         rotate();
     }
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::boot::hydrate_all(&app).expect("the actual root hydrates its audit stream");
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

@@ -227,6 +227,12 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let opened = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
         .expect("the actual signed Store opens through the normal bootstrap");
+    let boot_calls = opened
+        .calls
+        .clone()
+        .expect("the actual Store exposes typed boot calls");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::new(boot_calls.clone())
+        .expect("the actual Store provides the provision commit's durable overlay");
     let refusing = busbar_contract::store_calls::OpenedStore {
         records: Arc::new(RefusesKeyWrites(opened.records)),
         calls: None,
@@ -234,7 +240,7 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
-        None,
+        Some(overlay),
         Default::default(),
         Default::default(),
         (None, None),
@@ -244,11 +250,19 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
         false,
     )
     .expect("the actual product builds the provision deployment");
+    // Keep the key-write fault on the record facade; bind rate history through the same actual
+    // Store's typed calls without replacing that fault facade with an unfaulted typed one.
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(boot_calls, 101);
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the actual rate-card Store boots before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
     }
     let app = Arc::new(app);
+    busbar_kernel::boot::hydrate_all(&app).expect("the actual root hydrates its audit stream");
     let (_data, admin, handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -511,8 +525,10 @@ async fn auto_provision_stops_at_the_group_ceiling() {
         &["minters"],
         "api://admin-group-ceiling",
     );
-    let (router, handle) =
-        busbar_kernel::build_router_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let app = Arc::new(app);
+    busbar_kernel::boot::hydrate_all(&app)
+        .expect("the actual root hydrates its ceiling audit stream");
+    let (router, handle) = busbar_kernel::build_router_with_limits(app, 1 << 20, 0, false);
     let request = |name: &str, group: &str| {
         axum::http::Request::builder()
             .method("POST")

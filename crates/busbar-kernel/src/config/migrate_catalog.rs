@@ -72,6 +72,8 @@ pub fn migrate_catalog(raw: &str, shown: &str) -> Result<Option<CatalogMigration
         return Ok(None);
     };
 
+    // Migration preserves the legacy reader's behavior. An open options map in the current
+    // plane grammar does not make a formerly ignored catalog key meaningful in the old input.
     let descriptor =
         crate::plane_driver::door::provider_keys(crate::plane_driver::registry::plane_decls());
     let mut changes = Vec::new();
@@ -85,8 +87,7 @@ pub fn migrate_catalog(raw: &str, shown: &str) -> Result<Option<CatalogMigration
                 !k.as_str().is_some_and(|k| {
                     keys.contains(&k)
                         || descriptor.as_ref().is_some_and(|descriptor| {
-                            !descriptor.catalog.deny_unknown
-                                || descriptor.catalog.keys.iter().any(|key| key.name == k)
+                            descriptor.catalog.keys.iter().any(|key| key.name == k)
                         })
                 })
             })
@@ -98,8 +99,8 @@ pub fn migrate_catalog(raw: &str, shown: &str) -> Result<Option<CatalogMigration
                 .as_str()
                 .map_or_else(|| super::migrate::one_line(&key), str::to_string);
             changes.push(format!(
-                "{shown}: {name}.{shown_key}: removed (a catalog entry does not read this key: \
-                 1.5.5 ignored it, and 1.6.0 refuses it, so removing it keeps what 1.5.5 did)"
+                "{shown}: {name}.{shown_key}: removed (1.5.5 ignored this catalog key; \
+                 removing it preserves the legacy behavior)"
             ));
         }
     }

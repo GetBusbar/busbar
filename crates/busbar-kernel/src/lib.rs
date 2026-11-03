@@ -266,8 +266,10 @@ pub fn base_data_core_lines(
     busbar_contract::abi::mechanism::route::RouteMethod,
     busbar_contract::abi::mechanism::route::RouteAuth,
 )> {
+    // Core declarations do not include plugin routes. Mount plugins only when
+    // preparing their physical listener, where invalid candidates return an error.
     router::base_data_router(
-        &app.plugin_routes,
+        &crate::plugin_routes::PluginRouteTable::default(),
         &app.plane_slots,
         app.oauth_as.as_ref(),
         Vec::new(),

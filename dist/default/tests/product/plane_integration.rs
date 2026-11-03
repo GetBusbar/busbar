@@ -84,15 +84,24 @@ fn resolved(sections: &str) -> RootCfg {
         .unwrap_or_else(|e| panic!("the document resolves: {e:?}"));
     let mut auth = busbar_kernel::config::AuthCfg::default_none();
     auth.chain = vec![busbar_kernel::config::AuthChainEntry::bare("keys")];
-    auth.signing_key = Some(busbar_kernel::config::SecretRef::template(hex::encode(
-        [9u8; 32],
-    )));
+    let credentials = plugins::scratch("plane-integration-credentials");
+    let signing_key = credentials.join("signing-key");
+    let operator_token = credentials.join("operator-token");
+    std::fs::write(&signing_key, hex::encode([9u8; 32]))
+        .expect("write the actual file-backed signing input");
+    std::fs::write(&operator_token, "admintok")
+        .expect("write the actual file-backed operator input");
+    auth.signing_key = Some(busbar_kernel::config::SecretRef::file(
+        signing_key.to_string_lossy().into_owned(),
+    ));
     let operator = auth
         .admin_auth
         .iter_mut()
         .find(|entry| busbar_kernel::config::names_operator(&entry.module))
         .expect("the actual operator module");
-    operator.token = Some(busbar_kernel::config::SecretRef::template("admintok"));
+    operator.token = Some(busbar_kernel::config::SecretRef::file(
+        operator_token.to_string_lossy().into_owned(),
+    ));
     cfg.auth = Some(auth);
     cfg
 }
@@ -237,6 +246,9 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
         &rules,
     )
     .expect("the actual product builds the door deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, "configured-store")
+        .expect("the actual configured Store binds boot rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -335,6 +347,9 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
         &rules,
     )
     .expect("the actual product builds the door deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, "configured-store")
+        .expect("the actual configured Store binds boot rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -455,6 +470,9 @@ async fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
         &rules,
     )
     .expect("the actual product builds the door deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, "configured-store")
+        .expect("the actual configured Store binds boot rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -599,6 +617,9 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
         &rules,
     )
     .expect("the actual product builds the door deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, "configured-store")
+        .expect("the actual configured Store binds boot rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -689,6 +710,13 @@ mod metrics_scrape {
             return;
         }
         linked::install();
+        // main initializes the real recorder from export.metrics.buffer_seconds before
+        // serving; this isolated fixture builds the app directly and must do that startup step.
+        busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
+        assert!(
+            busbar_kernel::snapshot::recorder_installed(),
+            "the actual recorder is installed before plane traffic"
+        );
         let peer = crate::root::door_steps::tests::tool_door::TlsToolServer::new().await;
         let sections = format!(
             "{}{}export:\n  metrics: {{module: prometheus, settings: {{buffer_seconds: 60}}}}\n",
@@ -744,12 +772,16 @@ mod metrics_scrape {
             &rules,
         )
         .expect("the actual product builds the door deployment");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, "configured-store")
+            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
         }
         let app = Arc::new(app);
 
+        let (traffic_bearer, door_bearer) = plane_bearers(&app, &sections, "plane-metrics-traffic");
         let router = plane_router(app, &sections, usize::MAX, &["keys"]);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -759,6 +791,7 @@ mod metrics_scrape {
 
         let door_status = client
             .post(format!("{base}{door_mount}"))
+            .header("authorization", &door_bearer)
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -773,6 +806,7 @@ mod metrics_scrape {
 
         let agents_status = client
             .post(format!("{base}{agents_mount}/agents/planner"))
+            .header("authorization", &traffic_bearer)
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -785,13 +819,22 @@ mod metrics_scrape {
             .status()
             .as_u16();
 
-        let scrape = client.get(format!("{base}/metrics")).send().await.unwrap();
-        assert_eq!(
-            scrape.status().as_u16(),
-            200,
-            "the built-in prometheus exporter must serve /metrics on this router"
-        );
+        let scrape = client
+            .get(format!("{base}/metrics"))
+            .header("authorization", &traffic_bearer)
+            .send()
+            .await
+            .unwrap();
+        let scrape_status = scrape.status().as_u16();
         let exposition = scrape.text().await.unwrap();
+        assert_eq!(
+            scrape_status,
+            200,
+            "the built-in prometheus exporter must serve /metrics on this router; \
+             actual recorder installed={}; body prefix={:?}",
+            busbar_kernel::snapshot::recorder_installed(),
+            exposition.chars().take(512).collect::<String>(),
+        );
         server.abort();
 
         for plane in [door_plane().key, agents_plane().key] {
@@ -982,6 +1025,9 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
         &rules,
     )
     .expect("the actual product builds the door deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, "configured-store")
+        .expect("the actual configured Store binds boot rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1250,11 +1296,61 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     handle.abort();
 }
 
+// A protected resource rejects a plain data-plane token by design. A sibling path still
+// needs the ordinary data-plane credential, so retain both actual signed credentials.
+fn plane_bearers(app: &busbar_kernel::state::App, sections: &str, name: &str) -> (String, String) {
+    use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
+    let now = busbar_kernel::store::now();
+    let expiry = now.saturating_add(300);
+    let (key, plain) = app
+        .governance
+        .as_ref()
+        .expect("actual governance book")
+        .mint_signed(
+            busbar_kernel::governance::NewKeySpec {
+                name: name.to_string(),
+                ..Default::default()
+            },
+            expiry,
+            now,
+        )
+        .expect("mint an actual key for the protected plane traffic");
+    let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
+    let generation = TokenVerifier::single(signer.kid(), signer.verifying_key())
+        .verify(plain.expose(&busbar_kernel::seal::lend()), now, None)
+        .expect("the actual token carries its persisted key generation")
+        .generation;
+    let (_, object) = built_planes(&resolved(sections))
+        .into_iter()
+        .find(|(decl, _)| decl.key == door_plane().key)
+        .expect("the configured door builds its admission metadata");
+    let admission = (door_plane().admission)(&*object)
+        .expect("the protected door declares its canonical resource audience");
+    let bound = signer.mint_for_audience(
+        &key.id,
+        expiry,
+        generation.as_deref(),
+        &admission.audience,
+        None,
+    );
+    (
+        format!("Bearer {}", plain.expose(&busbar_kernel::seal::lend())),
+        format!("Bearer {bound}"),
+    )
+}
+
 async fn oversized_413_body(
     app: Arc<busbar_kernel::state::App>,
     sections: &str,
     path: &str,
 ) -> serde_json::Value {
+    let (plain_bearer, door_bearer) = plane_bearers(&app, sections, "plane-body-limit");
+    let mount = jsonrpc_mount(door_plane(), sections);
+    let bearer = if path == mount || path.starts_with(&format!("{mount}/")) {
+        door_bearer
+    } else {
+        plain_bearer
+    };
     let router = plane_router(app, sections, 64, &["keys"]);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -1263,6 +1359,7 @@ async fn oversized_413_body(
     let task = tokio::spawn(async move { axum::serve(listener, router).await.expect("serve") });
     let response = reqwest::Client::new()
         .post(format!("http://{address}{path}"))
+        .header("authorization", bearer)
         .header("content-type", "application/json")
         .body(vec![b'x'; 128])
         .send()
@@ -1366,25 +1463,45 @@ fn plane_router(
             )
         })
         .collect();
-    let mounts = crate::root::serve::door_mounts(
-        served,
-        || crate::root::kernel::ROOT_CARD.pin(),
-        &data_chain,
-        &busbar_kernel::base_data_core_lines(&app),
-        &[],
-        &crate::root::serve::transport_offers(crate::LINKED.transports, &[]),
-    )
-    .expect("the actual root mounts the planes' own declared doors");
+    // This in-process HTTP fixture mounts all configured plane claims, including A2A's
+    // gRPC line. Read both framing layers' real Statements rather than borrowing the
+    // executable's narrower default transport inventory or inventing offered auth bits.
+    let mut transports = crate::LINKED.transports.to_vec();
+    for row in [
+        crate::root::linked::linked_transport!(busbar_transport_http::door::door),
+        crate::root::linked::linked_transport!(busbar_transport_grpc::door),
+    ] {
+        if !transports
+            .iter()
+            .any(|present| (present.key)() == (row.key)())
+        {
+            transports.push(row);
+        }
+    }
+    let offers = crate::root::serve::transport_offers(&transports, &[]);
+    // Axum is the physical HTTP listener here. Let the production listener planner place
+    // every logical plane claim on that listener before sealing auth-point requirements:
+    // a gRPC framer's own empty auth record is not the HTTP listener's offered record.
+    let initial = crate::root::boot::configured_listener_needs(&cfg, &configured)
+        .expect("the actual configured root declares its physical listener assignments");
+    let framer_for = |scheme: &str| crate::root::connector::the().framer_for(scheme);
+    let plan = crate::root::serve::ListenerPlan::new(initial, offers.clone(), &framer_for);
+    let (routes, sessions, refusals, refuse_by_path) =
+        crate::root::serve::data_mounts_with_listeners(
+            served,
+            &app,
+            &plan,
+            "listen",
+            &data_chain,
+            &busbar_kernel::base_data_core_lines(&app),
+            &[],
+            &offers,
+        )
+        .expect("the actual root mounts the planes' own declared doors on the HTTP listener");
     let (router, _, handle) = busbar_kernel::build_split_routers_serving_doors(
-        app,
-        mounts.routes,
-        mounts.sessions,
-        mounts.refusals,
-        body_limit,
-        16,
-        false,
+        app, routes, sessions, refusals, body_limit, 16, false,
     );
-    if let Some(refuser) = mounts.refuse_by_path {
+    if let Some(refuser) = refuse_by_path {
         handle.bind_door_refuser(refuser);
     }
     live.set(handle);

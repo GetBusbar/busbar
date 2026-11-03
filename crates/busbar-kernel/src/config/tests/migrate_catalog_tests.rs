@@ -41,8 +41,8 @@ other:
     assert_eq!(
         m.changes,
         vec![
-            "providers.yaml: mock.colour: removed (a catalog entry does not read this key: 1.5.5 \
-             ignored it, and 1.6.0 refuses it, so removing it keeps what 1.5.5 did)"
+            "providers.yaml: mock.colour: removed (1.5.5 ignored this catalog key; \
+             removing it preserves the legacy behavior)"
                 .to_string()
         ]
     );

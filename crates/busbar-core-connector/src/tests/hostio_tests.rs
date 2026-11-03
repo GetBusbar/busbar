@@ -392,7 +392,13 @@ fn an_admitted_program_is_spawned_bare_and_killed_with_its_handle() {
 fn a_programs_own_exit_is_answered_by_ends_while_a_descendant_holds_its_output() {
     worker().block_on(async {
         let io = HostIo::new();
-        let args = ["-c".to_owned(), "sleep 5 & exit 3".to_owned()];
+        // Duplicate the admitted stdin before the shell backgrounds its descendant (whose
+        // implicit stdin would otherwise be /dev/null). The descendant keeps stdout/stderr
+        // open until this test closes the one owned writer, including on handle drop.
+        let args = [
+            "-c".to_owned(),
+            "exec 3<&0; /bin/cat <&3 & exit 3".to_owned(),
+        ];
         let program = Program {
             command: "/bin/sh".into(),
             cwd: None,
@@ -435,7 +441,21 @@ fn a_programs_own_exit_is_answered_by_ends_while_a_descendant_holds_its_output()
         let waker = std::task::Waker::noop();
         let read = io.read(OWNER, h, &mut buf, waker);
         assert!(read.is_pending(), "the pipe ended: {read:?}");
+
+        // The parent's END must already have been answered while its descendant held the
+        // output. Now end the fixture through its owned input and observe the output close,
+        // rather than leaving a background process attached to the test runner's stderr.
+        io.shut(OWNER, h, DIR_WRITE).unwrap();
+        let eof = tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            poll_fn(|cx| io.read(OWNER, h, &mut buf, cx.waker())),
+        )
+        .await
+        .expect("the owned descendant exits within the original deadline")
+        .expect("read the descendant's output EOF");
+        assert_eq!(eof, 0, "the descendant emitted no fixture output");
         io.close(OWNER, h).unwrap();
+        assert_eq!(io.held(), 0);
     });
 }
 

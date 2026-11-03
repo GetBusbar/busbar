@@ -1467,17 +1467,24 @@ unsafe fn session_piece(
             _ => {}
         }
     }
-    {
+    let initial = {
         let mut seen = me.session_tickets.lock().unwrap();
         let tickets = seen.entry(i.stream).or_default();
+        let initial = tickets.is_empty();
         if !tickets.contains(&t) {
             tickets.push(t);
         }
         let n = tickets.len() as u64;
         me.sessions[Sessions::Tickets as usize].store(n, Ordering::SeqCst);
-    }
+        initial
+    };
     let count = |c: Sessions| me.sessions[c as usize].fetch_add(1, Ordering::SeqCst);
     let piece = bytes(i.bytes);
+    // The driver's first caller crossing opens the session before any caller frame arrives.
+    // Keep later empty caller frames observable; only this initial empty opening has no echo.
+    if initial && i.from == FROM_CALLER && i.flags == 0 && piece.is_empty() {
+        return say(out, Outcome::Ready);
+    }
     match i.from {
         FROM_KERNEL if i.attempt_no > 0 => {
             count(Sessions::Attempts);
