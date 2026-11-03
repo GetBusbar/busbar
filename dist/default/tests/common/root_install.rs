@@ -15,6 +15,19 @@ pub fn trust_policy(cfg: &PluginsCfg) -> Result<TrustPolicy, String> {
     crate::root::boot::trust_policy(cfg, env!("CARGO_PKG_VERSION"))
 }
 
+static CREDENTIAL_HANDLE: std::sync::OnceLock<crate::root::credentials::LateHandle> =
+    std::sync::OnceLock::new();
+
+/// Complete the production credential-source lifecycle for an isolated application fixture.
+/// The caller retains the strong AppHandle for every credential read it exercises.
+pub fn bind_credentials_once(handle: std::sync::Arc<busbar_kernel::state::AppHandle>) {
+    install();
+    let late = CREDENTIAL_HANDLE.get().expect("the real credential source is installed");
+    assert!(!late.is_set(), "the isolated fixture binds its live credential source once");
+    late.set(handle);
+    assert!(late.is_set(), "the fixture retains its actual live AppHandle");
+}
+
 pub fn install() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -37,7 +50,8 @@ pub fn install() {
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the loopback IdP deployment resolves");
         let judge = crate::root::connector::dest_judge(&cfg);
-        let (credentials, _handle) = crate::root::credentials::AppCredentials::late();
+        let (credentials, handle) = crate::root::credentials::AppCredentials::late();
+        assert!(CREDENTIAL_HANDLE.set(handle).is_ok(), "the real credential source initializes once");
         crate::root::serve::compose(judge.clone(), &late, credentials);
         crate::root::connector::boot(
             crate::LINKED_TRANSPORT_DOORS,
