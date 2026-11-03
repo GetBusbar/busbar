@@ -1424,9 +1424,11 @@ impl Worker {
         Duration::from_nanos(next.saturating_sub(now)).min(Duration::from_millis(100))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn cross<'a>(
         &'a self,
         mut st: MutexGuard<'a, WorkerState>,
+        idx: u32,
         instance: &Arc<Instance>,
         s: u32,
         heads: (*mut InHead, *mut OutHead, u32),
@@ -1437,9 +1439,9 @@ impl Worker {
         // Only a raw driver's TICK hands its PENDING frame to a caller. Ordinary PENDING
         // and DRIVE retain host frames, but no caller owns their intermediate answer leases.
         // Instance::cross already copied the common head and negotiated reply extensions.
-        // SAFETY: this crossing owns the host input frame.
-        let ticket = unsafe { (*heads.0).ticket };
-        let entry = st.entries.get(decode(ticket.slot).1 as usize);
+        // The scheduled host entry owns the context. CANCEL and CLOSE need not carry that
+        // entry's ticket in their common head, so they cannot select it from the ABI frame.
+        let entry = st.entries.get(idx as usize);
         let tracing = entry.and_then(|e| {
             e.current
                 .as_ref()
@@ -1676,7 +1678,7 @@ impl Worker {
                 let heads = frame.prepare(ticket, class as u8);
                 let budget = env.budgets.of(slot::CANCEL, class);
                 let (mut st, c) =
-                    self.cross(st, &inst, slot::CANCEL, heads, budget, framing.clone())?;
+                    self.cross(st, idx, &inst, slot::CANCEL, heads, budget, framing.clone())?;
                 let _cancel_lease = UnhandedLease::new(&inst, framing.clone(), c.lease);
 
                 if op_slot == slot::OPEN
@@ -1687,7 +1689,7 @@ impl Worker {
                     let heads = (&raw mut input, &raw mut out, size_of::<OutHead>() as u32);
                     let budget = env.budgets.of(slot::CLOSE, class);
                     let (back, closed) =
-                        self.cross(st, &inst, slot::CLOSE, heads, budget, framing)?;
+                        self.cross(st, idx, &inst, slot::CLOSE, heads, budget, framing)?;
                     st = back;
                     if closed.outcome != Outcome::Ready {
                         tracing::warn!(
@@ -1748,7 +1750,7 @@ impl Worker {
                 let budget = env.budgets.of(slot::DRIVE, DeadlineClass::Connection);
                 env.services.held.enter(ticket, false);
                 let (mut st, c) =
-                    self.cross(st, &inst, slot::DRIVE, heads, budget, framing.clone())?;
+                    self.cross(st, idx, &inst, slot::DRIVE, heads, budget, framing.clone())?;
                 let _drive_lease = UnhandedLease::new(&inst, framing, c.lease);
                 env.services.held.leave(ticket);
                 if matches!(c.outcome, Outcome::Ready | Outcome::Pending) {
@@ -1837,7 +1839,7 @@ impl Worker {
             },
             None => None,
         };
-        let (mut st, c) = self.cross(st, inst, s, heads, budget, framing)?;
+        let (mut st, c) = self.cross(st, idx, inst, s, heads, budget, framing)?;
         drop(_reference);
         let e = &mut st.entries[idx as usize];
         let Some(cur) = e.current.as_mut() else {

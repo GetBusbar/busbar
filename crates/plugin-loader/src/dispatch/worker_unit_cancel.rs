@@ -374,6 +374,7 @@ impl Worker {
         } else {
             let (back, crossed) = self.cross(
                 st,
+                primary,
                 &instance,
                 slot::CANCEL,
                 heads,

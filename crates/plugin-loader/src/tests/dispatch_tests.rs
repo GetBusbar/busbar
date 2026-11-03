@@ -3501,6 +3501,71 @@ mod tracing_context {
         });
         d.recycle(ticket);
     }
+
+    #[test]
+    fn orphan_cancellation_keeps_its_creator_context_across_the_ffi_thread() {
+        let d = Dispatcher::new(config());
+        let healthy = plugin(&d);
+        let capture = Capture::default();
+        let ticket = d.mint(0).unwrap();
+        let (held, id) = tracing::subscriber::with_default(capture.clone(), || {
+            let span = tracing::info_span!("orphan-creator");
+            let id = span.id().unwrap().into_u64();
+            let _entered = span.enter();
+            let held = d.submit(
+                &healthy,
+                ticket,
+                TICK,
+                frame(plug::PEND_HOLD),
+                DeadlineClass::Call,
+                0,
+            );
+            (held, id)
+        });
+        until("the healthy op pends", || d.is_pending(ticket));
+
+        // HANG/UNHANG use a process-wide marker in the existing fixture. A unique marker and
+        // a release guard keep this control independent of other dispatch tests and panics.
+        let marker = format!(
+            "trace-orphan-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::UNIX_EPOCH
+                .elapsed()
+                .unwrap()
+                .as_nanos()
+        );
+        let hang = Box::leak(format!("hang:{marker}").into_bytes().into_boxed_slice());
+        let unhang = Box::leak(format!("unhang:{marker}").into_bytes().into_boxed_slice());
+        let (releaser, _) = opened(&d);
+        struct Release<'a>(&'a Plugin<TestKind>, &'static [u8]);
+        impl Drop for Release<'_> {
+            fn drop(&mut self) {
+                let _ = self.0.call(TICK, &mut frame(self.1));
+            }
+        }
+        let _release = Release(&releaser, unhang);
+        let (wedger, _) = opened(&d);
+        let wedged = d.mint(0).unwrap();
+        let hung = d.submit(&wedger, wedged, TICK, frame(hang), DeadlineClass::Call, 0);
+        until("the watchdog replaced the wedged worker", || {
+            d.stats().replacements == 1
+        });
+        until("the orphan cancellation crossing", || {
+            capture.events().iter().any(|e| e.0 == "cancel")
+        });
+        assert_eq!(held.wait(WAIT).unwrap().outcome, Outcome::Fault);
+        let events = capture.events();
+        let started = events.iter().find(|e| e.0 == "start").unwrap();
+        let cancelled = events.iter().find(|e| e.0 == "cancel").unwrap();
+        assert_ne!(
+            started.2, cancelled.2,
+            "orphan cancel must cross on the permanent FFI thread"
+        );
+        assert!(events.iter().all(|e| e.1 == Some(id)), "{events:?}");
+        drop(hung);
+        d.recycle(ticket);
+        d.recycle(wedged);
+    }
 }
 
 #[test]
