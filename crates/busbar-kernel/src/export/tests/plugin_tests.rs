@@ -515,6 +515,10 @@ fn settings_of(v: Value) -> serde_json::Map<String, Value> {
 
 #[test]
 fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
+    let resolver = crate::config::secret::actual_product_resolver();
+    let sink_settings = |axis: &dyn ExportAxis, module, settings| {
+        sink_settings_with_resolver(axis, module, settings, &resolver)
+    };
     let (url, token) = (
         format!("BUSBAR_T_REFCAP_EXPORT_URL_{}", std::process::id()),
         format!("BUSBAR_T_REFCAP_EXPORT_TOKEN_{}", std::process::id()),
@@ -567,6 +571,10 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
 
 #[test]
 fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
+    let resolver = crate::config::secret::actual_product_resolver();
+    let sink_settings = |axis: &dyn ExportAxis, module, settings| {
+        sink_settings_with_resolver(axis, module, settings, &resolver)
+    };
     let url_var = format!("BUSBAR_T_EXPORT_CLASS_URL_{}", std::process::id());
     let token_var = format!("BUSBAR_T_EXPORT_CLASS_TOKEN_{}", std::process::id());
     let url = "https://classification.example/collector";
