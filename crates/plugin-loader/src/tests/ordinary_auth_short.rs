@@ -222,7 +222,7 @@ fn request() -> VerifyRequest {
         ..Default::default()
     }
 }
-fn verify(auth: &dyn busbar_contract::auth_calls::AuthCalls) {
+fn verify(auth: &dyn busbar_contract::auth_calls::AuthCalls, judgment: usize) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -238,7 +238,11 @@ fn verify(auth: &dyn busbar_contract::auth_calls::AuthCalls) {
     let Verified::Identity(identity) = answer.verified else {
         panic!("identity refused");
     };
-    let judgment = JUDGMENTS.load(Ordering::SeqCst);
+    assert_eq!(
+        JUDGMENTS.load(Ordering::SeqCst),
+        judgment,
+        "this operation must judge exactly once in sequence"
+    );
     let expected = if judgment == 0 {
         SUBJECT.to_string()
     } else {
@@ -254,7 +258,7 @@ fn verify(auth: &dyn busbar_contract::auth_calls::AuthCalls) {
 fn actual_retained_short_decision_is_judged_once_and_its_lease_released_once() {
     let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
     let (_, auth) = opened(false);
-    verify(&*auth);
+    verify(&*auth, 1);
     assert_eq!(
         (
             VERIFIES.load(Ordering::SeqCst),
@@ -268,7 +272,7 @@ fn actual_retained_short_decision_is_judged_once_and_its_lease_released_once() {
 fn actual_static_short_decision_copies_without_a_reply_lease() {
     let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
     let (_, auth) = opened(true);
-    verify(&*auth);
+    verify(&*auth, 0);
     assert_eq!(
         (
             VERIFIES.load(Ordering::SeqCst),
@@ -290,7 +294,7 @@ fn actual_submitted_short_fences_release_and_rejects_same_worker_wait() {
         .unwrap_or_else(PoisonError::into_inner) = Some(dispatcher);
     let (finished, received) = mpsc::channel();
     let client = std::thread::spawn(move || {
-        verify(&*auth);
+        verify(&*auth, 1);
         finished.send(()).unwrap();
     });
     let state = gate.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -563,8 +567,8 @@ fn four_mixed_short_operations_keep_their_own_first_judgment_on_one_instance() {
         assert_eq!(identity.groups[299], "group-299");
     };
     sync(1);
-    verify(&*auth);
-    verify(&*auth);
+    verify(&*auth, 2);
+    verify(&*auth, 3);
     sync(4);
     assert_eq!(
         (
