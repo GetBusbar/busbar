@@ -169,6 +169,16 @@ fn request_with_challenge(
     path: &str,
     token: Option<&str>,
 ) -> (u16, String, Option<String>) {
+    request_with_headers(addr, method, path, token, &[])
+}
+
+fn request_with_headers(
+    addr: &str,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    headers: &[(&str, &str)],
+) -> (u16, String, Option<String>) {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async {
         let client = reqwest::Client::builder()
@@ -179,6 +189,9 @@ fn request_with_challenge(
         let mut req = client.request(method, format!("http://{addr}{path}"));
         if let Some(t) = token {
             req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {t}"));
+        }
+        for (name, value) in headers {
+            req = req.header(*name, *value);
         }
         let resp = req.send().await.expect("request");
         let challenge = resp
@@ -387,11 +400,38 @@ fn a_1_5_5_config_boot_prints_nothing_from_an_unconfigured_plane() {
         "a 1.5.5 config must print no plane line on BOOT-181:\n{out}"
     );
     let b = boot("181-control", true);
-    for (door, _) in plane_doors() {
-        let response = request_with_challenge(&b.data, "POST", door, None);
-        assert!(
-            is_plane_door(&b, door, &response),
-            "with every plane configured POST {door} reaches that plane's door: {response:?}"
-        );
+    for (door, configured) in plane_doors() {
+        if configured {
+            let response = request_with_challenge(&b.data, "POST", door, None);
+            assert!(
+                is_plane_door(&b, door, &response),
+                "with every plane configured POST {door} reaches that plane's door: {response:?}"
+            );
+        } else {
+            assert_eq!(door, "/v1/realtime/gemini");
+            let absent = request_with_challenge(&b.data, "POST", door, None);
+            assert!(
+                !is_plane_door(&b, door, &absent)
+                    && absent.2.as_deref() != Some(plane_challenge(&b, door).as_str()),
+                "the old POST {door} path is not a configured plane door: {absent:?}"
+            );
+            let target = "/v1/realtime/gemini/law7-probe";
+            let response = request_with_headers(
+                &b.data,
+                "GET",
+                target,
+                None,
+                &[
+                    ("connection", "Upgrade"),
+                    ("upgrade", "websocket"),
+                    ("sec-websocket-version", "13"),
+                    ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
+                ],
+            );
+            assert!(
+                is_plane_door(&b, door, &response),
+                "with every plane configured GET {target} reaches the declared WebSocket door: {response:?}"
+            );
+        }
     }
 }
