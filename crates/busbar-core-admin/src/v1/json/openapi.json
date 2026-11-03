@@ -11399,7 +11399,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: malformed body, unknown fields, invalid limit or a malformed or foreign cursor"
+            "description": "`invalid_request`: malformed body / unknown field"
           },
           "401": {
             "content": {
@@ -11478,7 +11478,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: malformed body, unknown fields, noncanonical operation id or fingerprint, missing verdict or invalid evidence"
+            "description": "`invalid_request`: malformed body / unknown field"
           },
           "401": {
             "content": {
@@ -11508,7 +11508,7 @@
                 }
               }
             },
-            "description": "`conflict`: stale recovery version, mismatched operation fingerprint, conflicting verdict or absent resolution authority"
+            "description": "`conflict`: the retained operation, recovery version, verdict or resolution authority conflicts with the request"
           },
           "503": {
             "content": {
