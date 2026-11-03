@@ -1058,6 +1058,10 @@ def cmd_upload(inp: Inputs, out: Path) -> int:
                   f"Push your signed tag to GitHub ({REPO}) first: git push <github remote> {tag}.")
     if vd.refusals:
         return finish(vd)
+    verified_images = read_images(inp.cand / "IMAGES")
+    if read_images(out / "IMAGES") != verified_images or signed_ev.get("images") != verified_images:
+        vd.refuse("G-10", "IMAGES", "the signed images match this verified candidate", "a different image set", "Sign this candidate before uploading.")
+        return finish(vd)
     digest = read_images(out / "IMAGES")["busbar"]
     cos = inp.trust.get("cosign") or {}
     if not cos.get("identity") or not cos.get("issuer"):
@@ -1065,7 +1069,7 @@ def cmd_upload(inp: Inputs, out: Path) -> int:
     # 1. images by digest, untagged; 2. cosign sign; 3. cosign verify on the registry copy.
     for repo in IMAGE_REPOS:
         run([tool("skopeo"), "copy", "--all", "--preserve-digests",
-             f"oci-archive:{inp.cand / 'images' / 'busbar.oci.tar'}", f"docker://{repo}@{digest}"], check=True)
+             f"oci-archive:{inp.cand / 'oci' / 'busbar.oci.tar'}", f"docker://{repo}@{digest}"], check=True)
         run([tool("cosign"), "sign", "--yes", f"{repo}@{digest}"], check=True)
         run([tool("cosign"), "verify", "--certificate-identity", cos["identity"],
              "--certificate-oidc-issuer", cos["issuer"], f"{repo}@{digest}"], check=True)
@@ -1102,17 +1106,27 @@ def cmd_upload(inp: Inputs, out: Path) -> int:
     # 8. verify as a user would; 9. only then the floating tags.
     dl = Path(tempfile.mkdtemp())
     run([tool("gh"), "release", "download", tag, "-R", REPO, "-D", str(dl)], check=True)
-    for f in ("SHA256SUMS", "SHA256SUMS.plugins", "IMAGES", "release-evidence.json"):
-        p = run([tool("ssh-keygen"), "-Y", "verify", "-f", str(signers), "-I", K2_IDENTITY, "-n", K2_NAMESPACE,
-                 "-s", str(dl / (f + ".sig"))], stdin=(dl / f).read_bytes())
-        if p.returncode != 0:
-            vd.refuse("G-7", f"published {f}", "verifies", "does not", "Pull the release back to draft at once.")
-    if sha256_file(dl / manifest.name) != signed_ev["conformance_manifest_sha256"]:
+    for name in ("SHA256SUMS", "SHA256SUMS.plugins", "IMAGES", "release-evidence.json"):
+        downloaded = dl / name
+        signature = dl / (name + ".sig")
+        if not downloaded.is_file() or not signature.is_file():
+            vd.refuse("G-4", f"published {name}", "the signed download", "missing", "Restore the complete release before publishing aliases.")
+            continue
+        verified = run([tool("ssh-keygen"), "-Y", "verify", "-f", str(signers), "-I", K2_IDENTITY, "-n", K2_NAMESPACE,
+                        "-s", str(signature)], stdin=downloaded.read_bytes())
+        if verified.returncode != 0:
+            vd.refuse("G-7", f"published {name}", "verifies", "does not", "Pull the release back to draft at once.")
+        if downloaded.read_bytes() != (out / name).read_bytes():
+            vd.refuse("G-4", f"published {name}", "the exact signed metadata for this candidate", "different bytes", "Restore this candidate's signed metadata.")
+    downloaded_manifest = dl / manifest.name
+    if not downloaded_manifest.is_file() or sha256_file(downloaded_manifest) != signed_ev["conformance_manifest_sha256"]:
         vd.refuse("G-C", f"published {manifest.name}", signed_ev["conformance_manifest_sha256"],
-                  sha256_file(dl / manifest.name), "Pull the release back to draft at once.")
-    for name, want in read_sums(dl / "SHA256SUMS").items():
-        if (dl / name).is_file() and sha256_file(dl / name) != want:
-            vd.refuse("G-4", f"published {name}", want, sha256_file(dl / name), "Pull the release back to draft at once.")
+                  sha256_file(downloaded_manifest) if downloaded_manifest.is_file() else "missing", "Pull the release back to draft at once.")
+    for name, want in read_sums(out / "SHA256SUMS").items():
+        artifact = dl / name
+        if not artifact.is_file() or sha256_file(artifact) != want:
+            vd.refuse("G-4", f"published {name}", want,
+                      sha256_file(artifact) if artifact.is_file() else "missing", "Restore the complete verified artifact set.")
     for repo in IMAGE_REPOS:
         got = inp.net.registry_digest(f"{repo}:{v}")
         if got != digest:
