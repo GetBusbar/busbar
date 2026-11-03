@@ -29,7 +29,18 @@ fn openapi_operations_carry_stable_operation_ids() {
         }
     }
 
-    assert_eq!(checked, 100, "expected exactly 100 admin operations");
+    assert_eq!(
+        checked, 102,
+        "expected the original 100 admin operations plus recovery list and resolve"
+    );
+    assert_eq!(
+        doc["paths"]["/api/v1/admin/ledger/recovery/list"]["post"]["operationId"],
+        "PostLedgerRecoveryList"
+    );
+    assert_eq!(
+        doc["paths"]["/api/v1/admin/ledger/recovery/resolve"]["post"]["operationId"],
+        "PostLedgerRecoveryResolve"
+    );
 
     assert_eq!(
         doc["paths"]["/api/v1/admin/keys"]["get"]["operationId"],
