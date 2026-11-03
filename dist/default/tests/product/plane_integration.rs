@@ -831,8 +831,9 @@ mod metrics_scrape {
             scrape_status,
             200,
             "the built-in prometheus exporter must serve /metrics on this router; \
-             actual recorder installed={}: {exposition:?}",
+             actual recorder installed={}; body prefix={:?}",
             busbar_kernel::snapshot::recorder_installed(),
+            exposition.chars().take(512).collect::<String>(),
         );
         server.abort();
 
