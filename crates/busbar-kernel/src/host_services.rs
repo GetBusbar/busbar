@@ -480,23 +480,21 @@ impl std::fmt::Debug for VerifiedTicketIdentity {
 /// Only a real reservation grants reservation-backed financial authority.
 pub enum TicketClaimDisposition {
     Ordinary,
-    Reserved(crate::plane_driver::money::TicketReservation),
+    Reserved(crate::plane_driver::TicketReservation),
     Refused,
 }
 
 /// Shared request contexts carry one removable, durably spent reservation.
 /// Cloning this holder shares custody; it never clones the reservation itself.
 #[derive(Clone)]
-pub struct HostTicketAdmission(
-    Arc<Mutex<Option<crate::plane_driver::money::SpentTicketReservation>>>,
-);
+pub struct HostTicketAdmission(Arc<Mutex<Option<crate::plane_driver::SpentTicketReservation>>>);
 
 impl HostTicketAdmission {
-    pub(crate) fn new(spent: crate::plane_driver::money::SpentTicketReservation) -> Self {
+    pub(crate) fn new(spent: crate::plane_driver::SpentTicketReservation) -> Self {
         Self(Arc::new(Mutex::new(Some(spent))))
     }
 
-    pub fn take(&self) -> Option<crate::plane_driver::money::SpentTicketReservation> {
+    pub fn take(&self) -> Option<crate::plane_driver::SpentTicketReservation> {
         // A poisoned holder fails closed. In either case no financial destructor runs
         // while the mutex is held: the removed token is returned to the caller.
         let mut held = self.0.lock().ok()?;
