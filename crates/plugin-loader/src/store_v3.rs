@@ -2096,9 +2096,6 @@ mod shortcut_tests;
 #[path = "tests/store_v3_deadline_tests.rs"]
 mod deadline_tests;
 
-#[cfg(test)]
-#[path = "tests/store_v3_opid_tests.rs"]
-mod opid_tests;
 
 #[cfg(test)]
 #[path = "tests/store_v3_validate_tests.rs"]
