@@ -2926,15 +2926,20 @@ impl ListenerPlan {
             .iter()
             .map(|name| (name.clone(), app.auth.position_points(name)))
             .collect();
-        let default_auth =
-            |mut line: Line, need: &crate::root::boot::ListenerNeed| -> Result<Line, String> {
-                if cfg.data_chain.is_empty() && matches!(line.auth, LineAuth::Chain(..)) {
-                    if let Some(default) = app.inbound_default_auth(&need.auth)? {
-                        line.auth = chain_auth(&[(default.provider, default.points)]);
-                    }
+        let data_mode = DataChainMode::for_candidate(app, &chain);
+        let default_auth = |mut line: Line,
+                            need: &crate::root::boot::ListenerNeed,
+                            allow_operator_open: bool|
+         -> Result<Line, String> {
+            if cfg.data_chain.is_empty() && matches!(line.auth, LineAuth::Chain(..)) {
+                if let Some(default) = app.inbound_default_auth(&need.auth)? {
+                    line.auth = chain_auth(&[(default.provider, default.points)]);
+                } else if allow_operator_open {
+                    line.auth = inherited_data_auth(&chain, data_mode);
                 }
-                Ok(line)
-            };
+            }
+            Ok(line)
+        };
         let mut partitions: Vec<(String, Vec<Line>)> = self
             .initial
             .binds
@@ -3001,6 +3006,24 @@ impl ListenerPlan {
             let Claimant::Plane(owner) = &line.claimant else {
                 continue;
             };
+            let allow_operator_open = self
+                .served
+                .get()
+                .and_then(|served| served.planes.iter().find(|plane| plane.instance == *owner))
+                .and_then(|plane| {
+                    plane
+                        .snapshot
+                        .claims
+                        .get(line.route.rung as usize)
+                        .map(|claim| {
+                            operator_open_claim(
+                                data_mode,
+                                plane.live.served_facts.section,
+                                claim.flags,
+                            )
+                        })
+                })
+                .unwrap_or(false);
             if self
                 .plane_sections
                 .get()
@@ -3042,6 +3065,9 @@ impl ListenerPlan {
                         line.route.path
                     ));
                 }
+                if allow_operator_open && matches!(line.auth, LineAuth::Chain(..)) {
+                    line.auth = inherited_data_auth(&chain, data_mode);
+                }
                 place(&mut partitions, "listen", line.clone())?;
             } else {
                 for need in needs {
@@ -3050,9 +3076,17 @@ impl ListenerPlan {
                         .get(&need.transport)
                         .is_some_and(|(_, datagram)| *datagram)
                     {
-                        place(&mut partitions, "listen", default_auth(line.clone(), need)?)?;
+                        place(
+                            &mut partitions,
+                            "listen",
+                            default_auth(line.clone(), need, allow_operator_open)?,
+                        )?;
                     } else {
-                        place(&mut partitions, &need.at, default_auth(line.clone(), need)?)?;
+                        place(
+                            &mut partitions,
+                            &need.at,
+                            default_auth(line.clone(), need, allow_operator_open)?,
+                        )?;
                     }
                 }
             }
@@ -3075,10 +3109,10 @@ impl ListenerPlan {
                     },
                     claimant: Claimant::Clean(CORE_CLAIMANT.into()),
                     dialect: 0,
-                    auth: if auth == RouteAuth::None {
-                        LineAuth::None
-                    } else {
-                        chain_auth(&chain)
+                    auth: match auth {
+                        RouteAuth::None => LineAuth::None,
+                        RouteAuth::Key => inherited_data_auth(&chain, data_mode),
+                        RouteAuth::Admin => chain_auth(&chain),
                     },
                     upgrade: None,
                     offered: crate::root::doors::offers_unstated(),
@@ -3121,13 +3155,17 @@ impl ListenerPlan {
                 offered: crate::root::doors::offers_unstated(),
             };
             if needs.is_empty() {
-                place(&mut partitions, "listen", line(0))?;
+                let mut line = line(0);
+                if matches!(line.auth, LineAuth::Chain(..)) {
+                    line.auth = inherited_data_auth(&chain, data_mode);
+                }
+                place(&mut partitions, "listen", line)?;
             } else {
                 for need in needs {
                     place(
                         &mut partitions,
                         &need.at,
-                        default_auth(line(need.need), need)?,
+                        default_auth(line(need.need), need, true)?,
                     )?;
                 }
             }
@@ -3216,6 +3254,43 @@ impl ListenerPlan {
         })
     }
 }
+
+// A configured empty data chain is an explicit operator policy, not an empty
+// credential requirement. Keep the latter represented by chain_auth([]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DataChainMode {
+    Credentialed,
+    OpenRelay,
+}
+
+impl DataChainMode {
+    fn for_candidate(app: &busbar_kernel::state::App, chain: &[ChainAuth]) -> Self {
+        if chain.is_empty() && app.auth.is_open() {
+            Self::OpenRelay
+        } else {
+            Self::Credentialed
+        }
+    }
+}
+
+fn inherited_data_auth(chain: &[ChainAuth], mode: DataChainMode) -> busbar_kernel::guest::LineAuth {
+    if mode == DataChainMode::OpenRelay && chain.is_empty() {
+        busbar_kernel::guest::LineAuth::None
+    } else {
+        chain_auth(chain)
+    }
+}
+
+fn operator_open_claim(mode: DataChainMode, section: &str, flags: u32) -> bool {
+    use busbar_contract::abi::plane::{CLAIM_SIGNED_INGRESS, CLAIM_TICKET};
+    mode == DataChainMode::OpenRelay
+        && section == busbar_contract::section::RESERVED_POOLS_KEY
+        && flags & (CLAIM_SIGNED_INGRESS | CLAIM_TICKET) == 0
+}
+
+#[cfg(test)]
+#[path = "tests/open_relay_composition.rs"]
+mod open_relay_composition_tests;
 
 fn chain_auth(data_chain: &[ChainAuth]) -> busbar_kernel::guest::LineAuth {
     let points = data_chain.iter().fold(0, |set, (_, p)| set | p.bits());
