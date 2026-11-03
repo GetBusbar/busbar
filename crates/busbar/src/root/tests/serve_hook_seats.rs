@@ -69,22 +69,8 @@ pub(super) fn install_door_seams() {
     crate::dist_root_install::install();
 }
 
-static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
-    std::sync::LazyLock::new(|| {
-        let holder = crate::root::kernel::RootHistory::default();
-        holder.apply(
-            crate::root::kernel::card_from_config(
-                std::iter::empty::<(&str, busbar_contract::billing::RawTierRates)>(),
-                0,
-                true,
-            ),
-            1_000,
-        );
-        holder
-    });
-
 fn card_pin() -> Option<crate::root::kernel::PinnedHistory> {
-    CARD.pin()
+    crate::root::kernel::ROOT_CARD.pin()
 }
 
 pub(super) const REWRITTEN: &str = "rewritten-by-the-global-rewrite-seat";
@@ -481,7 +467,7 @@ pub(crate) struct RigOpts<'a> {
     /// The flat request fee, in cents (`None`: 1 cent).
     pub fee_cents: Option<i64>,
     /// The card history a unit is pinned to at its door, which the node's book prices its line
-    /// against (`None`: the rig's own priceless card).
+    /// against (`None`: the rig's configured, Store-backed card).
     pub pin: Option<fn() -> Option<crate::root::kernel::PinnedHistory>>,
     /// The walk's clock the door plane is composed on, which every generation's walk reads (`None`:
     /// the node's own, [`crate::root::egress_ports::NodeClock`]).
@@ -943,6 +929,8 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     // those cells still exercise runtime admission's fail-closed refusal.
     cfg.groups = groups.clone();
     let fee = opts.fee_cents.unwrap_or(1);
+    cfg.per_request_fee = fee;
+    cfg.rate_card = opts.rate_card.cloned();
     let cost = if groups.is_empty() && opts.rate_card.is_none() {
         CostModel::flat(fee)
     } else {
