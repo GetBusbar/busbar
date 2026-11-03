@@ -1034,6 +1034,7 @@ impl Lane {
                     {
                         state.refusal =
                             Some("committed audit group no longer matches the queue prefix".into());
+                        state.stopped = true;
                         state.refusals = state.refusals.saturating_add(1);
                         self.set_full(&state);
                         self.moved.notify_all();
