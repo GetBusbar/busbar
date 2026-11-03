@@ -1971,6 +1971,8 @@ fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundA
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer() {
+    #[cfg(distribution_root)]
+    crate::dist_root_install::install();
     use busbar_contract::abi::host::conn::connector::{DIRECTION_OUTBOUND, EGRESS_PROVIDER};
     use busbar_contract::auth_calls::FieldsRequest;
     const TOKEN_URL: &str = "https://login.example.com/tenant/oauth2/v2.0/token";
@@ -2151,6 +2153,8 @@ fn jwt_bearer_routes(
     metadata: busbar_kernel::config_validate::MetadataPosture,
     table: &std::sync::Arc<TokenEndpoint>,
 ) -> Result<std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
+    #[cfg(distribution_root)]
+    crate::dist_root_install::install();
     use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
     let sa = serde_json::json!({
         "client_email": "svc@proj.iam.gserviceaccount.com",
@@ -8509,7 +8513,12 @@ fn per_hop_over(
     #[cfg(distribution_root)]
     crate::dist_root_install::install();
     let secret = busbar_contract::secret_ref::SecretRef::file(path.display().to_string());
-    let value = secrets.resolve_string(&secret).expect("it resolves");
+    let value = secrets
+        .resolve_string_at_config(
+            &secret,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .expect("it resolves while the binding is built");
     let seal = busbar_kernel::seal::lend();
     let value = value.expose(&seal);
     let settings = serde_json::json!({});
@@ -8707,6 +8716,26 @@ impl busbar_contract::secret::SecretResolve for CountingResolves {
         self.resolved
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         busbar_contract::secret::SecretResolve::resolve_string(&self.inner, secret)
+    }
+
+    fn resolve_at_config(
+        &self,
+        secret: &busbar_contract::secret_ref::SecretRef,
+        scope: &busbar_contract::config_time::ConfigScope,
+    ) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
+        self.resolved
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        busbar_contract::secret::SecretResolve::resolve_at_config(&self.inner, secret, scope)
+    }
+
+    fn resolve_string_at_config(
+        &self,
+        secret: &busbar_contract::secret_ref::SecretRef,
+        scope: &busbar_contract::config_time::ConfigScope,
+    ) -> Result<busbar_contract::redacted::Secret<String>, String> {
+        self.resolved
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        busbar_contract::secret::SecretResolve::resolve_string_at_config(&self.inner, secret, scope)
     }
 }
 
