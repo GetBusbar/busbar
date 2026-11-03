@@ -357,17 +357,13 @@ fn app() -> (
     let module = busbar_contract::abi::mechanism::rendering::read(&statement)
         .unwrap()
         .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-    );
+    let mut manifest = plugins::manifest("store", &module, "third-party");
     manifest.statement = Some(hex::encode(statement));
     let directory = plugins::scratch("admin-custody-outcomes");
     std::fs::write(
         directory.join("store.tar.gz"),
         plugins::signed(
-            &crate::dist_root_install::release_key(),
+            &plugins::key(0x33),
             manifest,
             &std::fs::read(library).unwrap(),
         ),
@@ -385,7 +381,7 @@ fn app() -> (
     let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
         .unwrap()
         .name;
-    common::credentials::install_auth_plugin(&directory, &oidc_module, "custody-auth", true);
+    common::credentials::install_auth_plugin(&directory, &oidc_module, "custody-auth", false);
     let signing = directory.join("signing-key");
     std::fs::write(&signing, hex::encode([9u8; 32])).unwrap();
     let deploy=busbar_kernel::config::deploy_from_deserializer(json!({
@@ -395,11 +391,18 @@ fn app() -> (
         "store":{"module":module,"settings":settings},"advanced":{"allow_destinations":["127.0.0.1"]}
     })).unwrap();
     let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
-    let plugin_config = busbar_kernel::config::PluginsCfg {
+    let mut plugin_config = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
         ..Default::default()
     };
+    plugin_config
+        .trust
+        .publishers
+        .push(busbar_kernel::config::PluginPublisher {
+            name: "third-party".into(),
+            public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+        });
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config).unwrap();
     let store = Store::new(anchor.records);
     let anchor = busbar_contract::store_calls::OpenedStore {
