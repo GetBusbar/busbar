@@ -867,7 +867,7 @@ mod renewal_fence_tests {
                 2 => {
                     let key = lease_key(&host);
                     let request = super::super::conditional::candidate(
-                        vec![],
+                        before.clone(),
                         vec![Mutation::DeleteRange {
                             schema: NODE_SCHEMA.into(),
                             prefix: key.clone(),
