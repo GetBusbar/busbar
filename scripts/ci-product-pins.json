@@ -125,7 +125,7 @@
     {
       "repo": "busbar-store-memory",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-store-memory",
-      "commit": "afa6267d0e34a1cb328e286d3d1ec6f95a83808f",
+      "commit": "6736c6a664ad66bee8c98edaf3794af676deeb07",
       "package": "busbar-store-memory-plugin",
       "kind": "store",
       "alias": "memory",
@@ -279,7 +279,7 @@
     {
       "repo": "busbar-plane-a2a",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-plane-a2a",
-      "commit": "d97eac2d7d8019ba99f8c532e37b33f2e8b8ef71",
+      "commit": "42d6f31042391903becc6c85a901ee666222d624",
       "package": "busbar-plane-a2a-plugin",
       "kind": "plane",
       "alias": "a2a",
@@ -301,13 +301,13 @@
     {
       "repo": "busbar-plane-mcp",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-plane-mcp",
-      "commit": "9d2f8138e93f6d8710e7b3f2240f300d5b0f9b7e",
+      "commit": "b6d6304ad0d4cc1494e9fb689a9661e05cccd22b",
       "package": "busbar-plane-mcp-plugin",
       "kind": "plane",
       "alias": "mcp",
       "image": "libbusbar_plane_mcp_plugin.so",
       "declares": "plane-mcp/declares.json",
-      "lock_sha256": "d25733201a2b64bf6190d588528d2e395d33722e52ac3d1d101d10a4f0414282"
+      "lock_sha256": "38e437e5f534df737d96baa87f72c173533c0b552f8b74285a6ec4c1bdc5c139"
     },
     {
       "repo": "busbar-plane-streaming",
