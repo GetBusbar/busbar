@@ -289,10 +289,9 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
 
     let pair = Pair::with_audio().await;
     assert_eq!(pair.caller.read().await, Some(Vec::new()));
-    // Establish and drain a genuine caller-wire barrier before pairing it to the
-    // upstream. Hold only autonomous caller ICE/timers after that barrier: setup
-    // traffic is not part of the one SRTP frame whose readiness we measure below.
-    pair.pause().await;
+    // Finish a real application exchange while the peer can still process SCTP
+    // control packets and retransmit. The root's channel-open event alone does
+    // not say that the peer has finished that reciprocal protocol work.
     pair.send(b"SRTP ingress window").await;
     assert_eq!(
         tokio::time::timeout(WAIT, pair.caller.read())
@@ -300,6 +299,10 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
             .unwrap(),
         Some(b"SRTP ingress window".to_vec())
     );
+    // Only then pause autonomous caller ICE/timers, before pairing upstream.
+    // Capture the counter baseline after upstream readiness below; explicit SRTP
+    // still crosses the real wire while autonomous caller work remains paused.
+    pair.pause().await;
     let mut entries = crate::root::connector::entries(
         crate::LINKED_TRANSPORT_DOORS,
         &TransportSettings::default(),
