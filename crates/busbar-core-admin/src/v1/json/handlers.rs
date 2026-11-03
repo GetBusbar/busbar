@@ -1632,6 +1632,7 @@ pub(crate) async fn put_auth(
         let in_process = busbar_kernel::preflight::root_rows().in_process_auth;
         for name in &req.admin_auth {
             let known = current.admin_modules.operator.is(name)
+                || current.admin_modules.modules.contains_key(name)
                 || in_process.is_some_and(|answers| answers(name));
             if !known {
                 return Err(AdminError::Validation(format!(
