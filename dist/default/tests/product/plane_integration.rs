@@ -84,15 +84,24 @@ fn resolved(sections: &str) -> RootCfg {
         .unwrap_or_else(|e| panic!("the document resolves: {e:?}"));
     let mut auth = busbar_kernel::config::AuthCfg::default_none();
     auth.chain = vec![busbar_kernel::config::AuthChainEntry::bare("keys")];
-    auth.signing_key = Some(busbar_kernel::config::SecretRef::template(hex::encode(
-        [9u8; 32],
-    )));
+    let credentials = plugins::scratch("plane-integration-credentials");
+    let signing_key = credentials.join("signing-key");
+    let operator_token = credentials.join("operator-token");
+    std::fs::write(&signing_key, hex::encode([9u8; 32]))
+        .expect("write the actual file-backed signing input");
+    std::fs::write(&operator_token, "admintok")
+        .expect("write the actual file-backed operator input");
+    auth.signing_key = Some(busbar_kernel::config::SecretRef::file(
+        signing_key.to_string_lossy().into_owned(),
+    ));
     let operator = auth
         .admin_auth
         .iter_mut()
         .find(|entry| busbar_kernel::config::names_operator(&entry.module))
         .expect("the actual operator module");
-    operator.token = Some(busbar_kernel::config::SecretRef::template("admintok"));
+    operator.token = Some(busbar_kernel::config::SecretRef::file(
+        operator_token.to_string_lossy().into_owned(),
+    ));
     cfg.auth = Some(auth);
     cfg
 }
@@ -237,6 +246,9 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
         &rules,
     )
     .expect("the actual product builds the door deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, "configured-store")
+        .expect("the actual configured Store binds boot rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -335,6 +347,9 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
         &rules,
     )
     .expect("the actual product builds the door deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, "configured-store")
+        .expect("the actual configured Store binds boot rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -455,6 +470,9 @@ async fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
         &rules,
     )
     .expect("the actual product builds the door deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, "configured-store")
+        .expect("the actual configured Store binds boot rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -599,6 +617,9 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
         &rules,
     )
     .expect("the actual product builds the door deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, "configured-store")
+        .expect("the actual configured Store binds boot rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -744,6 +765,9 @@ mod metrics_scrape {
             &rules,
         )
         .expect("the actual product builds the door deployment");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, "configured-store")
+            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -982,6 +1006,9 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
         &rules,
     )
     .expect("the actual product builds the door deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, "configured-store")
+        .expect("the actual configured Store binds boot rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
