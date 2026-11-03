@@ -292,11 +292,23 @@ fn build_application(
             ),
         }
     });
+    // Completing a hosted credential login provisions a subject leaf through the
+    // normal config transaction. Anchor its writable overlay in the same actual Store.
+    let (opened_store, overlay) = if auth_library.is_some() {
+        let opened = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugins)
+            .expect("the actual hosted-login Store anchors its config authority");
+        let overlay = busbar_kernel::config::overlay::OverlayStore::new(
+            opened.calls.as_ref().cloned().expect("the actual Store exposes typed calls"),
+        ).expect("the actual hosted-login Store supports a writable config overlay");
+        (Some(opened), Some(Arc::new(overlay)))
+    } else {
+        (opened_store, None)
+    };
     let carried = authorization_server.as_deref().or(prior);
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugins,
-        None,
+        overlay,
         HashSet::new(),
         HashSet::new(),
         (None, None),
