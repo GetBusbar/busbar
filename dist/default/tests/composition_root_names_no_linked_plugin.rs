@@ -58,7 +58,7 @@ unit-b = "beta"
         "a disabled row is emitted: {out}"
     );
     assert!(
-        out.contains("    #[cfg(test)]\n    protocols: &[busbar_first::linked::PROTOCOLS, ],\n"),
+        !out.contains("protocols:") && !out.contains("::PROTOCOLS"),
         "executable codec declarations must not enter the shipping linked table: {out}"
     );
     assert!(out.contains("    diagnostics: &[crate::root::third_half::DIAGNOSTICS, ],\n"));
