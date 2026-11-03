@@ -517,12 +517,11 @@ fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
         &rules,
     )
     .expect("the production root builds the app and opens its real store through the ABI");
+    let book = root::boot::book(&app, "test-store").expect("the boot book opens");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
     }
-
-    let book = root::boot::book(&app, "test-store").expect("the boot book opens");
 
     let (on_disk, first_record) = {
         let durability = book
@@ -580,6 +579,8 @@ fn a_store_without_the_record_slots_refuses_the_boot_by_name() {
         &rules,
     )
     .expect("the production root builds the app and opens its real store through the ABI");
+    let _book = root::boot::book(&app, store_module)
+        .expect("the configured Store binds rates before its record slots are withheld");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -819,11 +820,11 @@ fn one_seal_after_two_reloads() {
         &rules,
     )
     .expect("the production root builds the app and opens its real store through the ABI");
+    let book = root::boot::book(&boot, "test-store").expect("the boot book opens");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
     }
-    let book = root::boot::book(&boot, "test-store").expect("the boot book opens");
     let store = boot
         .governance
         .clone()

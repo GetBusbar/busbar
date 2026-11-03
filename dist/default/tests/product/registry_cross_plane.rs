@@ -790,6 +790,8 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         &rules,
     )
     .expect("the production root builds the app and opens its real store through the ABI");
+    let _book = crate::root::boot::book(&app, store.0)
+        .expect("the configured Store binds the boot rate authority before activation");
     limits.keep().expect("the actual app's limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -939,6 +941,8 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         &rules,
     )
     .expect("the production root builds the app and opens its real store through the ABI");
+    let _book = crate::root::boot::book(&app, store.0)
+        .expect("the configured Store binds the boot rate authority before activation");
     limits.keep().expect("the actual app's limits commit");
     if let Some(rotate) = rotate {
         rotate();
