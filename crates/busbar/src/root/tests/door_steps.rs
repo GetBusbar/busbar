@@ -3325,8 +3325,15 @@ pub(crate) mod tool_door {
                     "store": {"module": module, "settings": settings},
                 }))
                 .expect("the door deployment parses");
-                let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+                let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
                     .expect("the door deployment resolves");
+                cfg.per_request_fee = footing.fee_cents.unwrap_or(1);
+                if let Some(groups) = footing.groups {
+                    cfg.groups = groups.clone();
+                }
+                if let Some(fees) = footing.plane_fees {
+                    cfg.plane_fees = fees.clone();
+                }
                 let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
                     as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
                 let loaded = crate::root::real_store::store();
@@ -3902,6 +3909,9 @@ pub(crate) mod tool_door {
     pub(crate) struct Footing<'a> {
         pub(crate) ledger: Ledger,
         pub(crate) book: Option<&'a Rig>,
+        pub(crate) groups: Option<&'a BTreeMap<String, busbar_kernel::config::GroupCfg>>,
+        pub(crate) plane_fees: Option<&'a busbar_kernel::config::PlaneFeesMap>,
+        pub(crate) fee_cents: Option<i64>,
 
         pub(crate) guarded: bool,
 
@@ -3913,6 +3923,9 @@ pub(crate) mod tool_door {
             Footing {
                 ledger: Ledger::Memory,
                 book: None,
+                groups: None,
+                plane_fees: None,
+                fee_cents: None,
                 guarded: false,
                 tls: None,
             }
@@ -6205,8 +6218,7 @@ mod spent_ledger {
             Footing {
                 ledger,
                 book,
-                guarded: false,
-                tls: None,
+                ..Footing::own()
             },
             &|app| app,
         )
@@ -7165,8 +7177,7 @@ mod task_continuation {
             Footing {
                 ledger: Ledger::Rows(std::sync::Arc::clone(rows), max_live),
                 book,
-                guarded: false,
-                tls: None,
+                ..Footing::own()
             },
             &|app| app,
         )
