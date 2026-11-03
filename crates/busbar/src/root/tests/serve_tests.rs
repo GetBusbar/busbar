@@ -1987,6 +1987,12 @@ pub(super) mod session_door {
                 },
             );
         }
+        let data_chain_names: Vec<_> = config
+            .auth
+            .as_ref()
+            .into_iter()
+            .flat_map(|auth| auth.chain.iter().map(|entry| entry.name.clone()))
+            .collect();
         let plugins = crate::root::test_plugins::trusted_config(&directory);
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
@@ -2057,9 +2063,20 @@ pub(super) mod session_door {
 
         let upgrades = crate::root::serve::upgrade_carriers(crate::LINKED.transports, &[]);
         let offers = crate::root::serve::transport_offers(crate::LINKED.transports, &[]);
-        let mounts =
-            crate::root::serve::door_mounts(served, || CARD.pin(), &[], &[], &upgrades, &offers)
-                .expect("its claims mount");
+        // The real transport judges the same configured chain as the application.
+        let data_chain: Vec<_> = data_chain_names
+            .iter()
+            .map(|name| (name.clone(), app.auth.position_points(name)))
+            .collect();
+        let mounts = crate::root::serve::door_mounts(
+            served,
+            || CARD.pin(),
+            &data_chain,
+            &[],
+            &upgrades,
+            &offers,
+        )
+        .expect("its claims mount");
         let (router, _admin, handle) = busbar_kernel::build_split_routers_serving_doors(
             Arc::clone(&app),
             mounts.routes,
@@ -2297,6 +2314,10 @@ pub(super) mod session_door {
             let (status, heard) = s.signal_once().await;
             assert!(!status.is_success(), "signal {n} is not served");
             if !heard {
+                assert!(
+                    n > 0,
+                    "the breaker can only open after a real failed provider attempt"
+                );
                 return Some(n);
             }
         }
