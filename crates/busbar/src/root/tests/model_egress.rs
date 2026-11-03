@@ -48,18 +48,20 @@ fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
             false,
         )
         .expect("the product builds the configured model generation");
-        limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the serving application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .expect("the actual configured Store boots its rate history");
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            limits.stage_boot();
+            crate::root::kernel::ROOT_CARD.keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the serving application has its configured governance Store")
+                    .store_calls()
+                    .expect("the configured Store exposes actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            );
+            crate::root::kernel::ROOT_CARD
+                .boot_in_store(None)
+                .expect("the actual configured Store boots its rate history");
+        }
         limits
             .keep()
             .expect("the model generation commits its limits");
@@ -171,18 +173,20 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
             false,
         )
         .expect("the product builds the configured model generation");
-        limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the serving application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .expect("the actual configured Store boots its rate history");
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            limits.stage_boot();
+            crate::root::kernel::ROOT_CARD.keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the serving application has its configured governance Store")
+                    .store_calls()
+                    .expect("the configured Store exposes actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            );
+            crate::root::kernel::ROOT_CARD
+                .boot_in_store(None)
+                .expect("the actual configured Store boots its rate history");
+        }
         limits
             .keep()
             .expect("the model generation commits its limits");
@@ -228,18 +232,20 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
             false,
         )
         .expect("the product builds the configured model generation");
-        limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the serving application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .expect("the actual configured Store boots its rate history");
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            limits.stage_boot();
+            crate::root::kernel::ROOT_CARD.keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the serving application has its configured governance Store")
+                    .store_calls()
+                    .expect("the configured Store exposes actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            );
+            crate::root::kernel::ROOT_CARD
+                .boot_in_store(None)
+                .expect("the actual configured Store boots its rate history");
+        }
         limits
             .keep()
             .expect("the model generation commits its limits");
@@ -285,18 +291,20 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
             false,
         )
         .expect("the product builds the configured model generation");
-        limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the serving application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .expect("the actual configured Store boots its rate history");
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            limits.stage_boot();
+            crate::root::kernel::ROOT_CARD.keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the serving application has its configured governance Store")
+                    .store_calls()
+                    .expect("the configured Store exposes actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            );
+            crate::root::kernel::ROOT_CARD
+                .boot_in_store(None)
+                .expect("the actual configured Store boots its rate history");
+        }
         limits
             .keep()
             .expect("the model generation commits its limits");
@@ -404,18 +412,20 @@ fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
             false,
         )
         .expect("the product builds the configured model generation");
-        limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the serving application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .expect("the actual configured Store boots its rate history");
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            limits.stage_boot();
+            crate::root::kernel::ROOT_CARD.keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the serving application has its configured governance Store")
+                    .store_calls()
+                    .expect("the configured Store exposes actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            );
+            crate::root::kernel::ROOT_CARD
+                .boot_in_store(None)
+                .expect("the actual configured Store boots its rate history");
+        }
         limits
             .keep()
             .expect("the model generation commits its limits");
@@ -462,18 +472,20 @@ fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
             false,
         )
         .expect("the product builds the configured model generation");
-        limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the serving application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .expect("the actual configured Store boots its rate history");
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            limits.stage_boot();
+            crate::root::kernel::ROOT_CARD.keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the serving application has its configured governance Store")
+                    .store_calls()
+                    .expect("the configured Store exposes actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            );
+            crate::root::kernel::ROOT_CARD
+                .boot_in_store(None)
+                .expect("the actual configured Store boots its rate history");
+        }
         limits
             .keep()
             .expect("the model generation commits its limits");
@@ -558,18 +570,20 @@ fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
             false,
         )
         .expect("the product builds the configured model generation");
-        limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the serving application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .expect("the actual configured Store boots its rate history");
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            limits.stage_boot();
+            crate::root::kernel::ROOT_CARD.keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the serving application has its configured governance Store")
+                    .store_calls()
+                    .expect("the configured Store exposes actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            );
+            crate::root::kernel::ROOT_CARD
+                .boot_in_store(None)
+                .expect("the actual configured Store boots its rate history");
+        }
         limits
             .keep()
             .expect("the model generation commits its limits");
@@ -637,18 +651,20 @@ fn a_success_is_recorded_on_the_walks_clock() {
             false,
         )
         .expect("the product builds the configured model generation");
-        limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the serving application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .expect("the actual configured Store boots its rate history");
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            limits.stage_boot();
+            crate::root::kernel::ROOT_CARD.keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the serving application has its configured governance Store")
+                    .store_calls()
+                    .expect("the configured Store exposes actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            );
+            crate::root::kernel::ROOT_CARD
+                .boot_in_store(None)
+                .expect("the actual configured Store boots its rate history");
+        }
         limits
             .keep()
             .expect("the model generation commits its limits");
@@ -727,18 +743,20 @@ fn a_probe_success_joins_the_walks_window() {
             false,
         )
         .expect("the product builds the configured model generation");
-        limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the serving application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .expect("the actual configured Store boots its rate history");
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            limits.stage_boot();
+            crate::root::kernel::ROOT_CARD.keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the serving application has its configured governance Store")
+                    .store_calls()
+                    .expect("the configured Store exposes actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            );
+            crate::root::kernel::ROOT_CARD
+                .boot_in_store(None)
+                .expect("the actual configured Store boots its rate history");
+        }
         limits
             .keep()
             .expect("the model generation commits its limits");
@@ -822,18 +840,20 @@ fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
                 false,
             )
             .expect("the product builds the configured model generation");
-            limits.stage_boot();
-            crate::root::kernel::ROOT_CARD.keep_in_store(
-                app.governance
-                    .as_ref()
-                    .expect("the serving application has its configured governance Store")
-                    .store_calls()
-                    .expect("the configured Store exposes actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            );
-            crate::root::kernel::ROOT_CARD
-                .boot_in_store(None)
-                .expect("the actual configured Store boots its rate history");
+            if !crate::root::kernel::ROOT_CARD.keeps_store() {
+                limits.stage_boot();
+                crate::root::kernel::ROOT_CARD.keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the serving application has its configured governance Store")
+                        .store_calls()
+                        .expect("the configured Store exposes actual rate-history calls"),
+                    busbar_kernel::door::op_id().counter(),
+                );
+                crate::root::kernel::ROOT_CARD
+                    .boot_in_store(None)
+                    .expect("the actual configured Store boots its rate history");
+            }
             limits
                 .keep()
                 .expect("the model generation commits its limits");
@@ -954,18 +974,20 @@ fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
             false,
         )
         .expect("the product builds the configured model generation");
-        limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the serving application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .expect("the actual configured Store boots its rate history");
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            limits.stage_boot();
+            crate::root::kernel::ROOT_CARD.keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the serving application has its configured governance Store")
+                    .store_calls()
+                    .expect("the configured Store exposes actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            );
+            crate::root::kernel::ROOT_CARD
+                .boot_in_store(None)
+                .expect("the actual configured Store boots its rate history");
+        }
         limits
             .keep()
             .expect("the model generation commits its limits");
@@ -1041,18 +1063,20 @@ fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
             false,
         )
         .expect("the product builds the configured model generation");
-        limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the serving application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .expect("the actual configured Store boots its rate history");
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            limits.stage_boot();
+            crate::root::kernel::ROOT_CARD.keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the serving application has its configured governance Store")
+                    .store_calls()
+                    .expect("the configured Store exposes actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            );
+            crate::root::kernel::ROOT_CARD
+                .boot_in_store(None)
+                .expect("the actual configured Store boots its rate history");
+        }
         limits
             .keep()
             .expect("the model generation commits its limits");
@@ -1127,18 +1151,20 @@ fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retires() {
             false,
         )
         .expect("the product builds the configured model generation");
-        limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the serving application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .expect("the actual configured Store boots its rate history");
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            limits.stage_boot();
+            crate::root::kernel::ROOT_CARD.keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the serving application has its configured governance Store")
+                    .store_calls()
+                    .expect("the configured Store exposes actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            );
+            crate::root::kernel::ROOT_CARD
+                .boot_in_store(None)
+                .expect("the actual configured Store boots its rate history");
+        }
         limits
             .keep()
             .expect("the model generation commits its limits");
@@ -1191,18 +1217,20 @@ fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retires() {
             false,
         )
         .expect("the product builds the configured model generation");
-        limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the serving application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .expect("the actual configured Store boots its rate history");
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            limits.stage_boot();
+            crate::root::kernel::ROOT_CARD.keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the serving application has its configured governance Store")
+                    .store_calls()
+                    .expect("the configured Store exposes actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            );
+            crate::root::kernel::ROOT_CARD
+                .boot_in_store(None)
+                .expect("the actual configured Store boots its rate history");
+        }
         limits
             .keep()
             .expect("the model generation commits its limits");
@@ -1286,18 +1314,20 @@ fn a_keyless_lane_is_not_probed() {
                 false,
             )
             .expect("the product builds the configured model generation");
-            limits.stage_boot();
-            crate::root::kernel::ROOT_CARD.keep_in_store(
-                app.governance
-                    .as_ref()
-                    .expect("the serving application has its configured governance Store")
-                    .store_calls()
-                    .expect("the configured Store exposes actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            );
-            crate::root::kernel::ROOT_CARD
-                .boot_in_store(None)
-                .expect("the actual configured Store boots its rate history");
+            if !crate::root::kernel::ROOT_CARD.keeps_store() {
+                limits.stage_boot();
+                crate::root::kernel::ROOT_CARD.keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the serving application has its configured governance Store")
+                        .store_calls()
+                        .expect("the configured Store exposes actual rate-history calls"),
+                    busbar_kernel::door::op_id().counter(),
+                );
+                crate::root::kernel::ROOT_CARD
+                    .boot_in_store(None)
+                    .expect("the actual configured Store boots its rate history");
+            }
             limits
                 .keep()
                 .expect("the model generation commits its limits");
