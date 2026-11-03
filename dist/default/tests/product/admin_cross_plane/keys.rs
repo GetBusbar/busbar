@@ -127,20 +127,6 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
         )
         .unwrap();
 
-    let mut in_team = minted.clone();
-    in_team.group = Some("team".to_string());
-    let units = std::collections::BTreeMap::from([
-        (busbar_contract::records::UNIT_INPUT.to_string(), 700u64),
-        (busbar_contract::records::UNIT_OUTPUT.to_string(), 200u64),
-    ]);
-    gov.record_usage(&cost, &in_team, "", "m", &units, now);
-    let usage = busbar_contract::billing::TokenUsage {
-        input: 700,
-        output: 200,
-        ..Default::default()
-    };
-    gov.record_metering(&minted.id, "m", "vendor", Some(&usage), now);
-    gov.flush_metering();
     let app = {
         crate::distribution::admin_cross_plane::ensure_seam();
         let directory = super::plugins::scratch(&format!(
@@ -180,8 +166,12 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
         document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
         let deploy = busbar_kernel::config::deploy_from_deserializer(document)
             .expect("the actual admin deployment parses");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+        let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the actual admin deployment resolves");
+        // The read witness's intentionally unpriced card must be the activated card, not a
+        // replacement CostModel attached after the root has activated an unrelated empty card.
+        cfg.rate_card = Some(card.clone());
+        cfg.groups = groups.clone();
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -212,6 +202,21 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
             )
             .expect("the actual Store opens its overlay"),
         );
+        let now = busbar_kernel::store::now();
+        let mut in_team = minted.clone();
+        in_team.group = Some("team".to_string());
+        let units = std::collections::BTreeMap::from([
+            (busbar_contract::records::UNIT_INPUT.to_string(), 700u64),
+            (busbar_contract::records::UNIT_OUTPUT.to_string(), 200u64),
+        ]);
+        gov.record_usage(&cost, &in_team, "", "m", &units, now);
+        let usage = busbar_contract::billing::TokenUsage {
+            input: 700,
+            output: 200,
+            ..Default::default()
+        };
+        gov.record_metering(&minted.id, "m", "vendor", Some(&usage), now);
+        gov.flush_metering();
         app.governance = Some(gov);
         app.cost = std::sync::Arc::new(cost);
 
