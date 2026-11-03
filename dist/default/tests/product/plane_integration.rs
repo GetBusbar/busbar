@@ -774,23 +774,7 @@ mod metrics_scrape {
         }
         let app = Arc::new(app);
 
-        let (_, traffic_token) = app
-            .governance
-            .as_ref()
-            .expect("actual governance book")
-            .mint_signed(
-                busbar_kernel::governance::NewKeySpec {
-                    name: "plane-metrics-traffic".to_string(),
-                    ..Default::default()
-                },
-                busbar_kernel::store::now().saturating_add(300),
-                busbar_kernel::store::now(),
-            )
-            .expect("mint an actual credential for traffic through the protected plane doors");
-        let traffic_bearer = format!(
-            "Bearer {}",
-            traffic_token.expose(&busbar_kernel::seal::lend())
-        );
+        let (traffic_bearer, door_bearer) = plane_bearers(&app, &sections, "plane-metrics-traffic");
         let router = plane_router(app, &sections, usize::MAX, &["keys"]);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -800,7 +784,7 @@ mod metrics_scrape {
 
         let door_status = client
             .post(format!("{base}{door_mount}"))
-            .header("authorization", &traffic_bearer)
+            .header("authorization", &door_bearer)
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -1296,24 +1280,61 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     handle.abort();
 }
 
-async fn oversized_413_body(
-    app: Arc<busbar_kernel::state::App>,
-    sections: &str,
-    path: &str,
-) -> serde_json::Value {
-    let (_, token) = app
+// A protected resource rejects a plain data-plane token by design. A sibling path still
+// needs the ordinary data-plane credential, so retain both actual signed credentials.
+fn plane_bearers(app: &busbar_kernel::state::App, sections: &str, name: &str) -> (String, String) {
+    use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
+    let now = busbar_kernel::store::now();
+    let expiry = now.saturating_add(300);
+    let (key, plain) = app
         .governance
         .as_ref()
         .expect("actual governance book")
         .mint_signed(
             busbar_kernel::governance::NewKeySpec {
-                name: "plane-body-limit".to_string(),
+                name: name.to_string(),
                 ..Default::default()
             },
-            busbar_kernel::store::now().saturating_add(300),
-            busbar_kernel::store::now(),
+            expiry,
+            now,
         )
-        .expect("mint an actual credential before exercising the body's size gate");
+        .expect("mint an actual key for the protected plane traffic");
+    let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
+    let generation = TokenVerifier::single(signer.kid(), signer.verifying_key())
+        .verify(plain.expose(&busbar_kernel::seal::lend()), now, None)
+        .expect("the actual token carries its persisted key generation")
+        .generation;
+    let (_, object) = built_planes(&resolved(sections))
+        .into_iter()
+        .find(|(decl, _)| decl.key == door_plane().key)
+        .expect("the configured door builds its admission metadata");
+    let admission = (door_plane().admission)(&*object)
+        .expect("the protected door declares its canonical resource audience");
+    let bound = signer.mint_for_audience(
+        &key.id,
+        expiry,
+        generation.as_deref(),
+        &admission.audience,
+        None,
+    );
+    (
+        format!("Bearer {}", plain.expose(&busbar_kernel::seal::lend())),
+        format!("Bearer {bound}"),
+    )
+}
+
+async fn oversized_413_body(
+    app: Arc<busbar_kernel::state::App>,
+    sections: &str,
+    path: &str,
+) -> serde_json::Value {
+    let (plain_bearer, door_bearer) = plane_bearers(&app, sections, "plane-body-limit");
+    let mount = jsonrpc_mount(door_plane(), sections);
+    let bearer = if path == mount || path.starts_with(&format!("{mount}/")) {
+        door_bearer
+    } else {
+        plain_bearer
+    };
     let router = plane_router(app, sections, 64, &["keys"]);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -1322,10 +1343,7 @@ async fn oversized_413_body(
     let task = tokio::spawn(async move { axum::serve(listener, router).await.expect("serve") });
     let response = reqwest::Client::new()
         .post(format!("http://{address}{path}"))
-        .header(
-            "authorization",
-            format!("Bearer {}", token.expose(&busbar_kernel::seal::lend())),
-        )
+        .header("authorization", bearer)
         .header("content-type", "application/json")
         .body(vec![b'x'; 128])
         .send()
