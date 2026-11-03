@@ -1147,7 +1147,7 @@ async fn resource_after_inbound(s: &Subject, token: &str, scheme: &str, proofs: 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        super::serve_tls(listener, router).await;
+        axum::serve(listener, router).await.unwrap();
     });
     let mut request = s.client.get(format!("http://{addr}/stats"));
     for (name, value) in &head.fields {
