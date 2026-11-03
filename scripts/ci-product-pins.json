@@ -103,7 +103,7 @@
     {
       "repo": "busbar-secret-env",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-secret-env",
-      "commit": "2a23a0afd4315d52214bd067817490caed4824ab",
+      "commit": "b11f698e9d19282085b6c420388c50ea67a46f75",
       "package": "busbar-secret-env-plugin",
       "kind": "secret",
       "alias": "env",
@@ -279,7 +279,7 @@
     {
       "repo": "busbar-plane-a2a",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-plane-a2a",
-      "commit": "a83188f566e8fc98f96601efb32160c9ad0a23a5",
+      "commit": "2eee74a92d791fd8d5e139b199ceedbdb5e07683",
       "package": "busbar-plane-a2a-plugin",
       "kind": "plane",
       "alias": "a2a",

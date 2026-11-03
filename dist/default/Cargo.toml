@@ -871,7 +871,7 @@ busbar-export-prometheus-plugin = { git = "https://git.getbusbar.dev/GetBusbar/b
 # The env source's logic crate is also the door the loader's secret conformance suite links; its cdylib
 # crate (`busbar-secret-env-plugin`, same repo) is NOT a dependency: it is built from this pinned
 # checkout by the build:dlopen-cdylibs step and dlopened.
-busbar-secret-env = { git = "https://git.getbusbar.dev/GetBusbar/busbar-secret-env", rev = "2a23a0afd4315d52214bd067817490caed4824ab" }
+busbar-secret-env = { git = "https://git.getbusbar.dev/GetBusbar/busbar-secret-env", rev = "b11f698e9d19282085b6c420388c50ea67a46f75" }
 busbar-secret-file = { git = "https://git.getbusbar.dev/GetBusbar/busbar-secret-file", rev = "c8fb3d8f9def4fcbb67ee3675bc247da275a1c0c" }
 # THE REQUEST-LOG WEBHOOK SINK: the one home of its pinned rev (a rev bump is this one edit). `busbar`
 # links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
@@ -963,7 +963,7 @@ busbar-plane-decisions = { git = "https://git.getbusbar.dev/GetBusbar/busbar-pla
 # plane's door row (`plane-a2a-door`, `busbar_plane_a2a::door`), whose own root cells it
 # states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
 # live in that repo's plugin CI.
-busbar-plane-a2a = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-a2a", rev = "a83188f566e8fc98f96601efb32160c9ad0a23a5" }
+busbar-plane-a2a = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-a2a", rev = "2eee74a92d791fd8d5e139b199ceedbdb5e07683" }
 # THE STREAMING PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door`), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
