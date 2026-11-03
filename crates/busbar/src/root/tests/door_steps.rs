@@ -2855,6 +2855,19 @@ pub(crate) mod tool_door {
         }
 
         pub(crate) async fn member_ca_fixture(name: &str, expired: bool, mutual: bool) -> Self {
+            Self::member_ca_fixture_gate(name, expired, mutual, None).await
+        }
+
+        pub(crate) async fn member_ca_gated(release: tokio::sync::watch::Receiver<bool>) -> Self {
+            Self::member_ca_fixture_gate("127.0.0.1", false, false, Some(release)).await
+        }
+
+        async fn member_ca_fixture_gate(
+            name: &str,
+            expired: bool,
+            mutual: bool,
+            gate: Option<tokio::sync::watch::Receiver<bool>>,
+        ) -> Self {
             let answer: Replies = Arc::new(|request| {
                 (
                     200,
@@ -2870,10 +2883,20 @@ pub(crate) mod tool_door {
             let handler: TlsToolHandler = Arc::new(move |mut socket, sent| {
                 let answer = Arc::clone(&answer);
                 let count = Arc::clone(&count);
+                let gate = gate.clone();
                 Box::pin(async move {
                     if let Some(request) =
                         tool_request_counted(&mut socket, sent, Some(&count)).await
                     {
+                        if request.contains("\"tools/call\"") {
+                            if let Some(mut gate) = gate {
+                                drop(
+                                    gate.wait_for(|ready| *ready)
+                                        .await
+                                        .expect("old response release remains alive"),
+                                );
+                            }
+                        }
                         let (status, body) = answer(&request);
                         tool_reply(&mut socket, status, body).await;
                     }

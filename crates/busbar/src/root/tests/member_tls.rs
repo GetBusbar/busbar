@@ -182,3 +182,68 @@ async fn actual_mcp_member_ca_rotation_and_rejected_apply_preserve_serving_gener
     first.close().await;
     second.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn actual_mcp_inflight_request_retains_old_tls_generation_across_ca_rotation() {
+    let _one = PUBLISHING.lock().await;
+    let (release, held) = tokio::sync::watch::channel(false);
+    let mut first = TlsToolServer::member_ca_gated(held).await;
+    let mut second = TlsToolServer::member_ca_fixture("127.0.0.1", false, false).await;
+    let rig = try_rig_tools("member-tls-retained-request", first.port, tools(&first))
+        .expect("initial private CA member");
+    assert_actual_member_selector(&rig);
+    let router = rig.router.clone();
+    let token = rig.bound_token();
+    let pending = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(40), send(&router, Some(&token), CALL))
+            .await
+            .expect("bounded old generation request")
+    });
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let request = first
+                .heard
+                .recv()
+                .await
+                .expect("old TLS peer remains alive");
+            if request.contains("\"tools/call\"") {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("old actual tool request reaches its TLS peer before apply");
+    assert!(
+        !pending.is_finished(),
+        "the real old peer has not released its response"
+    );
+    let first_bytes = first.http_bytes.load(Ordering::SeqCst);
+    let generation = rig.live.current().generation;
+    rig.live.apply(&applied(&rig, tools(&second)));
+    assert_eq!(rig.live.current().generation, generation + 1);
+    succeeds(&rig).await;
+    assert!(
+        second.heard.try_recv().is_ok(),
+        "new requests reach the new CA peer while the old request is pending"
+    );
+    assert_eq!(
+        first.http_bytes.load(Ordering::SeqCst),
+        first_bytes,
+        "the new request did not reuse the old TLS endpoint"
+    );
+    release.send(true).expect("release the old peer response");
+    let (status, body) = tokio::time::timeout(Duration::from_secs(10), pending)
+        .await
+        .expect("old request finishes after release")
+        .expect("old caller task finishes");
+    assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&body));
+    let body: serde_json::Value = serde_json::from_slice(&body).expect("old response JSON");
+    assert!(body.get("error").is_none(), "{body}");
+    assert_ne!(body["result"]["isError"], true, "{body}");
+    assert_eq!(
+        body["result"]["content"][0]["text"], "from the server",
+        "the actual old TLS response survived successful rotation"
+    );
+    first.close().await;
+    second.close().await;
+}
