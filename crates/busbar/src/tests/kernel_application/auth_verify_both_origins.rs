@@ -69,15 +69,13 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
     let module = busbar_contract::abi::mechanism::rendering::read(&statement)
         .expect("the actual store statement is valid")
         .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-    );
+    const PUBLISHER: &str = "auth-both-origins-test";
+    let publisher_key = plugins::key(0x33);
+    let mut manifest = plugins::manifest("store", &module, PUBLISHER);
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-both-origins");
-    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    let archive = plugins::signed(&publisher_key, manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
     let settings: serde_json::Value = serde_json::from_str(
@@ -106,11 +104,18 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
+    let mut plugin_config = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
         ..Default::default()
     };
+    plugin_config
+        .trust
+        .publishers
+        .push(busbar_kernel::config::PluginPublisher {
+            name: PUBLISHER.into(),
+            public_key: hex::encode(publisher_key.verifying_key().as_bytes()),
+        });
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
         .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
@@ -165,8 +170,10 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
         })
         .copied()
         .expect("the linked OIDC Statement must match the exact qualified dropped image");
-    let linked_plugin = LinkedPlugin::auth_door_named(canonical, key, door);
-    let manifest = linked_plugin.manifest.clone();
+    let mut manifest = LinkedPlugin::auth_door_named(canonical, key, door).manifest;
+    // Admission metadata names the same explicitly configured normal publisher on both origins.
+    manifest.publisher = PUBLISHER.into();
+    let linked_plugin = LinkedPlugin::door(manifest.clone(), door);
     let linked = PluginRegistry::empty()
         .link(vec![linked_plugin])
         .expect("actual linked OIDC admits");
@@ -174,17 +181,16 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
     let library = std::fs::read(&path).expect("read exact OIDC image");
     std::fs::write(
         oidc_directory.join("oidc.tar.gz"),
-        plugins::signed(
-            &crate::dist_root_install::release_key(),
-            manifest.clone(),
-            &library,
-        ),
+        plugins::signed(&publisher_key, manifest.clone(), &library),
     )
     .expect("stage signed actual OIDC");
+    // This direct registry admission control uses the same narrow publisher allowlist as the
+    // cold root above. It is not a claim that direct scan runs the root's full boot trust flow.
     let policy = busbar_plugin_loader::sign::TrustPolicy {
-        first_party_key: Some(crate::dist_root_install::release_key().verifying_key()),
         binary_version: "1.6.0".into(),
+        publishers: vec![(PUBLISHER.into(), publisher_key.verifying_key())],
         allow_unsigned: false,
+        allow_third_party: false,
         ..Default::default()
     };
     let dropped = busbar_plugin_loader::scan_and_validate(&oidc_directory, &policy)
