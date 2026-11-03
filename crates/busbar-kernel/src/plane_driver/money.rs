@@ -702,7 +702,11 @@ impl PlaneMoney {
     }
 
     pub fn settle_end_as(&self, key: UnitKey, end: UnitEnd) {
-        let UnitEnd { caller_status, refused_unspent, .. } = end;
+        let UnitEnd {
+            caller_status,
+            refused_unspent,
+            ..
+        } = end;
         let removed = {
             let mut all = self.shard(key);
             all.remove(&key)
