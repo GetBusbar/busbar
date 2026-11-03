@@ -5569,6 +5569,14 @@ mod framed_tests;
 #[path = "tests/secret_source.rs"]
 mod secret_source_tests;
 
+#[cfg(all(test, linked_section_pools, linked_axis_plane_door))]
+#[path = "tests/member_tls.rs"]
+mod member_tls_tests;
+
+#[cfg(all(test, linked_section_pools, linked_axis_plane_door))]
+#[path = "tests/member_tls_negative.rs"]
+mod member_tls_negative_tests;
+
 #[cfg(test)]
 #[path = "tests/journal_live_retry.rs"]
 mod journal_live_retry_tests;

@@ -2694,10 +2694,21 @@ pub(crate) mod tool_door {
         socket: &mut S,
         sent: tokio::sync::mpsc::UnboundedSender<String>,
     ) -> Option<String> {
+        tool_request_counted(socket, sent, None).await
+    }
+
+    async fn tool_request_counted<S: tokio::io::AsyncRead + Unpin>(
+        socket: &mut S,
+        sent: tokio::sync::mpsc::UnboundedSender<String>,
+        count: Option<&std::sync::atomic::AtomicUsize>,
+    ) -> Option<String> {
         let mut buf = vec![0u8; 16 * 1024];
         let mut got = Vec::new();
         loop {
             let n = socket.read(&mut buf).await.ok()?;
+            if let Some(count) = count {
+                count.fetch_add(n, std::sync::atomic::Ordering::SeqCst);
+            }
             if n == 0 {
                 return None;
             }
@@ -2766,6 +2777,11 @@ pub(crate) mod tool_door {
         pub(crate) pin: String,
         tls: Arc<rustls::ClientConfig>,
         ca_der: Vec<u8>,
+        pub(crate) ca_pem: String,
+        pub(crate) client_cert_pem: String,
+        pub(crate) client_key_pem: String,
+        pub(crate) client_presented: Arc<std::sync::atomic::AtomicBool>,
+        pub(crate) http_bytes: Arc<std::sync::atomic::AtomicUsize>,
         task: Option<tokio::task::JoinHandle<()>>,
     }
 
@@ -2838,7 +2854,48 @@ pub(crate) mod tool_door {
             Self::with_handler(handler, None).await
         }
 
+        pub(crate) async fn member_ca_fixture(name: &str, expired: bool, mutual: bool) -> Self {
+            let answer: Replies = Arc::new(|request| {
+                (
+                    200,
+                    if request.contains("\"tools/list\"") {
+                        serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"tools":tool_listing()}}).to_string()
+                    } else {
+                        ANSWER.to_string()
+                    },
+                )
+            });
+            let http_bytes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let count = Arc::clone(&http_bytes);
+            let handler: TlsToolHandler = Arc::new(move |mut socket, sent| {
+                let answer = Arc::clone(&answer);
+                let count = Arc::clone(&count);
+                Box::pin(async move {
+                    if let Some(request) =
+                        tool_request_counted(&mut socket, sent, Some(&count)).await
+                    {
+                        let (status, body) = answer(&request);
+                        tool_reply(&mut socket, status, body).await;
+                    }
+                })
+            });
+            let mut fixture =
+                Self::with_handler_security(handler, None, name, expired, mutual).await;
+            fixture.http_bytes = http_bytes;
+            fixture
+        }
+
         async fn with_handler(handler: TlsToolHandler, limit: Option<usize>) -> Self {
+            Self::with_handler_security(handler, limit, "127.0.0.1", false, false).await
+        }
+
+        async fn with_handler_security(
+            handler: TlsToolHandler,
+            limit: Option<usize>,
+            name: &str,
+            expired: bool,
+            mutual: bool,
+        ) -> Self {
             use rcgen::PublicKeyData as _;
             busbar_core_connector::tls::install_crypto_provider();
             let ca_key = rcgen::KeyPair::generate().expect("a CA key");
@@ -2847,14 +2904,32 @@ pub(crate) mod tool_door {
             let ca = ca_params.self_signed(&ca_key).expect("the CA");
             let issuer = rcgen::Issuer::new(ca_params, ca_key);
             let leaf_key = rcgen::KeyPair::generate().expect("a leaf key");
-            let leaf = rcgen::CertificateParams::new(vec!["127.0.0.1".into()])
-                .expect("IP SAN")
-                .signed_by(&leaf_key, &issuer)
-                .expect("the leaf");
+            let mut params = rcgen::CertificateParams::new(vec![name.into()]).expect("server SAN");
+            if expired {
+                params.not_before = rcgen::date_time_ymd(2000, 1, 1);
+                params.not_after = rcgen::date_time_ymd(2001, 1, 1);
+            }
+            let leaf = params.signed_by(&leaf_key, &issuer).expect("the leaf");
+            let client_key = rcgen::KeyPair::generate().expect("client key");
+            let client = rcgen::CertificateParams::new(vec!["member-client".into()])
+                .unwrap()
+                .signed_by(&client_key, &issuer)
+                .expect("client certificate");
             let pin =
                 busbar_contract::transport::trust::key_pin(&leaf_key.subject_public_key_info());
-            let server = rustls::ServerConfig::builder()
-                .with_no_client_auth()
+            let builder = rustls::ServerConfig::builder();
+            let builder = if mutual {
+                let mut roots = rustls::RootCertStore::empty();
+                roots.add(ca.der().clone()).expect("client root");
+                builder.with_client_cert_verifier(
+                    rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
+                        .build()
+                        .unwrap(),
+                )
+            } else {
+                builder.with_no_client_auth()
+            };
+            let server = builder
                 .with_single_cert(
                     vec![leaf.der().clone()],
                     rustls_pki_types::PrivateKeyDer::try_from(leaf_key.serialize_der())
@@ -2874,6 +2949,8 @@ pub(crate) mod tool_door {
                 .expect("a TLS port");
             let port = listener.local_addr().unwrap().port();
             let (sent, heard) = tokio::sync::mpsc::unbounded_channel();
+            let client_presented = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let observed_client = Arc::clone(&client_presented);
             let task = tokio::spawn(async move {
                 let mut connections = tokio::task::JoinSet::new();
                 let mut accepted = 0usize;
@@ -2881,8 +2958,17 @@ pub(crate) mod tool_door {
                     let acceptor = acceptor.clone();
                     let sent = sent.clone();
                     let handler = Arc::clone(&handler);
+                    let observed_client = Arc::clone(&observed_client);
                     connections.spawn(async move {
                         if let Ok(tls) = acceptor.accept(socket).await {
+                            if tls
+                                .get_ref()
+                                .1
+                                .peer_certificates()
+                                .is_some_and(|chain| !chain.is_empty())
+                            {
+                                observed_client.store(true, std::sync::atomic::Ordering::SeqCst);
+                            }
                             handler(tls, sent).await;
                         }
                     });
@@ -2901,6 +2987,11 @@ pub(crate) mod tool_door {
                 pin,
                 tls: Arc::new(tls),
                 ca_der: ca.der().to_vec(),
+                ca_pem: ca.pem(),
+                client_cert_pem: client.pem(),
+                client_key_pem: client_key.serialize_pem(),
+                client_presented,
+                http_bytes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 task: Some(task),
             }
         }
