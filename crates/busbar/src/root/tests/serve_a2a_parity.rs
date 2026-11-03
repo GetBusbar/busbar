@@ -1277,11 +1277,22 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             continue;
         }
         gov.flush_budgets();
-        let before_billable = gov
+        // Plane admissions keep their fee units in the plane's named fee lane; the legacy
+        // scalar belongs to pool-plane requests. Read the actual persisted quantity here.
+        let fee_lane = busbar_kernel_ledger::cost::plane_fee_lane(plane.name());
+        let fee_quantity = |ledger: &busbar_contract::records::UsageLedger| {
+            ledger
+                .models
+                .iter()
+                .filter(|row| row.model == fee_lane)
+                .map(|row| row.tier(busbar_contract::plane::PER_REQUEST))
+                .sum::<u64>()
+        };
+        let before_ledger = gov
             .store()
             .get_usage(&key.id, 0)
-            .expect("the actual Store reads the total fee quantity before the request")
-            .billable_requests;
+            .expect("the actual Store reads the total fee quantity before the request");
+        let before_billable = fee_quantity(&before_ledger);
         let before = gov
             .usage_for(&app.cost, &key.id, busbar_kernel::store::now())
             .unwrap()
@@ -1304,15 +1315,19 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             "the actual root counts one completed request"
         );
         gov.flush_budgets();
-        let after_billable = gov
+        let after_ledger = gov
             .store()
             .get_usage(&key.id, 0)
-            .expect("the actual Store reads the settled total fee quantity")
-            .billable_requests;
+            .expect("the actual Store reads the settled total fee quantity");
+        let after_billable = fee_quantity(&after_ledger);
         assert_eq!(
             after_billable,
             before_billable + 1,
             "the actual root keeps the fee unit exactly once"
+        );
+        assert_eq!(
+            after_ledger.billable_requests, before_ledger.billable_requests,
+            "a plane fee must not also charge the pool-plane legacy fee scalar"
         );
 
         // This is raw ABI/host-services qualification, separate from the governed HTTP
