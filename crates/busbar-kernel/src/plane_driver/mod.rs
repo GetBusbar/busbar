@@ -58,7 +58,7 @@ pub use host::{
     engine_host, engine_host_from_handle, engine_host_value, live_host_factory, live_standing,
     standing_over, CostHandle, EngineHost, EngineHostImpl, GovHandle, LiveHostFactory, MeterPin,
 };
-pub use money::{EndPost, FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
+pub use money::{EndPost, FeeRefund, ParentMoney, PlaneMoney, UnitEnd, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;
 pub use route::{configure_route_policy_headers, HDR_ROUTE_POLICY, HDR_ROUTE_TARGET};
