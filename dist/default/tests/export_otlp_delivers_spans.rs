@@ -340,6 +340,59 @@ fn attribute(span: &Span, key: &str) -> Option<String> {
         })
 }
 
+// ArrivalSpan owns the callsite metadata; SpanRecord adds thread and timing metadata.
+// Validate that exact typed envelope before comparing every request field to the 1.5.5 rows.
+fn entry_request_fields(span: &Span) -> Vec<(String, String)> {
+    let mut envelope = std::collections::BTreeSet::new();
+    let mut fields = Vec::new();
+    for kv in &span.attributes {
+        let value = kv.value.as_ref().and_then(|value| value.value.as_ref());
+        let valid = match kv.key.as_str() {
+            "code.file.path" => {
+                matches!(value, Some(AnyValue::StringValue(path)) if path.ends_with("crates/busbar-kernel/src/observability/arrival.rs"))
+            }
+            "code.module.name" => {
+                matches!(value, Some(AnyValue::StringValue(module)) if module == "busbar_kernel::observability::arrival")
+            }
+            "target" => {
+                matches!(value, Some(AnyValue::StringValue(target)) if target == "busbar::ingress")
+            }
+            "code.line.number" | "thread.id" => {
+                matches!(value, Some(AnyValue::IntValue(number)) if *number > 0)
+            }
+            "thread.name" => matches!(value, Some(AnyValue::StringValue(name)) if !name.is_empty()),
+            "busy_ns" | "idle_ns" => {
+                matches!(value, Some(AnyValue::IntValue(number)) if *number >= 0)
+            }
+            _ => {
+                fields.push((kv.key.clone(), attribute(span, &kv.key).unwrap_or_default()));
+                continue;
+            }
+        };
+        assert!(valid, "invalid typed arrival metadata {}: {span:?}", kv.key);
+        assert!(
+            envelope.insert(kv.key.as_str()),
+            "duplicate arrival metadata {}: {span:?}",
+            kv.key
+        );
+    }
+    for required in [
+        "code.file.path",
+        "code.module.name",
+        "code.line.number",
+        "thread.id",
+        "target",
+        "busy_ns",
+        "idle_ns",
+    ] {
+        assert!(
+            envelope.contains(required),
+            "missing arrival metadata {required}: {span:?}"
+        );
+    }
+    fields
+}
+
 fn under(spans: &[Span], span: &Span, names: &[&str]) -> bool {
     spans.iter().any(|p| {
         names.contains(&p.name.as_str())
@@ -419,12 +472,7 @@ fn the_request_paths_spans_reach_the_collector_as_1_5_5_named_them() {
         let mut opened: Vec<Vec<(String, String)>> = spans
             .iter()
             .filter(|s| s.name == *entry)
-            .map(|s| {
-                s.attributes
-                    .iter()
-                    .map(|kv| (kv.key.clone(), attribute(s, &kv.key).unwrap_or_default()))
-                    .collect()
-            })
+            .map(entry_request_fields)
             .collect();
         let mut wanted: Vec<Vec<(String, String)>> = rows
             .iter()

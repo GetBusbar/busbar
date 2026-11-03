@@ -158,7 +158,11 @@ fn metrics_scrape_is_never_a_200_with_an_empty_body() {
         )
     });
     let reference_metadata = complete_metadata(&reference.body)
-        .expect("the settled reference must have one HELP and TYPE per family");
+        .expect("the settled reference must have complete 1.5.5 metadata");
+    assert!(
+        reference_metadata.contains(TYPE_ONLY_COUNTER_TYPE),
+        "the boot counter must retain its 1.5.5 TYPE and zero sample"
+    );
     let reference_names = help_names(&reference.body);
     assert!(
         !reference_names.is_empty(),
@@ -217,6 +221,12 @@ const LANE_FAMILIES: &[&str] = &[
     "busbar_lane_inflight",
 ];
 
+// 1.5.5 deliberately primed this undescribed counter to zero at recorder install.
+// The frozen scrape and the observability inventory both carry TYPE without HELP.
+const TYPE_ONLY_COUNTER: &str = "busbar_billing_truncated_total";
+const TYPE_ONLY_COUNTER_TYPE: &str = "# TYPE busbar_billing_truncated_total counter";
+const TYPE_ONLY_COUNTER_SAMPLE: &str = "busbar_billing_truncated_total 0";
+
 fn meta_lines(body: &str) -> Vec<String> {
     body.lines()
         .filter(|l| l.starts_with("# HELP ") || l.starts_with("# TYPE "))
@@ -243,6 +253,22 @@ fn complete_metadata(body: &str) -> Result<BTreeSet<String>, String> {
         }
         lines.insert(line);
     }
+    if types.contains(TYPE_ONLY_COUNTER) {
+        if help.contains(TYPE_ONLY_COUNTER)
+            || !lines.contains(TYPE_ONLY_COUNTER_TYPE)
+            || body
+                .lines()
+                .filter(|line| {
+                    line.strip_prefix(TYPE_ONLY_COUNTER)
+                        .is_some_and(|tail| tail.starts_with(' ') || tail.starts_with('{'))
+                })
+                .collect::<Vec<_>>()
+                != [TYPE_ONLY_COUNTER_SAMPLE]
+        {
+            return Err("the 1.5.5 undescribed boot counter requires its counter TYPE and one zero sample, with no HELP".into());
+        }
+        types.remove(TYPE_ONLY_COUNTER);
+    }
     if help.is_empty() || help != types {
         return Err(format!(
             "HELP/TYPE families differ: HELP={help:?}, TYPE={types:?}"
@@ -265,6 +291,32 @@ fn metadata_comparison_refuses_missing_changed_and_duplicate_types() {
     assert!(complete_metadata("# TYPE requests counter\n").is_err());
     assert!(complete_metadata("# HELP requests Total\n# TYPE requests\n").is_err());
     assert!(complete_metadata("").is_err());
+    let with_boot_counter =
+        format!("{reference}{TYPE_ONLY_COUNTER_TYPE}\n{TYPE_ONLY_COUNTER_SAMPLE}\n");
+    assert!(complete_metadata(&with_boot_counter).is_ok());
+    assert!(complete_metadata(&with_boot_counter.replace(TYPE_ONLY_COUNTER_SAMPLE, "")).is_err());
+    assert!(complete_metadata(&with_boot_counter.replace(
+        TYPE_ONLY_COUNTER_TYPE,
+        "# TYPE busbar_billing_truncated_total gauge"
+    ))
+    .is_err());
+    assert!(
+        complete_metadata(&(with_boot_counter.clone() + TYPE_ONLY_COUNTER_SAMPLE + "\n")).is_err()
+    );
+    for extra in [
+        "busbar_billing_truncated_total 1\n",
+        "busbar_billing_truncated_total{extra=\"label\"} 0\n",
+    ] {
+        assert!(complete_metadata(&(with_boot_counter.clone() + extra)).is_err());
+    }
+    assert!(complete_metadata(
+        &(with_boot_counter + "# HELP busbar_billing_truncated_total invented description\n")
+    )
+    .is_err());
+    assert!(
+        complete_metadata(&(reference.to_owned() + "# TYPE unrelated counter\nunrelated 0\n"))
+            .is_err()
+    );
 }
 
 fn meta_name(line: &str) -> &str {
@@ -282,6 +334,26 @@ fn golden_meta_lines() -> Vec<String> {
         .as_str()
         .expect("the golden scrape cell carries its body text");
     let lines = meta_lines(text);
+    let golden_help: BTreeSet<_> = lines
+        .iter()
+        .filter(|line| line.starts_with("# HELP "))
+        .map(|line| meta_name(line))
+        .collect();
+    let golden_types: BTreeSet<_> = lines
+        .iter()
+        .filter(|line| line.starts_with("# TYPE "))
+        .map(|line| meta_name(line))
+        .collect();
+    assert_eq!(
+        golden_types
+            .difference(&golden_help)
+            .copied()
+            .collect::<Vec<_>>(),
+        [TYPE_ONLY_COUNTER],
+        "only the frozen undescribed boot counter is exempt from HELP"
+    );
+    assert!(lines.iter().any(|line| line == TYPE_ONLY_COUNTER_TYPE));
+    assert!(text.lines().any(|line| line == TYPE_ONLY_COUNTER_SAMPLE));
     assert!(
         lines.iter().any(|l| meta_name(l) == LANE_FAMILIES[0]),
         "the golden scrape names no `{}`: the derivation did not bite",
