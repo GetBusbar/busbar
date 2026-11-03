@@ -105,8 +105,8 @@ fn input(store: &dyn RecordStore, bucket: &str, window: u64) -> u64 {
         .sum()
 }
 
-#[derive(Default)]
 struct Journal {
+    inner: Arc<dyn RecoverySink>,
     selected: std::sync::Mutex<Vec<RecoveryEvent>>,
     fail_after_write: std::sync::atomic::AtomicBool,
 }
@@ -124,9 +124,26 @@ impl Journal {
 }
 impl RecoverySink for Journal {
     fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError> {
-        Ok(self.selected.lock().unwrap().clone())
+        self.inner.replay()
+    }
+    fn replay_selections(
+        &self,
+    ) -> Result<Vec<busbar_kernel::governance::recovery::RecoverySelection>, RecoveryError> {
+        self.inner.replay_selections()
+    }
+    fn verify_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        self.inner.verify_checkpoint(event)
+    }
+    fn confirm_owned_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        self.inner.confirm_owned_checkpoint(event)
+    }
+    fn verify_origin(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        self.inner.verify_origin(event)
     }
     fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        // The real Store selects and verifies custody; this wrapper only loses
+        // the reply after durable success and observes the selected test events.
+        self.inner.persist(event)?;
         let mut selected = self.selected.lock().unwrap();
         if !selected.contains(event) {
             selected.push(event.clone());
@@ -327,7 +344,11 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
         replies: Default::default(),
         before_batch: Default::default(),
     });
-    let journal = Arc::new(Journal::default());
+    let journal = Arc::new(Journal {
+        inner: crate::root::durability::usage_recovery_sink(&_book.durability),
+        selected: Default::default(),
+        fail_after_write: Default::default(),
+    });
     let old_cost = model(&[(
         "g",
         group_cfg(
