@@ -812,7 +812,12 @@ mod metrics_scrape {
             .status()
             .as_u16();
 
-        let scrape = client.get(format!("{base}/metrics")).send().await.unwrap();
+        let scrape = client
+            .get(format!("{base}/metrics"))
+            .header("authorization", &traffic_bearer)
+            .send()
+            .await
+            .unwrap();
         assert_eq!(
             scrape.status().as_u16(),
             200,
