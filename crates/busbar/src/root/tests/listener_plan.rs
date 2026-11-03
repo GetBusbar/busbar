@@ -133,6 +133,19 @@ fn app(
             false,
         )
         .expect("the product builds the listener application");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        candidate
+            .governance
+            .as_ref()
+            .expect("the listener application has its configured governance Store")
+            .store_calls()
+            .expect("the configured product Store exposes its actual calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the listener's actual Store boots its rate-card history");
     limits.keep().expect("the listener limits commit");
     if let Some(rotate) = rotate {
         rotate();

@@ -260,6 +260,19 @@ async fn a_rejected_configs_limits_do_not_govern_later_connections() {
         &rules,
     )
     .expect("the actual product builds the baseline app with its real ABI store");
+    installed.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        baseline
+            .governance
+            .as_ref()
+            .expect("the listener application has its configured governance Store")
+            .store_calls()
+            .expect("the configured product Store exposes its actual calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the listener's actual Store boots its rate-card history");
     installed.keep().expect("the baseline limits activate");
     if let Some(rotate) = rotate {
         rotate();
