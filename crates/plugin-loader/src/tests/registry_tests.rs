@@ -1169,8 +1169,7 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
 }
 
 #[allow(non_upper_case_globals)]
-const versioned_door: busbar_contract::abi::mechanism::door::DoorFn =
-    crate::actual_store::door;
+const versioned_door: busbar_contract::abi::mechanism::door::DoorFn = crate::actual_store::door;
 
 fn door_version() -> String {
     let stated = crate::dispatch::rendering_of(versioned_door).expect("the door states itself");

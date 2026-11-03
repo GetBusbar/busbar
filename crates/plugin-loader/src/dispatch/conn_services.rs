@@ -5,30 +5,30 @@ use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 use std::net::IpAddr;
 use std::os::raw::c_void;
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use futures::FutureExt as _;
 
 use busbar_contract::abi::host::conn::connector::{
-    CAUSE_AUTH_FAILED, CAUSE_AUTH_REFUSED, CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE,
-    ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, REPLY_ACK, REPLY_BODY,
-    REPLY_END, REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD, ReplyIn, ReplyPiece, RequestIn,
-    RequestPiece, SERVICES, StreamFacts, StreamIn, UPGRADE_IN_V1_SIZE, UPGRADE_VERIFY_OFF,
-    UpgradeIn, WITHIN_SEPARATOR, service,
+    service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, ReplyIn,
+    ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn, CAUSE_AUTH_FAILED,
+    CAUSE_AUTH_REFUSED, CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE, REPLY_ACK, REPLY_BODY, REPLY_END,
+    REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE,
+    UPGRADE_VERIFY_OFF, WITHIN_SEPARATOR,
 };
-use busbar_contract::abi::host::service::{ServiceHead, ServiceOut, lent_out};
+use busbar_contract::abi::host::service::{lent_out, ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
-use busbar_contract::abi::transport::{FrameSpan, fields};
+use busbar_contract::abi::transport::{fields, FrameSpan};
 use busbar_contract::auth_calls::{Fields, FieldsRequest};
 use busbar_contract::conn::{
     ConnError, ConnId, DeclaredConns, InstanceId, NeedId, OpenDesc, PieceKind,
 };
 use std::future::Future as _;
 
-use super::services::{Answered, service, write_out};
+use super::services::{service, write_out, Answered};
 use super::ticket::InstanceWake;
 
 pub static CONN_SLOTS: ConnectorSlots = ConnectorSlots {
@@ -2473,11 +2473,9 @@ mod creating_authority_tests {
         );
         drop(wake.conn_state.retire_binding(&old));
         assert_eq!(lock(&actual.closed).len(), 3);
-        assert!(
-            lock(&actual.closed)
-                .iter()
-                .all(|(owner, _)| *owner == old_owner)
-        );
+        assert!(lock(&actual.closed)
+            .iter()
+            .all(|(owner, _)| *owner == old_owner));
         drop(wake.conn_state.retire_binding(&new));
         wake.exports.clear();
     }

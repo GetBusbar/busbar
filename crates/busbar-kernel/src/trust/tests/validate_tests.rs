@@ -187,10 +187,12 @@ fn a_registry() -> std::sync::Arc<crate::governance::GovState> {
 }
 
 fn a_live_key(gov: &crate::governance::GovState) -> VirtualKey {
-    gov.set_signing_key(Some(crate::governance::signing::TokenSigner::from_secret_bytes(
-        &[31; 32],
-        crate::governance::signing::DEFAULT_KID,
-    )));
+    gov.set_signing_key(Some(
+        crate::governance::signing::TokenSigner::from_secret_bytes(
+            &[31; 32],
+            crate::governance::signing::DEFAULT_KID,
+        ),
+    ));
     let (key, _secret) = gov
         .mint_signed(
             crate::governance::NewKeySpec {

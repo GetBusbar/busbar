@@ -126,8 +126,10 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
-    let resolve = || busbar_kernel::config::resolve(&deploy, &Default::default())
-        .expect("the product deployment resolves");
+    let resolve = || {
+        busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the product deployment resolves")
+    };
     let mut config = resolve();
     let plugin_config = busbar_kernel::config::PluginsCfg {
         enabled: true,

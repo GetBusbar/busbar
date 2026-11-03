@@ -209,7 +209,6 @@ mod dispatch_tests;
 #[cfg(test)]
 use actual_mcp as plane_door_plugin;
 
-
 #[cfg(test)]
 #[allow(unsafe_code)]
 #[path = "tests/dispatch_kind_secret_export_tests.rs"]
@@ -273,16 +272,10 @@ mod transport_door_tests;
 #[path = "tests/hook_door_conformance_tests.rs"]
 mod hook_door_conformance_tests;
 
-
-
 #[cfg(test)]
 #[allow(unsafe_code)]
 #[path = "tests/conformance_auth_form_tests.rs"]
 mod conformance_auth_form_tests;
-
-
-
-
 
 #[cfg(test)]
 #[allow(unsafe_code)]
@@ -292,36 +285,15 @@ mod conformance_auth_unjudged_tests;
 // The retired datagram harness tested its own string renderer and script judge.
 // Actual transport behavior remains owned by the product tests.
 
-
 #[cfg(test)]
 #[allow(unsafe_code)]
 #[path = "tests/conformance_export_unjudged_tests.rs"]
 mod conformance_export_unjudged_tests;
 
-
-
-
-
-
-
-
-
 #[cfg(test)]
 #[allow(unsafe_code)]
 #[path = "tests/conformance_ready_result_tests.rs"]
 mod conformance_ready_result_tests;
-
-
-
-
-
-
-
-
-
-
-
-
 
 #[cfg(test)]
 #[allow(unsafe_code)]

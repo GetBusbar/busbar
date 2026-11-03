@@ -2084,7 +2084,6 @@ impl busbar_contract::store_calls::StoreAxis for DoorStoreAxis {
     }
 }
 
-
 #[cfg(test)]
 #[path = "tests/store_v3_shortcut_tests.rs"]
 mod shortcut_tests;
@@ -2093,13 +2092,9 @@ mod shortcut_tests;
 #[path = "tests/store_v3_deadline_tests.rs"]
 mod deadline_tests;
 
-
 #[cfg(test)]
 #[path = "tests/store_v3_validate_tests.rs"]
 mod validate_tests;
-
-
-
 
 #[cfg(test)]
 #[path = "tests/store_v3_axis_tests.rs"]
@@ -2116,7 +2111,6 @@ mod conditional_tests;
 #[cfg(test)]
 #[path = "tests/store_v3_secrets_tests.rs"]
 mod secrets_tests;
-
 
 #[cfg(test)]
 #[path = "tests/store_actual_table_tests.rs"]

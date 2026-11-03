@@ -10,25 +10,25 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
-use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, DIAG_LOG, DIAG_LOG_DROPPED, DeadlineClass, Diag, FLAG_RESUME, InHead, METRIC_ADD,
-    METRIC_OBSERVE, METRIC_SET, MetricEntry, Op, OutHead, Outcome, RawOutcome, SEVERITY_ERROR,
-    SEVERITY_TRACE,
+    AbiStr, Blob, DeadlineClass, Diag, InHead, MetricEntry, Op, OutHead, Outcome, RawOutcome,
+    DIAG_LOG, DIAG_LOG_DROPPED, FLAG_RESUME, METRIC_ADD, METRIC_OBSERVE, METRIC_SET,
+    SEVERITY_ERROR, SEVERITY_TRACE,
 };
 use busbar_contract::abi::mechanism::door::{FAMILY_COUNTER, FAMILY_GAUGE, FAMILY_HISTOGRAM};
 use busbar_contract::abi::mechanism::lifecycle::{
-    OpenIn, OpenOut, ReadyIn, RefreshIn, ReleaseIn, ValidateIn, slot,
+    slot, OpenIn, OpenOut, ReadyIn, RefreshIn, ReleaseIn, ValidateIn,
 };
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
-use busbar_contract::abi::plane::{EXT_OWNED, PlaneOpenIn};
+use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::abi::plane::{PlaneOpenIn, EXT_OWNED};
 use busbar_contract::conn::{InstanceId, NeedId};
 
 use super::answer::Answer;
 use super::load::{Lib, LoadError, Validated};
-use super::ticket::{InstanceWake, host_wake};
-use super::{Frame, InFrame, Kind, OutFrame, validate};
+use super::ticket::{host_wake, InstanceWake};
+use super::{validate, Frame, InFrame, Kind, OutFrame};
 use busbar_contract::abi::mechanism::check::Fault;
 
 pub const MAX_ENVELOPE_ENTRIES: usize = busbar_contract::abi::mechanism::call::MAX_ENVELOPE_ENTRIES;
@@ -1913,7 +1913,7 @@ impl Instance {
         }
         if self.kind == KindCode::Transport {
             use busbar_contract::abi::mechanism::{call::BLOB_OCTETS, extensions};
-            use busbar_contract::abi::transport::{FramerOut, YIELD_MORE, guest_policy};
+            use busbar_contract::abi::transport::{guest_policy, FramerOut, YIELD_MORE};
             if outcome != Outcome::Pending {
                 if let Some(scope) = &scope {
                     scope.operation_done(ticket);

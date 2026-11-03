@@ -6,20 +6,20 @@ use std::future::Future;
 use std::mem::size_of;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, Weak};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::mechanism::call::{DeadlineClass, FLAG_RESUME, InHead, OutHead, Outcome};
-use busbar_contract::abi::mechanism::lifecycle::{TickIn, TickOut, slot};
+use busbar_contract::abi::mechanism::call::{DeadlineClass, InHead, OutHead, Outcome, FLAG_RESUME};
+use busbar_contract::abi::mechanism::lifecycle::{slot, TickIn, TickOut};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::conn::InstanceId;
 
-use super::plugin::{Crossed, Instance, Plugin, is_lifecycle};
+use super::plugin::{is_lifecycle, Crossed, Instance, Plugin};
 use super::services::{HostServices, Served, ServiceStore, ServicesSlot};
-use super::ticket::{MAX_INDEX, MAX_WORKERS, WakeRoute, decode, encode};
-use super::{DriveFrame, Frame, InFrame, Kind, OutFrame, in_head, now_ns, out_head, watchdog};
+use super::ticket::{decode, encode, WakeRoute, MAX_INDEX, MAX_WORKERS};
+use super::{in_head, now_ns, out_head, watchdog, DriveFrame, Frame, InFrame, Kind, OutFrame};
 
 #[path = "worker_unit_cancel.rs"]
 mod unit_cancel;
