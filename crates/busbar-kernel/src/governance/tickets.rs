@@ -130,6 +130,9 @@ impl GovState {
 
     /// Bind host-owned custody after the opaque record is kept, before publishing a credential.
     /// A failed binding must retain no reservation; its unpublished record is deleted here.
+    // Preserve the ordinary mint inputs and make the prepublication binding operation explicit.
+    // This is the existing mint contract plus its single custody callback, not a new request schema.
+    #[allow(clippy::too_many_arguments)]
     pub fn mint_ticket_bound(
         &self,
         key_id: &str,

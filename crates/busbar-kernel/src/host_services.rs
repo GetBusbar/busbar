@@ -512,6 +512,9 @@ impl std::fmt::Debug for HostTicketAdmission {
 pub trait TicketPress: Send + Sync {
     /// Mint with the host's exact admitted unit and caller identity. Reservation-aware presses
     /// override this method and bind custody before returning the credential.
+    // Keep the admitted unit, caller and full principal explicit at this authority boundary.
+    // These host bindings extend the existing mint inputs without changing its request schema.
+    #[allow(clippy::too_many_arguments)]
     fn mint_for_unit(
         &self,
         unit: u64,
