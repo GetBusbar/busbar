@@ -12273,7 +12273,6 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
     );
 }
 
-
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_key_row_whose_expires_at_is_in_the_past_is_refused_on_the_data_plane() {

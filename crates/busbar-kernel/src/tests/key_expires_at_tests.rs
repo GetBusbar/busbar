@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-
 use crate::governance::signing::{TokenSigner, DEFAULT_KID};
 use crate::governance::{GovState, NewKeySpec, RecordStore};
 use std::sync::Arc;
@@ -54,7 +53,6 @@ fn mint_then_expire_the_row(
     gov.refresh().expect("reload caches");
     token.expose(&crate::seal::lend()).clone()
 }
-
 
 #[test]
 fn a_key_row_whose_expires_at_is_in_the_past_is_refused() {
@@ -144,4 +142,3 @@ impl Buf {
         String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
     }
 }
-
