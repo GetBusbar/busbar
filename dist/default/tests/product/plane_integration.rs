@@ -1282,6 +1282,19 @@ async fn oversized_413_body(
     sections: &str,
     path: &str,
 ) -> serde_json::Value {
+    let (_, token) = app
+        .governance
+        .as_ref()
+        .expect("actual governance book")
+        .mint_signed(
+            busbar_kernel::governance::NewKeySpec {
+                name: "plane-body-limit".to_string(),
+                ..Default::default()
+            },
+            busbar_kernel::store::now().saturating_add(300),
+            busbar_kernel::store::now(),
+        )
+        .expect("mint an actual credential before exercising the body's size gate");
     let router = plane_router(app, sections, 64, &["keys"]);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -1290,6 +1303,10 @@ async fn oversized_413_body(
     let task = tokio::spawn(async move { axum::serve(listener, router).await.expect("serve") });
     let response = reqwest::Client::new()
         .post(format!("http://{address}{path}"))
+        .header(
+            "authorization",
+            format!("Bearer {}", token.expose(&busbar_kernel::seal::lend())),
+        )
         .header("content-type", "application/json")
         .body(vec![b'x'; 128])
         .send()
