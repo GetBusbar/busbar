@@ -1122,7 +1122,7 @@ impl<B: StoreSlots> SafeSlot for RecordScan<B> {
                 };
                 if kept.ticket != instance.ticket()
                     || kept.schema != schema
-                    || kept.prefix != input.field(|i| &i.prefix).bytes()
+                    || kept.prefix.as_slice() != input.field(|i| &i.prefix).bytes()
                     || kept.limit != input.limit
                 {
                     return out.fail(Refusal::refused("record scan recall names another read"));

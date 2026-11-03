@@ -973,6 +973,19 @@ fn scan_output() -> HostListOut {
     output
 }
 
+fn scan_reference(output: &HostListOut) -> Vec<u8> {
+    assert_ne!(output.head.lease, 0);
+    assert!(!output.head.extensions.ptr.is_null());
+    assert!(output.head.extensions.len > 0);
+    assert_eq!(
+        output.head.extensions.fmt,
+        busbar_contract::abi::mechanism::call::BLOB_OCTETS
+    );
+    // SAFETY: the real SDK's SHORT answer owns these bytes until release; copy while held.
+    unsafe { std::slice::from_raw_parts(output.head.extensions.ptr, output.head.extensions.len) }
+        .to_vec()
+}
+
 fn close_store(instance: *mut c_void) {
     assert_eq!(
         call(
@@ -1037,10 +1050,7 @@ fn a_short_record_scan_replays_its_completed_snapshot_when_the_store_grows() {
             input.limit,
         )
         .unwrap();
-        let reference = unsafe {
-            std::slice::from_raw_parts(short.head.extensions.ptr, short.head.extensions.len)
-        }
-        .to_vec();
+        let reference = scan_reference(&short);
         // Destroy the original buffers: the retained reply must own rows, never host pointers.
         drop(small_bytes);
         drop(small_items);
@@ -1130,9 +1140,7 @@ fn a_short_record_scan_reference_rejects_other_reads_and_expires_when_abandoned(
         call(ops().record_scan, instance, &input, &mut short),
         Outcome::Failed
     );
-    let reference =
-        unsafe { std::slice::from_raw_parts(short.head.extensions.ptr, short.head.extensions.len) }
-            .to_vec();
+    let reference = scan_reference(&short);
     let mut bytes = vec![0; short.needed_bytes as usize];
     let mut items = vec![zeroed::<RecordEntry>(); short.needed_items as usize];
     input.out = HostRecords {
