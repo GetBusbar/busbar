@@ -648,13 +648,22 @@ fn a_refused_facing_keeps_only_the_same_successful_serving_slot() {
     let next = section(serde_yaml::from_str("replacement: {}\n").unwrap());
     let first_defs = first.as_defs();
     let next_defs = next.as_defs();
-    let ctx = |defs, prior, public_url| BuildCtx {
-        endpoint_slot: None,
-        plane_defs: defs,
-        public_url,
-        prior,
-        providers: None,
-    };
+    fn ctx<'a>(
+        defs: &'a std::collections::BTreeMap<
+            &'static str,
+            Box<dyn crate::config::plane_sections::PlaneCfg>,
+        >,
+        prior: Option<&'a dyn crate::plane_driver::slots::PlaneSlots>,
+        public_url: Option<&'a str>,
+    ) -> BuildCtx<'a> {
+        BuildCtx {
+            endpoint_slot: None,
+            plane_defs: defs,
+            public_url,
+            prior,
+            providers: None,
+        }
+    }
     let old = (decl.build)(decl, &ctx(&first_defs, None, Some("https://old.example"))).unwrap();
     assert!(old.downcast_ref::<DoorSlot>().unwrap().opened);
     let prior = Prior(decl.key, Arc::clone(&old));
