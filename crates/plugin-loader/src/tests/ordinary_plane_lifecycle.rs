@@ -67,6 +67,17 @@ fn repeated_plane_loads_reuse_owned_static_words_after_the_image_is_released() {
         let first = make();
         let a = first.served();
         let declared = first.declared();
+        let owned_section = a.section.to_string();
+        let owned_classes = a
+            .op_classes
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>();
+        let owned_kinds = declared
+            .record_kinds
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>();
         reaped();
         let before = crate::dispatch::load::UNLOADS.load(std::sync::atomic::Ordering::SeqCst);
         drop(first);
@@ -77,6 +88,23 @@ fn repeated_plane_loads_reuse_owned_static_words_after_the_image_is_released() {
                 "the first actual dropped image was released"
             );
         }
+        // Read every original word after actual unload and BEFORE a reload can remap it.
+        assert_eq!(a.section, owned_section);
+        assert_eq!(
+            a.op_classes
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>(),
+            owned_classes
+        );
+        assert_eq!(
+            declared
+                .record_kinds
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>(),
+            owned_kinds
+        );
         let second = make();
         let b = second.served();
         assert_eq!(a.section, b.section);
