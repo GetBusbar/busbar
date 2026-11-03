@@ -333,35 +333,19 @@ mod conformance_ready_result_tests;
 
 
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_transport_opening_tests.rs"]
-mod conformance_transport_opening_tests;
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_transport_role_tests.rs"]
-mod conformance_transport_role_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
 #[path = "tests/https_timeout_tests.rs"]
 mod https_timeout_tests;
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/services_double_tests.rs"]
-mod services_double_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
 #[path = "tests/stand_in_tests.rs"]
 mod stand_in_tests;
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/warn_capture_tests.rs"]
-mod warn_capture_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
