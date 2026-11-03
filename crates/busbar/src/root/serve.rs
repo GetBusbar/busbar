@@ -2786,6 +2786,50 @@ impl ListenerPlan {
         Ok(auths)
     }
 
+    fn withheld_public_export_need(
+        app: &busbar_kernel::state::App,
+        need: &crate::root::boot::ListenerNeed,
+    ) -> bool {
+        use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
+        use busbar_contract::abi::mechanism::KindCode;
+        if need.kind != KindCode::Export
+            || need.at != "listen"
+            || need.transport != "http"
+            || !need.auth.is_empty()
+            || !app.plugin_routes.public_export_withheld(&need.instance)
+        {
+            return false;
+        }
+        let Some(def) = app.export_defs.get(&need.instance) else {
+            return false;
+        };
+        let Some(row) = crate::root::boot::dropped_registry()
+            .and_then(|registry| registry.resolve(def.module.trim()))
+        else {
+            return false;
+        };
+        let Ok(Some(candidate)) = row.candidate() else {
+            return false;
+        };
+        if candidate.kind != KindCode::Export || candidate.name != need.module {
+            return false;
+        }
+        // Only the exact single root-HTTP inbound declaration can be retired with
+        // this wholly withheld surface. Unrelated or private Needs remain strict.
+        candidate
+            .needs
+            .iter()
+            .filter(|decl| decl.direction == DIRECTION_INBOUND)
+            .count()
+            == 1
+            && candidate.needs.get(need.need as usize).is_some_and(|decl| {
+                decl.direction == DIRECTION_INBOUND
+                    && decl.transport == need.transport
+                    && decl.target_from == "listen"
+                    && decl.auth.is_empty()
+            })
+    }
+
     fn lists(
         &self,
         app: &busbar_kernel::state::App,
@@ -2795,7 +2839,9 @@ impl ListenerPlan {
         use busbar_contract::abi::transport::route::{PATH_EXACT, PATH_PATTERN};
         use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
         let cfg = self.config(app)?;
-        let next = self.needs(app)?;
+        let mut next = self.needs(app)?;
+        next.needs
+            .retain(|need| !Self::withheld_public_export_need(app, need));
         let physical_bind = |at: &str| {
             let proposed = next.binds.iter().find(|bind| bind.at == at);
             self.initial

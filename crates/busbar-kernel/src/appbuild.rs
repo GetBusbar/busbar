@@ -1357,9 +1357,12 @@ pub fn build_app_from_config_with_store(
         );
     }
 
-    let mut route_decls = crate::export::route_decls(&cfg_export);
+    let (mut route_decls, withheld_public_exports) = crate::export::route_projection(&cfg_export);
     route_decls.extend(hook_route_decls);
-    let plugin_routes = std::sync::Arc::new(crate::plugin_routes::build_route_table(route_decls)?);
+    let plugin_routes = std::sync::Arc::new(
+        crate::plugin_routes::build_route_table(route_decls)?
+            .with_withheld_public_exports(withheld_public_exports),
+    );
 
     let boot_route_paths = prior.map_or_else(
         || std::sync::Arc::new(plugin_routes.paths()),
