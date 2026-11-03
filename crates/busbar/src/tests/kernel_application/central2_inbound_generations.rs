@@ -76,15 +76,12 @@ async fn actual_inbound_generation_keeps_only_original_request_authority() {
     let module = busbar_contract::abi::mechanism::rendering::read(&statement)
         .expect("the actual store statement is valid")
         .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-    );
+    let mut manifest = plugins::manifest("store", &module, "third-party");
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("inbound-generation-custody");
-    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    let archive = plugins::signed(&plugins::key(0x33), manifest, &library);
+    let archive_sha256 = plugins::sha256(&archive);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
     let settings: serde_json::Value = serde_json::from_str(
@@ -108,11 +105,24 @@ async fn actual_inbound_generation_keeps_only_original_request_authority() {
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
+    let mut plugin_config = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
+        fetch: vec![busbar_kernel::config::PluginFetch::Url(
+            busbar_kernel::config::UrlFetch {
+                url: "https://plugins.invalid/store.tar.gz".into(),
+                sha256: Some(archive_sha256),
+            },
+        )],
         ..Default::default()
     };
+    plugin_config
+        .trust
+        .publishers
+        .push(busbar_kernel::config::PluginPublisher {
+            name: "third-party".into(),
+            public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+        });
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
