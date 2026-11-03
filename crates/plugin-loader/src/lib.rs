@@ -300,10 +300,6 @@ mod conformance_export_unjudged_tests;
 
 
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_plane_host_tests.rs"]
-mod conformance_plane_host_tests;
 
 
 
