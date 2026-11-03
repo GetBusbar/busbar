@@ -3937,7 +3937,8 @@ store:
 advanced:
   rate_sweep_interval: 256
 "#;
-    let cfg = resolve_yaml(yaml).expect("the clean config must resolve");
+    let mut cfg = resolve_yaml(yaml).expect("the clean config must resolve");
+    cfg.rate_card = cfg.rate_card.map(rate_card_for_actual_plane);
     assert!(
         validate(&cfg).is_ok(),
         "the resolved clean config must validate; got: {:?}",
