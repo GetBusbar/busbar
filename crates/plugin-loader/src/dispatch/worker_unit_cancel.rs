@@ -527,12 +527,18 @@ pub(super) fn cancel_orphan(mut orphan: Orphan) {
             )
         })
     });
-    let crossed = instance.cancel_abandoned(
-        *ticket,
-        current.meta.class,
-        unit,
-        current.meta.framing.clone(),
-    );
+    let cancel = || {
+        instance.cancel_abandoned(
+            *ticket,
+            current.meta.class,
+            unit,
+            current.meta.framing.clone(),
+        )
+    };
+    let crossed = match &current.meta.tracing {
+        Some(tracing) => tracing.in_scope(cancel),
+        None => cancel(),
+    };
     if crossed.outcome != Outcome::Ready {
         tracing::warn!(plugin = %instance.name(), outcome = ?crossed.outcome,
             "the cancel of a unit orphaned by a replaced worker did not answer READY");

@@ -555,6 +555,7 @@ impl<I, O> Drop for JobOf<I, O> {
 pub(crate) struct Meta {
     pub(crate) instance: Arc<Instance>,
     framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+    tracing: Option<Arc<TraceContext>>,
     slot: u32,
     class: DeadlineClass,
     deadline_ns: u64,
@@ -615,6 +616,29 @@ impl Drop for Meta {
         if let Some(framing) = self.framing.take() {
             drop_after_lock(Box::new(framing));
         }
+        if let Some(tracing) = self.tracing.take() {
+            drop_after_lock(Box::new(tracing));
+        }
+    }
+}
+
+/// The submitting host's context, never a parent supplied by a plugin. Shared so selecting a
+/// queued crossing under the worker lock calls no subscriber, including `Span::clone`/`drop`.
+struct TraceContext {
+    dispatch: tracing::Dispatch,
+    span: tracing::Span,
+}
+
+impl TraceContext {
+    fn current() -> Arc<Self> {
+        Arc::new(Self {
+            dispatch: tracing::dispatcher::get_default(Clone::clone),
+            span: tracing::Span::current(),
+        })
+    }
+
+    fn in_scope<T>(&self, f: impl FnOnce() -> T) -> T {
+        tracing::dispatcher::with_default(&self.dispatch, || self.span.in_scope(f))
     }
 }
 
@@ -809,6 +833,7 @@ impl Driven {
 
 pub(crate) struct Driver {
     instance: Arc<Instance>,
+    tracing: Option<Arc<TraceContext>>,
 
     frame: Option<Box<dyn DriveFrame>>,
     pending: bool,
@@ -820,6 +845,9 @@ pub(crate) struct Driver {
 impl Drop for Driver {
     fn drop(&mut self) {
         hold_past_lock(&self.instance);
+        if let Some(tracing) = self.tracing.take() {
+            drop_after_lock(Box::new(tracing));
+        }
     }
 }
 
@@ -1412,6 +1440,12 @@ impl Worker {
         // SAFETY: this crossing owns the host input frame.
         let ticket = unsafe { (*heads.0).ticket };
         let entry = st.entries.get(decode(ticket.slot).1 as usize);
+        let tracing = entry.and_then(|e| {
+            e.current
+                .as_ref()
+                .and_then(|c| c.meta.tracing.clone())
+                .or_else(|| e.driver.as_ref().and_then(|d| d.tracing.clone()))
+        });
         let tick_copy = s == slot::TICK
             && entry
                 .and_then(|e| e.current.as_ref())
@@ -1423,16 +1457,23 @@ impl Worker {
         self.crossing_since
             .store(now_ns().max(1), Ordering::Release);
         drop(st);
-        let mut crossed = {
+        let crossing = || {
             let _framing = super::framing_context::enter(framing.clone());
             // SAFETY: the frame is boxed and owned by this crossing; `s` passed `refuse` at submit.
             unsafe { instance.cross(s, heads.0, heads.1, heads.2) }
+        };
+        let mut crossed = match &tracing {
+            Some(tracing) => tracing.in_scope(crossing),
+            None => crossing(),
         };
         if tick_copy || (crossed.outcome == Outcome::Pending && !pending_is_handed) {
             let lease = std::mem::take(&mut crossed.lease);
             if lease != 0 {
                 let _scope = super::framing_context::enter(framing.clone());
-                instance.release_unread(lease);
+                match &tracing {
+                    Some(tracing) => tracing.in_scope(|| instance.release_unread(lease)),
+                    None => instance.release_unread(lease),
+                }
             }
         }
         self.crossing_since.store(0, Ordering::Release);
@@ -1440,15 +1481,24 @@ impl Worker {
         st.crossing = None;
         if st.dead {
             drop(st);
-            let _scope = super::framing_context::enter(framing);
-            if crossed.lease != 0 {
-                instance.release_unread(crossed.lease);
-            }
-            if crossed.short_lease != 0 {
-                instance.release_unread(crossed.short_lease);
+            let release = || {
+                let _scope = super::framing_context::enter(framing);
+                if crossed.lease != 0 {
+                    instance.release_unread(crossed.lease);
+                }
+                if crossed.short_lease != 0 {
+                    instance.release_unread(crossed.short_lease);
+                }
+            };
+            match &tracing {
+                Some(tracing) => tracing.in_scope(release),
+                None => release(),
             }
             None
         } else {
+            // A span's final drop can export its record and re-enter this dispatcher.
+            // Its crossing guards ended before the lock; defer the context's owner drop too.
+            drop_after_lock(Box::new(tracing));
             Some((st, crossed))
         }
     }
@@ -2314,6 +2364,7 @@ impl Dispatcher {
         }
         let driver = self.worker(worker)?.mint(Some(Driver {
             instance: inst.clone(),
+            tracing: Some(TraceContext::current()),
             frame: Some(K::drive_frame()),
             pending: false,
             wake_at_ns: 0,
@@ -2530,6 +2581,7 @@ impl Dispatcher {
         let meta = Meta {
             instance: inst.clone(),
             framing: super::framing_context::current(),
+            tracing: Some(TraceContext::current()),
             slot: s,
             class,
             deadline_ns,

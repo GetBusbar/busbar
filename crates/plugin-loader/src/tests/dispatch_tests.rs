@@ -3174,6 +3174,334 @@ fn a_dispatcher_built_and_first_submitted_inside_a_runtime_runs_in_no_runtime_un
     assert!(d.installed_runtime().is_some());
 }
 
+mod tracing_context {
+    use super::*;
+    use std::collections::HashMap;
+    use tracing::span::{Attributes, Current, Id, Record};
+    use tracing::{Metadata, Subscriber};
+
+    const TARGET: &str = "dispatch-context-test";
+
+    #[derive(Default)]
+    struct State {
+        spans: Vec<(&'static Metadata<'static>, usize)>,
+        entered: HashMap<std::thread::ThreadId, Vec<Id>>,
+        events: Vec<(String, Option<u64>, std::thread::ThreadId)>,
+        on_close: Option<Arc<dyn Fn() + Send + Sync>>,
+    }
+
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<State>>);
+
+    impl Capture {
+        fn events(&self) -> Vec<(String, Option<u64>, std::thread::ThreadId)> {
+            self.0.lock().unwrap().events.clone()
+        }
+    }
+
+    #[derive(Default)]
+    struct Phase(String);
+    impl tracing::field::Visit for Phase {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "phase" {
+                self.0 = format!("{value:?}");
+            }
+        }
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            if field.name() == "phase" {
+                self.0 = value.to_string();
+            }
+        }
+    }
+
+    impl Subscriber for Capture {
+        fn enabled(&self, _: &Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, attrs: &Attributes<'_>) -> Id {
+            let mut state = self.0.lock().unwrap();
+            state.spans.push((attrs.metadata(), 1));
+            Id::from_u64(state.spans.len() as u64)
+        }
+        fn record(&self, _: &Id, _: &Record<'_>) {}
+        fn record_follows_from(&self, _: &Id, _: &Id) {}
+        fn clone_span(&self, id: &Id) -> Id {
+            self.0.lock().unwrap().spans[id.into_u64() as usize - 1].1 += 1;
+            id.clone()
+        }
+        fn try_close(&self, id: Id) -> bool {
+            let callback = {
+                let mut state = self.0.lock().unwrap();
+                let refs = &mut state.spans[id.into_u64() as usize - 1].1;
+                *refs -= 1;
+                if *refs != 0 {
+                    return false;
+                }
+                state.on_close.clone()
+            };
+            if let Some(callback) = callback {
+                callback();
+            }
+            true
+        }
+        fn enter(&self, id: &Id) {
+            self.0
+                .lock()
+                .unwrap()
+                .entered
+                .entry(std::thread::current().id())
+                .or_default()
+                .push(id.clone());
+        }
+        fn exit(&self, _: &Id) {
+            if let Some(stack) = self
+                .0
+                .lock()
+                .unwrap()
+                .entered
+                .get_mut(&std::thread::current().id())
+            {
+                stack.pop();
+            }
+        }
+        fn current_span(&self) -> Current {
+            let state = self.0.lock().unwrap();
+            match state
+                .entered
+                .get(&std::thread::current().id())
+                .and_then(|stack| stack.last())
+            {
+                Some(id) => Current::new(id.clone(), state.spans[id.into_u64() as usize - 1].0),
+                None => Current::none(),
+            }
+        }
+        fn event(&self, event: &tracing::Event<'_>) {
+            if event.metadata().target() != TARGET {
+                return;
+            }
+            let mut phase = Phase::default();
+            event.record(&mut phase);
+            let current = self.current_span();
+            self.0.lock().unwrap().events.push((
+                phase.0,
+                current.id().map(Id::into_u64),
+                std::thread::current().id(),
+            ));
+        }
+    }
+
+    struct Sink(Arc<Recorder>);
+    impl EnvelopeSink for Sink {
+        fn metric(&self, metric: Metric<'_>) {
+            tracing::warn!(target: TARGET, phase = "envelope", "ingesting an op's envelope");
+            self.0.metric(metric);
+        }
+        fn diag(&self, diag: Diagnostic<'_>) {
+            tracing::warn!(target: TARGET, phase = "envelope", "ingesting an op's envelope");
+            self.0.diag(diag);
+        }
+        fn dropped(&self, why: Dropped) {
+            self.0.dropped(why);
+        }
+    }
+
+    extern "C" fn tick(
+        instance: *mut std::ffi::c_void,
+        input: *const std::ffi::c_void,
+        out: *mut std::ffi::c_void,
+    ) -> busbar_contract::abi::mechanism::call::RawOutcome {
+        // SAFETY: the real dispatcher supplies the fixture's initialized complete input frame.
+        let resumed = unsafe { (*input.cast::<TickIn>()).head.flags }
+            & busbar_contract::abi::mechanism::call::FLAG_RESUME
+            != 0;
+        tracing::warn!(target: TARGET, phase = if resumed { "resume" } else { "start" }, "crossing");
+        // SAFETY: this wrapper forwards the unchanged frame and instance to the real fixture op.
+        let answer = unsafe { (*plug::door().ops()).tick.unwrap()(instance, input, out) };
+        if answer.outcome() == Outcome::Pending {
+            tracing::warn!(target: TARGET, phase = "pending", "the crossing parked");
+        }
+        answer
+    }
+
+    extern "C" fn cancel(
+        instance: *mut std::ffi::c_void,
+        input: *const std::ffi::c_void,
+        out: *mut std::ffi::c_void,
+    ) -> busbar_contract::abi::mechanism::call::RawOutcome {
+        tracing::warn!(target: TARGET, phase = "cancel", "crossing");
+        // SAFETY: as above, the original fixture owns this instance and complete cancel frame.
+        unsafe { (*plug::door().ops()).cancel.unwrap()(instance, input, out) }
+    }
+
+    fn plugin(d: &Dispatcher) -> Plugin<TestKind> {
+        static CELL: LinkedSlot = LinkedSlot::new();
+        static SET: std::sync::Once = std::sync::Once::new();
+        extern "C" fn door() -> *const Door {
+            CELL.get()
+        }
+        SET.call_once(|| {
+            // SAFETY: the fixture's door owns a complete immutable lifecycle table.
+            let mut ops = unsafe { *plug::door().ops() };
+            ops.tick = Some(tick);
+            ops.cancel = Some(cancel);
+            let mut parts = plug::door().parts();
+            parts.ops = Box::leak(Box::new(ops));
+            // SAFETY: only same-signature wrappers changed; the full backing is static/leaked.
+            CELL.set(unsafe { Door::__from_parts(parts) });
+        });
+        let mut binding = bind(Arc::new(Recorder::default()));
+        binding.sink = Arc::new(Sink(Arc::new(Recorder::default())));
+        let p = load_linked::<TestKind>(&LinkedRow::of_raw(door).unwrap(), binding).unwrap();
+        assert_eq!(open(d, &p, 0), Outcome::Ready);
+        p
+    }
+
+    #[test]
+    fn queued_and_resumed_crossings_keep_the_submitters_span_and_dispatcher() {
+        let d = Dispatcher::new(config());
+        let p = plugin(&d);
+        let capture = Capture::default();
+        let ticket = d.mint(0).unwrap();
+        let caller_thread = std::thread::current().id();
+        let (reply, id) = tracing::subscriber::with_default(capture.clone(), || {
+            let span = tracing::info_span!("creator");
+            let id = span.id().unwrap().into_u64();
+            let _entered = span.enter();
+            let reply = d.submit(
+                &p,
+                ticket,
+                TICK,
+                frame(plug::PEND_BEFORE),
+                DeadlineClass::Call,
+                0,
+            );
+            (reply, id)
+        });
+        assert_eq!(reply.wait(WAIT).unwrap().outcome, Outcome::Ready);
+        let events = capture.events();
+        for phase in ["start", "pending", "resume", "envelope"] {
+            assert!(
+                events.iter().any(|e| e.0 == phase),
+                "missing {phase}: {events:?}"
+            );
+        }
+        assert!(
+            events
+                .iter()
+                .all(|e| e.1 == Some(id) && e.2 != caller_thread),
+            "{events:?}"
+        );
+        let first_count = events.len();
+        d.recycle(ticket);
+
+        let unrelated = Capture::default();
+        let ticket = d.mint(0).unwrap();
+        let reply = tracing::subscriber::with_default(unrelated.clone(), || {
+            d.submit(&p, ticket, TICK, frame(answer(1)), DeadlineClass::Call, 0)
+        });
+        assert_eq!(reply.wait(WAIT).unwrap().outcome, Outcome::Ready);
+        let events = unrelated.events();
+        assert!(
+            !events.is_empty(),
+            "the unrelated subscriber must receive its job's events"
+        );
+        assert!(
+            events.iter().all(|e| e.1.is_none()),
+            "the preceding span leaked: {events:?}"
+        );
+        assert_eq!(
+            capture.events().len(),
+            first_count,
+            "the following job used the preceding dispatcher"
+        );
+        d.recycle(ticket);
+    }
+
+    #[test]
+    fn cancellation_and_inline_crossings_keep_the_hosts_span() {
+        let d = Dispatcher::new(config());
+        let p = plugin(&d);
+        let capture = Capture::default();
+        let ticket = d.mint(0).unwrap();
+        let (reply, id) = tracing::subscriber::with_default(capture.clone(), || {
+            let span = tracing::info_span!("creator");
+            let id = span.id().unwrap().into_u64();
+            let _entered = span.enter();
+            let side = d.inline_ticket().unwrap();
+            assert_eq!(
+                p.call_inline(side.ticket(), false, TICK, &mut frame(answer(1)))
+                    .outcome,
+                Outcome::Ready
+            );
+            let reply = d.submit(
+                &p,
+                ticket,
+                TICK,
+                frame(plug::PEND_HOLD),
+                DeadlineClass::Call,
+                0,
+            );
+            (reply, id)
+        });
+        until("the pending crossing", || {
+            capture.events().iter().any(|e| e.0 == "pending")
+        });
+        drop(reply);
+        until("the cancellation crossing", || {
+            capture.events().iter().any(|e| e.0 == "cancel")
+        });
+        assert!(
+            capture.events().iter().all(|e| e.1 == Some(id)),
+            "{:?}",
+            capture.events()
+        );
+        d.recycle(ticket);
+    }
+
+    #[test]
+    fn dropping_a_completed_jobs_trace_context_can_reenter_its_worker() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let d = Arc::new(Dispatcher::new(config()));
+        let p = plugin(&d);
+        let capture = Capture::default();
+        let worker_closes = Arc::new(AtomicUsize::new(0));
+        let caller_thread = std::thread::current().id();
+        let dispatcher = Arc::clone(&d);
+        let closed = Arc::clone(&worker_closes);
+        capture.0.lock().unwrap().on_close = Some(Arc::new(move || {
+            // A span close can synchronously export through this dispatcher. Taking the same
+            // worker's lock here must succeed, including when its queued op was just retired.
+            let ticket = dispatcher.mint(0).unwrap();
+            dispatcher.recycle(ticket);
+            if std::thread::current().id() != caller_thread {
+                closed.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+        let ticket = d.mint(0).unwrap();
+        let reply = tracing::subscriber::with_default(capture.clone(), || {
+            let span = tracing::info_span!("creator");
+            let _entered = span.enter();
+            d.submit(
+                &p,
+                ticket,
+                TICK,
+                frame(plug::PEND_HOLD),
+                DeadlineClass::Call,
+                0,
+            )
+        });
+        until("the pending crossing", || {
+            capture.events().iter().any(|e| e.0 == "pending")
+        });
+        assert_eq!(p.call(TICK, &mut frame(plug::KICK)).outcome, Outcome::Ready);
+        assert_eq!(reply.wait(WAIT).unwrap().outcome, Outcome::Ready);
+        until("the worker's reentrant trace-context drop", || {
+            worker_closes.load(Ordering::SeqCst) > 0
+        });
+        d.recycle(ticket);
+    }
+}
+
 #[test]
 fn a_forged_context_quarantines_the_instance_that_forged_it() {
     let d = Dispatcher::new(config());
