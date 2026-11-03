@@ -3177,8 +3177,9 @@ fn a_dispatcher_built_and_first_submitted_inside_a_runtime_runs_in_no_runtime_un
 mod tracing_context {
     use super::*;
     use std::collections::HashMap;
-    use tracing::span::{Attributes, Current, Id, Record};
+    use tracing::span::{Attributes, Id, Record};
     use tracing::{Metadata, Subscriber};
+    use tracing_core::span::Current;
 
     const TARGET: &str = "dispatch-context-test";
 

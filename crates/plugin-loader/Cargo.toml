@@ -91,6 +91,7 @@ jsonschema = { workspace = true, optional = true }
 
 [dev-dependencies]
 base64 = { workspace = true }
+tracing-core = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-util"] }
 h2 = { workspace = true }
 log = { workspace = true }
