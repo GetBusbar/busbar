@@ -57,6 +57,9 @@ fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
         &rules,
     )
     .expect("boot");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&prior, &module)
+        .expect("the actual Store binds the boot rate history before activation");
     limits.keep().expect("the original limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -139,6 +142,9 @@ fn an_apply_carries_the_node_amendment_journal_its_governance_owns() {
         &rules,
     )
     .expect("boot");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&prior, &module)
+        .expect("the actual Store binds the boot rate history before activation");
     limits.keep().expect("the original limits commit");
     if let Some(rotate) = rotate {
         rotate();
