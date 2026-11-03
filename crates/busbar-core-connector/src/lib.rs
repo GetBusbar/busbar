@@ -247,6 +247,7 @@ struct DeclaredNeed {
     /// A member-program need's members (`busbar_contract::section::MEMBER_PROGRAM`): every open
     /// names one and leases its one long-lived program connection.
     members: Option<Arc<program::Members>>,
+    member_spec: Option<ReadNeed>,
 }
 
 /// A judgement's answer once it came, and the waker of the read or wait that found none.
@@ -1220,6 +1221,7 @@ impl Connector {
                 tls_policy,
                 program: None,
                 members: None,
+                member_spec: None,
             }),
         );
         Ok(())
@@ -1276,7 +1278,6 @@ impl Connector {
 
     /// Record (or, with `None`, drop) what the connector holds for `owner`'s `need`: a member of an
     fn set_need(&self, owner: InstanceId, need: NeedId, record: Option<DeclaredNeed>) {
-        let kept = record.as_ref().and_then(|r| r.members.clone());
         let before = {
             let mut over = self.over.lock().expect("needs");
             match record {
@@ -1284,15 +1285,9 @@ impl Connector {
                 None => over.remove(&(owner, need)),
             }
         };
-        for (name, member) in before.and_then(|b| b.members).iter().flat_map(|m| m.iter()) {
-            if !kept
-                .as_ref()
-                .and_then(|k| k.get(name))
-                .is_some_and(|k| Arc::ptr_eq(k, member))
-            {
-                member.retire();
-            }
-        }
+        // Final declaration custody can retire a child and invoke the carrier. Never do so
+        // while holding the connector's declaration map lock.
+        drop(before);
     }
 
     /// THE MEMBER-PROGRAM NEED (`busbar_contract::section::MEMBER_PROGRAM`): `owner`'s outbound
@@ -1303,6 +1298,7 @@ impl Connector {
         spec: &ReadNeed,
         programs: &[(String, busbar_contract::conn::Program)],
         scope: &busbar_contract::config_time::ConfigScope,
+        predecessor: Option<InstanceId>,
     ) -> Result<(), ConnError> {
         let served = {
             let view = self.transports.read().expect("transports");
@@ -1321,12 +1317,19 @@ impl Connector {
             self.set_need(owner, need, None);
             return Err(ConnError::Refused);
         };
-        let before = self
-            .over
-            .lock()
-            .expect("needs")
-            .get(&(owner, need))
-            .and_then(|d| d.members.clone());
+        let before = {
+            let over = self.over.lock().expect("needs");
+            // An existing successor can only redeclare its own members, never select a
+            // different predecessor. Provenance is used once for a fresh generation.
+            let source = over.get(&(owner, need)).or_else(|| {
+                predecessor
+                    .filter(|previous| *previous != owner)
+                    .and_then(|previous| over.get(&(previous, need)))
+            });
+            source
+                .filter(|d| d.member_spec.as_ref() == Some(spec))
+                .and_then(|d| d.members.clone())
+        };
         let members: program::Members = programs
             .iter()
             .map(|(name, p)| {
@@ -1341,7 +1344,7 @@ impl Connector {
                 }
                 let member = match kept {
                     Some(kept) => kept,
-                    None => Arc::new(program::Member::new(
+                    None => Arc::new(program::Declaration::new(program::Member::new(
                         p.clone(),
                         spawn_env::HeldEnv::load(&p.env_refs, self.spawn_secrets, scope),
                         Via {
@@ -1349,7 +1352,7 @@ impl Connector {
                             io: Arc::clone(&self.io),
                         },
                         alpn.clone(),
-                    )?),
+                    )?)),
                 };
                 Ok((name.clone(), member))
             })
@@ -1367,6 +1370,7 @@ impl Connector {
                 tls_policy: None,
                 program: None,
                 members: Some(Arc::new(members)),
+                member_spec: Some(spec.clone()),
             }),
         );
         Ok(())
@@ -1411,6 +1415,7 @@ impl Connector {
                     spawn_env::HeldEnv::load(&program.env_refs, self.spawn_secrets, scope),
                 )),
                 members: None,
+                member_spec: None,
             }),
         );
         Ok(())
@@ -2467,7 +2472,30 @@ impl DeclaredConns for Connector {
         programs: &[(String, busbar_contract::conn::Program)],
     ) -> Result<(), ConnError> {
         let scope = busbar_contract::config_time::ConfigScope::config_time();
-        let answer = self.record_members(owner, need, spec, programs, &scope);
+        let answer = self.record_members(owner, need, spec, programs, &scope, None);
+        self.declared
+            .lock()
+            .expect("declared needs")
+            .insert((owner, need), (spec.clone(), answer));
+        answer
+    }
+
+    fn declare_member_programs_from(
+        &self,
+        predecessor: InstanceId,
+        owner: InstanceId,
+        need: NeedId,
+        spec: &ReadNeed,
+        programs: &[(String, busbar_contract::conn::Program)],
+    ) -> Result<(), ConnError> {
+        let scope = busbar_contract::config_time::ConfigScope::config_time();
+        let fresh = !self
+            .declared
+            .lock()
+            .expect("declared needs")
+            .contains_key(&(owner, need));
+        let previous = (fresh && predecessor != owner).then_some(predecessor);
+        let answer = self.record_members(owner, need, spec, programs, &scope, previous);
         self.declared
             .lock()
             .expect("declared needs")
@@ -2867,6 +2895,7 @@ impl Connector {
             tls_policy: _,
             program,
             members,
+            member_spec: _,
         } = self
             .over
             .lock()
@@ -2890,7 +2919,7 @@ impl Connector {
             let expected = program::Expected::of(desc.fields)?;
             let member = members
                 .get(program::member_of(desc.target))
-                .cloned()
+                .map(|declaration| declaration.member())
                 .ok_or(ConnError::Refused)?;
             let lease = member.lease(&desc.body, expected)?;
             let mut held = Held::over(None, None, None).bounded(desc.timeout_ms);

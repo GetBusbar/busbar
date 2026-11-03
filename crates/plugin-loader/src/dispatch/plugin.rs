@@ -1054,7 +1054,7 @@ impl Instance {
     }
 
     fn declare_targeted(&self, settings: Blob, owned: Option<&[u8]>) -> Option<String> {
-        self.declare_targeted_on(settings, owned, self.wake.conn.get())
+        self.declare_targeted_on(settings, owned, self.wake.conn.get(), None)
     }
 
     fn declare_targeted_on(
@@ -1062,6 +1062,7 @@ impl Instance {
         settings: Blob,
         owned: Option<&[u8]>,
         connection: Option<&(InstanceId, Arc<dyn busbar_contract::conn::DeclaredConns>)>,
+        predecessor: Option<InstanceId>,
     ) -> Option<String> {
         let (instance, table) = connection?;
         let mut trust_refused = None;
@@ -1083,7 +1084,12 @@ impl Instance {
 
             if busbar_contract::section::member_program(&need.target_from) {
                 let programs = doc.as_ref().map(member_programs).unwrap_or_default();
-                let answer = table.declare_member_programs(*instance, id, need, &programs);
+                let answer = match predecessor {
+                    Some(previous) => {
+                        table.declare_member_programs_from(previous, *instance, id, need, &programs)
+                    }
+                    None => table.declare_member_programs(*instance, id, need, &programs),
+                };
                 self.need_refused(id, answer.map_err(crate::observe::conn_reason));
                 continue;
             }
@@ -1240,6 +1246,11 @@ impl Instance {
         owned: Option<&[u8]>,
         initial: bool,
     ) -> Result<Arc<super::export_bindings::Generation>, String> {
+        // Keep only THIS instance's currently published generation alive through declaration.
+        // Staged or original authorities are never sources of program custody.
+        let prior = (!initial)
+            .then(|| self.wake.exports.pin(Ticket::NONE))
+            .flatten();
         let conn = match self.wake.conn.get() {
             Some((owner, table)) => {
                 let owner = if initial && !self.wake.conn_forgotten.load(Ordering::Acquire) {
@@ -1275,7 +1286,14 @@ impl Instance {
                 }
             }
         }
-        if let Some(error) = self.declare_targeted_on(settings, owned, generation.conn.as_ref()) {
+        let predecessor = prior.as_ref().and_then(|prior| {
+            let (previous, previous_table) = prior.conn.as_ref()?;
+            let (owner, table) = generation.conn.as_ref()?;
+            (*previous != *owner && Arc::ptr_eq(previous_table, table)).then_some(*previous)
+        });
+        if let Some(error) =
+            self.declare_targeted_on(settings, owned, generation.conn.as_ref(), predecessor)
+        {
             return Err(error);
         }
         Ok(generation)
