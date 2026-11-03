@@ -2341,8 +2341,3 @@ impl Shared {
 #[cfg(test)]
 #[path = "tests/shared_tests.rs"]
 mod shared_tests;
-
-#[cfg(test)]
-pub(crate) fn test_store_calls() -> Arc<dyn StoreCalls> {
-    shared_tests::test_store_calls()
-}
