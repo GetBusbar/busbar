@@ -14,7 +14,7 @@ fn actual_mcp_function_macro_and_loaded_rows_preserve_the_same_door_and_statemen
     // and operation table; this wrapper returns that same descriptor without alteration.
     let macro_door = unsafe { MacroDoor::__from_door_macro(door) };
     let restated = unsafe { LoadedDoor::from_raw(crate::dispatch::load::raw(door)) };
-    assert_eq!(door as usize, macro_door.door_fn() as usize);
+    assert_eq!(door as *const () as usize, macro_door.door_fn() as usize);
     let by_fn = LinkedRow::of(door).expect("actual function door states itself");
     let by_macro = LinkedRow::of_macro(macro_door).expect("actual macro handle states itself");
     let by_loaded = LinkedRow::of_loaded(restated).expect("actual loaded door states itself");

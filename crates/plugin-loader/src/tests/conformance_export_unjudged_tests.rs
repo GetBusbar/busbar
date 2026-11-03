@@ -138,9 +138,8 @@ fn red_a_fault_answers_garbage_and_the_script_reads_none_of_it() {
     )
     .expect("the restated actual door loads");
     let opened = ExportInstance::open(p, d, br#"{ "buffer_seconds": 60 }"#);
-    assert_eq!(
+    assert!(
         opened.is_ok(),
-        true,
         "the real Prometheus open must answer READY: {opened:?}"
     );
     let sink = opened.expect("the real Prometheus instance opens");

@@ -213,7 +213,7 @@ fn every_pending_piece_resumes_on_its_original_unit_ticket() {
     }
     let seen = SEEN.lock().unwrap();
     assert_eq!(seen.len(), 20);
-    for pair in seen.chunks_exact(2) {
+    for pair in seen.as_chunks::<2>().0 {
         assert_eq!(pair[0].0, t);
         assert_eq!(pair[1].0, t);
         assert_ne!(t.generation, 0);

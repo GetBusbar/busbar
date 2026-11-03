@@ -90,7 +90,7 @@ fn opened(d: &Dispatcher, door: busbar_contract::abi::mechanism::door::DoorFn) -
 }
 
 fn bound(d: &Dispatcher, door: busbar_contract::abi::mechanism::door::DoorFn) -> Plugin<Plane> {
-    let p = load_linked::<Plane>(
+    load_linked::<Plane>(
         &LinkedRow::of(door).expect("actual MCP metadata"),
         Bind {
             instance: "suite-wake-control".into(),
@@ -102,8 +102,7 @@ fn bound(d: &Dispatcher, door: busbar_contract::abi::mechanism::door::DoorFn) ->
             conns: ConnTable::Probe,
         },
     )
-    .expect("actual MCP binds");
-    p
+    .expect("actual MCP binds")
 }
 
 fn tick() -> Frame<TickIn, TickOut> {
