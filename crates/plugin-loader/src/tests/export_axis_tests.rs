@@ -202,7 +202,7 @@ fn a_refused_webhook_target_is_said_once_in_busbars_log_at_start() {
                 target == crate::dispatch::log_file::MIRROR_TARGET
                     && *level == tracing::Level::ERROR
                     && message.contains("disabling this webhook exporter")
-                    && message.contains("said-once")
+                    && message.contains("http://127.0.0.1:1/***")
             })
             .count()
     };
@@ -218,6 +218,12 @@ fn a_refused_webhook_target_is_said_once_in_busbars_log_at_start() {
     let after = said();
     drop(sink);
     let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        host.lines()
+            .iter()
+            .all(|(_, _, _, message)| !message.contains("/said-once")),
+        "the actual webhook product masks the target path in its refusal log"
+    );
     assert_eq!(at_open, 0, "opening the sink says nothing in busbar's log");
     assert_eq!(at_start, 1, "the start says the refusal exactly once");
     assert_eq!(after, 1, "a delivery after it never says it again");
