@@ -3218,6 +3218,9 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
             rotate();
         }
         let app = Arc::new(app);
+        // READY's real 503 starts OIDC's mandatory refetch cooldown. Let that configured
+        // interval elapse so VERIFY can own the second fetch held below through EOF.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
         let points = app.auth.position_points("held");
         assert!(points.has(busbar_contract::abi::auth::AuthPoint::Head));
         let guests = GuestList::seal(vec![
