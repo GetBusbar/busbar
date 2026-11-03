@@ -23,6 +23,7 @@
   "PatchToolsNameSettings",
   "PostAgentsNameApprove",
   "PostAgentsNameConnect",
+  "PostLedgerRecoveryResolve",
   "PostToolsNameConnect",
   "PutAgentsName",
   "PutToolsName"
@@ -2414,6 +2415,60 @@
     }
    },
    "path": "/api/v1/admin/ledger/amend-rate-history",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostLedgerRecoveryList": {
+   "bad_body": {
+    "body": {
+     "limit": 0
+    },
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": false,
+   "not_found": null,
+   "notes": "1.6.0-additive observation-only ledger recovery list. A bounded authenticated request reads retained operation identities without granting resolution authority; limit zero is refused. The published 1.5.5 binary has no such route and answers the generic 404 envelope.",
+   "ok": {
+    "body": {
+     "limit": 1
+    },
+    "expect": [
+     200
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "path": "/api/v1/admin/ledger/recovery/list",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostLedgerRecoveryResolve": {
+   "bad_body": {
+    "body": {},
+    "expect": [
+     400
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   },
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "native_route_verified component evidence is in fixtures/ledger-recovery-positive-proof.json; Oracle positive remains Gap until the required real retained-operation producer/recorder is qualified. A successful probe requires a list-derived actual operation id, immutable fingerprint, inspected recovery version and evidence; never invent a verdict. The empty-object probe verifies required-field refusal. 1.6.0-additive: the published 1.5.5 binary has no such route and answers the generic 404 envelope.",
+   "ok": null,
+   "path": "/api/v1/admin/ledger/recovery/resolve",
    "restart": false,
    "scope": "full"
   },

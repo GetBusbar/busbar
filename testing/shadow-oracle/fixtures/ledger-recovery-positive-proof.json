@@ -1,7 +1,7 @@
 {
   "fixture": "actual-retained-usage-admin-route-v1",
   "cell": "admin.ops|PostLedgerRecoveryResolve|ok",
-  "status": "evidence-ready; native execution and explicit ROOT mapping approval required",
+  "status": "native_route_verified; Oracle positive cell remains Gap pending a real producer/recorder",
   "test": "root::units_admin::ledger_recovery_actual::an_actual_retained_usage_operation_is_listed_and_resolved_through_the_admin_route",
   "source": "crates/busbar/src/root/units_admin/tests/ledger_recovery_actual.rs",
   "requires": {
@@ -33,5 +33,145 @@
     "durable verdict preserves the HTTP actor and generated evidence reason plus both quiescence attestations"
   ],
   "admin_posture": "The normal product builder resolves a file-backed configured operator token. Production live_admin_door authenticates the bearer credential; the durable verdict must attribute the configured operator principal. Unauthenticated list and resolve each return HTTP 401.",
-  "oracle_mapping_rule": "This descriptor is not an Oracle PASS. Keep the cell needs_fixture until the exact current-source test runs successfully, its generated proof is retained with binary/Store/source hashes, and ROOT explicitly approves the actual-route evidence mapping. Never fabricate a golden or substitute static ids/evidence."
+  "oracle_mapping_rule": "Native-route verification is truthful component evidence only, not an Oracle PASS or a shortcut around the required producer/recorder. Keep this cell needs_fixture:true with body:null and Oracle Gap until the real producer/recorder is qualified and ROOT approves its exact linkage. Observed identities and evidence above are run-specific proof, never static replay request material.",
+  "qualified_tests": [
+    "root::units_admin::ledger_recovery_actual::an_actual_retained_usage_operation_is_listed_and_resolved_through_the_admin_route",
+    "root::units_admin::ledger_recovery_actual::actual_store_compatibility_replay_preserves_the_resolved_verdict"
+  ],
+  "native_route_verified": {
+    "verified": true,
+    "scope": "Actual Recovery2 only; clean d797 positive production replay and compatibility replay; no load/no source edits",
+    "not_oracle_binary_cell_pass": true,
+    "source": "6179a1ff5f17cbbeecc61073441aa35711d2f45c",
+    "tree": "b54240cc9e3c9a8c43af26cedbf3fdad0ab6d93b",
+    "producer_SDK": "16530bfbda93e34caa5bbf81b8e6c65307305477",
+    "root_SDK_projection": "current ROOT retained scan projection paired with SDK16530 producer; normal Memory pin/locked graph per fleet metadata receipt",
+    "actual_test_source_sha256": "5b0ae5c85de09330c8f1a048caf6083e03a554d57db19df9b8f205f7b1cd8404",
+    "qualified_descriptor_sha256": "96aff96cc96cf102d3a3be15a7a2bba32878a2e85a0364b41d83aa61a423d77f",
+    "elf": "/home/ubuntu/targets/fleet-check-pool-2/debug/deps/busbar-811df731a6cdb02a",
+    "elf_sha256": "9d92573fa1c9fa0d22ffb8441e49575710c9afd8bf8313b7703890dabe7575d4",
+    "store_source": "569f08d683cf20bba1eac21614a92e81a8c0de23",
+    "store_library": "/home/ubuntu/evidence/memory-569f/libbusbar_store_memory_plugin.so",
+    "store_sha256": "8fe5d5bdd553aeaefe6d7e3f9f7df71ab06183fa16dc6352988fb88ba665837f",
+    "store_settings": "{}",
+    "receipt": "delivery-1706-native/actual-recovery2-16530-569f/terminal.json",
+    "environment_audit": "delivery-1706-native/actual-recovery2-16530-569f/environment-audit.json",
+    "receipt_custody_root": "/Users/matthew/Developer/tmp/cleanup/lead-session/development-resume-20261101",
+    "compile": {
+      "exit": 0,
+      "seconds": 98.11763381958008
+    },
+    "source_unchanged": true,
+    "receipt_finalization": "runner finalizer NameError after both tests/proofs; raw runner-pool2.log preserved. Recomputed hashes only; no compile/test rerun or source edits.",
+    "proofs": [
+      {
+        "test_identifier": "root::units_admin::ledger_recovery_actual::an_actual_retained_usage_operation_is_listed_and_resolved_through_the_admin_route",
+        "exit": 0,
+        "seconds": 0.32287168502807617,
+        "proof": "delivery-1706-native/actual-recovery2-16530-569f/proof-0.json",
+        "proof_sha256": "5956b6fbac214c957b5b7679d63325daa67c275f81016971a4a4e6125e06d4a9",
+        "log": "delivery-1706-native/actual-recovery2-16530-569f/test-0.log",
+        "actual_api_outcomes": {
+          "unauthenticated_list_status": 401,
+          "unauthenticated_resolve_status": 401,
+          "listed_status": 200,
+          "resolve_status": 200,
+          "stale_version_status": 409,
+          "wrong_fingerprint_status": 409,
+          "missing_quiescence_status": 400,
+          "repeat_status": 200,
+          "actual_backend_commits": 1,
+          "actual_backend_input": 7,
+          "outstanding_original_usage_calls": 0,
+          "verdict_actor": "admin"
+        },
+        "observed_run_identity_not_static_request_material": {
+          "listed_item": {
+            "body_fingerprint": "0845d44251844dac1cfb7a850df2cfee2bd306f3f64cb88adb2bf4ba5aa056b3",
+            "can_resolve": true,
+            "first_sent_at_ms": 1793683946793,
+            "kind": "usage",
+            "operation_id": "3f7b92855b589e660700000000000000",
+            "recovery_version": 1,
+            "state": "landed_unknown"
+          },
+          "resolved_item": {
+            "body_fingerprint": "0845d44251844dac1cfb7a850df2cfee2bd306f3f64cb88adb2bf4ba5aa056b3",
+            "can_resolve": false,
+            "first_sent_at_ms": 1793683946793,
+            "kind": "usage",
+            "operation_id": "3f7b92855b589e660700000000000000",
+            "recovery_version": 3,
+            "state": "settled"
+          },
+          "backend_acknowledged_operation": "3f7b92855b589e660700000000000000"
+        },
+        "generated_evidence": "Actual backend acknowledged operation 3f7b92855b589e660700000000000000; its observed input count is 7; original sender was retired and no usage call remains in flight.",
+        "admin_posture": "configured production operator chain with bearer credential"
+      },
+      {
+        "test_identifier": "root::units_admin::ledger_recovery_actual::actual_store_compatibility_replay_preserves_the_resolved_verdict",
+        "exit": 0,
+        "seconds": 0.3441503047943115,
+        "proof": "delivery-1706-native/actual-recovery2-16530-569f/proof-1.json",
+        "proof_sha256": "a58a00ae282c68125b029e25fa26143ad5c737b79fa1019554d9cee5ed11a7eb",
+        "log": "delivery-1706-native/actual-recovery2-16530-569f/test-1.log",
+        "actual_api_outcomes": {
+          "unauthenticated_list_status": 401,
+          "unauthenticated_resolve_status": 401,
+          "listed_status": 200,
+          "resolve_status": 200,
+          "stale_version_status": 409,
+          "wrong_fingerprint_status": 409,
+          "missing_quiescence_status": 400,
+          "repeat_status": 200,
+          "actual_backend_commits": 1,
+          "actual_backend_input": 7,
+          "outstanding_original_usage_calls": 0,
+          "verdict_actor": "admin"
+        },
+        "observed_run_identity_not_static_request_material": {
+          "listed_item": {
+            "body_fingerprint": "1072ea91f369d602821a009c04abbbad3889a030206e546064062676a95d1940",
+            "can_resolve": true,
+            "first_sent_at_ms": 1793683947106,
+            "kind": "usage",
+            "operation_id": "25984d6b1b7a30f20700000000000000",
+            "recovery_version": 1,
+            "state": "landed_unknown"
+          },
+          "resolved_item": {
+            "body_fingerprint": "1072ea91f369d602821a009c04abbbad3889a030206e546064062676a95d1940",
+            "can_resolve": false,
+            "first_sent_at_ms": 1793683947106,
+            "kind": "usage",
+            "operation_id": "25984d6b1b7a30f20700000000000000",
+            "recovery_version": 3,
+            "state": "settled"
+          },
+          "backend_acknowledged_operation": "25984d6b1b7a30f20700000000000000"
+        },
+        "generated_evidence": "Actual backend acknowledged operation 25984d6b1b7a30f20700000000000000; its observed input count is 7; original sender was retired and no usage call remains in flight.",
+        "admin_posture": "configured production operator chain with bearer credential"
+      }
+    ]
+  },
+  "required_remaining_work": {
+    "status": "active; required, not optional",
+    "owner": "/root/core_recovery/production_recovery_causal with /root/oracle_boot_repair",
+    "producer": "Create a real retained operation through the actual custody lifecycle and keep its real router/Store lifetime or qualified persistent handoff available to the recorder.",
+    "recorder": "List the actual retained operation, derive its operation id, immutable fingerprint and inspected version, then send an attributed, evidence-backed resolution through the real candidate HTTP route.",
+    "artifact_boundary": "The qualified source above is a candidate-source test ELF. It is not the ordinary release candidate binary. A real recorder must bind the artifact and handoff honestly.",
+    "until_qualified": {
+      "needs_fixture": true,
+      "positive_http_body": null,
+      "oracle_cell_status": "Gap"
+    },
+    "prohibited": [
+      "invented operation identity, fingerprint or verdict evidence",
+      "direct insertion of reserved ledger rows",
+      "native proof relabeled as an Oracle binary PASS",
+      "accepted-entry additions or historical 1.5.5 baseline changes"
+    ]
+  }
 }
