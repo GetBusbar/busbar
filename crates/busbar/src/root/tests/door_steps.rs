@@ -7522,7 +7522,13 @@ pub(crate) mod hook_parity {
                             .cloned()
                             .unwrap_or_else(|| serde_json::json!({}))
                     };
-                    axum::Json(reply)
+                    let status = settings
+                        .get("http_status")
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|status| u16::try_from(status).ok())
+                        .and_then(|status| axum::http::StatusCode::from_u16(status).ok())
+                        .unwrap_or(axum::http::StatusCode::OK);
+                    (status, axum::Json(reply))
                 }
             }),
         );
@@ -7859,7 +7865,9 @@ pub(crate) mod hook_parity {
             &server,
             vec![(
                 "optional-outcome",
-                gate("rw", serde_json::json!({ "raw_transform_reply": {} })),
+                // A real target error makes the actual webrequest operation fail;
+                // its optional disposition must preserve the original request.
+                gate("rw", serde_json::json!({ "http_status": 503 })),
             )],
         );
         let (status, answer) = send_as(
@@ -7880,14 +7888,9 @@ pub(crate) mod hook_parity {
 
         let mut required = gate(
             "rw",
-            serde_json::json!({
-                "raw_transform_reply": {
-                    "reject": {
-                        "status": busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
-                        "message": busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
-                    }
-                }
-            }),
+            // The same actual operation failure now follows on_error: reject.
+            // Explicit hook rejects are client errors, not host unavailability.
+            serde_json::json!({ "http_status": 503 }),
         );
         required.on_error =
             serde_json::from_value(serde_json::json!("reject")).expect("an on_error disposition");
