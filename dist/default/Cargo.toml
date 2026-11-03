@@ -954,7 +954,7 @@ busbar-store-memory = { git = "https://git.getbusbar.dev/GetBusbar/busbar-store-
 # THE MCP PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the mcp plane's
 # door row (`plane-mcp-door`, `busbar_plane_mcp::tool_door::door`) and installs in every build's tests.
 # Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-mcp = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-mcp", rev = "95cab2dd465b8a283a744b782e86af019f4dc94b" }
+busbar-plane-mcp = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-mcp", rev = "dcfc3517a80901426d05219a9b77e7b0c21c9b6a" }
 # THE DECISIONS PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # decisions plane's door row (`plane-decisions`, `busbar_plane_decisions::door`). Its
 # dropped-in cdylib twin (`busbar-plane-decisions-plugin`) and its gates live in that repo's plugin CI.
