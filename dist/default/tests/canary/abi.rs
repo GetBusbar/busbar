@@ -9,7 +9,7 @@ use busbar_contract::auth_calls::{FieldsRequest, Verified, VerifyRequest};
 use busbar_contract::secret::SecretAxis as _;
 use busbar_contract::secret_ref::{SECRET_MODULE_ENV, SECRET_MODULE_FILE, SECRET_MODULE_TEMPLATE};
 use busbar_core_connector::{doors::Dispatched, process, registry::Entry, Connector};
-use busbar_kernel::host_services::KernelServices;
+use busbar_kernel::host_services::{DestJudge as _, KernelServices};
 use busbar_plugin_loader::auth_axis::AuthRows;
 use busbar_plugin_loader::dispatch::{
     kinds::transport::Transport, load_linked, DispatchConfig, Dispatcher, LinkedRow,
@@ -166,6 +166,17 @@ fn host() -> &'static (Arc<Dispatcher>, Arc<Connector>) {
             ..Default::default()
         })
         .expect("the local IdP destination policy");
+        assert!(
+            guard
+                .judge_name(
+                    "https://127.0.0.1:443/jwks",
+                    busbar_contract::abi::host::conn::connector::EGRESS_OPEN_WEB,
+                    true,
+                )
+                .is_ok(),
+            "the actual strict destination guard permits the configured TLS IdP"
+        );
+
         let services = Arc::new(KernelServices::new().with_dest_judge(guard.clone()));
         let dispatcher = Arc::new(Dispatcher::with_services(
             DispatchConfig::default(),
@@ -352,8 +363,9 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
     });
     assert!(
         matches!(answer.verified, Verified::Identity(ref identity) if identity.subject == "oidc:canary"),
-        "the observed dropped-in door verifies a signed token over the real TLS connection: {:?}; host trace: {}",
+        "the observed dropped-in door verifies a signed token over the real TLS connection: {:?}; host service errors: {:?}; host trace: {}",
         answer.verified,
+        recorder::failures(),
         String::from_utf8_lossy(&tracing.lock().unwrap_or_else(|p| p.into_inner())),
     );
     drop(oidc);

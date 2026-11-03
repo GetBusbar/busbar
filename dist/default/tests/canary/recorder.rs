@@ -76,6 +76,20 @@ pub fn crossings() -> Vec<Crossing> {
     LOG.lock().unwrap_or_else(|p| p.into_inner()).clone()
 }
 
+/// Failed host-service diagnostics only. The ABI guarantees `ServiceOut::error` is never secret.
+pub fn failures() -> Vec<(String, String)> {
+    crossings()
+        .into_iter()
+        .filter(|crossing| crossing.site.ends_with(".error"))
+        .map(|crossing| {
+            (
+                crossing.site,
+                String::from_utf8_lossy(&crossing.bytes).into_owned(),
+            )
+        })
+        .collect()
+}
+
 pub fn calls() -> Vec<(String, String)> {
     CALLS.lock().unwrap_or_else(|p| p.into_inner()).clone()
 }
@@ -818,6 +832,23 @@ fn on_svc(
     // SAFETY: the plugin supplied these loans for this exact host service slot. The recorder
     // forwards its original context and buffers unchanged to the loader's real callback.
     let answer = unsafe { real(ctx, input, out) };
+    quietly(|| {
+        if !matches!(answer.outcome(), Outcome::Failed | Outcome::Refused) {
+            return;
+        }
+        // SAFETY: the service returned this caller-owned, sized output. Its error is a
+        // process-lived diagnostic and, by the service ABI, never secret material.
+        unsafe {
+            if let Some(answer) = read_in::<ServiceOut>(out.cast_const().cast()) {
+                push(
+                    &label,
+                    Dir::HostToPlugin,
+                    format!("{site}.error"),
+                    abistr(&answer.error),
+                );
+            }
+        }
+    });
 
     quietly(|| {
         if family != SERVICES
