@@ -2584,6 +2584,16 @@ impl Connector {
         }
     }
 
+    /// A session's upstream offer mirrors metadata learned from its actual caller association.
+    /// Ordinary units have no pairing and can open immediately.
+    pub async fn wait_session_opening(&self, unit: u64) -> Result<(), ConnError> {
+        let pairing = self.pairs.lock().expect("pairs").get(&unit).cloned();
+        match pairing {
+            Some(pairing) => pairing.wait_opening().await,
+            None => Ok(()),
+        }
+    }
+
     /// THE COMPOSED OPEN of a held session's upstream leg over a datagram framer's need ([`dialled`]):
     #[allow(clippy::too_many_arguments)]
     fn open_dialled(

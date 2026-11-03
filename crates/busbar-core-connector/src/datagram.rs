@@ -2708,6 +2708,25 @@ impl Pairing {
         st.bridge.opening(&st.bridge.caller_channels())
     }
 
+    /// Wait for the caller's actual media or channel metadata before mirroring its opening.
+    pub async fn wait_opening(&self) -> Result<(), busbar_contract::conn::ConnError> {
+        loop {
+            let changed = self.published.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            {
+                let state = self.lock();
+                if state.closed {
+                    return Err(busbar_contract::conn::ConnError::Closed);
+                }
+                if !state.bridge.caller.is_empty() || !state.bridge.channels.is_empty() {
+                    return Ok(());
+                }
+            }
+            changed.await;
+        }
+    }
+
     /// What `leg` yielded: its line heads recorded, its line frames handed to the other leg (once
     pub fn sort(
         &self,
@@ -2724,6 +2743,7 @@ impl Pairing {
             };
             (session, across, to)
         };
+        self.published.notify_waiters();
         if let Some(to) = to {
             for a in across {
                 to.line(a, now);
