@@ -133,12 +133,12 @@ pub struct SpentTicketReservation(TicketReservation);
 
 pub struct ReturnedTicketReservation {
     reason: ReasonCode,
-    reservation: TicketReservation,
+    reservation: Box<TicketReservation>,
 }
 
 impl ReturnedTicketReservation {
     pub fn into_parts(self) -> (ReasonCode, TicketReservation) {
-        (self.reason, self.reservation)
+        (self.reason, *self.reservation)
     }
 }
 
@@ -176,7 +176,7 @@ impl SpentTicketReservation {
         if reservation.key.as_ref() != principal {
             return Err(ReturnedTicketReservation {
                 reason: ReasonCode::Unpriced,
-                reservation,
+                reservation: Box::new(reservation),
             });
         }
         Ok(Self(reservation))
@@ -211,7 +211,7 @@ impl SpentTicketReservation {
         {
             return Err(ReturnedTicketReservation {
                 reason: ReasonCode::Unpriced,
-                reservation,
+                reservation: Box::new(reservation),
             });
         }
         let TicketReservation {
@@ -235,7 +235,7 @@ impl SpentTicketReservation {
                 let (reason, reserved) = returned.into_parts();
                 Err(ReturnedTicketReservation {
                     reason,
-                    reservation: TicketReservation {
+                    reservation: Box::new(TicketReservation {
                         money: reserved,
                         id,
                         expires_at,
@@ -245,7 +245,7 @@ impl SpentTicketReservation {
                         source_unit,
                         node_nonce,
                         instance_nonce,
-                    },
+                    }),
                 })
             }
         }
