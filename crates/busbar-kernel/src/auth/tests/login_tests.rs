@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::auth::LoginKind;
 
 #[test]
 fn inbound_default_selects_declared_styles_and_refuses_provider_names() {
@@ -79,8 +78,6 @@ fn idp_with_secret(env: &str) -> crate::config::AuthCfg {
 
 #[test]
 fn browser_login_secret_required_for_redirect_absent_for_credential() {
-    use busbar_contract::auth::LoginKind;
-
     assert!(validate_browser_login_secret(LoginKind::Redirect, true).is_ok());
     assert!(
         validate_browser_login_secret(LoginKind::Redirect, false).is_err(),

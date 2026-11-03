@@ -5,7 +5,6 @@ use crate::appbuild::{
     inert_durable_keys_banner, open_relay_banner, resolve_model_context_max,
     stateful_plane_ephemeral_store_warn,
 };
-use crate::config_validate::{registry_refusal, secret_module};
 #[allow(unused_imports)]
 use crate::preflight::{
     build_secret_resolver, is_real_auth_plugin_ref, is_real_identity_provider_plugin_ref,
@@ -296,7 +295,6 @@ fn test_stateful_plane_ephemeral_store_warn_fires_only_for_ram_plus_stateful() {
 #[test]
 fn test_memory_store_cannot_reach_inert_with_keys() {
     use crate::governance::GovState;
-    use std::sync::Arc;
 
     let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
@@ -602,21 +600,6 @@ pub(crate) fn skipped_in(
 
 pub(crate) const UNSIGNED_SKIPPED: &str = "manifest carries no signature; refusing to load an \
      unsigned plugin. Set plugins.trust.allow_unsigned=true to permit unsigned plugins.";
-
-fn plugins_cfg(dir: &std::path::Path, enabled: bool) -> crate::config::PluginsCfg {
-    crate::config::PluginsCfg {
-        enabled,
-        dir: dir.to_string_lossy().into_owned(),
-        ..Default::default()
-    }
-}
-
-fn gov_with_store(store: &str) -> crate::config::StoreCfg {
-    crate::config::StoreCfg {
-        module: store.to_string(),
-        settings: serde_json::Map::new(),
-    }
-}
 
 #[test]
 fn the_preflight_warns_about_a_malformed_floor() {

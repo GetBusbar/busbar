@@ -902,24 +902,6 @@ fn the_admin_head_hands_the_request_through_as_presented() {
     assert_eq!(names, ["authorization", X_ADMIN_TOKEN, "host"]);
 }
 
-struct Answered(Option<busbar_contract::auth_calls::VerifyAnswer>);
-
-impl std::future::Future for Answered {
-    type Output = busbar_contract::auth_calls::VerifyAnswer;
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        std::task::Poll::Ready(self.0.take().expect("polled once"))
-    }
-}
-
-impl busbar_contract::auth_calls::Verifying for Answered {
-    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        self.0.take()
-    }
-}
-
 #[test]
 fn a_data_plane_door_overloaded_or_without_a_verdict_denies_the_chain() {
     use busbar_contract::auth_calls::Verified;
@@ -1036,23 +1018,25 @@ async fn data_verifier_outcome_projection_preserves_the_503_and_401_envelopes() 
     ))
     .await;
     assert_eq!(rejected, all_pass, "a REJECT: the 1.5.5 401, byte for byte");
-    let overloaded = data_verdict_of("door", Verified::Overloaded.into(), false)
-        .err()
-        .expect("overload stays apart");
+    let overloaded = match data_verdict_of("door", Verified::Overloaded.into(), false) {
+        Err(error) => error,
+        Ok(_) => panic!("overload stays apart"),
+    };
     assert_eq!(
         inspect(data_verifier_error_response(overloaded)).await,
         at_capacity_503(),
         "an overloaded door (Q134)"
     );
-    let failed = data_verdict_of("door", Verified::Failed.into(), false)
-        .err()
-        .expect("no verdict stays apart");
+    let failed = match data_verdict_of("door", Verified::Failed.into(), false) {
+        Err(error) => error,
+        Ok(_) => panic!("no verdict stays apart"),
+    };
     assert_eq!(
         inspect(data_verifier_error_response(failed)).await,
         at_capacity_503(),
         "a FAILED door: 503 + Retry-After, refused (SIGN-auth-kind 2026-10-30)"
     );
-    let faulted = data_verdict_of(
+    let faulted = match data_verdict_of(
         "door",
         Verified::Identity(VerifiedIdentity {
             subject: "faulted".into(),
@@ -1060,9 +1044,10 @@ async fn data_verifier_outcome_projection_preserves_the_503_and_401_envelopes() 
         })
         .into(),
         true,
-    )
-    .err()
-    .expect("a fault overrides its purported identity");
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("a fault overrides its purported identity"),
+    };
     assert_eq!(
         inspect(data_verifier_error_response(faulted)).await,
         at_capacity_503(),
