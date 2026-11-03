@@ -1741,6 +1741,31 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
             .expect("stage the actual Store product");
         std::fs::write(directory.join("admin.token"), "admintok")
             .expect("write the operator credential");
+        let ranking_library = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_TEST_RANKING_CDYLIB")
+                .expect("the admin hook witnesses require the actual Ranking product"),
+        );
+        let ranking_statement =
+            busbar_plugin_loader::dispatch::rendering_of_library(&ranking_library)
+                .expect("the actual Ranking statement reads")
+                .expect("the actual Ranking product states its door");
+        let ranking_facts = busbar_contract::abi::mechanism::rendering::read(&ranking_statement)
+            .expect("the actual Ranking statement parses");
+        let mut ranking_manifest = super::plugins::manifest(
+            "hook",
+            &ranking_facts.name,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
+        ranking_manifest.alias = "hooks-ranking".into();
+        ranking_manifest.version = ranking_facts.version;
+        ranking_manifest.statement = Some(hex::encode(ranking_statement));
+        let ranking_archive = super::plugins::signed(
+            &crate::dist_root_install::release_key(),
+            ranking_manifest,
+            &std::fs::read(ranking_library).expect("the actual Ranking library reads"),
+        );
+        std::fs::write(directory.join("ranking.tar.gz"), ranking_archive)
+            .expect("stage the actual signed Ranking product");
         let settings = crate::root::test_plugins::application_store_settings(&directory);
         let mut document = serde_json::json!({"groups": {"team": {"enabled": true, "limits": []}}, "hooks": {"basehook": {"kind":"gate","module":"hooks-ranking","settings":{"policy":"cheapest"},"timeout_ms":25,"on_error":"reject"}}});
         document["providers"] = serde_json::json!({});
