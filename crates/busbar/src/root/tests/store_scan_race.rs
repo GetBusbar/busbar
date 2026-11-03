@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use crate::root::durability::store_chain::{verify_stored_chain_with_seals, RecordSeal};
 use crate::root::durability::store_identity::{take_node, HeldLease};
 use busbar_contract::abi::sdk::store::conditional::{Decision, Mutation, Predicate};
 
@@ -167,6 +168,15 @@ fn bulky_audit(sealed: &mut Sealed, wall: u64) -> JournalRecord {
 
 #[test]
 fn concurrent_atomic_append_after_saturated_4096_probe_fails_closed() {
+    genuine_saturated_mixed_prefix_proof(false);
+}
+
+#[test]
+fn sealed_outer_proof_retries_a_genuine_saturated_mixed_prefix_once() {
+    genuine_saturated_mixed_prefix_proof(true);
+}
+
+fn genuine_saturated_mixed_prefix_proof(sealed_retry: bool) {
     let slots = RecordSlots::new();
     let taken = take_node(&slots, "actual-prefix-race-writer").unwrap();
     let node = taken.id;
@@ -254,15 +264,27 @@ fn concurrent_atomic_append_after_saturated_4096_probe_fails_closed() {
         upper_seen: AtomicBool::new(false),
         first_upper: AtomicBool::new(false),
     };
-    let result = verify_stored_chain(&view, node);
+    let result = if sealed_retry {
+        // These original observations include both sides of the mixed append. The
+        // complete retry must retain them; it cannot reset selection observations.
+        let seals = [RecordSeal::of(&sealed.records[299]), RecordSeal::of(&last)];
+        verify_stored_chain_with_seals(&view, node, &seals)
+    } else {
+        verify_stored_chain(&view, node)
+    };
     assert!(view.lower_snapshot.load(Ordering::SeqCst));
     assert!(view.upper_seen.load(Ordering::SeqCst));
     assert_eq!(*view.stages.lock().unwrap(), ["lower_snapshot_captured", "atomic_append_applied", "upper_backend_started", "upper_snapshot_observed"],
         "actual read and atomic Store completion order must establish the two distinct snapshot epochs");
-    assert!(
-        result.unwrap_err().contains("broken hash link or sequence"),
-        "the mixed snapshot must fail specifically at the unchanged hash-link/sequence verifier"
-    );
+    if sealed_retry {
+        result
+            .expect("one fresh complete proof fills the genuine mixed gap and retains both seals");
+    } else {
+        assert!(
+            result.unwrap_err().contains("broken hash link or sequence"),
+            "the cold mixed snapshot must fail specifically at the unchanged hash-link/sequence verifier"
+        );
+    }
     let mut observed = Vec::new();
     fold_stored_records(
         &view.delegate,
