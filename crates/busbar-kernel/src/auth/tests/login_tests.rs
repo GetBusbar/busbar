@@ -107,7 +107,7 @@ fn the_client_secret_is_lent_at_open() {
         &method.module,
         method.browser_login.as_ref(),
         &["client_secret".into()],
-        &crate::config::secret::SecretResolver::builtins_only(),
+        &crate::config::secret::actual_product_resolver(),
         &mut resolved,
     )
     .expect("the declared secret is resolved into the settings lent at open");
