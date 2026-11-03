@@ -17,7 +17,7 @@ use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::planes_tests::{composed_services, PUBLISHING};
-use super::{compose_planes_over, door_routes, DoorEgress, HookStage};
+use super::{compose_planes_over, door_mounts, DoorEgress, HookStage};
 use crate::root::door_steps::{kernel_sections, provider_routes, DoorReach, OutboundAuths};
 use crate::root::loader::dispatch::kinds::plane::Plane;
 use crate::root::loader::dispatch::{
@@ -1188,14 +1188,29 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             );
         })
     };
-    let doors = door_routes(served, pin, &[], &busbar_kernel::base_data_core_lines(&app))
-        .expect("its claims mount");
-    let door_table = doors
+    let mounts = door_mounts(
+        served,
+        pin,
+        &[],
+        &busbar_kernel::base_data_core_lines(&app),
+        &[],
+        &[],
+    )
+    .expect("its claims and dialect refusal handlers mount");
+    let door_table = mounts
+        .routes
         .iter()
         .map(|d| (d.path.clone(), d.method.as_str().to_string(), d.auth))
         .collect();
-    let (router, _admin, _handle) =
-        busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
+    let (router, _admin, _handle) = busbar_kernel::build_split_routers_serving_doors(
+        Arc::clone(&app),
+        mounts.routes,
+        mounts.sessions,
+        mounts.refusals,
+        1 << 20,
+        0,
+        false,
+    );
     Ok(DoorRig {
         router,
         door_table,
