@@ -585,7 +585,8 @@ static REAL: [OnceLock<usize>; 3] = [const { OnceLock::new() }; 3];
 static RECORDING: [OnceLock<usize>; 3] = [const { OnceLock::new() }; 3];
 
 static CONTEXTS: Mutex<Option<HashMap<u64, String>>> = Mutex::new(None);
-static MADE: Mutex<Option<HashMap<usize, usize>>> = Mutex::new(None);
+type RecordedTables = HashMap<(usize, u64), usize>;
+static MADE: Mutex<Option<RecordedTables>> = Mutex::new(None);
 
 fn label_of(ctx: HostCtx) -> String {
     CONTEXTS
@@ -596,19 +597,16 @@ fn label_of(ctx: HostCtx) -> String {
         .unwrap_or_else(|| format!("ctx#{}", ctx.handle))
 }
 
-/// The recording copy of the loader's `real` tables, made once per real tables pointer.
+/// The recording copy of the loader's `real` tables, made once per live host identity.
 ///
 /// # Safety
-/// `real` is NULL or the loader's `HostTables`, valid for the process.
+/// `real` is NULL or the loader's `HostTables`, valid for this call.
 unsafe fn recording_tables(label: &str, real: *const HostTables) -> *const HostTables {
     if real.is_null() {
         return real;
     }
     let mut made = MADE.lock().unwrap_or_else(|p| p.into_inner());
     let made = made.get_or_insert_with(HashMap::new);
-    if let Some(&rec) = made.get(&(real as usize)) {
-        return rec as *const HostTables;
-    }
     // SAFETY: the caller's contract; `size` states how much of the struct the host wrote.
     let size = unsafe { (real as *const u32).read_unaligned() } as usize;
     if size < size_of::<HostTables>() {
@@ -616,6 +614,26 @@ unsafe fn recording_tables(label: &str, real: *const HostTables) -> *const HostT
     }
     // SAFETY: as above.
     let mut t: HostTables = unsafe { real.read_unaligned() };
+    // The loader owns these tables per instance. A later instance may reuse the allocation,
+    // so its current host context must participate in the cache key.
+    let key = (real as usize, t.ctx.handle);
+    if let Some(&rec) = made.get(&key) {
+        // SAFETY: every recorded table is leaked below and remains live for the process.
+        assert_eq!(
+            unsafe { (*(rec as *const HostTables)).ctx.handle },
+            t.ctx.handle
+        );
+        return rec as *const HostTables;
+    }
+    if made
+        .keys()
+        .any(|(at, handle)| *at == key.0 && *handle != key.1)
+    {
+        call(
+            label,
+            "host tables allocation reused with a fresh context".into(),
+        );
+    }
     CONTEXTS
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -628,7 +646,7 @@ unsafe fn recording_tables(label: &str, real: *const HostTables) -> *const HostT
         t.io = recording_table(IO, t.io as *const u8) as *const IoSlots;
     }
     let rec: &'static HostTables = Box::leak(Box::new(t));
-    made.insert(real as usize, rec as *const HostTables as usize);
+    made.insert(key, rec as *const HostTables as usize);
     rec
 }
 
