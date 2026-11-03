@@ -2764,7 +2764,19 @@ impl Inbound {
                     let door = method
                         .and_then(|m| table.doors.door_refusal(&path, &m).cloned())
                         .map(|refuse| (refuse, target));
-                    crate::auth::unauthorized_with_completion_taps(app, &path, door.as_ref())
+                    let admission = head
+                        .as_ref()
+                        .and_then(|head| table.listener.admission(head));
+                    let client_token_present = head.as_ref().is_some_and(|head| {
+                        crate::auth::inbound_candidate(app, &header_map(head)).is_some()
+                    });
+                    crate::auth::scoped_unauthorized_with_completion_taps(
+                        app,
+                        &path,
+                        door.as_ref(),
+                        admission.as_ref(),
+                        client_token_present,
+                    )
                 }
                 _ => return Err(CAUSE_UNKNOWN),
             })

@@ -6,7 +6,7 @@ use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
 use busbar_contract::abi::host::service::{UnitRef, FLOW_STOP, REFUSE_STOPPED};
 use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
 use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
-use busbar_kernel::inbound::{Call, Head, Listener, Refusal, Refuse};
+use busbar_kernel::inbound::{Call, Head, Listener, ListenerScope, Refusal, Refuse};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -147,35 +147,32 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
     let inbound = Arc::clone(crate::root::inbound::host());
     // A typed listener declaration exercises the actual public host API over the
     // normally built application; no auth verifier or Store result is fabricated.
-    inbound
-        .install(
-            7,
-            3,
-            Listener {
-                guests: GuestList::seal(vec![Line {
-                    route: Route {
-                        methods: METHOD_POST,
-                        path_form: PATH_EXACT,
-                        path: "/v1/messages".into(),
-                        fields: Vec::new(),
-                        rung: 0,
-                    },
-                    claimant: Claimant::Plane("inbound-keys-custody".into()),
-                    dialect: 0,
-                    auth: LineAuth::Chain(vec!["keys".into()], AuthPoints::HEAD),
-                    upgrade: None,
-                    offered: AuthPoints::HEAD,
-                }])
-                .expect("the normal host declaration seals"),
-                auths: Default::default(),
-                body_limit: 16,
-                app: Arc::clone(&app),
-                door_refusals: Vec::new(),
-                ids: vec![7000],
-                signed_ingress: Arc::new(|_, _| false),
-                scope: None,
+    let listener = Listener {
+        guests: GuestList::seal(vec![Line {
+            route: Route {
+                methods: METHOD_POST,
+                path_form: PATH_EXACT,
+                path: "/v1/messages".into(),
+                fields: Vec::new(),
+                rung: 0,
             },
-        )
+            claimant: Claimant::Plane("inbound-keys-custody".into()),
+            dialect: 0,
+            auth: LineAuth::Chain(vec!["keys".into()], AuthPoints::HEAD),
+            upgrade: None,
+            offered: AuthPoints::HEAD,
+        }])
+        .expect("the normal host declaration seals"),
+        auths: Default::default(),
+        body_limit: 16,
+        app: Arc::clone(&app),
+        door_refusals: Vec::new(),
+        ids: vec![7000],
+        signed_ingress: Arc::new(|_, _| false),
+        scope: None,
+    };
+    inbound
+        .install(7, 3, listener.clone())
         .expect("the host listener installs");
     let handle = inbound.specs(7, 3).unwrap()[0].auth;
     let head = |fields: Vec<(String, Vec<u8>)>| {
@@ -340,6 +337,93 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
         before + 1,
         "an already-retired unit emits no second refusal event"
     );
+    // The same real verifier refusal must retain its physical plane's challenge, even if the
+    // transport strips its credential or a replacement table changes the current listener.
+    const METADATA: &str = "https://plane.example/.well-known/oauth-protected-resource/mcp";
+    for cause in [
+        REFUSE_STOPPED,
+        busbar_contract::abi::host::service::REFUSE_CHECK_FAILED,
+    ] {
+        for token in [None, Some("not-a-valid-signed-key")] {
+            let mut scoped = listener.clone();
+            scoped.scope = Some(ListenerScope {
+                admission: Arc::new(|_, original| {
+                    (original.target == "/v1/messages").then(|| {
+                        busbar_kernel::plane_driver::dispatch::PlaneAdmission {
+                            audience: "https://plane.example/mcp".into(),
+                            resource_metadata: METADATA.into(),
+                        }
+                    })
+                }),
+                legacy_fallback: false,
+                refuse: None,
+            });
+            inbound.install(7, 3, scoped.clone()).unwrap();
+            let original = token.map_or_else(|| head(Vec::new()), &bearer);
+            let stopped = call(original).await;
+            assert_eq!(stopped.flow, FLOW_STOP);
+            scoped.scope.as_mut().unwrap().admission = Arc::new(|_, _| None);
+            inbound.install(7, 3, scoped).unwrap();
+
+            let before = captured.0.lock().unwrap().len();
+            let got = refuse(cause, 0, stopped.unit, "/another-listeners-path").unwrap();
+            assert_eq!(got.status, 401);
+            let mut challenge = format!("Bearer resource_metadata=\"{METADATA}\"");
+            let body = if token.is_some() {
+                challenge.push_str(", error=\"invalid_token\", error_description=\"Authentication is required for this resource.\"");
+                serde_json::json!({
+                    "error": "invalid_token",
+                    "error_description": "Authentication is required for this resource.",
+                })
+            } else {
+                serde_json::json!({"error": "unauthorized"})
+            };
+            assert!(got.fields.iter().any(|(name, value)| {
+                name == "www-authenticate" && value == challenge.as_bytes()
+            }));
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&got.body).unwrap(),
+                body
+            );
+            assert!(inbound.unit_secret(7, stopped.unit.id).is_none());
+            assert_eq!(captured.0.lock().unwrap().len(), before + 1);
+        }
+    }
+
+    // A mount on a different physical listener must not lend this listener its metadata.
+    let mut elsewhere_app = (*app).clone();
+    elsewhere_app.planes = Arc::new(
+        (*app.planes)
+            .clone()
+            .mount("elsewhere", "/v1/messages", "anthropic")
+            .admit(
+                "elsewhere",
+                busbar_kernel::plane_driver::dispatch::PlaneAdmission {
+                    audience: "https://elsewhere.example/mcp".into(),
+                    resource_metadata: "https://elsewhere.example/metadata".into(),
+                },
+            ),
+    );
+    assert!(elsewhere_app.planes.admission_for("/v1/messages").is_some());
+    let mut private = listener;
+    private.app = Arc::new(elsewhere_app);
+    private.scope = Some(ListenerScope {
+        admission: Arc::new(|_, _| None),
+        legacy_fallback: false,
+        refuse: None,
+    });
+    inbound.install(7, 3, private).unwrap();
+    let stopped = call(bearer("not-a-valid-signed-key")).await;
+    assert_eq!(stopped.flow, FLOW_STOP);
+    let got = refuse(REFUSE_STOPPED, 0, stopped.unit, "/v1/messages").unwrap();
+    assert_eq!(
+        got, want,
+        "a private listener keeps its native fallback bytes"
+    );
+    assert!(!got
+        .fields
+        .iter()
+        .any(|(name, _)| name == "www-authenticate"));
     println!("{WITNESS}");
 }
 

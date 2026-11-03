@@ -1868,6 +1868,16 @@ pub(crate) fn unauthorized_with_completion_taps(
     path: &str,
     door: Option<&RefusalDoor>,
 ) -> Response {
+    scoped_unauthorized_with_completion_taps(app, path, door, None, false)
+}
+
+pub(crate) fn scoped_unauthorized_with_completion_taps(
+    app: &std::sync::Arc<crate::state::App>,
+    path: &str,
+    door: Option<&RefusalDoor>,
+    admission: Option<&crate::plane_driver::dispatch::PlaneAdmission>,
+    client_token_present: bool,
+) -> Response {
     let proto = crate::ingress::native::envelope_dialect(ingress_for_path(app, path));
     if !app.tap_hooks_response.is_empty() {
         let shape = crate::hooks::taps::StageShape::zeroed(app.next_request_id(), "", proto, false);
@@ -1891,7 +1901,12 @@ pub(crate) fn unauthorized_with_completion_taps(
             &|groups: &[String]| host.caller_in_hook_groups(None, groups),
         );
     }
-    unauthorized_response(app, path, door)
+    identity_refusal_response(
+        IdentityRefusal::Denied,
+        admission,
+        client_token_present,
+        || unauthorized_response(app, path, door),
+    )
 }
 
 pub(crate) fn verifier_unavailable_response() -> Response {
