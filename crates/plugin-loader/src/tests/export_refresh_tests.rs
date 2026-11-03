@@ -243,7 +243,9 @@ mod pending_boundary {
         }
         fn close(&mut self) {
             if let Some(stream) = self.stream.take() {
-                let _ = self.host.connector(self.ticket).close(stream);
+                // Close is ticketless, so it cannot replay a completed service handle.
+                // The production host routes it through this stream's creating authority.
+                let _ = self.host.connector(Ticket::NONE).close(stream);
             }
         }
     }
