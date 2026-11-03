@@ -2359,8 +2359,36 @@ fn observed(
     ))
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static TEST_SLOT_OVERRIDE: std::cell::Cell<Option<fn(&mut [Op])>> = const { std::cell::Cell::new(None) };
+}
+
+/// Scope an adversarial ABI boundary around a real image at bind, before its slots are shared.
+#[cfg(test)]
+pub(crate) fn with_test_slot_override<R>(change: fn(&mut [Op]), bind: impl FnOnce() -> R) -> R {
+    struct Restore(Option<fn(&mut [Op])>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_SLOT_OVERRIDE.with(|slot| slot.set(self.0));
+        }
+    }
+    let _restore = Restore(TEST_SLOT_OVERRIDE.with(|slot| slot.replace(Some(change))));
+    bind()
+}
+
 impl<K: Kind> Plugin<K> {
     pub(crate) fn bind(v: Validated, lib: Option<Lib>, bind: Bind) -> Result<Self, LoadError> {
+        #[cfg(test)]
+        let v = {
+            let mut v = v;
+            TEST_SLOT_OVERRIDE.with(|slot| {
+                if let Some(change) = slot.get() {
+                    change(&mut v.slots);
+                }
+            });
+            v
+        };
         let st = v.statement;
         let families = (0..st.families_len)
             .map(|i| {
