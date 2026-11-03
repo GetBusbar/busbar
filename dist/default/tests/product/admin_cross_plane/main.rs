@@ -26,7 +26,9 @@ pub(crate) fn ensure_seam() {
     SEAM_ONCE.call_once(|| {
         root_install::install();
 
-        linked::install();
+        // The real composition root already registered its linked planes.
+        // Installing the standalone plane-test registry here would register a
+        // second composition root before the document can be generated.
         busbar_core_admin::install();
     });
 }
