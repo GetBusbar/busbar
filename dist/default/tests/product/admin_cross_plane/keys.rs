@@ -3994,7 +3994,7 @@ async fn test_admin_v1_identity_provider_delete_rejects_a_dangling_reference() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-fn publish_door(section: &str, settings: &str) -> ServeTables {
+fn try_publish_door(section: &str, settings: &str) -> Result<ServeTables, String> {
     use busbar_plugin_loader::dispatch::kinds::plane::{open_door, Plane};
     use busbar_plugin_loader::dispatch::{
         load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
@@ -4022,7 +4022,7 @@ fn publish_door(section: &str, settings: &str) -> ServeTables {
             (plane.served().section == owner.config_section).then_some((instance, plane))
         })
         .expect("the owning plane's door is test-linked");
-    let snapshot = open_door(&plane, settings.as_bytes(), b"", None).expect("the door opens");
+    let snapshot = open_door(&plane, settings.as_bytes(), b"", None)?;
     let routes = snapshot
         .admin_routes
         .iter()
@@ -4051,13 +4051,36 @@ fn publish_door(section: &str, settings: &str) -> ServeTables {
             &[],
         )
         .expect("its admin routes publish");
-    tables
+    Ok(tables)
+}
+
+fn publish_door(section: &str, settings: &str) -> ServeTables {
+    try_publish_door(section, settings).expect("the door opens")
+}
+
+fn assert_passthrough_is_refused_before_publication() {
+    // This original registration formerly reached connect's 400 guard. The product now rejects
+    // credential forwarding while OPEN reads the section, before any route can be published.
+    let error = match try_publish_door(
+        "tools",
+        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "cert_spki", "key": "sha256/l5WGzHWyALvI/qjcwI1ctxb3Jp8+8Ztd0NTYTcL0Q4s="}, "upstream_credentials": "passthrough", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("a passthrough registration must not publish an admin route"),
+    };
+    assert!(
+        error.contains("upstream_credentials: passthrough"),
+        "{error}"
+    );
+    assert!(error.contains("is refused"), "{error}");
+    assert!(error.contains("caller"), "{error}");
 }
 
 async fn drive_door_verb_errors() {
+    assert_passthrough_is_refused_before_publication();
     let tables = publish_door(
         "tools",
-        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "cert_spki", "key": "sha256/l5WGzHWyALvI/qjcwI1ctxb3Jp8+8Ztd0NTYTcL0Q4s="}, "upstream_credentials": "passthrough", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
+        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "cert_spki", "key": "sha256/l5WGzHWyALvI/qjcwI1ctxb3Jp8+8Ztd0NTYTcL0Q4s="}, "upstream_credentials": "own", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
     );
     let (_dir, _overlay, addr, handle) = named_map_app_serving("door-verbs", tables).await;
     let client = reqwest::Client::new();
@@ -4080,21 +4103,19 @@ async fn drive_door_verb_errors() {
     let r = send(reqwest::Method::POST, "/tools/base-tools/connect")
         .await
         .unwrap();
-    assert_eq!(r.status(), 400);
+    assert_eq!(r.status(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(
-        body.pointer("/error/code").unwrap(),
-        "invalid_request",
-        "{body}"
-    );
+    assert_eq!(body.get("name").unwrap(), "base-tools", "{body}");
+    assert!(body.get("error").is_none(), "{body}");
     handle.abort();
 }
 
 #[tokio::test]
 async fn a_door_admin_route_is_served_only_by_the_generation_lent_its_table() {
+    assert_passthrough_is_refused_before_publication();
     let tables = publish_door(
         "tools",
-        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "cert_spki", "key": "sha256/l5WGzHWyALvI/qjcwI1ctxb3Jp8+8Ztd0NTYTcL0Q4s="}, "upstream_credentials": "passthrough", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
+        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "cert_spki", "key": "sha256/l5WGzHWyALvI/qjcwI1ctxb3Jp8+8Ztd0NTYTcL0Q4s="}, "upstream_credentials": "own", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
     );
     let (lent_dir, _lent_overlay, lent, lent_handle) =
         named_map_app_serving("door-table-lent", tables).await;
@@ -4112,12 +4133,9 @@ async fn a_door_admin_route_is_served_only_by_the_generation_lent_its_table() {
     let r = connect(lent).await.unwrap();
     let status = r.status().as_u16();
     let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(status, 400, "the lent generation serves the door: {body}");
-    assert_eq!(
-        body.pointer("/error/code").unwrap(),
-        "invalid_request",
-        "{body}"
-    );
+    assert_eq!(status, 200, "the lent generation serves the door: {body}");
+    assert_eq!(body.get("name").unwrap(), "base-tools", "{body}");
+    assert!(body.get("error").is_none(), "{body}");
     let r = connect(unlent).await.unwrap();
     let status = r.status().as_u16();
     let body: serde_json::Value = r.json().await.unwrap();
