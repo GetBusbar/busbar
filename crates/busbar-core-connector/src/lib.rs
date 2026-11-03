@@ -2583,7 +2583,6 @@ impl Connector {
     }
 
     /// A session's upstream offer mirrors metadata learned from its actual caller association.
-
     pub async fn wait_session_opening(&self, unit: u64) -> Result<(), ConnError> {
         let pairing = self.pairs.lock().expect("pairs").get(&unit).cloned();
         match pairing {

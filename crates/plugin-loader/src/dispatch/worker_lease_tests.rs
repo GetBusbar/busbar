@@ -245,7 +245,6 @@ fn settled_unpolled_reply_releases_under_its_captured_scope_outside_both_locks()
 }
 
 /// CLOSE crosses to a permanent FFI worker before its synchronous host callback. This raw
-
 #[test]
 fn close_host_callback_keeps_the_submitted_framing_scope_outside_both_locks() {
     use crate::dispatch::auth_handle::{

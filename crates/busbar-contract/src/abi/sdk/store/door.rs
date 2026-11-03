@@ -1057,7 +1057,6 @@ slot!(
     }
 );
 /// A completed scan retained across the host's one buffer-size recall. No host buffer or
-
 struct RetainedRecordScan {
     ticket: Ticket,
     schema: String,

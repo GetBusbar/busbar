@@ -117,7 +117,6 @@ pub struct PluginRouteTable {
 
 impl PluginRouteTable {
     /// Exact opened export instances whose complete public surface was withheld
-
     pub fn public_export_withheld(&self, instance: &str) -> bool {
         self.withheld_public_exports.contains(instance)
     }

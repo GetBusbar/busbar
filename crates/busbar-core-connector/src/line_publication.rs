@@ -621,7 +621,6 @@ impl Pairing {
     }
 
     /// Await actual publication quiescence, or explicit terminal failure. Intermediate metadata
-
     pub async fn published(&self) -> PublicationOutcome {
         loop {
             let changed = self.publication_completed.notified();

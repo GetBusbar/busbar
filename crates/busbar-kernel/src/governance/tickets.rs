@@ -77,7 +77,6 @@ impl GovState {
     }
 
     /// Offload the durable spend after a host has claimed its linear custody. Cancellation
-
     pub async fn redeem_verified_ticket_async(
         self: &Arc<Self>,
         identity: VerifiedTicketIdentity,
@@ -129,7 +128,6 @@ impl GovState {
     }
 
     /// Bind host-owned custody after the opaque record is kept, before publishing a credential.
-
     #[allow(clippy::too_many_arguments)]
     pub fn mint_ticket_bound(
         &self,
@@ -227,7 +225,6 @@ impl GovState {
     }
 
     /// Spend a prepared identity after the host has claimed custody and released its locks.
-
     pub fn redeem_verified_ticket(
         &self,
         identity: VerifiedTicketIdentity,

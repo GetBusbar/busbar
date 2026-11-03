@@ -407,7 +407,6 @@ pub trait DeclaredConns: Conns {
     }
 
     /// Declare member programs for a successor of the same loaded instance's CURRENT published
-
     fn declare_member_programs_from(
         &self,
         predecessor: InstanceId,

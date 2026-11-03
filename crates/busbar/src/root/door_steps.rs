@@ -4027,7 +4027,6 @@ fn member_tls_section_refusal(section: &serde_yaml::Value) -> Result<(), String>
 }
 
 /// Read the explicitly selected member TLS bundle; its certificate material is public,
-
 fn registration_ca_anchors(
     entry: &str,
     registration: &serde_yaml::Value,

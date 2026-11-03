@@ -63,7 +63,6 @@ fn an_op_on_no_ticket_may_not_pend_or_connect() {
 }
 
 /// The typed continuation owns its request across a PENDING boundary. Durable
-
 #[test]
 fn a_parked_rewrap_request_owns_its_exact_fields_after_caller_buffers_are_dropped() {
     use crate::abi::sdk::store::rewrap;

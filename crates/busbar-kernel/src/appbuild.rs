@@ -483,7 +483,6 @@ pub trait RootRules: Send + Sync {
     fn destinations_applied(&self, _destinations: &config::Destinations) {}
 
     /// Move host-owned, single-use admission custody before durable ticket redemption.
-
     fn claim_ticket_admission(
         &self,
         _identity: &crate::host_services::VerifiedTicketIdentity,

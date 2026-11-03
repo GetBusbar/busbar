@@ -2226,7 +2226,6 @@ fn routes_of(
 }
 
 /// A route synthesized from the catalog and a matching declared secondary kind are host facts.
-
 fn seal_secondary_scopes(
     facts: &mut DoorFacts,
     scope_kinds: &[&str],

@@ -469,7 +469,6 @@ impl ConnState {
     }
 
     /// Detach only the candidate's resources. Dropping the returned owner closes connections
-
     pub(crate) fn retire_binding(
         &self,
         binding: &Arc<super::export_bindings::Generation>,

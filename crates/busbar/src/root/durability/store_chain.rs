@@ -410,7 +410,6 @@ impl AuditGroup {
 }
 
 /// Recovery records have immutable addresses and bytes. Unlike an arbitrary mutation, a retry
-
 fn put_immutable_record(
     calls: &dyn StoreCalls,
     lease: &HeldLease,
@@ -654,7 +653,6 @@ fn visit_journal_pages(
 }
 
 /// Fold bounded Store pages in key order. Neither a node's journal nor its historical bodies
-
 pub(super) fn fold_stored_records(
     calls: &dyn StoreCalls,
     node: u64,
@@ -842,7 +840,6 @@ impl RecordSeal {
 }
 
 /// The same sealed hash/sequence authority as the ordinary journal reader, folded without a
-
 pub(super) fn verify_stored_chain(calls: &dyn StoreCalls, node: u64) -> Result<(), String> {
     verify_stored_chain_once(calls, node, &[], None).map_err(ChainProofFailure::reason)
 }
@@ -895,7 +892,6 @@ fn extend_chain_digest(digest: [u8; 32], point: ChainPoint) -> [u8; 32] {
 }
 
 /// The sole retry belongs to this entire sealed-node proof. Original requested seals remain
-
 pub(super) fn verify_stored_chain_with_seals(
     calls: &dyn StoreCalls,
     node: u64,

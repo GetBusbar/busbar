@@ -62,7 +62,6 @@ pub fn requests_settled(reached_admitted: bool, drawn: u32) -> u32 {
 }
 
 /// A receipt changes only the request quantity; origin, usage and the real hold remain intact.
-
 pub(crate) fn requests_drawn_with_lineage(
     ctx: &crate::teller::UnitCtx,
     principal: &busbar_contract::caps::PrincipalId,

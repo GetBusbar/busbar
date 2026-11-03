@@ -440,7 +440,6 @@ pub struct InstanceFacts {
 }
 
 /// Verified, in-process ticket identity. Its credential remains host-private and zeroised.
-
 pub struct VerifiedTicketIdentity {
     pub(crate) id: String,
     pub(crate) principal: Arc<busbar_contract::records::VirtualKey>,
@@ -477,7 +476,6 @@ impl std::fmt::Debug for VerifiedTicketIdentity {
 }
 
 /// Host policy classifies an authenticated ticket before its durable single-use spend.
-
 pub enum TicketClaimDisposition {
     Ordinary,
     Reserved(crate::plane_driver::TicketReservation),
@@ -509,7 +507,6 @@ impl std::fmt::Debug for HostTicketAdmission {
 
 pub trait TicketPress: Send + Sync {
     /// Mint with the host's exact admitted unit and caller identity. Reservation-aware presses
-
     #[allow(clippy::too_many_arguments)]
     fn mint_for_unit(
         &self,

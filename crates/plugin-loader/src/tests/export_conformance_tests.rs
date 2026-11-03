@@ -633,7 +633,6 @@ fn actual_file_streams_match_its_product_statement() {
 }
 
 /// The loader compares ingested envelopes. Rendering the resulting exposition
-
 #[test]
 fn the_rendered_exposition_equivalence_is_owed_at_the_composition_root() {}
 

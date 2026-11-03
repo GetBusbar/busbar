@@ -1571,7 +1571,6 @@ async fn nested_anonymous_admission_matches_the_arrival_rule() {
 }
 
 /// A real governor admission and matching admitted cell, kept separate from the custody state
-
 struct ReservedSource {
     owner: super::TicketSourceOwner,
     money: Arc<PlaneMoney>,

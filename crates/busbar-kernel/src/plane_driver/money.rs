@@ -106,7 +106,6 @@ pub struct ParentMoney {
 }
 
 /// One actual admission reserved for a later child. Its financial participation is linear:
-
 pub struct ReservationMoney {
     money: Arc<UnitMoney>,
     grant: Arc<AdmitGrant>,
@@ -422,7 +421,6 @@ impl PlaneMoney {
     }
 
     /// Capture a live, governor-backed parent for an already authenticated matching key.
-
     pub fn parent_money(
         &self,
         parent: UnitKey,
@@ -449,7 +447,6 @@ impl PlaneMoney {
     }
 
     /// Reserve real admission custody while the original unit remains live. The reservation
-
     pub fn reserve_admission(
         &self,
         parent: UnitKey,
@@ -510,7 +507,6 @@ impl PlaneMoney {
     }
 
     /// Consume a real reserved admission once, without another governor admission. Errors
-
     pub fn adopt_reserved(
         &self,
         reservation: ReservationMoney,
@@ -575,7 +571,6 @@ impl PlaneMoney {
     }
 
     /// Verify a unit's own governor admission at the teller's terminal authority check.
-
     pub fn validate_admitted(
         &self,
         unit: UnitKey,
@@ -596,7 +591,6 @@ impl PlaneMoney {
     }
 
     /// A registered child keeps its real admission after the parent closes. The driver marks
-
     pub fn validate_child(
         &self,
         parent: &ParentMoney,
@@ -621,7 +615,6 @@ impl PlaneMoney {
     }
 
     /// Register ordinary child usage under the actual parent's admission and rate era.
-
     pub fn open_child(
         &self,
         parent: &ParentMoney,
