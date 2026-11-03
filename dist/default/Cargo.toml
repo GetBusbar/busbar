@@ -894,8 +894,8 @@ busbar-transport-ws = { git = "https://git.getbusbar.dev/GetBusbar/busbar-transp
 busbar-export-webhook-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-webhook", rev = "b5a99a53a5f64940f596e9d19879d473dd6560fd" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
-busbar-transport-tcp = { git = "https://git.getbusbar.dev/GetBusbar/busbar-transport-tcp", rev = "6c804d968737f39ea435c81ef22d16cd7ffcaf59" }
-busbar-transport-tcp-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-transport-tcp", rev = "6c804d968737f39ea435c81ef22d16cd7ffcaf59" }
+busbar-transport-tcp = { git = "https://git.getbusbar.dev/GetBusbar/busbar-transport-tcp", rev = "7cdbb13a62e15216fd9d2b89ef42c3646b6c2a72" }
+busbar-transport-tcp-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-transport-tcp", rev = "7cdbb13a62e15216fd9d2b89ef42c3646b6c2a72" }
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
 # (feature `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split). The pin ranks
 # 1.5.5's `bearer` and `api-key` first (arch-audit u29 F1, busbar-auth-header #35).
