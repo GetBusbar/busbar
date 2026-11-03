@@ -1368,6 +1368,7 @@ pub(super) mod session_door {
     const REALTIME: &str = "/v1/realtime?model=m-cap";
 
     const SIGNAL: &str = "/v1/realtime/calls";
+    const PROVIDER_CALL_ID: &str = "rtc_provider0001";
 
     const PUBLIC: &str = "http://gw.test";
 
@@ -1627,9 +1628,9 @@ pub(super) mod session_door {
                         "application/json"
                     };
                     let location = if body.starts_with("v=0") {
-                        "location: /v1/realtime/calls/rtc_provider0001\r\n"
+                        format!("location: {SIGNAL}/{PROVIDER_CALL_ID}\r\n")
                     } else {
-                        ""
+                        String::new()
                     };
                     let reply = format!(
                         "HTTP/1.1 {line}\r\ncontent-type: {kind}\r\n{location}content-length: {}\r\n\
@@ -3642,7 +3643,9 @@ pub(super) mod session_door {
             .await
             .expect("the sideband dials the provider");
         assert!(
-            dial.starts_with(&format!("DIAL GET /v1/realtime?call_id={PLACED_CALL} ")),
+            dial.starts_with(&format!(
+                "DIAL GET /v1/realtime?call_id={PROVIDER_CALL_ID} "
+            )),
             "the sideband attaches to the call it names: {dial}"
         );
         let carried = next_report(&mut s.heard)
@@ -3663,11 +3666,9 @@ pub(super) mod session_door {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_session_door_dials_the_session_models_upstream_name() {
         let _one = PUBLISHING.lock().await;
-        let far_end = far_calls_and_socket().await;
         let mut s = session_with(
             "serve-door-session-upstream",
             Opts {
-                far_end: Some(far_end),
                 upstream_model: Some("gpt-realtime-wire"),
                 ..Opts::default()
             },
