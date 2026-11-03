@@ -4115,7 +4115,7 @@ fn publish_door(section: &str, settings: &str) -> ServeTables {
 async fn drive_door_verb_errors() {
     let tables = publish_door(
         "tools",
-        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "pinned_pubkey", "key": "sha256/K="}, "upstream_credentials": "passthrough", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
+        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "cert_spki", "key": "sha256/l5WGzHWyALvI/qjcwI1ctxb3Jp8+8Ztd0NTYTcL0Q4s="}, "upstream_credentials": "passthrough", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
     );
     let (_dir, _overlay, addr, handle) = named_map_app_serving("door-verbs", tables).await;
     let client = reqwest::Client::new();
@@ -4152,7 +4152,7 @@ async fn drive_door_verb_errors() {
 async fn a_door_admin_route_is_served_only_by_the_generation_lent_its_table() {
     let tables = publish_door(
         "tools",
-        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "pinned_pubkey", "key": "sha256/K="}, "upstream_credentials": "passthrough", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
+        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "cert_spki", "key": "sha256/l5WGzHWyALvI/qjcwI1ctxb3Jp8+8Ztd0NTYTcL0Q4s="}, "upstream_credentials": "passthrough", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
     );
     let (lent_dir, _lent_overlay, lent, lent_handle) =
         named_map_app_serving("door-table-lent", tables).await;
