@@ -2595,6 +2595,7 @@ fn test_hook_on_error_terminating_chain_ok() {
 
 #[test]
 fn test_hook_reserved_name_rejected() {
+    crate::dist_root_install::install();
     for reserved in [
         "weighted",
         "cheapest",
@@ -3077,7 +3078,7 @@ fn priced_entry() -> config::RateEntryCfg {
 fn present_tools_section() -> Box<dyn busbar_kernel::config::plane_sections::PlaneCfg> {
     let key = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
     let written: serde_yaml::Value =
-        serde_yaml::from_str("a-tool-server:\n  url: \"https://tools.example.com/rpc\"\n")
+        serde_yaml::from_str("a-tool-server:\n  url: \"https://tools.example.com/rpc\"\n  pin: { mechanism: unpinned }\n")
             .expect("yaml");
     let deploy = config::deploy_from_deserializer(serde_json::json!({
         "providers": {}, "models": {}, "auth": { "chain": [], "admin_auth": [] },
@@ -3093,6 +3094,26 @@ fn present_tools_section() -> Box<dyn busbar_kernel::config::plane_sections::Pla
     section
 }
 
+fn rate_card_for_actual_plane(
+    mut card: std::collections::BTreeMap<String, config::RateEntryCfg>,
+) -> std::collections::BTreeMap<String, config::RateEntryCfg> {
+    let plane = busbar_kernel::plane_driver::registry::plane_decl_for(
+        busbar_kernel::plane_driver::dispatch::fallback_key(),
+    )
+    .expect("the actual fallback plane is registered");
+    let zero = serde_json::from_value(serde_json::json!(0)).expect("an exact free unit rate");
+    for entry in card.values_mut() {
+        for class in plane.billable_classes {
+            if !busbar_contract::records::RESERVED_UNITS.contains(&class.class)
+                && !plane.fee_units.contains(&class.class)
+            {
+                entry.units.entry(class.class.to_owned()).or_insert(zero);
+            }
+        }
+    }
+    card
+}
+
 fn rate_card_of(entries: &[&str]) -> std::collections::BTreeMap<String, config::RateEntryCfg> {
     entries
         .iter()
@@ -3103,7 +3124,9 @@ fn rate_card_of(entries: &[&str]) -> std::collections::BTreeMap<String, config::
 #[test]
 fn test_validate_rate_card_completeness_fails_closed_with_paste_stub() {
     let mut cfg = cost_cfg(&["claude-opus-4"]);
-    cfg.rate_card = Some(rate_card_of(&["some-other-model"]));
+    cfg.rate_card = Some(rate_card_for_actual_plane(rate_card_of(&[
+        "some-other-model",
+    ])));
     let errs =
         validate(&cfg).expect_err("a configured model without a rate entry must fail validation");
     let joined = errs.join("\n");
@@ -3125,7 +3148,7 @@ fn test_validate_rate_card_completeness_fails_closed_with_paste_stub() {
     );
 
     let mut cfg_ok = cost_cfg(&["claude-opus-4"]);
-    cfg_ok.rate_card = Some(rate_card_of(&["claude-opus-4"]));
+    cfg_ok.rate_card = Some(rate_card_for_actual_plane(rate_card_of(&["claude-opus-4"])));
     assert!(
         validate(&cfg_ok).is_ok(),
         "a complete rate card passes; got: {:?}",
@@ -3139,7 +3162,9 @@ fn test_validate_rate_card_completeness_fails_closed_with_paste_stub() {
 #[test]
 fn test_validate_unpriced_class_with_billing_on_refuses_boot() {
     let mut cfg = cost_cfg(&["claude-opus-4"]);
-    cfg.rate_card = Some(rate_card_of(&["some-priced-model"]));
+    cfg.rate_card = Some(rate_card_for_actual_plane(rate_card_of(&[
+        "some-priced-model",
+    ])));
     cfg.models
         .insert("some-priced-model".to_string(), make_model("p", 10));
     let errs = validate(&cfg)
@@ -3182,7 +3207,9 @@ fn test_validate_rate_card_refuses_a_rate_the_card_cannot_hold() {
             "output_utok" => entry.output_utok = v,
             _ => entry.cache_write_utok = v,
         }
-        cfg.rate_card = Some([("m".to_string(), entry)].into_iter().collect());
+        cfg.rate_card = Some(rate_card_for_actual_plane(
+            [("m".to_string(), entry)].into_iter().collect(),
+        ));
         let errs = validate(&cfg).expect_err("a rate the card cannot hold must refuse boot");
         let want = format!("rate_card['m'].{tier} = {v} micro-units per token is a rate the card");
         assert!(
@@ -3195,7 +3222,9 @@ fn test_validate_rate_card_refuses_a_rate_the_card_cannot_hold() {
     let mut entry = priced_entry();
     entry.input_utok = 0.001;
     entry.cache_read_utok = 0.0;
-    cfg.rate_card = Some([("m".to_string(), entry)].into_iter().collect());
+    cfg.rate_card = Some(rate_card_for_actual_plane(
+        [("m".to_string(), entry)].into_iter().collect(),
+    ));
     assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
 }
 
@@ -3203,7 +3232,7 @@ fn test_validate_rate_card_refuses_a_rate_the_card_cannot_hold() {
 fn test_validate_rate_card_stubs_every_missing_model() {
     let mut cfg = cost_cfg(&["alpha", "long-model-name"]);
 
-    cfg.rate_card = Some(rate_card_of(&[]));
+    cfg.rate_card = Some(rate_card_for_actual_plane(rate_card_of(&[])));
     let errs = validate(&cfg).expect_err("two unpriced models must fail validation");
     let joined = errs.join("\n");
     assert!(
@@ -3223,14 +3252,14 @@ fn test_validate_rate_card_keyed_by_config_name_not_upstream() {
     let mut cfg = cost_cfg(&["smart"]);
     cfg.models.get_mut("smart").unwrap().upstream_model = Some("gpt-5".to_string());
 
-    cfg.rate_card = Some(rate_card_of(&["smart"]));
+    cfg.rate_card = Some(rate_card_for_actual_plane(rate_card_of(&["smart"])));
     assert!(
         validate(&cfg).is_ok(),
         "the card is keyed by config model name; got: {:?}",
         validate(&cfg)
     );
 
-    cfg.rate_card = Some(rate_card_of(&["gpt-5"]));
+    cfg.rate_card = Some(rate_card_for_actual_plane(rate_card_of(&["gpt-5"])));
     let errs = validate(&cfg).expect_err("pricing the upstream name must fail");
     let joined = errs.join("\n");
     assert!(
@@ -3246,16 +3275,18 @@ fn test_validate_rate_card_keyed_by_config_name_not_upstream() {
 #[test]
 fn test_validate_rate_card_rejects_nan_and_negative_rates() {
     let mut cfg = cost_cfg(&["m"]);
-    cfg.rate_card = Some(std::collections::BTreeMap::from([(
-        "m".to_string(),
-        config::RateEntryCfg {
-            input_utok: f64::NAN,
-            output_utok: -1.0,
-            cache_read_utok: f64::INFINITY,
-            cache_write_utok: 0.0,
-            ..Default::default()
-        },
-    )]));
+    cfg.rate_card = Some(rate_card_for_actual_plane(
+        std::collections::BTreeMap::from([(
+            "m".to_string(),
+            config::RateEntryCfg {
+                input_utok: f64::NAN,
+                output_utok: -1.0,
+                cache_read_utok: f64::INFINITY,
+                cache_write_utok: 0.0,
+                ..Default::default()
+            },
+        )]),
+    ));
     let errs = validate(&cfg).expect_err("NaN/negative/infinite rates must fail");
     let joined = errs.join("\n");
     assert!(joined.contains("rate_card['m'].input_utok"), "{joined}");
@@ -3300,7 +3331,9 @@ fn test_rate_card_open_class_grammar_is_exact_and_refuses_a_reserved_class() {
     );
 
     let mut cfg = cost_cfg(&["m"]);
-    cfg.rate_card = Some(parse("m: { input_utok: 1, units: { output: 5 } }\n").expect("parses"));
+    cfg.rate_card = Some(rate_card_for_actual_plane(
+        parse("m: { input_utok: 1, units: { output: 5 } }\n").expect("parses"),
+    ));
     let joined = validate(&cfg)
         .expect_err("a reserved class under units: must fail")
         .join("\n");
@@ -3331,7 +3364,7 @@ fn test_validate_all_zero_rate_card_warns_but_does_not_fail() {
         "free-by-accident".to_string(),
         config::RateEntryCfg::default(),
     );
-    cfg.rate_card = Some(card);
+    cfg.rate_card = Some(rate_card_for_actual_plane(card));
 
     let cap = WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
@@ -3362,7 +3395,7 @@ fn test_validate_rate_card_entry_omitting_a_tier_is_accepted_and_bills_that_clas
     let card: std::collections::BTreeMap<String, config::RateEntryCfg> =
         serde_yaml::from_str("claude-sonnet:\n  input_utok: 3.0\n  output_utok: 15.0\n")
             .expect("the two-tier card must parse");
-    cfg.rate_card = Some(card);
+    cfg.rate_card = Some(rate_card_for_actual_plane(card));
 
     assert!(
         validate(&cfg).is_ok(),
@@ -3420,7 +3453,7 @@ fn test_validate_rate_card_entry_with_explicit_zero_tiers_is_free_not_unpriced()
          cache_write_utok: 0.0\n",
     )
     .expect("the four-tier card must parse");
-    cfg.rate_card = Some(card);
+    cfg.rate_card = Some(rate_card_for_actual_plane(card));
 
     assert!(
         validate(&cfg).is_ok(),
@@ -3438,7 +3471,7 @@ fn test_validate_rate_card_entry_all_four_explicit_zeros_still_only_warns() {
          cache_write_utok: 0.0\n",
     )
     .expect("the all-zero card must parse");
-    cfg.rate_card = Some(card);
+    cfg.rate_card = Some(rate_card_for_actual_plane(card));
     assert!(
         validate(&cfg).is_ok(),
         "an EXPLICITLY all-zero entry is a deliberate free model: {:?}",
@@ -3449,10 +3482,9 @@ fn test_validate_rate_card_entry_all_four_explicit_zeros_still_only_warns() {
 #[test]
 fn test_validate_allows_a_flat_card_beside_a_plane_with_no_card_of_its_own() {
     let mut cfg = cost_cfg(&["claude-sonnet"]);
-    cfg.rate_card = Some(std::collections::BTreeMap::from([(
-        "claude-sonnet".to_string(),
-        priced_entry(),
-    )]));
+    cfg.rate_card = Some(rate_card_for_actual_plane(
+        std::collections::BTreeMap::from([("claude-sonnet".to_string(), priced_entry())]),
+    ));
     cfg.plane_defs.insert(
         busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
         present_tools_section(),
@@ -3776,8 +3808,8 @@ fn test_validate_role_binding_reserved_role_name_rejected() {
             .any(|e| e.contains("role_bindings.keys") && e.contains("reserved"))
     };
     assert!(
-        !validate(&cfg).err().is_some_and(|errs| reserved(&errs)),
-        "no operator row, no operator principal to shadow: {:?}",
+        validate(&cfg).err().is_some_and(|errs| reserved(&errs)),
+        "the operator principal remains reserved without an active operator row: {:?}",
         validate(&cfg)
     );
 }
@@ -3858,6 +3890,7 @@ fn test_validate_secret_module_resolvability() {
 }
 
 fn resolve_yaml(yaml: &str) -> Result<RootCfg, Vec<String>> {
+    crate::dist_root_install::install();
     let deploy: config::DeployCfg =
         serde_yaml::from_str(yaml).expect("the test DeployCfg yaml must parse");
     let def: config::ProviderDef = serde_yaml::from_str(&format!(
@@ -4407,25 +4440,31 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
         struct Fields {
             message: String,
             diag: String,
+            context: String,
         }
         impl tracing::field::Visit for Fields {
             fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
                 match field.name() {
                     "message" => self.message = format!("{value:?}"),
                     "diag" => self.diag = format!("{value:?}"),
-                    _ => {}
+                    _ => self
+                        .context
+                        .push_str(&format!(" {}={value:?}", field.name())),
                 }
             }
             fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
                 match field.name() {
                     "message" => self.message = value.into(),
                     "diag" => self.diag = value.into(),
-                    _ => {}
+                    _ => self
+                        .context
+                        .push_str(&format!(" {}={value:?}", field.name())),
                 }
             }
         }
         let mut fields = Fields::default();
         event.record(&mut fields);
+        fields.message.push_str(&fields.context);
         if !fields.diag.is_empty() {
             fields.message.push_str(&format!(" diag={}", fields.diag));
         }
