@@ -1824,6 +1824,20 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
         );
         std::fs::write(directory.join("ranking.tar.gz"), ranking_archive)
             .expect("stage the actual signed Ranking product");
+        let oidc_path = super::plugins::token_verifier_cdylib_path()
+            .expect("the lockout witness requires the actual OIDC product");
+        let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
+            .expect("the actual OIDC statement reads")
+            .expect("the actual OIDC product states its door");
+        let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+            .expect("the actual OIDC statement parses")
+            .name;
+        crate::test_common::credentials::install_auth_plugin(
+            &directory,
+            &oidc_module,
+            "test-scope-module",
+            true,
+        );
         let settings = crate::root::test_plugins::application_store_settings(&directory);
         let mut document = serde_json::json!({"groups": {"team": {"enabled": true, "limits": []}}, "hooks": {"basehook": {"kind":"gate","module":"hooks-ranking","settings":{"policy":"cheapest"},"timeout_ms":25,"on_error":"reject"}}});
         document["providers"] = serde_json::json!({});
@@ -1831,10 +1845,16 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
         document["plugins"] =
             super::plugins::config_document(&super::plugins::trusted_config(&directory));
-        document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
+        document["auth"] =
+            serde_json::json!({"chain": [], "admin_auth": ["test-scope-module", "admin-tokens"]});
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
+        document["identity-providers"]["test-scope-module"] = serde_json::json!({
+            "module": oidc_module,
+            "settings": crate::test_common::credentials::settings("admin-lockout-witness"),
+            "max_admin_scope": "full",
+        });
         document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
         let deploy = busbar_kernel::config::deploy_from_deserializer(document)
             .expect("the actual admin deployment parses");
