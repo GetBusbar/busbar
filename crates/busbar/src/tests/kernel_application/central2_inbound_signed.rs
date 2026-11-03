@@ -95,7 +95,7 @@ fn sign_fixture(
     let service_key = hmac_sha256(region_key.as_ref(), service.as_bytes());
     let signing_key = hmac_sha256(service_key.as_ref(), b"aws4_request");
     let signature = hmac_sha256(signing_key.as_ref(), string_to_sign.as_bytes());
-    (hex::encode(signature.as_ref()), signed_headers)
+    (hex::encode(&signature[..]), signed_headers)
 }
 
 #[tokio::test]
