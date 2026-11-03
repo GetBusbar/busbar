@@ -423,7 +423,10 @@ async fn test_admin_v1_config_plane_golden_path() {
         app.hook_env.registry.resolve("test-hook").is_some(),
         "the actual signed hook is admitted and resolves through its alias"
     );
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::boot::hydrate_all(&app)
+        .expect("the actual root hydrates the audit stream before admin mutations");
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
