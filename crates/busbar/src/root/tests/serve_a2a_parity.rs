@@ -180,6 +180,7 @@ async fn http_bytes(
         .header(header.0, header.1)
         .body(axum::body::Body::from(body))
         .unwrap();
+    eprintln!("actual A2A root POST {path} starting");
     tokio::time::timeout(Duration::from_secs(20), async {
         let response = router.clone().oneshot(request).await.unwrap();
         let status = response.status().as_u16();
@@ -189,7 +190,9 @@ async fn http_bytes(
         (status, bytes.to_vec())
     })
     .await
-    .expect("the actual root headers and complete body finish within one deadline")
+    .unwrap_or_else(|why| {
+        panic!("actual A2A root POST {path}: headers and complete body must finish within one deadline: {why}")
+    })
 }
 
 fn bind_plane(origin: Origin, instance: &str, dispatcher: &Dispatcher) -> Plugin<Plane> {
