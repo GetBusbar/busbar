@@ -29,6 +29,7 @@ struct Case {
     unset: Vec<String>,
     credentials: Credentials,
     upstream: Option<BTreeMap<String, Answer>>,
+    upstream_tls: bool,
     steps: Vec<Step>,
 }
 
@@ -186,6 +187,10 @@ impl Step {
                 "status",
                 "body_contains",
                 "body_lacks",
+                "body_eq",
+                "json_eq",
+                "response_headers_eq",
+                "within_secs",
             ],
             "admin" => &["method", "path", "body", "status", "json_eq"],
             "mint" => &["path", "body", "bind_audience"],
@@ -194,6 +199,27 @@ impl Step {
             other => return Err(format!("steps[{at}]: `{other}` is no step")),
         };
         object(body, &what, known)?;
+        if kind == "call" {
+            if body.get("body_eq").is_some_and(|v| !v.is_string()) {
+                return Err(format!("{what}.body_eq: a string is required"));
+            }
+            if body.get("json_eq").is_some_and(|v| !v.is_object()) {
+                return Err(format!(
+                    "{what}.json_eq: an object of JSON pointers is required"
+                ));
+            }
+            if let Some(headers) = body.get("response_headers_eq") {
+                string_map(Some(headers), &format!("{what}.response_headers_eq"))?;
+            }
+            if body
+                .get("within_secs")
+                .is_some_and(|v| v.as_u64().is_none_or(|n| n == 0))
+            {
+                return Err(format!(
+                    "{what}.within_secs: a positive number of seconds is required"
+                ));
+            }
+        }
         if kind == "boot"
             && body.get("exit").is_some()
             && body.get("expect").and_then(Value::as_str) == Some("listening")
@@ -387,22 +413,44 @@ impl Case {
                 }
             }
         };
+        let mut upstream_tls = false;
         let upstream = match map.get("upstream") {
             None => None,
             Some(u) => {
-                let u = object(u, "upstream", &["methods"])?;
-                let methods = u
-                    .get("methods")
-                    .and_then(Value::as_object)
-                    .ok_or("upstream.methods: an object of method -> answer")?;
-                Some(
-                    methods
-                        .iter()
-                        .map(|(m, a)| {
-                            answer(a, &format!("upstream.methods.{m}")).map(|a| (m.clone(), a))
-                        })
-                        .collect::<Result<BTreeMap<_, _>, _>>()?,
-                )
+                let u = object(u, "upstream", &["methods", "http", "tls"])?;
+                upstream_tls = match u.get("tls") {
+                    None => false,
+                    Some(Value::Bool(tls)) => *tls,
+                    Some(_) => return Err("upstream.tls: a boolean is required".into()),
+                };
+                match (u.get("methods"), u.get("http")) {
+                    (Some(Value::Object(methods)), None) => Some(
+                        methods
+                            .iter()
+                            .map(|(m, a)| {
+                                answer(a, &format!("upstream.methods.{m}")).map(|a| (m.clone(), a))
+                            })
+                            .collect::<Result<BTreeMap<_, _>, _>>()?,
+                    ),
+                    (None, Some(http)) => {
+                        let http = object(http, "upstream.http", &["status", "body"])?;
+                        let status = http.get("status").and_then(Value::as_u64)
+                            .filter(|s| (100..=599).contains(s))
+                            .ok_or("upstream.http.status: an HTTP status from 100 through 599 is required")?;
+                        let body = http
+                            .get("body")
+                            .ok_or("upstream.http.body: a JSON body is required")?
+                            .clone();
+                        Some(BTreeMap::from([(
+                            String::new(),
+                            Answer::Http {
+                                status: status as u16,
+                                body,
+                            },
+                        )]))
+                    }
+                    _ => return Err("upstream: exactly one of methods or http is required".into()),
+                }
             }
         };
         let steps = map
@@ -423,6 +471,7 @@ impl Case {
             unset: strings(map.get("unset"), "unset")?,
             credentials,
             upstream,
+            upstream_tls,
             steps,
         })
     }
@@ -708,10 +757,18 @@ impl World {
                 "data_port" => Some(self.data_port.to_string()),
                 "admin_port" => Some(self.admin_port.to_string()),
                 "admin_token" => Some(self.admin_token.clone()),
-                "upstream_url" => self
+                "upstream_url" => self.responder.as_ref().map(Responder::url),
+                "upstream_spki" => self.responder.as_ref().and_then(|r| r.spki.clone()),
+                "upstream_ca_pem_json" => self
                     .responder
                     .as_ref()
-                    .map(|r| format!("http://127.0.0.1:{}", r.port)),
+                    .and_then(|r| r.ca_pem.as_ref())
+                    .map(|pem| serde_json::to_string(pem).expect("the public CA is JSON")),
+                "upstream_ca_file" => self
+                    .responder
+                    .as_ref()
+                    .and_then(|r| r.ca_pem.as_ref())
+                    .map(|_| self.dir.join("upstream-ca.pem").display().to_string()),
                 "signing_key_file" => self
                     .signing
                     .as_ref()
@@ -854,13 +911,28 @@ fn http(
     bearer: Option<&str>,
     body: Option<&Value>,
 ) -> Result<(u16, String), String> {
+    let (status, text, _) =
+        http_response(method, url, headers, bearer, body, Duration::from_secs(60))?;
+    Ok((status, text))
+}
+
+type ResponseHeaders = BTreeMap<String, Vec<String>>;
+
+fn http_response(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    bearer: Option<&str>,
+    body: Option<&Value>,
+    timeout: Duration,
+) -> Result<(u16, String, ResponseHeaders), String> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("a runtime: {e}"))?;
     rt.block_on(async {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(60))
+            .timeout(timeout)
             .build()
             .map_err(|e| format!("a client: {e}"))?;
         let method = reqwest::Method::from_bytes(method.as_bytes())
@@ -877,14 +949,24 @@ fn http(
             Some(v) => {
                 req = req
                     .header("content-type", "application/json")
-                    .body(v.to_string());
+                    .body(v.to_string())
             }
             None => {}
         }
         let resp = req.send().await.map_err(|e| format!("{url}: {e}"))?;
         let status = resp.status().as_u16();
-        let text = resp.text().await.unwrap_or_default();
-        Ok((status, text))
+        let mut response_headers = BTreeMap::<String, Vec<String>>::new();
+        for (name, value) in resp.headers() {
+            response_headers
+                .entry(name.as_str().to_string())
+                .or_default()
+                .push(String::from_utf8_lossy(value.as_bytes()).into_owned());
+        }
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| format!("{url}: response body: {e}"))?;
+        Ok((status, text, response_headers))
     })
 }
 
@@ -1230,13 +1312,20 @@ fn run_step(world: &mut World, step: &Step) -> Result<(), String> {
                 Some(b) => Some(world.fill_json(b)?),
                 None => None,
             };
-            let (status, text) = http(
+            let (status, text, response_headers) = http_response(
                 s.get("method").and_then(Value::as_str).unwrap_or("POST"),
                 &format!("http://127.0.0.1:{port}{path}"),
                 &headers,
                 bearer.as_deref(),
                 body.as_ref(),
+                secs(s, 60),
             )?;
+            for (name, value) in string_map(s.get("response_headers_eq"), "response_headers_eq")? {
+                let expected = vec![world.fill(&value)?];
+                if response_headers.get(&name.to_ascii_lowercase()) != Some(&expected) {
+                    return Err(format!("response header {name:?} is not exactly {expected:?}: {response_headers:?}"));
+                }
+            }
             if let Some(want) = s.get("status").and_then(Value::as_u64) {
                 if u64::from(status) != want {
                     return Err(format!("answered {status}, {want} was expected: {text}"));
@@ -1247,6 +1336,19 @@ fn run_step(world: &mut World, step: &Step) -> Result<(), String> {
                 for reply in responses_in(&text) {
                     reply_id_held(request, &reply)?;
                 }
+            }
+            if let Some(want) = s.get("body_eq").and_then(Value::as_str) {
+                let want = world.fill(want)?;
+                if text != want {
+                    return Err(format!(
+                        "the body is not byte-identical: got {text:?}, expected {want:?}"
+                    ));
+                }
+            }
+            if let Some(checks) = s.get("json_eq") {
+                let doc: Value = serde_json::from_str(&text)
+                    .map_err(|e| format!("the body is not JSON: {e}"))?;
+                pointer_eq(&doc, Some(&world.fill_json(checks)?), "the body")?;
             }
             hold(
                 &text,
@@ -1383,7 +1485,13 @@ fn run_case(krate: &str, case: &Case) -> Result<Option<String>, String> {
         admin_token: format!("blackbox-admin-{}", std::process::id()),
         signing: None,
         minted: None,
-        responder: case.upstream.clone().map(Responder::start),
+        responder: case.upstream.clone().map(|methods| {
+            if case.upstream_tls {
+                Responder::start_tls(methods)
+            } else {
+                Responder::start(methods)
+            }
+        }),
         counts_mark: BTreeMap::new(),
         counts_start: BTreeMap::new(),
         node: None,
@@ -1393,6 +1501,10 @@ fn run_case(krate: &str, case: &Case) -> Result<Option<String>, String> {
     };
     if case.credentials.issuer {
         common::credentials::issuer();
+    }
+    if let Some(ca) = world.responder.as_ref().and_then(|r| r.ca_pem.as_ref()) {
+        std::fs::write(world.dir.join("upstream-ca.pem"), ca)
+            .map_err(|e| named(format!("write the public upstream CA: {e}")))?;
     }
     if case.credentials.signing_key {
         let (bytes, hex_key) = common::credentials::generate_signing_key();
@@ -1769,4 +1881,184 @@ fn a_reply_under_a_foreign_id_fails_the_call() {
         &json!({"jsonrpc": "2.0", "id": 9, "result": {}})
     )
     .is_ok());
+}
+
+#[test]
+fn raw_http_responder_preserves_the_full_json_body_without_a_rpc_envelope() {
+    let body =
+        json!({"id":"raw-message", "content":[{"text":"exact"}], "usage":{"input_tokens":3}});
+    let responder = Responder::start(BTreeMap::from([(
+        String::new(),
+        Answer::Http {
+            status: 203,
+            body: body.clone(),
+        },
+    )]));
+    let (status, text) = http(
+        "POST",
+        &responder.url(),
+        &[],
+        None,
+        Some(&json!({"method":"payload-field"})),
+    )
+    .unwrap();
+    assert_eq!(status, 203);
+    assert_eq!(text, body.to_string());
+    assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), body);
+    assert_eq!(
+        responder.received(),
+        BTreeMap::from([("payload-field".into(), 1)])
+    );
+}
+
+#[test]
+fn exact_call_and_transport_fields_refuse_malformed_oracles() {
+    for field in [
+        json!({"body_eq":false}),
+        json!({"json_eq":[]}),
+        json!({"response_headers_eq":{"www-authenticate":7}}),
+        json!({"within_secs":0}),
+    ] {
+        let case =
+            json!({"schema":"blackbox/1", "case":"invalid exact call", "steps":[{"call":field}]})
+                .to_string();
+        assert!(Case::parse(&case).is_err(), "{case}");
+    }
+    for upstream in [
+        json!({"tls":"yes","methods":{}}),
+        json!({"http":{"status":700,"body":{}}}),
+        json!({"methods":{},"http":{"status":200,"body":{}}}),
+    ] {
+        let case = json!({"schema":"blackbox/1", "case":"invalid transport", "upstream":upstream, "steps":[{"call":{"path":"/"}}]}).to_string();
+        assert!(Case::parse(&case).is_err(), "{case}");
+    }
+}
+
+#[test]
+fn tls_responder_proves_its_actual_ca_and_spki_and_refuses_wrong_anchors() {
+    use base64::Engine as _;
+    let responder = Responder::start_tls(BTreeMap::from([(
+        "probe".into(),
+        Answer::Result(json!({"kept":true})),
+    )]));
+    let other = Responder::start_tls(BTreeMap::new());
+    let ca = responder.ca_pem.as_deref().unwrap();
+    let pin = responder.spki.as_deref().unwrap();
+    let digest: [u8; 32] = base64::engine::general_purpose::STANDARD
+        .decode(pin.strip_prefix("sha256/").unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let client = |ca: &str, pin| {
+        let config = busbar_core_connector::tls::client::build_client_config(
+            &busbar_contract::transport::trust::EgressTrust {
+                extra_anchors: busbar_core_connector::tls::client::operator_ca_anchors(
+                    ca.as_bytes(),
+                )
+                .unwrap(),
+                pinned_public_keys: vec![pin],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        reqwest::Client::builder()
+            .use_preconfigured_tls(config)
+            .tls_info(true)
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap()
+    };
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let response = client(ca, digest)
+            .post(responder.url())
+            .json(&json!({"jsonrpc":"2.0","id":7,"method":"probe"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+        let leaf = response
+            .extensions()
+            .get::<reqwest::tls::TlsInfo>()
+            .unwrap()
+            .peer_certificate()
+            .unwrap();
+        assert_eq!(
+            busbar_core_connector::tls::client::peer_key_pin(leaf).as_deref(),
+            Some(pin)
+        );
+        assert_eq!(
+            response.json::<Value>().await.unwrap(),
+            json!({"jsonrpc":"2.0","id":7,"result":{"kept":true}})
+        );
+        assert!(client(other.ca_pem.as_deref().unwrap(), digest)
+            .post(responder.url())
+            .json(&json!({"method":"wrong-ca"}))
+            .send()
+            .await
+            .is_err());
+        assert!(client(ca, [0; 32])
+            .post(responder.url())
+            .json(&json!({"method":"wrong-pin"}))
+            .send()
+            .await
+            .is_err());
+    });
+    assert_eq!(responder.received(), BTreeMap::from([("probe".into(), 1)]));
+}
+
+#[test]
+fn exact_call_oracles_detect_changed_bytes_json_and_headers_on_actual_http() {
+    let body = json!({"content":"kept", "units":3});
+    let responder = Responder::start(BTreeMap::from([(
+        String::new(),
+        Answer::Http {
+            status: 200,
+            body: body.clone(),
+        },
+    )]));
+    let mut world = World {
+        dir: case_dir("exact-call-controls"),
+        data_port: responder.port,
+        admin_port: responder.port,
+        admin_token: String::new(),
+        signing: None,
+        minted: None,
+        responder: Some(responder),
+        counts_mark: BTreeMap::new(),
+        counts_start: BTreeMap::new(),
+        node: None,
+        vars: BTreeMap::new(),
+        unset: Vec::new(),
+        issuer: false,
+    };
+    let good = json!({"path":"/raw", "status":200, "body":{}, "body_eq":body.to_string(),
+        "json_eq":{"":body}, "response_headers_eq":{"content-type":"application/json"}, "within_secs":5});
+    run_step(&mut world, &Step::Call(good.clone())).unwrap();
+    for (field, value, failure) in [
+        ("body_eq", json!(format!("{} ", body)), "byte-identical"),
+        (
+            "json_eq",
+            json!({"":{"content":"changed", "units":3}}),
+            "is not",
+        ),
+        (
+            "response_headers_eq",
+            json!({"content-type":"text/plain"}),
+            "response header",
+        ),
+    ] {
+        let mut changed = good.clone();
+        changed[field] = value;
+        let error =
+            run_step(&mut world, &Step::Call(changed)).expect_err("the altered oracle must fail");
+        assert!(error.contains(failure), "{error}");
+    }
+    assert_eq!(
+        world.responder.as_ref().unwrap().received(),
+        BTreeMap::from([(String::new(), 4)])
+    );
 }
