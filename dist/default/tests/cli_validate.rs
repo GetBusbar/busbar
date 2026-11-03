@@ -1695,9 +1695,9 @@ fn validate_orders_a_webhook_sinks_refusals_among_the_limits_as_before() {
         refusal,
         [
             "  - limits.upstream_request_timeout_secs must be >= 1 (0 would time out every upstream call instantly)",
-            "  - export.request-log-webhook.settings.max_inflight_deliveries must be >= 1 (a 0-permit semaphore admits nothing, silently dropping every webhook delivery)",
+            "  - the largest settings.max_inflight_deliveries among `module: request-log-webhook` export instances must be >= 1",
             "  - limits.max_honored_retry_after_secs must be >= 1 (a 0 ceiling would clamp every honored Retry-After to 0)",
-            "  - the `module: request-log-webhook` export instance targeting 'https://siem.example/in' (#0) sets settings.delivery_timeout_secs: 0, which would abort every delivery — it must be >= 1",
+            "  - export.hook: the `module: request-log-webhook` export instance targeting 'https://siem.example/***' (#0) sets settings.delivery_timeout_secs: 0 — it must be >= 1",
         ],
         "{stderr}"
     );
