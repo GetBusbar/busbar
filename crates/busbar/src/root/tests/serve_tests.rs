@@ -1696,7 +1696,9 @@ pub(super) mod session_door {
         if let Some(amount) = budget {
             limits.push(busbar_kernel::config::groups::LimitCfg {
                 metric: busbar_kernel::config::groups::LimitMetric::Budget,
-                amount,
+                // A spent-key cell uses a valid one-unit cap, consumed below by a
+                // separate admitted caller before the tested key reaches the door.
+                amount: amount.max(1),
                 per: Some(busbar_kernel::config::groups::LimitWindow::Total),
                 scope: None,
                 on_exhaust: None,
@@ -1971,6 +1973,29 @@ pub(super) mod session_door {
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
+        }
+        if budget == Some(0) {
+            let (warm, _) = gov
+                .mint_signed(
+                    NewKeySpec {
+                        name: "pre-exhausted-session-group".to_string(),
+                        group: groups.keys().next().cloned(),
+                        ..Default::default()
+                    },
+                    4_000_000_000,
+                    1_700_000_000,
+                )
+                .expect("the prior caller shares the actual configured session group");
+            let pool = crate::root::door_steps::plane_lane(&plane_name, "m-cap");
+            drop(
+                gov.try_admit(&cost, &warm, &pool, busbar_kernel::store::now())
+                    .expect("the prior caller consumes the configured one-unit cap"),
+            );
+            assert!(
+                gov.try_admit(&cost, &warm, &pool, busbar_kernel::store::now())
+                    .is_err(),
+                "the actual session group is exhausted before the tested request"
+            );
         }
         app.governance = Some(Arc::clone(&gov));
         app.cost = Arc::new(cost);
