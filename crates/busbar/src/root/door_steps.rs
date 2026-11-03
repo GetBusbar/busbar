@@ -1123,6 +1123,9 @@ impl DriverSteps for DoorSteps<'_> {
         }
 
         if let (Some(parent), Some(key)) = (self.parent_admission, self.key.as_ref()) {
+            if !admit.bound_to(ctx.call) {
+                return Err(Refusal::new(ReasonCode::Replayed));
+            }
             if !self.money.is_some_and(|money| std::ptr::eq(money, parent.money)) {
                 return Err(Refusal::new(ReasonCode::Unpriced));
             }
