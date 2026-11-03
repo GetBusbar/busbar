@@ -55,7 +55,8 @@ fn app(
         "the actual store settings are an object"
     );
     let signing = directory.join("signing-key");
-    std::fs::write(&signing, [0x37; 32]).expect("write the real configured signing key");
+    std::fs::write(&signing, hex::encode([7u8; 32]))
+        .expect("write the real configured signing key");
     let operator_token = directory.join("operator-token");
     std::fs::write(&operator_token, "actual-inbound-operator")
         .expect("write the real operator credential");
@@ -64,7 +65,8 @@ fn app(
         "public_url": "https://gw.example",
         "providers": {},
         "models": {},
-        "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing} },
+        "rate_card": {},
+        "auth": { "chain": ["keys"], "admin_auth": [operator], "signing_key": {"file": signing} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
@@ -429,10 +431,36 @@ fn captured_request(name: &str) -> Value {
         .clone()
 }
 
+fn captured_key(app: &busbar_kernel::state::App) -> busbar_contract::Secret<String> {
+    let now = busbar_kernel::store::now();
+    let gov = app
+        .governance
+        .as_ref()
+        .expect("the actual Store owns the captured caller's key");
+    let (_, token) = gov
+        .mint_signed(
+            busbar_kernel::governance::NewKeySpec {
+                name: "inbound-captured-caller".into(),
+                ..Default::default()
+            },
+            now + 3600,
+            now,
+        )
+        .expect("the actual configured signer mints the captured authenticated caller");
+    gov.hydrate_budgets(&app.cost, now)
+        .expect("the actual caller's budgets hydrate");
+    assert!(
+        app.cost.model_unpriced("nope"),
+        "the captured no-rate request has an authoritative card without that model's rate"
+    );
+    token
+}
+
 async fn captured_router_crossing(
     router: axum::Router,
     head: &kin::Head,
     captured: &Value,
+    token: &busbar_contract::Secret<String>,
 ) -> kin::Refusal {
     use tower::ServiceExt as _;
     let raw = captured["body"].as_str().unwrap_or("");
@@ -458,6 +486,11 @@ async fn captured_router_crossing(
     }
     if captured["listener"] == "admin" {
         request = request.header("x-admin-token", "actual-inbound-operator");
+    } else if captured["auth"] == "ok" {
+        request = request.header(
+            "authorization",
+            format!("Bearer {}", token.expose(&busbar_kernel::seal::lend())),
+        );
     }
     let request = request
         .body(axum::body::Body::from(body))
@@ -484,6 +517,7 @@ async fn captured_router_crossing(
 async fn refused_against(family: &str, cause: u32) -> Vec<String> {
     let (side, guests) = side();
     let (router_app, router_config, router_book) = app(true);
+    let token = captured_key(&router_app);
     let (_, data, admin) =
         actual_listener_with_routers(router_app, &router_config, &router_book, true);
     let mut failing = Vec::new();
@@ -497,7 +531,7 @@ async fn refused_against(family: &str, cause: u32) -> Vec<String> {
             } else {
                 data.clone()
             };
-            let refusal = captured_router_crossing(router, &head, &captured).await;
+            let refusal = captured_router_crossing(router, &head, &captured, &token).await;
             let wrong = differences(&refusal, &name);
             if !wrong.is_empty() {
                 failing.push(format!("{name}: {}", wrong.join("; ")));
@@ -552,6 +586,7 @@ async fn red_every_over_gate_cell_answers_its_1_5_5_bytes() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn captured_rate_and_admin_availability_requests_match_their_unchanged_wire_goldens() {
     let (app, config, book) = app(true);
+    let token = captured_key(&app);
     let (_, data, admin) = actual_listener_with_routers(app, &config, &book, true);
     for (family, target, router) in [
         ("unknown-path", "/x/v1/chat/completions", data),
@@ -562,7 +597,7 @@ async fn captured_rate_and_admin_availability_requests_match_their_unchanged_wir
             .find(|(_, head, _)| head.target == target)
             .expect("the existing catalogue captures the actual request");
         let captured = captured_request(&name);
-        let response = captured_router_crossing(router, &head, &captured).await;
+        let response = captured_router_crossing(router, &head, &captured, &token).await;
         let wrong = differences(&response, &name);
         assert!(wrong.is_empty(), "{name}: {wrong:#?}");
     }
