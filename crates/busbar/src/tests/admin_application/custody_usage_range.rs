@@ -97,6 +97,9 @@ impl Fixture {
             &rules,
         )
         .expect("the actual product builds the usage range deployment");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, &module)
+            .expect("the actual application Store binds the dated rate history");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
