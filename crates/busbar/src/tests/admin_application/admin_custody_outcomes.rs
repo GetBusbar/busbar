@@ -360,15 +360,13 @@ fn app() -> (
     let mut manifest = plugins::manifest("store", &module, "third-party");
     manifest.statement = Some(hex::encode(statement));
     let directory = plugins::scratch("admin-custody-outcomes");
-    std::fs::write(
-        directory.join("store.tar.gz"),
-        plugins::signed(
-            &plugins::key(0x33),
-            manifest,
-            &std::fs::read(library).unwrap(),
-        ),
-    )
-    .unwrap();
+    let archive = plugins::signed(
+        &plugins::key(0x33),
+        manifest,
+        &std::fs::read(library).unwrap(),
+    );
+    let archive_sha256 = busbar_plugin_loader::sign::sha256_hex(&archive);
+    std::fs::write(directory.join("store.tar.gz"), archive).unwrap();
     let settings: Value = serde_json::from_str(
         &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
     )
@@ -394,6 +392,12 @@ fn app() -> (
     let mut plugin_config = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
+        fetch: vec![busbar_kernel::config::PluginFetch::Url(
+            busbar_kernel::config::UrlFetch {
+                url: "http://127.0.0.1:9/store.tar.gz".into(),
+                sha256: Some(archive_sha256),
+            },
+        )],
         ..Default::default()
     };
     plugin_config
