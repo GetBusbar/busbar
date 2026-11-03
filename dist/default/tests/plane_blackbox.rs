@@ -193,7 +193,7 @@ impl Step {
                 "within_secs",
             ],
             "admin" => &["method", "path", "body", "status", "json_eq"],
-            "mint" => &["path", "body", "bind_audience"],
+            "mint" => &["path", "body", "bind_audience", "within_secs"],
             "upstream_set" => &["method", "result", "echo"],
             "upstream_counts" => &["since", "counts"],
             other => return Err(format!("steps[{at}]: `{other}` is no step")),
@@ -211,14 +211,15 @@ impl Step {
             if let Some(headers) = body.get("response_headers_eq") {
                 string_map(Some(headers), &format!("{what}.response_headers_eq"))?;
             }
-            if body
+        }
+        if matches!(kind.as_str(), "call" | "mint")
+            && body
                 .get("within_secs")
                 .is_some_and(|v| v.as_u64().is_none_or(|n| n == 0))
-            {
-                return Err(format!(
-                    "{what}.within_secs: a positive number of seconds is required"
-                ));
-            }
+        {
+            return Err(format!(
+                "{what}.within_secs: a positive number of seconds is required"
+            ));
         }
         if kind == "boot"
             && body.get("exit").is_some()
@@ -1385,12 +1386,13 @@ fn run_step(world: &mut World, step: &Step) -> Result<(), String> {
                     .unwrap_or("/api/v1/admin/keys"),
             )?;
             let body = world.fill_json(s.get("body").unwrap_or(&json!({})))?;
-            let (status, text) = http(
+            let (status, text, _) = http_response(
                 "POST",
                 &format!("http://127.0.0.1:{}{path}", world.admin_port),
                 &[],
                 Some(world.admin_token.as_str()),
                 Some(&body),
+                secs(s, 60),
             )?;
             let doc: Value = serde_json::from_str(&text)
                 .map_err(|_| format!("the mint answered {status}, not JSON: {text}"))?;
