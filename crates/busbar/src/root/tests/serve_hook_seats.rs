@@ -887,7 +887,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     }
     let defs: HashMap<String, busbar_kernel::config::ProviderDef> =
         serde_yaml::from_str(&defs_yaml).expect("the providers");
-    let cfg = busbar_kernel::config::resolve(&deploy, &defs).map_err(|e| e.join("; "))?;
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &defs).map_err(|e| e.join("; "))?;
     let providers = provider_routes(
         &cfg.providers,
         &busbar_kernel::config_validate::MetadataPosture::default(),
@@ -938,29 +938,16 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         .into_iter()
         .chain(configured)
         .collect();
+    // The deployed authority declares the same group tree the fixture's governor uses.
+    // A key deliberately naming an absent group is minted only after boot below, so
+    // those cells still exercise runtime admission's fail-closed refusal.
+    cfg.groups = groups.clone();
     let fee = opts.fee_cents.unwrap_or(1);
     let cost = if groups.is_empty() && opts.rate_card.is_none() {
         CostModel::flat(fee)
     } else {
         CostModel::resolve_parts(opts.rate_card, fee, &groups)
     };
-    let (key, token) = gov
-        .mint_signed(
-            NewKeySpec {
-                name: "seats".to_string(),
-                group: opts
-                    .key_group
-                    .map(str::to_string)
-                    .or_else(|| groups.keys().next().cloned()),
-                allowed_pools: opts
-                    .allowed_pools
-                    .map(|pools| pools.iter().map(|p| (*p).to_string()).collect()),
-                ..Default::default()
-            },
-            4_000_000_000,
-            1_700_000_000,
-        )
-        .expect("mint");
     for (bucket, requests) in opts.seed {
         gov.store()
             .put_usage(
@@ -1029,6 +1016,23 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     if let Some(rotate) = rotate {
         rotate();
     }
+    let (key, token) = gov
+        .mint_signed(
+            NewKeySpec {
+                name: "seats".to_string(),
+                group: opts
+                    .key_group
+                    .map(str::to_string)
+                    .or_else(|| groups.keys().next().cloned()),
+                allowed_pools: opts
+                    .allowed_pools
+                    .map(|pools| pools.iter().map(|p| (*p).to_string()).collect()),
+                ..Default::default()
+            },
+            4_000_000_000,
+            1_700_000_000,
+        )
+        .expect("mint");
     app.governance = Some(Arc::clone(&gov));
     app.cost = Arc::new(cost);
     let mut app = Arc::new(app);
