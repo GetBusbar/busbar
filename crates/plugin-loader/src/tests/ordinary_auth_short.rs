@@ -217,10 +217,9 @@ fn opened(
     (dispatcher, auth)
 }
 fn request() -> VerifyRequest {
-    VerifyRequest {
-        point: busbar_contract::abi::auth::AuthPoint::Head,
-        ..Default::default()
-    }
+    let mut request = VerifyRequest::default();
+    request.point = busbar_contract::abi::auth::AuthPoint::Head;
+    request
 }
 fn verify(auth: &dyn busbar_contract::auth_calls::AuthCalls, judgment: usize) {
     let runtime = tokio::runtime::Builder::new_current_thread()
