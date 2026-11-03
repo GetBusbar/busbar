@@ -1233,7 +1233,13 @@ fn independent_entry_refund_posts_while_only_the_matching_entry_negative_is_quar
     let plain = ExactUsageDelta::from_signed(&negative);
     let dated = ExactUsageDelta::from_signed(&dated_delta(&negative, entry_b));
     let held = gov
-        .capture_usage_recovery(&key.id, 0, plain.clone(), dated.clone())
+        .capture_usage_recovery(
+            &key.id,
+            0,
+            plain.clone(),
+            dated.clone(),
+            &Default::default(),
+        )
         .unwrap();
     assert!(
         held.child.is_none() && held.prerequisite.is_some(),
@@ -1241,7 +1247,7 @@ fn independent_entry_refund_posts_while_only_the_matching_entry_negative_is_quar
     );
     let journal_len = journal.selected.lock().unwrap().len();
     assert!(
-        gov.capture_usage_recovery(&key.id, 0, plain, dated)
+        gov.capture_usage_recovery(&key.id, 0, plain, dated, &Default::default())
             .is_err(),
         "an unconfirmed immutable take cannot spend the same selected capacity twice"
     );

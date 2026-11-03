@@ -12,6 +12,20 @@ fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
     std::time::Duration::from_millis(ms)
 }
 
+// The reuse key is DATA: a handle is reusable only for the same module, resolved
+// settings and effective budget. HTTP route declarations add their own equality
+// check after this predicate; gate resolution uses the unresolved definition.
+fn same_call_inputs(
+    opened_module: &str,
+    opened_settings: &serde_json::Map<String, serde_json::Value>,
+    opened_budget: std::time::Duration,
+    module: &str,
+    settings: &serde_json::Map<String, serde_json::Value>,
+    effective_budget: impl FnOnce() -> std::time::Duration,
+) -> bool {
+    opened_module == module && opened_settings == settings && opened_budget == effective_budget()
+}
+
 pub mod gate;
 pub mod taps;
 
@@ -129,9 +143,14 @@ impl HookEnv {
         timeout_ms: u64,
     ) -> Result<Arc<dyn RoutingPolicy>, String> {
         if let Some(opened) = self.route_calls.get(name).filter(|opened| {
-            opened.module == module
-                && opened.resolved.as_value() == settings.as_value()
-                && opened.budget == policy_timeout(timeout_ms)
+            same_call_inputs(
+                &opened.module,
+                &opened.resolved,
+                opened.budget,
+                module,
+                settings,
+                || policy_timeout(timeout_ms),
+            )
         }) {
             return Ok(crate::plane_driver::hooks::policy::HookPolicy::policy(
                 opened.calls.clone(),
@@ -172,12 +191,22 @@ impl HookEnv {
                 continue;
             }
             let budget = policy_timeout(hook.timeout_ms);
-            let opened = match self.route_calls.get(name).filter(|opened| {
-                opened.module == hook.plugin
-                    && opened.resolved.as_value() == resolved.as_value()
-                    && opened.budget == budget
-                    && opened.calls.routes() == routes.as_slice()
-            }) {
+            let opened = match retained_route(
+                &self.route_calls,
+                name,
+                RouteIdentity {
+                    module: &hook.plugin,
+                    settings: &resolved,
+                    budget,
+                },
+                |opened| RouteIdentity {
+                    module: &opened.module,
+                    settings: &opened.resolved,
+                    budget: opened.budget,
+                },
+            )
+            .filter(|opened| opened.calls.routes() == routes.as_slice())
+            {
                 Some(opened) => opened.calls.clone(),
                 None => axis.open(&hook.plugin, name, resolved.as_value(), budget)?,
             };
@@ -247,29 +276,64 @@ impl HookEnv {
         &self,
         hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     ) -> Result<(), String> {
-        for (name, hook) in hooks {
-            if hook.kind != crate::config::HookKind::Gate {
-                continue;
-            }
-
-            if !self.knows(&hook.plugin) {
-                continue;
-            }
-
-            let resolved = self
-                .resolve_hook_settings(&hook.plugin, &hook.settings)
-                .map_err(|e| format!("hook '{name}' settings: {e}"))?;
-            self.open(&hook.plugin, &resolved, name, hook.timeout_ms)
-                .map_err(|e| {
-                    format!(
-                        "gate hook '{name}' (plugin '{}') failed to open; refusing to boot/reload \
-                         with a silently-absent admission gate (fail-closed): {e}",
-                        hook.plugin
-                    )
-                })?;
-        }
-        Ok(())
+        preopen_definitions(
+            hooks,
+            |module| self.knows(module),
+            |_, hook| self.resolve_hook_settings(&hook.plugin, &hook.settings),
+            |name, hook, resolved| {
+                self.open(&hook.plugin, &resolved, name, hook.timeout_ms)
+                    .map(|_| ())
+            },
+        )
     }
+}
+
+fn preopen_definitions<T>(
+    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    mut knows: impl FnMut(&str) -> bool,
+    mut resolve: impl FnMut(&str, &crate::config::HookCfg) -> Result<T, String>,
+    mut open: impl FnMut(&str, &crate::config::HookCfg, T) -> Result<(), String>,
+) -> Result<(), String> {
+    for (name, hook) in hooks {
+        if hook.kind != crate::config::HookKind::Gate || !knows(&hook.plugin) {
+            continue;
+        }
+        let resolved = resolve(name, hook).map_err(|e| format!("hook '{name}' settings: {e}"))?;
+        open(name, hook, resolved).map_err(|e| {
+            format!(
+                "gate hook '{name}' (plugin '{}') failed to open; refusing to boot/reload \
+             with a silently-absent admission gate (fail-closed): {e}",
+                hook.plugin
+            )
+        })?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct RouteIdentity<'a> {
+    module: &'a str,
+    settings: &'a serde_json::Map<String, serde_json::Value>,
+    budget: std::time::Duration,
+}
+
+fn retained_route<'a, T>(
+    routes: &'a std::collections::HashMap<String, T>,
+    name: &str,
+    requested: RouteIdentity<'_>,
+    identity: impl Fn(&'a T) -> RouteIdentity<'a>,
+) -> Option<&'a T> {
+    routes.get(name).filter(|retained| {
+        let retained = identity(*retained);
+        same_call_inputs(
+            retained.module,
+            retained.settings,
+            retained.budget,
+            requested.module,
+            requested.settings,
+            || requested.budget,
+        )
+    })
 }
 
 struct RouteCalls {
@@ -290,17 +354,26 @@ impl crate::plugin_routes::PluginHttpDispatch for HookHttp {
         &self,
         request: &busbar_contract::abi::mechanism::endpoint::EndpointRequest,
     ) -> busbar_contract::abi::mechanism::endpoint::EndpointResponse {
-        match tokio::runtime::Handle::current()
-            .block_on(self.calls.serve(request.clone(), self.budget))
-        {
-            Ok(response) => response,
-            Err(why) => {
-                tracing::warn!(hook = self.calls.name(), error = %why, "hook route failed");
-                busbar_contract::abi::mechanism::endpoint::EndpointResponse {
-                    status: 502,
-                    headers: Vec::new(),
-                    body: Vec::new(),
-                }
+        hook_route_response(
+            self.calls.name(),
+            tokio::runtime::Handle::current()
+                .block_on(self.calls.serve(request.clone(), self.budget)),
+        )
+    }
+}
+
+fn hook_route_response(
+    name: &str,
+    response: Result<busbar_contract::abi::mechanism::endpoint::EndpointResponse, String>,
+) -> busbar_contract::abi::mechanism::endpoint::EndpointResponse {
+    match response {
+        Ok(response) => response,
+        Err(why) => {
+            tracing::warn!(hook=name,error=%why,"hook route failed");
+            busbar_contract::abi::mechanism::endpoint::EndpointResponse {
+                status: 502,
+                headers: Vec::new(),
+                body: Vec::new(),
             }
         }
     }
@@ -355,25 +428,14 @@ pub fn try_resolve_pool_ordering(
     default_hook: Option<&str>,
     settings_version: u64,
 ) -> Result<Option<ResolvedPolicy>, String> {
-    if !cfg.base_named {
-        if let Some(name) = default_hook {
-            if let Some(hook) = hooks.get(name) {
-                if hook.kind == crate::config::HookKind::Gate && !hook.prompt.can_rewrite() {
-                    return Ok(resolve_gate_transport(
-                        name,
-                        hook,
-                        hooks,
-                        env,
-                        settings_version,
-                    ));
-                }
-                tracing::warn!(
-                    hook = %name,
-                    "`default: true` hook is not a decision gate; ignored as the base ordering \
-                     (the compiled-in weighted backstop applies)"
-                );
-            }
-        }
+    if let Some((name, hook)) = inherited_ordering(cfg, hooks, default_hook) {
+        return Ok(resolve_gate_transport(
+            name,
+            hook,
+            hooks,
+            env,
+            settings_version,
+        ));
     }
     let Some(name) = cfg.policy.native_name() else {
         return Ok(None);
@@ -386,24 +448,34 @@ pub fn try_resolve_pool_ordering(
     Ok(Some(ranked_policy(policy, timeout)))
 }
 
+fn inherited_ordering<'a>(
+    cfg: &crate::config::PoolCfg,
+    hooks: &'a std::collections::HashMap<String, crate::config::HookCfg>,
+    default_hook: Option<&'a str>,
+) -> Option<(&'a str, &'a crate::config::HookCfg)> {
+    if cfg.base_named {
+        return None;
+    }
+    let name = default_hook?;
+    let hook = hooks.get(name)?;
+    if hook.kind == crate::config::HookKind::Gate && !hook.prompt.can_rewrite() {
+        return Some((name, hook));
+    }
+    tracing::warn!(hook = %name,
+        "`default: true` hook is not a decision gate; ignored as the base ordering \
+         (the compiled-in weighted backstop applies)");
+    None
+}
+
 pub fn resolve_pool_gates(
     cfg: &crate::config::PoolCfg,
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     env: &HookEnv,
     settings_version: u64,
 ) -> Vec<(u16, ResolvedPolicy)> {
-    let mut ranked: Vec<(u16, ResolvedPolicy)> = cfg
-        .gates
-        .iter()
-        .filter_map(|name| {
-            let hook = hooks.get(name)?;
-            if hook.kind != crate::config::HookKind::Gate {
-                return None;
-            }
-
-            if hook.prompt.can_rewrite() {
-                return None;
-            }
+    let mut ranked: Vec<(u16, ResolvedPolicy)> = decision_definitions(hooks, &cfg.gates)
+        .into_iter()
+        .filter_map(|(name, hook)| {
             resolve_gate_transport(name, hook, hooks, env, settings_version)
                 .map(|rp| (hook.priority, rp))
         })
@@ -420,14 +492,9 @@ pub fn resolve_pool_rewrites(
     settings_version: u64,
 ) -> Vec<(std::time::Duration, Arc<dyn RoutingPolicy>)> {
     let mut ranked: Vec<(u16, std::time::Duration, Arc<dyn RoutingPolicy>)> = Vec::new();
-    for name in &cfg.gates {
-        let Some(hook) = hooks.get(name) else {
-            continue;
-        };
-
-        if hook.kind != crate::config::HookKind::Gate || !admits_rewrite(name, hook, env) {
-            continue;
-        }
+    for (name, hook) in rewrite_definitions(hooks, &cfg.gates, |name, hook| {
+        admits_rewrite(name, hook, env)
+    }) {
         if let Some(ResolvedPolicy::Policy {
             policy,
             timeout,
@@ -597,6 +664,7 @@ fn hook_inert_gate_banner(
     ))
 }
 
+#[derive(Clone, Copy)]
 struct Needs {
     prompt: busbar_contract::plugin_rows::NeedLevel,
     user: busbar_contract::plugin_rows::NeedLevel,
@@ -613,18 +681,31 @@ fn effective_access(
     hook: &crate::config::HookCfg,
     env: &HookEnv,
 ) -> (crate::config::PromptAccess, crate::config::UserAccess) {
+    let Some(p) = env.registry.resolve(&hook.plugin) else {
+        return (hook.prompt, hook.user);
+    };
+    access_from_intent(
+        name,
+        hook,
+        Needs {
+            prompt: p.needs_prompt,
+            user: p.needs_user,
+        },
+        &env.banner_seen,
+    )
+}
+
+fn access_from_intent(
+    name: &str,
+    hook: &crate::config::HookCfg,
+    needs: Needs,
+    banner_seen: &std::sync::Mutex<std::collections::HashSet<String>>,
+) -> (crate::config::PromptAccess, crate::config::UserAccess) {
     use crate::config::{PromptAccess, UserAccess};
     use busbar_contract::plugin_rows::NeedLevel;
 
     let grant_prompt = hook.prompt;
     let grant_user = hook.user;
-    let Some(p) = env.registry.resolve(&hook.plugin) else {
-        return (grant_prompt, grant_user);
-    };
-    let needs = Needs {
-        prompt: p.needs_prompt,
-        user: p.needs_user,
-    };
 
     let eff_prompt = match (grant_prompt, needs.prompt) {
         (PromptAccess::No, _) | (_, NeedLevel::No) => PromptAccess::No,
@@ -647,8 +728,7 @@ fn effective_access(
     if grant_prompt.can_rewrite() && !needs.prompt.wants_rewrite() {
         match hook_inert_gate_banner(name, &hook.plugin, hook.kind, needs.prompt) {
             Some(banner)
-                if env
-                    .banner_seen
+                if banner_seen
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .insert(name.to_string()) =>
@@ -691,6 +771,50 @@ fn projection_grants(name: &str, hook: &crate::config::HookCfg, env: &HookEnv) -
     (prompt.sends_prompt(), user.sends_user())
 }
 
+fn decision_definitions<'a>(
+    hooks: &'a std::collections::HashMap<String, crate::config::HookCfg>,
+    names: &'a [String],
+) -> Vec<(&'a str, &'a crate::config::HookCfg)> {
+    names
+        .iter()
+        .filter_map(|name| {
+            let hook = hooks.get(name)?;
+            (hook.kind == crate::config::HookKind::Gate && !hook.prompt.can_rewrite())
+                .then_some((name.as_str(), hook))
+        })
+        .collect()
+}
+
+fn tap_definitions<'a>(
+    hooks: &'a std::collections::HashMap<String, crate::config::HookCfg>,
+    names: &'a [String],
+    stage: crate::config::HookStage,
+) -> Vec<(&'a str, &'a crate::config::HookCfg)> {
+    names
+        .iter()
+        .filter_map(|name| {
+            let hook = hooks.get(name)?;
+            (hook.kind == crate::config::HookKind::Tap && hook.fires_at_stage(stage))
+                .then_some((name.as_str(), hook))
+        })
+        .collect()
+}
+
+fn rewrite_definitions<'a>(
+    hooks: &'a std::collections::HashMap<String, crate::config::HookCfg>,
+    names: &'a [String],
+    mut admitted: impl FnMut(&str, &crate::config::HookCfg) -> bool,
+) -> Vec<(&'a str, &'a crate::config::HookCfg)> {
+    names
+        .iter()
+        .filter_map(|name| {
+            let hook = hooks.get(name)?;
+            (hook.kind == crate::config::HookKind::Gate && admitted(name, hook))
+                .then_some((name.as_str(), hook))
+        })
+        .collect()
+}
+
 fn admits_rewrite(name: &str, hook: &crate::config::HookCfg, env: &HookEnv) -> bool {
     effective_access(name, hook, env).0.can_rewrite()
 }
@@ -702,9 +826,14 @@ fn gate_transport_named(
     _settings_version: u64,
 ) -> Option<(Arc<dyn RoutingPolicy>, ResolvedSettings)> {
     if let Some(opened) = env.route_calls.get(name).filter(|opened| {
-        opened.module == hook.plugin
-            && *opened.definition == hook.settings
-            && opened.budget == policy_timeout(hook.timeout_ms)
+        same_call_inputs(
+            &opened.module,
+            &opened.definition,
+            opened.budget,
+            &hook.plugin,
+            &hook.settings,
+            || policy_timeout(hook.timeout_ms),
+        )
     }) {
         return Some((
             crate::plane_driver::hooks::policy::HookPolicy::policy(opened.calls.clone(), name),
@@ -731,7 +860,21 @@ fn gate_transport_uncached(
     hook: &crate::config::HookCfg,
     env: &HookEnv,
 ) -> Option<(Arc<dyn RoutingPolicy>, ResolvedSettings)> {
-    let resolved = match env.resolve_hook_settings(&hook.plugin, &hook.settings) {
+    open_resolved(
+        name,
+        hook,
+        env.resolve_hook_settings(&hook.plugin, &hook.settings),
+        |resolved| env.open(&hook.plugin, resolved, name, hook.timeout_ms),
+    )
+}
+
+fn open_resolved<T>(
+    name: &str,
+    hook: &crate::config::HookCfg,
+    settings: Result<ResolvedSettings, String>,
+    open: impl FnOnce(&ResolvedSettings) -> Result<T, String>,
+) -> Option<(T, ResolvedSettings)> {
+    let resolved = match settings {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(
@@ -742,7 +885,7 @@ fn gate_transport_uncached(
             return None;
         }
     };
-    match env.open(&hook.plugin, &resolved, name, hook.timeout_ms) {
+    match open(&resolved) {
         Ok(policy) => Some((policy, resolved)),
         Err(e) => {
             tracing::warn!(
@@ -771,6 +914,13 @@ mod resolution {
     }
 
     impl Paths {
+        pub(super) fn matches(
+            &self,
+            registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
+        ) -> bool {
+            std::sync::Weak::ptr_eq(&self.registry, &std::sync::Arc::downgrade(registry))
+        }
+
         pub(super) fn new(
             registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         ) -> std::sync::Arc<Self> {
@@ -817,17 +967,27 @@ mod resolution {
         hook: &crate::config::HookCfg,
         env: &super::HookEnv,
     ) -> Option<u64> {
-        use busbar_contract::secret_fields;
-        use std::hash::{Hash as _, Hasher as _};
-
-        if !std::sync::Weak::ptr_eq(
-            &env.resolution_paths.registry,
-            &std::sync::Arc::downgrade(&env.registry),
-        ) {
+        if !env.resolution_paths.matches(&env.registry) {
             return None;
         }
 
         let paths = env.resolution_paths.modules.get(&hook.plugin)?;
+        key_for_settings(
+            std::sync::Arc::as_ptr(&env.registry) as *const u8 as usize,
+            name,
+            hook,
+            paths,
+        )
+    }
+
+    pub(super) fn key_for_settings(
+        registry: usize,
+        name: &str,
+        hook: &crate::config::HookCfg,
+        paths: &[String],
+    ) -> Option<u64> {
+        use busbar_contract::secret_fields;
+        use std::hash::{Hash as _, Hasher as _};
         let settings = serde_json::Value::Object(hook.settings.clone());
 
         if secret_fields::undeclared_reference(&settings, &[]).is_some()
@@ -839,7 +999,7 @@ mod resolution {
         }
         let mut h = std::collections::hash_map::DefaultHasher::new();
 
-        (std::sync::Arc::as_ptr(&env.registry) as *const u8 as usize).hash(&mut h);
+        registry.hash(&mut h);
         name.hash(&mut h);
         hook.plugin.hash(&mut h);
         super::policy_timeout(hook.timeout_ms).hash(&mut h);
@@ -978,20 +1138,31 @@ pub async fn push_configure(
     settings_version: u64,
     env: &HookEnv,
 ) -> Result<(), String> {
-    let Some((transport, resolved)) =
-        gate_transport_offloaded(name, hook, env, settings_version).await
-    else {
+    configure_resolved(
+        gate_transport_offloaded(name, hook, env, settings_version).await,
+        |transport, resolved| async move {
+            transport
+                .configure(
+                    name,
+                    &resolved,
+                    settings_version,
+                    applied_deadline(CONFIGURE_TIMEOUT_MS),
+                )
+                .await
+                .map_err(|e| e.to_string())
+        },
+    )
+    .await
+}
+
+async fn configure_resolved<T, F: std::future::Future<Output = Result<(), String>>>(
+    loaded: Option<(T, ResolvedSettings)>,
+    configure: impl FnOnce(T, ResolvedSettings) -> F,
+) -> Result<(), String> {
+    let Some((transport, resolved)) = loaded else {
         return Err("hook plugin unresolvable".to_string());
     };
-    transport
-        .configure(
-            name,
-            &resolved,
-            settings_version,
-            applied_deadline(CONFIGURE_TIMEOUT_MS),
-        )
-        .await
-        .map_err(|e| e.to_string())
+    configure(transport, resolved).await
 }
 
 const TRANSPORT_RESOLVE_TIMEOUT_MS: u64 = CONFIGURE_TIMEOUT_MS;
@@ -1177,14 +1348,9 @@ pub fn resolve_rewrite_hooks(
     settings_version: u64,
 ) -> Vec<(std::time::Duration, Arc<dyn RoutingPolicy>)> {
     let mut ranked: Vec<(u16, std::time::Duration, Arc<dyn RoutingPolicy>)> = Vec::new();
-    for name in global_hooks {
-        let Some(hook) = hooks.get(name) else {
-            continue;
-        };
-
-        if hook.kind != crate::config::HookKind::Gate || !admits_rewrite(name, hook, env) {
-            continue;
-        }
+    for (name, hook) in rewrite_definitions(hooks, global_hooks, |name, hook| {
+        admits_rewrite(name, hook, env)
+    }) {
         if let Some(ResolvedPolicy::Policy {
             policy,
             timeout,
@@ -1211,18 +1377,7 @@ pub fn resolve_tap_hooks(
     stage: crate::config::HookStage,
 ) -> Vec<TapEntry> {
     let mut ranked: Vec<(u16, TapEntry)> = Vec::new();
-    for name in global_hooks {
-        let Some(hook) = hooks.get(name) else {
-            continue;
-        };
-        if hook.kind != crate::config::HookKind::Tap {
-            continue;
-        }
-
-        if !hook.fires_at_stage(stage) {
-            continue;
-        }
-
+    for (name, hook) in tap_definitions(hooks, global_hooks, stage) {
         if let Some(ResolvedPolicy::Policy {
             policy,
             timeout,
@@ -1247,14 +1402,7 @@ pub fn resolve_gate_hooks(
     settings_version: u64,
 ) -> Vec<(u16, ResolvedPolicy)> {
     let mut ranked: Vec<(u16, ResolvedPolicy)> = Vec::new();
-    for name in global_hooks {
-        let Some(hook) = hooks.get(name) else {
-            continue;
-        };
-
-        if hook.kind != crate::config::HookKind::Gate || hook.prompt.can_rewrite() {
-            continue;
-        }
+    for (name, hook) in decision_definitions(hooks, global_hooks) {
         if let Some(rp) = resolve_gate_transport(name, hook, hooks, env, settings_version) {
             ranked.push((hook.priority, rp));
         }
@@ -1451,4 +1599,75 @@ pub struct FallbackHook {
     pub send_prompt: bool,
     pub send_user: bool,
     pub on_empty: crate::config::PolicyOnError,
+}
+
+#[cfg(test)]
+mod call_input_tests {
+    use super::{policy_timeout, same_call_inputs};
+
+    #[test]
+    fn timeout_only_changes_refuse_the_old_instance_in_every_reuse_path() {
+        let settings = serde_json::json!({"url": "http://127.0.0.1:1/"})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(same_call_inputs(
+            "webrequest",
+            &settings,
+            policy_timeout(11),
+            "webrequest",
+            &settings,
+            || policy_timeout(11)
+        ));
+        assert!(!same_call_inputs(
+            "webrequest",
+            &settings,
+            policy_timeout(11),
+            "webrequest",
+            &settings,
+            || policy_timeout(29)
+        ));
+        assert!(!same_call_inputs(
+            "webrequest",
+            &settings,
+            policy_timeout(11),
+            "ranking",
+            &settings,
+            || policy_timeout(11)
+        ));
+        let changed = serde_json::json!({"url": "http://127.0.0.1:2/"})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(!same_call_inputs(
+            "webrequest",
+            &settings,
+            policy_timeout(11),
+            "webrequest",
+            &changed,
+            || policy_timeout(11)
+        ));
+    }
+
+    #[test]
+    fn implicit_and_explicit_default_reuse_the_same_effective_budget() {
+        let settings = Default::default();
+        let default = crate::limits::default_policy_timeout_ms();
+        assert!(same_call_inputs(
+            "hook",
+            &settings,
+            policy_timeout(0),
+            "hook",
+            &settings,
+            || policy_timeout(default)
+        ));
+        assert!(same_call_inputs(
+            "hook",
+            &settings,
+            policy_timeout(default),
+            "hook",
+            &settings,
+            || policy_timeout(0)
+        ));
+    }
 }

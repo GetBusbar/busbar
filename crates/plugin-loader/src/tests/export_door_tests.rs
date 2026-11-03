@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use busbar_contract::abi::export::ExportStream;
 use busbar_contract::export_calls::{parse_families, ServeRequest};
@@ -9,8 +9,40 @@ use busbar_contract::export_calls::{parse_families, ServeRequest};
 use super::*;
 use crate::dispatch::{load_linked, Bind, DispatchConfig, LinkedRow, NoSink};
 
-pub(crate) const SCRAPE_DOOR: busbar_contract::abi::mechanism::door::DoorFn =
-    crate::both_ways::export_scrape_fixture::door::door;
+pub(crate) const SCRAPE_DOOR: busbar_contract::abi::mechanism::door::DoorFn = scrape_door;
+
+extern "C" fn scrape_door() -> &'static busbar_contract::abi::mechanism::door::Door {
+    use busbar_contract::abi::mechanism::DOOR_SYMBOL;
+    use busbar_contract::abi::sdk::door::RawDoorFn;
+    static IMAGE: OnceLock<(libloading::Library, RawDoorFn)> = OnceLock::new();
+    let image = IMAGE.get_or_init(|| {
+        let path = std::env::var_os("BUSBAR_TEST_EXPORT_PROMETHEUS_CDYLIB")
+            .map(std::path::PathBuf::from)
+            .expect(
+                "BUSBAR_TEST_EXPORT_PROMETHEUS_CDYLIB must name the fresh actual Prometheus image",
+            );
+        assert!(
+            path.is_absolute() && path.is_file(),
+            "the actual Prometheus image must be an absolute file: {}",
+            path.display()
+        );
+        let library = crate::dlopen_on_worker(path.as_os_str())
+            .expect("the actual Prometheus image loads on the plugin thread");
+        // SAFETY: the selected product image exports the mechanism's typed symbol.
+        // IMAGE retains the library while its immutable descriptor and code are used.
+        let entry = unsafe {
+            *library
+                .get::<RawDoorFn>(DOOR_SYMBOL)
+                .expect("the actual Prometheus door")
+        };
+        (library, entry)
+    });
+    let door = crate::dispatch::load::enter_door(image.1);
+    crate::dispatch::load::validate_door::<Export>(door)
+        .expect("the actual Prometheus descriptor validates");
+    // SAFETY: the validated descriptor is immutable and IMAGE keeps its library alive.
+    unsafe { &*door }
+}
 
 fn linked() -> (Plugin<Export>, Arc<Dispatcher>) {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));

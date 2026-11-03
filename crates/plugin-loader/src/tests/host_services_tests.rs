@@ -48,7 +48,21 @@ impl Provider {
     }
 }
 
-impl crate::services_double::ServicesDouble for Provider {
+impl HostServices for Provider {
+    fn trust_sight(
+        &self,
+        _caller: &Caller,
+        _counterparty: &str,
+        _hash: &str,
+        _later: Later,
+    ) -> Ran {
+        panic!("unexpected HostServices operation in raw ABI boundary control")
+    }
+
+    fn session_emit(&self, _caller: &Caller, _session: u64, _bytes: &[u8]) -> Stored {
+        panic!("unexpected HostServices operation in raw ABI boundary control")
+    }
+
     fn now(&self) -> Reading {
         Reading {
             wall_ns: 1_700_000_000_000_000_000,
@@ -381,7 +395,7 @@ const LISTED: [(&[u8], &[u8]); 2] = [(b"p/1", b"a"), (b"p/2", b"b")];
 
 struct Route {
     store: Arc<ServiceStore>,
-    provider: Arc<crate::services_double::Double<Provider>>,
+    provider: Arc<Provider>,
     wakes: Mutex<Vec<Ticket>>,
 
     auth: std::sync::OnceLock<Arc<dyn crate::dispatch::auth_handle::AuthHandleHost>>,

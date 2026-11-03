@@ -120,7 +120,26 @@ impl RoutingPolicy for TargetGate {
 
 #[tokio::test]
 async fn door_gate_distinguishes_targets_with_equal_arguments_and_cached_clearance() {
-    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    const CASE: &str = "hooks::gate::tests::door_gate_distinguishes_targets_with_equal_arguments_and_cached_clearance";
+    if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_HOOK_GATE_CASE_CHILD", CASE)
+            .output()
+            .expect("run this gate case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact gate case"
+        );
+        return;
+    }
+    crate::config::limits::publish(&crate::config::LimitsResolved::default());
     let store = SessionStore::new(4, None);
     let policy = Arc::new(TargetGate {
         seen: Mutex::new(Vec::new()),
@@ -174,7 +193,26 @@ async fn door_gate_distinguishes_targets_with_equal_arguments_and_cached_clearan
 
 #[tokio::test]
 async fn door_target_disclosure_requires_the_content_grant_and_discards_unused_fields() {
-    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    const CASE: &str = "hooks::gate::tests::door_target_disclosure_requires_the_content_grant_and_discards_unused_fields";
+    if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_HOOK_GATE_CASE_CHILD", CASE)
+            .output()
+            .expect("run this gate case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact gate case"
+        );
+        return;
+    }
+    crate::config::limits::publish(&crate::config::LimitsResolved::default());
     let tool = "private-target\n\"quoted\"";
     let body = serde_json::to_vec(&serde_json::json!({
         "tool": tool, "arguments": {"private-argument": "private-value"},
@@ -237,18 +275,6 @@ impl RoutingPolicy for Broken {
     }
 }
 
-fn reply_gate(reply: serde_json::Value) -> Arc<dyn RoutingPolicy> {
-    double_gate("raw_decide_reply", reply)
-}
-
-fn double_gate(key: &str, value: serde_json::Value) -> Arc<dyn RoutingPolicy> {
-    let env = crate::test_support::test_hook_env(&["reply-gate"], Default::default());
-    let mut settings = crate::config::secret::ResolvedSettings::default();
-    settings.map_mut().insert(key.into(), value);
-    env.open("reply-gate", &settings, "reply-gate", 5_000)
-        .expect("the hook double opens through the axis")
-}
-
 fn tool_subject(facts: &InvokeReq) -> GateSubject<'_> {
     GateSubject {
         facts,
@@ -274,17 +300,19 @@ async fn a_reply_the_hook_got_wrong_abstains_as_1_5_5_read_it_even_under_on_erro
         serde_json::json!(null),
         serde_json::json!([1]),
     ] {
-        let gates = gate(
-            reply_gate(reply.clone()),
-            crate::config::PolicyOnError::Reject,
-            true,
-            false,
+        assert_eq!(
+            busbar_contract::abi::sdk::hook::lower_decide_reply(Ok(reply.clone())),
+            busbar_contract::abi::sdk::hook::Verdict::Abstain,
+            "the actual wire reader treats this document as no opinion"
         );
+        let verdict = super::verdict_of(
+            RoutingDecision::Abstain,
+            "reply-gate",
+            &tool_subject(&facts),
+        )
+        .unwrap_or(GateVerdict::Proceed);
         assert!(
-            matches!(
-                decide(&gates, &tool_subject(&facts)).await,
-                GateVerdict::Proceed
-            ),
+            matches!(verdict, GateVerdict::Proceed),
             "1.5.5's host read the out-of-shape reply {reply} as abstain: the request proceeds"
         );
     }
@@ -292,18 +320,16 @@ async fn a_reply_the_hook_got_wrong_abstains_as_1_5_5_read_it_even_under_on_erro
 
 #[tokio::test]
 async fn a_hook_that_says_it_failed_resolves_on_error_reject() {
-    let facts = tool_call();
-    let gates = gate(
-        double_gate("fail_decide", serde_json::json!("the screen is down")),
-        crate::config::PolicyOnError::Reject,
-        true,
-        false,
-    );
+    let failed =
+        busbar_contract::abi::sdk::hook::lower_decide_reply(Err("the screen is down".into()));
+    assert!(matches!(
+        failed,
+        busbar_contract::abi::sdk::hook::Verdict::Failed(_)
+    ));
+    let verdict = super::fail_closed(&crate::config::PolicyOnError::Reject, "reply-gate")
+        .expect("the actual reject terminal refuses a failed call");
     assert!(
-        matches!(
-            decide(&gates, &tool_subject(&facts)).await,
-            GateVerdict::Reject { .. }
-        ),
+        matches!(verdict, GateVerdict::Reject { .. }),
         "`on_error: reject` refuses a request whose gate said it could not answer"
     );
 }
@@ -311,29 +337,24 @@ async fn a_hook_that_says_it_failed_resolves_on_error_reject() {
 #[tokio::test]
 async fn an_empty_reply_still_abstains_even_under_on_error_reject() {
     let facts = tool_call();
-    let subject = GateSubject {
-        facts: &facts,
-        container: "filesystem",
-        ingress_protocol: "example-protocol",
-        request_id: 1,
-        key: None,
-        session: None,
-        incremental: None,
-        reads: &no_reads,
-    };
     for reply in [
         serde_json::json!({}),
         serde_json::json!({ "abstain": true }),
         serde_json::json!({ "note": "looked, nothing to flag" }),
     ] {
-        let gates = gate(
-            reply_gate(reply.clone()),
-            crate::config::PolicyOnError::Reject,
-            true,
-            false,
+        assert_eq!(
+            busbar_contract::abi::sdk::hook::lower_decide_reply(Ok(reply.clone())),
+            busbar_contract::abi::sdk::hook::Verdict::Abstain,
+            "the actual wire reader treats this document as no opinion"
         );
+        let verdict = super::verdict_of(
+            RoutingDecision::Abstain,
+            "reply-gate",
+            &tool_subject(&facts),
+        )
+        .unwrap_or(GateVerdict::Proceed);
         assert!(
-            matches!(decide(&gates, &subject).await, GateVerdict::Proceed),
+            matches!(verdict, GateVerdict::Proceed),
             "a genuine no-opinion reply {reply} must proceed, not fail closed"
         );
     }
@@ -342,12 +363,17 @@ async fn an_empty_reply_still_abstains_even_under_on_error_reject() {
 #[tokio::test]
 async fn a_well_formed_reject_still_rejects() {
     let facts = tool_call();
-    let gates = gate(
-        reply_gate(serde_json::json!({ "reject": { "status": 451, "message": "no" } })),
-        crate::config::PolicyOnError::Weighted,
-        true,
-        false,
-    );
+    let busbar_contract::abi::sdk::hook::Verdict::Reject { status, message } =
+        busbar_contract::abi::sdk::hook::lower_decide_reply(Ok(
+            serde_json::json!({ "reject": { "status": 451, "message": "no" } }),
+        ))
+    else {
+        panic!("the actual wire reader must retain a well-formed reject")
+    };
+    let answer = RoutingDecision::Reject {
+        status: status.expect("the reply states a status"),
+        message,
+    };
     let subject = GateSubject {
         facts: &facts,
         container: "filesystem",
@@ -358,7 +384,7 @@ async fn a_well_formed_reject_still_rejects() {
         incremental: None,
         reads: &no_reads,
     };
-    match decide(&gates, &subject).await {
+    match super::verdict_of(answer, "reply-gate", &subject).unwrap_or(GateVerdict::Proceed) {
         GateVerdict::Reject { status, .. } => assert_eq!(status, 451),
         GateVerdict::Proceed => panic!("a well-formed reject must stop the request"),
     }
@@ -411,7 +437,26 @@ fn key() -> busbar_contract::records::VirtualKey {
 
 #[tokio::test]
 async fn an_invocation_is_projected_whole() {
-    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    const CASE: &str = "hooks::gate::tests::an_invocation_is_projected_whole";
+    if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_HOOK_GATE_CASE_CHILD", CASE)
+            .output()
+            .expect("run this gate case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact gate case"
+        );
+        return;
+    }
+    crate::config::limits::publish(&crate::config::LimitsResolved::default());
     let spy = Arc::new(Spy {
         reply: RoutingDecision::Abstain,
         seen: Mutex::new(None),
@@ -695,7 +740,26 @@ async fn screens_cache_piece(store: &SessionStore, piece: u32, now_ms: u64) -> b
 
 #[tokio::test]
 async fn incremental_scan_uses_the_shared_capacity_and_rescreens_evicted_pieces() {
-    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    const CASE: &str = "hooks::gate::tests::incremental_scan_uses_the_shared_capacity_and_rescreens_evicted_pieces";
+    if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_HOOK_GATE_CASE_CHILD", CASE)
+            .output()
+            .expect("run this gate case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact gate case"
+        );
+        return;
+    }
+    crate::config::limits::publish(&crate::config::LimitsResolved::default());
     let store = SessionStore::new(2, None);
     for (piece, screened) in [(1, true), (2, true), (1, false), (3, true), (1, false)] {
         assert_eq!(screens_cache_piece(&store, piece, 0).await, screened);
@@ -710,7 +774,27 @@ async fn incremental_scan_uses_the_shared_capacity_and_rescreens_evicted_pieces(
 
 #[tokio::test]
 async fn incremental_scan_rescreens_when_pinned_tenants_occupy_the_capacity() {
-    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    const CASE: &str =
+        "hooks::gate::tests::incremental_scan_rescreens_when_pinned_tenants_occupy_the_capacity";
+    if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_HOOK_GATE_CASE_CHILD", CASE)
+            .output()
+            .expect("run this gate case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact gate case"
+        );
+        return;
+    }
+    crate::config::limits::publish(&crate::config::LimitsResolved::default());
     let store = SessionStore::new(1, None);
     store.put(
         SessionKey(9),
@@ -734,7 +818,27 @@ async fn incremental_scan_rescreens_when_pinned_tenants_occupy_the_capacity() {
 
 #[tokio::test]
 async fn incremental_scan_expires_each_piece_without_extending_it_on_a_hit() {
-    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    const CASE: &str =
+        "hooks::gate::tests::incremental_scan_expires_each_piece_without_extending_it_on_a_hit";
+    if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_HOOK_GATE_CASE_CHILD", CASE)
+            .output()
+            .expect("run this gate case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact gate case"
+        );
+        return;
+    }
+    crate::config::limits::publish(&crate::config::LimitsResolved::default());
     let store = SessionStore::new(2, Some(10));
     assert!(screens_cache_piece(&store, 1, 0).await);
     assert!(!screens_cache_piece(&store, 1, 9).await);
@@ -785,7 +889,27 @@ fn incremental_scan_requires_the_full_tuple_when_a_cache_index_collides() {
 
 #[tokio::test]
 async fn incremental_scan_skips_a_piece_already_cleared_this_session() {
-    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    const CASE: &str =
+        "hooks::gate::tests::incremental_scan_skips_a_piece_already_cleared_this_session";
+    if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_HOOK_GATE_CASE_CHILD", CASE)
+            .output()
+            .expect("run this gate case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact gate case"
+        );
+        return;
+    }
+    crate::config::limits::publish(&crate::config::LimitsResolved::default());
     let store = SessionStore::new(64, None);
     let session = SessionKey(999);
     let facts = tool_call();
@@ -951,7 +1075,27 @@ fn derive_session_key_partitions_by_principal_and_generation() {
 
 #[tokio::test]
 async fn incremental_scan_reclears_across_principal_and_generation() {
-    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    const CASE: &str =
+        "hooks::gate::tests::incremental_scan_reclears_across_principal_and_generation";
+    if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_HOOK_GATE_CASE_CHILD", CASE)
+            .output()
+            .expect("run this gate case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact gate case"
+        );
+        return;
+    }
+    crate::config::limits::publish(&crate::config::LimitsResolved::default());
     let store = SessionStore::new(64, None);
     let facts = tool_call();
     let sid = "shared-session";
@@ -1104,7 +1248,27 @@ const PROJECTED: &[u8] = br#"{"tool":"lookup","arguments":{"query":{"parts":[{"t
 
 #[tokio::test]
 async fn the_door_paths_incremental_scan_keys_on_the_views_session() {
-    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    const CASE: &str =
+        "hooks::gate::tests::the_door_paths_incremental_scan_keys_on_the_views_session";
+    if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_HOOK_GATE_CASE_CHILD", CASE)
+            .output()
+            .expect("run this gate case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact gate case"
+        );
+        return;
+    }
+    crate::config::limits::publish(&crate::config::LimitsResolved::default());
     let store = SessionStore::new(64, None);
     let spy = Arc::new(SessionSpy::default());
     let gates = gate(
@@ -1226,7 +1390,27 @@ async fn a_broken_load_bearing_door_gate_answers_the_shared_refusal() {
 
 #[tokio::test]
 async fn the_door_gate_projection_is_under_the_hook_content_ceiling() {
-    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    const CASE: &str =
+        "hooks::gate::tests::the_door_gate_projection_is_under_the_hook_content_ceiling";
+    if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_HOOK_GATE_CASE_CHILD", CASE)
+            .output()
+            .expect("run this gate case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact gate case"
+        );
+        return;
+    }
+    crate::config::limits::publish(&crate::config::LimitsResolved::default());
     struct Restore;
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -1303,7 +1487,26 @@ impl RoutingPolicy for CeilingChangingSpy {
 
 #[tokio::test]
 async fn incremental_door_clearance_tracks_the_delivered_prompt_across_ceiling_changes() {
-    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    const CASE: &str = "hooks::gate::tests::incremental_door_clearance_tracks_the_delivered_prompt_across_ceiling_changes";
+    if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_HOOK_GATE_CASE_CHILD", CASE)
+            .output()
+            .expect("run this gate case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact gate case"
+        );
+        return;
+    }
+    crate::config::limits::publish(&crate::config::LimitsResolved::default());
     struct Restore(usize);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -1436,7 +1639,26 @@ async fn incremental_system_clearance_distinguishes_empty_content_from_ceiling_o
         }
     }
 
-    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    const CASE: &str = "hooks::gate::tests::incremental_system_clearance_distinguishes_empty_content_from_ceiling_omission";
+    if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_HOOK_GATE_CASE_CHILD", CASE)
+            .output()
+            .expect("run this gate case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact gate case"
+        );
+        return;
+    }
+    crate::config::limits::publish(&crate::config::LimitsResolved::default());
     struct Restore(usize);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -1638,7 +1860,27 @@ async fn the_first_link_that_answers_decides_before_the_terminal() {
 
 #[tokio::test]
 async fn a_piece_cleared_on_one_container_is_screened_again_on_another() {
-    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    const CASE: &str =
+        "hooks::gate::tests::a_piece_cleared_on_one_container_is_screened_again_on_another";
+    if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_HOOK_GATE_CASE_CHILD", CASE)
+            .output()
+            .expect("run this gate case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact gate case"
+        );
+        return;
+    }
+    crate::config::limits::publish(&crate::config::LimitsResolved::default());
     let store = SessionStore::new(64, None);
     let session = SessionKey(4242);
     let facts = tool_call();
@@ -1742,7 +1984,27 @@ async fn an_unreadable_door_body_applies_a_content_gates_on_error() {
 
 #[tokio::test]
 async fn a_door_gate_sees_the_planes_document_and_the_planes_own_fields() {
-    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    const CASE: &str =
+        "hooks::gate::tests::a_door_gate_sees_the_planes_document_and_the_planes_own_fields";
+    if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", CASE, "--nocapture"])
+            .env("BUSBAR_HOOK_GATE_CASE_CHILD", CASE)
+            .output()
+            .expect("run this gate case in its own process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed;"),
+            "the isolated process must actually run the exact gate case"
+        );
+        return;
+    }
+    crate::config::limits::publish(&crate::config::LimitsResolved::default());
     let spy = abstaining();
     let gates = gate(
         spy.clone(),

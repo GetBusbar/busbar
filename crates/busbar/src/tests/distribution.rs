@@ -262,3 +262,226 @@ mod config_price_activation;
 
 #[path = "admin_application/config_secret_transaction.rs"]
 mod config_secret_transaction;
+
+#[path = "admin_application/service_group_deletion.rs"]
+mod service_group_deletion;
+
+#[path = "admin_application/service_groups.rs"]
+mod service_groups;
+
+#[path = "admin_application/service_hooks.rs"]
+mod service_hooks;
+
+#[path = "admin_application/service_named_defs.rs"]
+mod service_named_defs;
+
+#[path = "admin_application/service_plugin_policy.rs"]
+mod service_plugin_policy;
+
+#[path = "admin_application/service_hook_probe.rs"]
+mod service_hook_probe;
+
+#[path = "admin_application/service_plugin_integration.rs"]
+mod service_plugin_integration;
+
+#[path = "admin_application/service_plane_usage.rs"]
+mod service_plane_usage;
+
+#[path = "admin_application/service_group_usage.rs"]
+mod service_group_usage;
+
+#[path = "kernel_application/misc_boot.rs"]
+mod misc_boot;
+
+#[path = "kernel_application/misc_ingress_terminal.rs"]
+mod misc_ingress_terminal;
+
+#[path = "kernel_application/misc_operation.rs"]
+mod misc_operation;
+
+#[path = "kernel_application/misc_router_door.rs"]
+mod misc_router_door;
+
+#[path = "kernel_application/misc_router_session.rs"]
+mod misc_router_session;
+
+#[path = "kernel_application/auth_admin_tests.rs"]
+mod kernel_application_auth_admin_tests;
+
+#[path = "kernel_application/exports_projection.rs"]
+mod kernel_application_exports_projection;
+
+#[path = "kernel_application/hooks_runtime_replies.rs"]
+mod kernel_application_hooks_runtime_replies;
+
+#[path = "admin_application/admin_config_history_and_overlay.rs"]
+mod admin_application_admin_config_history_and_overlay;
+
+#[path = "admin_application/admin_corrupt_overlay_refusals.rs"]
+mod admin_application_admin_corrupt_overlay_refusals;
+
+#[path = "admin_application/admin_hook_crud_contracts.rs"]
+mod admin_application_admin_hook_crud_contracts;
+
+#[path = "admin_application/admin_hook_overlay_reset.rs"]
+mod admin_application_admin_hook_overlay_reset;
+
+#[path = "admin_application/admin_hook_read_metadata.rs"]
+mod admin_application_admin_hook_read_metadata;
+
+#[path = "admin_application/admin_key_mutation_gates.rs"]
+mod admin_application_admin_key_mutation_gates;
+
+#[path = "admin_application/admin_key_store_selection.rs"]
+mod admin_application_admin_key_store_selection;
+
+#[path = "admin_application/admin_named_map_scope.rs"]
+mod admin_application_admin_named_map_scope;
+
+#[path = "admin_application/admin_operation_namespaces.rs"]
+mod admin_application_admin_operation_namespaces;
+
+#[path = "admin_application/admin_overlay_boundaries.rs"]
+mod admin_application_admin_overlay_boundaries;
+
+#[path = "admin_application/admin_overlay_persist_failures.rs"]
+mod admin_application_admin_overlay_persist_failures;
+
+#[path = "admin_application/admin_restart_idempotency.rs"]
+mod admin_application_admin_restart_idempotency;
+
+#[path = "admin_application/admin_rotate_pool_ceilings.rs"]
+mod admin_application_admin_rotate_pool_ceilings;
+
+#[path = "admin_application/admin_scope_ladder.rs"]
+mod admin_application_admin_scope_ladder;
+
+#[path = "admin_application/admin_usage_model_key.rs"]
+mod admin_application_admin_usage_model_key;
+
+#[path = "../root/tests/serve_a2a_parity.rs"]
+mod a2a_actual_parity;
+
+#[path = "kernel_application/auth_data_gate_tests.rs"]
+mod kernel_application_auth_data_gate_tests;
+
+#[path = "kernel_application/central2_disk_config.rs"]
+mod kernel_application_central2_disk_config;
+
+#[path = "kernel_application/central2_linked_products.rs"]
+mod kernel_application_central2_linked_products;
+
+#[path = "kernel_application/central2_preflight.rs"]
+mod kernel_application_central2_preflight;
+
+#[path = "kernel_application/central2_provider_boot.rs"]
+mod kernel_application_central2_provider_boot;
+
+#[path = "kernel_application/central2_rate_apply.rs"]
+mod kernel_application_central2_rate_apply;
+
+#[path = "kernel_application/central2_root_rules.rs"]
+mod kernel_application_central2_root_rules;
+
+#[path = "kernel_application/central2_router_boundaries.rs"]
+mod kernel_application_central2_router_boundaries;
+
+#[path = "kernel_application/central2_validator_order.rs"]
+mod kernel_application_central2_validator_order;
+
+#[path = "kernel_application/misc_snapshot_fields.rs"]
+mod kernel_application_misc_snapshot_fields;
+
+#[path = "admin_application/admin_warning_contracts.rs"]
+mod admin_application_admin_warning_contracts;
+
+#[path = "admin_application/service_bootstrap_rollback.rs"]
+mod admin_application_service_bootstrap_rollback;
+
+#[path = "admin_application/service_cross_usage.rs"]
+mod admin_application_service_cross_usage;
+
+#[path = "admin_application/service_store_usage.rs"]
+mod admin_application_service_store_usage;
+
+#[path = "admin_application/service_usage_adjustment.rs"]
+mod admin_application_service_usage_adjustment;
+
+#[path = "kernel_application/central2_handler_panic.rs"]
+mod kernel_application_central2_handler_panic;
+
+#[path = "kernel_application/central2_generation_limits.rs"]
+mod kernel_application_central2_generation_limits;
+
+#[path = "admin_application/admin_hook_replacement.rs"]
+mod admin_application_admin_hook_replacement;
+
+#[path = "kernel_application/export_scrape_crossings.rs"]
+mod kernel_application_export_scrape_crossings;
+
+#[path = "kernel_application/external_preflight.rs"]
+mod kernel_application_external_preflight;
+
+#[path = "admin_application/admin_credential_cache.rs"]
+mod admin_application_admin_credential_cache;
+
+#[path = "admin_application/admin_hook_settings_ack.rs"]
+mod admin_application_admin_hook_settings_ack;
+
+#[path = "admin_application/admin_openapi_route_parity.rs"]
+mod admin_application_admin_openapi_route_parity;
+
+#[path = "admin_application/admin_stuck_key_sentinel.rs"]
+mod admin_application_admin_stuck_key_sentinel;
+
+#[path = "kernel_application/auth_login_tests.rs"]
+mod kernel_application_auth_login_tests;
+
+#[path = "kernel_application/central2_config_export.rs"]
+mod kernel_application_central2_config_export;
+
+#[path = "admin_application/admin_custody_outcomes.rs"]
+mod admin_application_admin_custody_outcomes;
+
+#[path = "kernel_application/external_plane_driver_actual.rs"]
+mod kernel_application_external_plane_driver_actual;
+
+#[path = "admin_application/admin_hook_timeout.rs"]
+mod admin_application_admin_hook_timeout;
+
+#[path = "kernel_application/external_accepted_events.rs"]
+mod kernel_application_external_accepted_events;
+
+#[path = "kernel_application/recovery_flusher_actual.rs"]
+mod kernel_application_recovery_flusher_actual;
+
+#[path = "kernel_application/auth_governance_routes.rs"]
+mod kernel_application_auth_governance_routes;
+
+#[path = "kernel_application/auth_linked_contracts.rs"]
+mod kernel_application_auth_linked_contracts;
+
+#[path = "kernel_application/plugin_routes_actual.rs"]
+mod kernel_application_plugin_routes_actual;
+
+#[path = "kernel_application/central2_inbound_tickets.rs"]
+mod kernel_application_central2_inbound_tickets;
+
+#[path = "kernel_application/central2_inbound_keys.rs"]
+mod kernel_application_central2_inbound_keys;
+
+#[path = "kernel_application/central2_inbound_generations.rs"]
+mod kernel_application_central2_inbound_generations;
+
+#[path = "kernel_application/central2_inbound_custody.rs"]
+mod kernel_application_central2_inbound_custody;
+
+#[path = "kernel_application/central2_inbound_signed.rs"]
+mod kernel_application_central2_inbound_signed;
+
+#[path = "kernel_application/central2_inbound_refusals.rs"]
+mod kernel_application_central2_inbound_refusals;
+
+#[cfg(linked_operator_auth)]
+#[path = "kernel_application/auth_verify_both_origins.rs"]
+mod kernel_application_auth_verify_both_origins;

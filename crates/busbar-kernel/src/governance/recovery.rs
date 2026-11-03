@@ -1140,6 +1140,18 @@ impl super::GovState {
             .map_err(|error| super::RecordStoreError(error.to_string()))
     }
 
+    pub(super) fn verify_current_recovery_checkpoint(
+        &self,
+        event: &RecoveryEvent,
+    ) -> super::RecordStoreResult<()> {
+        self.recovery_book
+            .sink
+            .get()
+            .ok_or_else(|| super::RecordStoreError("recovery Store is not attached".into()))?
+            .verify_checkpoint(event)
+            .map_err(|error| super::RecordStoreError(error.to_string()))
+    }
+
     pub(super) fn verify_recovery_checkpoint(
         &self,
         event: &RecoveryEvent,
@@ -1301,6 +1313,32 @@ pub(in crate::governance) mod tests {
                 Ok(())
             }
         }
+        fn verify_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+            let chain = self
+                .foreign
+                .lock()
+                .unwrap()
+                .get(&event.operation_id)
+                .map(|(_, events)| events.clone())
+                .unwrap_or_else(|| {
+                    self.selected
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|selected| selected.operation_id == event.operation_id)
+                        .cloned()
+                        .collect()
+                });
+            let present = chain.iter().any(|selected| selected == event);
+            summarize_recovery_chains(chain)?;
+            if present {
+                Ok(())
+            } else {
+                Err(RecoveryError::Conflict(
+                    "checkpoint is not currently selected".into(),
+                ))
+            }
+        }
         fn inspect_foreign(&self) -> Result<Vec<RecoveryInspection>, RecoveryError> {
             Ok(self
                 .foreign
@@ -1392,7 +1430,8 @@ pub(in crate::governance) mod tests {
                         .and_then(|(_, events)| events.first().cloned())
                 })
                 .unwrap_or_else(|| event.clone());
-            if event.origin_reference()? != genesis.origin_reference()?
+            if (event.revision == 0 && event != &genesis)
+                || event.origin_reference()? != genesis.origin_reference()?
                 || event.kind != genesis.kind
                 || event.body_fingerprint != genesis.body_fingerprint
                 || event.first_sent_at_ms != genesis.first_sent_at_ms
@@ -1665,6 +1704,7 @@ pub(in crate::governance) mod tests {
                 0,
                 negative,
                 super::super::ExactUsageDelta::default(),
+                &gov.capture_foreign_settled_snapshot(),
             )
             .unwrap();
         assert!(captured.child.is_none());
@@ -1771,6 +1811,7 @@ pub(in crate::governance) mod tests {
                     ..Default::default()
                 },
                 Default::default(),
+                &gov.capture_foreign_settled_snapshot(),
             )
             .unwrap();
         assert!(captured.child.is_none());
@@ -1782,6 +1823,7 @@ pub(in crate::governance) mod tests {
                 0,
                 captured.deferred_plain,
                 captured.deferred_dated,
+                &gov.capture_foreign_settled_snapshot(),
             )
             .unwrap();
         assert!(remaining.child.is_none());
@@ -2285,6 +2327,7 @@ pub(in crate::governance) mod tests {
                     ..Default::default()
                 },
                 Default::default(),
+                &gov.capture_foreign_settled_snapshot(),
             )
             .unwrap();
         let prerequisite = captured.prerequisite.as_ref().unwrap().clone();
@@ -2334,5 +2377,196 @@ pub(in crate::governance) mod tests {
             "a different legal candidate at that revision is not selected ancestry"
         );
         assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 4);
+    }
+    #[test]
+    fn reused_host_flushes_fresh_refund_only_after_exact_foreign_settled_subtree_proof() {
+        use super::super::{GovState, RecordStore, VirtualKey};
+        for mode in 0..5 {
+            let store = crate::real_store::store();
+            let sink = Arc::new(Journal::default());
+            let key_id = format!("vk_foreign_snapshot_{mode}");
+            let key = VirtualKey {
+                id: key_id.clone(),
+                generation_hash: super::super::binding_marker(&key_id, "generation"),
+                enabled: true,
+                ..Default::default()
+            };
+            store.put_key(&key).unwrap();
+            let first = GovState::new(store.clone(), None).unwrap();
+            first.attach_recovery_sink(sink.clone()).unwrap();
+            let total = if mode == 4 {
+                u64::MAX
+            } else {
+                i64::MAX as u64 + 7
+            };
+            let root = GovState::usage_recovery_child(
+                &key.id,
+                0,
+                super::super::ExactUsageDelta {
+                    requests: i128::from(total),
+                    billable_requests: i128::from(total),
+                    ..Default::default()
+                },
+                Default::default(),
+            )
+            .unwrap()
+            .unwrap();
+            let initial = first
+                .new_recovery_event(
+                    root.operation_id,
+                    root.kind,
+                    root.body_fingerprint,
+                    RecoveryState::Intent,
+                    root.first_sent_at_ms,
+                    root.payload,
+                )
+                .unwrap();
+            first.keep_recovery_event(&initial).unwrap();
+            let mut custody: super::super::raw_recovery::UsageCustody =
+                serde_json::from_slice(&initial.payload).unwrap();
+            store
+                .add_usage_batch_deduped(
+                    busbar_contract::abi::store::OpId(initial.operation_id),
+                    &[(key.id.as_str(), 0, custody.chunk_plain.clone())],
+                )
+                .unwrap();
+            let remainder = total - i64::MAX as u64;
+            let child = GovState::usage_recovery_child(
+                &key.id,
+                0,
+                super::super::ExactUsageDelta {
+                    requests: i128::from(remainder),
+                    billable_requests: i128::from(remainder),
+                    ..Default::default()
+                },
+                Default::default(),
+            )
+            .unwrap()
+            .unwrap();
+            custody.plain = Default::default();
+            custody.dated = Default::default();
+            custody.handoffs.push(child.clone());
+            let applied = first
+                .new_recovery_event(
+                    initial.operation_id,
+                    initial.kind,
+                    initial.body_fingerprint,
+                    RecoveryState::Applied,
+                    initial.first_sent_at_ms,
+                    serde_json::to_vec(&custody).unwrap(),
+                )
+                .unwrap();
+            first.keep_recovery_event(&applied).unwrap();
+            first.drive_recovery_children(&applied).unwrap();
+            let child_initial = first.recovery_event(child.operation_id).unwrap();
+            let mut unselected = None;
+            match mode {
+                1 => {} // The actual foreign current head remains Intent.
+                2 => {
+                    let mut raw: super::super::raw_recovery::UsageCustody =
+                        serde_json::from_slice(&child_initial.payload).unwrap();
+                    store
+                        .add_usage_batch_deduped(
+                            busbar_contract::abi::store::OpId(child.operation_id),
+                            &[(key.id.as_str(), 0, raw.chunk_plain.clone())],
+                        )
+                        .unwrap();
+                    raw.plain = Default::default();
+                    raw.dated = Default::default();
+                    let candidate = child_initial
+                        .checkpoint(RecoveryState::Applied, serde_json::to_vec(&raw).unwrap())
+                        .unwrap();
+                    unselected = Some(
+                        candidate
+                            .checkpoint(RecoveryState::Settled, candidate.payload.clone())
+                            .unwrap(),
+                    );
+                }
+                _ => {
+                    first.drive_raw_recovery(child.operation_id).unwrap();
+                    if mode == 3 {
+                        // Same child header/body fingerprint, but a different full
+                        // template than its older actual authorization/genesis.
+                        let mut changed = custody.clone();
+                        let mut payload: serde_json::Value =
+                            serde_json::from_slice(&changed.handoffs[0].payload).unwrap();
+                        payload["plain"]["requests"] = serde_json::Value::String("8".into());
+                        payload["plain"]["billable_requests"] =
+                            serde_json::Value::String("8".into());
+                        changed.handoffs[0].payload = serde_json::to_vec(&payload).unwrap();
+                        let checkpoint = first
+                            .new_recovery_event(
+                                initial.operation_id,
+                                initial.kind,
+                                initial.body_fingerprint,
+                                RecoveryState::Applied,
+                                initial.first_sent_at_ms,
+                                serde_json::to_vec(&changed).unwrap(),
+                            )
+                            .unwrap();
+                        first.keep_recovery_event(&checkpoint).unwrap();
+                    }
+                    if mode == 4 {
+                        let child_done = first.recovery_event(child.operation_id).unwrap();
+                        let raw: super::super::raw_recovery::UsageCustody =
+                            serde_json::from_slice(&child_done.payload).unwrap();
+                        let grandchild = &raw.handoffs[0];
+                        assert_eq!(
+                            first.recovery_event(grandchild.operation_id).unwrap().state,
+                            RecoveryState::Intent
+                        );
+                        sink.make_foreign(grandchild.operation_id, 42);
+                    }
+                }
+            }
+            sink.make_foreign(child.operation_id, 42);
+            drop(first);
+
+            // The same host replays its own parent; the child belongs to another
+            // node and is never imported into this Gov's writable Book.
+            let gov = GovState::new(store.clone(), None).unwrap();
+            gov.attach_recovery_sink(sink.clone()).unwrap();
+            let cost = crate::cost::CostModel::flat(0);
+            gov.hydrate_budgets(&cost, crate::store::now()).unwrap();
+            assert!(gov.recovery_event(child.operation_id).is_none());
+            if let Some(candidate) = unselected {
+                assert!(
+                    sink.verify_checkpoint(&candidate).is_err(),
+                    "unselected final-looking candidate is not a receipt"
+                );
+            }
+            if mode == 4 {
+                let proof = gov.capture_foreign_settled_snapshot();
+                let held = gov
+                    .capture_usage_recovery(
+                        &key.id,
+                        0,
+                        super::super::ExactUsageDelta {
+                            billable_requests: -1,
+                            ..Default::default()
+                        },
+                        Default::default(),
+                        &proof,
+                    )
+                    .unwrap();
+                assert_eq!(held.deferred_plain.billable_requests, -1,
+                    "a settled child with an unknown descendant does not prove its whole exposure settled");
+                continue;
+            }
+            let before = store.get_usage(&key.id, 0).unwrap().billable_requests;
+            let grant = gov.try_admit(&cost, &key, "", crate::store::now()).unwrap();
+            gov.flush_budgets();
+            assert_eq!(
+                store.get_usage(&key.id, 0).unwrap().billable_requests,
+                before + 1
+            );
+            gov.refund_charge(grant.charge());
+            gov.flush_budgets();
+            let after = store.get_usage(&key.id, 0).unwrap().billable_requests;
+            assert_eq!(after, if mode == 0 { before } else { before + 1 },
+                "only an exact fully settled foreign subtree releases the matching fresh refund (mode {mode})");
+            assert!(gov.recovery_event(child.operation_id).is_none());
+            assert!(sink.adoption_attempts.lock().unwrap().is_empty());
+        }
     }
 }

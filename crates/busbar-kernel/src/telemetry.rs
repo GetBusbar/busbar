@@ -178,13 +178,24 @@ pub(crate) fn request_finished(
     outcome: &'static str,
     seconds: f64,
 ) {
+    request_finished_in(&app.tslots, plane, ingress_protocol, pool, outcome, seconds);
+}
+
+fn request_finished_in(
+    slots: &AppSlots,
+    plane: &str,
+    ingress_protocol: &str,
+    pool: &str,
+    outcome: &'static str,
+    seconds: f64,
+) {
     if !crate::plane_driver::dispatch::is_fallback(plane) {
         crate::snapshot::incr_plane_requests_total(plane, ingress_protocol, pool, outcome);
         crate::snapshot::record_plane_request_duration(plane, ingress_protocol, pool, seconds);
         return;
     }
 
-    let fam = app.tslots.request_family(plane, ingress_protocol, pool);
+    let fam = slots.request_family(plane, ingress_protocol, pool);
     let outcome_idx = OUTCOMES.iter().position(|o| *o == outcome);
     match (fam, outcome_idx) {
         (Some(fam), Some(oi)) if fam.requests[oi].is_valid() => fam.requests[oi].incr(),
@@ -203,15 +214,7 @@ pub fn model_request_finished(
     status: u16,
     seconds: f64,
 ) {
-    let outcome = outcome_of(status);
-    request_finished(
-        app,
-        crate::plane_driver::dispatch::fallback_key(),
-        ingress_protocol,
-        pool,
-        outcome,
-        seconds,
-    );
+    let outcome = model_request_finished_in(&app.tslots, ingress_protocol, pool, status, seconds);
 
     if app
         .export_projections
@@ -228,50 +231,102 @@ pub fn model_request_finished(
     }
 }
 
+fn model_request_finished_in(
+    slots: &AppSlots,
+    ingress_protocol: &str,
+    pool: &str,
+    status: u16,
+    seconds: f64,
+) -> &'static str {
+    let outcome = outcome_of(status);
+    request_finished_in(
+        slots,
+        crate::plane_driver::dispatch::fallback_key(),
+        ingress_protocol,
+        pool,
+        outcome,
+        seconds,
+    );
+    outcome
+}
+
 pub fn upstream_attempt(app: &App, pool_label: &str, lane_idx: usize) {
-    match app.tslots.lane_family(pool_label, lane_idx) {
-        Some(fam) if fam.attempts.is_valid() => fam.attempts.incr(),
-        _ => upstream_attempt_on(
+    upstream_attempt_in(&app.tslots, pool_label, lane_idx, || {
+        upstream_attempt_on(
             pool_label,
             app.engine_tables_view()
                 .lane_view(lane_idx)
-                .map(|l| l.model)
+                .map(|lane| lane.model)
                 .unwrap_or(""),
-        ),
+        )
+    });
+}
+
+fn upstream_attempt_in(
+    slots: &AppSlots,
+    pool_label: &str,
+    lane_idx: usize,
+    fallback: impl FnOnce(),
+) {
+    match slots.lane_family(pool_label, lane_idx) {
+        Some(fam) if fam.attempts.is_valid() => fam.attempts.incr(),
+        _ => fallback(),
     }
 }
 
 pub fn upstream_failure(app: &App, pool_label: &str, lane_idx: usize, disposition: &'static str) {
-    let fam = app.tslots.lane_family(pool_label, lane_idx);
-    let di = DISPOSITIONS.iter().position(|d| *d == disposition);
-    match (fam, di) {
-        (Some(fam), Some(di)) if fam.failures[di].is_valid() => fam.failures[di].incr(),
-        _ => upstream_failure_on(
+    upstream_failure_in(&app.tslots, pool_label, lane_idx, disposition, || {
+        upstream_failure_on(
             pool_label,
             app.engine_tables_view()
                 .lane_view(lane_idx)
-                .map(|l| l.model)
+                .map(|lane| lane.model)
                 .unwrap_or(""),
             disposition,
-        ),
+        )
+    });
+}
+
+fn upstream_failure_in(
+    slots: &AppSlots,
+    pool_label: &str,
+    lane_idx: usize,
+    disposition: &'static str,
+    fallback: impl FnOnce(),
+) {
+    let fam = slots.lane_family(pool_label, lane_idx);
+    let di = DISPOSITIONS.iter().position(|d| *d == disposition);
+    match (fam, di) {
+        (Some(fam), Some(di)) if fam.failures[di].is_valid() => fam.failures[di].incr(),
+        _ => fallback(),
     }
 }
 
 pub fn breaker_trip(app: &App, pool_label: &str, lane_idx: usize) {
-    match app.tslots.lane_family(pool_label, lane_idx) {
-        Some(fam) if fam.trips.is_valid() => fam.trips.incr(),
-        _ => breaker_trip_on(
+    breaker_trip_in(&app.tslots, pool_label, lane_idx, || {
+        breaker_trip_on(
             pool_label,
             app.engine_tables_view()
                 .lane_view(lane_idx)
-                .map(|l| l.model)
+                .map(|lane| lane.model)
                 .unwrap_or(""),
-        ),
+        )
+    });
+}
+
+fn breaker_trip_in(slots: &AppSlots, pool_label: &str, lane_idx: usize, fallback: impl FnOnce()) {
+    match slots.lane_family(pool_label, lane_idx) {
+        Some(fam) if fam.trips.is_valid() => fam.trips.incr(),
+        _ => fallback(),
     }
 }
 
 pub fn failover(app: &App, pool_label: &str, reason: &'static str) {
-    let slots = app.tslots.failover.get(pool_label);
+    failover_in(&app.tslots, pool_label, reason);
+}
+
+fn failover_in(slots: &AppSlots, pool_label: &str, reason: &'static str) {
+    let slots = slots.failover.get(pool_label);
     let ri = REASONS.iter().position(|r| *r == reason);
     match (slots, ri) {
         (Some(slots), Some(ri)) if slots[ri].is_valid() => slots[ri].incr(),

@@ -467,3 +467,7 @@ mod settings_resolution_tests;
 #[cfg(test)]
 #[path = "tests/linked_secret_hardening_tests.rs"]
 mod linked_secret_hardening_tests;
+
+#[cfg(test)]
+#[path = "tests/loader_declared_settings.rs"]
+mod loader_declared_settings;

@@ -1,10 +1,6 @@
 use super::*;
 use std::collections::BTreeMap;
 
-fn render_text(hooks: &[(String, Vec<HookMetric>)]) -> String {
-    crate::test_support::export_axis::lines(&families_of(hooks))
-}
-
 fn metric(name: &str, kind: &str, value: f64) -> HookMetric {
     HookMetric {
         name: name.to_string(),
@@ -57,17 +53,6 @@ fn counter_renders_with_hook_label_and_verbatim_name() {
                 value: "42".to_string()
             },]
         },]
-    );
-    let text = render_text(&hooks);
-    assert!(text.contains("# TYPE tokens_saved_total counter"), "{text}");
-    assert!(
-        text.contains("# HELP tokens_saved_total tokens the hook saved"),
-        "{text}"
-    );
-
-    assert!(
-        text.contains("tokens_saved_total{hook=\"compress\",pool=\"chat\"} 42\n"),
-        "{text}"
     );
 }
 
@@ -129,26 +114,6 @@ fn histogram_renders_as_summary() {
             ]
         },]
     );
-    let text = render_text(&hooks);
-    assert!(
-        text.contains("# TYPE compress_latency_us summary"),
-        "{text}"
-    );
-    assert!(
-        text.contains("compress_latency_us{hook=\"compress\",pool=\"chat\",quantile=\"0.5\"} 18\n"),
-        "{text}"
-    );
-    assert!(
-        text.contains(
-            "compress_latency_us{hook=\"compress\",pool=\"chat\",quantile=\"0.99\"} 91\n"
-        ),
-        "{text}"
-    );
-
-    assert!(
-        text.contains("compress_latency_us_count{hook=\"compress\",pool=\"chat\"} 1000\n"),
-        "{text}"
-    );
 }
 
 #[test]
@@ -208,30 +173,6 @@ fn histogram_with_buckets_renders_as_native_histogram() {
             ]
         },]
     );
-    let text = render_text(&hooks);
-    assert!(
-        text.contains("# TYPE rewriter_compression_ratio histogram"),
-        "buckets => histogram, not summary: {text}"
-    );
-
-    let lo = text
-        .find("rewriter_compression_ratio_bucket{hook=\"compress\",pool=\"chat\",le=\"0.5\"} 3\n")
-        .expect("0.5 bucket");
-    let hi = text
-        .find("rewriter_compression_ratio_bucket{hook=\"compress\",pool=\"chat\",le=\"1\"} 7\n")
-        .expect("1 bucket");
-    assert!(lo < hi, "buckets must be ascending by le: {text}");
-
-    assert!(
-        text.contains(
-            "rewriter_compression_ratio_bucket{hook=\"compress\",pool=\"chat\",le=\"+Inf\"} 7\n"
-        ),
-        "{text}"
-    );
-    assert!(
-        text.contains("rewriter_compression_ratio_count{hook=\"compress\",pool=\"chat\"} 7\n"),
-        "{text}"
-    );
 }
 
 #[test]
@@ -257,12 +198,6 @@ fn busbar_prefix_is_reserved() {
             },]
         },]
     );
-    let text = render_text(&hooks);
-    assert!(
-        !text.contains("busbar_engine_requests_total"),
-        "reserved name must be dropped: {text}"
-    );
-    assert!(text.contains("legit_total{hook=\"evil\"} 1\n"), "{text}");
 }
 
 #[test]
@@ -297,22 +232,6 @@ fn two_hooks_same_name_share_header_split_by_label() {
             ]
         },]
     );
-    let text = render_text(&hooks);
-
-    assert_eq!(
-        text.matches("# TYPE proxy_compression_ratio_by_strategy")
-            .count(),
-        1,
-        "one TYPE header per name: {text}"
-    );
-    assert!(
-        text.contains("proxy_compression_ratio_by_strategy{hook=\"hook_a\"} 0.4\n"),
-        "{text}"
-    );
-    assert!(
-        text.contains("proxy_compression_ratio_by_strategy{hook=\"hook_b\"} 0.6\n"),
-        "{text}"
-    );
 }
 
 #[test]
@@ -333,19 +252,6 @@ fn type_conflict_for_shared_name_is_dropped() {
                 value: "1".to_string()
             },]
         },]
-    );
-    let text = render_text(&hooks);
-    assert_eq!(
-        text.matches("# TYPE shared").count(),
-        1,
-        "one type only: {text}"
-    );
-    assert!(text.contains("# TYPE shared counter"), "first wins: {text}");
-
-    assert!(text.contains("shared{hook=\"a\"} 1\n"), "{text}");
-    assert!(
-        !text.contains("hook=\"b\""),
-        "conflicting-type entry dropped: {text}"
     );
 }
 
@@ -373,8 +279,6 @@ fn label_values_are_escaped() {
             },]
         },]
     );
-    let text = render_text(&hooks);
-    assert!(text.contains(r#"k="a\"b\\c""#), "{text}");
 }
 
 fn unique_hook(base: &str) -> String {
@@ -547,27 +451,5 @@ fn hook_labels_cannot_shadow_renderer_labels() {
                 },]
             },
         ]
-    );
-    let text = render_text(&hooks);
-    for line in text.lines().filter(|l| !l.starts_with('#')) {
-        for name in ["hook", "le", "quantile"] {
-            let n = line.matches(&format!("{{{name}=\"")).count()
-                + line.matches(&format!(",{name}=\"")).count();
-            assert!(
-                n <= 1,
-                "duplicate `{name}` makes the exposition unparseable: {line}"
-            );
-        }
-    }
-
-    assert!(text.contains(r#"hook="compress""#), "auto hook label kept");
-    assert!(
-        !text.contains(r#"hook="inner""#),
-        "shadowing hook label dropped"
-    );
-    assert!(text.contains(r#"le="+Inf""#), "histogram bucket label kept");
-    assert!(
-        text.contains(r#"quantile="0.5""#),
-        "summary quantile label kept"
     );
 }

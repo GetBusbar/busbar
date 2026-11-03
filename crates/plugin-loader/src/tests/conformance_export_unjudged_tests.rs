@@ -7,11 +7,14 @@ use busbar_contract::abi::export::{CheckOut, Ops, ServeOut, StatusOut, CHECK_PHA
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::door::Door;
 
-use super::{check, serve, status};
-use crate::conformance::{
-    dispatcher, load, open, test_door, test_op, Leg, Subject, TestDoor, TestOp,
-};
+use std::sync::Arc;
+
 use crate::dispatch::kinds::export::Export;
+use crate::dispatch::{
+    load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow, NoSink,
+};
+use crate::export_door::{check, ExportInstance};
+use busbar_contract::export_calls::{ExportCalls as _, ServeRequest};
 
 const GARBAGE: *const u8 = 0x10 as *const u8;
 const HUGE: usize = 1 << 40;
@@ -20,8 +23,8 @@ static SLOT: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
 
 struct StatusFaults;
 
-impl TestOp for StatusFaults {
-    fn op(
+impl StatusFaults {
+    extern "C" fn op(
         _i: *mut std::ffi::c_void,
         _in: *const std::ffi::c_void,
         out: *mut std::ffi::c_void,
@@ -43,8 +46,8 @@ impl TestOp for StatusFaults {
 
 struct CheckFaults;
 
-impl TestOp for CheckFaults {
-    fn op(
+impl CheckFaults {
+    extern "C" fn op(
         _i: *mut std::ffi::c_void,
         _in: *const std::ffi::c_void,
         out: *mut std::ffi::c_void,
@@ -66,8 +69,8 @@ impl TestOp for CheckFaults {
 
 struct ServeFaults;
 
-impl TestOp for ServeFaults {
-    fn op(
+impl ServeFaults {
+    extern "C" fn op(
         _i: *mut std::ffi::c_void,
         _in: *const std::ffi::c_void,
         out: *mut std::ffi::c_void,
@@ -91,19 +94,20 @@ impl TestOp for ServeFaults {
 
 struct FaultingDoor;
 
-impl TestDoor for FaultingDoor {
-    fn door() -> *const Door {
+impl FaultingDoor {
+    extern "C" fn door() -> &'static Door {
         let have = SLOT.load(Ordering::SeqCst);
         if !have.is_null() {
-            return have;
+            // SAFETY: SLOT owns an immutable leaked descriptor.
+            return unsafe { &*have };
         }
         let real: Door = *crate::export_door::tests::SCRAPE_DOOR();
         // SAFETY: the real sink's door and its export table are `'static`.
         let ops: Ops = unsafe { real.ops().cast::<Ops>().read_unaligned() };
         let ops: &'static Ops = Box::leak(Box::new(Ops {
-            status: Some(test_op::<StatusFaults>),
-            check: Some(test_op::<CheckFaults>),
-            serve: Some(test_op::<ServeFaults>),
+            status: Some(StatusFaults::op),
+            check: Some(CheckFaults::op),
+            serve: Some(ServeFaults::op),
             ..ops
         }));
         let door = Box::into_raw(Box::new(unsafe {
@@ -113,30 +117,51 @@ impl TestDoor for FaultingDoor {
             })
         }));
         SLOT.store(door, Ordering::SeqCst);
-        door
+        // SAFETY: the descriptor is leaked and its real-image code remains loaded.
+        unsafe { &*door }
     }
 }
 
 #[test]
 fn red_a_fault_answers_garbage_and_the_script_reads_none_of_it() {
-    let s = Subject::of_raw(test_door::<FaultingDoor>, "unused", "{}");
-    let d = dispatcher();
-    let p = load::<Export>(&s, Leg::Linked, s.bind(&d, "export")).expect("the restated door loads");
-    let opened = open(&p, br#"{ "buffer_seconds": 60 }"#);
-    assert_eq!(opened.outcome, Outcome::Ready, "{opened:?}");
-    let (line, _) = status(&p);
-    assert!(
-        line.starts_with("Fault ") && line.ends_with(" status=<unread>"),
-        "{line}"
+    let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let row = LinkedRow::of(FaultingDoor::door).expect("the restated actual door states itself");
+    let p = load_linked::<Export>(
+        &row,
+        Bind {
+            instance: Arc::from("export-unjudged"),
+            max_inflight_cap: 16,
+            sink: Arc::new(NoSink),
+            dispatcher: d.adopter(),
+            conns: ConnTable::NoNeeds,
+        },
+    )
+    .expect("the restated actual door loads");
+    let opened = ExportInstance::open(p, d, br#"{ "buffer_seconds": 60 }"#);
+    assert_eq!(
+        opened.is_ok(),
+        true,
+        "the real Prometheus open must answer READY: {opened:?}"
     );
-    let (line, _) = check(&p, CHECK_PHASE_LIMITS, &[]);
+    let sink = opened.expect("the real Prometheus instance opens");
     assert!(
-        line.starts_with("Fault ") && line.ends_with(" findings=<unread>"),
-        "{line}"
+        sink.status().is_none(),
+        "a FAULT status leaves its garbage payload unread",
     );
-    let (line, _) = serve(&p, &serde_json::json!({ "path": "/" }));
+    let findings = check(sink.plugin(), CHECK_PHASE_LIMITS, &[]);
     assert!(
-        line.starts_with("Fault ") && line.ends_with(" headers=<unread> body=<unread>"),
-        "{line}"
+        matches!(&findings, Err(reason) if reason == "Fault"),
+        "a FAULT check leaves its garbage findings unread: {findings:?}",
+    );
+    let served = sink.serve(&ServeRequest {
+        method: "GET",
+        path: "/",
+        query: None,
+        headers: &[],
+        body: &[],
+    });
+    assert!(
+        matches!(&served, Err(reason) if reason == "Fault"),
+        "a FAULT serve leaves its garbage headers and body unread: {served:?}",
     );
 }

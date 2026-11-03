@@ -316,8 +316,12 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
         None,
         &rules,
         Some(anchor),
+        true,
     )
     .expect("the actual product builds the session deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -524,8 +528,13 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
             None,
             &rules,
             Some(anchor),
+            true,
         )
         .expect("the actual product builds the session deployment");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, &module).expect(
+            "the actual Store binds rate-card history and usage recovery before activation",
+        );
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -685,8 +694,12 @@ async fn existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persi
         None,
         &rules,
         Some(anchor),
+        true,
     )
     .expect("the actual product builds the session deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -849,8 +862,13 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
             None,
             &rules,
             Some(anchor),
+            true,
         )
         .expect("the actual product builds the session deployment");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, &module).expect(
+            "the actual Store binds rate-card history and usage recovery before activation",
+        );
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -1079,8 +1097,13 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                 None,
                 &rules,
                 Some(anchor),
+                true,
             )
             .expect("the actual product builds the session deployment");
+            limits.stage_boot();
+            let _book = crate::root::boot::book(&app, &module).expect(
+                "the actual Store binds rate-card history and usage recovery before activation",
+            );
             limits.keep().expect("the product limits commit");
             if let Some(rotate) = rotate {
                 rotate();

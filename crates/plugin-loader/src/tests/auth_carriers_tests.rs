@@ -394,25 +394,19 @@ mod observed {
     }
 
     pub extern "C" fn door() -> &'static Door {
-        static DOOR: std::sync::OnceLock<crate::conformance::StaticDoor> =
-            std::sync::OnceLock::new();
-        DOOR.get_or_init(|| {
-            // SAFETY: wrapped leaks its immutable ops copy; its Statement and every nested range
-            // keep the original SDK door's static backing, independent of this owned door.
-            unsafe { crate::conformance::StaticDoor::new(wrapped(false)) }
-        })
-        .get()
+        static DOOR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let address = *DOOR.get_or_init(|| Box::into_raw(Box::new(wrapped(false))) as usize);
+        // SAFETY: this immutable SDK-backed descriptor and its copied tables are retained
+        // permanently by the one-time allocation; all nested SDK ranges are static.
+        unsafe { &*(address as *const Door) }
     }
 
     pub extern "C" fn ready_failure_door() -> &'static Door {
-        static DOOR: std::sync::OnceLock<crate::conformance::StaticDoor> =
-            std::sync::OnceLock::new();
-        DOOR.get_or_init(|| {
-            // SAFETY: wrapped leaks its immutable ops copy; its Statement and every nested range
-            // keep the original SDK door's static backing, independent of this owned door.
-            unsafe { crate::conformance::StaticDoor::new(wrapped(true)) }
-        })
-        .get()
+        static DOOR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let address = *DOOR.get_or_init(|| Box::into_raw(Box::new(wrapped(true))) as usize);
+        // SAFETY: this immutable SDK-backed descriptor and its copied tables are retained
+        // permanently by the one-time allocation; all nested SDK ranges are static.
+        unsafe { &*(address as *const Door) }
     }
 
     pub fn open(door: DoorFn, variant: &str) -> Result<AuthInstance, String> {

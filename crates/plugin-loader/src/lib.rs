@@ -192,6 +192,7 @@ mod export_conformance_tests;
 mod both_ways;
 
 #[cfg(test)]
+#[allow(unsafe_code)]
 #[path = "tests/auth_verify_conformance_tests.rs"]
 mod auth_verify_conformance_tests;
 
@@ -206,13 +207,7 @@ mod dispatch_test_plugin;
 mod dispatch_tests;
 
 #[cfg(test)]
-#[path = "../tests/fixtures/plane_door_plugin.rs"]
-mod plane_door_plugin;
-
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/plane_conformance_tests.rs"]
-mod plane_conformance_tests;
+use actual_mcp as plane_door_plugin;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
@@ -235,6 +230,7 @@ mod dispatch_kind_plane_tests;
 mod dispatch_kind_store_tests;
 
 #[cfg(test)]
+#[allow(unsafe_code)]
 #[path = "tests/stub_store_plane_tests.rs"]
 mod stub_store_plane_tests;
 
@@ -263,10 +259,12 @@ mod store_door_conformance_tests;
 mod secret_door_conformance_tests;
 
 #[cfg(test)]
+#[allow(unsafe_code)]
 #[path = "tests/transport_door_conformance_tests.rs"]
 mod transport_door_conformance_tests;
 
 #[cfg(test)]
+#[allow(unsafe_code)]
 #[path = "tests/transport_door_tests.rs"]
 mod transport_door_tests;
 
@@ -276,38 +274,16 @@ mod hook_door_conformance_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
-#[path = "tests/conformance_auth_clock_tests.rs"]
-mod conformance_auth_clock_tests;
-
-#[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/conformance_auth_form_tests.rs"]
 mod conformance_auth_form_tests;
-
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_auth_outbound_custody_tests.rs"]
-mod conformance_auth_outbound_custody_tests;
-
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_auth_short_tests.rs"]
-mod conformance_auth_short_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
 #[path = "tests/conformance_auth_unjudged_tests.rs"]
 mod conformance_auth_unjudged_tests;
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_datagram_tests.rs"]
-mod conformance_datagram_tests;
-
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_declared_tests.rs"]
-mod conformance_declared_tests;
+// The retired datagram harness tested its own string renderer and script judge.
+// Actual transport behavior remains owned by the product tests.
 
 #[cfg(test)]
 #[allow(unsafe_code)]
@@ -316,85 +292,110 @@ mod conformance_export_unjudged_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
-#[path = "tests/conformance_newer_schema_tests.rs"]
-mod conformance_newer_schema_tests;
-
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_plane_arrive_tests.rs"]
-mod conformance_plane_arrive_tests;
-
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_plane_host_tests.rs"]
-mod conformance_plane_host_tests;
-
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_plane_lending_tests.rs"]
-mod conformance_plane_lending_tests;
-
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_plane_release_tests.rs"]
-mod conformance_plane_release_tests;
-
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_plane_sessions_tests.rs"]
-mod conformance_plane_sessions_tests;
-
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_plane_settings_tests.rs"]
-mod conformance_plane_settings_tests;
-
-#[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/conformance_ready_result_tests.rs"]
 mod conformance_ready_result_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
-#[path = "tests/conformance_secret_contract_tests.rs"]
-mod conformance_secret_contract_tests;
+#[path = "tests/actual_mcp.rs"]
+mod actual_mcp;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
-#[path = "tests/conformance_store_runs_tests.rs"]
-mod conformance_store_runs_tests;
+#[path = "tests/actual_mcp_identity_tests.rs"]
+mod actual_mcp_identity_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
-#[path = "tests/conformance_suite_tests.rs"]
-mod conformance_suite_tests;
+#[path = "tests/ordinary_plane_registry.rs"]
+mod ordinary_plane_registry;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
-#[path = "tests/conformance_transport_opening_tests.rs"]
-mod conformance_transport_opening_tests;
+#[path = "tests/ordinary_plane_lending.rs"]
+mod ordinary_plane_lending;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
-#[path = "tests/conformance_transport_role_tests.rs"]
-mod conformance_transport_role_tests;
+#[path = "tests/ordinary_suite_dispatch_tests.rs"]
+mod ordinary_suite_dispatch_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
-#[path = "tests/https_timeout_tests.rs"]
-mod https_timeout_tests;
+#[path = "tests/ordinary_auth_short.rs"]
+mod ordinary_auth_short;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
-#[path = "tests/services_double_tests.rs"]
-mod services_double_tests;
+#[path = "tests/ordinary_suite_hook_ticket_tests.rs"]
+mod ordinary_suite_hook_ticket_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
-#[path = "tests/stand_in_tests.rs"]
-mod stand_in_tests;
+#[path = "tests/actual_store.rs"]
+mod actual_store;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
-#[path = "tests/warn_capture_tests.rs"]
-mod warn_capture_tests;
+#[path = "tests/actual_env_secret.rs"]
+mod actual_env_secret;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/actual_exports.rs"]
+mod actual_exports;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/store_memory_facts_actual.rs"]
+mod store_memory_facts_actual;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/ordinary_plane_ack_drive.rs"]
+mod ordinary_plane_ack_drive;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/ordinary_plane_lifecycle.rs"]
+mod ordinary_plane_lifecycle;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/ordinary_plane_sessions_actual.rs"]
+mod ordinary_plane_sessions_actual;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/ordinary_plane_deadline.rs"]
+mod ordinary_plane_deadline;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/ordinary_plane_fault_outputs.rs"]
+mod ordinary_plane_fault_outputs;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/ordinary_declared_metadata.rs"]
+mod ordinary_declared_metadata;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/store_lifecycle_actual.rs"]
+mod store_lifecycle_actual;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/store_actual_opid_tests.rs"]
+mod store_actual_opid_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/store_actual_pending_tests.rs"]
+mod store_actual_pending_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/actual_rewrap_contracts.rs"]
+mod actual_rewrap_contracts;

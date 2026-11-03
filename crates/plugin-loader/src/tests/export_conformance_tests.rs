@@ -2,20 +2,13 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::collections::HashMap;
-use std::os::raw::c_void;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::export::{ExportStream, Ops, CHECK_PHASE_INSTANCES, CHECK_PHASE_LIMITS};
 use busbar_contract::abi::host::conn::connector::EGRESS_OPEN_WEB;
-use busbar_contract::abi::host::service::{
-    DISK_APPEND_FAILED, DISK_OPEN_FAILED, DISK_RENAME_FAILED, DISK_RETENTION_FAILED,
-    DISK_SHIFT_FAILED,
-};
-use busbar_contract::abi::mechanism::call::{
-    Diag, MetricEntry, OutHead, RawOutcome, DIAG_LOG, DIAG_LOG_DROPPED,
-};
+use busbar_contract::abi::mechanism::call::{DIAG_LOG, DIAG_LOG_DROPPED};
 use busbar_contract::abi::mechanism::door::{Door, DoorFn, DoorParts};
 use busbar_contract::abi::mechanism::lifecycle::OpsHead;
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
@@ -26,11 +19,9 @@ use busbar_contract::conn::{
 };
 use busbar_contract::export_calls::{Delivered, ExportCalls};
 use busbar_contract::ids::StreamId;
-use busbar_contract::services::{DiskDest, DiskReport, DiskRotate, Later, Ran};
 use busbar_contract::transport::ConnFacts;
 
 use super::*;
-use crate::both_ways;
 use crate::dispatch::kinds::export::Export;
 use crate::dispatch::{
     load_dropped_bytes, load_linked, rendering_of, Bind, Diagnostic, DispatchConfig, Dispatcher,
@@ -43,29 +34,87 @@ use crate::sign::{Declares, Manifest};
 #[path = "export_refresh_tests.rs"]
 mod refresh_tests;
 
-const FILE_DOOR: DoorFn = both_ways::export_fixture::door;
+const FILE_DOOR: DoorFn = file_door;
+const WEBHOOK_DOOR: DoorFn = webhook_door;
+const TRACE_DOOR: DoorFn = trace_door;
 
 fn file_cdylib() -> &'static str {
-    both_ways::fixture("export").1
+    "BUSBAR_TEST_EXPORT_FILE_CDYLIB"
 }
-
-const WEBHOOK_DOOR: DoorFn = both_ways::export_carried_fixture::door;
-
 fn webhook_cdylib() -> &'static str {
-    both_ways::fixture("export-carried").1
+    "BUSBAR_TEST_EXPORT_WEBHOOK_CDYLIB"
 }
-
-const TRACE_DOOR: DoorFn = both_ways::export_trace_fixture::door::door;
-
 fn trace_cdylib() -> &'static str {
-    both_ways::fixture("export-trace").1
+    "BUSBAR_TEST_EXPORT_OTLP_CDYLIB"
 }
 
-const FILE_CARRIES: &[u8] = &[ExportStream::Logs as u8, ExportStream::Events as u8];
+fn required_file(variable: &str) -> PathBuf {
+    let path = std::env::var_os(variable)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("{variable} must name the fresh actual product input"));
+    assert!(
+        path.is_absolute() && path.is_file(),
+        "{variable} must be an absolute file: {}",
+        path.display()
+    );
+    path
+}
+
+fn actual_door(
+    variable: &str,
+    image: &'static OnceLock<(
+        libloading::Library,
+        busbar_contract::abi::sdk::door::RawDoorFn,
+    )>,
+) -> &'static Door {
+    let image = image.get_or_init(|| {
+        let library = crate::dlopen_on_worker(required_file(variable).as_os_str())
+            .expect("the actual exporter image loads on the plugin thread");
+        // SAFETY: the required actual product image exports the typed mechanism symbol;
+        // image retains its library throughout every test crossing.
+        let entry = unsafe {
+            *library
+                .get::<busbar_contract::abi::sdk::door::RawDoorFn>(DOOR_SYMBOL)
+                .expect("the actual exporter door")
+        };
+        (library, entry)
+    });
+    let door = crate::dispatch::load::enter_door(image.1);
+    crate::dispatch::load::validate_door::<Export>(door).expect("the actual exporter validates");
+    // SAFETY: the validated immutable descriptor belongs to the process-held image.
+    unsafe { &*door }
+}
+
+extern "C" fn file_door() -> &'static Door {
+    static IMAGE: OnceLock<(
+        libloading::Library,
+        busbar_contract::abi::sdk::door::RawDoorFn,
+    )> = OnceLock::new();
+    actual_door(file_cdylib(), &IMAGE)
+}
+extern "C" fn webhook_door() -> &'static Door {
+    static IMAGE: OnceLock<(
+        libloading::Library,
+        busbar_contract::abi::sdk::door::RawDoorFn,
+    )> = OnceLock::new();
+    actual_door(webhook_cdylib(), &IMAGE)
+}
+extern "C" fn trace_door() -> &'static Door {
+    static IMAGE: OnceLock<(
+        libloading::Library,
+        busbar_contract::abi::sdk::door::RawDoorFn,
+    )> = OnceLock::new();
+    actual_door(trace_cdylib(), &IMAGE)
+}
+
+const FILE_CARRIES: &[u8] = &[ExportStream::Logs as u8];
 
 fn file_declaration() -> Declares {
-    Declares::from_declares_json(both_ways::export_fixture::DECLARES.as_bytes())
-        .expect("the file sink's declaration parses")
+    Declares::from_declares_json(
+        &std::fs::read(required_file("BUSBAR_TEST_EXPORT_FILE_DECLARES"))
+            .expect("read the actual file declaration"),
+    )
+    .expect("the actual file sink's declaration parses")
 }
 
 fn file_declares() -> Declares {
@@ -75,15 +124,12 @@ fn file_declares() -> Declares {
     }
 }
 
-fn renaming(mut declared: Declares) -> Declares {
-    declared.keep.insert("path".to_string(), 2);
-    declared
-}
-
 fn webhook_declares() -> Declares {
-    let declared =
-        Declares::from_declares_json(both_ways::export_carried_fixture::DECLARES.as_bytes())
-            .expect("the webhook sink's declaration parses");
+    let declared = Declares::from_declares_json(
+        &std::fs::read(required_file("BUSBAR_TEST_EXPORT_WEBHOOK_DECLARES"))
+            .expect("read the actual webhook declaration"),
+    )
+    .expect("the actual webhook sink's declaration parses");
     Declares {
         metrics: Vec::new(),
         ..declared
@@ -91,34 +137,77 @@ fn webhook_declares() -> Declares {
 }
 
 fn manifest(name: &str, declares: Declares) -> Manifest {
-    let mut m = both_ways::statement(
-        "export",
-        name,
-        name,
-        busbar_contract::abi::export::ABI_VERSION,
-    );
+    let mut m: Manifest = serde_json::from_slice(
+        &std::fs::read(required_file("BUSBAR_TEST_EXPORT_FILE_MANIFEST"))
+            .expect("read the actual file manifest"),
+    )
+    .expect("the actual file manifest parses");
+    m.name = name.into();
+    m.alias = name.into();
     m.declares = declares;
     m
 }
 
-fn stating(mut m: Manifest, door: DoorFn) -> Manifest {
-    m.statement = Some(hex::encode(
-        rendering_of(door).expect("the door renders its Statement"),
+fn stating(m: Manifest, door: DoorFn) -> Manifest {
+    let variable = if std::ptr::fn_addr_eq(door, FILE_DOOR) {
+        "BUSBAR_TEST_EXPORT_FILE_MANIFEST"
+    } else if std::ptr::fn_addr_eq(door, WEBHOOK_DOOR) {
+        "BUSBAR_TEST_EXPORT_WEBHOOK_MANIFEST"
+    } else if std::ptr::fn_addr_eq(door, TRACE_DOOR) {
+        "BUSBAR_TEST_EXPORT_OTLP_MANIFEST"
+    } else {
+        panic!("only an actual exporter supplies a package manifest")
+    };
+    let mut stated: Manifest = serde_json::from_slice(
+        &std::fs::read(required_file(variable)).expect("read the actual exporter manifest"),
+    )
+    .expect("the actual exporter manifest parses");
+    stated.name = m.name;
+    stated.alias = m.alias;
+    stated.publisher = m.publisher;
+    stated.declares = m.declares;
+    stated.statement = Some(hex::encode(
+        rendering_of(door).expect("the actual door renders its Statement"),
     ));
-    m
+    stated
 }
 
-fn cdylib_bytes(crate_snake: &str) -> Vec<u8> {
-    std::fs::read(both_ways::cdylib(crate_snake)).expect("read the cdylib")
+fn cdylib_bytes(variable: &str) -> Vec<u8> {
+    std::fs::read(required_file(variable)).expect("read the actual exporter image")
 }
 
-fn both(m: Manifest, door: DoorFn, crate_snake: &str) -> [PluginRegistry; 2] {
-    let lib = cdylib_bytes(crate_snake);
+fn both(m: Manifest, door: DoorFn, variable: &str) -> [PluginRegistry; 2] {
+    let lib = cdylib_bytes(variable);
     let m = stating(m, door);
     let linked = PluginRegistry::empty()
         .link(vec![LinkedPlugin::door(m.clone(), door)])
-        .expect("the linked door admits the sink");
-    let dropped = both_ways::dropped(crate_snake, m, &lib);
+        .expect("the actual descriptor admits the sink");
+    let release = crate::sign::SigningKey::from_bytes(&[11; 32]);
+    let signer = if m.publisher == crate::sign::FIRST_PARTY_PUBLISHER {
+        release.clone()
+    } else {
+        crate::sign::SigningKey::from_bytes(&[22; 32])
+    };
+    let publisher = (m.publisher.clone(), signer.verifying_key());
+    let package = crate::sign::sign(&signer, m, &lib);
+    let dir = scratch(&format!("package-{}", package.name));
+    std::fs::write(
+        dir.join("exporter.tar.gz"),
+        crate::tarball::package(&package, "exporter", &lib).expect("package actual image"),
+    )
+    .expect("write the actual exporter package");
+    let policy = crate::sign::TrustPolicy {
+        first_party_key: Some(release.verifying_key()),
+        first_party_keys: vec![crate::sign::FirstPartyKey::unnamed(release.verifying_key())],
+        publishers: std::iter::once(publisher)
+            .filter(|(_, key)| *key != release.verifying_key())
+            .collect(),
+        binary_version: package.version.clone(),
+        ..Default::default()
+    };
+    let dropped =
+        crate::scan_and_validate(&dir, &policy).expect("the actual signed exporter package admits");
+    std::fs::remove_dir_all(dir).expect("remove the staged package");
     [linked, dropped]
 }
 
@@ -171,63 +260,8 @@ impl EnvelopeSink for Tape {
     }
 }
 
-struct DiskHost;
-
-impl DiskHost {
-    fn append(dest: &DiskDest, bytes: &[u8]) -> DiskReport {
-        use std::io::Write as _;
-        let due = dest
-            .rotate_at
-            .is_some_and(|limit| std::fs::metadata(&dest.path).is_ok_and(|m| m.len() >= limit));
-        let truncate = due && dest.rotate == DiskRotate::Truncate;
-        let (renamed, failed) = match dest.rotate {
-            DiskRotate::Rename { keep } if due => {
-                crate::host::rotate(std::path::Path::new(&dest.path), keep)
-            }
-            _ => (false, Vec::new()),
-        };
-        let faults = failed.iter().fold(0u8, |f, step| {
-            f | match *step {
-                "retention" => DISK_RETENTION_FAILED,
-                "shift" => DISK_SHIFT_FAILED,
-                _ => DISK_RENAME_FAILED,
-            }
-        });
-        let opened = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .append(!truncate)
-            .truncate(truncate)
-            .open(&dest.path);
-        let rotated = renamed;
-        let report = |step, error: String| DiskReport {
-            step,
-            rotated,
-            faults,
-            error: Box::leak(error.into_boxed_str()),
-        };
-        match opened {
-            Ok(mut file) => match file.write_all(bytes) {
-                Ok(()) => report(0, String::new()),
-                Err(e) => report(DISK_APPEND_FAILED, e.to_string()),
-            },
-            Err(e) => report(DISK_OPEN_FAILED, e.to_string()),
-        }
-    }
-}
-
-impl crate::services_double::ServicesDouble for DiskHost {
-    fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
-        later(Self::append(dest, &bytes).stored());
-        Ran::Later
-    }
-}
-
 fn dispatcher() -> Arc<Dispatcher> {
-    Arc::new(Dispatcher::with_services(
-        DispatchConfig::default(),
-        Arc::new(crate::services_double::Double(DiskHost)),
-    ))
+    Arc::new(Dispatcher::new(DispatchConfig::default()))
 }
 
 const REFUSED_TARGET: &str = "refused.example";
@@ -556,38 +590,6 @@ fn line(n: u32, pad: usize) -> serde_json::Value {
     serde_json::json!({ "n": n, "pad": "x".repeat(pad) })
 }
 
-fn big_line(n: u32) -> serde_json::Value {
-    line(n, 1_100_000)
-}
-
-fn ns_of(text: &str) -> Option<Vec<u64>> {
-    if !text.is_empty() && !text.ends_with('\n') {
-        return None;
-    }
-    text.lines()
-        .map(|l| serde_json::from_str::<serde_json::Value>(l).ok()?["n"].as_u64())
-        .collect()
-}
-
-fn ns(path: &Path) -> Option<Vec<u64>> {
-    ns_of(&std::fs::read_to_string(path).ok()?)
-}
-
-fn ns_settled(path: &Path) -> Option<Vec<u64>> {
-    let text = std::fs::read_to_string(path).ok()?;
-    Some(ns_of(&text).unwrap_or_else(|| {
-        panic!(
-            "{} holds {} bytes that are not whole JSON lines with an `n`",
-            path.display(),
-            text.len()
-        )
-    }))
-}
-
-fn archive(path: &Path, n: u32) -> PathBuf {
-    PathBuf::from(format!("{}.{n}", path.display()))
-}
-
 fn scratch(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("busbar-11-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -595,33 +597,16 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
-fn file_settings(path: &Path) -> serde_json::Value {
-    serde_json::json!({ "path": path.display().to_string(), "rotate_mb": 1 })
-}
-
-fn script(sink: &dyn ExportCalls, path: &Path) {
-    for n in 1..=3 {
-        deliver(sink, &big_line(n));
-    }
-    until("the three lines on disk", || {
-        ns(path) == Some(vec![3])
-            && ns(&archive(path, 1)) == Some(vec![2])
-            && ns(&archive(path, 2)) == Some(vec![1])
-    });
-}
-
-fn opened(
-    plugin: Plugin<Export>,
-    d: Arc<Dispatcher>,
-    settings: &serde_json::Value,
-) -> ExportInstance {
-    plugin.grant_destinations(&renaming(file_declares()));
-    ExportInstance::open(plugin, d, settings.to_string().as_bytes()).expect("the sink opens")
-}
-
 fn bind(label: &str, sink: Arc<Tape>, d: &Dispatcher) -> Bind {
     Bind {
-        instance: Arc::from(label),
+        instance: {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{label}-{}",
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+            .into()
+        },
         max_inflight_cap: 64,
         sink,
         dispatcher: d.adopter(),
@@ -629,20 +614,8 @@ fn bind(label: &str, sink: Arc<Tape>, d: &Dispatcher) -> Bind {
     }
 }
 
-fn run_compiled_in(path: &Path) -> Vec<String> {
-    let tape = Arc::new(Tape::default());
-    let d = dispatcher();
-    let row = LinkedRow::of(FILE_DOOR).expect("the door states its Statement");
-    let plugin =
-        load_linked::<Export>(&row, bind("#11-compiled-in", tape.clone(), &d)).expect("loads");
-    let sink = opened(plugin, d, &file_settings(path));
-    script(&sink, path);
-
-    drop(sink);
-    tape.seen()
-}
-
-fn run_dropped_in(path: &Path) -> Vec<String> {
+#[test]
+fn actual_file_streams_match_its_product_statement() {
     let bytes = cdylib_bytes(file_cdylib());
     let tape = Arc::new(Tape::default());
     let d = dispatcher();
@@ -660,471 +633,14 @@ fn run_dropped_in(path: &Path) -> Vec<String> {
             .map(|f| f.streams.clone()),
         Some(FILE_CARRIES.to_vec())
     );
-    let sink = opened(plugin, d, &file_settings(path));
-    script(&sink, path);
-    drop(sink);
-    tape.seen()
+    drop(plugin);
 }
 
-fn rotated_record(path: &Path) -> String {
-    format!(
-        "log 0 {target}: request-log file rotated by rename path={p} archive={p}.1",
-        target = both_ways::fixture("export").0,
-        p = path.display()
-    )
-}
-
-#[test]
-fn compiled_in_and_dropped_in_report_identical_observations() {
-    let dir = scratch("equivalence");
-    let path = dir.join("requests.jsonl");
-    let compiled = run_compiled_in(&path);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    let dropped = run_dropped_in(&path);
-    let _ = std::fs::remove_dir_all(&dir);
-    assert_eq!(
-        compiled, dropped,
-        "compiled-in and dropped-in builds of ONE crate must hand the host identical \
-         observations — this is design decision #11's real test"
-    );
-
-    assert!(
-        !compiled.is_empty(),
-        "neither build reported anything; the equivalence would be vacuous"
-    );
-}
-
-#[test]
-fn the_reported_observations_are_the_ones_the_sink_produced() {
-    let dir = scratch("produced");
-    let path = dir.join("requests.jsonl");
-    let observed = run_compiled_in(&path);
-    let _ = std::fs::remove_dir_all(&dir);
-    assert_eq!(
-        observed,
-        vec![rotated_record(&path), rotated_record(&path)],
-        "observed: {observed:?}"
-    );
-}
-
-#[test]
-fn a_destination_declared_keep_zero_is_truncated_in_place_with_no_archive() {
-    let dir = scratch("keep0");
-    let path = dir.join("requests.jsonl");
-    let tape = Arc::new(Tape::default());
-    let d = dispatcher();
-    let row = LinkedRow::of(FILE_DOOR).expect("the door states its Statement");
-    let plugin = load_linked::<Export>(&row, bind("keep0", tape.clone(), &d)).expect("loads");
-    let mut declares = file_declares();
-    declares.keep.insert("path".to_string(), 0);
-    plugin.grant_destinations(&declares);
-    let sink = ExportInstance::open(plugin, d, file_settings(&path).to_string().as_bytes())
-        .expect("the sink opens");
-    for n in 1..=3 {
-        deliver(&sink, &big_line(n));
-    }
-    until("the third line alone in the live file", || {
-        ns(&path) == Some(vec![3])
-    });
-    drop(sink);
-    assert!(!archive(&path, 1).exists(), "keep 0 writes no archive");
-    let files = std::fs::read_dir(&dir).expect("scratch dir").count();
-    assert_eq!(files, 1, "the live file and nothing else");
-    assert!(
-        tape.seen().is_empty(),
-        "a truncation in place is no rotation: {:?}",
-        tape.seen()
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn a_linked_and_a_dropped_in_export_sink_register_one_row_and_fold_the_same() {
-    let name = "export-fixture";
-    let doors = both(
-        manifest(name, renaming(file_declares())),
-        FILE_DOOR,
-        file_cdylib(),
-    );
-    let dir = scratch("k5");
-    let path = dir.join("requests.jsonl");
-    let [linked, dropped] = doors.map(|registry| {
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("scratch dir");
-        let tape = Arc::new(Tape::default());
-        let sink = ExportRows::new(&registry, dispatcher())
-            .with_envelope(tape.clone())
-            .open(name, "export.tail", &file_settings(&path))
-            .expect("the export sink opens through its alias");
-        let streams = sink.streams().to_vec();
-        let routes = sink.routes().len();
-
-        for n in [1, 2] {
-            deliver(sink.as_ref(), &big_line(n));
-        }
-        until("both lines on disk", || {
-            ns(&path) == Some(vec![2]) && ns(&archive(&path, 1)) == Some(vec![1])
-        });
-        drop(sink);
-        let transcript = serde_json::json!({
-            "streams": streams,
-            "routes": routes,
-            "folds": tape.seen(),
-        })
-        .to_string();
-        (both_ways::row(&registry, name), transcript)
-    });
-    let _ = std::fs::remove_dir_all(&dir);
-    assert!(
-        !linked.0.starts_with("no row"),
-        "the linked door registered no row: {}",
-        linked.0
-    );
-    assert!(
-        linked.1.contains("request-log file rotated by rename"),
-        "the linked sink reported the rotation its deliveries caused: {}",
-        linked.1
-    );
-    assert_eq!(
-        linked, dropped,
-        "the two doors must register one row and fold the same"
-    );
-}
-
-static PRE_ENVELOPE_PLUGIN_LOCAL: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-struct RealOps(Ops);
-// SAFETY: the table is the dlopened image's `'static` data (its pointers name its code), never
-// written; the library stays loaded for the life of the process (the RED arm leaks it).
-unsafe impl Send for RealOps {}
-// SAFETY: as above.
-unsafe impl Sync for RealOps {}
-static PRE_ENVELOPE_REAL: OnceLock<RealOps> = OnceLock::new();
-
-struct ShimDoor(Door, Ops);
-// SAFETY: built once from the image's `'static` door and never written after; every pointer names
-// the image's `'static` data or [`PRE_ENVELOPE_DOORS`] itself.
-unsafe impl Send for ShimDoor {}
-// SAFETY: as above.
-unsafe impl Sync for ShimDoor {}
-static PRE_ENVELOPE_DOORS: OnceLock<Box<ShimDoor>> = OnceLock::new();
-
-/// Move the reply's #85 envelope out of the `out` the host reads into the plugin's own store —
-/// where a dropped-in `cdylib`'s statically-linked facade sent what it observed before the
-/// envelope: the reply the host reads carries none of it.
-///
-/// # Safety
-/// `out` leads with an [`OutHead`] the op just wrote, its envelope arrays valid for this call.
-unsafe fn keep_plugin_local(out: *mut c_void) {
-    if out.is_null() {
-        return;
-    }
-    // SAFETY: the caller's contract.
-    let head = unsafe { &mut *out.cast::<OutHead>() };
-    let env = &mut head.envelope;
-    let mut local = PRE_ENVELOPE_PLUGIN_LOCAL
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    if !env.metrics.is_null() {
-        // SAFETY: the plugin's array of `metrics_len` entries, valid until its next op.
-        let metrics: &[MetricEntry] =
-            unsafe { std::slice::from_raw_parts(env.metrics, env.metrics_len) };
-        local.extend(
-            metrics
-                .iter()
-                .map(|m| metric_text(m.family_idx, m.kind, m.value)),
-        );
-    }
-    if !env.diags.is_null() {
-        // SAFETY: as above.
-        let diags: &[Diag] = unsafe { std::slice::from_raw_parts(env.diags, env.diags_len) };
-        local.extend(diags.iter().map(|d| {
-            let text = if d.text.ptr.is_null() {
-                &[][..]
-            } else {
-                // SAFETY: the plugin's text, valid until its next op.
-                unsafe { std::slice::from_raw_parts(d.text.ptr, d.text.len) }
-            };
-            entry_text(d.id_idx, d.severity, text)
-        }));
-    }
-    env.metrics = std::ptr::null();
-    env.metrics_len = 0;
-    env.diags = std::ptr::null();
-    env.diags_len = 0;
-}
-
-/// One forwarding op per slot of the export table: the real image's op, then its envelope kept
-/// plugin-local.
-macro_rules! pre_envelope_ops {
-    ($($name:ident => $($field:ident).+;)*) => {
-        $(
-            extern "C" fn $name(i: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
-                let real = PRE_ENVELOPE_REAL.get().expect("the RED arm sets the table first");
-                let op = real.0.$($field).+.expect("a forwarding op wraps a present op");
-                // SAFETY: the shim forwards the original instance and unchanged ABI frame to
-                // the real op for this same slot; its checked loans remain live for the call.
-                let answered = unsafe { op(i, input, out) };
-                // SAFETY: every op's `out` leads with its `OutHead`, written by the op just now.
-                unsafe { keep_plugin_local(out) };
-                answered
-            }
-        )*
-        /// The real table with every present op replaced by its forwarding op.
-        fn pre_envelope_ops(real: &Ops) -> Ops {
-            let mut ops = *real;
-            $(
-                if real.$($field).+.is_some() {
-                    ops.$($field).+ = Some($name);
-                }
-            )*
-            ops
-        }
-    };
-}
-
-pre_envelope_ops! {
-    pre_validate => head.validate;
-    pre_open => head.open;
-    pre_refresh => head.refresh;
-    pre_retire => head.retire;
-    pre_tick => head.tick;
-    pre_drive => head.drive;
-    pre_cancel => head.cancel;
-    pre_release => head.release;
-    pre_close => head.close;
-    pre_deliver => deliver;
-    pre_scrape => scrape;
-    pre_status => status;
-    pre_check => check;
-    pre_serve => serve;
-}
-
-extern "C" fn pre_envelope_door() -> *const Door {
-    &PRE_ENVELOPE_DOORS
-        .get()
-        .expect("the RED arm builds the door first")
-        .0
-}
-
-#[test]
-fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
-    let dir = scratch("pre-envelope");
-    let path = dir.join("requests.jsonl");
-
-    let compiled_in = run_compiled_in(&path);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-
-    let bytes = cdylib_bytes(file_cdylib());
-    let (lib, staged) = crate::stage::load_library_from_bytes(&bytes, "#11-pre-envelope")
-        .expect("stage the file sink cdylib");
-    // SAFETY: `DOOR_SYMBOL` is typed `RawDoorFn` by the mechanism; the library is leaked below, so
-    // the pointer stays valid for the life of the process.
-    let real_door: busbar_contract::abi::sdk::door::RawDoorFn = unsafe {
-        *lib.get::<busbar_contract::abi::sdk::door::RawDoorFn>(DOOR_SYMBOL)
-            .expect("the image's door")
-    };
-    std::mem::forget(lib);
-    std::mem::forget(staged);
-    // SAFETY: the image's door answers its `'static` Door; its ops table is the export kind's.
-    let door = unsafe { *real_door() };
-    // SAFETY: as above: the export kind's table, `'static` in the image.
-    let real_ops = unsafe { *door.ops().cast::<Ops>() };
-    let _ = PRE_ENVELOPE_REAL.set(RealOps(real_ops));
-    let shim = PRE_ENVELOPE_DOORS.get_or_init(|| {
-        let mut shim = Box::new(ShimDoor(door, pre_envelope_ops(&real_ops)));
-        let parts = DoorParts {
-            ops: std::ptr::from_ref(&shim.1).cast::<OpsHead>(),
-            ..shim.0.parts()
-        };
-        // SAFETY: the image's own `'static` Statement over the boxed shim table, built once and
-        // held for the process.
-        shim.0 = unsafe { Door::__from_parts(parts) };
-        shim
-    });
-    assert_eq!(
-        shim.0.statement(),
-        door.statement(),
-        "the image's own Statement"
-    );
-    PRE_ENVELOPE_PLUGIN_LOCAL
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clear();
-    let tape = Arc::new(Tape::default());
-    let d = dispatcher();
-    let row = LinkedRow::of_raw(pre_envelope_door).expect("the image's Statement renders");
-    assert_eq!(
-        row.statement,
-        rendering_of(FILE_DOOR).expect("renders"),
-        "the pre-envelope door states the real sink's Statement"
-    );
-    let plugin = load_linked::<Export>(&row, bind("#11-pre-envelope", tape.clone(), &d))
-        .expect("the pre-envelope door loads");
-    let sink = opened(plugin, d, &file_settings(&path));
-
-    script(&sink, &path);
-    drop(sink);
-    let _ = std::fs::remove_dir_all(&dir);
-    let dropped_in_pre_envelope = tape.seen();
-    let plugin_local = std::mem::take(
-        &mut *PRE_ENVELOPE_PLUGIN_LOCAL
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner),
-    );
-
-    assert_eq!(
-        compiled_in.len(),
-        2,
-        "the compiled-in build must report both rotations: {compiled_in:?}"
-    );
-
-    assert_eq!(
-        plugin_local, compiled_in,
-        "the pre-envelope build must have observed what the compiled-in one reported, or the \
-         divergence below is a broken fixture rather than the defect"
-    );
-
-    assert!(
-        dropped_in_pre_envelope.is_empty(),
-        "the defect: a dropped-in plugin's observations land where nothing reads — the host \
-         ingested {dropped_in_pre_envelope:?}"
-    );
-    assert_ne!(
-        compiled_in, dropped_in_pre_envelope,
-        "compiled-in ≡ dropped-in was ASSERTED and false for anything a plugin observes — this \
-         inequality is what #85's envelope exists to remove, and \
-         `compiled_in_and_dropped_in_report_identical_observations` is what proves it did"
-    );
-}
-
-/// **OWED, and named so it is not forgotten.** The assertions above compare what the host was
-/// HANDED. The one #85's acceptance clause names compares what the host RENDERS:
-///
-/// ```ignore
-/// // wherever a metrics recorder legitimately exists (the engine, not the loader):
-/// install_recorder();
-/// run_compiled_in();
-/// let a = busbar_kernel_testkit::test_support::export_axis::render();
-/// reset_recorder();
-/// run_dropped_in();
-/// let b = busbar_kernel_testkit::test_support::export_axis::render();
-/// assert_eq!(a, b);   // byte-identical exposition
-/// ```
-///
-/// It is not written here because this crate has no recorder and must not acquire one, and it is
-/// not written in the kernel because the kernel may not name a concrete plugin instance — not even
-/// under `tests/` (DECISIONS #2). Its home is the composition root, which is the one place entitled
-/// to name both. Recorded here rather than in a document because a test file is the thing the next
-/// person editing this seam actually reads.
+/// The loader compares ingested envelopes. Rendering the resulting exposition
+/// belongs to the actual composition root; physical file observations are tested
+/// beside the production kernel disk lane.
 #[test]
 fn the_rendered_exposition_equivalence_is_owed_at_the_composition_root() {}
-
-const S1_HOST_SERIES: &str = "busbar_s1_host_owned_total";
-
-#[test]
-fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
-    use busbar_contract::abi::mechanism::observe::SeriesDecl;
-
-    let d = dispatcher();
-    d.observing()
-        .install_host_series(|name| name == S1_HOST_SERIES);
-    let declared = file_declaration();
-    let series: Vec<(String, String)> = declared
-        .metrics
-        .iter()
-        .map(|s| (s.name.clone(), s.kind.clone()))
-        .collect();
-
-    assert!(
-        series
-            .iter()
-            .any(|(n, _)| n == "busbar_file_logs_dropped_total"),
-        "{series:?}"
-    );
-    let name = "s1-fixture";
-    let doors = both(
-        manifest(name, renaming(declared.clone())),
-        FILE_DOOR,
-        file_cdylib(),
-    );
-    let dir = scratch("s1");
-    let path = dir.join("requests.jsonl");
-    let [linked, dropped] = doors.map(|registry| {
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("scratch dir");
-        let tape = Arc::new(Tape::default());
-        let sink = ExportRows::new(&registry, Arc::clone(&d))
-            .with_envelope(tape.clone())
-            .open(name, "export.tail", &file_settings(&path))
-            .expect("a first-party declaration opens");
-        for n in [1, 2] {
-            deliver(sink.as_ref(), &big_line(n));
-        }
-        until("both lines on disk", || ns(&path) == Some(vec![2]));
-
-        let granted: Vec<bool> = series
-            .iter()
-            .map(|(s, k)| crate::observe::first_party_series(name, s, k))
-            .collect();
-        drop(sink);
-        assert!(
-            series
-                .iter()
-                .all(|(s, k)| !crate::observe::first_party_series(name, s, k)),
-            "the grant goes with the instance"
-        );
-        let transcript =
-            serde_json::json!({ "granted": granted, "folds": tape.seen() }).to_string();
-        (both_ways::row(&registry, name), transcript)
-    });
-    let every_granted = format!(
-        r#""granted":{}"#,
-        serde_json::json!(vec![true; series.len()])
-    );
-    assert!(
-        linked.1.contains(&every_granted)
-            && linked.1.contains("request-log file rotated by rename"),
-        "the linked door grants every declared series and the sink reports: {}",
-        linked.1
-    );
-    assert_eq!(linked, dropped, "both doors grant and fold the same");
-
-    let lib = cdylib_bytes(file_cdylib());
-    let mut third = stating(manifest("s1-third-party", declared.clone()), FILE_DOOR);
-    third.publisher = "acme".into();
-    let registry = both_ways::dropped_third_party(file_cdylib(), third, &lib);
-    let sink = ExportRows::new(&registry, Arc::clone(&d))
-        .open("s1-third-party", "export.tail", &file_settings(&path))
-        .expect("a third party opens; its declaration is simply not granted");
-    drop(sink);
-    for (s, k) in &series {
-        assert!(!crate::observe::first_party_series("s1-third-party", s, k));
-    }
-
-    let mut collides = declared;
-    collides.metrics = vec![SeriesDecl::new(S1_HOST_SERIES, "counter")];
-    let registry = PluginRegistry::empty()
-        .link(vec![LinkedPlugin::door(
-            stating(manifest("s1-collides", collides), FILE_DOOR),
-            FILE_DOOR,
-        )])
-        .expect("the linked door admits the sink");
-    let Err(refused) = ExportRows::new(&registry, Arc::clone(&d)).open(
-        "s1-collides",
-        "export.tail",
-        &file_settings(&path),
-    ) else {
-        panic!("a claim on a host series is refused");
-    };
-    assert!(
-        refused.contains(S1_HOST_SERIES) && refused.contains("the host itself emits"),
-        "{refused}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
 
 #[test]
 fn a_sink_validates_its_settings_the_same_through_either_door() {
@@ -1140,10 +656,12 @@ fn a_sink_validates_its_settings_the_same_through_either_door() {
             "not_export": rows.probe("no-such-module", "tail", &refused),
         })
         .to_string();
-        (both_ways::row(&registry, name), transcript)
+        ({ let row = registry.resolve(name).expect("the actual exporter row resolves");
+ serde_json::json!({"manifest": Manifest { sha256: String::new(), signature: String::new(), ..row.manifest.clone() },
+ "alias_resolves_to": registry.resolve(&row.manifest.alias).map(|alias| alias.manifest.name.clone()) }).to_string() }, transcript)
     });
     let line = "export.tail.settings: invalid type: integer `7`, expected a string";
-    let streams = [ExportStream::Logs as u8, ExportStream::Events as u8];
+    let streams = [ExportStream::Logs as u8];
     assert_eq!(
         linked.1,
         serde_json::json!({
@@ -1190,7 +708,9 @@ fn a_declared_diagnostic_is_stated_and_raised_the_same_through_either_door() {
             "carried": far.carried(),
         })
         .to_string();
-        (both_ways::row(&registry, name), transcript)
+        ({ let row = registry.resolve(name).expect("the actual exporter row resolves");
+ serde_json::json!({"manifest": Manifest { sha256: String::new(), signature: String::new(), ..row.manifest.clone() },
+ "alias_resolves_to": registry.resolve(&row.manifest.alias).map(|alias| alias.manifest.name.clone()) }).to_string() }, transcript)
     });
     assert!(
         linked.0.contains("webhook-delivery-transport-error"),
@@ -1206,87 +726,12 @@ fn a_declared_diagnostic_is_stated_and_raised_the_same_through_either_door() {
     );
     assert_eq!(linked, dropped, "both doors state and raise the same");
 
-    let lib = cdylib_bytes(webhook_cdylib());
     let mut third = stating(manifest("s3-third-party", decl.clone()), WEBHOOK_DOOR);
     third.publisher = "acme".into();
-    let registry = both_ways::dropped_third_party(webhook_cdylib(), third, &lib);
+    let [_, registry] = both(third, WEBHOOK_DOOR, webhook_cdylib());
     let row = registry.resolve("s3-third-party").expect("admitted");
     assert_eq!(row.manifest.declares.diagnostics, decl.diagnostics);
     assert!(!row.first_party());
-}
-
-#[test]
-fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_either_door() {
-    let declaring = |name: &str, declared: bool| {
-        let mut d = file_declares();
-        if !declared {
-            d.destinations.clear();
-        }
-        manifest(name, d)
-    };
-    let dir = scratch("s4");
-    let path = dir.join("requests.jsonl");
-
-    let run = |registry: &PluginRegistry, name: &str, landed: &dyn Fn(&Tape) -> bool| {
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("scratch dir");
-        let tape = Arc::new(Tape::default());
-        let sink = ExportRows::new(registry, dispatcher())
-            .with_envelope(tape.clone())
-            .open(name, "export.tail", &file_settings(&path))
-            .expect("opens");
-        for n in 1..=4 {
-            deliver(sink.as_ref(), &line(n, 600_000));
-        }
-        until("the four deliveries answered", || landed(&tape));
-        drop(sink);
-        serde_json::json!({
-            "live": ns_settled(&path),
-            "archive": ns_settled(&archive(&path, 1)),
-            "folds": tape.seen(),
-        })
-        .to_string()
-    };
-    let doors = both(declaring("s4-fixture", true), FILE_DOOR, file_cdylib());
-    let [linked, dropped] = doors.map(|registry| {
-        let on_disk = |_: &Tape| ns(&path) == Some(vec![3, 4]) && !archive(&path, 1).exists();
-        (
-            both_ways::row(&registry, "s4-fixture"),
-            run(&registry, "s4-fixture", &on_disk),
-        )
-    });
-
-    assert!(linked.1.contains(r#""archive":null"#), "{}", linked.1);
-    assert!(linked.1.contains(r#""live":[3,4]"#), "{}", linked.1);
-    assert!(
-        !linked.1.contains("request-log file rotated"),
-        "{}",
-        linked.1
-    );
-    assert_eq!(linked, dropped, "both doors write and rotate the same");
-
-    let registry = PluginRegistry::empty()
-        .link(vec![LinkedPlugin::door(
-            stating(declaring("s4-undeclared", false), FILE_DOOR),
-            FILE_DOOR,
-        )])
-        .expect("the linked door admits the sink");
-    let refused = run(&registry, "s4-undeclared", &|tape| {
-        tape.count(both_ways::export_fixture::OPEN_FAILED) == 4
-    });
-    let _ = std::fs::remove_dir_all(&dir);
-    assert!(refused.contains(r#""live":null"#), "{refused}");
-    assert_eq!(
-        refused
-            .matches(both_ways::export_fixture::OPEN_FAILED)
-            .count(),
-        4,
-        "one refusal line per delivery: {refused}"
-    );
-    assert!(
-        refused.contains(crate::dispatch::services::NO_DESTINATION),
-        "the host's refusal, in its words: {refused}"
-    );
 }
 
 #[test]
@@ -1320,7 +765,9 @@ fn a_sinks_outbound_request_is_carried_by_the_host_the_same_through_either_door(
     let doors = both(m.clone(), WEBHOOK_DOOR, webhook_cdylib());
     let [linked, dropped] = doors.map(|registry| {
         (
-            both_ways::row(&registry, name),
+            { let row = registry.resolve(name).expect("the actual exporter row resolves");
+ serde_json::json!({"manifest": Manifest { sha256: String::new(), signature: String::new(), ..row.manifest.clone() },
+ "alias_resolves_to": registry.resolve(&row.manifest.alias).map(|alias| alias.manifest.name.clone()) }).to_string() },
             run(&registry, "https://collector.example/v1", false),
         )
     });
@@ -1613,10 +1060,9 @@ fn a_loopback_collector_the_operator_trusted_loads_first_party_or_not() {
     );
     assert_eq!(opened[0], opened[1], "both doors declare the same need");
 
-    let lib = cdylib_bytes(trace_cdylib());
     let mut third = stating(manifest("k9e2-third-otlp", Declares::default()), collector);
     third.publisher = "acme".into();
-    let registry = both_ways::dropped_third_party(trace_cdylib(), third, &lib);
+    let [_, registry] = both(third, TRACE_DOOR, trace_cdylib());
     let row = registry.resolve("k9e2-third-otlp").expect("admitted");
     assert!(!row.first_party());
     ExportRows::new(&registry, dispatcher())
@@ -1624,13 +1070,12 @@ fn a_loopback_collector_the_operator_trusted_loads_first_party_or_not() {
         .open("k9e2-third-otlp", "export.trace", &settings)
         .expect("an operator-trusted collector opens");
 
-    let lib = cdylib_bytes(webhook_cdylib());
     let mut third = stating(
         manifest("k9e2-third-hook", webhook_declares()),
         WEBHOOK_DOOR,
     );
     third.publisher = "acme".into();
-    let registry = both_ways::dropped_third_party(webhook_cdylib(), third, &lib);
+    let [_, registry] = both(third, WEBHOOK_DOOR, webhook_cdylib());
     let row = registry.resolve("k9e2-third-hook").expect("admitted");
     assert!(!row.first_party());
 }
@@ -1804,104 +1249,4 @@ fn a_closed_span_reaches_a_collector_the_same_through_either_door() {
         "{linked}"
     );
     assert_eq!(linked, dropped, "both doors carry the same request");
-}
-
-#[test]
-fn the_operators_keep_beside_a_destination_outranks_the_manifest() {
-    let dir = scratch("keep-setting");
-    let path = dir.join("requests.jsonl");
-    let registry = PluginRegistry::empty()
-        .link(vec![LinkedPlugin::door(
-            stating(manifest("keep-fixture", file_declares()), FILE_DOOR),
-            FILE_DOOR,
-        )])
-        .expect("the linked door admits the sink");
-    let mut settings = file_settings(&path);
-    settings["keep"] = serde_json::json!(2);
-    let sink = ExportRows::new(&registry, dispatcher())
-        .open("keep-fixture", "export.tail", &settings)
-        .expect("opens");
-    for n in 1..=4 {
-        deliver(sink.as_ref(), &line(n, 600_000));
-    }
-    until("the four lines landed", || ns(&path) == Some(vec![3, 4]));
-    drop(sink);
-    assert_eq!(
-        ns_settled(&archive(&path, 1)),
-        Some(vec![1, 2]),
-        "the rotated lines are kept in the first archive"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn accepted_event_payload_crosses_linked_and_dropped_fixture_doors_unchanged() {
-    use busbar_contract::abi::export::ExportField as F;
-
-    const FIXTURE_NAME: &str = "accepted-events-carrier";
-    const INSTANCE_LABEL: &str = "export.accepted-events";
-    const ACTION: &str = "fixture.mutate";
-    const RESOURCE: &str = "fixture:accepted";
-    const ACTOR: &str = "fixture-admin";
-    const FIRST_SEQUENCE: u64 = 1;
-    const FIXTURE_UNIX_SECONDS: u64 = 1_700_000_000;
-    const ONE_RECORD: usize = 1;
-    const FIRST_RECORD: usize = 0;
-
-    let doors = both(
-        manifest(FIXTURE_NAME, renaming(file_declares())),
-        FILE_DOOR,
-        file_cdylib(),
-    );
-    let dir = scratch(FIXTURE_NAME);
-    let path = dir.join("accepted-events.jsonl");
-    let fields = [
-        (F::Seq, serde_json::Value::from(FIRST_SEQUENCE)),
-        (F::Ts, serde_json::Value::from(FIXTURE_UNIX_SECONDS)),
-        (F::PrevHash, serde_json::Value::from("")),
-        (F::Kind, serde_json::Value::from(ACTION)),
-        (F::Actor, serde_json::Value::from(ACTOR)),
-        (F::Resource, serde_json::Value::from(RESOURCE)),
-        (
-            F::Outcome,
-            serde_json::Value::from(busbar_contract::vocab::OUTCOME_APPLIED),
-        ),
-    ];
-    let expected = serde_json::Value::Object(
-        fields
-            .into_iter()
-            .map(|(field, value)| (field.as_token().into(), value))
-            .collect(),
-    );
-    let [linked, dropped] = doors.map(|registry| {
-        let _ = std::fs::remove_file(&path);
-        let tape = Arc::new(Tape::default());
-        let sink = ExportRows::new(&registry, dispatcher())
-            .with_envelope(tape)
-            .open(FIXTURE_NAME, INSTANCE_LABEL, &file_settings(&path))
-            .expect("the neutral carrier opens through either memory ABI door");
-        assert!(sink.streams().contains(&(ExportStream::Events as u8)));
-        assert!(matches!(
-            sink.deliver(
-                ExportStream::Events as u8,
-                serde_json::to_vec(&expected).unwrap(),
-                Box::new(()),
-            ),
-            Delivered::Queued
-        ));
-        until("the accepted event reaches the host disk lane", || {
-            std::fs::read_to_string(&path).is_ok_and(|text| text.ends_with('\n'))
-        });
-        drop(sink);
-        let text = std::fs::read_to_string(&path).unwrap();
-        let records: Vec<serde_json::Value> = text
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
-        assert_eq!(records.len(), ONE_RECORD);
-        assert_eq!(records[FIRST_RECORD], expected);
-        records
-    });
-    assert_eq!(linked, dropped);
-    std::fs::remove_dir_all(dir).unwrap();
 }

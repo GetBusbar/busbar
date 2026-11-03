@@ -1805,3 +1805,7 @@ mod provision_tests;
 #[cfg(test)]
 #[path = "tests/key_custody_tests.rs"]
 mod key_custody_tests;
+
+#[cfg(test)]
+#[path = "tests/admin_pure_contracts.rs"]
+mod admin_pure_contracts;

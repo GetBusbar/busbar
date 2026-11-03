@@ -322,3 +322,7 @@ mod tests {
         assert_eq!(store.held(), 0);
     }
 }
+
+#[cfg(test)]
+#[path = "completion_retirement_boundary_tests.rs"]
+mod boundary_tests;

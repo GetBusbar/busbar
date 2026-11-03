@@ -37,6 +37,7 @@ fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
                 records: store.clone(),
                 calls: Some(store),
             }),
+            false,
         )
         .expect("the product builds the configured model generation");
         limits
@@ -146,6 +147,7 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
                 records: store.clone(),
                 calls: Some(store),
             }),
+            false,
         )
         .expect("the product builds the configured model generation");
         limits
@@ -189,6 +191,7 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
                 records: store.clone(),
                 calls: Some(store),
             }),
+            false,
         )
         .expect("the product builds the configured model generation");
         limits
@@ -232,6 +235,7 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
                 records: store.clone(),
                 calls: Some(store),
             }),
+            false,
         )
         .expect("the product builds the configured model generation");
         limits
@@ -337,6 +341,7 @@ fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
                 records: store.clone(),
                 calls: Some(store),
             }),
+            false,
         )
         .expect("the product builds the configured model generation");
         limits
@@ -381,6 +386,7 @@ fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
                 records: store.clone(),
                 calls: Some(store),
             }),
+            false,
         )
         .expect("the product builds the configured model generation");
         limits
@@ -463,6 +469,7 @@ fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
                 records: store.clone(),
                 calls: Some(store),
             }),
+            false,
         )
         .expect("the product builds the configured model generation");
         limits
@@ -528,6 +535,7 @@ fn a_success_is_recorded_on_the_walks_clock() {
                 records: store.clone(),
                 calls: Some(store),
             }),
+            false,
         )
         .expect("the product builds the configured model generation");
         limits
@@ -604,6 +612,7 @@ fn a_probe_success_joins_the_walks_window() {
                 records: store.clone(),
                 calls: Some(store),
             }),
+            false,
         )
         .expect("the product builds the configured model generation");
         limits
@@ -686,6 +695,7 @@ fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
                     records: store.clone(),
                     calls: Some(store),
                 }),
+                false,
             )
             .expect("the product builds the configured model generation");
             limits
@@ -804,6 +814,7 @@ fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
                 records: store.clone(),
                 calls: Some(store),
             }),
+            false,
         )
         .expect("the product builds the configured model generation");
         limits
@@ -877,6 +888,7 @@ fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
                 records: store.clone(),
                 calls: Some(store),
             }),
+            false,
         )
         .expect("the product builds the configured model generation");
         limits
@@ -949,6 +961,7 @@ fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retires() {
                 records: store.clone(),
                 calls: Some(store),
             }),
+            false,
         )
         .expect("the product builds the configured model generation");
         limits
@@ -999,6 +1012,7 @@ fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retires() {
                 records: store.clone(),
                 calls: Some(store),
             }),
+            false,
         )
         .expect("the product builds the configured model generation");
         limits
@@ -1081,6 +1095,7 @@ fn a_keyless_lane_is_not_probed() {
                     records: store.clone(),
                     calls: Some(store),
                 }),
+                false,
             )
             .expect("the product builds the configured model generation");
             limits

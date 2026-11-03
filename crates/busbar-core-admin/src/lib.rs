@@ -66,36 +66,7 @@ fn seam_mount(
     crate::transport::mount(router, &crate::v1::json::JsonV1)
 }
 
-#[cfg(test)]
-mod test_seams {
-    pub(crate) fn ensure_seam() {
-        static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
-        SEAM_ONCE.call_once(|| {
-            busbar_kernel_testkit::test_support::operator_double::install();
-
-            (busbar_kernel_testkit::testkit::TEST_SEAM.install)();
-            super::install();
-        });
-    }
-}
-#[cfg(test)]
-use test_seams::ensure_seam;
-
-#[cfg(test)]
-pub(crate) fn new_test_app() -> busbar_kernel_testkit::test_support::TestApp {
-    ensure_seam();
-    busbar_kernel_testkit::test_support::TestApp::new()
-}
-
-#[cfg(test)]
-pub(crate) fn linked_protocol() -> &'static str {
-    ensure_seam();
-    busbar_kernel_testkit::ingress::protocols::known_protocols()
-        .first()
-        .copied()
-        .expect("this test binary registers a codec protocol")
-}
-#[cfg(all(not(test), feature = "test-support"))]
+#[cfg(any(test, feature = "test-support"))]
 fn ensure_seam() {
     static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
     SEAM_ONCE.call_once(install);

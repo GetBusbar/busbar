@@ -694,12 +694,111 @@ fn networked_rows() -> AuthRows {
     AuthRows::new(Arc::new(registry), dispatcher())
 }
 
-static SERVING_TABLE: std::sync::OnceLock<Arc<crate::tcp_conns::TcpConns>> =
-    std::sync::OnceLock::new();
-
+// Observe only the existing inert declaration boundary: this case never dials a socket.
+#[derive(Default)]
+struct DeclarationObserver {
+    declarations: AtomicU64,
+}
+impl busbar_contract::conn::Conns for DeclarationObserver {
+    fn open(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        desc: &busbar_contract::conn::OpenDesc<'_>,
+    ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+        busbar_contract::conn::Conns::open(&crate::needs_restated::Inert, caller, need, desc)
+    }
+    fn write(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+        bytes: &[u8],
+        end: bool,
+        text: bool,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        busbar_contract::conn::Conns::write(
+            &crate::needs_restated::Inert,
+            caller,
+            conn,
+            bytes,
+            end,
+            text,
+        )
+    }
+    fn read(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+        ticket: u64,
+        buf: &mut [u8],
+    ) -> Result<busbar_contract::conn::Piece, busbar_contract::conn::ConnError> {
+        busbar_contract::conn::Conns::read(&crate::needs_restated::Inert, caller, conn, ticket, buf)
+    }
+    fn wait(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        set: &[busbar_contract::conn::ConnId],
+        ticket: u64,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        busbar_contract::conn::Conns::wait(&crate::needs_restated::Inert, caller, set, ticket)
+    }
+    fn facts(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+    ) -> Result<busbar_contract::transport::ConnFacts, busbar_contract::conn::ConnError> {
+        busbar_contract::conn::Conns::facts(&crate::needs_restated::Inert, caller, conn)
+    }
+    fn close(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        busbar_contract::conn::Conns::close(&crate::needs_restated::Inert, caller, conn)
+    }
+}
+impl busbar_contract::conn::DeclaredConns for DeclarationObserver {
+    fn declare(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        spec: &busbar_contract::abi::mechanism::rendering::ReadNeed,
+        target: Option<&str>,
+        trust: Option<&str>,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        assert_eq!(
+            spec.transport, "tcp",
+            "the original network need is preserved"
+        );
+        let result = busbar_contract::conn::DeclaredConns::declare(
+            &crate::needs_restated::Inert,
+            owner,
+            need,
+            spec,
+            target,
+            trust,
+        );
+        self.declarations.fetch_add(1, Ordering::SeqCst);
+        result
+    }
+    fn declared(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+    ) -> Option<Result<(), busbar_contract::conn::ConnError>> {
+        busbar_contract::conn::DeclaredConns::declared(&crate::needs_restated::Inert, owner, need)
+    }
+    fn serves_scheme(&self, transport: &str) -> bool {
+        busbar_contract::conn::DeclaredConns::serves_scheme(
+            &crate::needs_restated::Inert,
+            transport,
+        )
+    }
+}
+static SERVING_TABLE: std::sync::OnceLock<Arc<DeclarationObserver>> = std::sync::OnceLock::new();
 fn serving_table() -> Arc<dyn busbar_contract::conn::DeclaredConns> {
     SERVING_TABLE
-        .get_or_init(|| Arc::new(crate::tcp_conns::TcpConns::new(Arc::new(|_, _| {}))))
+        .get_or_init(|| Arc::new(DeclarationObserver::default()))
         .clone()
 }
 
@@ -712,7 +811,8 @@ fn a_networked_auth_door_opened_to_serve_declares_its_need_on_the_hosts_table() 
         SERVING_TABLE
             .get()
             .expect("the table was read")
-            .declarations(),
+            .declarations
+            .load(Ordering::SeqCst),
         1,
         "its one tcp need is declared on the host's table"
     );
@@ -956,7 +1056,10 @@ mod ticketed {
     };
     use busbar_contract::abi::sdk::door::{abi_str, statement};
     use busbar_contract::auth_calls::{AuthCalls, Verified, VerifiedIdentity, VerifyRequest};
-    use busbar_contract::services::{Later, Ran, Stored};
+    use busbar_contract::services::{
+        Caller, DiskDest, HookAsk, Later, NestAsk, Ran, Reading, RecordsList, Snapshot, Stored,
+        TrustKeyRef,
+    };
     use busbar_contract::Secret;
 
     use crate::auth_axis::AuthRows;
@@ -1032,7 +1135,193 @@ mod ticketed {
         served: AtomicU64,
     }
 
-    impl crate::services_double::ServicesDouble for SlowSecrets {
+    #[allow(unused_variables)]
+    impl HostServices for SlowSecrets {
+        fn now(&self) -> Reading {
+            panic!("unexpected host service in the records-secret scheduling boundary: now")
+        }
+        fn dest_judge(&self, dest: &str, class: u32, flags: u32, later: Option<Later>) -> Ran {
+            panic!("unexpected host service in the records-secret scheduling boundary: dest_judge")
+        }
+        fn records_get(&self, caller: &Caller, kind: &str, key: &[u8], later: Later) -> Ran {
+            panic!("unexpected host service in the records-secret scheduling boundary: records_get")
+        }
+        fn records_list(&self, caller: &Caller, list: RecordsList, later: Later) -> Ran {
+            panic!(
+                "unexpected host service in the records-secret scheduling boundary: records_list"
+            )
+        }
+        fn records_claim(
+            &self,
+            caller: &Caller,
+            kind: &str,
+            key: &[u8],
+            ttl_ms: u64,
+            later: Later,
+        ) -> Ran {
+            panic!(
+                "unexpected host service in the records-secret scheduling boundary: records_claim"
+            )
+        }
+        fn sign(&self, caller: &Caller, data: &[u8]) -> Stored {
+            panic!("unexpected host service in the records-secret scheduling boundary: sign")
+        }
+        fn trust_sight(
+            &self,
+            caller: &Caller,
+            counterparty: &str,
+            hash: &str,
+            later: Later,
+        ) -> Ran {
+            panic!("unexpected host service in the records-secret scheduling boundary: trust_sight")
+        }
+        fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
+            panic!("unexpected host service in the records-secret scheduling boundary: trust_unreached")
+        }
+        fn trust_sight_item(
+            &self,
+            caller: &Caller,
+            counterparty: &str,
+            item: &str,
+            digest: &str,
+        ) -> Stored {
+            panic!("unexpected host service in the records-secret scheduling boundary: trust_sight_item")
+        }
+        fn trust_decide(
+            &self,
+            caller: &Caller,
+            key: TrustKeyRef<'_>,
+            expected: Option<&str>,
+            approve: bool,
+        ) -> Stored {
+            panic!(
+                "unexpected host service in the records-secret scheduling boundary: trust_decide"
+            )
+        }
+        fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
+            panic!("unexpected host service in the records-secret scheduling boundary: trust_state")
+        }
+        fn trust_serves(
+            &self,
+            caller: &Caller,
+            counterparty: &str,
+            item: Option<&str>,
+            digest: Option<&str>,
+        ) -> Stored {
+            panic!(
+                "unexpected host service in the records-secret scheduling boundary: trust_serves"
+            )
+        }
+        fn trust_due(&self, caller: &Caller) -> Stored {
+            panic!("unexpected host service in the records-secret scheduling boundary: trust_due")
+        }
+        fn trust_verify(
+            &self,
+            caller: &Caller,
+            counterparty: &str,
+            payload: &[u8],
+            signatures: &[u8],
+        ) -> Stored {
+            panic!(
+                "unexpected host service in the records-secret scheduling boundary: trust_verify"
+            )
+        }
+        fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
+            panic!("unexpected host service in the records-secret scheduling boundary: entitlement_check")
+        }
+        fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
+            panic!(
+                "unexpected host service in the records-secret scheduling boundary: session_emit"
+            )
+        }
+        fn ticket_mint(
+            &self,
+            caller: &Caller,
+            unit: Option<u64>,
+            ttl_secs: u64,
+            record: &[u8],
+        ) -> Stored {
+            panic!("unexpected host service in the records-secret scheduling boundary: ticket_mint")
+        }
+        fn ticket_take(&self, caller: &Caller, unit: Option<u64>) -> Stored {
+            panic!("unexpected host service in the records-secret scheduling boundary: ticket_take")
+        }
+        fn random_fill(&self, len: u64) -> Stored {
+            panic!("unexpected host service in the records-secret scheduling boundary: random_fill")
+        }
+        fn unit_nest(&self, caller: &Caller, unit: Option<u64>, ask: NestAsk, later: Later) -> Ran {
+            panic!("unexpected host service in the records-secret scheduling boundary: unit_nest")
+        }
+        fn work_open(
+            &self,
+            caller: &Caller,
+            unit: Option<u64>,
+            kind: &str,
+            record: &[u8],
+            later: Later,
+        ) -> Ran {
+            panic!("unexpected host service in the records-secret scheduling boundary: work_open")
+        }
+        fn work_find(
+            &self,
+            caller: &Caller,
+            unit: Option<u64>,
+            reference: &[u8],
+            later: Later,
+        ) -> Ran {
+            panic!("unexpected host service in the records-secret scheduling boundary: work_find")
+        }
+        fn work_settle(
+            &self,
+            caller: &Caller,
+            unit: Option<u64>,
+            handle: u64,
+            record: &[u8],
+            later: Later,
+        ) -> Ran {
+            panic!("unexpected host service in the records-secret scheduling boundary: work_settle")
+        }
+        fn work_resume(
+            &self,
+            caller: &Caller,
+            unit: Option<u64>,
+            handle: u64,
+            later: Later,
+        ) -> Ran {
+            panic!("unexpected host service in the records-secret scheduling boundary: work_resume")
+        }
+        fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
+            panic!("unexpected host service in the records-secret scheduling boundary: disk_append")
+        }
+        fn verify_lookup(&self, caller: &Caller, key: &[u8], later: Later) -> Ran {
+            panic!(
+                "unexpected host service in the records-secret scheduling boundary: verify_lookup"
+            )
+        }
+        fn verify_store(&self, caller: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
+            panic!(
+                "unexpected host service in the records-secret scheduling boundary: verify_store"
+            )
+        }
+        fn content_scan(
+            &self,
+            caller: &Caller,
+            unit: Option<u64>,
+            content: &[u8],
+            later: Later,
+        ) -> Ran {
+            panic!(
+                "unexpected host service in the records-secret scheduling boundary: content_scan"
+            )
+        }
+        fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran {
+            panic!("unexpected host service in the records-secret scheduling boundary: hook_call")
+        }
+        fn snapshot_read(&self, caller: &Caller, scope: u32) -> Snapshot {
+            panic!(
+                "unexpected host service in the records-secret scheduling boundary: snapshot_read"
+            )
+        }
         fn records_secret(&self, kind: &str, id: &str, done: Later) -> Ran {
             assert_eq!(kind, KIND, "the host serves only the declared kind");
             self.served.fetch_add(1, Ordering::SeqCst);
@@ -1058,7 +1347,7 @@ mod ticketed {
         }
     }
 
-    fn opened(double: Arc<crate::services_double::Double<SlowSecrets>>) -> Arc<dyn AuthCalls> {
+    fn opened(double: Arc<SlowSecrets>) -> Arc<dyn AuthCalls> {
         let registry = PluginRegistry::empty()
             .link(vec![LinkedPlugin::auth_door("proves", door::door)])
             .expect("the linked door registers");
@@ -1093,7 +1382,7 @@ mod ticketed {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_ticketed_verify_pends_on_records_secret_and_resumes_ready() {
-        let double = Arc::new(crate::services_double::Double(SlowSecrets::default()));
+        let double = Arc::new(SlowSecrets::default());
         let a = opened(double.clone());
         let request = lent("AKID:open-sesame");
         assert_eq!(
@@ -1120,7 +1409,7 @@ mod ticketed {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_unknown_id_pends_and_resumes_on_the_same_path_and_is_rejected() {
-        let double = Arc::new(crate::services_double::Double(SlowSecrets::default()));
+        let double = Arc::new(SlowSecrets::default());
         let a = opened(double.clone());
         let request = lent("NOBODY:dummy-secret-0000");
         assert_eq!(
@@ -1139,7 +1428,7 @@ mod ticketed {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_sync_verify_plugin_still_answers_on_the_spot_and_submitted() {
-        let double = Arc::new(crate::services_double::Double(SlowSecrets::default()));
+        let double = Arc::new(SlowSecrets::default());
         let registry = PluginRegistry::empty()
             .link(vec![LinkedPlugin::auth_door("judge", super::judge::door)])
             .expect("the linked door registers");

@@ -116,3 +116,35 @@ async fn dpop_refusal_keeps_the_exchange_unauthenticated_words() {
     let body = std::str::from_utf8(&bytes).unwrap();
     assert_eq!((status, body), (401, r#"{"error":"not authenticated"}"#));
 }
+
+#[tokio::test]
+async fn exchange_verifier_outcome_projection_preserves_failed_and_faulted_503() {
+    use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
+    for faulted in [false, true] {
+        let verified = if faulted {
+            Verified::Identity(VerifiedIdentity {
+                subject: "faulted".into(),
+                ..Default::default()
+            })
+        } else {
+            Verified::Failed
+        };
+        let judged = crate::auth::data_verdict_of("door", verified.into(), faulted).map(|judged| {
+            crate::auth::chain_position_verdict("door", judged.verdict)
+                .unwrap_or(crate::auth::ChainVerdict::Denied)
+        });
+        let response =
+            exchange_verdict_result(judged).expect_err("no verdict refuses the exchange");
+        assert_eq!(
+            (
+                response.status().as_u16(),
+                response
+                    .headers()
+                    .get("retry-after")
+                    .map(|value| value.to_str().unwrap())
+            ),
+            (503, Some("1")),
+            "failed/faulted exchange:503 +Retry-After (SIGN-auth-kind 2026-10-30)"
+        );
+    }
+}

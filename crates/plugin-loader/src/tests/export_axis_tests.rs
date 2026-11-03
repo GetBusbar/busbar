@@ -8,13 +8,14 @@ use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::export_calls::parse_families;
 
 use super::*;
+use crate::actual_exports;
 use crate::both_ways;
 use crate::dispatch::{rendering_of, DispatchConfig, Dispatcher};
 use crate::sign::Manifest;
 
 #[test]
 fn trace_diagnostics_mask_userinfo_even_when_the_endpoint_is_malformed() {
-    let mask = both_ways::export_trace_fixture::mask_userinfo;
+    let mask = busbar_contract::abi::sdk::mask::mask_url;
     assert_eq!(
         mask("https://user:secret@collector:bad/v1/traces"),
         "https://***@collector:bad/v1/traces"
@@ -35,8 +36,8 @@ fn manifest(name: &str) -> Manifest {
     both_ways::statement("export", name, name, v)
 }
 
-fn both(name: &str, door: DoorFn, crate_snake: &str) -> [PluginRegistry; 2] {
-    let lib = std::fs::read(both_ways::cdylib(crate_snake)).expect("read the cdylib");
+fn both(name: &str, door: DoorFn, path: std::path::PathBuf) -> [PluginRegistry; 2] {
+    let lib = std::fs::read(path).expect("read the actual exporter cdylib");
     let linked = PluginRegistry::empty()
         .link(vec![crate::LinkedPlugin::door(manifest(name), door)])
         .expect("the linked door admits the sink");
@@ -44,7 +45,7 @@ fn both(name: &str, door: DoorFn, crate_snake: &str) -> [PluginRegistry; 2] {
     stated.statement = Some(hex::encode(
         rendering_of(door).expect("the door renders its Statement"),
     ));
-    let dropped = both_ways::dropped(crate_snake, stated, &lib);
+    let dropped = both_ways::dropped(name, stated, &lib);
     [linked, dropped]
 }
 
@@ -69,14 +70,15 @@ busbar_request_duration_seconds_count 2
 
 #[test]
 fn the_scrape_sink_answers_the_same_through_either_door() {
-    let row = "export-scrape";
+    let row = actual_exports::prometheus::NAME;
     let doors = both(
         row,
-        both_ways::export_scrape_fixture::door::door,
-        both_ways::fixture(row).1,
+        actual_exports::prometheus::door,
+        actual_exports::prometheus::path(),
     );
     let transcripts = doors.map(|registry| {
-        let rows = ExportRows::new(&registry, dispatcher());
+        let rows = ExportRows::new(&registry, dispatcher())
+            .with_conns(Arc::new(crate::needs_restated::Inert));
         let module = row;
         let good = serde_json::json!({ "buffer_seconds": 60 });
         let (streams, clean) = rows.probe(module, "metrics", &good).expect("an export row");
@@ -115,11 +117,11 @@ fn the_scrape_sink_answers_the_same_through_either_door() {
 
 #[test]
 fn the_trace_sink_answers_the_same_through_either_door() {
-    let row = "export-trace";
+    let row = actual_exports::otlp::NAME;
     let doors = both(
         row,
-        both_ways::export_trace_fixture::door::door,
-        both_ways::fixture(row).1,
+        actual_exports::otlp::door,
+        actual_exports::otlp::path(),
     );
     let transcripts = doors.map(|registry| {
         let rows = ExportRows::new(&registry, dispatcher())
@@ -145,11 +147,11 @@ fn the_trace_sink_answers_the_same_through_either_door() {
 
 #[test]
 fn the_request_log_webhook_sink_answers_the_same_through_either_door() {
-    let row = "export-carried";
+    let row = actual_exports::webhook::NAME;
     let doors = both(
         row,
-        both_ways::export_carried_fixture::door,
-        both_ways::fixture(row).1,
+        actual_exports::webhook::door,
+        actual_exports::webhook::path(),
     );
     let transcripts = doors.map(|registry| {
         let rows = ExportRows::new(&registry, dispatcher())
@@ -181,11 +183,11 @@ fn a_refused_webhook_target_is_said_once_in_busbars_log_at_start() {
     let host = HostLog::installed();
     let dir = scratch("webhook-refused");
     let logs = config(&dir, LogLevel::Info);
-    let row = "export-carried";
+    let row = actual_exports::webhook::NAME;
     let registry = PluginRegistry::empty()
         .link(vec![crate::LinkedPlugin::door(
             manifest(row),
-            both_ways::export_carried_fixture::door,
+            actual_exports::webhook::door,
         )])
         .expect("the linked sink admits");
     let rows = ExportRows::new(&registry, dispatcher())
@@ -223,14 +225,15 @@ fn a_refused_webhook_target_is_said_once_in_busbars_log_at_start() {
 
 #[test]
 fn check_runs_when_the_first_instance_does_not_open() {
-    let row = "export-scrape";
+    let row = actual_exports::prometheus::NAME;
     let registry = PluginRegistry::empty()
         .link(vec![crate::LinkedPlugin::door(
             manifest(row),
-            both_ways::export_scrape_fixture::door::door,
+            actual_exports::prometheus::door,
         )])
         .expect("the linked door admits the sink");
-    let rows = ExportRows::new(&registry, dispatcher());
+    let rows =
+        ExportRows::new(&registry, dispatcher()).with_conns(Arc::new(crate::needs_restated::Inert));
     let findings = rows
         .check(
             row,

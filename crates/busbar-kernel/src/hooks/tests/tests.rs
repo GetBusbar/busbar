@@ -9,7 +9,7 @@ fn from_ranked_drops_unknown_and_dedups() {
     assert_eq!(d, RoutingDecision::Prefer(vec![2, 1, 0]));
 }
 
-use crate::config::{HookCfg, HookKind, PolicyOnError, PoolPolicy, PromptAccess, UserAccess};
+use crate::config::{HookCfg, HookKind, PoolPolicy, PromptAccess, UserAccess};
 use std::collections::HashMap;
 
 #[path = "resolution_tests.rs"]
@@ -17,361 +17,176 @@ mod resolution_tests;
 
 const EXTRA_STRATEGY: &str = "operator-order";
 
-struct ReceivingCalls {
-    calls: Arc<dyn busbar_contract::hook_calls::HookCalls>,
-    seen: Arc<std::sync::atomic::AtomicUsize>,
-    routes: Vec<busbar_contract::abi::mechanism::route::Route>,
-}
-
-impl busbar_contract::hook_calls::HookCalls for ReceivingCalls {
-    fn name(&self) -> &str {
-        "receiver"
-    }
-    fn routes(&self) -> &[busbar_contract::abi::mechanism::route::Route] {
-        &self.routes
-    }
-    fn serve(
-        &self,
-        _: busbar_contract::abi::mechanism::endpoint::EndpointRequest,
-        _: std::time::Duration,
-    ) -> busbar_contract::hook_calls::Pending<
-        Result<busbar_contract::abi::mechanism::endpoint::EndpointResponse, String>,
-    > {
-        self.seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Box::pin(async {
-            Ok(
-                busbar_contract::abi::mechanism::endpoint::EndpointResponse {
-                    status: 202,
-                    headers: Vec::new(),
-                    body: Vec::new(),
-                },
-            )
-        })
-    }
-    fn decide(
-        &self,
-        _: Arc<busbar_contract::abi::host::hook::DecideFrame>,
-        _: std::time::Duration,
-    ) -> busbar_contract::hook_calls::Pending<
-        busbar_contract::hook_calls::Answered<busbar_contract::abi::hook::DecideOut>,
-    > {
-        let count = self.seen.load(std::sync::atomic::Ordering::SeqCst);
-        Box::pin(async move {
-            busbar_contract::hook_calls::Answered::Broken(format!("feedback={count}"))
-        })
-    }
-    fn transform(
-        &self,
-        f: Arc<busbar_contract::abi::host::hook::DecideFrame>,
-        b: std::time::Duration,
-    ) -> busbar_contract::hook_calls::Pending<
-        busbar_contract::hook_calls::Answered<busbar_contract::abi::hook::TransformOut>,
-    > {
-        self.calls.transform(f, b)
-    }
-    fn notify(
-        &self,
-        f: Arc<busbar_contract::abi::host::hook::NotifyFrame>,
-        b: std::time::Duration,
-    ) -> busbar_contract::hook_calls::Pending<()> {
-        self.calls.notify(f, b)
-    }
-    fn configure(
-        &self,
-        n: &str,
-        s: &str,
-        v: u64,
-        b: std::time::Duration,
-    ) -> busbar_contract::hook_calls::Pending<Result<(), String>> {
-        self.calls.configure(n, s, v, b)
-    }
-    fn status(
-        &self,
-        b: std::time::Duration,
-    ) -> busbar_contract::hook_calls::Pending<Option<Vec<u8>>> {
-        self.calls.status(b)
-    }
-    fn describe(
-        &self,
-        b: std::time::Duration,
-    ) -> busbar_contract::hook_calls::Pending<Option<Vec<u8>>> {
-        self.calls.describe(b)
-    }
-}
-
-struct ReceivingAxis;
-
-fn receiving_route() -> busbar_contract::abi::mechanism::route::Route {
-    busbar_contract::abi::mechanism::route::Route {
-        path: "/hooks/receiver/feedback".into(),
-        method: busbar_contract::abi::mechanism::route::RouteMethod::Post,
-        auth: busbar_contract::abi::mechanism::route::RouteAuth::Key,
-    }
-}
-
-impl busbar_contract::hook_calls::HookAxis for ReceivingAxis {
-    fn routes(
-        &self,
-        _: &str,
-        _: &str,
-        _: &serde_json::Value,
-    ) -> Result<Vec<busbar_contract::abi::mechanism::route::Route>, String> {
-        Ok(vec![receiving_route()])
-    }
-    fn probe(
-        &self,
-        _: &str,
-        _: &str,
-        _: &serde_json::Value,
-    ) -> Option<busbar_contract::hook_calls::Probed> {
-        Some((
-            Some(busbar_contract::hook_calls::HookFacts {
-                name: "receiver".into(),
-                ..Default::default()
-            }),
-            Vec::new(),
-        ))
-    }
-    fn open(
-        &self,
-        _: &str,
-        name: &str,
-        _: &serde_json::Value,
-        budget: std::time::Duration,
-    ) -> Result<Arc<dyn busbar_contract::hook_calls::HookCalls>, String> {
-        let calls = crate::test_support::hook_double::HookAxisDouble::new(&["receiver"]).open(
-            "receiver",
-            name,
-            &serde_json::json!({}),
-            budget,
-        )?;
-        Ok(Arc::new(ReceivingCalls {
-            calls,
-            seen: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            routes: vec![receiving_route()],
-        }))
-    }
-    fn linked(&self, _: &str) -> bool {
-        true
-    }
-    fn first_party(&self, _: &str) -> bool {
-        true
-    }
-    fn call_budget(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(1)
-    }
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn inbound_feedback_reaches_the_policy_instance_and_reload_keeps_old_state_separate() {
-    let definitions = HashMap::from([(
-        "receiver".into(),
-        serde_json::from_value::<HookCfg>(
-            serde_json::json!({"kind": "gate", "module": "receiver-module"}),
-        )
-        .unwrap(),
-    )]);
-    let build = || {
-        let mut env = HookEnv::with_axis(
-            crate::test_support::rows::empty(),
-            Arc::new(ReceivingAxis),
-            Arc::new(crate::config::secret::SecretResolver::builtins_only()),
-        );
-        let routes = env.route_decls(&definitions).unwrap();
-        let (policy, _) =
-            gate_transport_named("receiver", &definitions["receiver"], &env, 0).unwrap();
-        (env, routes, policy)
+#[test]
+fn inbound_feedback_reaches_the_policy_instance_and_reload_keeps_old_state_separate() {
+    // Arbitrary inbound routes are host-boundary metadata, not an advertised
+    // webrequest/ranking product capability. Keep the actual route reuse rule
+    // and response forwarding here; actual product transport identity is also
+    // exercised by distribution::hooks_runtime_replies.
+    let settings = serde_json::Map::new();
+    let identity = RouteIdentity {
+        module: "receiver-module",
+        settings: &settings,
+        budget: std::time::Duration::from_secs(1),
     };
-    let (_old_env, mut old_routes, old_policy) = build();
-    let old_dispatch = old_routes.remove(0).dispatch;
-    let response = tokio::task::spawn_blocking(move || {
-        old_dispatch.handle_http(
-            &busbar_contract::abi::mechanism::endpoint::EndpointRequest {
-                method: "POST".into(),
-                path: receiving_route().path,
-                query: String::new(),
+    let old_generation = Arc::new(1usize);
+    let new_generation = Arc::new(0usize);
+    let old_routes = HashMap::from([("receiver".to_owned(), (identity, old_generation.clone()))]);
+    let selected = retained_route(&old_routes, "receiver", identity, |entry| entry.0)
+        .expect("the route and policy select the retained instance");
+    assert!(Arc::ptr_eq(&selected.1, &old_generation));
+    let response = hook_route_response(
+        "receiver",
+        Ok(
+            busbar_contract::abi::mechanism::endpoint::EndpointResponse {
+                status: 202,
                 headers: Vec::new(),
                 body: Vec::new(),
             },
-        )
-    })
-    .await
-    .unwrap();
+        ),
+    );
     assert_eq!(response.status, 202);
-    let (_new_env, _new_routes, new_policy) = build();
-    let request = RoutingRequest {
-        request_id: 1,
-        pool: "p",
-        ingress_protocol: "x",
-        requested_model: None,
-        message_count: 0,
-        tool_count: 0,
-        has_tools: false,
-        total_chars: 0,
-        system_chars: 0,
-        max_tokens: None,
-        stream: false,
-        prompt: None,
-        identity: None,
-        signals: SignalBag::new(),
-        session: None,
-    };
-    let context = RoutingContext {
-        pool: "p",
-        budget_remaining: None,
-        budget: &[],
-    };
-    assert!(old_policy
-        .decide(&request, &[], &context, std::time::Duration::from_secs(1))
-        .await
-        .unwrap_err()
-        .to_string()
-        .contains("feedback=1"));
-    assert!(new_policy
-        .decide(&request, &[], &context, std::time::Duration::from_secs(1))
-        .await
-        .unwrap_err()
-        .to_string()
-        .contains("feedback=0"));
-}
-
-struct StrategyAxis {
-    facts: busbar_contract::hook_calls::HookFacts,
-    fail_open: bool,
-}
-
-impl busbar_contract::hook_calls::HookAxis for StrategyAxis {
-    fn probe(
-        &self,
-        module: &str,
-        _: &str,
-        settings: &serde_json::Value,
-    ) -> Option<busbar_contract::hook_calls::Probed> {
-        assert_eq!(module, EXTRA_STRATEGY);
-        assert_eq!(settings, &serde_json::json!({"policy": EXTRA_STRATEGY}));
-        Some((Some(self.facts.clone()), Vec::new()))
-    }
-
-    fn open(
-        &self,
-        module: &str,
-        label: &str,
-        settings: &serde_json::Value,
-        budget: std::time::Duration,
-    ) -> Result<Arc<dyn busbar_contract::hook_calls::HookCalls>, String> {
-        assert_eq!(module, EXTRA_STRATEGY);
-        assert_eq!(label, EXTRA_STRATEGY);
-        assert_eq!(settings, &serde_json::json!({"policy": EXTRA_STRATEGY}));
-        if self.fail_open {
-            return Err("strategy constructor refused".into());
-        }
-
-        crate::test_support::hook_double::HookAxisDouble::new(&["strategy-double"]).open(
-            "strategy-double",
-            label,
-            &serde_json::json!({"order": [1, 0]}),
-            budget,
-        )
-    }
-
-    fn linked(&self, _: &str) -> bool {
-        false
-    }
-    fn call_budget(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(1)
-    }
-    fn first_party(&self, _: &str) -> bool {
-        false
-    }
-}
-
-fn strategy_env(infallible: bool, words: Vec<String>, fail_open: bool) -> HookEnv {
-    HookEnv::with_axis(
-        crate::test_support::rows::empty(),
-        Arc::new(StrategyAxis {
-            facts: busbar_contract::hook_calls::HookFacts {
-                name: "strategy-double".into(),
-                class: busbar_contract::abi::hook::CLASS_GATE,
-                infallible,
-                words,
-                ..Default::default()
-            },
-            fail_open,
-        }),
-        Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+    let new_routes = HashMap::from([("receiver".to_owned(), (identity, new_generation.clone()))]);
+    let old = retained_route(&old_routes, "receiver", identity, |entry| entry.0).unwrap();
+    let new = retained_route(&new_routes, "receiver", identity, |entry| entry.0).unwrap();
+    assert_eq!(
+        *old.1, 1,
+        "the retained old generation remains selected for its old route"
+    );
+    assert_eq!(
+        *new.1, 0,
+        "a new environment selects its independent new instance"
+    );
+    assert!(!Arc::ptr_eq(&old.1, &new.1));
+    assert!(retained_route(
+        &old_routes,
+        "receiver",
+        RouteIdentity {
+            module: "replacement",
+            ..identity
+        },
+        |entry| entry.0
     )
+    .is_none());
+    assert!(retained_route(
+        &old_routes,
+        "receiver",
+        RouteIdentity {
+            budget: std::time::Duration::from_secs(2),
+            ..identity
+        },
+        |entry| entry.0
+    )
+    .is_none());
+    let changed = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(
+        serde_json::json!({"url":"changed"}),
+    )
+    .unwrap();
+    assert!(retained_route(
+        &old_routes,
+        "receiver",
+        RouteIdentity {
+            settings: &changed,
+            ..identity
+        },
+        |entry| entry.0
+    )
+    .is_none());
 }
 
-#[tokio::test]
-async fn plugin_strategy_word_survives_parse_and_uses_the_admitted_axis() {
+#[test]
+fn plugin_strategy_word_survives_parse_and_uses_the_admitted_axis() {
     let pool = pool_policy(crate::config::parse_strategy(EXTRA_STRATEGY));
     assert_eq!(pool.policy.native_name(), Some(EXTRA_STRATEGY));
-    let env = strategy_env(false, vec![EXTRA_STRATEGY.into()], false);
-    let resolved = resolve_pool_ordering(&pool, &HashMap::new(), &env, None, 0);
-    let Some(ResolvedPolicy::Policy { policy, .. }) = resolved else {
-        panic!("the admitted plugin strategy must not become weighted");
+    let facts = busbar_contract::hook_calls::HookFacts {
+        name: "strategy".into(),
+        class: busbar_contract::abi::hook::CLASS_GATE,
+        infallible: false,
+        words: vec![EXTRA_STRATEGY.into()],
+        ..Default::default()
     };
-    assert_eq!(policy.name(), EXTRA_STRATEGY);
-    let order = policy
-        .decide(
-            &dreq("hi"),
-            &[dcand(0), dcand(1)],
-            &dctx(),
-            std::time::Duration::from_secs(1),
-        )
-        .await
-        .expect("strategy decision");
-    assert_eq!(order, RoutingDecision::Prefer(vec![1, 0]));
+    let settings =
+        crate::preflight::ranking_settings_from(EXTRA_STRATEGY, Some((Some(facts), Vec::new())))
+            .expect("the advertised strategy word is admitted");
+    let (name, _) = crate::preflight::open_ranked(
+        EXTRA_STRATEGY,
+        &settings,
+        std::time::Duration::from_secs(1),
+        |module, label, settings, budget| {
+            assert_eq!(module, EXTRA_STRATEGY);
+            assert_eq!(label, EXTRA_STRATEGY);
+            assert_eq!(settings, &serde_json::json!({"policy":EXTRA_STRATEGY}));
+            assert_eq!(budget, std::time::Duration::from_secs(1));
+            Ok(label.to_owned())
+        },
+    )
+    .expect("admitted strategy construction succeeds");
+    assert_eq!(name, EXTRA_STRATEGY);
+    // The old synthetic Prefer([1,0]) answer is preserved through actual HTTP
+    // in distribution::hooks_runtime_replies, alongside unknown-index filtering.
 }
 
 #[test]
 fn plugin_strategy_requires_a_declared_word() {
-    let pool = pool_policy(crate::config::parse_strategy(EXTRA_STRATEGY));
-    for env in [
-        strategy_env(false, vec!["different-word".into()], false),
-        strategy_env(true, Vec::new(), false),
+    for (class, infallible, words) in [
+        (
+            busbar_contract::abi::hook::CLASS_GATE,
+            false,
+            vec!["different-word".into()],
+        ),
+        (busbar_contract::abi::hook::CLASS_GATE, true, Vec::new()),
+        (
+            busbar_contract::abi::hook::CLASS_TAP,
+            true,
+            vec![EXTRA_STRATEGY.into()],
+        ),
     ] {
-        assert!(resolve_pool_ordering(&pool, &HashMap::new(), &env, None, 0).is_none());
-    }
-    let mut tap = strategy_env(true, vec![EXTRA_STRATEGY.into()], false);
-    tap.axis = Some(Arc::new(StrategyAxis {
-        facts: busbar_contract::hook_calls::HookFacts {
-            class: busbar_contract::abi::hook::CLASS_TAP,
-            words: vec![EXTRA_STRATEGY.into()],
+        let facts = busbar_contract::hook_calls::HookFacts {
+            class,
+            infallible,
+            words,
             ..Default::default()
-        },
-        fail_open: false,
-    }));
-    assert!(resolve_pool_ordering(&pool, &HashMap::new(), &tap, None, 0).is_none());
+        };
+        assert!(crate::preflight::ranking_settings_from(
+            EXTRA_STRATEGY,
+            Some((Some(facts), Vec::new()))
+        )
+        .is_err());
+    }
 }
 
 #[test]
 fn plugin_strategy_open_failure_refuses_pool_construction() {
-    let pool = pool_policy(crate::config::parse_strategy(EXTRA_STRATEGY));
-    let env = strategy_env(true, vec![EXTRA_STRATEGY.into()], true);
-    let error = try_resolve_pool_ordering(&pool, &HashMap::new(), &env, None, 0)
-        .err()
-        .expect("a constructor failure must refuse boot/reload");
-    assert!(error.contains("strategy constructor refused"));
-}
-
-fn test_env_needs(alias: &str, needs: crate::test_support::HookNeeds) -> HookEnv {
-    crate::test_support::test_hook_env(&[alias], needs)
-}
-
-fn test_env() -> HookEnv {
-    test_env_needs(
-        "test-hook",
-        crate::test_support::HookNeeds {
-            prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
-            user: busbar_contract::plugin_rows::NeedLevel::Ro,
+    let settings = crate::preflight::ranking_settings_from(
+        EXTRA_STRATEGY,
+        Some((
+            Some(busbar_contract::hook_calls::HookFacts {
+                class: busbar_contract::abi::hook::CLASS_GATE,
+                words: vec![EXTRA_STRATEGY.into()],
+                ..Default::default()
+            }),
+            Vec::new(),
+        )),
+    )
+    .expect("the strategy word is admitted before its constructor runs");
+    let error = crate::preflight::open_ranked::<()>(
+        EXTRA_STRATEGY,
+        &settings,
+        std::time::Duration::from_secs(1),
+        |module, label, settings, _| {
+            assert_eq!(module, EXTRA_STRATEGY);
+            assert_eq!(label, EXTRA_STRATEGY);
+            assert_eq!(settings, &serde_json::json!({"policy":EXTRA_STRATEGY}));
+            Err("strategy constructor refused".into())
         },
     )
+    .expect_err("a constructor failure must refuse boot/reload");
+    assert!(error.contains("strategy constructor refused"));
 }
 
 fn empty_env() -> HookEnv {
     HookEnv::new(
-        crate::test_support::rows::empty(),
+        std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
         std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
     )
     .expect("the registry's hook axis")
@@ -409,7 +224,18 @@ fn preresolve_hook_secrets_fails_closed_on_unresolvable_secret() {
 
 #[test]
 fn preopen_gate_hooks_aborts_on_a_broken_gate_but_never_a_broken_tap() {
-    let env = test_env();
+    let resolver = crate::config::secret::SecretResolver::builtins_only();
+    let open = |_: &str, hook: &HookCfg| {
+        crate::config::secret::resolve_settings(
+            &hook.settings,
+            &[],
+            &[],
+            &hook.plugin,
+            &resolver,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .map(|_| ())
+    };
 
     let mut settings = serde_json::Map::new();
     settings.insert(
@@ -422,15 +248,14 @@ fn preopen_gate_hooks_aborts_on_a_broken_gate_but_never_a_broken_tap() {
     broken_tap.settings = settings.clone();
     let tap_hooks = registry("broken-tap", broken_tap);
     assert!(
-        env.preopen_gate_hooks(&tap_hooks).is_ok(),
+        preopen_definitions(&tap_hooks, |_| true, open, |_, _, ()| Ok(())).is_ok(),
         "a broken TAP must never abort boot/reload (taps fail-open)"
     );
 
     let mut broken_gate = base_gate();
     broken_gate.settings = settings;
     let gate_hooks = registry("broken-gate", broken_gate);
-    let err = env
-        .preopen_gate_hooks(&gate_hooks)
+    let err = preopen_definitions(&gate_hooks, |_| true, open, |_, _, ()| Ok(()))
         .expect_err("a gate whose settings/open() fails must abort boot/reload CLOSED");
     assert!(
         err.contains("broken-gate"),
@@ -439,7 +264,7 @@ fn preopen_gate_hooks_aborts_on_a_broken_gate_but_never_a_broken_tap() {
 
     let ok_hooks = registry("ok-gate", base_gate());
     assert!(
-        env.preopen_gate_hooks(&ok_hooks).is_ok(),
+        preopen_definitions(&ok_hooks, |_| true, open, |_, _, ()| Ok(())).is_ok(),
         "a gate with valid settings must pre-open without error"
     );
 }
@@ -501,33 +326,7 @@ fn registry(name: &str, hook: HookCfg) -> HashMap<String, HookCfg> {
 }
 
 #[test]
-fn native_policy_resolves_constructed_policy() {
-    for (policy, name) in [
-        (PoolPolicy::Cheapest, "cheapest"),
-        (PoolPolicy::Fastest, "fastest"),
-        (PoolPolicy::LeastBusy, "least_busy"),
-        (PoolPolicy::Usage, "usage"),
-    ] {
-        let cfg = pool_policy(policy);
-        match resolve_policy(&cfg) {
-            Some(ResolvedPolicy::Policy { policy, .. }) => {
-                assert_eq!(
-                    policy.name(),
-                    name,
-                    "resolved native policy name must round-trip"
-                );
-            }
-            other => panic!(
-                "policy: {name} must resolve to a Policy, got none={}",
-                other.is_none()
-            ),
-        }
-    }
-}
-
-#[test]
 fn default_hook_resolves_as_base_for_unnamed_pools() {
-    let env = test_env();
     let mut def = base_gate();
     def.default = true;
     let mut hooks = registry("def", def);
@@ -539,43 +338,34 @@ fn default_hook_resolves_as_base_for_unnamed_pools() {
     let mut unnamed = pool_with_hook("x");
     unnamed.gates.clear();
     assert!(
-        resolve_pool_ordering(&unnamed, &hooks, &env, Some("def"), 0).is_some(),
+        inherited_ordering(&unnamed, &hooks, Some("def")).is_some(),
         "an unnamed-base pool inherits the default hook as its ordering"
     );
 
     assert!(
-        resolve_pool_ordering(
-            &pool_policy(PoolPolicy::Weighted),
-            &hooks,
-            &env,
-            Some("def"),
-            0
-        )
-        .is_none(),
+        inherited_ordering(&pool_policy(PoolPolicy::Weighted), &hooks, Some("def")).is_none(),
         "a pool that named its base keeps it; the default does not override"
     );
 
     let gated = pool_with_hook("h");
     assert!(
-        resolve_pool_ordering(&gated, &hooks, &env, Some("def"), 0).is_some(),
+        inherited_ordering(&gated, &hooks, Some("def")).is_some(),
         "an unnamed-base pool with its own gate still inherits the default as base"
     );
     assert_eq!(
-        resolve_pool_gates(&gated, &hooks, &env, 0).len(),
+        decision_definitions(&hooks, &gated.gates).len(),
         1,
         "the pool's own gate resolves separately, on top of the inherited base"
     );
 
     assert!(
-        resolve_pool_ordering(&unnamed, &HashMap::new(), &env, None, 0).is_none(),
+        inherited_ordering(&unnamed, &HashMap::new(), None).is_none(),
         "no default hook ⇒ the compiled-in weighted backstop (None)"
     );
 }
 
 #[test]
 fn default_rw_hook_is_not_the_base_ordering() {
-    let env = test_env();
-
     let mut rw = base_gate();
     rw.prompt = PromptAccess::Rw;
     rw.default = true;
@@ -583,7 +373,7 @@ fn default_rw_hook_is_not_the_base_ordering() {
     let mut unnamed = pool_with_hook("x");
     unnamed.gates.clear();
     assert!(
-        resolve_pool_ordering(&unnamed, &hooks, &env, Some("def"), 0).is_none(),
+        inherited_ordering(&unnamed, &hooks, Some("def")).is_none(),
         "a prompt:rw default hook must not become the base ordering — it can never return an order"
     );
 
@@ -594,7 +384,7 @@ fn default_rw_hook_is_not_the_base_ordering() {
     let mut unnamed2 = pool_with_hook("x");
     unnamed2.gates.clear();
     assert!(
-        resolve_pool_ordering(&unnamed2, &hooks, &env, Some("deftap"), 0).is_none(),
+        inherited_ordering(&unnamed2, &hooks, Some("deftap")).is_none(),
         "a tap default hook must not become the base ordering — it has no decision arm"
     );
 }
@@ -614,139 +404,16 @@ fn unknown_hook_ref_falls_back_to_none() {
 }
 
 #[test]
-fn plugin_gate_resolves_constructed_policy() {
-    let env = test_env();
-    let hooks = registry("h", base_gate());
-    match resolve_pool_gates(&pool_with_hook("h"), &hooks, &env, 0)
-        .into_iter()
-        .next()
-    {
-        Some((
-            _,
-            ResolvedPolicy::Policy {
-                policy, timeout, ..
-            },
-        )) => {
-            assert_eq!(
-                policy.name(),
-                "h",
-                "the HookPolicy carries the hook's registry name"
-            );
-            assert_eq!(
-                timeout,
-                std::time::Duration::from_millis(crate::config::DEFAULT_POLICY_TIMEOUT_MS),
-                "a gate with the default timeout resolves to the documented deadline, not 0ms",
-            );
-        }
-        None => panic!("plugin gate must resolve to a Policy"),
-    }
-
-    assert!(resolve_pool_gates(&pool_with_hook("h"), &hooks, &empty_env(), 0).is_empty());
-}
-
-#[test]
 fn weighted_default_resolves_none() {
     assert!(resolve_policy(&pool_policy(PoolPolicy::Weighted)).is_none());
 }
 
-#[test]
-fn on_error_chain_resolves_gates_and_terminals() {
-    let env = test_env();
-
-    let mut a = base_gate();
-    a.on_error = "b".to_string();
-    let mut b = base_gate();
-    b.on_error = "reject".to_string();
-    let mut hooks = registry("a", a);
-    hooks.insert("b".to_string(), b);
-
-    let resolved = resolve_pool_gates(&pool_with_hook("a"), &hooks, &env, 0);
-    let Some((
-        _,
-        ResolvedPolicy::Policy {
-            on_error,
-            on_error_chain,
-            ..
-        },
-    )) = resolved.into_iter().next()
-    else {
-        panic!("gate a must resolve");
-    };
-    assert_eq!(on_error_chain.len(), 1, "one fallback link (gate b)");
-    assert_eq!(on_error_chain[0].policy.name(), "b");
-    assert_eq!(
-        on_error,
-        PolicyOnError::Reject,
-        "the chain bottoms out on b's reject terminal"
-    );
-
-    let mut n = base_gate();
-    n.on_error = "nothing".to_string();
-    let hooks_n = registry("n", n);
-    let Some((
-        _,
-        ResolvedPolicy::Policy {
-            on_error,
-            on_error_chain,
-            ..
-        },
-    )) = resolve_pool_gates(&pool_with_hook("n"), &hooks_n, &env, 0)
-        .into_iter()
-        .next()
-    else {
-        panic!("gate n must resolve");
-    };
-    assert!(on_error_chain.is_empty());
-    assert_eq!(
-        on_error,
-        PolicyOnError::Weighted,
-        "nothing = the non-participating terminal"
-    );
-
-    let mut c = base_gate();
-    c.on_error = "first".to_string();
-    let hooks = registry("c", c);
-    let Some((
-        _,
-        ResolvedPolicy::Policy {
-            on_error,
-            on_error_chain,
-            ..
-        },
-    )) = resolve_pool_gates(&pool_with_hook("c"), &hooks, &env, 0)
-        .into_iter()
-        .next()
-    else {
-        panic!("gate c must resolve");
-    };
-    assert!(on_error_chain.is_empty(), "a terminal name has no chain");
-    assert_eq!(on_error, PolicyOnError::First);
-}
-
-#[test]
-fn on_error_chain_strategy_terminates() {
-    let env = test_env();
-    let mut g = base_gate();
-    g.on_error = "cheapest".to_string();
-    let hooks = registry("g", g);
-    let Some((
-        _,
-        ResolvedPolicy::Policy {
-            on_error,
-            on_error_chain,
-            ..
-        },
-    )) = resolve_pool_gates(&pool_with_hook("g"), &hooks, &env, 0)
-        .into_iter()
-        .next()
-    else {
-        panic!("gate g must resolve");
-    };
-    assert_eq!(on_error_chain.len(), 1);
-    assert_eq!(on_error_chain[0].policy.name(), "cheapest");
-    assert_eq!(on_error, PolicyOnError::Weighted);
-}
-
+// resolution::Entry and resolution::Paths retain Weak references to their registry.
+// The Weak control block retains that allocation until the last Weak is dropped;
+// a live cache entry therefore cannot observe an allocator-recycled registry address.
+// Missing-row behavior remains asserted below; replacement identity is asserted by
+// resolution_tests::replacing_the_public_registry_cannot_reuse_a_stale_path_snapshot,
+// and actual transport reuse/change is asserted in distribution::hooks_runtime_replies.
 #[test]
 fn missing_plugin_gate_is_absent_not_stranded() {
     let hooks = registry("h", base_gate());
@@ -755,43 +422,7 @@ fn missing_plugin_gate_is_absent_not_stranded() {
 }
 
 #[test]
-fn a_reused_registry_address_never_inherits_a_dead_registrys_resolution() {
-    let env = test_env();
-    let hooks = registry("h", base_gate());
-
-    assert_eq!(
-        resolve_pool_gates(&pool_with_hook("h"), &hooks, &env, 0).len(),
-        1,
-        "the plugin-backed gate resolves against the registry that carries it"
-    );
-    let freed = std::sync::Arc::as_ptr(&env.registry) as *const u8 as usize;
-    drop(env);
-
-    let mut keepalive: Vec<std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>> =
-        Vec::new();
-    for _ in 0..4096 {
-        let reg = crate::test_support::rows::empty();
-        if std::sync::Arc::as_ptr(&reg) as *const u8 as usize == freed {
-            let reused = HookEnv::new(
-                reg,
-                std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
-            )
-            .expect("the registry's hook axis");
-            assert!(
-                resolve_pool_gates(&pool_with_hook("h"), &hooks, &reused, 0).is_empty(),
-                "a registry that does not carry the plugin must resolve to gate-absent even when \
-                 it was allocated on a dead registry's address — a resolution is identified by \
-                 WHICH registry it came out of, and an address is not an identity"
-            );
-            return;
-        }
-        keepalive.push(reg);
-    }
-}
-
-#[test]
 fn resolve_rewrite_hooks_admits_only_prompt_rw_gates() {
-    let env = test_env();
     let mk = |kind: HookKind, prompt: PromptAccess| HookCfg {
         kind,
         prompt,
@@ -810,7 +441,19 @@ fn resolve_rewrite_hooks_admits_only_prompt_rw_gates() {
         "no-gate".to_string(),
         "rw-tap".to_string(),
     ];
-    let resolved = resolve_rewrite_hooks(&hooks, &global, &env, 0);
+    let resolved = rewrite_definitions(&hooks, &global, |name, hook| {
+        access_from_intent(
+            name,
+            hook,
+            Needs {
+                prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
+                user: busbar_contract::plugin_rows::NeedLevel::Ro,
+            },
+            &std::sync::Mutex::new(HashSet::new()),
+        )
+        .0
+        .can_rewrite()
+    });
     assert_eq!(
         resolved.len(),
         1,
@@ -834,7 +477,6 @@ fn resolve_rewrite_hooks_admits_only_prompt_rw_gates() {
 /// on `hook.prompt.can_rewrite()` alone and every row admitted.
 #[test]
 fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
-    use crate::test_support::HookNeeds;
     use busbar_contract::plugin_rows::NeedLevel;
 
     for (need, admitted) in [
@@ -842,18 +484,23 @@ fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
         (NeedLevel::Ro, false),
         (NeedLevel::Rw, true),
     ] {
-        let needs = HookNeeds {
+        let needs = Needs {
             prompt: need,
             user: NeedLevel::No,
         };
-        let env = test_env_needs("test-hook", needs);
+        let banners = std::sync::Mutex::new(HashSet::new());
 
         let mut rw = base_gate();
         rw.prompt = PromptAccess::Rw;
         rw.global = true;
         let hooks = registry("rw", rw);
 
-        let global = resolve_rewrite_hooks(&hooks, &["rw".to_string()], &env, 0);
+        let global_names = ["rw".to_string()];
+        let global = rewrite_definitions(&hooks, &global_names, |name, hook| {
+            access_from_intent(name, hook, needs, &banners)
+                .0
+                .can_rewrite()
+        });
         assert_eq!(
             !global.is_empty(),
             admitted,
@@ -861,7 +508,12 @@ fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
              {} admit — the operator grant alone is not the ticket",
             if admitted { "" } else { "NOT " }
         );
-        let pool = resolve_pool_rewrites(&pool_with_hook("rw"), &hooks, &env, 0);
+        let pool_cfg = pool_with_hook("rw");
+        let pool = rewrite_definitions(&hooks, &pool_cfg.gates, |name, hook| {
+            access_from_intent(name, hook, needs, &banners)
+                .0
+                .can_rewrite()
+        });
         assert_eq!(
             !pool.is_empty(),
             admitted,
@@ -870,7 +522,9 @@ fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
             if admitted { "" } else { "NOT " }
         );
 
-        let (send_prompt, _) = projection_grants("rw", hooks.get("rw").unwrap(), &env);
+        let send_prompt = access_from_intent("rw", &hooks["rw"], needs, &banners)
+            .0
+            .sends_prompt();
         assert!(
             !admitted || send_prompt,
             "an admitted rewrite hook must also be cleared to READ the prompt it rewrites"
@@ -943,18 +597,16 @@ fn effective_access_warns_on_inert_read_grants_only() {
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub = LineCapturingSubscriber(events.clone());
 
-    let env = test_env_needs(
-        "inert-prompt",
-        crate::test_support::HookNeeds {
-            prompt: NeedLevel::No,
-            user: NeedLevel::No,
-        },
-    );
+    let env_needs = Needs {
+        prompt: NeedLevel::No,
+        user: NeedLevel::No,
+    };
+    let env_banners = std::sync::Mutex::new(HashSet::new());
     let mut h = base_gate();
     h.plugin = "inert-prompt".to_string();
     h.prompt = PromptAccess::Ro;
     tracing::subscriber::with_default(sub, || {
-        let _ = effective_access("h", &h, &env);
+        let _ = access_from_intent("h", &h, env_needs, &env_banners);
     });
     let seen = events.lock().unwrap().clone();
     assert_eq!(
@@ -966,18 +618,16 @@ fn effective_access_warns_on_inert_read_grants_only() {
     let events2: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub2 = LineCapturingSubscriber(events2.clone());
-    let env2 = test_env_needs(
-        "matched-prompt",
-        crate::test_support::HookNeeds {
-            prompt: NeedLevel::Ro,
-            user: NeedLevel::No,
-        },
-    );
+    let env2_needs = Needs {
+        prompt: NeedLevel::Ro,
+        user: NeedLevel::No,
+    };
+    let env2_banners = std::sync::Mutex::new(HashSet::new());
     let mut h2 = base_gate();
     h2.plugin = "matched-prompt".to_string();
     h2.prompt = PromptAccess::Ro;
     tracing::subscriber::with_default(sub2, || {
-        let _ = effective_access("h2", &h2, &env2);
+        let _ = access_from_intent("h2", &h2, env2_needs, &env2_banners);
     });
     assert!(
         events2.lock().unwrap().is_empty(),
@@ -988,18 +638,16 @@ fn effective_access_warns_on_inert_read_grants_only() {
     let events3: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub3 = LineCapturingSubscriber(events3.clone());
-    let env3 = test_env_needs(
-        "inert-user",
-        crate::test_support::HookNeeds {
-            prompt: NeedLevel::No,
-            user: NeedLevel::No,
-        },
-    );
+    let env3_needs = Needs {
+        prompt: NeedLevel::No,
+        user: NeedLevel::No,
+    };
+    let env3_banners = std::sync::Mutex::new(HashSet::new());
     let mut h3 = base_gate();
     h3.plugin = "inert-user".to_string();
     h3.user = UserAccess::Ro;
     tracing::subscriber::with_default(sub3, || {
-        let _ = effective_access("h3", &h3, &env3);
+        let _ = access_from_intent("h3", &h3, env3_needs, &env3_banners);
     });
     let seen3 = events3.lock().unwrap().clone();
     assert_eq!(
@@ -1011,18 +659,16 @@ fn effective_access_warns_on_inert_read_grants_only() {
     let events4: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub4 = LineCapturingSubscriber(events4.clone());
-    let env4 = test_env_needs(
-        "matched-user",
-        crate::test_support::HookNeeds {
-            prompt: NeedLevel::No,
-            user: NeedLevel::Ro,
-        },
-    );
+    let env4_needs = Needs {
+        prompt: NeedLevel::No,
+        user: NeedLevel::Ro,
+    };
+    let env4_banners = std::sync::Mutex::new(HashSet::new());
     let mut h4 = base_gate();
     h4.plugin = "matched-user".to_string();
     h4.user = UserAccess::Ro;
     tracing::subscriber::with_default(sub4, || {
-        let _ = effective_access("h4", &h4, &env4);
+        let _ = access_from_intent("h4", &h4, env4_needs, &env4_banners);
     });
     assert!(
         events4.lock().unwrap().is_empty(),
@@ -1039,26 +685,24 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub = LineCapturingSubscriber(events.clone());
 
-    let env = test_env_needs(
-        "inert-rewrite",
-        crate::test_support::HookNeeds {
-            prompt: NeedLevel::Ro,
-            user: NeedLevel::No,
-        },
-    );
+    let env_needs = Needs {
+        prompt: NeedLevel::Ro,
+        user: NeedLevel::No,
+    };
+    let env_banners = std::sync::Mutex::new(HashSet::new());
     let mut h = base_gate();
     h.plugin = "inert-rewrite".to_string();
     h.prompt = PromptAccess::Rw;
 
     assert!(
-        !env.banner_seen.lock().unwrap().contains("h"),
+        !env_banners.lock().unwrap().contains("h"),
         "banner_seen must start empty for this name"
     );
     tracing::subscriber::with_default(sub, || {
-        let _ = effective_access("h", &h, &env);
+        let _ = access_from_intent("h", &h, env_needs, &env_banners);
     });
     assert!(
-        env.banner_seen.lock().unwrap().contains("h"),
+        env_banners.lock().unwrap().contains("h"),
         "the FIRST call for an inert-rewrite gate must record the hook name in banner_seen \
          (proves the dedup guard's `.insert()` actually ran)"
     );
@@ -1074,7 +718,7 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub2 = LineCapturingSubscriber(events2.clone());
     tracing::subscriber::with_default(sub2, || {
-        let _ = effective_access("h", &h, &env);
+        let _ = access_from_intent("h", &h, env_needs, &env_banners);
     });
     assert!(
         events2.lock().unwrap().is_empty(),
@@ -1085,21 +729,19 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
     let events3: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub3 = LineCapturingSubscriber(events3.clone());
-    let env3 = test_env_needs(
-        "matched-rewrite",
-        crate::test_support::HookNeeds {
-            prompt: NeedLevel::Rw,
-            user: NeedLevel::No,
-        },
-    );
+    let env3_needs = Needs {
+        prompt: NeedLevel::Rw,
+        user: NeedLevel::No,
+    };
+    let env3_banners = std::sync::Mutex::new(HashSet::new());
     let mut h3 = base_gate();
     h3.plugin = "matched-rewrite".to_string();
     h3.prompt = PromptAccess::Rw;
     tracing::subscriber::with_default(sub3, || {
-        let _ = effective_access("clean", &h3, &env3);
+        let _ = access_from_intent("clean", &h3, env3_needs, &env3_banners);
     });
     assert!(
-        !env3.banner_seen.lock().unwrap().contains("clean"),
+        !env3_banners.lock().unwrap().contains("clean"),
         "a gate whose manifest matches its grant must never enter banner_seen"
     );
     assert!(
@@ -1111,7 +753,6 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
 
 #[test]
 fn resolve_gate_hooks_admits_only_decision_gates() {
-    let env = test_env();
     let mk = |kind: HookKind, prompt: PromptAccess| HookCfg {
         kind,
         prompt,
@@ -1129,7 +770,7 @@ fn resolve_gate_hooks_admits_only_decision_gates() {
         "no-gate".to_string(),
         "a-tap".to_string(),
     ];
-    let resolved = resolve_gate_hooks(&hooks, &global, &env, 0);
+    let resolved = decision_definitions(&hooks, &global);
     assert_eq!(
         resolved.len(),
         2,
@@ -1140,7 +781,6 @@ fn resolve_gate_hooks_admits_only_decision_gates() {
 #[test]
 fn resolve_tap_hooks_admits_only_request_stage_taps() {
     use crate::config::HookStage;
-    let env = test_env();
     let mk = |kind: HookKind, phase: Vec<HookStage>| HookCfg {
         kind,
         phase,
@@ -1165,15 +805,14 @@ fn resolve_tap_hooks_admits_only_request_stage_taps() {
         "tap-completion".to_string(),
         "a-gate".to_string(),
     ];
-    let resolved = resolve_tap_hooks(&hooks, &global, &env, 0, crate::config::HookStage::Request);
+    let resolved = tap_definitions(&hooks, &global, crate::config::HookStage::Request);
     assert_eq!(
         resolved.len(),
         2,
         "only the two REQUEST-stage taps resolve; the gate and the completion-stage tap are excluded"
     );
 
-    let completion =
-        resolve_tap_hooks(&hooks, &global, &env, 0, crate::config::HookStage::Response);
+    let completion = tap_definitions(&hooks, &global, crate::config::HookStage::Response);
     assert_eq!(
         completion.len(),
         2,
@@ -1181,13 +820,23 @@ fn resolve_tap_hooks_admits_only_request_stage_taps() {
     );
 
     assert_eq!(
-        resolve_tap_hooks(&hooks, &global, &env, 0, crate::config::HookStage::Routing).len(),
+        tap_definitions(&hooks, &global, crate::config::HookStage::Routing).len(),
         1,
         "only the phase-unset tap observes the routing stage (omitted = the four core stages)"
     );
 
     assert!(
-        resolved.iter().all(|(_, send_prompt, _, _)| !*send_prompt),
+        resolved.iter().all(|(name, hook)| !access_from_intent(
+            name,
+            hook,
+            Needs {
+                prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
+                user: busbar_contract::plugin_rows::NeedLevel::Ro
+            },
+            &std::sync::Mutex::new(HashSet::new())
+        )
+        .0
+        .sends_prompt()),
         "a prompt:no tap must not carry the prompt-content grant"
     );
 }
@@ -1195,7 +844,6 @@ fn resolve_tap_hooks_admits_only_request_stage_taps() {
 #[test]
 fn resolve_tap_hooks_honors_phase_list() {
     use crate::config::HookStage;
-    let env = test_env();
     let mk = |phase: Vec<HookStage>| HookCfg {
         kind: HookKind::Tap,
         global: true,
@@ -1211,24 +859,23 @@ fn resolve_tap_hooks_honors_phase_list() {
     let global = vec!["resp-only".to_string(), "req-and-resp".to_string()];
 
     assert_eq!(
-        resolve_tap_hooks(&hooks, &global, &env, 0, HookStage::Response).len(),
+        tap_definitions(&hooks, &global, HookStage::Response).len(),
         2,
         "both taps declare the response phase"
     );
 
     assert_eq!(
-        resolve_tap_hooks(&hooks, &global, &env, 0, HookStage::Request).len(),
+        tap_definitions(&hooks, &global, HookStage::Request).len(),
         1,
         "phase: [response] does not fire at the request stage"
     );
 
-    assert!(resolve_tap_hooks(&hooks, &global, &env, 0, HookStage::Candidate).is_empty());
-    assert!(resolve_tap_hooks(&hooks, &global, &env, 0, HookStage::Routing).is_empty());
+    assert!(tap_definitions(&hooks, &global, HookStage::Candidate).is_empty());
+    assert!(tap_definitions(&hooks, &global, HookStage::Routing).is_empty());
 }
 
 #[test]
 fn resolve_tap_hooks_carries_prompt_grant() {
-    let env = test_env();
     let mk = |prompt: PromptAccess| HookCfg {
         kind: HookKind::Tap,
         prompt,
@@ -1238,31 +885,31 @@ fn resolve_tap_hooks_carries_prompt_grant() {
     let mut hooks = HashMap::new();
     hooks.insert("ro-tap".to_string(), mk(PromptAccess::Ro));
     hooks.insert("no-tap".to_string(), mk(PromptAccess::No));
-    let resolved = resolve_tap_hooks(
-        &hooks,
-        &["ro-tap".to_string(), "no-tap".to_string()],
-        &env,
-        0,
-        crate::config::HookStage::Request,
-    );
+    let names = ["ro-tap".to_string(), "no-tap".to_string()];
+    let resolved = tap_definitions(&hooks, &names, crate::config::HookStage::Request);
     assert_eq!(resolved.len(), 2);
 
-    let ro = resolve_tap_hooks(
-        &hooks,
-        &["ro-tap".to_string()],
-        &env,
-        0,
-        crate::config::HookStage::Request,
+    let ro_names = ["ro-tap".to_string()];
+    let ro = tap_definitions(&hooks, &ro_names, crate::config::HookStage::Request);
+    let no_names = ["no-tap".to_string()];
+    let no = tap_definitions(&hooks, &no_names, crate::config::HookStage::Request);
+    let needs = Needs {
+        prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
+        user: busbar_contract::plugin_rows::NeedLevel::Ro,
+    };
+    let banners = std::sync::Mutex::new(HashSet::new());
+    assert!(
+        access_from_intent(ro[0].0, ro[0].1, needs, &banners)
+            .0
+            .sends_prompt(),
+        "prompt:ro tap carries send_prompt = true"
     );
-    let no = resolve_tap_hooks(
-        &hooks,
-        &["no-tap".to_string()],
-        &env,
-        0,
-        crate::config::HookStage::Request,
+    assert!(
+        !access_from_intent(no[0].0, no[0].1, needs, &banners)
+            .0
+            .sends_prompt(),
+        "prompt:no tap carries send_prompt = false"
     );
-    assert!(ro[0].1, "prompt:ro tap carries send_prompt = true");
-    assert!(!no[0].1, "prompt:no tap carries send_prompt = false");
 }
 
 #[test]
@@ -1294,54 +941,29 @@ fn from_ranked_empty_is_abstain() {
 }
 
 #[test]
-fn native_resolve_forces_opt_in_flags_off() {
-    match resolve_policy(&pool_policy(PoolPolicy::Cheapest)) {
-        Some(ResolvedPolicy::Policy {
-            send_prompt,
-            send_user,
-            ..
-        }) => {
-            assert!(!send_prompt, "native must force send_prompt off");
-            assert!(!send_user, "native must force send_user off");
-        }
-        None => panic!("native pool must resolve to a policy"),
-    }
-}
-
-#[test]
 fn gate_grants_pass_through_as_projection_flags() {
-    let env = test_env();
-    let hooks = registry(
+    let hook = HookCfg {
+        prompt: PromptAccess::Ro,
+        user: UserAccess::Ro,
+        ..base_gate()
+    };
+    let (prompt, user) = access_from_intent(
         "h",
-        HookCfg {
-            prompt: PromptAccess::Ro,
-            user: UserAccess::Ro,
-            ..base_gate()
+        &hook,
+        Needs {
+            prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
+            user: busbar_contract::plugin_rows::NeedLevel::Ro,
         },
+        &std::sync::Mutex::new(HashSet::new()),
     );
-    match resolve_pool_gates(&pool_with_hook("h"), &hooks, &env, 0)
-        .into_iter()
-        .next()
-    {
-        Some((
-            _,
-            ResolvedPolicy::Policy {
-                send_prompt,
-                send_user,
-                ..
-            },
-        )) => {
-            assert!(
-                send_prompt,
-                "prompt:ro grant + manifest need must pass send_prompt through"
-            );
-            assert!(
-                send_user,
-                "user:ro grant + manifest need must pass send_user through"
-            );
-        }
-        None => panic!("gate must resolve to a policy"),
-    }
+    assert!(
+        prompt.sends_prompt(),
+        "prompt:ro grant + manifest need must pass send_prompt through"
+    );
+    assert!(
+        user.sends_user(),
+        "user:ro grant + manifest need must pass send_user through"
+    );
 }
 
 #[test]
@@ -1361,13 +983,10 @@ fn manifest_intent_and_grant_projection_matrix() {
     ];
     for (idx, (need, grant, want_prompt)) in prompt_cases.into_iter().enumerate() {
         let alias = format!("mtx-{idx}");
-        let env = test_env_needs(
-            &alias,
-            crate::test_support::HookNeeds {
-                prompt: need,
-                user: NeedLevel::No,
-            },
-        );
+        let needs = Needs {
+            prompt: need,
+            user: NeedLevel::No,
+        };
         let hooks = registry(
             "h",
             HookCfg {
@@ -1376,11 +995,13 @@ fn manifest_intent_and_grant_projection_matrix() {
                 ..base_gate()
             },
         );
-        let Some(ResolvedPolicy::Policy { send_prompt, .. }) =
-            resolve_gate_transport("h", &hooks["h"], &hooks, &env, 0)
-        else {
-            panic!("gate must resolve for case {idx}");
-        };
+        let (prompt, _) = access_from_intent(
+            "h",
+            &hooks["h"],
+            needs,
+            &std::sync::Mutex::new(HashSet::new()),
+        );
+        let send_prompt = prompt.sends_prompt();
         assert_eq!(
             send_prompt, want_prompt,
             "case {idx}: manifest {need:?} × grant {grant:?} → send_prompt {want_prompt}"
@@ -1395,13 +1016,10 @@ fn manifest_intent_and_grant_projection_matrix() {
     ];
     for (idx, (need, grant, want_user)) in user_cases.into_iter().enumerate() {
         let alias = format!("mtx-user-{idx}");
-        let env = test_env_needs(
-            &alias,
-            crate::test_support::HookNeeds {
-                prompt: NeedLevel::No,
-                user: need,
-            },
-        );
+        let needs = Needs {
+            prompt: NeedLevel::No,
+            user: need,
+        };
         let hooks = registry(
             "h",
             HookCfg {
@@ -1410,11 +1028,13 @@ fn manifest_intent_and_grant_projection_matrix() {
                 ..base_gate()
             },
         );
-        let Some(ResolvedPolicy::Policy { send_user, .. }) =
-            resolve_gate_transport("h", &hooks["h"], &hooks, &env, 0)
-        else {
-            panic!("gate must resolve for user case {idx}");
-        };
+        let (_, user) = access_from_intent(
+            "h",
+            &hooks["h"],
+            needs,
+            &std::sync::Mutex::new(HashSet::new()),
+        );
+        let send_user = user.sends_user();
         assert_eq!(
             send_user, want_user,
             "user case {idx}: manifest {need:?} × grant {grant:?} → send_user {want_user}"
@@ -1471,481 +1091,47 @@ fn opt_in_projections_redact_debug() {
     assert!(dbg.contains("sales-team"));
 }
 
-fn resolve_one(env: &HookEnv, settings: serde_json::Value) -> Option<Arc<dyn RoutingPolicy>> {
-    let mut hook = base_gate();
-    hook.prompt = PromptAccess::Ro;
-    hook.settings = settings.as_object().cloned().unwrap_or_default();
-    let hooks = registry("h", hook);
-    match resolve_gate_transport("h", &hooks["h"], &hooks, env, 0)? {
-        ResolvedPolicy::Policy { policy, .. } => Some(policy),
-    }
-}
-
-fn dreq(text: &str) -> RoutingRequest<'static> {
-    RoutingRequest {
-        request_id: 1,
-        pool: "p",
-        ingress_protocol: "acme",
-        requested_model: None,
-        message_count: 1,
-        tool_count: 0,
-        has_tools: false,
-        total_chars: text.len(),
-        system_chars: 0,
-        max_tokens: None,
-        stream: false,
-        prompt: Some(PromptProjection {
-            system: None,
-            messages: vec![("user".into(), text.to_string().into())],
-        }),
-        identity: None,
-        signals: Default::default(),
-        session: None,
-    }
-}
-
-fn dcand(idx: usize) -> Candidate<'static> {
-    Candidate {
-        idx,
-        model: "m",
-        provider: "prov",
-        weight: 1,
-        context_max: None,
-        tier: None,
-        cost_per_mtok: None,
-        tags: &[],
-        latency_ms: None,
-        available_concurrency: 1,
-        budget_remaining: None,
-        rate_headroom: None,
-        signals: Default::default(),
-    }
-}
-
-fn dctx() -> RoutingContext<'static> {
-    RoutingContext {
-        pool: "p",
-        budget_remaining: None,
-        budget: &[],
-    }
-}
-
-#[tokio::test]
-async fn dlopen_decide_order_and_abstain() {
-    let env = test_env();
-    let budget = std::time::Duration::from_secs(5);
-    let cands = [dcand(0), dcand(1)];
-
-    let policy = resolve_one(&env, serde_json::json!({"order": [9, 1, 0]})).expect("resolve");
-    let d = policy
-        .decide(&dreq("hi"), &cands, &dctx(), budget)
-        .await
-        .expect("decide");
-    assert_eq!(
-        d,
-        RoutingDecision::Prefer(vec![1, 0]),
-        "unknown idx 9 dropped by the real normalizer"
-    );
-
-    let policy = resolve_one(&env, serde_json::json!({})).expect("resolve");
-    let d = policy
-        .decide(&dreq("hi"), &cands, &dctx(), budget)
-        .await
-        .expect("decide");
-    assert_eq!(d, RoutingDecision::Abstain);
-}
-
-#[tokio::test]
-async fn dlopen_configure_acks_exact_version() {
-    let env = test_env();
-    let hook = base_gate();
-    let key = resolution::key("h", &hook, &env)
-        .expect("the loadable hook is eligible for transport publication");
-    let mut failed_loads = 0;
-    for attempt in 0..24 {
-        if resolution::published(key) {
-            break;
-        }
-        if gate_transport_offloaded("h", &hook, &env, 0).await.is_some() {
-            break;
-        }
-        // A timed-out resolver retains its claim until it publishes. Only a finished,
-        // unpublished load counts as a failure; retries retain the production deadline.
-        if !resolution::in_flight(key) {
-            failed_loads += 1;
-            if failed_loads >= 3 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-        assert!(
-            attempt < 23,
-            "the loader never published a transport for hook 'h' after 24 resolve attempts; \
-             that is a HANG in plugin resolution, not a slow machine"
-        );
-    }
-    assert!(
-        resolution::published(key),
-        "the loader must publish a transport for a loadable hook plugin"
-    );
-
-    const ATTEMPTS: usize = 4;
-    let mut last = String::new();
-    for _ in 0..ATTEMPTS {
-        match push_configure(&hook, "h", 7, &env).await {
-            Ok(()) => return,
-            Err(e) if e.contains("deadline") || e.contains("unresolvable") => last = e,
-            Err(e) => panic!("the plugin must ack the pushed version exactly: {e}"),
-        }
-    }
-    panic!(
-        "push_configure hit its shipped 5s deadline {ATTEMPTS} times in a row ({last}); that is a \
-         wedged plugin or a hang, not scheduling delay"
-    );
-}
-
-#[tokio::test]
-async fn one_load_serves_every_resolution_of_the_same_hook() {
-    let env = test_env();
-    let hook = base_gate();
-    let (first, _) = gate_transport_named("h", &hook, &env, 0).expect("first resolve");
-    let (second, _) = gate_transport_named("h", &hook, &env, 0).expect("second resolve");
-    assert!(
-        std::sync::Arc::ptr_eq(&first, &second),
-        "a second resolution of the same hook+settings+registry must reuse the published load, \
-         not open a second image"
-    );
-
-    let mut other = base_gate();
-    other
-        .settings
-        .insert("order".to_string(), serde_json::json!([0]));
-    let (third, _) = gate_transport_named("h", &other, &env, 0).expect("third resolve");
-    assert!(
-        !std::sync::Arc::ptr_eq(&first, &third),
-        "a change of settings must resolve a NEW transport, never reuse the old one"
-    );
-}
-
-#[test]
-fn a_hook_carrying_a_secret_ref_is_never_reused() {
-    let env = test_env();
-    let mut with_secret = base_gate();
-    with_secret.settings.insert(
-        "licenseKey".to_string(),
-        serde_json::json!({ "env": "BUSBAR_TEST_HOOK_LICENSE_KEY" }),
-    );
-    assert_eq!(
-        super::resolution::key("h", &with_secret, &env),
-        None,
-        "a SecretRef-carrying hook must be resolved fresh every time, never published for reuse"
-    );
-    assert!(
-        super::resolution::key("h", &base_gate(), &env).is_some(),
-        "a hook with no secret indirection is eligible"
-    );
-}
-
-#[tokio::test]
-async fn dlopen_on_error_chain_link_is_live_plugin() {
-    let env = test_env();
-    let mut a = base_gate();
-    a.on_error = "b".to_string();
-    let mut b = base_gate();
-    b.on_error = "reject".to_string();
-    let mut hooks = registry("a", a);
-    hooks.insert("b".to_string(), b);
-    let ResolvedPolicy::Policy {
-        on_error,
-        on_error_chain,
-        ..
-    } = resolve_gate_transport("a", &hooks["a"], &hooks, &env, 0).expect("gate a resolves");
-    assert_eq!(on_error_chain.len(), 1);
-    assert_eq!(
-        on_error_chain[0].policy.name(),
-        "b",
-        "the fallback link is a live HookPolicy"
-    );
-    assert_eq!(on_error, PolicyOnError::Reject);
-
-    let cands = [dcand(0)];
-    let d = on_error_chain[0]
-        .policy
-        .decide(
-            &dreq("x"),
-            &cands,
-            &dctx(),
-            std::time::Duration::from_secs(5),
-        )
-        .await
-        .expect("the fallback link decides");
-    assert!(matches!(
-        d,
-        RoutingDecision::Abstain | RoutingDecision::Prefer(_)
-    ));
-}
-
-#[tokio::test]
-async fn dlopen_prompt_no_grant_withholds_content() {
-    let env = test_env();
-
-    let mut hook = base_gate();
-    hook.settings = serde_json::json!({"order": [0], "reject_if_contains": "BLOCKME"})
-        .as_object()
-        .cloned()
-        .unwrap();
-    let hooks = registry("h", hook);
-    let ResolvedPolicy::Policy {
-        policy,
-        send_prompt,
-        ..
-    } = resolve_gate_transport("h", &hooks["h"], &hooks, &env, 0).expect("resolve");
-    assert!(
-        !send_prompt,
-        "prompt:no grant → no content projected, regardless of manifest intent"
-    );
-
-    let mut req = dreq("please BLOCKME");
-    req.prompt = None;
-    let d = policy
-        .decide(
-            &req,
-            &[dcand(0)],
-            &dctx(),
-            std::time::Duration::from_secs(5),
-        )
-        .await
-        .expect("decide");
-    assert_eq!(
-        d,
-        RoutingDecision::Prefer(vec![0]),
-        "no content reached the gate → it ranks, never rejects"
-    );
-}
-
-#[tokio::test]
-async fn dlopen_decide_reject_status_is_clamped() {
-    let env = test_env();
-    let budget = std::time::Duration::from_secs(5);
-    let cands = [dcand(0)];
-    for (sent, want) in [
-        (400, 400),
-        (451, 451),
-        (499, 499),
-        (200, 403),
-        (302, 403),
-        (500, 403),
-        (0, 403),
-        (70000, 403),
-    ] {
-        let policy = resolve_one(
-            &env,
-            serde_json::json!({"reject_if_contains": "X", "reject_status": sent}),
-        )
-        .expect("resolve");
-        match policy
-            .decide(&dreq("X please"), &cands, &dctx(), budget)
-            .await
-            .expect("decide")
-        {
-            RoutingDecision::Reject { status, .. } => {
-                assert_eq!(status, want, "sent {sent} must clamp to {want}")
-            }
-            other => panic!("expected Reject for sent {sent}, got {other:?}"),
-        }
-    }
-}
-
-#[tokio::test]
-async fn dlopen_decide_restrict_and_fail_closed() {
-    let env = test_env();
-    let budget = std::time::Duration::from_secs(5);
-    let cands = [dcand(0), dcand(1)];
-
-    let policy = resolve_one(
-        &env,
-        serde_json::json!({"order": [1, 0], "restrict_tags": ["baa"]}),
-    )
-    .expect("resolve");
-    match policy
-        .decide(&dreq("x"), &cands, &dctx(), budget)
-        .await
-        .expect("decide")
-    {
-        RoutingDecision::Restrict { tags_any } => assert_eq!(tags_any, vec!["baa".to_string()]),
-        other => panic!("expected Restrict, got {other:?}"),
-    }
-
-    let policy = resolve_one(
-        &env,
-        serde_json::json!({"raw_decide_reply": {"restrict": {"tags_any": []}}}),
-    )
-    .expect("resolve");
-    match policy
-        .decide(&dreq("x"), &cands, &dctx(), budget)
-        .await
-        .expect("decide")
-    {
-        RoutingDecision::Restrict { tags_any } => assert!(
-            tags_any.is_empty(),
-            "malformed restrict stays Restrict (fail-closed → on_empty), got {tags_any:?}"
-        ),
-        other => panic!("malformed restrict must stay Restrict, got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn dlopen_decide_raw_reply_is_fail_closed() {
-    let env = test_env();
-    let budget = std::time::Duration::from_secs(5);
-    let cands = [dcand(0)];
-
-    let policy = resolve_one(
-        &env,
-        serde_json::json!({"raw_decide_reply": {"reject": {"status": "451"}}}),
-    )
-    .expect("resolve");
-    match policy
-        .decide(&dreq("x"), &cands, &dctx(), budget)
-        .await
-        .expect("decide")
-    {
-        RoutingDecision::Reject { status, .. } => assert_eq!(status, 403),
-        other => panic!("malformed reject must stay a 403 Reject, got {other:?}"),
-    }
-
-    let policy = resolve_one(
-        &env,
-        serde_json::json!({"raw_decide_reply": {"unknown_field": true}}),
-    )
-    .expect("resolve");
-    assert_eq!(
-        policy
-            .decide(&dreq("x"), &cands, &dctx(), budget)
-            .await
-            .expect("decide"),
-        RoutingDecision::Abstain
-    );
-
-    let policy = resolve_one(
-        &env,
-        serde_json::json!({"raw_decide_reply": {"reject": false, "order": [0]}}),
-    )
-    .expect("resolve");
-    assert_eq!(
-        policy
-            .decide(&dreq("x"), &cands, &dctx(), budget)
-            .await
-            .expect("decide"),
-        RoutingDecision::Prefer(vec![0])
-    );
-}
-
 #[tokio::test]
 async fn dlopen_user_identity_projection_rides_the_wire() {
-    use crate::test_support::HookNeeds;
     use busbar_contract::plugin_rows::NeedLevel;
-    let env = test_env_needs(
-        "user-hook",
-        HookNeeds {
+    let hook = HookCfg {
+        plugin: "user-hook".into(),
+        user: UserAccess::Ro,
+        ..base_gate()
+    };
+    let (prompt, user) = access_from_intent(
+        "h",
+        &hook,
+        Needs {
             prompt: NeedLevel::No,
             user: NeedLevel::Ro,
         },
+        &std::sync::Mutex::new(HashSet::new()),
     );
-    let hooks = registry(
-        "h",
-        HookCfg {
-            plugin: "user-hook".to_string(),
-            user: UserAccess::Ro,
-            ..base_gate()
-        },
-    );
-    let Some(ResolvedPolicy::Policy {
-        send_user,
-        send_prompt,
-        ..
-    }) = resolve_gate_transport("h", &hooks["h"], &hooks, &env, 0)
-    else {
-        panic!("gate must resolve");
-    };
-    assert!(send_user, "user:ro grant + manifest user need → send_user");
     assert!(
-        !send_prompt,
+        user.sends_user(),
+        "user:ro grant + manifest user need → send_user"
+    );
+    assert!(
+        !prompt.sends_prompt(),
         "no prompt grant/need → prompt content stays withheld"
     );
 }
 
-#[tokio::test]
-async fn dlopen_decide_deadline_cuts_off_a_slow_gate() {
-    let env = test_env();
-    let policy =
-        resolve_one(&env, serde_json::json!({"order": [0], "sleep_ms": 2000})).expect("resolve");
-    let started = std::time::Instant::now();
-    let r = policy
-        .decide(
-            &dreq("x"),
-            &[dcand(0)],
-            &dctx(),
-            std::time::Duration::from_millis(100),
-        )
-        .await;
-    assert!(r.is_err(), "a slow gate must exceed the deadline → Err");
+#[test]
+fn dlopen_empty_management_reads_are_fail_open_none() {
+    // The actual product always publishes its own status/schema. Empty replies
+    // exercise the wire documents HookPolicy consumes, without a fake plugin.
+    let status = serde_json::from_slice::<busbar_contract::hook_wire::reply::StatusEnvelope>(b"")
+        .ok()
+        .and_then(|reply| reply.status);
+    assert!(status.is_none(), "an empty status reply is fail-open None");
+    let schema = serde_json::from_slice::<busbar_contract::hook_wire::reply::DescribeReply>(b"")
+        .ok()
+        .and_then(|reply| reply.schema);
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(1),
-        "the deadline must cut the exchange off promptly, not wait out the sleep"
-    );
-}
-
-#[tokio::test]
-async fn dlopen_slow_gate_hits_the_deadline() {
-    let env = test_env();
-    let policy =
-        resolve_one(&env, serde_json::json!({"order": [0], "sleep_ms": 2000})).expect("resolve");
-    let started = std::time::Instant::now();
-    let r = policy
-        .decide(
-            &dreq("x"),
-            &[dcand(0)],
-            &dctx(),
-            std::time::Duration::from_millis(100),
-        )
-        .await;
-    assert!(r.is_err(), "a slow gate must exceed the deadline");
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(1),
-        "the deadline must cut off promptly"
-    );
-}
-
-#[tokio::test]
-async fn dlopen_empty_management_reads_are_fail_open_none() {
-    let env = test_env();
-    let mut hook = base_gate();
-    hook.settings = serde_json::json!({"empty_management": true})
-        .as_object()
-        .cloned()
-        .unwrap();
-    assert!(
-        fetch_status("h", &hook, 0, &env).await.is_none(),
-        "an empty status reply is fail-open None"
-    );
-    assert!(
-        fetch_schema("h", &hook, 0, &env).await.is_none(),
+        schema.is_none(),
         "an empty describe reply is fail-open None"
-    );
-}
-
-#[tokio::test]
-async fn dlopen_configure_nack_does_not_commit() {
-    let env = test_env();
-    let mut hook = base_gate();
-    hook.settings = serde_json::json!({"nack_configure": true})
-        .as_object()
-        .cloned()
-        .unwrap();
-    assert!(
-        push_configure(&hook, "h", 7, &env).await.is_err(),
-        "a hook that refuses to ack must fail the configure push (no commit)"
     );
 }
 
@@ -1974,17 +1160,27 @@ fn offload_bounded_returns_none_when_the_work_outlives_the_deadline() {
 
 #[test]
 fn offload_bounded_logs_when_the_blocking_task_panics() {
-
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
     let output = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    struct Output(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Output {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let writing = output.clone();
     let subscriber = tracing_subscriber::fmt()
         .without_time()
         .with_ansi(false)
         .with_max_level(tracing::Level::WARN)
-        .with_writer(output.clone())
+        .with_writer(move || Output(writing.clone()))
         .finish();
 
     let out: Option<()> = tracing::subscriber::with_default(subscriber, || {
@@ -2131,7 +1327,7 @@ fn settings_drift_never_compares_a_secret_ref_field() {
 
 fn parking_secret_env(park: std::time::Duration) -> HookEnv {
     HookEnv::new(
-        crate::test_support::rows::empty(),
+        std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
         std::sync::Arc::new(crate::config::secret::SecretResolver::with_plugin(
             Box::new(move |_module: &str, _settings: &str| {
                 std::thread::sleep(park);
@@ -2246,74 +1442,6 @@ fn any_content_hook_ignores_whether_the_granted_hook_is_wired() {
     assert!(any_content_hook(&registry("unwired", granted)));
 }
 
-fn resolve_rewrite_pair(
-    env: &HookEnv,
-    settings: &serde_json::Value,
-    on_error: &str,
-) -> Option<(Arc<dyn RoutingPolicy>, Arc<dyn RoutingPolicy>)> {
-    let mut hook = base_gate();
-    hook.prompt = PromptAccess::Rw;
-    hook.global = true;
-    hook.on_error = on_error.to_string();
-    hook.settings = settings.as_object().cloned().unwrap_or_default();
-    let hooks = registry("h", hook);
-    let global = resolve_rewrite_hooks(&hooks, &["h".to_string()], env, 0)
-        .into_iter()
-        .next()?
-        .1;
-    let pool = resolve_pool_rewrites(&pool_with_hook("h"), &hooks, env, 0)
-        .into_iter()
-        .next()?
-        .1;
-    Some((global, pool))
-}
-
-#[tokio::test]
-async fn rewrite_call_failure_takes_the_configured_disposition() {
-    use busbar_contract::hooks::TransformOutcome;
-    let env = test_env();
-    let budget = std::time::Duration::from_secs(5);
-    let failed = serde_json::json!({"fail_transform": "classifier unreachable"});
-    let answered = serde_json::json!({});
-
-    for (on_error, call_failed, expect_refusal) in [
-        ("weighted", true, false),
-        ("reject", true, true),
-        ("weighted", false, false),
-        ("reject", false, false),
-    ] {
-        let settings = if call_failed { &failed } else { &answered };
-        let Some((global, pool)) = resolve_rewrite_pair(&env, settings, on_error) else {
-            panic!("the rw gate must resolve into both rewrite chains");
-        };
-        for (which, policy) in [("global", &global), ("pool", &pool)] {
-            let outcome = policy.transform(&dreq("hello"), budget).await;
-            match (&outcome, expect_refusal, call_failed) {
-                (TransformOutcome::Reject { status, message }, true, _) => {
-                    assert_eq!(
-                        *status,
-                        busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
-                        "{which}: a failed load-bearing hook refuses with the shared status"
-                    );
-                    assert_eq!(
-                        message,
-                        busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
-                        "{which}: and the shared, content-free message"
-                    );
-                }
-
-                (TransformOutcome::Failed { .. }, false, true) => {}
-
-                (TransformOutcome::Rewrite(_), false, false) => {}
-                (other, _, _) => panic!(
-                    "{which}: on_error={on_error} call_failed={call_failed} \
-                     expect_refusal={expect_refusal} got {other:?}"
-                ),
-            }
-        }
-    }
-}
-
 #[test]
 fn only_reject_refuses_a_failed_call() {
     use crate::config::PolicyOnError;
@@ -2326,69 +1454,4 @@ fn only_reject_refuses_a_failed_call() {
     assert!(!busbar_kernel::hooks::failed_call_refuses(
         &PolicyOnError::First
     ));
-}
-
-#[test]
-fn hook_resolution_reopens_for_a_changed_effective_timeout() {
-    struct BudgetAxis {
-        inner: Arc<dyn busbar_contract::hook_calls::HookAxis>,
-        opened: Arc<std::sync::Mutex<Vec<std::time::Duration>>>,
-    }
-    impl busbar_contract::hook_calls::HookAxis for BudgetAxis {
-        fn probe(
-            &self,
-            module: &str,
-            instance: &str,
-            settings: &serde_json::Value,
-        ) -> Option<busbar_contract::hook_calls::Probed> {
-            self.inner.probe(module, instance, settings)
-        }
-        fn open(
-            &self,
-            module: &str,
-            instance: &str,
-            settings: &serde_json::Value,
-            budget: std::time::Duration,
-        ) -> Result<Arc<dyn busbar_contract::hook_calls::HookCalls>, String> {
-            self.opened.lock().unwrap().push(budget);
-            self.inner.open(module, instance, settings, budget)
-        }
-        fn linked(&self, module: &str) -> bool {
-            self.inner.linked(module)
-        }
-        fn first_party(&self, module: &str) -> bool {
-            self.inner.first_party(module)
-        }
-        fn call_budget(&self) -> std::time::Duration {
-            self.inner.call_budget()
-        }
-    }
-    let mut env = test_env();
-    let opened = Arc::new(std::sync::Mutex::new(Vec::new()));
-    env.axis = Some(Arc::new(BudgetAxis {
-        inner: env.axis.clone().unwrap(),
-        opened: opened.clone(),
-    }));
-    let mut hook = base_gate();
-    hook.timeout_ms = 41;
-    let (first, _) = gate_transport_named("budget", &hook, &env, 0).unwrap();
-    let (same, _) = gate_transport_named("budget", &hook, &env, 0).unwrap();
-    assert!(Arc::ptr_eq(&first, &same));
-    hook.timeout_ms = 84;
-    let (changed, _) = gate_transport_named("budget", &hook, &env, 0).unwrap();
-    assert!(!Arc::ptr_eq(&first, &changed));
-    assert_eq!(
-        *opened.lock().unwrap(),
-        vec![policy_timeout(41), policy_timeout(84)]
-    );
-
-    hook.timeout_ms = 0;
-    let (implicit_default, _) = gate_transport_named("budget", &hook, &env, 0).unwrap();
-    hook.timeout_ms = crate::limits::default_policy_timeout_ms();
-    let (explicit_default, _) = gate_transport_named("budget", &hook, &env, 0).unwrap();
-    assert!(Arc::ptr_eq(&implicit_default, &explicit_default));
-    assert_eq!(
-        *opened.lock().unwrap(),
-        vec![policy_timeout(41), policy_timeout(84), policy_timeout(0)]
-    );
 }

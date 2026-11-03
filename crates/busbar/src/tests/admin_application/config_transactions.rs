@@ -123,7 +123,20 @@ async fn a_txn_that_declares_no_plan_swaps_nothing() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
-    limits.keep().expect("the product limits commit");
+    limits.stage_boot();
+    let boot_calls = app
+        .governance
+        .as_ref()
+        .expect("actual governance")
+        .store_calls()
+        .expect("actual boot Store calls");
+    crate::root::kernel::ROOT_CARD.keep_in_store(boot_calls, 101);
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the actual rate history boots before rates are committed");
+    limits
+        .keep()
+        .expect("the booted actual rates and limits commit");
     if let Some(rotate) = rotate {
         rotate();
     }
@@ -250,7 +263,20 @@ async fn a_failed_persist_swaps_nothing() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
-    limits.keep().expect("the product limits commit");
+    limits.stage_boot();
+    let boot_calls = app
+        .governance
+        .as_ref()
+        .expect("actual governance")
+        .store_calls()
+        .expect("actual boot Store calls");
+    crate::root::kernel::ROOT_CARD.keep_in_store(boot_calls, 101);
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the actual rate history boots before rates are committed");
+    limits
+        .keep()
+        .expect("the booted actual rates and limits commit");
     if let Some(rotate) = rotate {
         rotate();
     }
@@ -386,7 +412,20 @@ async fn concurrent_transactions_never_lose_a_swap() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
-    limits.keep().expect("the product limits commit");
+    limits.stage_boot();
+    let boot_calls = app
+        .governance
+        .as_ref()
+        .expect("actual governance")
+        .store_calls()
+        .expect("actual boot Store calls");
+    crate::root::kernel::ROOT_CARD.keep_in_store(boot_calls, 101);
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the actual rate history boots before rates are committed");
+    limits
+        .keep()
+        .expect("the booted actual rates and limits commit");
     if let Some(rotate) = rotate {
         rotate();
     }
@@ -527,7 +566,20 @@ async fn cancelling_a_handler_future_does_not_release_the_mutation_domain() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
-    limits.keep().expect("the product limits commit");
+    limits.stage_boot();
+    let boot_calls = app
+        .governance
+        .as_ref()
+        .expect("actual governance")
+        .store_calls()
+        .expect("actual boot Store calls");
+    crate::root::kernel::ROOT_CARD.keep_in_store(boot_calls, 101);
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the actual rate history boots before rates are committed");
+    limits
+        .keep()
+        .expect("the booted actual rates and limits commit");
     if let Some(rotate) = rotate {
         rotate();
     }
@@ -698,7 +750,20 @@ async fn plugin_install_is_serialized_by_the_mutation_domain() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
-    limits.keep().expect("the product limits commit");
+    limits.stage_boot();
+    let boot_calls = app
+        .governance
+        .as_ref()
+        .expect("actual governance")
+        .store_calls()
+        .expect("actual boot Store calls");
+    crate::root::kernel::ROOT_CARD.keep_in_store(boot_calls, 101);
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the actual rate history boots before rates are committed");
+    limits
+        .keep()
+        .expect("the booted actual rates and limits commit");
     if let Some(rotate) = rotate {
         rotate();
     }

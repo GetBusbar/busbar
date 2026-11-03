@@ -135,7 +135,7 @@ impl super::super::recovery::RecoverySink for RecoveryJournal {
 fn ordinary_product_flush_quarantines_old_unknown_and_continues_fresh_positive_usage() {
     use super::super::recovery::{RecoveryResolution, RecoveryState, RecoveryVerdict};
     let store = Arc::new(UnknownFlushStore {
-        inner: MemoryStore::new(),
+        inner: crate::real_store::store(),
         fail_after_commit: std::sync::atomic::AtomicBool::new(true),
         unwind: false,
     });

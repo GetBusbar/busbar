@@ -1141,17 +1141,19 @@ fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outag
         "no billable input tokens lost across the failed flush"
     );
 
-    let rendered = crate::snapshot::render();
+    let rendered = crate::snapshot::snapshot().expect("the actual recorder is installed");
     let coalesced = rendered
-        .lines()
-        .find(|l| l.starts_with("busbar_metering_pending_coalesced_total "))
-        .and_then(|l| l.rsplit(' ').next())
-        .and_then(|v| v.parse::<u64>().ok())
+        .iter()
+        .flat_map(|family| &family.samples)
+        .find(|sample| {
+            sample.name == "busbar_metering_pending_coalesced_total" && sample.labels.is_empty()
+        })
+        .and_then(|sample| sample.value.parse::<u64>().ok())
         .unwrap_or(0);
     assert!(
         coalesced > 0,
         "coalesced cells are exported on busbar_metering_pending_coalesced_total so the degradation \
-         is observable; got:\n{rendered}"
+         is observable; got:\n{rendered:?}"
     );
 }
 
@@ -5250,8 +5252,34 @@ impl RecordStore for MeteringFailStore {
 
 #[test]
 fn flush_metering_failure_warns_once_per_tick_not_per_key() {
-    use crate::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
+    #[derive(Clone, Default)]
+    struct MeteringWarnings(Arc<std::sync::Mutex<Vec<String>>>);
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for MeteringWarnings {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if *event.metadata().level() != tracing::Level::WARN {
+                return;
+            }
+            struct Fields(String);
+            impl tracing::field::Visit for Fields {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    use std::fmt::Write as _;
+                    write!(&mut self.0, "{}={value:?} ", field.name()).unwrap();
+                }
+            }
+            let mut fields = Fields(String::new());
+            event.record(&mut fields);
+            self.0.lock().unwrap().push(fields.0);
+        }
+    }
 
     let store: Arc<dyn RecordStore> = Arc::new(MeteringFailStore {
         inner: crate::real_store::store(),
@@ -5263,22 +5291,26 @@ fn flush_metering_failure_warns_once_per_tick_not_per_key() {
         gov.record_metering(k, "model-x", "prov", None, now);
     }
 
-    let cap = WarnCapture::default();
+    let cap = MeteringWarnings::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
     let flushed = tracing::subscriber::with_default(subscriber, || gov.flush_metering());
 
+    let messages = cap.0.lock().unwrap().clone();
     assert_eq!(flushed, 0, "every key failed to persist");
     assert_eq!(
-        cap.count("metering flush:"),
+        messages
+            .iter()
+            .filter(|message| message.contains("metering flush:"))
+            .count(),
         1,
         "exactly ONE aggregate warn per tick, not one per failed key: {:?}",
-        cap.messages()
+        messages
     );
 
     assert!(
-        cap.contains("failed=5"),
+        messages.iter().any(|message| message.contains("failed=5")),
         "the aggregate warn reports the failed-key count: {:?}",
-        cap.messages()
+        messages
     );
 
     assert_eq!(

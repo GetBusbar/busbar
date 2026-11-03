@@ -391,7 +391,11 @@ fn belongs_to<K: crate::dispatch::Kind>(p: &Plugin<K>, owner: InstanceId) -> boo
     crate::dispatch::handle::supplier_of(owner).is_some_and(|wake| std::ptr::eq(wake, supplier))
 }
 
-fn assert_generation_owners(table: &Recording, p: &Plugin<TestKind>, count: usize) {
+fn assert_generation_owners<K: crate::dispatch::Kind>(
+    table: &Recording,
+    p: &Plugin<K>,
+    count: usize,
+) {
     let owners: Vec<_> = table
         .declared
         .lock()
@@ -747,13 +751,7 @@ fn an_owned_trust_from_resolves_against_the_owned_sections_alone() {
     );
     assert_eq!(refresh_with(&p, decoy), Outcome::Ready);
     let declared = table.declared.lock().unwrap().clone();
-    assert_eq!(
-        declared
-            .iter()
-            .map(|(owner, ..)| *owner)
-            .collect::<Vec<_>>(),
-        vec![p.instance(); 3]
-    );
+    assert_generation_owners(&table, &p, 3);
     let seen: Vec<Option<String>> = declared
         .iter()
         .filter(|(owner, need, ..)| belongs_to(&p, *owner) && *need == NeedId(0))
@@ -2378,6 +2376,20 @@ fn a_replayed_identity_writes_the_callers_memory_again() {
     let mut first: ProcessIdentity = unsafe { std::mem::zeroed() };
     assert!(ready(&ask(&mut first)));
     assert_eq!(first.pid, u64::from(std::process::id()));
+    let expected_user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_default();
+    let user_of = |identity: &ProcessIdentity| {
+        if identity.os_user.len == 0 {
+            return "";
+        }
+        // SAFETY: the actual identity service lends its process-lifetime OS-user
+        // bytes; the successful crossing above initialized this complete AbiStr.
+        let bytes =
+            unsafe { std::slice::from_raw_parts(identity.os_user.ptr, identity.os_user.len) };
+        std::str::from_utf8(bytes).expect("the actual OS-user string is UTF-8")
+    };
+    assert_eq!(user_of(&first), expected_user);
     // SAFETY: as above.
     let mut replayed: ProcessIdentity = unsafe { std::mem::zeroed() };
     assert!(ready(&ask(&mut replayed)), "the same handle, again");
@@ -2385,6 +2397,11 @@ fn a_replayed_identity_writes_the_callers_memory_again() {
         replayed.pid,
         u64::from(std::process::id()),
         "a replay answered READY without writing the identity"
+    );
+    assert_eq!(
+        user_of(&replayed),
+        expected_user,
+        "the replay must also write the actual OS-user identity"
     );
 }
 
@@ -2649,7 +2666,10 @@ fn refreshed_connection_authorities_are_each_forgotten_once() {
     );
     let replacement = table.declared.lock().unwrap().last().unwrap().0;
     assert_ne!(original, replacement);
-    assert_eq!(table.forgotten.lock().unwrap().clone(), vec![original]);
+    assert!(
+        table.forgotten.lock().unwrap().is_empty(),
+        "the original root authority remains alive for member authentication"
+    );
     p.inner.let_go_held();
     p.inner.let_go_held();
     drop(p);
@@ -3498,3 +3518,113 @@ fn a_members_protected_fields_never_open_on_a_table_without_secure_custody() {
         );
     }
 }
+
+mod refresh_driver_generation {
+    use super::*;
+    use busbar_contract::abi::mechanism::call::{InHead, OutHead, FLAG_RESUME};
+    use busbar_contract::abi::mechanism::lifecycle::OpsHead;
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static OBSERVED: Mutex<Vec<(InstanceId, bool)>> = Mutex::new(Vec::new());
+    static FINISH: AtomicBool = AtomicBool::new(false);
+
+    crate::dispatch_tests::c_abi! {
+        fn drive(_: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
+            let input = unsafe { &*input.cast::<InHead>() };
+            let binding = crate::dispatch::export_bindings::current().expect("driver binding");
+            let owner = binding.conn.as_ref().expect("driver authority").0;
+            let outcome = if FINISH.load(Ordering::SeqCst) { Outcome::Ready } else { Outcome::Pending };
+            unsafe { (*out.cast::<OutHead>()).outcome = RawOutcome::of(outcome); }
+            OBSERVED.lock().unwrap().push((owner, input.flags & FLAG_RESUME != 0));
+            RawOutcome::of(outcome)
+        }
+    }
+
+    fn wait(count: usize) {
+        let start = std::time::Instant::now();
+        while OBSERVED.lock().unwrap().len() < count {
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(10),
+                "driver crossing {count}"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn pending_driver_keeps_authority_and_autonomous_next_cycle_uses_refreshed_generation() {
+        OBSERVED.lock().unwrap().clear();
+        FINISH.store(false, Ordering::SeqCst);
+        let d = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+        let table = Arc::new(Recording::default());
+        let conns: Arc<dyn DeclaredConns> = table.clone();
+        let real = unsafe { *plug::busbar_plugin_door() };
+        let statement = unsafe { *real.statement() };
+        let needs = Box::leak(Box::new(NEEDS));
+        let statement = Box::leak(Box::new(Statement {
+            kind: busbar_contract::abi::mechanism::KindCode::Plane as u32,
+            kind_abi: busbar_contract::abi::mechanism::KindCode::Plane.abi_version(),
+            needs: needs.as_ptr(),
+            needs_len: needs.len(),
+            ..statement
+        }));
+        let ops = unsafe { *real.parts().ops.cast::<OpsHead>() };
+        let ops = Box::leak(Box::new(OpsHead {
+            drive: Some(drive),
+            ..ops
+        }));
+        let door = Box::leak(Box::new(unsafe {
+            Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+                kind: busbar_contract::abi::mechanism::KindCode::Plane as u32,
+                kind_abi: busbar_contract::abi::mechanism::KindCode::Plane.abi_version(),
+                layout: busbar_contract::abi::mechanism::KindCode::Plane.layout_fingerprint(),
+                statement,
+                ops,
+                ..real.parts()
+            })
+        }));
+        let plugin = Plugin::<PlaneShaped>::bind(
+            validate_door::<PlaneShaped>(door).unwrap(),
+            None,
+            Bind {
+                instance: Arc::from("driver-generation"),
+                max_inflight_cap: 8,
+                sink: Arc::new(NoSink),
+                dispatcher: d.adopter(),
+                conns: crate::dispatch::ConnTable::Host(conns),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            open_with(&plugin, br#"{"upstream":"127.0.0.1:9"}"#),
+            Outcome::Ready
+        );
+        let old = plugin.instance();
+        let driver = d.driver(&plugin, 0).unwrap();
+        crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
+        wait(1);
+        assert!(d.retirement_barrier(driver, std::time::Duration::from_secs(10)));
+        assert_eq!(
+            refresh_with(&plugin, br#"{"upstream":"127.0.0.2:9"}"#),
+            Outcome::Ready
+        );
+        let new = table.declared.lock().unwrap().last().unwrap().0;
+        assert_ne!(old, new);
+        FINISH.store(true, Ordering::SeqCst);
+        crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
+        wait(2);
+        assert!(d.retirement_barrier(driver, std::time::Duration::from_secs(10)));
+        crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
+        wait(3);
+        assert_eq!(
+            *OBSERVED.lock().unwrap(),
+            vec![(old, false), (old, true), (new, false)]
+        );
+        d.recycle(driver);
+        assert!(d.retirement_barrier(driver, std::time::Duration::from_secs(10)));
+    }
+}
+
+#[path = "ordinary_connector_bounds.rs"]
+mod ordinary_connector_bounds;

@@ -12,3 +12,7 @@ pub mod schema;
 #[cfg(test)]
 #[path = "tests/hook_stage_projection.rs"]
 mod hook_stage_projection;
+
+#[cfg(test)]
+#[path = "tests/read_view_redaction.rs"]
+mod read_view_redaction;

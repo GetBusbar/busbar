@@ -234,26 +234,18 @@ impl GovState {
             if self.observed_child_receipt(parent, &child)?.is_some() {
                 continue;
             }
-            let mut payload: serde_json::Value = decode(&child.payload)?;
-            payload
-                .as_object_mut()
-                .ok_or_else(|| invalid("child template is not an object"))?
-                .insert(
-                    "origin".into(),
-                    serde_json::to_value(RecoveryOrigin {
-                        operation_id: parent.operation_id,
-                        event_fingerprint: parent.fingerprint().map_err(invalid)?,
-                    })
-                    .map_err(invalid)?,
-                );
+            let initial = child.intent_with_origin(RecoveryOrigin {
+                operation_id: parent.operation_id,
+                event_fingerprint: parent.fingerprint().map_err(invalid)?,
+            })?;
             let event = self
                 .new_recovery_event(
-                    child.operation_id,
-                    child.kind,
-                    child.body_fingerprint,
-                    RecoveryState::Intent,
-                    child.first_sent_at_ms,
-                    encode(&payload)?,
+                    initial.operation_id,
+                    initial.kind,
+                    initial.body_fingerprint,
+                    initial.state,
+                    initial.first_sent_at_ms,
+                    initial.payload,
                 )
                 .map_err(invalid)?;
             self.keep_recovery_event(&event)?;
@@ -634,6 +626,7 @@ impl GovState {
         window: u64,
         mut plain: ExactUsageDelta,
         mut dated: ExactUsageDelta,
+        settled: &ForeignSettledSnapshot,
     ) -> RecordStoreResult<DurableUsageFlight> {
         // Read correction and raw exposure from one stable selected snapshot.
         // This is CPU-only under the caller's shard lock; a changed snapshot is
@@ -666,7 +659,9 @@ impl GovState {
         for event in observations {
             let links: Links = decode(&event.payload)?;
             for child in links.handoffs {
-                if child.kind != RecoveryKind::Usage || owned_snapshot.contains(&child.operation_id)
+                if child.kind != RecoveryKind::Usage
+                    || owned_snapshot.contains(&child.operation_id)
+                    || settled.excludes(event.operation_id, &child)
                 {
                     continue;
                 }
@@ -814,11 +809,25 @@ impl GovState {
         &self,
         parent: &RecoveryEvent,
     ) -> RecordStoreResult<bool> {
+        self.recovery_children_settled_inner(parent, false)
+    }
+
+    fn recovery_children_settled_inner(
+        &self,
+        parent: &RecoveryEvent,
+        verify_current: bool,
+    ) -> RecordStoreResult<bool> {
         let mut queue = std::collections::VecDeque::from([parent.clone()]);
         let mut seen = std::collections::BTreeSet::new();
         while let Some(event) = queue.pop_front() {
             if !seen.insert(event.operation_id) {
                 continue;
+            }
+            if verify_current {
+                if event.state != RecoveryState::Settled {
+                    return Ok(false);
+                }
+                self.verify_current_recovery_checkpoint(&event)?;
             }
             let links: Links = decode(&event.payload)?;
             for descriptor in links.handoffs {
@@ -830,6 +839,9 @@ impl GovState {
                 } else {
                     return Ok(false);
                 };
+                if verify_current {
+                    self.verify_settled_descriptor(&event, &descriptor, &child)?;
+                }
                 if child.state != RecoveryState::Settled {
                     return Ok(false);
                 }
@@ -1065,5 +1077,106 @@ impl GovState {
         };
         transitions.push(unknown.checkpoint(state, payload)?);
         Ok(transitions)
+    }
+}
+
+/// One flush's readonly proofs. No foreign ownership or event history is cached.
+#[derive(Default)]
+pub(super) struct ForeignSettledSnapshot {
+    descriptors: std::collections::BTreeSet<([u8; 16], [u8; 32])>,
+}
+impl ForeignSettledSnapshot {
+    fn excludes(&self, parent: [u8; 16], child: &RecoveryChild) -> bool {
+        fingerprint(b"busbar.recovery.settled-descriptor.v1\0", child)
+            .is_ok_and(|digest| self.descriptors.contains(&(parent, digest)))
+    }
+}
+impl RecoveryChild {
+    fn intent_with_origin(&self, origin: RecoveryOrigin) -> RecordStoreResult<RecoveryEvent> {
+        let mut payload: serde_json::Value = decode(&self.payload)?;
+        let object = payload
+            .as_object_mut()
+            .ok_or_else(|| invalid("child template is not an object"))?;
+        if object.get("origin").is_some_and(|origin| !origin.is_null()) {
+            return Err(invalid("child template already has an origin"));
+        }
+        object.insert(
+            "origin".into(),
+            serde_json::to_value(origin).map_err(invalid)?,
+        );
+        Ok(RecoveryEvent {
+            operation_id: self.operation_id,
+            revision: 0,
+            previous_event: None,
+            kind: self.kind,
+            body_fingerprint: self.body_fingerprint,
+            state: RecoveryState::Intent,
+            first_sent_at_ms: self.first_sent_at_ms,
+            payload: encode(&payload)?,
+        })
+    }
+}
+impl GovState {
+    /// Called only by the cold flusher before any shard lock. Failed proof leaves
+    /// exposure unknown while independent positive work can still continue.
+    pub(super) fn capture_foreign_settled_snapshot(&self) -> ForeignSettledSnapshot {
+        let mut snapshot = ForeignSettledSnapshot::default();
+        if !self.recovery_enabled() {
+            return snapshot;
+        }
+        for parent in self.selected_recovery_events() {
+            let Ok(links) = decode::<Links>(&parent.payload) else {
+                continue;
+            };
+            for child in links.handoffs {
+                if child.kind != RecoveryKind::Usage
+                    || self.recovery_event(child.operation_id).is_some()
+                {
+                    continue;
+                }
+                let Ok(Some(receipt)) = self.observed_child_receipt(&parent, &child) else {
+                    continue;
+                };
+                if self
+                    .verify_settled_descriptor(&parent, &child, &receipt)
+                    .is_err()
+                    || !matches!(
+                        self.recovery_children_settled_inner(&receipt, true),
+                        Ok(true)
+                    )
+                {
+                    continue;
+                }
+                if let Ok(digest) = fingerprint(b"busbar.recovery.settled-descriptor.v1\0", &child)
+                {
+                    snapshot.descriptors.insert((parent.operation_id, digest));
+                }
+            }
+        }
+        snapshot
+    }
+    fn verify_settled_descriptor(
+        &self,
+        parent: &RecoveryEvent,
+        descriptor: &RecoveryChild,
+        receipt: &RecoveryEvent,
+    ) -> RecordStoreResult<()> {
+        if receipt.state != RecoveryState::Settled
+            || receipt.kind != descriptor.kind
+            || receipt.body_fingerprint != descriptor.body_fingerprint
+            || receipt.first_sent_at_ms != descriptor.first_sent_at_ms
+        {
+            return Err(invalid("settled descriptor identity differs"));
+        }
+        let origin = receipt
+            .origin_reference()
+            .map_err(invalid)?
+            .ok_or_else(|| invalid("settled child has no origin"))?;
+        if origin.operation_id != parent.operation_id {
+            return Err(invalid("settled child belongs to another parent"));
+        }
+        // C checks a revision-zero argument against the exact actual genesis,
+        // then its older selected parent checkpoint and full sealed template.
+        self.verify_external_recovery_origin(&descriptor.intent_with_origin(origin)?)
     }
 }

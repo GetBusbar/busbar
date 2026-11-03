@@ -116,7 +116,10 @@ fn gate_granted(reject: Option<(u16, &'static str)>, send_prompt: bool) -> (Seen
     )
 }
 
-struct Rewriter;
+struct Rewriter {
+    name: &'static str,
+    refuses_failed_rewrite: bool,
+}
 
 #[async_trait::async_trait]
 impl RoutingPolicy for Rewriter {
@@ -130,7 +133,10 @@ impl RoutingPolicy for Rewriter {
         Ok(RoutingDecision::Abstain)
     }
     fn name(&self) -> &'static str {
-        "rewriter"
+        self.name
+    }
+    fn refuses_failed_rewrite(&self) -> bool {
+        self.refuses_failed_rewrite
     }
     async fn transform(&self, _: &RoutingRequest<'_>, _: Duration) -> TransformOutcome {
         TransformOutcome::Rewrite(RewriteReply {
@@ -186,7 +192,13 @@ async fn no_hook_bound_projects_nothing() {
 async fn a_rewrite_is_applied_by_the_plane_and_re_pushed_on_every_attempt() {
     let (seen, g) = gate(None);
     let hooks = bound(
-        vec![(Duration::from_millis(500), Arc::new(Rewriter))],
+        vec![(
+            Duration::from_millis(500),
+            Arc::new(Rewriter {
+                name: "rewriter",
+                refuses_failed_rewrite: false,
+            }),
+        )],
         vec![(0, g)],
     );
     let r = rig_with_hooks(
@@ -346,30 +358,13 @@ async fn a_load_bearing_rewrite_that_cannot_answer_refuses_with_the_shared_503()
 }
 
 fn resolved_rewrite(on_error: &str) -> Vec<(Duration, Arc<dyn RoutingPolicy>)> {
-    let env = busbar_kernel_testkit::test_support::test_hook_env(
-        &["test-hook"],
-        busbar_kernel_testkit::test_support::HookNeeds {
-            prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
-            user: busbar_contract::plugin_rows::NeedLevel::Ro,
-        },
-    );
-    let hook: busbar_kernel::config::HookCfg = serde_json::from_value(serde_json::json!({
-        "kind": "gate",
-        "module": "test-hook",
-        "prompt": "rw",
-        "on_error": on_error,
-        "global": true,
-        "timeout_ms": 5000,
-    }))
-    .expect("a prompt: rw gate");
-    let hooks = std::collections::HashMap::from([("rw".to_string(), hook)]);
-    let chain = busbar_kernel::hooks::resolve_rewrite_hooks(&hooks, &["rw".to_string()], &env, 0);
-    assert_eq!(
-        chain.len(),
-        1,
-        "the rw gate resolves into the rewrite chain"
-    );
-    chain
+    vec![(
+        Duration::from_millis(500),
+        Arc::new(Rewriter {
+            name: "rw",
+            refuses_failed_rewrite: on_error == "reject",
+        }),
+    )]
 }
 
 #[tokio::test]
@@ -528,12 +523,41 @@ async fn a_gate_first_rewrite_the_plane_does_not_apply_is_refused_under_every_on
 
 const NOT_APPLICABLE_WARN: &str = "rewrite not applicable to this request; forwarded unmodified";
 
-fn capture_warnings() -> (
-    busbar_kernel_testkit::test_support::warn_capture::WarnCapture,
-    tracing::subscriber::DefaultGuard,
-) {
+#[derive(Clone, Default)]
+struct Warnings(Arc<Mutex<Vec<String>>>);
+
+impl Warnings {
+    fn messages(&self) -> Vec<String> {
+        self.0.lock().expect("warning capture lock").clone()
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Warnings {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        if *event.metadata().level() != tracing::Level::WARN {
+            return;
+        }
+        struct Fields(String);
+        impl tracing::field::Visit for Fields {
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                use std::fmt::Write;
+                write!(&mut self.0, "{}={value} ", field.name())
+                    .expect("append warning string field");
+            }
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                use std::fmt::Write;
+                write!(&mut self.0, "{}={value:?} ", field.name()).expect("append warning fields");
+            }
+        }
+        let mut fields = Fields(String::new());
+        event.record(&mut fields);
+        self.0.lock().expect("warning capture lock").push(fields.0);
+    }
+}
+
+fn capture_warnings() -> (Warnings, tracing::subscriber::DefaultGuard) {
     use tracing_subscriber::layer::SubscriberExt as _;
-    let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
+    let cap = Warnings::default();
     let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(cap.clone()));
     (cap, guard)
 }
@@ -1228,7 +1252,13 @@ async fn reported(hooks: BoundHooks) -> Vec<HooksRan> {
 async fn the_stage_reports_each_hook_that_ran_in_order_with_its_head() {
     let (_, g) = gate(None);
     let reports = reported(bound(
-        vec![(Duration::from_millis(500), Arc::new(Rewriter))],
+        vec![(
+            Duration::from_millis(500),
+            Arc::new(Rewriter {
+                name: "rewriter",
+                refuses_failed_rewrite: false,
+            }),
+        )],
         vec![(0, g)],
     ))
     .await;

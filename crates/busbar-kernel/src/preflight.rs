@@ -335,9 +335,16 @@ fn ranking_settings(
     name: &str,
 ) -> Result<serde_json::Value, String> {
     let settings = serde_json::json!({ "policy": name });
-    let (facts, problems) = axis
-        .probe(name, name, &settings)
-        .ok_or_else(|| format!("ranking strategy '{name}' has no admitted hook plugin"))?;
+    ranking_settings_from(name, axis.probe(name, name, &settings))
+}
+
+pub(crate) fn ranking_settings_from(
+    name: &str,
+    probed: Option<busbar_contract::hook_calls::Probed>,
+) -> Result<serde_json::Value, String> {
+    let settings = serde_json::json!({"policy":name});
+    let (facts, problems) =
+        probed.ok_or_else(|| format!("ranking strategy '{name}' has no admitted hook plugin"))?;
     let facts = facts.ok_or_else(|| format!("ranking strategy '{name}' has no hook metadata"))?;
     if facts.class != busbar_contract::abi::hook::CLASS_GATE
         || !facts.words.iter().any(|word| word == name)
@@ -367,11 +374,25 @@ pub(crate) fn ranking_on_axis(
 > {
     let settings = ranking_settings(axis, name)?;
     let budget = axis.call_budget();
-    let calls = axis.open(name, name, &settings, budget)?;
+    let (calls, _) = open_ranked(
+        name,
+        &settings,
+        budget,
+        |module, label, settings, budget| axis.open(module, label, settings, budget),
+    )?;
     Ok((
         crate::plane_driver::hooks::policy::HookPolicy::policy(calls, name),
         budget,
     ))
+}
+
+pub(crate) fn open_ranked<T>(
+    name: &str,
+    settings: &serde_json::Value,
+    budget: std::time::Duration,
+    open: impl FnOnce(&str, &str, &serde_json::Value, std::time::Duration) -> Result<T, String>,
+) -> Result<(T, std::time::Duration), String> {
+    open(name, name, settings, budget).map(|opened| (opened, budget))
 }
 
 pub(crate) fn validate_pool_strategies(
@@ -422,6 +443,27 @@ struct PluginRef<'a> {
     remedy: &'a str,
 }
 
+fn missing_plugin_error(
+    dir: &str,
+    want: PluginRef<'_>,
+    loadable: &[busbar_contract::plugin_rows::Row],
+) -> String {
+    format!(
+        "{} is installed in '{dir}' (plugins ARE enabled; loadable: [{}]). Two things to \
+                 check: is the plugin subsystem enabled? (it is) — and is the signed {}tarball \
+                 actually IN the folder? \
+                 Add it to plugins.fetch or drop the signed tarball in the directory, or {}.",
+        want.missing,
+        loadable
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+        want.label,
+        want.remedy
+    )
+}
+
 fn require_plugin(
     registry: &dyn PluginRows,
     dir: &str,
@@ -439,21 +481,7 @@ fn require_plugin(
                 "{} plugin '{}' ({}) but it was not loaded: {}",
                 want.matched, s.name, s.file, s.reason
             ),
-            None => format!(
-                "{} is installed in '{dir}' (plugins ARE enabled; loadable: [{}]). Two things to \
-                 check: is the plugin subsystem enabled? (it is) — and is the signed {}tarball \
-                 actually IN the folder? \
-                 Add it to plugins.fetch or drop the signed tarball in the directory, or {}.",
-                want.missing,
-                registry
-                    .loadable()
-                    .iter()
-                    .map(|p| p.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                want.label,
-                want.remedy
-            ),
+            None => missing_plugin_error(dir, want, &registry.loadable()),
         }),
     }
 }
@@ -718,72 +746,7 @@ fn log_build(n: BuildNote<'_>, dir: &str) {
             "plugins: disabled (plugins.enabled is false; tarballs in the directory are inert)"
         ),
         BuildNote::Scanned { rows, copies } => {
-            let loadable = rows.loadable();
-            let skipped = rows.skipped();
-            tracing::info!(
-                dir = %dir,
-                loadable = loadable.len(),
-                skipped = skipped.len(),
-                "plugins: enabled"
-            );
-            for copy in copies {
-                tracing::info!(
-                    plugin = %copy.name,
-                    version = %copy.version,
-                    file = %copy.file,
-                    "{}",
-                    copy.line
-                );
-            }
-            for s in &skipped {
-                diag_warn!(
-                    PLUGIN_SKIPPED_TRUST_POLICY,
-                    plugin = %s.name,
-                    file = %s.file,
-                    reason = %s.reason,
-                    "plugin present but NOT loaded (trust policy)"
-                );
-
-                crate::audit::auditlog::record_plugin_refusal(
-                    crate::audit::auditlog::PluginRefusal::Trust,
-                    "file",
-                    &s.file,
-                    s.code,
-                );
-            }
-            for p in &loadable {
-                match &p.trust {
-                    busbar_contract::plugin_rows::Trust::Trusted {
-                        publisher,
-                        first_party,
-                    } => tracing::info!(
-                        plugin = %p.name,
-                        alias = %p.alias,
-                        kind = %p.kind,
-                        version = %p.version,
-                        publisher = %publisher,
-                        first_party,
-                        "plugin validated"
-                    ),
-                    busbar_contract::plugin_rows::Trust::Allowed { reason } => {
-                        diag_warn!(
-                            PLUGIN_LOADED_UNVERIFIED,
-                            plugin = %p.name,
-                            alias = %p.alias,
-                            kind = %p.kind,
-                            reason = %reason,
-                            "plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in)"
-                        );
-
-                        crate::audit::auditlog::record_plugin_refusal(
-                            crate::audit::auditlog::PluginRefusal::Unverified,
-                            "file",
-                            &p.file,
-                            "unverified",
-                        );
-                    }
-                }
-            }
+            log_scanned_rows(&rows.loadable(), &rows.skipped(), copies, dir);
         }
         BuildNote::FloorUnwritable(e) => diag_warn!(
             PLUGIN_FIRSTPARTY_FLOOR_UNWRITABLE,
@@ -791,6 +754,78 @@ fn log_build(n: BuildNote<'_>, dir: &str) {
             "could not persist the first-party anti-downgrade floor; it still applies to this \
              process but will not survive a restart"
         ),
+    }
+}
+
+fn log_scanned_rows(
+    loadable: &[busbar_contract::plugin_rows::Row],
+    skipped: &[busbar_contract::plugin_rows::Skipped],
+    copies: &[CopyLine],
+    dir: &str,
+) {
+    tracing::info!(
+        dir = %dir,
+        loadable = loadable.len(),
+        skipped = skipped.len(),
+        "plugins: enabled"
+    );
+    for copy in copies {
+        tracing::info!(
+            plugin = %copy.name,
+            version = %copy.version,
+            file = %copy.file,
+            "{}",
+            copy.line
+        );
+    }
+    for s in skipped {
+        diag_warn!(
+            PLUGIN_SKIPPED_TRUST_POLICY,
+            plugin = %s.name,
+            file = %s.file,
+            reason = %s.reason,
+            "plugin present but NOT loaded (trust policy)"
+        );
+
+        crate::audit::auditlog::record_plugin_refusal(
+            crate::audit::auditlog::PluginRefusal::Trust,
+            "file",
+            &s.file,
+            s.code,
+        );
+    }
+    for p in loadable {
+        match &p.trust {
+            busbar_contract::plugin_rows::Trust::Trusted {
+                publisher,
+                first_party,
+            } => tracing::info!(
+                plugin = %p.name,
+                alias = %p.alias,
+                kind = %p.kind,
+                version = %p.version,
+                publisher = %publisher,
+                first_party,
+                "plugin validated"
+            ),
+            busbar_contract::plugin_rows::Trust::Allowed { reason } => {
+                diag_warn!(
+                    PLUGIN_LOADED_UNVERIFIED,
+                    plugin = %p.name,
+                    alias = %p.alias,
+                    kind = %p.kind,
+                    reason = %reason,
+                    "plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in)"
+                );
+
+                crate::audit::auditlog::record_plugin_refusal(
+                    crate::audit::auditlog::PluginRefusal::Unverified,
+                    "file",
+                    &p.file,
+                    "unverified",
+                );
+            }
+        }
     }
 }
 
@@ -914,6 +949,21 @@ pub(crate) fn valid_identity_provider_modules(registry: &dyn PluginRows) -> Stri
     names.join(" | ")
 }
 
+fn check_secret_module_claim(
+    claimed_by: &std::collections::BTreeMap<String, String>,
+    canonical: &str,
+    module: &str,
+) -> Result<(), String> {
+    if let Some(previous) = claimed_by.get(canonical) {
+        return Err(format!(
+            "secrets: the module '{canonical}' is configured TWICE — once as '{previous}' and \
+                 once as '{module}' (an alias and its canonical name resolve to the same plugin). \
+                 One of the two blocks would be silently dropped; keep exactly one."
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn build_secret_resolver(
     registry: Arc<dyn PluginRows>,
     secret_modules: &std::collections::BTreeMap<String, config::SecretModuleCfg>,
@@ -928,13 +978,7 @@ pub(crate) fn build_secret_resolver(
     for (module, mcfg) in secret_modules {
         let canonical = config_validate::secret_module(registry.as_ref(), module)?;
 
-        if let Some(previous) = claimed_by.get(&canonical) {
-            return Err(format!(
-                "secrets: the module '{canonical}' is configured TWICE — once as '{previous}' and \
-                 once as '{module}' (an alias and its canonical name resolve to the same plugin). \
-                 One of the two blocks would be silently dropped; keep exactly one."
-            ));
-        }
+        check_secret_module_claim(&claimed_by, &canonical, module)?;
         config::secret::resolve_settings(
             &mcfg.settings,
             &registry.secret_slots(module),
@@ -1080,3 +1124,15 @@ mod store_row_tests;
 #[cfg(test)]
 #[path = "tests/plugin_refusal_tests.rs"]
 mod plugin_refusal_tests;
+
+#[cfg(test)]
+#[path = "tests/central2_secret_claim_tests.rs"]
+mod central2_secret_claim_tests;
+
+#[cfg(test)]
+#[path = "tests/central2_boot_log_tests.rs"]
+mod central2_boot_log_tests;
+
+#[cfg(test)]
+#[path = "tests/central2_missing_plugin_tests.rs"]
+mod central2_missing_plugin_tests;

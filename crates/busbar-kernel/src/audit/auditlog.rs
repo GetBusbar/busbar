@@ -351,6 +351,20 @@ enum EventOrigin {
     ExportFailure,
 }
 
+impl EventOrigin {
+    fn for_plugin_refusal(refusal: PluginRefusal, kind: &str) -> Self {
+        if refusal == PluginRefusal::Op && kind == busbar_contract::plugin::Kind::Export.root() {
+            Self::ExportFailure
+        } else {
+            Self::Mutation
+        }
+    }
+
+    fn redispatch(self) -> bool {
+        self != Self::ExportFailure
+    }
+}
+
 #[derive(Clone)]
 struct PendingAudit {
     scope: String,
@@ -517,10 +531,20 @@ fn report_unwritten(latch: &AtomicBool) {
     }
 }
 
+fn normalize_queued_append(
+    result: RecordStoreResult<(u64, String, String)>,
+) -> Result<(u64, String, String), ()> {
+    result.map_err(|_| ())
+}
+
 fn drain_pending_audit() {
     static WRITE_FAILED_LATCHED: AtomicBool = AtomicBool::new(false);
     PENDING_AUDIT.drain_with(
-        |scope, suffix| match stream_registry::append_full(KIND_ID_AUDIT, scope, suffix) {
+        |scope, suffix| match normalize_queued_append(stream_registry::append_full(
+            KIND_ID_AUDIT,
+            scope,
+            suffix,
+        )) {
             Ok(written) => {
                 WRITE_FAILED_LATCHED.store(false, Ordering::Relaxed);
                 Ok(written)
@@ -545,7 +569,7 @@ fn drain_pending_audit() {
                 recorded_here: true,
             };
             AUDIT_LOG.push_entry(entry.clone());
-            if p.origin != EventOrigin::ExportFailure {
+            if p.origin.redispatch() {
                 deliver_audit_event(&entry);
             }
         },
@@ -893,12 +917,7 @@ fn seal_refusal(row: &HeldRefusal) {
 }
 
 pub fn record_plugin_refusal(refusal: PluginRefusal, kind: &str, subject: &str, reason: &str) {
-    let origin =
-        if refusal == PluginRefusal::Op && kind == busbar_contract::plugin::Kind::Export.root() {
-            EventOrigin::ExportFailure
-        } else {
-            EventOrigin::Mutation
-        };
+    let origin = EventOrigin::for_plugin_refusal(refusal, kind);
     PLUGIN_REFUSALS.raise(
         HeldRefusal {
             ts: busbar_kernel::store::now(),

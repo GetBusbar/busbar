@@ -479,3 +479,6 @@ fn an_append_completion_can_submit_another_whole_append() {
     assert_eq!(std::fs::read(&file).unwrap(), b"first\nsecond\n");
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[path = "host_disk_export_tests.rs"]
+mod exporter_host_policy;

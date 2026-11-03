@@ -283,7 +283,7 @@ pub fn door_addresses_of_library(path: &Path) -> Result<Option<(usize, usize)>, 
         Ok(door) => door,
         Err(_) => return Ok(None),
     };
-    let at = door();
+    let at = enter_door(door);
     let ops = if at.is_null() {
         0
     } else {

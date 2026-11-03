@@ -1501,31 +1501,29 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
             }
             seen_once.push(module);
         }
-        match module {
-            other if axis.is_some() => {
-                let metrics = busbar_contract::abi::export::ExportStream::Metrics;
-                let carries = declared.is_some_and(|d| d.contains(&metrics));
-                let first_party = crate::export::plugin::first_party(other);
-                let scrape = carries && first_party && projection.wants_stream(metrics);
-
-                let scrape = scrape && !out.plugins.iter().any(|p| p.scrape);
-                if scrape {
-                    out.recorder = serde_json::from_value(settings).ok();
-                }
-                errors.extend(axis.into_iter().flat_map(|(_, problems)| problems));
-                out.plugins.push(PluginExportSettings {
-                    name: name.clone(),
-                    def: def.clone(),
-                    projection,
-                    scrape,
-                })
+        let first_party = axis
+            .as_ref()
+            .is_some_and(|_| crate::export::plugin::first_party(module));
+        let (scrape, recorder) = crate::export::plugin::scrape_instance(
+            projection,
+            declared,
+            first_party,
+            out.plugins.iter().any(|p| p.scrape),
+            settings,
+        );
+        if let Some(instance) = crate::export::plugin::configured_instance(
+            name,
+            def,
+            projection,
+            axis.map(|(_, problems)| problems),
+            scrape,
+            crate::export::plugin::linked_modules,
+            errors,
+        ) {
+            if scrape {
+                out.recorder = recorder;
             }
-
-            other => errors.push(format!(
-                "export.{name}.module: unknown exporter '{other}'; the built-in export modules are \
-                 {}",
-                crate::export::plugin::linked_modules().join(" | ")
-            )),
+            out.plugins.push(instance);
         }
     }
     out
@@ -1938,11 +1936,11 @@ pub fn resolve(
             endpoint_resources,
             oauth_as,
             credentials: deploy.credentials.clone(),
-            plane_defs: deploy
-                .declared
-                .0
-                .iter()
-                .map(|(s, c)| (*s, c.clone_box()))
+            // Keep the raw sections already parsed and judged above as well as
+            // typed declarations. Existing typed declarations retain precedence.
+            plane_defs: raw_judged
+                .into_iter()
+                .chain(deploy.declared.0.iter().map(|(s, c)| (*s, c.clone_box())))
                 .collect(),
             plane_pools,
             tls: deploy.tls.clone(),

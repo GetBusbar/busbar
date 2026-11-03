@@ -331,6 +331,12 @@ const CATALOG_CACHE_TTL_SECS: u64 = 120;
 
 static CATALOG_CACHE: OnceLock<Mutex<HashMap<PathBuf, CatalogCacheEntry>>> = OnceLock::new();
 
+fn prune_catalog_cache(cache: &mut HashMap<PathBuf, CatalogCacheEntry>, now: u64) {
+    cache.retain(|_, entry| {
+        entry.inserted_at <= now && now.saturating_sub(entry.inserted_at) < CATALOG_CACHE_TTL_SECS
+    });
+}
+
 fn catalog_cache() -> &'static Mutex<HashMap<PathBuf, CatalogCacheEntry>> {
     CATALOG_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -443,6 +449,16 @@ pub(crate) fn hook_plugins_compiled_in() -> Vec<&'static str> {
 const MAX_PLUGIN_FILENAME_LEN: usize = 256;
 
 fn validate_plugin_filename(app: &App, file: &str) -> Result<String, AdminError> {
+    validate_plugin_filename_with(file, |file| {
+        app.plugin_admission
+            .is_some_and(|admission| admission.is_tarball(file))
+    })
+}
+
+fn validate_plugin_filename_with(
+    file: &str,
+    is_tarball: impl FnOnce(&str) -> bool,
+) -> Result<String, AdminError> {
     if file.is_empty() || file.len() > MAX_PLUGIN_FILENAME_LEN {
         return Err(AdminError::Validation(format!(
             "plugin filename must be 1..={MAX_PLUGIN_FILENAME_LEN} chars"
@@ -465,7 +481,7 @@ fn validate_plugin_filename(app: &App, file: &str) -> Result<String, AdminError>
             ));
         }
     }
-    if !app.plugin_admission.is_some_and(|a| a.is_tarball(file)) {
+    if !is_tarball(file) {
         return Err(AdminError::Validation(
             "plugin filename must be a `.tar.gz` (or `.tgz`) signed plugin tarball".into(),
         ));
@@ -473,31 +489,45 @@ fn validate_plugin_filename(app: &App, file: &str) -> Result<String, AdminError>
     Ok(file.to_string())
 }
 
-async fn probe_transport(
-    cfg: &HookCfg,
-    env: &busbar_kernel::hooks::HookEnv,
-) -> (Option<bool>, Option<String>) {
-    match env.registry.resolve(&cfg.plugin) {
-        Some(p) if p.kind == "hook" => (Some(true), None),
-        Some(p) => (
+fn hook_health_projection(
+    name: &str,
+    cfg: Option<&HookCfg>,
+    global_hooks: &[String],
+    resolved_kind: Option<&str>,
+    skipped_reason: Option<&str>,
+) -> Result<HookHealthView, AdminError> {
+    let cfg = cfg.ok_or_else(|| AdminError::not_found(format!("hook `{name}`")))?;
+    let view = project_hook_view(name, cfg, global_hooks);
+    let (reachable, detail) = match resolved_kind {
+        Some("hook") => (Some(true), None),
+        Some(kind) => (
             Some(false),
             Some(format!(
                 "plugin '{}' resolves to kind '{}', not 'hook'",
-                cfg.plugin, p.kind
+                cfg.plugin, kind
             )),
         ),
         None => (
             Some(false),
-            Some(match env.registry.unresolved_reason(&cfg.plugin) {
-                Some(sk) => format!(
-                    "plugin '{}' present but not loaded: {}",
-                    cfg.plugin, sk.reason
-                ),
+            Some(match skipped_reason {
+                Some(reason) => {
+                    format!("plugin '{}' present but not loaded: {}", cfg.plugin, reason)
+                }
                 None => format!("plugin '{}' is not installed", cfg.plugin),
             }),
         ),
-    }
+    };
+    Ok(HookHealthView {
+        name: name.to_string(),
+        transport: view.transport,
+        reachable,
+        detail,
+    })
 }
+
+#[cfg(test)]
+#[path = "tests/hook_health_projection.rs"]
+mod hook_health_projection_tests;
 
 pub(crate) const MAX_SETTINGS_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_SETTINGS_KEYS: usize = 256;
@@ -690,12 +720,11 @@ pub(crate) fn build_without_group(
     Ok(next)
 }
 
-pub(crate) fn build_with_registry(
-    current: &App,
-    registry: std::collections::HashMap<String, HookCfg>,
-    global_hooks: Vec<String>,
-) -> Result<App, AdminError> {
-    for (name, cfg) in &registry {
+fn validate_hook_registry(
+    registry: &std::collections::HashMap<String, HookCfg>,
+    global_hooks: &[String],
+) -> Result<(), AdminError> {
+    for (name, cfg) in registry {
         if cfg.plugin.trim().is_empty() {
             return Err(AdminError::Validation(format!(
                 "hook `{name}` must name a `kind: hook` plugin via `module:`"
@@ -718,13 +747,22 @@ pub(crate) fn build_with_registry(
             defaults.join(", ")
         )));
     }
-    for g in &global_hooks {
+    for g in global_hooks {
         if !registry.contains_key(g) {
             return Err(AdminError::Validation(format!(
                 "snapshot wires unknown global hook `{g}`"
             )));
         }
     }
+    Ok(())
+}
+
+pub(crate) fn build_with_registry(
+    current: &App,
+    registry: std::collections::HashMap<String, HookCfg>,
+    global_hooks: Vec<String>,
+) -> Result<App, AdminError> {
+    validate_hook_registry(&registry, &global_hooks)?;
     let mut next = current.clone();
     next.config_version = current.config_version.wrapping_add(1);
     next.hook_registry = registry;
@@ -802,6 +840,154 @@ fn manifest_schema_url_and_error(
             Some(format!("manifest settings_schema is not valid JSON: {e}")),
         ),
     }
+}
+
+fn check_inspect_tarball_size(size: usize, cap: u64) -> Result<(), AdminError> {
+    if size as u64 > cap {
+        return Err(AdminError::Validation(format!(
+            "decoded tarball is {} bytes, exceeding the {cap}-byte cap",
+            size
+        )));
+    }
+    Ok(())
+}
+
+fn inspect_plugin_view(
+    manifest: busbar_kernel::admission::Stated,
+    judged: busbar_kernel::admission::Judged,
+    restart_default: impl FnOnce(&str) -> bool,
+) -> serde_json::Value {
+    use busbar_kernel::admission::Judged;
+    let trust = match judged {
+        Judged::Trusted { .. } => "trusted",
+        Judged::Allowed => "unverified",
+        Judged::Rejected { .. } => "rejected",
+    };
+
+    let (schema, schema_error) = match manifest.settings_schema.as_deref() {
+        None => (None, None),
+        Some(s) => match schema_json_within_bounds(s) {
+            Err(reason) => (None, Some(reason)),
+            Ok(()) => match serde_json::from_str::<serde_json::Value>(s) {
+                Ok(v) => (Some(v), None),
+                Err(e) => (
+                    None,
+                    Some(format!("manifest settings_schema is not valid JSON: {e}")),
+                ),
+            },
+        },
+    };
+
+    serde_json::json!({
+        "name": manifest.name,
+        "version": manifest.version,
+        "kind": manifest.kind,
+        "schema": schema,
+        "schema_error": schema_error,
+        "trust": trust,
+        "source": "manifest",
+        "restart_required_default": restart_default(&manifest.kind),
+    })
+}
+
+fn plugin_inventory_view(row: busbar_kernel::admission::Inventoried) -> PluginView {
+    let trust = if row.status == "ready" {
+        if row.signature == "first-party" || row.signature.starts_with("publisher:") {
+            Some("trusted")
+        } else {
+            Some("unverified")
+        }
+    } else if row.stated.is_some() {
+        Some("rejected")
+    } else {
+        None
+    };
+    let name = row
+        .stated
+        .as_ref()
+        .map(|m| m.name.clone())
+        .unwrap_or_else(|| row.file.clone());
+
+    let r#type = match row.stated.as_ref().map(|m| m.kind.as_str()) {
+        Some("secret") => "secret",
+        Some("auth") => "auth",
+        Some("hook") => "hook",
+        Some("export") => "export",
+        Some("transport") => "transport",
+        Some("plane") => "plane",
+        _ => "store",
+    };
+
+    let (schema_url, schema_error) = match row.stated.as_ref() {
+        Some(m) => manifest_schema_url_and_error(&name, m.settings_schema.as_deref()),
+        None => (None, None),
+    };
+    PluginView {
+        name,
+        r#type,
+        loader: "dynamic-library",
+        active: None,
+        target: Some(row.file.clone()),
+        file: Some(row.file.clone()),
+        has_schema: schema_url.is_some(),
+        version: row.stated.as_ref().map(|m| m.version.clone()),
+        publisher: row.stated.as_ref().map(|m| m.publisher.clone()),
+        interface_version: row.stated.as_ref().map(|m| m.abi_version),
+        trust,
+        valid: Some(row.status == "ready"),
+        error: (row.status != "ready").then(|| row.status.clone()),
+        schema_url,
+        schema_error,
+    }
+}
+
+enum PluginQuery {
+    Auth,
+    Hooks,
+    Store,
+    Secret,
+}
+
+fn plugin_query(ptype: &str) -> Result<PluginQuery, AdminError> {
+    match ptype {
+        "auth" => Ok(PluginQuery::Auth),
+        "hooks" => Ok(PluginQuery::Hooks),
+        "store" | "db" => Ok(PluginQuery::Store),
+        "secret" => Ok(PluginQuery::Secret),
+        other => Err(AdminError::Validation(format!(
+            "unknown plugin type `{other}`: expected `auth`, `hooks`, `secret`, or `store`"
+        ))),
+    }
+}
+
+fn catalog_rows_of_kind(
+    rows: Vec<PluginView>,
+    kind: &'static str,
+) -> impl Iterator<Item = PluginView> {
+    rows.into_iter().filter(move |row| row.r#type == kind)
+}
+
+fn validated_snapshot(
+    history: Option<&busbar_kernel::cost::History>,
+    key: busbar_kernel::cost::EntryKey,
+) -> Result<busbar_kernel::cost::EntryKey, AdminError> {
+    let history = history
+        .filter(|history| !history.is_empty())
+        .ok_or_else(|| {
+            AdminError::Validation(
+                "as_of names a rate-card history snapshot; this node has resolved no \
+             rate-card history to snapshot"
+                    .into(),
+            )
+        })?;
+    if history.entry(&key).is_none() {
+        return Err(AdminError::Validation(format!(
+            "as_of {} does not name a known rate-card history entry; an unknown snapshot \
+             is refused, never interpreted as a list position",
+            key.hex()
+        )));
+    }
+    Ok(key)
 }
 
 pub(crate) struct AdminService {

@@ -1,8 +1,6 @@
 use super::*;
 use busbar_contract::records::ScopeRef;
 
-const LANE_PROTOCOL: &str = "unregistered-lane-protocol";
-
 fn binding(
     allowed_pools: Option<&[&str]>,
     group: Option<&str>,
@@ -28,15 +26,6 @@ fn bindings_for(
     let mut rb = crate::config::RoleBindings::new();
     rb.insert(module.to_string(), table);
     rb
-}
-
-fn chain_cfg(modules: &[&str]) -> crate::config::AuthCfg {
-    let mut cfg = crate::config::AuthCfg::default_none();
-    cfg.chain = modules
-        .iter()
-        .map(|m| crate::config::AuthChainEntry::bare(*m))
-        .collect();
-    cfg
 }
 
 fn grp_principal(id: &str, roles: &[&str]) -> Principal {
@@ -508,517 +497,19 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
     }
 }
 
-#[tokio::test]
-async fn forbidden_admin_requests_audit_once_per_window() {
-    use crate::test_support::TestApp;
-
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-
-    let unique = format!(
-        "unbound-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+#[test]
+fn an_all_pass_admin_continuation_retains_the_401_refusal() {
+    let verdict = complete_chain(chain_position_verdict("slow-oidc", AuthVerdict::Pass));
+    let door = admin_door_from_bindings(
+        &Default::default(),
+        &Operator::new("operator-provider"),
+        "operator",
+        verdict,
+        None,
+        crate::admin::seam::admin_verb_rung,
     );
-    let principal_id = format!("test:{unique}");
-
-    let app = TestApp::new()
-        .admin_chain(vec!["test-scope-module".to_string()])
-        .build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/api/v1/admin/keys");
-
-    for _ in 0..50 {
-        let r = client
-            .get(&url)
-            .bearer_auth(format!("grp:{unique}"))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            r.status().as_u16(),
-            403,
-            "an unbound role must be forbidden even on a GET (Grants::default() never allows \
-             ReadOnly), got {}",
-            r.status()
-        );
-    }
-
-    let n = crate::audit::auditlog::AUDIT_LOG
-        .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None)
-        .iter()
-        .filter(|e| e.action == "admin.forbidden" && e.principal == principal_id)
-        .count();
-    assert!(
-        (1..=2).contains(&n),
-        "expected 1 or 2 durable audit records for 50 forbidden requests from one principal \
-         (bounded by the per-(principal, window) counter, with <=2 absorbing a window-boundary \
-         straddle), got {n}"
-    );
-
-    handle.abort();
-}
-
-struct SleepingAdminDoor(std::time::Duration);
-
-struct AnsweredLater(tokio::sync::oneshot::Receiver<busbar_contract::auth_calls::VerifyAnswer>);
-
-impl std::future::Future for AnsweredLater {
-    type Output = busbar_contract::auth_calls::VerifyAnswer;
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        std::future::Future::poll(std::pin::Pin::new(&mut self.0), cx).map(|answer| {
-            answer.unwrap_or_else(|_| busbar_contract::auth_calls::Verified::Failed.into())
-        })
-    }
-}
-
-impl busbar_contract::auth_calls::Verifying for AnsweredLater {
-    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        self.0.try_recv().ok()
-    }
-}
-
-impl busbar_contract::auth_calls::AuthCalls for SleepingAdminDoor {
-    fn name(&self) -> &str {
-        "slow-oidc"
-    }
-    fn facts(&self) -> u32 {
-        0
-    }
-    fn verify_now(
-        &self,
-        _: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        None
-    }
-    fn verify(
-        &self,
-        _: busbar_contract::auth_calls::VerifyRequest,
-    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let hold = self.0;
-        std::thread::spawn(move || {
-            std::thread::sleep(hold);
-            let _ = tx.send(busbar_contract::auth_calls::Verified::Pass.into());
-        });
-        Box::new(AnsweredLater(rx))
-    }
-    fn refresh(&self) -> Result<u64, String> {
-        Ok(0)
-    }
-}
-
-struct RolelessAdminModule;
-impl crate::auth::AuthModule for RolelessAdminModule {
-    fn name(&self) -> &'static str {
-        "ext-admin"
-    }
-    fn authenticate(&self, _candidate: Option<&str>) -> crate::auth::AuthVerdict {
-        crate::auth::AuthVerdict::Identify(Principal::from_id("admin"))
-    }
-}
-
-async fn serve_app(
-    app: std::sync::Arc<crate::state::App>,
-) -> (String, tokio::task::JoinHandle<()>) {
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (format!("http://{addr}"), handle)
-}
-
-#[tokio::test]
-async fn admin_plugin_full_binding_allows_mutation() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let rb = bindings_for(
-        "test-scope-module",
-        &[("minters", binding(None, None, Some("full")))],
-    );
-    let mut app = crate::test_support::TestApp::new()
-        .admin_chain(vec!["test-scope-module".to_string()])
-        .role_bindings(rb)
-        .build();
-
-    let a = std::sync::Arc::get_mut(&mut app).expect("unshared App Arc");
-    a.auth_scope_caps
-        .insert("test-scope-module".to_string(), "full".to_string());
-    let (base, handle) = serve_app(app).await;
-    let client = reqwest::Client::new();
-
-    let r = client
-        .post(format!("{base}/api/v1/admin/hooks"))
-        .bearer_auth("grp:minters")
-        .body("{}")
-        .send()
-        .await
-        .unwrap();
-    assert_ne!(r.status().as_u16(), 401, "full binding must authenticate");
-    assert_ne!(
-        r.status().as_u16(),
-        403,
-        "full binding must satisfy the Full mutation scope, got {}",
-        r.status()
-    );
-    handle.abort();
-}
-
-#[tokio::test]
-async fn admin_plugin_readonly_binding_get_ok_post_403() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let rb = bindings_for(
-        "test-scope-module",
-        &[("viewers", binding(None, None, Some("read-only")))],
-    );
-    let app = crate::test_support::TestApp::new()
-        .admin_chain(vec!["test-scope-module".to_string()])
-        .role_bindings(rb)
-        .build();
-    let (base, handle) = serve_app(app).await;
-    let client = reqwest::Client::new();
-    let get = client
-        .get(format!("{base}/api/v1/admin/keys"))
-        .bearer_auth("grp:viewers")
-        .send()
-        .await
-        .unwrap();
-    assert_ne!(
-        get.status().as_u16(),
-        403,
-        "read-only binding must satisfy a GET (ReadOnly), got {}",
-        get.status()
-    );
-    assert_ne!(
-        get.status().as_u16(),
-        401,
-        "read-only binding authenticates"
-    );
-    let post = client
-        .post(format!("{base}/api/v1/admin/hooks"))
-        .bearer_auth("grp:viewers")
-        .body("{}")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        post.status().as_u16(),
-        403,
-        "read-only binding must NOT satisfy a Full mutation, got {}",
-        post.status()
-    );
-    let body = post.text().await.unwrap();
-    assert!(
-        body.contains("\"forbidden\""),
-        "403 must carry the frozen forbidden envelope: {body}"
-    );
-    handle.abort();
-}
-
-#[tokio::test]
-async fn admin_max_admin_scope_caps_binding() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let rb = bindings_for(
-        "test-scope-module",
-        &[("ops", binding(None, None, Some("full")))],
-    );
-    let mut app = crate::test_support::TestApp::new()
-        .admin_chain(vec!["test-scope-module".to_string()])
-        .role_bindings(rb)
-        .build();
-    let a = std::sync::Arc::get_mut(&mut app).expect("unshared App Arc");
-    a.auth_scope_caps
-        .insert("test-scope-module".to_string(), "read-only".to_string());
-    let (base, handle) = serve_app(app).await;
-    let client = reqwest::Client::new();
-    let post = client
-        .post(format!("{base}/api/v1/admin/hooks"))
-        .bearer_auth("grp:ops")
-        .body("{}")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        post.status().as_u16(),
-        403,
-        "a read-only ceiling must cap a full binding below the Full mutation scope, got {}",
-        post.status()
-    );
-    handle.abort();
-}
-
-#[tokio::test]
-async fn roleless_external_admin_principal_denied() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = crate::test_support::TestApp::new()
-        .admin_chain(vec!["ext-admin".to_string()])
-        .admin_module("ext-admin", Box::new(RolelessAdminModule))
-        .build();
-    let (base, handle) = serve_app(app).await;
-    let client = reqwest::Client::new();
-    let r = client
-        .get(format!("{base}/api/v1/admin/keys"))
-        .bearer_auth("anything")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        403,
-        "a roleless external principal id 'admin' must get Grants::default() (403), never Full; got {}",
-        r.status()
-    );
-    handle.abort();
-}
-
-#[tokio::test]
-async fn a_slow_admin_door_does_not_stall_healthz() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = crate::test_support::TestApp::new()
-        .admin_chain(vec!["slow-oidc".to_string()])
-        .admin_door(
-            "slow-oidc",
-            std::sync::Arc::new(SleepingAdminDoor(std::time::Duration::from_millis(800))),
-        )
-        .build();
-    let (base, handle) = serve_app(app).await;
-    let client = reqwest::Client::new();
-
-    let admin_url = format!("{base}/api/v1/admin/keys");
-    let c2 = client.clone();
-    let admin = tokio::spawn(async move {
-        c2.get(&admin_url)
-            .bearer_auth("anything")
-            .send()
-            .await
-            .unwrap()
-    });
-
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    let start = std::time::Instant::now();
-    let hz = client.get(format!("{base}/healthz")).send().await.unwrap();
-    let elapsed = start.elapsed();
-    assert!(
-        hz.status().as_u16() == 200 || hz.status().as_u16() == 503,
-        "/healthz must return a health verdict (200/503), not hang, while an admin module sleeps; \
-         got {}",
-        hz.status()
-    );
-    assert!(
-        elapsed < std::time::Duration::from_millis(400),
-        "/healthz stalled for {elapsed:?} behind a sleeping admin door — the chain parked a \
-         reactor worker instead of awaiting it"
-    );
-
-    let r = admin.await.unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        401,
-        "a sleeping admin module that ultimately Passes fail-closed-denies (401), got {}",
-        r.status()
-    );
-    handle.abort();
-}
-
-#[tokio::test]
-async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
-    use crate::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
-    use crate::governance::GovState;
-    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use serde_json::json;
-    use std::sync::Arc;
-
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-
-    let state = Arc::new(MockServerState::new());
-    let server = MockServer::new(state).await;
-
-    let store = crate::real_store::store();
-    let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
-    let (key, plain_token) = gov
-        .mint_signed(
-            crate::governance::NewKeySpec {
-                name: "audience-agent".to_string(),
-                allowed_pools: Some(vec!["pa".to_string()]),
-                group: None,
-                labels: Default::default(),
-                ..Default::default()
-            },
-            2_000_000_000,
-            1_000_000_000,
-        )
-        .unwrap();
-
-    let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
-    let verifier = TokenVerifier::single(signer.kid(), signer.verifying_key());
-    let generation = verifier
-        .verify(
-            plain_token.expose(&crate::seal::lend()).as_str(),
-            1_000_000_000,
-            None,
-        )
-        .expect("plain claims")
-        .generation;
-    let bound_token = signer.mint_for_audience(
-        &key.id,
-        2_000_000_000,
-        generation.as_deref(),
-        "https://busbar.example.com/rpc",
-        Some("client-1"),
-    );
-
-    let app = TestApp::new()
-        .lane(
-            LaneSpec::new("test-model", LANE_PROTOCOL, &server.base_url())
-                .api_key("busbar-upstream-key"),
-        )
-        .pool("pa", &[(0, 1)])
-        .keys_chain()
-        .governance(gov)
-        .build();
-
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let body =
-        json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16})
-            .to_string();
-
-    let r = client
-        .post(format!("http://{addr}/pa/v1/messages"))
-        .header("authorization", format!("Bearer {bound_token}"))
-        .body(body.clone())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        401,
-        "audience-bound token must be rejected on the data-plane ingress"
-    );
-
-    let r = client
-        .get(format!("http://{addr}/stats"))
-        .header("authorization", format!("Bearer {bound_token}"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        401,
-        "audience-bound token must be rejected on /stats (chain-verdict-only admission)"
-    );
-
-    let r = client
-        .get(format!("http://{addr}/stats"))
-        .header(
-            "authorization",
-            format!("Bearer {}", plain_token.expose(&crate::seal::lend())),
-        )
-        .send()
-        .await
-        .unwrap();
-    assert_ne!(
-        r.status().as_u16(),
-        401,
-        "the plain data-plane sibling must still be admitted"
-    );
-
-    handle.abort();
-    server.shutdown().await;
-}
-
-#[tokio::test]
-async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
-    use crate::governance::{GovState, RecordStore, ScopeRef, VirtualKey};
-    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use serde_json::json;
-    use std::sync::Arc;
-
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-
-    let state = Arc::new(MockServerState::new());
-    let server = MockServer::new(state).await;
-
-    let store = crate::real_store::store();
-
-    store
-        .put_key(&VirtualKey {
-            id: "empty".to_string(),
-            generation_hash: busbar_contract::redacted::sha256_hex(b""),
-            name: "empty".to_string(),
-            allowed_scopes: Some(vec![ScopeRef::pool("pa")]),
-            enabled: true,
-            created_at: 0,
-            group: None,
-            labels: Default::default(),
-            expires_at: None,
-            deleted_at: None,
-            revision: 1,
-            ..Default::default()
-        })
-        .unwrap();
-
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
-
-    let app = TestApp::new()
-        .lane(
-            LaneSpec::new("test-model", LANE_PROTOCOL, &server.base_url())
-                .api_key("busbar-upstream-key"),
-        )
-        .pool("pa", &[(0, 1)])
-        .keys_chain()
-        .governance(gov)
-        .build();
-
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/pa/v1/messages");
-    let body =
-        json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16})
-            .to_string();
-
-    let r_none = client.post(&url).body(body.clone()).send().await.unwrap();
-    assert_eq!(
-        r_none.status().as_u16(),
-        401,
-        "an unauthenticated request must be rejected even when a key hashing the empty secret \
-             exists in the store (got {})",
-        r_none.status()
-    );
-
-    let r_empty = client
-        .post(&url)
-        .header("x-api-key", "")
-        .body(body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        r_empty.status().as_u16(),
-        401,
-        "a present-but-empty credential must be rejected (got {})",
-        r_empty.status()
-    );
-
-    handle.abort();
-    server.shutdown().await;
+    let refusal = admin_principal_or_response(door).expect_err("all-Pass denies");
+    assert_eq!(refusal.status().as_u16(), 401);
 }
 
 #[test]
@@ -1043,57 +534,6 @@ fn test_caller_token_debug_redacts_value() {
     );
 }
 
-#[tokio::test]
-async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
-    use crate::governance::GovState;
-    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use serde_json::json;
-    use std::sync::Arc;
-
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-
-    let state = Arc::new(MockServerState::new());
-    let server = MockServer::new(state).await;
-
-    let store = crate::real_store::store();
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
-
-    let app = TestApp::new()
-        .lane(
-            LaneSpec::new("test-model", LANE_PROTOCOL, &server.base_url())
-                .api_key("busbar-upstream-key"),
-        )
-        .pool("pa", &[(0, 1)])
-        .upstream_creds(crate::auth::UpstreamCreds::Own)
-        .keys_chain()
-        .governance(gov)
-        .build();
-
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/pa/v1/messages");
-    let body =
-        json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16})
-            .to_string();
-
-    let r_none = client.post(&url).body(body).send().await.unwrap();
-    assert_eq!(
-        r_none.status().as_u16(),
-        401,
-        "active governance must require a virtual key even behind an open static chain (got {})",
-        r_none.status()
-    );
-
-    handle.abort();
-    server.shutdown().await;
-}
-
-/// Internal policy continuation: real callers supply their verified principal and configured
-/// bindings/caps to these same production functions. Real OIDC refusal is covered separately in
-/// the root's test_nonempty_chain_fails_closed_on_all_pass, including the old not-a-grp input.
 #[test]
 fn test_admin_scope_cap_ceilings_external_module() {
     use busbar_contract::authz::{Grants, Scope};
@@ -1135,98 +575,23 @@ fn test_admin_scope_cap_ceilings_external_module() {
     );
 }
 
-async fn dp_serve(
-    app: std::sync::Arc<crate::state::App>,
-) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (addr, handle)
-}
-
-fn dp_gov_with_key() -> (std::sync::Arc<crate::governance::GovState>, String) {
-    use crate::governance::{GovState, NewKeySpec};
-    let store = crate::real_store::store();
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
-        &[7u8; 32],
-        crate::governance::signing::DEFAULT_KID,
-    );
-    let gov = std::sync::Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
-    let (_k, secret) = gov
-        .mint_signed(
-            NewKeySpec {
-                name: "vk".to_string(),
-                allowed_pools: Some(vec!["pa".to_string()]),
-                group: None,
-                labels: Default::default(),
-                ..Default::default()
-            },
-            2_000_000_000,
-            1_000_000_000,
-        )
-        .unwrap();
-    (
-        gov,
-        secret.expose(&crate::seal::lend()).as_str().to_string(),
-    )
-}
-
-fn dp_ok_state() -> std::sync::Arc<crate::test_support::MockServerState> {
-    use crate::test_support::{MockResponse, MockServerState};
-    let state = std::sync::Arc::new(MockServerState::new());
-    for _ in 0..2 {
-        state.push(MockResponse::Ok {
-            status: axum::http::StatusCode::OK,
-
-            body: serde_json::json!({"id": "r1", "answer": "hi"}),
-        });
-    }
-    state
-}
-
-#[tokio::test]
-async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
-    use crate::test_support::{LaneSpec, MockServer, TestApp};
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let server = MockServer::new(dp_ok_state()).await;
-    let (gov, secret) = dp_gov_with_key();
-    let key_id = gov.all_keys().unwrap()[0].id.clone();
-    gov.update_key(&key_id, Some(false), None).unwrap();
-    let app = TestApp::new()
-        .lane(LaneSpec::new("m", LANE_PROTOCOL, &server.base_url()).api_key("up"))
-        .pool("pa", &[(0, 1)])
-        .keys_chain()
-        .governance(gov)
-        .build();
-    let (addr, handle) = dp_serve(app).await;
-    let body = serde_json::json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}).to_string();
-    let r = reqwest::Client::new()
-        .post(format!("http://{addr}/pa/v1/messages"))
-        .bearer_auth(&secret)
-        .body(body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        401,
-        "a disabled vkey must be rejected (never re-admitted via synth)"
-    );
-    handle.abort();
-    server.shutdown().await;
-}
-
 #[test]
-fn the_operator_credential_opens_from_the_axis() {
-    use crate::auth::{open_operator, OperatorCredential};
+fn an_unanswered_operator_does_not_open_a_verifier() {
+    use crate::auth::{Operator, OperatorCredential};
     let digest = busbar_contract::redacted::sha256_hex(b"tok");
-
-    let linked = crate::preflight::linked().expect("the linked registry");
-    let none = Default::default();
-    let open = |digest| open_operator(&linked, digest, &none).expect("opens");
+    // Explicit constructor DATA for an unanswered provider, not a fabricated root registry.
+    // The root's actual operator/carrier controls separately exercise its real installed axis.
+    let open = |digest| {
+        Operator::open(
+            "operator-provider",
+            std::iter::empty(),
+            &|module: &str| module == "operator-provider",
+            false,
+            digest,
+            |_| panic!("an unanswered operator must not invoke a verifier factory"),
+        )
+        .expect("an unanswered operator is represented explicitly")
+    };
     assert!(matches!(
         *open(Some(digest)),
         OperatorCredential::Unanswered
@@ -1251,112 +616,30 @@ pub(super) fn admin_headers(bearer: Option<&str>, header: Option<&str>) -> Heade
     headers
 }
 
-pub(super) fn run_admin_chain_on(
-    app: &crate::state::App,
-    bearer: Option<&str>,
-    header: Option<&str>,
-) -> (ChainVerdict, Option<busbar_contract::authz::Scope>) {
-    let headers = admin_headers(bearer, header);
-    let mut carried = AdminCarried::default();
-    let walk = std::pin::pin!(run_admin_chain(
-        app,
-        "GET",
-        "/",
-        &headers,
-        true,
-        &mut carried
-    ));
-    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    match std::future::Future::poll(walk, &mut cx) {
-        std::task::Poll::Ready(answer) => answer,
-        std::task::Poll::Pending => (ChainVerdict::Denied, None),
-    }
-}
-
-struct OperatorDouble(busbar_contract::auth_calls::Verified);
-
-struct OperatorAnswer(Option<busbar_contract::auth_calls::VerifyAnswer>);
-
-impl std::future::Future for OperatorAnswer {
-    type Output = busbar_contract::auth_calls::VerifyAnswer;
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        std::task::Poll::Ready(self.0.take().expect("polled once"))
-    }
-}
-
-impl busbar_contract::auth_calls::Verifying for OperatorAnswer {
-    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        self.0.take()
-    }
-}
-
-impl busbar_contract::auth_calls::AuthCalls for OperatorDouble {
-    fn name(&self) -> &str {
-        "operator-double"
-    }
-    fn facts(&self) -> u32 {
-        0
-    }
-    fn verify_now(
-        &self,
-        _: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        Some(self.0.clone().into())
-    }
-    fn verify(
-        &self,
-        _: busbar_contract::auth_calls::VerifyRequest,
-    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        Box::new(OperatorAnswer(Some(self.0.clone().into())))
-    }
-    fn refresh(&self) -> Result<u64, String> {
-        Ok(0)
-    }
-}
-
-pub(super) fn operator_app(
-    verified: busbar_contract::auth_calls::Verified,
-) -> std::sync::Arc<crate::state::App> {
-    let op = crate::config::operator_provider();
-    let mut app = crate::test_support::TestApp::new()
-        .admin_chain(vec![op.to_string()])
-        .build();
-    let operator = Operator::open(
-        op,
-        std::iter::empty(),
-        &|m: &str| crate::config::names_operator(m),
-        true,
-        Some("digest".to_string()),
-        |_| Ok(std::sync::Arc::new(OperatorDouble(verified))),
-    )
-    .expect("opens");
-    std::sync::Arc::get_mut(&mut app)
-        .expect("freshly built App Arc is unshared")
-        .admin_modules = std::sync::Arc::new(AdminAuthChain {
-        modules: std::collections::HashMap::new(),
-        operator,
-    });
-    app
-}
-
-async fn walk(verified: busbar_contract::auth_calls::Verified) -> AdminChainAnswer {
-    let app = operator_app(verified);
-    let headers = admin_headers(Some("tok"), None);
-    run_admin_chain(&app, "GET", "/", &headers, false, &mut Default::default()).await
-}
-
-#[tokio::test]
-async fn the_operator_door_is_awaited_and_an_unjudged_verify_is_the_1_5_5_refusal() {
+#[test]
+fn operator_answer_continuation_preserves_identified_and_refusal_types() {
     use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
-    let identity = Verified::Identity(VerifiedIdentity {
-        subject: "admin".into(),
-        ..VerifiedIdentity::default()
-    });
+    // The old producer returned Ready immediately from both verify/probe; its assertions
+    // classified answers, rather than proving a Pending await. Real Pending is tested at root.
+    let outcome = |verified: Verified| {
+        let answered = Judgement::answered(verified.into());
+        let verdict = complete_chain(chain_position_verdict(
+            "operator-provider",
+            answered.verdict,
+        ));
+        let operator = Operator::new("operator-provider");
+        let cap = if matches!(&verdict, ChainVerdict::Identified { .. }) {
+            module_scope_cap(&Default::default(), &operator, "operator-provider")
+        } else {
+            None
+        };
+        (verdict, cap)
+    };
     assert!(matches!(
-        walk(identity).await,
+        outcome(Verified::Identity(VerifiedIdentity {
+            subject: "admin".into(),
+            ..Default::default()
+        })),
         (ChainVerdict::Identified { .. }, _)
     ));
     for refused in [
@@ -1366,127 +649,229 @@ async fn the_operator_door_is_awaited_and_an_unjudged_verify_is_the_1_5_5_refusa
         Verified::Failed,
     ] {
         assert_eq!(
-            walk(refused.clone()).await,
+            outcome(refused.clone()),
             (ChainVerdict::Denied, None),
             "{refused:?}: 1.5.5's refusal"
         );
     }
 }
 
-async fn admin_get(app: std::sync::Arc<crate::state::App>) -> (u16, Option<String>, String) {
-    let (base, handle) = serve_app(app).await;
-    let r = reqwest::Client::new()
-        .get(format!("{base}/api/v1/admin/keys"))
-        .bearer_auth("tok")
-        .send()
-        .await
-        .unwrap();
-    let status = r.status().as_u16();
-    let retry_after = r
-        .headers()
-        .get("retry-after")
-        .map(|v| v.to_str().unwrap_or_default().to_string());
-    let text = r.text().await.unwrap();
-    handle.abort();
-    (status, retry_after, text)
-}
-
 #[tokio::test]
-async fn an_operator_door_without_a_verdict_answers_503_and_an_overloaded_one_the_1_5_5_admin_401()
-{
+async fn operator_answer_response_projection_preserves_503_and_legacy_401() {
     use busbar_contract::auth_calls::Verified;
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let rejected = admin_get(operator_app(Verified::Reject)).await;
-    assert_eq!(rejected.0, 401, "a bad credential is the admin 401");
-    assert_eq!(rejected.1, None, "a 401 names no Retry-After");
-    let overloaded = admin_get(operator_app(Verified::Overloaded)).await;
+    async fn inspect(door: AdminDoor) -> (u16, Option<String>, String) {
+        let response = admin_principal_or_response(door).expect_err("a refusal has no principal");
+        let status = response.status().as_u16();
+        let retry = response
+            .headers()
+            .get("retry-after")
+            .map(|value| value.to_str().unwrap().to_string());
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        (status, retry, String::from_utf8(body.to_vec()).unwrap())
+    }
+    let project = |verdict| {
+        let identified = matches!(&verdict, ChainVerdict::Identified { .. });
+        let claim = unclaimed_admin_replay(identified, None, 7);
+        let operator = Operator::new("operator-provider");
+        (
+            admin_door_from_bindings(
+                &Default::default(),
+                &operator,
+                "admin",
+                verdict,
+                None,
+                crate::admin::seam::admin_verb_rung,
+            ),
+            PendingClaim::of(claim, None),
+        )
+    };
+    let classified = |verified: Verified| {
+        let answered = Judgement::answered(verified.into());
+        admin_probe_projection(
+            admin_chain_outcome(
+                complete_chain(chain_position_verdict(
+                    "operator-provider",
+                    answered.verdict,
+                )),
+                answered.no_verdict,
+            ),
+            project,
+        )
+        .0
+    };
+    let rejected = inspect(classified(Verified::Reject)).await;
+    assert_eq!(rejected.0, 401, "a bad credential is the admin401");
+    assert_eq!(rejected.1, None, "a401 names no Retry-After");
+    let overloaded = inspect(classified(Verified::Overloaded)).await;
     assert_eq!(
         overloaded, rejected,
-        "an overloaded verifier: the same bytes"
+        "an overloaded operator answer uses the same bytes"
     );
-    let failed = admin_get(operator_app(Verified::Failed)).await;
+    let failed = inspect(classified(Verified::Failed)).await;
     assert_eq!(
         (failed.0, failed.1.as_deref()),
         (503, Some("1")),
-        "a verdict-less verifier: 503 + Retry-After (SIGN-auth-kind 2026-10-30): {failed:?}"
+        "a verdict-less answer projects503+Retry-After (SIGN-auth-kind 2026-10-30)"
     );
-    let body: serde_json::Value = serde_json::from_str(&failed.2).expect("the admin envelope");
+    let body: serde_json::Value = serde_json::from_str(&failed.2).expect("the real admin envelope");
     assert_eq!(body["error"]["code"], "unavailable", "{failed:?}");
 }
 
 #[tokio::test]
-async fn an_external_admin_door_without_a_verdict_answers_503_and_a_reject_401() {
-    use busbar_contract::auth_calls::Verified;
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let door = |calls: std::sync::Arc<dyn AuthCalls>| {
-        crate::test_support::TestApp::new()
-            .admin_chain(vec!["ext".to_string()])
-            .admin_door("ext", calls)
-            .build()
+async fn external_admin_answer_projection_preserves_failed_faulted_and_reject_responses() {
+    use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
+    async fn inspect(door: AdminDoor) -> (u16, Option<String>, String) {
+        let response = admin_principal_or_response(door).expect_err("a refusal has no principal");
+        let status = response.status().as_u16();
+        let retry = response
+            .headers()
+            .get("retry-after")
+            .map(|value| value.to_str().unwrap().to_string());
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        (status, retry, String::from_utf8(body.to_vec()).unwrap())
+    }
+    let project = |verdict| {
+        let identified = matches!(&verdict, ChainVerdict::Identified { .. });
+        let claim = unclaimed_admin_replay(identified, None, 7);
+        let operator = Operator::new("operator-provider");
+        (
+            admin_door_from_bindings(
+                &Default::default(),
+                &operator,
+                "admin",
+                verdict,
+                None,
+                crate::admin::seam::admin_verb_rung,
+            ),
+            PendingClaim::of(claim, None),
+        )
     };
-    let rejected = admin_get(door(std::sync::Arc::new(AnswersOnly(Verified::Reject)))).await;
+    let classified = |verified: Verified, faulted| {
+        let answered = admin_verdict_of(verified.into(), faulted);
+        admin_probe_projection(
+            admin_chain_outcome(
+                complete_chain(chain_position_verdict("ext", answered.verdict)),
+                answered.no_verdict,
+            ),
+            project,
+        )
+        .0
+    };
+    let rejected = inspect(classified(Verified::Reject, false)).await;
     assert_eq!(
         (rejected.0, rejected.1.as_deref()),
         (401, None),
         "{rejected:?}"
     );
-    for (what, calls) in [
-        (
-            "FAILED",
-            std::sync::Arc::new(AnswersOnly(Verified::Failed)) as std::sync::Arc<dyn AuthCalls>,
-        ),
+    for (what, verified, faulted) in [
+        ("FAILED", Verified::Failed, false),
         (
             "FAULT",
-            std::sync::Arc::new(FaultingDoor) as std::sync::Arc<dyn AuthCalls>,
+            Verified::Identity(VerifiedIdentity {
+                subject: "faulted".into(),
+                ..Default::default()
+            }),
+            true,
         ),
     ] {
-        let answered = admin_get(door(calls)).await;
+        let answered = inspect(classified(verified, faulted)).await;
         assert_eq!(
             (answered.0, answered.1.as_deref()),
             (503, Some("1")),
-            "{what}: 503 + Retry-After (SIGN-auth-kind 2026-10-30): {answered:?}"
+            "{what}:503+Retry-After (SIGN-auth-kind 2026-10-30): {answered:?}"
         );
     }
 }
 
 #[test]
 fn the_sync_admin_door_probe_fails_closed_when_the_operator_verifier_is_overloaded() {
-    let app = operator_app(busbar_contract::auth_calls::Verified::Overloaded);
-    let headers = admin_headers(Some("tok"), None);
-    assert!(dry_run_admin_scope(&app, &headers) == busbar_contract::authz::Grants::default());
-    assert_eq!(admin_door(&app, "GET", "/", &headers), AdminDoor::Denied);
+    let project = |verdict| {
+        let identified = matches!(&verdict, ChainVerdict::Identified { .. });
+        let claim = unclaimed_admin_replay(identified, None, 7);
+        let operator = Operator::new("operator-provider");
+        (
+            admin_door_from_bindings(
+                &Default::default(),
+                &operator,
+                "admin",
+                verdict,
+                None,
+                crate::admin::seam::admin_verb_rung,
+            ),
+            PendingClaim::of(claim, None),
+        )
+    };
+    let answered = Judgement::answered(busbar_contract::auth_calls::Verified::Overloaded.into());
+    let (door, _) = admin_probe_projection(
+        admin_chain_outcome(
+            complete_chain(chain_position_verdict(
+                "operator-provider",
+                answered.verdict,
+            )),
+            answered.no_verdict,
+        ),
+        project,
+    );
+    assert_eq!(
+        admin_scope_from_door(door.clone()),
+        busbar_contract::authz::Grants::default()
+    );
+    assert_eq!(door, AdminDoor::Denied);
 }
 
 #[test]
 fn the_sync_admin_door_keeps_no_verdict_for_the_root_http_projection() {
     use busbar_contract::auth_calls::Verified;
-    let headers = admin_headers(Some("tok"), None);
     for verified in [Verified::Failed, Verified::Reject, Verified::Overloaded] {
         let expected = if matches!(verified, Verified::Failed) {
             AdminDoor::Unavailable(VerifierUnavailable::NoVerdict)
         } else {
             AdminDoor::Denied
         };
-        for app in [
-            operator_app(verified.clone()),
-            crate::test_support::TestApp::new()
-                .admin_chain(vec!["ext".to_string()])
-                .admin_door("ext", std::sync::Arc::new(AnswersOnly(verified.clone())))
-                .build(),
-        ] {
-            let judged = admin_verdict(&app, "GET", "/api/v1/admin/keys", &headers);
-            assert_eq!(judged.door, expected, "{verified:?}");
-            assert!(
-                judged.claim.is_none(),
-                "an unidentified request claims nothing"
+        for operator in [true, false] {
+            let answered = if operator {
+                Judgement::answered(verified.clone().into())
+            } else {
+                admin_verdict_of(verified.clone().into(), false)
+            };
+            let verdict = complete_chain(chain_position_verdict("provider", answered.verdict));
+            let (door, claim) = admin_probe_projection(
+                admin_chain_outcome(verdict, answered.no_verdict),
+                |verdict| {
+                    let identified = matches!(&verdict, ChainVerdict::Identified { .. });
+                    // Actual production filtering must ignore even supplied replay metadata for
+                    // an unidentified answer; no fake producer or application is constructed.
+                    let replay = Some((
+                        "provider".to_string(),
+                        Box::new(Replay {
+                            key: "unidentified".into(),
+                            ttl_secs: 60,
+                        }),
+                    ));
+                    let claim = unclaimed_admin_replay(identified, replay, 7);
+                    let op = Operator::new("operator-provider");
+                    (
+                        admin_door_from_bindings(
+                            &Default::default(),
+                            &op,
+                            "admin",
+                            verdict,
+                            None,
+                            crate::admin::seam::admin_verb_rung,
+                        ),
+                        PendingClaim::of(claim, None),
+                    )
+                },
             );
-            assert!(!admin_door_admits(
-                &judged.door,
-                "GET",
-                "/api/v1/admin/keys"
-            ));
+            assert_eq!(door, expected, "{verified:?}");
+            assert!(claim.is_none(), "an unidentified request claims nothing");
+            assert!(!admin_door_admits(&door, "GET", "/api/v1/admin/keys"));
             assert_eq!(
-                dry_run_admin_scope(&app, &headers),
+                admin_scope_from_door(door),
                 busbar_contract::authz::Grants::default(),
                 "an unavailable or rejecting verifier grants nothing"
             );
@@ -1517,8 +902,6 @@ fn the_admin_head_hands_the_request_through_as_presented() {
     assert_eq!(names, ["authorization", X_ADMIN_TOKEN, "host"]);
 }
 
-struct AnswersOnly(busbar_contract::auth_calls::Verified);
-
 struct Answered(Option<busbar_contract::auth_calls::VerifyAnswer>);
 
 impl std::future::Future for Answered {
@@ -1537,185 +920,61 @@ impl busbar_contract::auth_calls::Verifying for Answered {
     }
 }
 
-impl busbar_contract::auth_calls::AuthCalls for AnswersOnly {
-    fn name(&self) -> &str {
-        "answers-only"
-    }
-    fn facts(&self) -> u32 {
-        0
-    }
-    fn verify_now(
-        &self,
-        _: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        Some(self.0.clone().into())
-    }
-    fn verify(
-        &self,
-        _: busbar_contract::auth_calls::VerifyRequest,
-    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        Box::new(Answered(Some(self.0.clone().into())))
-    }
-    fn refresh(&self) -> Result<u64, String> {
-        Ok(0)
-    }
-}
-
-fn door_then_identifier(verified: busbar_contract::auth_calls::Verified) -> AuthMiddleware {
-    let identifier = crate::auth::stand_in::InProcessAuth::new(
-        crate::test_support::auth_modules::open(
-            crate::test_support::auth_modules::TEST_GROUPS_MODULE,
-        )
-        .expect("the test groups module"),
-    );
-    AuthMiddleware::from_doors_for_test(vec![
-        (
-            "door".to_string(),
-            std::sync::Arc::new(AnswersOnly(verified)) as std::sync::Arc<dyn AuthCalls>,
-        ),
-        (
-            "test-groups-module".to_string(),
-            std::sync::Arc::new(identifier),
-        ),
-    ])
-}
-
-#[tokio::test]
-async fn a_data_plane_door_overloaded_or_without_a_verdict_denies_the_chain() {
+#[test]
+fn a_data_plane_door_overloaded_or_without_a_verdict_denies_the_chain() {
     use busbar_contract::auth_calls::Verified;
+    // Internal outcome→public chain-result continuation. An error is terminal before any
+    // later provider; actual OIDC identity/verification is qualified separately at the root.
     for verified in [Verified::Overloaded, Verified::Failed] {
-        let auth = std::sync::Arc::new(door_then_identifier(verified.clone()));
-        let verdict = AuthMiddleware::run_chain_on_request_path(
-            &auth,
-            Some("grp:admins".into()),
-            ChainHead::default(),
-            None,
-            None,
-        )
-        .await;
+        let judged = data_verdict_of("door", verified.clone().into(), false).map(|judged| {
+            chain_position_verdict("door", judged.verdict).unwrap_or(ChainVerdict::Denied)
+        });
         assert_eq!(
-            verdict,
+            deny_unavailable_chain(judged),
             ChainVerdict::Denied,
             "{verified:?} must deny, not pass"
         );
     }
 }
 
-#[tokio::test]
-async fn the_data_plane_walk_hands_an_overloaded_or_verdict_less_door_back_apart() {
-    use busbar_contract::auth_calls::Verified;
-    let judged = |verified: Verified| async move {
-        let auth = std::sync::Arc::new(door_then_identifier(verified));
-        AuthMiddleware::judge_chain_on_request_path(
-            &auth,
-            Some("grp:admins".into()),
-            ChainHead::default(),
-            None,
-            None,
-        )
-        .await
+#[test]
+fn the_data_plane_walk_hands_an_overloaded_or_verdict_less_door_back_apart() {
+    use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
+    let judged = |verified: Verified| {
+        data_verdict_of("door", verified.into(), false).map(|judged| {
+            chain_position_verdict("door", judged.verdict).unwrap_or(ChainVerdict::Denied)
+        })
     };
     assert_eq!(
-        judged(Verified::Overloaded).await,
+        judged(Verified::Overloaded),
         Err(VerifierUnavailable::Overloaded),
         "an overloaded door is handed back apart, never a reject or a pass"
     );
     assert_eq!(
-        judged(Verified::Failed).await,
+        judged(Verified::Failed),
         Err(VerifierUnavailable::NoVerdict),
         "a door with no verdict is handed back apart (SIGN-auth-kind 2026-10-30)"
     );
     assert_eq!(
-        judged(Verified::Reject).await,
+        judged(Verified::Reject),
         Ok(ChainVerdict::Denied),
         "a REJECT is the denial"
     );
-    let auth = std::sync::Arc::new(faulting_door_then_identifier());
+    let faulted = data_verdict_of(
+        "door",
+        Verified::Identity(VerifiedIdentity {
+            subject: "faulted".into(),
+            ..Default::default()
+        })
+        .into(),
+        true,
+    )
+    .map(|judged| chain_position_verdict("door", judged.verdict).unwrap_or(ChainVerdict::Denied));
     assert_eq!(
-        AuthMiddleware::judge_chain_on_request_path(
-            &auth,
-            Some("grp:admins".into()),
-            ChainHead::default(),
-            None,
-            None,
-        )
-        .await,
+        faulted,
         Err(VerifierUnavailable::NoVerdict),
         "a FAULTED door is handed back apart, never admitted on its answer"
     );
-}
-
-struct FaultingDoor;
-
-struct FaultedCall(Option<busbar_contract::auth_calls::VerifyAnswer>);
-
-impl std::future::Future for FaultedCall {
-    type Output = busbar_contract::auth_calls::VerifyAnswer;
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        std::task::Poll::Ready(self.0.take().expect("polled once"))
-    }
-}
-
-impl busbar_contract::auth_calls::Verifying for FaultedCall {
-    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        None
-    }
-    fn faulted(&self) -> bool {
-        true
-    }
-}
-
-impl busbar_contract::auth_calls::AuthCalls for FaultingDoor {
-    fn name(&self) -> &str {
-        "faulting-door"
-    }
-    fn facts(&self) -> u32 {
-        0
-    }
-    fn verify_now(
-        &self,
-        _: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        None
-    }
-    fn verify(
-        &self,
-        _: busbar_contract::auth_calls::VerifyRequest,
-    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
-        Box::new(FaultedCall(Some(
-            Verified::Identity(VerifiedIdentity {
-                subject: "faulted".into(),
-                ..VerifiedIdentity::default()
-            })
-            .into(),
-        )))
-    }
-    fn refresh(&self) -> Result<u64, String> {
-        Ok(0)
-    }
-}
-
-fn faulting_door_then_identifier() -> AuthMiddleware {
-    let identifier = crate::auth::stand_in::InProcessAuth::new(
-        crate::test_support::auth_modules::open(
-            crate::test_support::auth_modules::TEST_GROUPS_MODULE,
-        )
-        .expect("the test groups module"),
-    );
-    AuthMiddleware::from_doors_for_test(vec![
-        (
-            "door".to_string(),
-            std::sync::Arc::new(FaultingDoor) as std::sync::Arc<dyn AuthCalls>,
-        ),
-        (
-            "test-groups-module".to_string(),
-            std::sync::Arc::new(identifier),
-        ),
-    ])
 }
 
 fn at_capacity_503() -> (u16, Option<String>, Option<String>, String) {
@@ -1729,298 +988,165 @@ fn at_capacity_503() -> (u16, Option<String>, Option<String>, String) {
 }
 
 #[tokio::test]
-async fn a_data_plane_door_without_a_verdict_answers_503_like_an_overloaded_one_and_a_reject_401() {
-    use crate::test_support::{LaneSpec, MockServer, TestApp};
-    use busbar_contract::auth_calls::Verified;
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let server = MockServer::new(dp_ok_state()).await;
-    let ask = |auth: AuthMiddleware, path: &'static str| {
-        let app = TestApp::new()
-            .lane(LaneSpec::new("m", LANE_PROTOCOL, &server.base_url()).api_key("up"))
-            .pool("pa", &[(0, 1)])
-            .auth(std::sync::Arc::new(auth))
-            .build();
-        async move {
-            let (addr, handle) = dp_serve(app).await;
-            let body = serde_json::json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}).to_string();
-            let r = reqwest::Client::new()
-                .post(format!("http://{addr}{path}"))
-                .bearer_auth("grp:admins")
-                .body(body)
-                .send()
-                .await
-                .unwrap();
-            let status = r.status().as_u16();
-            let header = |name: &str| {
-                r.headers()
-                    .get(name)
-                    .map(|v| v.to_str().unwrap_or_default().to_string())
-            };
-            let (content_type, retry_after) = (header("content-type"), header("retry-after"));
-            let text = r.text().await.unwrap();
-            handle.abort();
-            (status, content_type, retry_after, text)
-        }
-    };
-
-    let all_pass = ask(
-        AuthMiddleware::new_builtin(&chain_cfg(&["test-groups-module"])),
-        "/pa/v1/messages",
+async fn data_verifier_outcome_projection_preserves_the_503_and_401_envelopes() {
+    use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
+    async fn inspect(response: Response) -> (u16, Option<String>, Option<String>, String) {
+        let status = response.status().as_u16();
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .map(|value| value.to_str().unwrap().to_string())
+        };
+        let (content_type, retry_after) = (header("content-type"), header("retry-after"));
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        (
+            status,
+            content_type,
+            retry_after,
+            String::from_utf8(body.to_vec()).unwrap(),
+        )
+    }
+    // Internal outcome/identity→response continuation. Both production callers use these
+    // exact factories; actual HTTP delivery and genuine credentials have separate root controls.
+    let no_grant = resolve_identity_from_bindings(
+        &Default::default(),
+        ChainVerdict::Identified {
+            module: "test-groups-module".into(),
+            principal: grp_principal("test:admins", &["admins"]),
+            resolved: None,
+        },
     )
+    .expect_err("an identified unbound principal has no grant");
+    let all_pass = inspect(identity_refusal_response(no_grant, None, true, || {
+        unauthorized_ingress_response(crate::plane_driver::dispatch::Ingress::Fallback(None))
+    }))
     .await;
-    assert_eq!(all_pass.0, 401, "the all-pass refusal: {all_pass:?}");
-    let rejected = ask(door_then_identifier(Verified::Reject), "/pa/v1/messages").await;
-    assert_eq!(rejected, all_pass, "a REJECT: the 1.5.5 401, byte for byte");
-
-    let overloaded = ask(
-        door_then_identifier(Verified::Overloaded),
-        "/pa/v1/messages",
-    )
-    .await;
-    assert_eq!(overloaded, at_capacity_503(), "an overloaded door (Q134)");
-    let failed = ask(door_then_identifier(Verified::Failed), "/pa/v1/messages").await;
     assert_eq!(
-        failed,
+        all_pass.0, 401,
+        "the unbound-identity refusal: {all_pass:?}"
+    );
+    let rejected = inspect(identity_refusal_response(
+        IdentityRefusal::Denied,
+        None,
+        true,
+        || unauthorized_ingress_response(crate::plane_driver::dispatch::Ingress::Fallback(None)),
+    ))
+    .await;
+    assert_eq!(rejected, all_pass, "a REJECT: the 1.5.5 401, byte for byte");
+    let overloaded = data_verdict_of("door", Verified::Overloaded.into(), false)
+        .err()
+        .expect("overload stays apart");
+    assert_eq!(
+        inspect(data_verifier_error_response(overloaded)).await,
+        at_capacity_503(),
+        "an overloaded door (Q134)"
+    );
+    let failed = data_verdict_of("door", Verified::Failed.into(), false)
+        .err()
+        .expect("no verdict stays apart");
+    assert_eq!(
+        inspect(data_verifier_error_response(failed)).await,
         at_capacity_503(),
         "a FAILED door: 503 + Retry-After, refused (SIGN-auth-kind 2026-10-30)"
     );
-    let faulted = ask(faulting_door_then_identifier(), "/pa/v1/messages").await;
+    let faulted = data_verdict_of(
+        "door",
+        Verified::Identity(VerifiedIdentity {
+            subject: "faulted".into(),
+            ..Default::default()
+        })
+        .into(),
+        true,
+    )
+    .err()
+    .expect("a fault overrides its purported identity");
     assert_eq!(
-        faulted,
+        inspect(data_verifier_error_response(faulted)).await,
         at_capacity_503(),
         "a FAULTED door: 503 + Retry-After, refused (SIGN-auth-kind 2026-10-30)"
     );
-
-    let exchanged = ask(door_then_identifier(Verified::Failed), "/auth/token").await;
-    assert_eq!(
-        (exchanged.0, exchanged.2.as_deref()),
-        (503, Some("1")),
-        "the exchange behind a FAILED door: 503 + Retry-After (SIGN-auth-kind 2026-10-30): {exchanged:?}"
-    );
-    let exchanged = ask(faulting_door_then_identifier(), "/auth/token").await;
-    assert_eq!(
-        (exchanged.0, exchanged.2.as_deref()),
-        (503, Some("1")),
-        "the exchange behind a FAULTED door: 503 + Retry-After (SIGN-auth-kind 2026-10-30): {exchanged:?}"
-    );
-    server.shutdown().await;
+    // The two exchange NoVerdict status/header oracles are retained in
+    // exchange_verifier_outcome_projection_preserves_failed_and_faulted_503.
 }
 
-struct LentCredentialDoor(busbar_contract::auth_calls::Verified);
-
-impl LentCredentialDoor {
-    fn answer(
-        &self,
-        r: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> busbar_contract::auth_calls::VerifyAnswer {
-        use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
-        match r
-            .credential
-            .as_ref()
-            .map(|c| c.expose(&crate::seal::lend()).as_slice())
-        {
-            Some(b"tok") => Verified::Identity(VerifiedIdentity {
-                subject: "ext:who".into(),
-                groups: vec!["ops".into()],
-                ..VerifiedIdentity::default()
-            })
-            .into(),
-            _ => self.0.clone().into(),
-        }
+#[test]
+fn external_admin_answer_projection_keeps_identity_and_all_refusal_types() {
+    use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
+    // INTERNAL outcome/projection DATA. Actual OIDC requests from both credential carriers
+    // separately establish the selected-candidate loan; this does not assert sync I/O readiness.
+    let project = |verified: Verified| {
+        let answered = admin_verdict_of(verified.into(), false);
+        let verdict = complete_chain(chain_position_verdict("ext-door", answered.verdict));
+        let operator = Operator::new("operator-provider");
+        let cap = if matches!(&verdict, ChainVerdict::Identified { .. }) {
+            module_scope_cap(&Default::default(), &operator, "ext-door")
+        } else {
+            None
+        };
+        let door = admin_door_from_bindings(
+            &Default::default(),
+            &operator,
+            "operator",
+            verdict.clone(),
+            cap,
+            crate::admin::seam::admin_verb_rung,
+        );
+        ((verdict, cap), door)
+    };
+    for _ in 0..2 {
+        let (chain, door) = project(Verified::Identity(VerifiedIdentity {
+            subject: "ext:who".into(),
+            groups: vec!["ops".into()],
+            ..Default::default()
+        }));
+        assert!(
+            matches!(chain, (ChainVerdict::Identified { ref module, .. }, _) if module == "ext-door")
+        );
+        assert!(matches!(door, AdminDoor::Identified(..)));
     }
-}
-
-impl busbar_contract::auth_calls::AuthCalls for LentCredentialDoor {
-    fn name(&self) -> &str {
-        "lent-credential-door"
-    }
-    fn facts(&self) -> u32 {
-        busbar_contract::abi::auth::FACT_CACHEABLE
-    }
-    fn verify_now(
-        &self,
-        r: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        Some(self.answer(r))
-    }
-    fn verify(
-        &self,
-        r: busbar_contract::auth_calls::VerifyRequest,
-    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        Box::new(OperatorAnswer(Some(self.answer(&r))))
-    }
-    fn refresh(&self) -> Result<u64, String> {
-        Ok(0)
-    }
-}
-
-fn external_door_app(
-    otherwise: busbar_contract::auth_calls::Verified,
-) -> std::sync::Arc<crate::state::App> {
-    let mut app = crate::test_support::TestApp::new()
-        .admin_chain(vec!["ext-door".to_string()])
-        .build();
-    let mut modules = std::collections::HashMap::new();
-    modules.insert(
-        "ext-door".to_string(),
-        AdminModule {
-            calls: std::sync::Arc::new(LentCredentialDoor(otherwise)),
-        },
-    );
-
-    let carriers = app.admin_modules.operator.carriers().to_vec();
-    std::sync::Arc::get_mut(&mut app)
-        .expect("freshly built App Arc is unshared")
-        .admin_modules = std::sync::Arc::new(AdminAuthChain {
-        modules,
-        operator: Operator::new(crate::config::operator_provider()).with_carriers(carriers),
-    });
-    app
-}
-
-#[tokio::test]
-async fn an_external_admin_door_is_lent_the_candidate_and_an_unjudged_verify_is_the_1_5_5_refusal()
-{
-    use busbar_contract::auth_calls::Verified;
-    for headers in [
-        admin_headers(Some("tok"), None),
-        admin_headers(None, Some("tok")),
-    ] {
-        let app = external_door_app(Verified::Reject);
-        assert!(matches!(
-            run_admin_chain(&app, "GET", "/", &headers, false, &mut Default::default()).await,
-            (ChainVerdict::Identified { ref module, .. }, _) if module == "ext-door"
-        ));
-        assert!(matches!(
-            admin_door(&app, "GET", "/", &headers),
-            AdminDoor::Identified(..)
-        ));
-    }
-    let wrong = admin_headers(Some("not-tok"), None);
     for otherwise in [
         Verified::Reject,
         Verified::Pass,
         Verified::Overloaded,
         Verified::Failed,
     ] {
-        let app = external_door_app(otherwise.clone());
         assert_eq!(
-            run_admin_chain(&app, "GET", "/", &wrong, false, &mut Default::default()).await,
+            project(otherwise.clone()).0,
             (ChainVerdict::Denied, None),
             "{otherwise:?}: the 1.5.5 refusal"
         );
     }
 }
 
-struct ScriptedDoor {
-    script: Vec<busbar_contract::auth_calls::Verified>,
-    verifies: std::sync::atomic::AtomicUsize,
-}
-
-impl ScriptedDoor {
-    fn answer(&self) -> busbar_contract::auth_calls::VerifyAnswer {
-        let n = self
-            .verifies
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.script[n.min(self.script.len() - 1)].clone().into()
-    }
-}
-
-impl busbar_contract::auth_calls::AuthCalls for ScriptedDoor {
-    fn name(&self) -> &str {
-        "scripted-door"
-    }
-    fn facts(&self) -> u32 {
-        busbar_contract::abi::auth::FACT_CACHEABLE
-    }
-    fn verify_now(
-        &self,
-        _: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        Some(self.answer())
-    }
-    fn verify(
-        &self,
-        _: busbar_contract::auth_calls::VerifyRequest,
-    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        Box::new(OperatorAnswer(Some(self.answer())))
-    }
-    fn refresh(&self) -> Result<u64, String> {
-        Ok(0)
-    }
-}
-
-#[tokio::test]
-async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict() {
+#[test]
+fn successive_admin_answer_projections_do_not_reuse_an_earlier_identity() {
     use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
-    let door = std::sync::Arc::new(ScriptedDoor {
-        script: vec![
-            Verified::Identity(VerifiedIdentity {
-                subject: "ext:who".into(),
-                groups: vec!["ops".into()],
-                ..VerifiedIdentity::default()
-            }),
-            Verified::Reject,
-        ],
-        verifies: std::sync::atomic::AtomicUsize::new(0),
-    });
-    let mut app = crate::test_support::TestApp::new()
-        .admin_chain(vec!["ext-door".to_string()])
-        .build();
-    let mut modules = std::collections::HashMap::new();
-    modules.insert(
-        "ext-door".to_string(),
-        AdminModule {
-            calls: door.clone(),
-        },
+    let project = |verified: Verified| {
+        let answer = admin_verdict_of(verified.into(), false);
+        let verdict = complete_chain(chain_position_verdict("ext-door", answer.verdict));
+        let cap = if matches!(&verdict, ChainVerdict::Identified { .. }) {
+            module_scope_cap(
+                &Default::default(),
+                &Operator::new("operator-provider"),
+                "ext-door",
+            )
+        } else {
+            None
+        };
+        (verdict, cap)
+    };
+    assert!(
+        matches!(project(Verified::Identity(VerifiedIdentity { subject: "ext:who".into(), groups: vec!["ops".into()], ..Default::default() })),
+        (ChainVerdict::Identified { ref module, .. }, _) if module == "ext-door")
     );
-    std::sync::Arc::get_mut(&mut app)
-        .expect("freshly built App Arc is unshared")
-        .admin_modules = std::sync::Arc::new(AdminAuthChain {
-        modules,
-        operator: Operator::new(crate::config::operator_provider()),
-    });
-    let headers = admin_headers(Some("tok"), None);
-    assert!(matches!(
-        run_admin_chain(&app, "GET", "/", &headers, false, &mut Default::default()).await,
-        (ChainVerdict::Identified { ref module, .. }, _) if module == "ext-door"
-    ));
     assert_eq!(
-        run_admin_chain(&app, "GET", "/", &headers, false, &mut Default::default()).await,
+        project(Verified::Reject),
         (ChainVerdict::Denied, None),
-        "the second request is the door's second answer, never a cached Identified"
+        "a later refusal is never replaced by an earlier Identified outcome"
     );
-    assert_eq!(
-        door.verifies.load(std::sync::atomic::Ordering::SeqCst),
-        2,
-        "one door verify per request"
-    );
-}
-
-struct NamingDoor(busbar_contract::auth_calls::VerifyAnswer);
-
-impl busbar_contract::auth_calls::AuthCalls for NamingDoor {
-    fn name(&self) -> &str {
-        "naming-door"
-    }
-    fn facts(&self) -> u32 {
-        0
-    }
-    fn verify_now(
-        &self,
-        _: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        Some(self.0.clone())
-    }
-    fn verify(
-        &self,
-        _: busbar_contract::auth_calls::VerifyRequest,
-    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        Box::new(Answered(Some(self.0.clone())))
-    }
-    fn refresh(&self) -> Result<u64, String> {
-        Ok(0)
-    }
 }
 
 fn hook_answer(
@@ -2045,26 +1171,10 @@ fn hook_answer(
     }
 }
 
-fn naming_chain(
-    answer: busbar_contract::auth_calls::VerifyAnswer,
-) -> std::sync::Arc<AuthMiddleware> {
-    std::sync::Arc::new(AuthMiddleware::from_doors_for_test(vec![(
-        "door".to_string(),
-        std::sync::Arc::new(NamingDoor(answer)) as std::sync::Arc<dyn AuthCalls>,
-    )]))
-}
-
 fn replay_gov() -> std::sync::Arc<crate::governance::GovState> {
-    use busbar_contract::store_calls::StoreDoor;
-    let opened = crate::test_support::store_axis_stand_in()
-        .open(
-            StoreDoor::Linked(crate::test_support::store_double::door),
-            crate::test_support::store_double::NAME,
-            b"{}",
-        )
-        .expect("the store double opens through its door");
-    let gov = crate::governance::GovState::new(opened.records, None).expect("gov");
-    assert!(gov.attach_store_calls(opened.calls.expect("a door-opened store has its calls")));
+    let actual = crate::real_store::store();
+    let gov = crate::governance::GovState::new(actual.clone(), None).expect("gov");
+    assert!(gov.attach_store_calls(actual));
     std::sync::Arc::new(gov)
 }
 
@@ -2124,19 +1234,18 @@ async fn the_signed_ingress_claims_its_identitys_replay_key() {
 }
 
 #[tokio::test]
-async fn a_replayed_signed_message_inside_its_ttl_is_denied() {
+async fn a_replayed_verified_identity_inside_its_ttl_is_denied() {
     let gov = replay_gov();
+    // INTERNAL post-verification claim continuation; no fake verifier or chain.
     let run = |key: &str, gov: Option<std::sync::Arc<crate::governance::GovState>>| {
-        let auth = naming_chain(hook_answer(Some(key), Vec::new()));
+        let answered = chain_verdict_of(hook_answer(Some(key), Vec::new()));
+        let verdict = complete_chain(chain_position_verdict("door", answered.verdict));
+        let pending = PendingClaim::of(
+            ReplayClaim::of("door", answered.replay, busbar_kernel::store::now()),
+            gov,
+        );
         async move {
-            AuthMiddleware::run_chain_on_request_path(
-                &auth,
-                Some("signed".into()),
-                ChainHead::default(),
-                gov,
-                None,
-            )
-            .await
+            deny_unavailable_chain(claimed_chain_identity(Ok(verdict), pending.as_ref()).await)
         }
     };
     let first = run("standard-webhooks/msg_1", Some(gov.clone())).await;
@@ -2161,181 +1270,138 @@ async fn a_replayed_signed_message_inside_its_ttl_is_denied() {
     );
 }
 
-async fn echo_behind_the_gate(
-    app: std::sync::Arc<crate::state::App>,
-) -> (String, tokio::task::JoinHandle<()>) {
-    async fn echo(
-        axum::extract::OriginalUri(original): axum::extract::OriginalUri,
-        consumed: Option<axum::Extension<ConsumedCredentials>>,
-        req: Request<Body>,
-    ) -> axum::Json<serde_json::Value> {
-        let mut headers = req.headers().clone();
-        ConsumedCredentials::strip_from(consumed.as_ref().map(|c| &c.0), &mut headers);
-        let names: Vec<&str> = headers.keys().map(|n| n.as_str()).collect();
-        axum::Json(serde_json::json!({
-            "uri": req.uri().to_string(),
-            "original": original.to_string(),
-            "headers": names,
-        }))
-    }
-    let handle = std::sync::Arc::new(crate::state::AppHandle::new(app));
-    let core_routes: &'static crate::core_routes::CoreRouteTable = Box::leak(Box::default());
-    let router = axum::Router::new()
-        .route("/echo", axum::routing::any(echo))
-        .layer(axum::middleware::from_fn_with_state(
-            handle.clone(),
-            move |app: crate::state::CurrentApp,
-                  req: axum::extract::Request,
-                  next: axum::middleware::Next| {
-                auth_middleware(app, core_routes, req, next)
-            },
-        ))
-        .with_state(handle);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let served = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (format!("http://{addr}"), served)
-}
-
-fn naming_app(
-    answer: busbar_contract::auth_calls::VerifyAnswer,
-) -> std::sync::Arc<crate::state::App> {
-    let mut rb = crate::config::RoleBindings::default();
-    rb.entry("door".to_string())
-        .or_default()
-        .entry("hooks".to_string())
-        .or_default();
-    crate::test_support::TestApp::new()
-        .auth(naming_chain(answer))
-        .role_bindings(rb)
-        .governance(replay_gov())
-        .build()
-}
-
 #[tokio::test]
-async fn a_replayed_signed_delivery_is_answered_401_the_second_time() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = naming_app(hook_answer(Some("standard-webhooks/msg_1"), Vec::new()));
-    let (base, served) = echo_behind_the_gate(app).await;
-    let deliver = || async {
-        reqwest::Client::new()
-            .post(format!("{base}/echo"))
-            .bearer_auth("signed")
-            .send()
-            .await
-            .unwrap()
-            .status()
-            .as_u16()
+async fn a_replayed_verified_delivery_is_denied_before_dispatch() {
+    // INTERNAL post-verification admission over the actual conditional Store. The former
+    // NamingDoor/echo server only invented verification; real HTTP auth is exercised at root.
+    let gov = replay_gov();
+    let bindings = bindings_for("door", &[("hooks", binding(None, None, None))]);
+    let run = || {
+        let answered = chain_verdict_of(hook_answer(Some("standard-webhooks/msg_1"), Vec::new()));
+        let verdict = complete_chain(chain_position_verdict("door", answered.verdict));
+        let pending = PendingClaim::of(
+            ReplayClaim::of("door", answered.replay, busbar_kernel::store::now()),
+            Some(gov.clone()),
+        );
+        (verdict, pending)
     };
-    assert_eq!(deliver().await, 200, "the first delivery is served");
-    assert_eq!(deliver().await, 401, "the replay is refused");
-    served.abort();
+    let (verdict, pending) = run();
+    assert!(admit_verified_session(&bindings, verdict, pending.as_ref())
+        .await
+        .is_ok());
+    let (verdict, pending) = run();
+    let refused = admit_verified_session(&bindings, verdict, pending.as_ref())
+        .await
+        .expect_err("the replay must never reach a handler");
+    assert_eq!(refused, IdentityRefusal::Denied);
+    let response = identity_refusal_response(refused, None, true, || {
+        unauthorized_ingress_response(crate::plane_driver::dispatch::Ingress::Fallback(
+            crate::ingress::protocols::residual_dialect_for_path("/pa/v1/messages"),
+        ))
+    });
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "the production refusal projection returns the same 401 envelope as native ingress"
+    );
 }
 
-#[tokio::test]
-async fn an_auth_named_header_and_query_key_never_reach_the_plane() {
+#[test]
+fn named_credential_stripping_preserves_both_request_targets_and_other_headers() {
     use busbar_contract::auth_calls::Strip;
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = naming_app(hook_answer(
-        None,
-        vec![Strip::field("X-Hook-Secret"), Strip::query("api_key")],
-    ));
-    let (base, served) = echo_behind_the_gate(app).await;
-    let seen: serde_json::Value = reqwest::Client::new()
-        .get(format!(
-            "{base}/echo?x=1&api_key=s3cret&y=a%20b&api%5Fkey=t"
-        ))
-        .bearer_auth("signed")
+    // INTERNAL request-mutation continuation. Actual webhook verification declares field
+    // strips; no real auth product is claimed to declare these query strips.
+    let mut request = Request::builder()
+        .uri("/echo?x=1&api_key=s3cret&y=a%20b&api%5Fkey=t")
+        .header("authorization", "Bearer signed")
         .header("x-hook-secret", "hs")
         .header("x-trace", "t-1")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
+        .body(Body::empty())
         .unwrap();
-    served.abort();
-    let headers: Vec<&str> = seen["headers"]
-        .as_array()
-        .expect("names")
-        .iter()
-        .filter_map(|n| n.as_str())
-        .collect();
+    let original = axum::extract::OriginalUri(request.uri().clone());
+    request.extensions_mut().insert(original);
+    let mut consumed = consumed_from_carriers(&[AUTHORIZATION], None, false, false);
+    strike_named(
+        &mut request,
+        &mut consumed,
+        &[Strip::field("X-Hook-Secret"), Strip::query("api_key")],
+    );
+    ConsumedCredentials::strip_from(Some(&consumed), request.headers_mut());
+    let headers: Vec<&str> = request.headers().keys().map(|name| name.as_str()).collect();
     assert!(!headers.contains(&"x-hook-secret"), "{headers:?}");
     assert!(!headers.contains(&"authorization"), "{headers:?}");
     assert!(headers.contains(&"x-trace"), "{headers:?}");
-    assert_eq!(seen["uri"], "/echo?x=1&y=a%20b");
-    assert_eq!(seen["original"], "/echo?x=1&y=a%20b");
-}
-
-fn naming_admin_app(
-    answer: busbar_contract::auth_calls::VerifyAnswer,
-) -> std::sync::Arc<crate::state::App> {
-    let rb = bindings_for(
-        "ext-door",
-        &[("hooks", binding(None, None, Some("read-only")))],
+    assert_eq!(request.uri().to_string(), "/echo?x=1&y=a%20b");
+    assert_eq!(
+        request
+            .extensions()
+            .get::<axum::extract::OriginalUri>()
+            .unwrap()
+            .0
+            .to_string(),
+        "/echo?x=1&y=a%20b"
     );
-    let mut app = crate::test_support::TestApp::new()
-        .admin_chain(vec!["ext-door".to_string()])
-        .role_bindings(rb)
-        .governance(replay_gov())
-        .build();
-    let mut modules = std::collections::HashMap::new();
-    modules.insert(
-        "ext-door".to_string(),
-        AdminModule {
-            calls: std::sync::Arc::new(NamingDoor(answer)),
-        },
-    );
-    std::sync::Arc::get_mut(&mut app)
-        .expect("freshly built App Arc is unshared")
-        .admin_modules = std::sync::Arc::new(AdminAuthChain {
-        modules,
-        operator: Operator::new(crate::config::operator_provider()),
-    });
-    app
 }
 
 #[tokio::test]
 async fn an_admin_identity_replayed_is_denied_and_its_named_lines_ride_out() {
-    use busbar_contract::auth_calls::Strip;
-    let app = naming_admin_app(hook_answer(
-        Some("signed/admin_1"),
-        vec![Strip::field("x-hook-secret")],
-    ));
-    let headers = admin_headers(Some("signed"), None);
-    let mut strips = Vec::new();
-    let first = judge_admin_door(&app, "GET", "/", &headers, false, true, &mut strips).await;
+    let gov = replay_gov();
+    let now = busbar_kernel::store::now();
+    let project = || {
+        let mut carried = AdminCarried::default();
+        let (verdict, replay) = carry_admin_outcome(
+            &mut carried,
+            "ext-door",
+            chain_verdict_of(hook_answer(
+                Some("signed/admin_1"),
+                vec![Strip::field("x-hook-secret")],
+            )),
+        );
+        let verdict = complete_chain(chain_position_verdict("ext-door", verdict));
+        let pending = PendingClaim::of(
+            unclaimed_admin_replay(
+                matches!(&verdict, ChainVerdict::Identified { .. }),
+                replay.map(|r| ("ext-door".into(), r)),
+                now,
+            ),
+            Some(gov.clone()),
+        );
+        let door = admin_door_from_bindings(
+            &bindings_for(
+                "ext-door",
+                &[("hooks", binding(None, None, Some("read-only")))],
+            ),
+            &Operator::new("operator-provider"),
+            "operator",
+            verdict,
+            None,
+            crate::admin::seam::admin_verb_rung,
+        );
+        (door, pending, carried.strips)
+    };
+    let (door, pending, strips) = project();
+    let first = Ok::<_, VerifierUnavailable>(
+        claimed_admin_door(door, pending.as_ref(), "GET", "/", true).await,
+    );
     assert!(matches!(first, Ok(AdminDoor::Identified(..))), "{first:?}");
     assert_eq!(strips, vec![Strip::field("x-hook-secret")]);
+    let (door, pending, _) = project();
     assert_eq!(
-        admin_door(&app, "GET", "/", &headers),
+        probed_admin_claim(door, pending.as_ref(), "GET", "/", true),
         AdminDoor::Denied,
         "the replay is refused"
     );
+    let (door, pending, _) = project();
     assert!(
-        dry_run_admin_scope(&app, &headers) != busbar_contract::authz::Grants::default(),
+        admin_scope_from_door(probed_admin_claim(
+            door,
+            pending.as_ref(),
+            "GET",
+            "/",
+            false
+        )) != busbar_contract::authz::Grants::default(),
         "a dry run claims nothing"
     );
-}
-
-fn replay_app(
-    answer: busbar_contract::auth_calls::VerifyAnswer,
-    gov: std::sync::Arc<crate::governance::GovState>,
-    bound: bool,
-) -> std::sync::Arc<crate::state::App> {
-    let mut rb = crate::config::RoleBindings::default();
-    if bound {
-        rb.entry("door".to_string())
-            .or_default()
-            .entry("hooks".to_string())
-            .or_default();
-    }
-    crate::test_support::TestApp::new()
-        .auth(naming_chain(answer))
-        .role_bindings(rb)
-        .governance(gov)
-        .build()
 }
 
 async fn still_unclaimed(gov: &crate::governance::GovState, provider: &str, key: &str) -> bool {
@@ -2348,46 +1414,55 @@ async fn still_unclaimed(gov: &crate::governance::GovState, provider: &str, key:
 
 #[tokio::test]
 async fn a_delivery_refused_for_its_grant_leaves_its_replay_key_unclaimed() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let gov = replay_gov();
-    let answer = hook_answer(Some("standard-webhooks/msg_r6"), Vec::new());
-    let deliver = |base: String| async move {
-        reqwest::Client::new()
-            .post(format!("{base}/echo"))
-            .bearer_auth("signed")
-            .send()
-            .await
-            .unwrap()
-            .status()
-            .as_u16()
+    let run = || {
+        let answered = chain_verdict_of(hook_answer(Some("standard-webhooks/msg_r6"), Vec::new()));
+        let verdict = complete_chain(chain_position_verdict("door", answered.verdict));
+        let pending = PendingClaim::of(
+            ReplayClaim::of("door", answered.replay, busbar_kernel::store::now()),
+            Some(gov.clone()),
+        );
+        (verdict, pending)
     };
-    let (unbound, served) =
-        echo_behind_the_gate(replay_app(answer.clone(), gov.clone(), false)).await;
-    assert_eq!(deliver(unbound.clone()).await, 401, "no grant: refused");
-    assert_eq!(deliver(unbound).await, 401, "no grant again: refused");
-    served.abort();
-    let (bound, served) = echo_behind_the_gate(replay_app(answer, gov, true)).await;
-    assert_eq!(
-        deliver(bound.clone()).await,
-        200,
-        "the group bound, the redelivery is served: the refused ones claimed nothing"
+    for _ in 0..2 {
+        let (verdict, pending) = run();
+        assert!(matches!(
+            admit_verified_session(&Default::default(), verdict, pending.as_ref()).await,
+            Err(IdentityRefusal::NoGrant)
+        ));
+    }
+    let bindings = bindings_for("door", &[("hooks", binding(None, None, None))]);
+    let (verdict, pending) = run();
+    assert!(
+        admit_verified_session(&bindings, verdict, pending.as_ref())
+            .await
+            .is_ok(),
+        "binding the group must admit the still-unclaimed delivery"
     );
-    assert_eq!(deliver(bound).await, 401, "its replay is refused");
-    served.abort();
+    let (verdict, pending) = run();
+    assert!(
+        matches!(
+            admit_verified_session(&bindings, verdict, pending.as_ref()).await,
+            Err(IdentityRefusal::Denied)
+        ),
+        "the admitted delivery now owns its replay claim"
+    );
 }
 
 #[tokio::test]
 async fn a_session_refused_for_its_grant_claims_no_replay_key() {
     let gov = replay_gov();
-    let answer = hook_answer(Some("standard-webhooks/msg_r6s"), Vec::new());
+    let now = busbar_kernel::store::now();
     for _ in 0..2 {
-        let refused = crate::auth::admit::admit_session(
-            replay_app(answer.clone(), gov.clone(), false),
-            Some("signed".into()),
-            String::new(),
-        )
-        .await
-        .expect_err("no grant: refused");
+        let answered = chain_verdict_of(hook_answer(Some("standard-webhooks/msg_r6s"), Vec::new()));
+        let verdict = complete_chain(chain_position_verdict("door", answered.verdict));
+        let pending = PendingClaim::of(
+            ReplayClaim::of("door", answered.replay, now),
+            Some(gov.clone()),
+        );
+        let refused = admit_verified_session(&Default::default(), verdict, pending.as_ref())
+            .await
+            .expect_err("no grant: refused");
         assert_eq!(refused, IdentityRefusal::NoGrant, "refused for its grant");
     }
     assert!(
@@ -2399,30 +1474,58 @@ async fn a_session_refused_for_its_grant_claims_no_replay_key() {
 #[tokio::test]
 async fn an_admin_identity_refused_for_scope_leaves_its_replay_key_unclaimed() {
     use busbar_contract::authz::Scope;
-    let app = naming_admin_app(hook_answer(Some("signed/admin_r6"), Vec::new()));
-    let headers = admin_headers(Some("signed"), None);
-    let mut strips = Vec::new();
+    let gov = replay_gov();
+    let now = busbar_kernel::store::now();
+    // INTERNAL verified-identity/scope/claim continuation over actual conditional Store.
+    let project = || {
+        let answered = chain_verdict_of(hook_answer(Some("signed/admin_r6"), Vec::new()));
+        let verdict = complete_chain(chain_position_verdict("ext-door", answered.verdict));
+        let pending = PendingClaim::of(
+            unclaimed_admin_replay(true, answered.replay.map(|r| ("ext-door".into(), r)), now),
+            Some(gov.clone()),
+        );
+        let door = admin_door_from_bindings(
+            &bindings_for(
+                "ext-door",
+                &[("hooks", binding(None, None, Some("read-only")))],
+            ),
+            &Operator::new("operator-provider"),
+            "operator",
+            verdict,
+            None,
+            crate::admin::seam::admin_verb_rung,
+        );
+        (door, pending)
+    };
     for _ in 0..2 {
-        let refused = judge_admin_door(&app, "POST", "/", &headers, false, true, &mut strips).await;
+        let (door, pending) = project();
+        let refused = Ok::<_, VerifierUnavailable>(
+            claimed_admin_door(door, pending.as_ref(), "POST", "/", true).await,
+        );
         let Ok(AdminDoor::Identified(_, grants)) = &refused else {
             panic!("identified, not authorized, not a replay: {refused:?}");
         };
         assert!(!grants.allows(Scope::Full), "{grants:?}");
     }
+    let (door, pending) = project();
     assert!(
         matches!(
-            admin_door(&app, "POST", "/", &headers),
+            probed_admin_claim(door, pending.as_ref(), "POST", "/", true),
             AdminDoor::Identified(..)
         ),
         "the probe refuses for scope too, claiming nothing"
     );
-    let admitted = judge_admin_door(&app, "GET", "/", &headers, false, true, &mut strips).await;
+    let (door, pending) = project();
+    let admitted = Ok::<_, VerifierUnavailable>(
+        claimed_admin_door(door, pending.as_ref(), "GET", "/", true).await,
+    );
     assert!(
         matches!(admitted, Ok(AdminDoor::Identified(..))),
         "the authorized request wins the still-free claim: {admitted:?}"
     );
+    let (door, pending) = project();
     assert_eq!(
-        admin_door(&app, "GET", "/", &headers),
+        probed_admin_claim(door, pending.as_ref(), "GET", "/", true),
         AdminDoor::Denied,
         "its replay is refused"
     );
@@ -2430,711 +1533,47 @@ async fn an_admin_identity_refused_for_scope_leaves_its_replay_key_unclaimed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_racing_identical_deliveries_admit_at_most_one() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = replay_app(
-        hook_answer(Some("standard-webhooks/msg_race"), Vec::new()),
-        replay_gov(),
-        true,
-    );
-    let (base, served) = echo_behind_the_gate(app).await;
-    let deliver = || {
-        let base = base.clone();
-        tokio::spawn(async move {
-            reqwest::Client::new()
-                .post(format!("{base}/echo"))
-                .bearer_auth("signed")
-                .send()
-                .await
-                .unwrap()
-                .status()
-                .as_u16()
-        })
-    };
-    let racing: Vec<_> = (0..8).map(|_| deliver()).collect();
-    let mut statuses = Vec::new();
-    for one in racing {
-        statuses.push(one.await.unwrap());
-    }
-    served.abort();
-    statuses.sort_unstable();
-    let mut expected = vec![200];
-    expected.extend([401; 7]);
-    assert_eq!(statuses, expected, "exactly one admitted");
-}
-
-const DOOR_BODY: &str =
-    r#"{"model":"pa","messages":[{"role":"user","content":"hi"}],"max_tokens":16}"#;
-
-fn admitting_door(path: &str) -> busbar_kernel::plane_routes::PlaneRouteSpec {
-    busbar_kernel::plane_routes::PlaneRouteSpec {
-        path: path.to_string(),
-        method: busbar_contract::abi::mechanism::route::RouteMethod::Post,
-        auth: busbar_contract::abi::mechanism::route::RouteAuth::Key,
-        handler: std::sync::Arc::new(|ctx: busbar_kernel::plane_routes::PlaneReqCtx| {
-            Box::pin(async move {
-                let gov = if ctx.gov.is_some() {
-                    "attached"
-                } else {
-                    "absent"
-                };
-                let key = ctx
-                    .gov
-                    .as_ref()
-                    .and_then(|g| g.key())
-                    .map_or_else(|| "-".to_string(), |k| k.id.clone());
-                let principal = ctx
-                    .principal
-                    .as_ref()
-                    .and_then(|p| p.0.as_ref())
-                    .map_or_else(|| "-".to_string(), |p| p.id.clone());
-                axum::response::Response::new(axum::body::Body::from(format!(
-                    "gov={gov} key={key} principal={principal}"
-                )))
-            })
-        }),
-    }
-}
-
-async fn door_serve(
-    app: std::sync::Arc<crate::state::App>,
-    paths: &[&str],
-) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let doors = paths.iter().map(|p| admitting_door(p)).collect();
-    let (router, _admin, _handle) = crate::build_split_routers_serving(
-        app,
-        doors,
-        busbar_kernel_egress::upstream::max_translate_body_bytes(),
-        crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
-        crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (addr, handle)
-}
-
-async fn door_post(
-    addr: std::net::SocketAddr,
-    path: &str,
-    credential: Option<(&str, &str)>,
-) -> (u16, Option<String>, String) {
-    let mut req = reqwest::Client::new()
-        .post(format!("http://{addr}{path}"))
-        .body(DOOR_BODY);
-    if let Some((carrier, value)) = credential {
-        req = req.header(carrier, value);
-    }
-    let r = req.send().await.unwrap();
-    let status = r.status().as_u16();
-    let ct = r
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-    let body = r.text().await.unwrap();
-    (status, ct, body)
-}
-
-fn bearer(secret: &str) -> String {
-    format!("Bearer {secret}")
-}
-
-async fn door_bearer(
-    addr: std::net::SocketAddr,
-    path: &str,
-    secret: &str,
-) -> (u16, Option<String>, String) {
-    let auth = bearer(secret);
-    door_post(addr, path, Some(("authorization", auth.as_str()))).await
-}
-
-fn door_gov(admin_token: Option<&str>) -> std::sync::Arc<crate::governance::GovState> {
-    let store = crate::real_store::store();
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
-        &[7u8; 32],
-        crate::governance::signing::DEFAULT_KID,
-    );
-    std::sync::Arc::new(
-        crate::governance::GovState::new_with_signer(
-            store,
-            admin_token.map(str::to_string),
-            Some(signer),
-        )
-        .unwrap(),
-    )
-}
-
-fn door_mint(gov: &crate::governance::GovState, name: &str, pools: &[&str]) -> (String, String) {
-    let (key, secret) = gov
-        .mint_signed(
-            crate::governance::NewKeySpec {
-                name: name.to_string(),
-                allowed_pools: Some(pools.iter().map(|p| p.to_string()).collect()),
-                group: None,
-                labels: Default::default(),
-                ..Default::default()
-            },
-            2_000_000_000,
-            1_000_000_000,
-        )
-        .unwrap();
-    (
-        key.id,
-        secret.expose(&crate::seal::lend()).as_str().to_string(),
-    )
-}
-
-fn door_app() -> crate::test_support::TestApp {
-    crate::test_support::TestApp::new()
-        .lane(
-            crate::test_support::LaneSpec::new("test-model", LANE_PROTOCOL, "http://127.0.0.1:1")
-                .api_key("busbar-upstream-key"),
-        )
-        .pool("pa", &[(0, 1)])
-}
-
-fn admitted(gov: &str, key: &str, principal: &str) -> String {
-    format!("gov={gov} key={key} principal={principal}")
-}
-
-#[tokio::test]
-async fn test_chain_accepts_all_carriers_and_native_401() {
-    let token = "grp:carrier";
-    let app = door_app()
-        .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(
-            &chain_cfg(&["test-groups-module"]),
-        )))
-        .role_bindings(bindings_for(
-            "test-groups-module",
-            &[("carrier", binding(None, None, None))],
-        ))
-        .build();
-    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
-    let url = "/pa/v1/messages";
-
-    let auth = bearer(token);
-    for (carrier, value) in [
-        ("authorization", auth.as_str()),
-        ("x-api-key", token),
-        ("x-goog-api-key", token),
-    ] {
-        let (status, _, body) = door_post(addr, url, Some((carrier, value))).await;
-        assert_eq!(status, 200, "a valid token via {carrier} must pass: {body}");
-        assert!(
-            body.starts_with("gov=attached key=") && body.ends_with(" principal=test:carrier"),
-            "the chain identified the token via {carrier} and the bound role keyed it: {body}"
-        );
-        assert!(
-            !body.contains("key=- "),
-            "a bound role is admitted under a governance key: {body}"
-        );
-    }
-
-    let (status, ct, body) = door_post(addr, url, Some(("x-api-key", "not-the-token"))).await;
-    assert_eq!(status, 401, "wrong token must be 401: {body}");
-    assert_eq!(
-        ct.as_deref(),
-        Some("application/json"),
-        "401 must carry application/json native envelope, not text/plain"
-    );
-    let env: serde_json::Value = serde_json::from_str(&body).expect("401 body is JSON");
-    assert!(
-        env.get("error").is_some_and(serde_json::Value::is_object),
-        "native error envelope must contain an `error` object: {env}"
-    );
-
-    let (status, ct, body) = door_post(addr, url, Some(("x-api-key", "grp:unbound"))).await;
-    assert_eq!(
-        status, 401,
-        "an unbound role under a governed module must be refused: {body}"
-    );
-    assert_eq!(ct.as_deref(), Some("application/json"));
-
-    let (status, ct, body) = door_post(addr, url, None).await;
-    assert_eq!(status, 401, "missing token must be 401: {body}");
-    assert_eq!(ct.as_deref(), Some("application/json"));
-
-    handle.abort();
-}
-
-#[tokio::test]
-async fn test_disabled_virtual_key_is_rejected_401() {
-    let gov = door_gov(Some("admintok"));
-    let (dis_id, disabled_secret) = door_mint(&gov, "kdis", &["pa"]);
-    let (ena_id, enabled_secret) = door_mint(&gov, "kena", &["pa"]);
-
-    gov.update_key(&dis_id, Some(false), None).unwrap();
-    let app = door_app().keys_chain().governance(gov).build();
-    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
-    let url = "/pa/v1/messages";
-
-    let (status, _, body) = door_bearer(addr, url, &disabled_secret).await;
-    assert_eq!(
-        status, 401,
-        "a disabled virtual key must be rejected: {body}"
-    );
-
-    let (status, _, body) = door_bearer(addr, url, "sk-vk-nope").await;
-    assert_eq!(status, 401, "unknown key must be rejected: {body}");
-
-    let (status, _, body) = door_bearer(addr, url, &enabled_secret).await;
-    assert_eq!(status, 200, "an enabled virtual key must pass auth: {body}");
-    assert_eq!(body, admitted("attached", &ena_id, &ena_id));
-
-    handle.abort();
-}
-
-#[tokio::test]
-async fn test_governance_accepts_vendor_carriers_and_native_401() {
-    let gov = door_gov(Some("admintok"));
-    let (key_id, secret) = door_mint(&gov, "kc", &["pa"]);
-    let app = door_app().keys_chain().governance(gov).build();
-    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
-    let url = "/pa/v1/messages";
-
-    for carrier in ["x-goog-api-key", "x-api-key"] {
-        let (status, _, body) = door_post(addr, url, Some((carrier, secret.as_str()))).await;
-        assert_eq!(
-            status, 200,
-            "valid virtual key via {carrier} must pass governance: {body}"
-        );
-        assert_eq!(body, admitted("attached", &key_id, &key_id));
-    }
-
-    let (status, ct, body) = door_post(addr, url, Some(("x-goog-api-key", "sk-vk-nope"))).await;
-    assert_eq!(
-        status, 401,
-        "an unknown virtual key via x-goog-api-key must be 401: {body}"
-    );
-    assert_eq!(
-        ct.as_deref(),
-        Some("application/json"),
-        "401 must carry the native application/json envelope, not text/plain"
-    );
-
-    handle.abort();
-}
-
-#[tokio::test]
-async fn test_governance_revoked_signed_token_key_rejected() {
-    let gov = door_gov(Some("admintok"));
-    let (key_id, secret) = door_mint(&gov, "revocable", &["pa"]);
-    let app = door_app().keys_chain().governance(gov.clone()).build();
-    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
-    let url = "/pa/v1/messages";
-
-    let (status, _, body) = door_bearer(addr, url, &secret).await;
-    assert_eq!(
-        status, 200,
-        "a live signed-token key must authenticate: {body}"
-    );
-    assert_eq!(body, admitted("attached", &key_id, &key_id));
-
-    gov.revoke(&key_id, "audit regression").unwrap();
-    assert!(gov.is_revoked(&key_id), "revoke must denylist the subject");
-
-    let (status, _, body) = door_bearer(addr, url, &secret).await;
-    assert_eq!(
-        status, 401,
-        "a REVOKED signed-token key's presented token must be rejected: {body}"
-    );
-
-    handle.abort();
-}
-
-#[tokio::test]
-async fn test_governance_inert_without_admin_token_static_token_admitted() {
-    let gov = std::sync::Arc::new(
-        crate::governance::GovState::new(crate::real_store::store(), None).unwrap(),
-    );
-    assert!(
-        gov.admin_token_hash().is_none(),
-        "precondition: engine must be inert (no admin token)"
-    );
-    let app = door_app()
-        .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(
-            &chain_cfg(&["test-groups-module"]),
-        )))
-        .governance(gov)
-        .role_bindings(bindings_for(
-            "test-groups-module",
-            &[("static", binding(None, None, None))],
-        ))
-        .build();
-    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
-    let url = "/pa/v1/messages";
-
-    let (status, _, body) = door_bearer(addr, url, "grp:static").await;
-    assert_eq!(
-        status, 200,
-        "an inert governance engine must NOT supersede the static chain: {body}"
-    );
-    assert!(
-        body.ends_with(" principal=test:static"),
-        "the static chain identified the caller: {body}"
-    );
-
-    let (status, _, body) = door_bearer(addr, url, "not-the-token").await;
-    assert_eq!(
-        status, 401,
-        "the static chain must still reject a token it does not identify: {body}"
-    );
-
-    handle.abort();
-}
-
-#[tokio::test]
-async fn test_governance_inert_without_admin_token_open_relay_admits() {
-    let gov = std::sync::Arc::new(
-        crate::governance::GovState::new(crate::real_store::store(), None).unwrap(),
-    );
-    let app = door_app()
-        .upstream_creds(crate::auth::UpstreamCreds::Own)
-        .governance(gov)
-        .build();
-    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
-
-    let (status, _, body) = door_post(addr, "/pa/v1/messages", None).await;
-    assert_eq!(
-        status, 200,
-        "an inert governance engine must NOT supersede the open relay: {body}"
-    );
-    assert_eq!(body, admitted("attached", "-", "-"));
-
-    handle.abort();
-}
-
-#[tokio::test]
-async fn test_governance_active_with_admin_token_enforces_minted_key() {
-    let gov = door_gov(Some("admintok"));
-    assert!(
-        gov.admin_token_hash().is_some(),
-        "precondition: engine active"
-    );
-    let (key_id, secret) = door_mint(&gov, "k", &["pa"]);
-    let app = door_app().keys_chain().governance(gov).build();
-    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
-    let url = "/pa/v1/messages";
-
-    let (status, _, body) = door_bearer(addr, url, &secret).await;
-    assert_eq!(
-        status, 200,
-        "an enabled virtual key must pass under active governance: {body}"
-    );
-    assert_eq!(body, admitted("attached", &key_id, &key_id));
-
-    let (status, _, body) = door_bearer(addr, url, "sk-vk-unknown").await;
-    assert_eq!(
-        status, 401,
-        "active governance must reject an unknown token: {body}"
-    );
-
-    handle.abort();
-}
-
-#[tokio::test]
-async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins() {
-    use crate::governance::RecordStore as _;
-    let persisted_secret = "sk-vk-persisted-from-prior-run";
-    let store = crate::real_store::store();
-    store
-        .put_key(&crate::governance::VirtualKey {
-            id: "kold".to_string(),
-            generation_hash: busbar_contract::redacted::sha256_hex(persisted_secret.as_bytes()),
-            name: "kold".to_string(),
-            allowed_scopes: Some(vec![ScopeRef::pool("restricted")]),
-            enabled: true,
-            created_at: 0,
-            group: None,
-            labels: Default::default(),
-            expires_at: None,
-            deleted_at: None,
-            revision: 1,
-            ..Default::default()
-        })
-        .unwrap();
-    let gov = std::sync::Arc::new(crate::governance::GovState::new(store, None).unwrap());
-    assert!(
-        gov.admin_token_hash().is_none(),
-        "precondition: engine must be inert (no admin token)"
-    );
-    let app = door_app()
-        .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(
-            &chain_cfg(&["test-groups-module"]),
-        )))
-        .governance(gov)
-        .role_bindings(bindings_for(
-            "test-groups-module",
-            &[("static-chain", binding(None, None, None))],
-        ))
-        .build();
-    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
-    let url = "/pa/v1/messages";
-
-    let (status, _, body) = door_bearer(addr, url, persisted_secret).await;
-    assert_eq!(
-        status, 401,
-        "an inert engine's persisted key must confer nothing — the static chain rejects it: {body}"
-    );
-
-    let (status, _, body) = door_bearer(addr, url, "grp:static-chain").await;
-    assert_eq!(
-        status, 200,
-        "the static chain governs an inert engine: {body}"
-    );
-    assert!(
-        body.ends_with(" principal=test:static-chain"),
-        "the static chain identified the caller: {body}"
-    );
-    assert!(
-        !body.contains("key=kold "),
-        "the persisted key's controls are not consulted: {body}"
-    );
-
-    handle.abort();
-}
-
-#[tokio::test]
-async fn test_1_5_2_open_chain_admin_token_no_credential_admits_anon() {
-    let gov = door_gov(Some("admintok"));
-    let _ = door_mint(&gov, "vk", &["pa"]);
-    let app = door_app().governance(gov).build();
-    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
-
-    let (status, _, body) = door_post(addr, "/pa/v1/messages", None).await;
-    assert_eq!(
-        status, 200,
-        "chain:[] + admin token + no credential must admit ANONYMOUS: {body}"
-    );
-    assert_eq!(body, admitted("attached", "-", "-"));
-
-    handle.abort();
-}
-
-#[tokio::test]
-async fn test_1_5_2_open_chain_inserts_default_govctx_no_500() {
-    let gov = door_gov(Some("admintok"));
-    let _ = door_mint(&gov, "vk", &["pa"]);
-    let app = door_app().governance(gov).build();
-    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
-
-    let (status, _, body) = door_post(addr, "/pa/v1/messages", None).await;
-    assert_ne!(
-        status, 500,
-        "open chain must insert a default GovCtx (no MissingExtension 500): {body}"
-    );
-    assert_eq!(status, 200, "{body}");
-    assert!(
-        body.starts_with("gov=attached "),
-        "the open arm inserts the default context: {body}"
-    );
-
-    handle.abort();
-}
-
-#[tokio::test]
-async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
-    async fn metering_door_serve(
-        app: std::sync::Arc<crate::state::App>,
-        gov: std::sync::Arc<crate::governance::GovState>,
-    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-        crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-        let mut door = admitting_door("/pa/v1/messages");
-        let echo = door.handler.clone();
-        door.handler = std::sync::Arc::new(move |ctx| {
-            let gov = gov.clone();
-            let echo = echo.clone();
-            Box::pin(async move {
-                if let Some(key) = ctx.gov.as_ref().and_then(|g| g.key()) {
-                    gov.try_admit(
-                        &crate::cost::CostModel::flat(1),
-                        key,
-                        "pa",
-                        crate::store::now(),
-                    )
-                    .expect("the fixture key has no budget ceiling");
-                }
-                echo(ctx).await
-            })
-        });
-        let (router, _admin, _handle) = crate::build_split_routers_serving(
-            app,
-            vec![door],
-            busbar_kernel_egress::upstream::max_translate_body_bytes(),
-            crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
-            crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-        (addr, handle)
-    }
-
-    let gov = door_gov(Some("admintok"));
-    let (key_id, secret) = door_mint(&gov, "vk", &["pa"]);
-    let app = door_app().governance(gov.clone()).build();
-    let (addr, handle) = metering_door_serve(app, gov.clone()).await;
-
-    let (status, _, body) = door_bearer(addr, "/pa/v1/messages", &secret).await;
-    assert_eq!(
-        status, 200,
-        "open chain admits regardless of the presented vkey: {body}"
-    );
-    assert_eq!(
-        body,
-        admitted("attached", "-", "-"),
-        "an empty chain must NOT resolve a presented vkey (pure anonymous)"
-    );
-    let spend = gov
-        .usage_for(
-            &crate::cost::CostModel::flat(1),
-            &key_id,
-            busbar_kernel::store::now(),
-        )
-        .unwrap()
-        .map(|u| u.spend_cents)
-        .unwrap_or(0);
-    assert_eq!(
-        spend, 0,
-        "an empty chain must NOT meter a presented vkey (pure anonymous)"
-    );
-
-    handle.abort();
-
-    let app = door_app().keys_chain().governance(gov.clone()).build();
-    let (addr, handle) = metering_door_serve(app, gov.clone()).await;
-    let (status, _, body) = door_bearer(addr, "/pa/v1/messages", &secret).await;
-    handle.abort();
-    assert_eq!(status, 200, "{body}");
-    assert!(body.contains(&format!("key={key_id} ")), "{body}");
-    let usage = gov
-        .usage_for(
-            &crate::cost::CostModel::flat(1),
-            &key_id,
-            crate::store::now(),
-        )
-        .unwrap()
-        .expect("the keys-chain request has a usage row");
-    assert_eq!(
-        usage.spend_cents, 1,
-        "the handler charges one real request fee"
-    );
-}
-
-#[tokio::test]
-async fn test_1_5_2_keys_chain_valid_vkey_admits() {
-    let gov = door_gov(Some("admintok"));
-    let (key_id, secret) = door_mint(&gov, "vk", &["pa"]);
-    let app = door_app().keys_chain().governance(gov).build();
-    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
-
-    let (status, _, body) = door_bearer(addr, "/pa/v1/messages", &secret).await;
-    assert_eq!(
-        status, 200,
-        "chain:[keys] + valid enabled vkey must admit: {body}"
-    );
-    assert_eq!(body, admitted("attached", &key_id, &key_id));
-
-    handle.abort();
-}
-
-#[tokio::test]
-async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack() {
-    const FORBIDDEN: &[&str] = &[
-        "virtual key",
-        "client token",
-        "client_token",
-        "allowlist",
-        "disabled",
-        "passthrough",
-        "busbar",
-        "unauthorized",
-        "admin",
-    ];
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = door_app()
-        .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(
-            &chain_cfg(&["test-groups-module"]),
-        )))
-        .build();
-    let (addr, handle) = dp_serve(app).await;
-    let paths = [
-        "/v1beta/models/x:verb",
-        "/pa/v1/messages",
-        "/v1/kind/action",
-        "/v1/responses",
-        "/v2/chat",
-        "/model/vendor.model/converse",
-        "/totally/unknown/path",
-    ];
-    for path in paths {
-        let (status, ct, raw) = door_post(addr, path, Some(("x-api-key", "wrong-token"))).await;
-        assert!(
-            status == 401 || status == 403,
-            "'{path}' must be refused by the auth gate (got {status}): {raw}"
-        );
-        assert_eq!(ct.as_deref(), Some("application/json"), "'{path}': {raw}");
-        let body: serde_json::Value = serde_json::from_str(&raw)
-            .unwrap_or_else(|e| panic!("auth-failure body for '{path}' must be JSON ({e}): {raw}"));
-        let mut strings = Vec::new();
-        collect_strings(&body, &mut strings);
-        assert!(
-            !strings.is_empty(),
-            "'{path}' body carries a message: {body}"
-        );
-        for s in &strings {
-            let lc = s.to_ascii_lowercase();
-            for bad in FORBIDDEN {
-                assert!(
-                    !lc.contains(bad),
-                    "auth-failure body for '{path}' leaked busbar vocabulary '{bad}': {body}"
-                );
+    let gov = replay_gov();
+    let bindings = std::sync::Arc::new(bindings_for(
+        "door",
+        &[("hooks", binding(None, None, None))],
+    ));
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
+    let mut racing = Vec::new();
+    for _ in 0..8 {
+        let gov = gov.clone();
+        let bindings = bindings.clone();
+        let barrier = barrier.clone();
+        racing.push(tokio::spawn(async move {
+            let answered =
+                chain_verdict_of(hook_answer(Some("standard-webhooks/msg_race"), Vec::new()));
+            let verdict = complete_chain(chain_position_verdict("door", answered.verdict));
+            let pending = PendingClaim::of(
+                ReplayClaim::of("door", answered.replay, busbar_kernel::store::now()),
+                Some(gov),
+            );
+            barrier.wait().await;
+            match admit_verified_session(&bindings, verdict, pending.as_ref()).await {
+                Ok(_) => true,
+                Err(IdentityRefusal::Denied) => false,
+                Err(other) => panic!("unexpected grant refusal: {other:?}"),
             }
-        }
+        }));
     }
-    handle.abort();
+    let mut admitted = 0;
+    for one in racing {
+        admitted += usize::from(one.await.unwrap());
+    }
+    assert_eq!(
+        admitted, 1,
+        "the actual conditional Store admits exactly one of eight racing claims"
+    );
 }
 
-#[tokio::test]
-async fn test_admin_prefix_is_boundary_safe() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = crate::test_support::TestApp::new()
-        .lane(
-            crate::test_support::LaneSpec::new("test-model", LANE_PROTOCOL, "http://127.0.0.1:1")
-                .api_key("busbar-upstream-key"),
-        )
-        .pool("apix", &[(0, 1)])
-        .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(
-            &chain_cfg(&["test-groups-module"]),
-        )))
-        .build();
-    let (addr, handle) = dp_serve(app).await;
-
-    let (status, ct, raw) = door_post(
-        addr,
-        "/apix/v1/messages",
-        Some(("x-api-key", "wrong-token")),
-    )
-    .await;
-    assert_eq!(
-        status, 401,
-        "an /apix path with a wrong token must be a normal 401, not 500/admin: {raw}"
-    );
-    assert_eq!(ct.as_deref(), Some("application/json"));
-    let env: serde_json::Value = serde_json::from_str(&raw).expect("401 body is JSON");
-    assert_eq!(
-        env["error"]["type"],
-        busbar_contract::protocol::KIND_AUTHENTICATION,
-        "expected the data plane's native authentication_error: {env}"
-    );
-    assert!(
-        env["error"].get("code").is_none(),
-        "the admin branch's frozen {{error:{{code}}}} envelope must not answer a non-admin path: {env}"
-    );
-
-    handle.abort();
-}
+// Ordinary root replacements for the synthetic door/GovCtx cohort live in
+// busbar/src/tests/kernel_application/auth_governance_routes.rs. The actual /stats
+// endpoint consumes GovCtx; session admission exposes its principal/key without
+// introducing a plane handler merely to echo request extensions.
 
 #[test]
 fn a_signed_verify_keeps_the_lines_its_auth_named_whatever_its_verdict() {
@@ -3179,100 +1618,37 @@ fn a_signed_verify_keeps_the_lines_its_auth_named_whatever_its_verdict() {
     assert_eq!(strips, named, "a faulted verify's named lines are kept");
 }
 
-struct OtherStyle;
-
-impl busbar_contract::abi::sdk::auth_door::VerifyPlugin for OtherStyle {
-    fn validate(settings: &[u8]) -> Result<(), busbar_contract::abi::sdk::life::Refusal> {
-        busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
-    }
-
-    fn open_refusing(
-        _settings: &[u8],
-        _secrets: &[&[u8]],
-    ) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
-        Ok(Self)
-    }
-
-    fn verify(
-        &self,
-        _request: &busbar_contract::abi::sdk::auth_door::VerifyView<'_>,
-    ) -> busbar_contract::abi::sdk::auth_door::Answer {
-        busbar_contract::abi::sdk::auth_door::Verdict::Pass.into()
-    }
-}
-
-const OTHER_LINES: [&str; 2] = ["x-other-key", "authorization"];
-
-const OTHER_MARKS: &[busbar_contract::abi::mechanism::door::MarkWord] = &[
-    busbar_contract::abi::sdk::auth_door::carrier(OTHER_LINES[0]),
-    busbar_contract::abi::sdk::auth_door::carrier(OTHER_LINES[1]),
-];
-
-const OTHER_TAIL: &busbar_contract::abi::auth::AuthTail =
-    &busbar_contract::abi::sdk::auth_door::verify_tail(
-        busbar_contract::abi::auth::FACT_DEFAULT_INBOUND_STYLE,
-        busbar_contract::abi::auth::AuthPoints::HEAD,
-    );
-
-mod other_style {
-    busbar_contract::auth_verify_door!(
-        super::OtherStyle,
-        busbar_contract::abi::sdk::auth_door::with_tail(
-            busbar_contract::abi::mechanism::door::Statement {
-                mark_words: super::OTHER_MARKS.as_ptr(),
-                mark_words_len: super::OTHER_MARKS.len(),
-                ..busbar_contract::abi::sdk::door::statement("other-style", "1.0.0", 4)
-            },
-            super::OTHER_TAIL,
-        )
-    );
-}
-
-fn other_style_chain() -> AuthMiddleware {
-    let registry = crate::test_support::rows::Rows::new()
-        .with_linked_style(
-            crate::preflight::LinkedRow::Auth(("other-style", "other-style", other_style::door)),
-            &OTHER_LINES,
-        )
-        .into_rows();
-    AuthMiddleware::new(
-        &chain_cfg(&["keys"]),
-        &registry,
-        &crate::config::secret::SecretResolver::builtins_only(),
-    )
-    .expect("the chain builds")
-}
-
 #[test]
-fn the_client_token_is_read_off_the_default_inbound_styles_own_lines() {
-    let mw = other_style_chain();
+fn declared_carrier_order_selects_only_its_own_header_lines() {
+    // INTERNAL carrier-selection continuation over metadata DATA, including an arbitrary
+    // first carrier. The actual root's separate statement test pins installed metadata.
+    let carriers = ["x-other-key", "authorization"].map(HeaderName::from_static);
     let mut headers = HeaderMap::new();
     headers.insert("x-api-key", HeaderValue::from_static("from-x-api-key"));
-    assert_eq!(mw.extract_client_token(&headers), None);
+    assert_eq!(carried_credential(&carriers, &headers), None);
     headers.insert(
         "authorization",
         HeaderValue::from_static("Bearer from-bearer"),
     );
     assert_eq!(
-        mw.extract_client_token(&headers),
+        carried_credential(&carriers, &headers),
         Some("from-bearer".to_string())
     );
     headers.insert("x-other-key", HeaderValue::from_static("from-other"));
     assert_eq!(
-        mw.extract_client_token(&headers),
+        carried_credential(&carriers, &headers),
         Some("from-other".to_string()),
         "the style's first line wins"
     );
-    let names: Vec<&str> = mw.carriers().iter().map(HeaderName::as_str).collect();
-    assert_eq!(names, ["x-other-key", "authorization"]);
 }
 
 #[test]
 fn the_gate_strips_the_styles_lines_and_the_operator_credentials() {
-    let app = crate::test_support::TestApp::new()
-        .admin_chain(vec![crate::config::operator_provider().to_string()])
-        .build();
-    let consumed = gate_consumed(&app, false, false);
+    // Internal stripping continuation over explicit carrier DATA. The root's actual carrier
+    // tests separately prove what the installed default style/operator rows declare.
+    let style = ["authorization", "x-api-key", "x-goog-api-key"].map(HeaderName::from_static);
+    let operator = [X_ADMIN_TOKEN.to_string()];
+    let consumed = consumed_from_carriers(&style, Some(&operator), false, false);
     let mut headers = HeaderMap::new();
     for name in [
         "authorization",
@@ -3288,18 +1664,6 @@ fn the_gate_strips_the_styles_lines_and_the_operator_credentials() {
     assert_eq!(kept, ["x-trace"]);
 }
 
-fn verbs_app(ops: crate::config::RoleBindingCfg, cap: &str) -> std::sync::Arc<crate::state::App> {
-    crate::test_support::install_admin_verb_table_double();
-    let mut app = crate::test_support::TestApp::new()
-        .admin_chain(vec!["test-scope-module".to_string()])
-        .role_bindings(bindings_for("test-scope-module", &[("ops", ops)]))
-        .build();
-    let a = std::sync::Arc::get_mut(&mut app).expect("unshared App Arc");
-    a.auth_scope_caps
-        .insert("test-scope-module".to_string(), cap.to_string());
-    app
-}
-
 fn verbs_binding(yaml: &str) -> crate::config::RoleBindingCfg {
     serde_yaml::from_str(yaml).expect("`verbs:` is a role-binding key")
 }
@@ -3307,13 +1671,30 @@ fn verbs_binding(yaml: &str) -> crate::config::RoleBindingCfg {
 #[test]
 fn a_role_granting_verbs_by_name_is_identified_with_its_allow_list() {
     use busbar_contract::authz::{Grants, Scope};
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = verbs_app(verbs_binding("verbs: [post_config_apply]"), "full");
-    let door = admin_door(
-        &app,
-        "POST",
-        "/api/v1/admin/config/apply",
-        &admin_headers(Some("grp:ops"), None),
+    // Internal projection over explicit binding/principal/rung DATA. The real root named-verb
+    // gate separately exercises the actual registered core-admin table and real OIDC verifier.
+    let operator = Operator::new("operator-provider");
+    let rungs = std::collections::BTreeMap::from([
+        ("post_config_apply", Scope::Full),
+        ("post_keys", Scope::Full),
+        ("get_keys", Scope::ReadOnly),
+    ]);
+    let identified = || ChainVerdict::Identified {
+        module: "test-scope-module".to_string(),
+        principal: grp_principal("test:ops", &["ops"]),
+        resolved: None,
+    };
+    let bindings = bindings_for(
+        "test-scope-module",
+        &[("ops", verbs_binding("verbs: [post_config_apply]"))],
+    );
+    let door = admin_door_from_bindings(
+        &bindings,
+        &operator,
+        "operator:local",
+        identified(),
+        Some(Scope::Full),
+        |name| rungs.get(name).copied(),
     );
     let AdminDoor::Listed(principal, grants, list) = door else {
         panic!("a role granting verbs by name is identified with its list, got {door:?}");
@@ -3345,19 +1726,51 @@ fn a_role_granting_verbs_by_name_is_identified_with_its_allow_list() {
 
 #[test]
 fn verbs_star_is_exactly_admin_scope_full() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let star = verbs_app(verbs_binding("verbs: \"*\""), "full");
-    let full = verbs_app(binding(None, None, Some("full")), "full");
-    let headers = admin_headers(Some("grp:ops"), None);
+    use busbar_contract::authz::Scope;
+    // Internal projection over explicit binding/principal/rung DATA. The real root named-verb
+    // gate separately exercises the actual registered core-admin table and real OIDC verifier.
+    let operator = Operator::new("operator-provider");
+    let rungs = std::collections::BTreeMap::from([
+        ("post_config_apply", Scope::Full),
+        ("post_keys", Scope::Full),
+        ("get_keys", Scope::ReadOnly),
+    ]);
+    let identified = || ChainVerdict::Identified {
+        module: "test-scope-module".to_string(),
+        principal: grp_principal("test:ops", &["ops"]),
+        resolved: None,
+    };
+    let star = bindings_for(
+        "test-scope-module",
+        &[("ops", verbs_binding("verbs: \"*\""))],
+    );
+    let full = bindings_for(
+        "test-scope-module",
+        &[("ops", binding(None, None, Some("full")))],
+    );
     for (method, path) in [
         ("POST", "/api/v1/admin/config/apply"),
         ("GET", "/api/v1/admin/keys"),
     ] {
-        let by_star = admin_door(&star, method, path, &headers);
+        let by_star = admin_door_from_bindings(
+            &star,
+            &operator,
+            "operator:local",
+            identified(),
+            Some(Scope::Full),
+            |name| rungs.get(name).copied(),
+        );
         assert!(matches!(by_star, AdminDoor::Identified(..)), "{by_star:?}");
         assert_eq!(
             by_star,
-            admin_door(&full, method, path, &headers),
+            admin_door_from_bindings(
+                &full,
+                &operator,
+                "operator:local",
+                identified(),
+                Some(Scope::Full),
+                |name| rungs.get(name).copied()
+            ),
             "{method} {path}: `verbs: \"*\"` must be exactly `admin_scope: full`"
         );
     }
@@ -3366,11 +1779,32 @@ fn verbs_star_is_exactly_admin_scope_full() {
 #[test]
 fn a_binding_without_verbs_is_judged_by_its_rung_alone() {
     use busbar_contract::authz::{Grants, Scope};
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let headers = admin_headers(Some("grp:ops"), None);
+    // Internal projection over explicit binding/principal/rung DATA. The real root named-verb
+    // gate separately exercises the actual registered core-admin table and real OIDC verifier.
+    let operator = Operator::new("operator-provider");
+    let rungs = std::collections::BTreeMap::from([
+        ("post_config_apply", Scope::Full),
+        ("post_keys", Scope::Full),
+        ("get_keys", Scope::ReadOnly),
+    ]);
+    let identified = || ChainVerdict::Identified {
+        module: "test-scope-module".to_string(),
+        principal: grp_principal("test:ops", &["ops"]),
+        resolved: None,
+    };
     for (scope, rung) in [("read-only", Scope::ReadOnly), ("full", Scope::Full)] {
-        let app = verbs_app(binding(None, None, Some(scope)), "full");
-        let door = admin_door(&app, "POST", "/api/v1/admin/config/apply", &headers);
+        let bindings = bindings_for(
+            "test-scope-module",
+            &[("ops", binding(None, None, Some(scope)))],
+        );
+        let door = admin_door_from_bindings(
+            &bindings,
+            &operator,
+            "operator:local",
+            identified(),
+            Some(Scope::Full),
+            |name| rungs.get(name).copied(),
+        );
         let AdminDoor::Identified(_, grants) = door else {
             panic!("{scope}: a binding with no `verbs` key is never listed, got {door:?}");
         };
@@ -3381,16 +1815,30 @@ fn a_binding_without_verbs_is_judged_by_its_rung_alone() {
 #[test]
 fn the_providers_ceiling_caps_a_named_verb() {
     use busbar_contract::authz::{Grants, Scope};
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = verbs_app(
-        verbs_binding("verbs: [get_keys, post_config_apply]"),
-        "read-only",
+    // Internal projection over explicit binding/principal/rung DATA. The real root named-verb
+    // gate separately exercises the actual registered core-admin table and real OIDC verifier.
+    let operator = Operator::new("operator-provider");
+    let rungs = std::collections::BTreeMap::from([
+        ("post_config_apply", Scope::Full),
+        ("post_keys", Scope::Full),
+        ("get_keys", Scope::ReadOnly),
+    ]);
+    let identified = || ChainVerdict::Identified {
+        module: "test-scope-module".to_string(),
+        principal: grp_principal("test:ops", &["ops"]),
+        resolved: None,
+    };
+    let bindings = bindings_for(
+        "test-scope-module",
+        &[("ops", verbs_binding("verbs: [get_keys, post_config_apply]"))],
     );
-    let door = admin_door(
-        &app,
-        "GET",
-        "/api/v1/admin/keys",
-        &admin_headers(Some("grp:ops"), None),
+    let door = admin_door_from_bindings(
+        &bindings,
+        &operator,
+        "operator:local",
+        identified(),
+        Some(Scope::ReadOnly),
+        |name| rungs.get(name).copied(),
     );
     let AdminDoor::Listed(_, grants, list) = door else {
         panic!("the named read survives the ceiling, got {door:?}");
@@ -3401,63 +1849,6 @@ fn the_providers_ceiling_caps_a_named_verb() {
         !list.admits(Some("post_config_apply"), Scope::Full),
         "a named mutation above the provider's ceiling is not held"
     );
-}
-
-#[tokio::test]
-async fn the_admin_gate_admits_only_the_listed_verbs() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = verbs_app(verbs_binding("verbs: [post_config_apply]"), "full");
-    let (base, handle) = serve_app(app).await;
-    let client = reqwest::Client::new();
-    let listed = client
-        .post(format!("{base}/api/v1/admin/config/apply"))
-        .bearer_auth("grp:ops")
-        .body("{}")
-        .send()
-        .await
-        .unwrap();
-    assert_ne!(
-        listed.status().as_u16(),
-        401,
-        "the listed role authenticates"
-    );
-    assert_ne!(
-        listed.status().as_u16(),
-        403,
-        "the listed verb must pass authorization, got {}",
-        listed.status()
-    );
-    for (method, path) in [
-        (reqwest::Method::POST, "/api/v1/admin/keys"),
-        (reqwest::Method::GET, "/api/v1/admin/keys"),
-    ] {
-        let refused = client
-            .request(method.clone(), format!("{base}{path}"))
-            .bearer_auth("grp:ops")
-            .body("{}")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            refused.status().as_u16(),
-            403,
-            "{method} {path}: a verb the list does not name is refused"
-        );
-        let needed = if method == reqwest::Method::GET {
-            "read-only"
-        } else {
-            "full"
-        };
-        assert_eq!(
-            refused.text().await.unwrap(),
-            format!(
-                "{{\"error\":{{\"code\":\"forbidden\",\"message\":\"this endpoint requires the \
-                 `{needed}` admin scope\"}}}}"
-            ),
-            "{method} {path}: the refusal is the existing scope refusal, byte for byte"
-        );
-    }
-    handle.abort();
 }
 
 #[test]

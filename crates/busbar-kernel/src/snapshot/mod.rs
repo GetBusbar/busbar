@@ -569,8 +569,3 @@ pub fn snapshot() -> Option<Vec<Family>> {
     crate::telemetry::flush_to_recorder();
     Some(source.snapshot())
 }
-
-#[cfg(test)]
-pub fn render() -> String {
-    crate::test_support::export_axis::lines(&snapshot().unwrap_or_default())
-}

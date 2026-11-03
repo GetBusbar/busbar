@@ -508,3 +508,7 @@ impl Fielding for Pending<FieldsIn, FieldsOut, Asked> {
 #[cfg(test)]
 #[path = "tests/auth_outbound_tests.rs"]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "tests/ordinary_auth_custody.rs"]
+mod ordinary_auth_custody;

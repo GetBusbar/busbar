@@ -12,9 +12,9 @@ use super::SecretRows;
 use crate::boot::{Candidate, Origin};
 use crate::dispatch::{rendering_of, DispatchConfig, Dispatcher};
 
-use crate::both_ways::{fixture_cdylib, secret_fixture};
+use crate::actual_env_secret as secret_fixture;
 use crate::hook_door_conformance_tests::hook_door_plugin;
-use secret_fixture::door::door;
+use secret_fixture::door;
 use secret_fixture::NAME;
 
 #[path = "secret_shared_close_tests.rs"]
@@ -93,14 +93,14 @@ fn a_linked_secret_plugin_answers_and_resolves_through_the_axis() {
 }
 
 fn dropped_secret_candidate() -> Candidate {
-    let path = fixture_cdylib("secret");
+    let path = secret_fixture::cdylib();
     let stated = rendering_of(door).expect("the door renders its Statement");
     let bytes = std::fs::read(&path).expect("the plugin's cdylib reads");
     Candidate::from_rendering(
         stated,
         None,
         Origin::Dropped {
-            file: format!("{}.tar.gz", crate::both_ways::fixture("secret").0),
+            file: format!("{}.tar.gz", "busbar-secret-env"),
             bytes: Arc::new(bytes),
         },
     )

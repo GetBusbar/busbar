@@ -117,10 +117,10 @@ impl Offload for Held {
 }
 
 fn services_over(
-    rows: impl FnOnce(Arc<MemoryStore>) -> Arc<dyn RecordRows>,
+    rows: impl FnOnce(Arc<LoadedStore>) -> Arc<dyn RecordRows>,
     pool: Arc<dyn Offload>,
-) -> (Arc<KernelServices>, Arc<MemoryStore>) {
-    let store = Arc::new(MemoryStore::new());
+) -> (Arc<KernelServices>, Arc<LoadedStore>) {
+    let store = actual_store();
     let s = KernelServices::new()
         .with_records(rows(Arc::clone(&store)))
         .with_pool(pool);
@@ -132,8 +132,8 @@ fn services_over(
     (Arc::new(s), store)
 }
 
-fn stored(store: &MemoryStore, key: &[u8]) -> Option<Vec<u8>> {
-    store
+fn stored(store: &Arc<LoadedStore>, key: &[u8]) -> Option<Vec<u8>> {
+    Rows(Arc::clone(store))
         .record_get(task(), &record_key("inst", key))
         .unwrap()
         .map(|v| v.as_slice().to_vec())

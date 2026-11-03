@@ -9,10 +9,27 @@ use crate::export::projection::{
 use busbar_contract::abi::export::{ExportField, ExportStream};
 
 fn resolve_errs(yaml: &str) -> Vec<String> {
-    crate::export::scrape::tests::installed_axis();
     let defs: ExportDefs = serde_yaml::from_str(yaml).expect("fixture parses");
     let mut errors = Vec::new();
-    let _ = crate::config::resolve_export(&defs, &mut errors);
+    for (name, def) in defs {
+        // Grammar inputs are declarations, not an exporter implementation. Product
+        // loading and config-axis wiring are exercised in the distribution tests.
+        let carries = match def.module.as_str() {
+            "request-log-webhook" => &[ExportStream::Logs][..],
+            "prometheus" => &[ExportStream::Metrics][..],
+            "otlp" => &[ExportStream::Traces][..],
+            module => panic!("unexpected grammar input module {module}"),
+        };
+        resolve_projection(
+            &name,
+            &def.module,
+            Some(carries),
+            def.streams.as_deref(),
+            def.fields.as_deref(),
+            def.durable,
+            &mut errors,
+        );
+    }
     errors
 }
 
@@ -303,7 +320,6 @@ fn a_grant_on_one_stream_does_not_leak_into_another() {
 
 #[test]
 fn projection_union_is_the_compute_gate() {
-    crate::test_support::export_axis::install_export_axis();
     let empty = ProjectionUnion::default();
     assert!(empty.is_empty());
     for s in ExportStream::ALL {
@@ -315,7 +331,30 @@ fn projection_union_is_the_compute_gate() {
     )
     .unwrap();
     let mut errors = Vec::new();
-    let cfg = crate::config::resolve_export(&defs, &mut errors);
+    let plugins = defs
+        .into_iter()
+        .map(|(name, def)| {
+            let projection = resolve_projection(
+                &name,
+                &def.module,
+                None,
+                def.streams.as_deref(),
+                def.fields.as_deref(),
+                def.durable,
+                &mut errors,
+            );
+            crate::config::PluginExportSettings {
+                name,
+                def,
+                projection,
+                scrape: false,
+            }
+        })
+        .collect();
+    let cfg = crate::config::ExportCfg {
+        recorder: None,
+        plugins,
+    };
     assert!(errors.is_empty(), "{errors:#?}");
     let union = cfg.projection_union();
     assert!(union.wants_stream(ExportStream::Logs));
@@ -384,47 +423,4 @@ fn projection_keys_are_instance_level_not_settings() {
     assert!(!def.durable);
     assert!(def.settings.contains_key("url"));
     assert!(!def.settings.contains_key("streams"));
-}
-
-#[test]
-fn a_producerless_stream_fails_the_boot_validate_pipeline() {
-    crate::test_support::register_neutral_test_plane();
-
-    let base = r#"
-listen: "0.0.0.0:8080"
-auth:
-  chain: [keys]
-  signing_key: { env: BUSBAR_SIGNING_KEY }
-  admin_auth: []
-  role_bindings:
-    keys:
-      platform:
-        allowed_pools: [main]
-        group: eng
-providers: {}
-models: {}
-pools:
-  main:
-    members: []
-groups:
-  eng:
-    limits:
-      - { requests: 500, per: minute }
-store:
-  module: memory
-"#;
-    let defs = std::collections::HashMap::new();
-
-    let control: crate::config::DeployCfg = serde_yaml::from_str(base).expect("fixture parses");
-    if let Err(errors) = crate::config::resolve(&control, &defs) {
-        panic!("the fixture without `export:` must resolve; errors were: {errors:#?}");
-    }
-    let yaml = format!(
-        "{base}export:\n  siem:\n    module: request-log-webhook\n    streams: [prompts]\n    \
-         settings:\n      url: https://siem.example.com/l\n"
-    );
-    let deploy: crate::config::DeployCfg = serde_yaml::from_str(&yaml).expect("fixture parses");
-    let errors = crate::config::resolve(&deploy, &defs)
-        .expect_err("a producerless stream must make the whole config fail to resolve");
-    assert_error_mentions(&errors, &["prompts", "NO PRODUCER", "later release"]);
 }

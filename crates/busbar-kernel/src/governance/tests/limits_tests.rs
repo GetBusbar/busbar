@@ -1173,8 +1173,28 @@ static TOKEN_FAMILY_PLANE: crate::plane_driver::registry::PlaneDecl =
 
 #[test]
 fn tokens_cap_counts_every_token_family_class_a_plane_declares() {
-    let _iso =
-        busbar_kernel::test_support::planes::TestRegistryIsolation::seeded(&[&TOKEN_FAMILY_PLANE]);
+    const CHILD: &str =
+        "BUSBAR_OWNER_REGISTRY_TOKENS_CAP_COUNTS_EVERY_TOKEN_FAMILY_CLASS_A_PLANE_DECLARES";
+    if std::env::var_os(CHILD).is_none() {
+        let full = concat!(
+            module_path!(),
+            "::tokens_cap_counts_every_token_family_class_a_plane_declares"
+        );
+        let (_, name) = full.split_once("::").expect("the crate prefix");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("run the owner registry case in a fresh process");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    crate::plane_driver::registry::publish_planes(&[&TOKEN_FAMILY_PLANE]);
     let g = gov();
     let cm = model(&[(
         "g",
@@ -1956,12 +1976,29 @@ fn a_refund_after_a_roll_returns_the_fee_from_the_window_it_was_charged_in() {
 }
 
 fn captured<R>(f: impl FnOnce() -> R) -> (R, Vec<String>) {
-    use crate::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
-    let cap = WarnCapture::capturing_debug();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let r = tracing::subscriber::with_default(subscriber, f);
-    (r, cap.messages())
+    use std::io::Write;
+    #[derive(Clone, Default)]
+    struct MeteringLog(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl Write for MeteringLog {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let log = MeteringLog::default();
+    let writer = log.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .without_time()
+        .finish();
+    let result = tracing::subscriber::with_default(subscriber, f);
+    let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+    (result, text.lines().map(str::to_string).collect())
 }
 
 #[test]

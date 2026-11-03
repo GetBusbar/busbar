@@ -29,7 +29,10 @@ pub(crate) struct Bindings(Mutex<State>);
 #[derive(Default)]
 struct State {
     current: Option<Arc<Generation>>,
+    // Root-installed member authentication remains bound to the original authority.
+    root: Option<Arc<Generation>>,
     tickets: HashMap<Ticket, Arc<Generation>>,
+    staged: HashMap<Ticket, Arc<Generation>>,
     entering: usize,
     refreshing: Option<Ticket>,
     pending_refresh: bool,
@@ -44,6 +47,7 @@ pub(crate) struct Admission {
 
 pub(crate) struct Forgotten {
     binding: Option<Arc<Generation>>,
+    replaced: Option<Arc<Generation>>,
     waiting: Vec<Ticket>,
     wake: &'static InstanceWake,
 }
@@ -57,6 +61,7 @@ impl Forgotten {
 impl Drop for Forgotten {
     fn drop(&mut self) {
         drop(self.binding.take());
+        drop(self.replaced.take());
         if let Some(waking) = Waking::of(self.wake) {
             for ticket in self.waiting.drain(..) {
                 waking.wake(ticket);
@@ -74,11 +79,12 @@ impl Bindings {
     ) -> Option<Admission> {
         let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
         let refresh = op == slot::REFRESH;
-        if refresh && state.refreshing.is_none() && state.entering == 0 {
+        let another_refresh = refresh && state.staged.keys().any(|pending| *pending != ticket);
+        if refresh && !another_refresh && state.refreshing.is_none() && state.entering == 0 {
             state.refreshing = Some(ticket);
         }
         let blocked = if refresh {
-            state.entering != 0 || state.refreshing != Some(ticket)
+            another_refresh || state.entering != 0 || state.refreshing != Some(ticket)
         } else {
             state.refreshing.is_some()
         };
@@ -103,6 +109,9 @@ impl Bindings {
         if ticket.is_none() {
             return state.current.clone();
         }
+        if let Some(generation) = state.staged.get(&ticket) {
+            return Some(generation.clone());
+        }
         if let Some(generation) = state.tickets.get(&ticket) {
             return Some(generation.clone());
         }
@@ -115,19 +124,29 @@ impl Bindings {
         self.0
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .tickets
+            .staged
             .get(&ticket)
             .cloned()
     }
 
-    pub(crate) fn stage(&self, ticket: Ticket, generation: Arc<Generation>) {
-        let prior = self
-            .0
+    pub(crate) fn stage(
+        &self,
+        ticket: Ticket,
+        generation: Arc<Generation>,
+    ) -> Option<Arc<Generation>> {
+        self.0
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .tickets
-            .insert(ticket, generation);
-        drop(prior);
+            .staged
+            .insert(ticket, generation)
+    }
+
+    pub(crate) fn take_staged(&self, ticket: Ticket) -> Option<Arc<Generation>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .staged
+            .remove(&ticket)
     }
 
     pub(crate) fn pending_refresh(&self, ticket: Ticket) {
@@ -155,45 +174,58 @@ impl Bindings {
     }
 
     pub(crate) fn publish(&self, generation: Arc<Generation>) {
-        let prior = self
-            .0
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .current
-            .replace(generation);
-        drop(prior);
+        let prior = {
+            let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+            if state.root.is_none() {
+                state.root = Some(generation.clone());
+            }
+            state.current.replace(generation)
+        };
+        super::worker::drop_after_lock(Box::new(prior));
     }
 
     pub(crate) fn forget(&self, wake: &'static InstanceWake, ticket: Ticket) -> Forgotten {
-        let (binding, waiting) = {
+        let (binding, replaced, waiting) = {
             let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
             let pending_refresh = state.pending_refresh && state.refreshing == Some(ticket);
             if pending_refresh {
                 state.refreshing = None;
                 state.pending_refresh = false;
             }
-            let waiting = if pending_refresh {
+            let staged = state.staged.remove(&ticket);
+            let waiting = if pending_refresh || (staged.is_some() && state.refreshing.is_none()) {
                 std::mem::take(&mut state.waiting)
             } else {
                 Vec::new()
             };
-            (state.tickets.remove(&ticket), waiting)
+            let pinned = state.tickets.remove(&ticket);
+            let (binding, replaced) = match staged {
+                Some(staged) => (Some(staged), pinned),
+                None => (pinned, None),
+            };
+            (binding, replaced, waiting)
         };
         Forgotten {
             binding,
+            replaced,
             waiting,
             wake,
         }
     }
 
     pub(crate) fn clear(&self) {
-        let (current, tickets) = {
+        let (current, root, tickets, staged) = {
             let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
             state.refreshing = None;
             state.pending_refresh = false;
-            (state.current.take(), std::mem::take(&mut state.tickets))
+            (
+                state.current.take(),
+                state.root.take(),
+                std::mem::take(&mut state.tickets),
+                std::mem::take(&mut state.staged),
+            )
         };
-        drop((current, tickets));
+        super::worker::drop_after_lock(Box::new((current, root, tickets, staged)));
     }
 
     pub(crate) fn wake_waiters(&self, wake: &'static InstanceWake) {
@@ -209,11 +241,11 @@ impl Bindings {
     }
 
     pub(crate) fn worker_pins(&self, worker: u32) -> Vec<(Ticket, Arc<Generation>)> {
-        self.0
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+        let state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        state
             .tickets
             .iter()
+            .chain(state.staged.iter())
             .filter(|(ticket, _)| super::ticket::decode(ticket.slot).0 == worker)
             .map(|(ticket, binding)| (*ticket, binding.clone()))
             .collect()

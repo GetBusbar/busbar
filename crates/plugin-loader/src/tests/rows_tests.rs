@@ -9,7 +9,7 @@ use busbar_contract::store_calls::StoreDoor;
 use crate::{LinkedPlugin, PluginRegistry};
 
 fn registry() -> PluginRegistry {
-    let door = crate::both_ways::store_fixture::door;
+    let door = crate::actual_store::door;
     PluginRegistry::empty()
         .link(vec![LinkedPlugin::store("the-store", door, true)])
         .expect("the linked row registers")

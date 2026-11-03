@@ -1,33 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::{log_build, BuildNote};
+use super::log_scanned_rows;
 use crate::audit::auditlog::{
     ensure_global_audit_stream_registered, plugin_refusal_resource, PluginRefusal, AUDIT_LOG,
     PLUGIN_REFUSAL_PRINCIPAL,
 };
-use crate::test_support::rows::{skipped, Rows};
+use busbar_contract::plugin_rows::{NeedLevel, Row, Skipped, Trust};
 
 #[test]
 fn a_trust_policy_skip_seals_one_plugin_trust_record() {
     ensure_global_audit_stream_registered();
 
-    let mut row = skipped(
-        "bind-audit-probe",
-        "bind-audit-probe",
-        "unknown publisher 'acme|key.create|x'; refusing to load",
-    );
-    row.file = "bind-audit-trust-probe.tar.gz".to_string();
-    row.code = "unknown_publisher";
-    let rows = Rows::new().with_skipped(row).into_rows();
+    let row = Skipped {
+        file: "bind-audit-trust-probe.tar.gz".into(),
+        name: "bind-audit-probe".into(),
+        alias: "bind-audit-probe".into(),
+        reason: "unknown publisher 'acme|key.create|x'; refusing to load".into(),
+        code: "unknown_publisher",
+    };
 
-    log_build(
-        BuildNote::Scanned {
-            rows: rows.as_ref(),
-            copies: &[],
-        },
-        "/plugins",
-    );
+    log_scanned_rows(&[], &[row], &[], "/plugins");
 
     let resource =
         plugin_refusal_resource("file", "bind-audit-trust-probe.tar.gz", "unknown_publisher");
@@ -48,23 +41,27 @@ fn a_trust_policy_skip_seals_one_plugin_trust_record() {
 
 #[test]
 fn an_unverified_load_seals_one_degraded_plugin_trust_record() {
-    use busbar_contract::plugin_rows::Trust;
     ensure_global_audit_stream_registered();
-    let mut row =
-        crate::test_support::rows::row("item1-unsigned-probe", "item1-unsigned-probe", "store");
-    row.file = "item1-unsigned-probe.tar.gz".to_string();
-    row.trust = Trust::Allowed {
-        reason: "plugin manifest is unsigned|x; loaded because allow_unsigned is set".to_string(),
-    };
-    let rows = Rows::new().with_dropped(row).into_rows();
-
-    log_build(
-        BuildNote::Scanned {
-            rows: rows.as_ref(),
-            copies: &[],
+    let row = Row {
+        file: "item1-unsigned-probe.tar.gz".into(),
+        key: "item1-unsigned-probe".into(),
+        name: "item1-unsigned-probe".into(),
+        alias: "item1-unsigned-probe".into(),
+        kind: "store".into(),
+        version: "1.0.0".into(),
+        abi_version: 3,
+        trust: Trust::Allowed {
+            reason: "plugin manifest is unsigned|x; loaded because allow_unsigned is set".into(),
         },
-        "/plugins",
-    );
+        ephemeral: false,
+        in_process: false,
+        linked: false,
+        needs_prompt: NeedLevel::No,
+        needs_user: NeedLevel::No,
+        settings_schema: None,
+    };
+
+    log_scanned_rows(&[row], &[], &[], "/plugins");
 
     let resource = plugin_refusal_resource("file", "item1-unsigned-probe.tar.gz", "unverified");
     let sealed = AUDIT_LOG.list_filtered(
@@ -85,23 +82,18 @@ fn an_unverified_load_seals_one_degraded_plugin_trust_record() {
 #[test]
 fn a_retired_key_skip_seals_one_rejected_plugin_trust_record() {
     ensure_global_audit_stream_registered();
-    let mut row = skipped(
-        "sec-allowuns-retired-probe",
-        "sec-allowuns-retired-probe",
-        "first-party manifest signed by the RETIRED busbar release key b18395|x (retired); \
-         refusing to load it. plugins.trust.allow_unsigned does not admit a retired key",
-    );
-    row.file = "sec-allowuns-retired-probe.tar.gz".to_string();
-    row.code = "retired_key";
-    let rows = Rows::new().with_skipped(row).into_rows();
+    let row = Skipped {
+        file: "sec-allowuns-retired-probe.tar.gz".into(),
+        name: "sec-allowuns-retired-probe".into(),
+        alias: "sec-allowuns-retired-probe".into(),
+        reason:
+            "first-party manifest signed by the RETIRED busbar release key b18395|x (retired); \
+         refusing to load it. plugins.trust.allow_unsigned does not admit a retired key"
+                .into(),
+        code: "retired_key",
+    };
 
-    log_build(
-        BuildNote::Scanned {
-            rows: rows.as_ref(),
-            copies: &[],
-        },
-        "/plugins",
-    );
+    log_scanned_rows(&[], &[row], &[], "/plugins");
 
     let resource =
         plugin_refusal_resource("file", "sec-allowuns-retired-probe.tar.gz", "retired_key");

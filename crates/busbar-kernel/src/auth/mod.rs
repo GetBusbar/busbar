@@ -119,6 +119,10 @@ fn chain_position_verdict(module: &str, verdict: AuthVerdict) -> Option<ChainVer
     }
 }
 
+fn complete_chain(verdict: Option<ChainVerdict>) -> ChainVerdict {
+    verdict.unwrap_or(ChainVerdict::Denied)
+}
+
 fn deny_unavailable_chain(verdict: Result<ChainVerdict, VerifierUnavailable>) -> ChainVerdict {
     verdict.unwrap_or(ChainVerdict::Denied)
 }
@@ -244,6 +248,30 @@ async fn claim_won(pending: Option<&PendingClaim>) -> bool {
     match pending {
         None => true,
         Some(pending) => pending.win().await,
+    }
+}
+
+async fn admit_verified_session(
+    bindings: &crate::config::RoleBindings,
+    verdict: ChainVerdict,
+    claim: Option<&PendingClaim>,
+) -> Result<(AuthPrincipal, crate::governance::PlaneRequestCtx), IdentityRefusal> {
+    let admitted = resolve_identity_from_bindings(bindings, verdict)?;
+    match claim {
+        Some(claim) if !claim.win().await => Err(IdentityRefusal::Denied),
+        _ => Ok(admitted),
+    }
+}
+
+async fn claimed_chain_identity(
+    verdict: Result<ChainVerdict, VerifierUnavailable>,
+    pending: Option<&PendingClaim>,
+) -> Result<ChainVerdict, VerifierUnavailable> {
+    match verdict {
+        Ok(ChainVerdict::Identified { .. }) if !claim_won(pending).await => {
+            Ok(ChainVerdict::Denied)
+        }
+        verdict => verdict,
     }
 }
 
@@ -845,24 +873,6 @@ impl AuthMiddleware {
         })
     }
 
-    #[cfg(test)]
-    pub fn new_builtin(cfg: &AuthCfg) -> Self {
-        let mut mw = Self::new(
-            cfg,
-            &crate::test_support::rows::empty(),
-            &crate::config::secret::SecretResolver::builtins_only(),
-        )
-        .expect("builtin-only auth chain never fails to construct");
-        if mw.carriers.is_empty() {
-            mw.carriers = test_inbound_style();
-        }
-
-        if mw.issued.is_none() {
-            mw.issued = Some(crate::test_support::issued::double());
-        }
-        mw
-    }
-
     pub fn chain_names(&self) -> Vec<String> {
         self.chain.iter().map(|e| e.name.clone()).collect()
     }
@@ -967,14 +977,14 @@ impl AuthMiddleware {
                 if matches!(verdict, ChainVerdict::Identified { .. }) {
                     *claim = ReplayClaim::of(&entry.provider, judged.replay, now);
                 }
-                return Ok(verdict);
+                return Ok(complete_chain(Some(verdict)));
             }
         }
 
         if self.keys_in_chain {
             return Ok(keys_arm_verdict(gov, candidate, now, expected_aud));
         }
-        Ok(ChainVerdict::Denied)
+        Ok(complete_chain(None))
     }
 
     pub fn flush_verified(&self, module: Option<&str>) -> Result<u64, String> {
@@ -1018,12 +1028,7 @@ impl AuthMiddleware {
             Self::judge_chain_on_request_path_naming(auth, candidate, head, gov, expected_aud)
                 .await;
 
-        match verdict {
-            Ok(ChainVerdict::Identified { .. }) if !claim_won(pending.as_ref()).await => {
-                Ok(ChainVerdict::Denied)
-            }
-            verdict => verdict,
-        }
+        claimed_chain_identity(verdict, pending.as_ref()).await
     }
 
     pub async fn judge_chain_on_request_path_naming(
@@ -1225,10 +1230,18 @@ pub(crate) fn inbound_candidate(
     app: &crate::state::App,
     headers: &HeaderMap,
 ) -> Option<busbar_contract::redacted::Secret<String>> {
-    app.oauth_as
-        .as_ref()
-        .and_then(|_| dpop::dpop_credential(headers))
-        .or_else(|| app.auth.extract_client_token(headers))
+    candidate_from_metadata(app.oauth_as.is_some(), app.auth.carriers(), headers)
+}
+
+fn candidate_from_metadata(
+    has_oauth_as: bool,
+    carriers: &[HeaderName],
+    headers: &HeaderMap,
+) -> Option<busbar_contract::redacted::Secret<String>> {
+    has_oauth_as
+        .then(|| dpop::dpop_credential(headers))
+        .flatten()
+        .or_else(|| carried_credential(carriers, headers))
         .map(busbar_contract::redacted::Secret::new)
 }
 
@@ -1264,6 +1277,29 @@ pub(crate) struct AdminCarried {
     strips: Vec<Strip>,
     replay: Option<(String, Box<Replay>)>,
     no_verdict: bool,
+}
+
+fn carry_admin_outcome(
+    carried: &mut AdminCarried,
+    name: &str,
+    outcome: Judgement,
+) -> (AuthVerdict, Option<Box<Replay>>) {
+    carried.strips.extend(outcome.strips);
+    if outcome.no_verdict {
+        verify_without_verdict("admin", name, "no verdict");
+        carried.no_verdict = true;
+    }
+    (outcome.verdict, outcome.replay)
+}
+
+fn unresolved_admin_module(name: &str) -> Judgement {
+    diag_error!(
+        ADMIN_MODULE_UNRESOLVED,
+        module = name,
+        "admin_auth names a module with no resolved plugin; skipping (boot resolves \
+         every non-builtin admin module, fail-closed)"
+    );
+    Judgement::of(AuthVerdict::Pass)
 }
 
 async fn run_admin_chain(
@@ -1306,30 +1342,18 @@ async fn run_admin_chain(
                 external_admin_module(app, other, request, probe).await
             }
         }
-        .unwrap_or_else(|| {
-            diag_error!(
-                ADMIN_MODULE_UNRESOLVED,
-                module = name.as_str(),
-                "admin_auth names a module with no resolved plugin; skipping (boot resolves \
-                 every non-builtin admin module, fail-closed)"
-            );
-            Judgement::of(AuthVerdict::Pass)
-        });
-        carried.strips.extend(outcome.strips);
-        if outcome.no_verdict {
-            verify_without_verdict("admin", name, "no verdict");
-            carried.no_verdict = true;
-        }
-        if let Some(verdict) = chain_position_verdict(name, outcome.verdict) {
+        .unwrap_or_else(|| unresolved_admin_module(name));
+        let (verdict, replay) = carry_admin_outcome(carried, name, outcome);
+        if let Some(verdict) = chain_position_verdict(name, verdict) {
             if matches!(verdict, ChainVerdict::Identified { .. }) {
-                carried.replay = outcome.replay.map(|r| (name.clone(), r));
+                carried.replay = replay.map(|r| (name.clone(), r));
                 let cap = module_admin_scope_cap(app, name);
-                return (verdict, cap);
+                return (complete_chain(Some(verdict)), cap);
             }
-            return (verdict, None);
+            return (complete_chain(Some(verdict)), None);
         }
     }
-    (ChainVerdict::Denied, None)
+    (complete_chain(None), None)
 }
 
 async fn external_admin_module(
@@ -1397,7 +1421,11 @@ pub fn dry_run_admin_scope(
         return busbar_contract::authz::Grants::default();
     }
 
-    match probe_admin_door(app, "GET", "/", headers, false) {
+    admin_scope_from_door(probe_admin_door(app, "GET", "/", headers, false))
+}
+
+fn admin_scope_from_door(door: AdminDoor) -> busbar_contract::authz::Grants {
+    match door {
         AdminDoor::Identified(_, grants) | AdminDoor::Listed(_, grants, _) => grants,
 
         AdminDoor::Open | AdminDoor::Denied | AdminDoor::Unavailable(_) => {
@@ -1463,6 +1491,37 @@ fn admin_head(
     }
 }
 
+fn admin_chain_outcome(
+    verdict: ChainVerdict,
+    no_verdict: bool,
+) -> Result<ChainVerdict, VerifierUnavailable> {
+    if no_verdict && verdict == ChainVerdict::Denied {
+        Err(VerifierUnavailable::NoVerdict)
+    } else {
+        Ok(verdict)
+    }
+}
+
+fn admin_probe_projection(
+    verdict: Result<ChainVerdict, VerifierUnavailable>,
+    project: impl FnOnce(ChainVerdict) -> (AdminDoor, Option<PendingClaim>),
+) -> (AdminDoor, Option<PendingClaim>) {
+    match verdict {
+        Ok(verdict) => project(verdict),
+        Err(error) => (AdminDoor::Unavailable(error), None),
+    }
+}
+
+fn unclaimed_admin_replay(
+    identified: bool,
+    replay: Option<(String, Box<Replay>)>,
+    now: u64,
+) -> Option<ReplayClaim> {
+    replay
+        .filter(|_| identified)
+        .and_then(|(provider, replay)| ReplayClaim::of(&provider, Some(replay), now))
+}
+
 async fn judge_admin_door(
     app: &App,
     method: &str,
@@ -1474,15 +1533,23 @@ async fn judge_admin_door(
 ) -> Result<AdminDoor, VerifierUnavailable> {
     let (verdict, cap, replay, no_verdict) =
         judge_admin_chain(app, method, target, headers, probe, strips).await;
-    if no_verdict && verdict == ChainVerdict::Denied {
-        return Err(VerifierUnavailable::NoVerdict);
-    }
+    let verdict = admin_chain_outcome(verdict, no_verdict)?;
     let (door, pending) = admin_door_claim_of(app, verdict, cap, replay);
 
-    if claim && admin_door_admits(&door, method, target) && !claim_won(pending.as_ref()).await {
-        return Ok(AdminDoor::Denied);
+    Ok(claimed_admin_door(door, pending.as_ref(), method, target, claim).await)
+}
+
+async fn claimed_admin_door(
+    door: AdminDoor,
+    pending: Option<&PendingClaim>,
+    method: &str,
+    target: &str,
+    claim: bool,
+) -> AdminDoor {
+    if claim && admin_door_admits(&door, method, target) && !claim_won(pending).await {
+        return AdminDoor::Denied;
     }
-    Ok(door)
+    door
 }
 
 /// THE ADMIN DOOR'S VERDICT with its identity's replay claim UNWON ([`PendingClaim`]), for an admin
@@ -1510,9 +1577,7 @@ fn admin_door_claim_of(
 ) -> (AdminDoor, Option<PendingClaim>) {
     let identified = matches!(verdict, ChainVerdict::Identified { .. });
     let now = busbar_kernel::store::now();
-    let claim = replay
-        .filter(|_| identified)
-        .and_then(|(provider, replay)| ReplayClaim::of(&provider, Some(replay), now));
+    let claim = unclaimed_admin_replay(identified, replay, now);
     (
         admin_door_of(app, verdict, cap),
         PendingClaim::of(claim, app.governance.clone()),
@@ -1564,21 +1629,45 @@ fn admin_door_of(
     verdict: ChainVerdict,
     cap: Option<busbar_contract::authz::Scope>,
 ) -> AdminDoor {
+    admin_door_from_bindings(
+        &app.role_bindings,
+        &app.admin_modules.operator,
+        crate::config::operator_principal_id(),
+        verdict,
+        cap,
+        crate::admin::seam::admin_verb_rung,
+    )
+}
+
+fn admin_door_from_bindings(
+    bindings: &crate::config::RoleBindings,
+    operator: &Operator,
+    operator_principal: &str,
+    verdict: ChainVerdict,
+    cap: Option<busbar_contract::authz::Scope>,
+    rung_of: impl Fn(&str) -> Option<busbar_contract::authz::Scope>,
+) -> AdminDoor {
     match verdict {
         ChainVerdict::Open => AdminDoor::Open,
         ChainVerdict::Denied => AdminDoor::Denied,
         ChainVerdict::Identified {
             module, principal, ..
         } => {
-            let grants = admin_scope_for(app, Some(&module), Some(&principal));
+            let grants = admin_scope_from_bindings(
+                bindings,
+                operator,
+                operator_principal,
+                Some(&module),
+                Some(&principal),
+            );
             let rungs = cap_admin_scope(grants, cap);
-            let named = admin_verbs_named(app, &module, &principal, cap);
+            let named = admin_verbs_named(bindings, &module, &principal, cap, &rung_of);
             if named.is_empty() {
                 return AdminDoor::Identified(principal, rungs);
             }
 
             let reach = (named.iter())
-                .filter_map(|verb| crate::admin::seam::admin_verb_rung(verb.as_str()))
+                .filter_map(|verb| rung_of(verb.as_str()))
                 .fold(rungs, busbar_contract::authz::Grants::with);
             AdminDoor::Listed(principal, reach, VerbAllowList { rungs, named })
         }
@@ -1603,10 +1692,17 @@ fn probe_admin_door(
 ) -> AdminDoor {
     let (door, pending) = probe_admin_verdict(app, method, target, headers);
 
-    if claim
-        && admin_door_admits(&door, method, target)
-        && pending.as_ref().is_some_and(|p| !p.win_now())
-    {
+    probed_admin_claim(door, pending.as_ref(), method, target, claim)
+}
+
+fn probed_admin_claim(
+    door: AdminDoor,
+    pending: Option<&PendingClaim>,
+    method: &str,
+    target: &str,
+    claim: bool,
+) -> AdminDoor {
+    if claim && admin_door_admits(&door, method, target) && pending.is_some_and(|p| !p.win_now()) {
         return AdminDoor::Denied;
     }
     door
@@ -1635,24 +1731,9 @@ fn probe_admin_verdict(
             return (AdminDoor::Unavailable(VerifierUnavailable::NoVerdict), None)
         }
     };
-    if no_verdict && verdict == ChainVerdict::Denied {
-        return (AdminDoor::Unavailable(VerifierUnavailable::NoVerdict), None);
-    }
-    admin_door_claim_of(app, verdict, cap, replay)
-}
-
-fn admin_scope_for(
-    app: &crate::state::App,
-    module: Option<&str>,
-    principal: Option<&Principal>,
-) -> busbar_contract::authz::Grants {
-    admin_scope_from_bindings(
-        &app.role_bindings,
-        &app.admin_modules.operator,
-        crate::config::operator_principal_id(),
-        module,
-        principal,
-    )
+    admin_probe_projection(admin_chain_outcome(verdict, no_verdict), |verdict| {
+        admin_door_claim_of(app, verdict, cap, replay)
+    })
 }
 
 fn admin_scope_from_bindings(
@@ -1711,12 +1792,13 @@ impl VerbAllowList {
 }
 
 fn admin_verbs_named(
-    app: &crate::state::App,
+    bindings: &crate::config::RoleBindings,
     module: &str,
     principal: &Principal,
     cap: Option<busbar_contract::authz::Scope>,
+    rung_of: &impl Fn(&str) -> Option<busbar_contract::authz::Scope>,
 ) -> std::collections::BTreeSet<String> {
-    let Some(table) = app.role_bindings.get(module) else {
+    let Some(table) = bindings.get(module) else {
         return std::collections::BTreeSet::new();
     };
     (principal.roles.iter())
@@ -1727,8 +1809,7 @@ fn admin_verbs_named(
         })
         .flatten()
         .filter(|verb| {
-            crate::admin::seam::admin_verb_rung(verb.as_str())
-                .is_some_and(|rung| cap.is_none_or(|c| c.allows(rung)))
+            rung_of(verb.as_str()).is_some_and(|rung| cap.is_none_or(|c| c.allows(rung)))
         })
         .collect()
 }
@@ -1817,10 +1898,58 @@ pub(crate) fn verifier_unavailable_response() -> Response {
     crate::limits::admission::inbound_overloaded_response()
 }
 
+fn data_verifier_error_response(error: VerifierUnavailable) -> Response {
+    match error {
+        VerifierUnavailable::Overloaded | VerifierUnavailable::NoVerdict => {
+            verifier_unavailable_response()
+        }
+    }
+}
+
+fn identity_refusal_response(
+    refusal: IdentityRefusal,
+    admission: Option<&crate::plane_driver::dispatch::PlaneAdmission>,
+    client_token_present: bool,
+    legacy: impl FnOnce() -> Response,
+) -> Response {
+    if let Some(admission) = admission {
+        return match refusal {
+            IdentityRefusal::Denied => challenge::refuse(
+                if client_token_present {
+                    challenge::ChallengeError::InvalidToken
+                } else {
+                    challenge::ChallengeError::Absent
+                },
+                &admission.resource_metadata,
+                "Authentication is required for this resource.",
+                None,
+            ),
+            IdentityRefusal::NoGrant => challenge::refuse(
+                challenge::ChallengeError::InsufficientScope,
+                &admission.resource_metadata,
+                "The authenticated principal carries no grant on this resource.",
+                None,
+            ),
+        };
+    }
+    legacy()
+}
+
 pub const ADMIN_AUTH_UNAVAILABLE_MESSAGE: &str =
     "admin authentication is unavailable (the auth module answered no verdict); retry shortly";
 
 pub const ADMIN_AUTH_RETRY_AFTER: &str = crate::limits::admission::OVERLOADED_RETRY_AFTER;
+
+fn admin_principal_or_response(door: AdminDoor) -> Result<Option<Principal>, Response> {
+    match door {
+        AdminDoor::Identified(principal, _) | AdminDoor::Listed(principal, _, _) => {
+            Ok(Some(principal))
+        }
+        AdminDoor::Open => Ok(None),
+        AdminDoor::Denied => Err(admin_unauthorized_response()),
+        AdminDoor::Unavailable(_) => Err(admin_unavailable_response()),
+    }
+}
 
 fn admin_unavailable_response() -> Response {
     let mut resp = crate::admin::gate::err_json(&crate::admin::gate::ApiError::Unavailable(
@@ -1834,14 +1963,69 @@ fn admin_unavailable_response() -> Response {
 }
 
 pub(crate) fn gate_consumed(app: &App, is_admin: bool, dpop_proven: bool) -> ConsumedCredentials {
-    let mut consumed = ConsumedCredentials::carrying(app.auth.carriers());
-    if !app.admin_chain.is_empty() {
-        consumed.carry(&header_names(app.admin_modules.operator.carriers()));
+    consumed_from_carriers(
+        app.auth.carriers(),
+        (!app.admin_chain.is_empty()).then(|| app.admin_modules.operator.carriers()),
+        is_admin,
+        dpop_proven,
+    )
+}
+
+fn consumed_from_carriers(
+    carriers: &[HeaderName],
+    operator_carriers: Option<&[String]>,
+    is_admin: bool,
+    dpop_proven: bool,
+) -> ConsumedCredentials {
+    let mut consumed = ConsumedCredentials::carrying(carriers);
+    if let Some(operator_carriers) = operator_carriers {
+        consumed.carry(&header_names(operator_carriers));
     }
     if dpop_proven || is_admin {
         consumed.carry(&[dpop::DPOP_HEADER]);
     }
     consumed
+}
+
+fn verified_caller_credential(
+    inbound: Option<Option<&busbar_contract::redacted::Secret<String>>>,
+    client_token: Option<&str>,
+) -> Option<CallerCredential> {
+    match inbound {
+        Some(credential) => credential
+            .map(|credential| CallerCredential::verified(credential.expose(&crate::seal::lend()))),
+        None => client_token.map(CallerCredential::verified),
+    }
+}
+
+async fn ticket_verdict(
+    signed: bool,
+    keys_in_chain: bool,
+    prefix: Option<&str>,
+    token: Option<&str>,
+    gov: Option<&std::sync::Arc<crate::governance::GovState>>,
+    now: u64,
+) -> Result<Option<(ChainVerdict, Vec<u8>)>, ()> {
+    match (!signed, prefix, token) {
+        (true, Some(prefix), Some(token)) if keys_in_chain && token.starts_with(prefix) => {
+            let admitted = match gov {
+                Some(gov) => gov.admit_ticket_async(prefix, token, now).await,
+                None => None,
+            };
+            match admitted {
+                Some((key, record)) => Ok(Some((
+                    ChainVerdict::Identified {
+                        module: crate::config::KEYS_MODULE.to_string(),
+                        principal: principal_from_vkey(&key),
+                        resolved: Some(key),
+                    },
+                    record,
+                ))),
+                None => Err(()),
+            }
+        }
+        _ => Ok(None),
+    }
 }
 
 #[allow(clippy::result_large_err)]
@@ -1951,13 +2135,12 @@ pub(crate) async fn auth_middleware(
     };
 
     let mut consumed = gate_consumed(&app, is_admin, dpop_proven);
-    consumed.caller =
-        match &inbound {
-            Some(admission) => admission.inner.credential.as_ref().map(|credential| {
-                CallerCredential::verified(credential.expose(&crate::seal::lend()))
-            }),
-            None => client_token.as_deref().map(CallerCredential::verified),
-        };
+    consumed.caller = verified_caller_credential(
+        inbound
+            .as_ref()
+            .map(|admission| admission.inner.credential.as_ref()),
+        client_token.as_deref(),
+    );
 
     req.extensions_mut()
         .insert(CallerToken(client_token.clone()));
@@ -1982,15 +2165,9 @@ pub(crate) async fn auth_middleware(
         strike_named(&mut req, &mut consumed, &strips);
         req.extensions_mut().insert(consumed);
 
-        let principal = match door {
-            AdminDoor::Identified(principal, _) | AdminDoor::Listed(principal, _, _) => {
-                Some(principal)
-            }
-
-            AdminDoor::Open => None,
-
-            AdminDoor::Denied => return Err(admin_unauthorized_response()),
-            AdminDoor::Unavailable(_) => return Err(admin_unavailable_response()),
+        let principal = match admin_principal_or_response(door) {
+            Ok(principal) => principal,
+            Err(response) => return Err(response),
         };
         let required = crate::admin::gate::required_scope(req.method(), &path);
 
@@ -2138,34 +2315,22 @@ pub(crate) async fn auth_middleware(
         }
     };
 
-    let ticketed = match (
-        signed.is_none(),
+    let ticketed = match ticket_verdict(
+        signed.is_some(),
+        app.auth.keys_in_chain,
         core_routes.door_ticket(&path, req.method()),
         client_token.as_deref(),
-    ) {
-        (true, Some(prefix), Some(token))
-            if app.auth.keys_in_chain && token.starts_with(prefix) =>
-        {
-            let admitted = match app.governance.as_ref() {
-                Some(gov) => {
-                    gov.admit_ticket_async(prefix, token, busbar_kernel::store::now())
-                        .await
-                }
-                None => None,
-            };
-            match admitted {
-                Some((key, record)) => {
-                    consumed.ticket = Some(record);
-                    Some(ChainVerdict::Identified {
-                        module: crate::config::KEYS_MODULE.to_string(),
-                        principal: principal_from_vkey(&key),
-                        resolved: Some(key),
-                    })
-                }
-                None => return Err(unauthorized_response(&app, &path, door.as_ref())),
-            }
+        app.governance.as_ref(),
+        busbar_kernel::store::now(),
+    )
+    .await
+    {
+        Ok(Some((verdict, record))) => {
+            consumed.ticket = Some(record);
+            Some(verdict)
         }
-        _ => None,
+        Ok(None) => None,
+        Err(()) => return Err(unauthorized_response(&app, &path, door.as_ref())),
     };
     let verdict = if let Some(verdict) = signed {
         verdict
@@ -2213,9 +2378,7 @@ pub(crate) async fn auth_middleware(
                 verdict
             }
 
-            Err(VerifierUnavailable::Overloaded | VerifierUnavailable::NoVerdict) => {
-                return Err(verifier_unavailable_response())
-            }
+            Err(error) => return Err(data_verifier_error_response(error)),
         }
     };
 
@@ -2238,40 +2401,13 @@ pub(crate) async fn auth_middleware(
             strike_named(&mut req, &mut consumed, &strips);
             req.extensions_mut().insert(consumed);
         }
-        Err(IdentityRefusal::Denied) => {
-            if let Some(adm) = admission.as_ref() {
-                let kind = if client_token.is_none() {
-                    challenge::ChallengeError::Absent
-                } else {
-                    challenge::ChallengeError::InvalidToken
-                };
-                return Err(challenge::refuse(
-                    kind,
-                    &adm.resource_metadata,
-                    "Authentication is required for this resource.",
-                    None,
-                ));
-            }
-            return Err(unauthorized_with_completion_taps(
-                &app,
-                &path,
-                door.as_ref(),
-            ));
-        }
-        Err(IdentityRefusal::NoGrant) => {
-            if let Some(adm) = admission.as_ref() {
-                return Err(challenge::refuse(
-                    challenge::ChallengeError::InsufficientScope,
-                    &adm.resource_metadata,
-                    "The authenticated principal carries no grant on this resource.",
-                    None,
-                ));
-            }
-            return Err(unauthorized_with_completion_taps(
-                &app,
-                &path,
-                door.as_ref(),
-            ));
+        Err(refusal) => {
+            return Err(identity_refusal_response(
+                refusal,
+                admission.as_ref(),
+                client_token.is_some(),
+                || unauthorized_with_completion_taps(&app, &path, door.as_ref()),
+            ))
         }
     }
 
@@ -2382,73 +2518,6 @@ fn signed_request(parts: &axum::http::request::Parts, body: &[u8]) -> VerifyRequ
     }
 }
 
-#[cfg(test)]
-fn test_inbound_style() -> Vec<HeaderName> {
-    if crate::preflight::linked_auth_names().is_empty() {
-        return header_names(&crate::test_support::outbound_auth::double_inbound_style());
-    }
-    header_names(
-        &crate::preflight::linked_auth_axis()
-            .and_then(|axis| axis.default_inbound_style().ok())
-            .unwrap_or_default(),
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl AuthMiddleware {
-    pub fn from_calls_for_test(
-        chain: Vec<(String, std::sync::Arc<dyn AuthCalls>)>,
-        carriers: &[&str],
-    ) -> Self {
-        let chain = chain
-            .into_iter()
-            .map(|(provider, calls)| ChainEntry {
-                provider,
-                name: calls.name().to_string(),
-                calls,
-            })
-            .collect();
-        Self {
-            keys_in_chain: false,
-            chain,
-            readers: Vec::new(),
-            carriers: carriers
-                .iter()
-                .filter_map(|word| HeaderName::from_bytes(word.as_bytes()).ok())
-                .collect(),
-            issued: None,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn from_doors_for_test(chain: Vec<(String, std::sync::Arc<dyn AuthCalls>)>) -> Self {
-        let carriers = test_inbound_style();
-        let names: Vec<&str> = carriers.iter().map(HeaderName::as_str).collect();
-        Self::from_calls_for_test(chain, &names)
-    }
-
-    #[must_use]
-    pub fn with_reader_for_test(
-        mut self,
-        calls: std::sync::Arc<dyn AuthCalls>,
-        kinds: Vec<String>,
-        carriers: &[&str],
-    ) -> Self {
-        self.keys_in_chain = true;
-        self.readers.push(CredentialReader {
-            name: "test-reader".to_owned(),
-            kinds,
-            issued: None,
-            carriers: carriers
-                .iter()
-                .filter_map(|c| HeaderName::from_bytes(c.as_bytes()).ok())
-                .collect(),
-            calls,
-        });
-        self
-    }
-}
-
 pub mod admit;
 
 pub mod caller_credential;
@@ -2467,9 +2536,6 @@ pub mod exchange;
 pub mod login;
 
 #[cfg(test)]
-pub(crate) use crate::test_support::auth_stand_in as stand_in;
-
-#[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
 
@@ -2484,3 +2550,11 @@ mod acceptance_1_5_5_tests;
 #[cfg(test)]
 #[path = "tests/ticket_store_tests.rs"]
 mod ticket_store_tests;
+
+#[cfg(test)]
+#[path = "tests/ticket_admission_policy.rs"]
+mod ticket_admission_policy;
+
+#[cfg(test)]
+#[path = "tests/verified_caller_policy.rs"]
+mod verified_caller_policy;

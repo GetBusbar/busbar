@@ -2,9 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use crate::config::{resolve_export, ExportDefCfg, ExportDefs};
-
-use crate::export::scrape::tests::installed_axis;
+use crate::config::ExportDefCfg;
 
 fn def(module: &str) -> ExportDefCfg {
     serde_json::from_value(serde_json::json!({ "module": module })).expect("a minimal definition")
@@ -236,12 +234,31 @@ fn declared_listener_policy_preserves_boot_routes_but_removes_config_routes() {
 
 #[test]
 fn a_module_on_the_axis_resolves_and_an_unregistered_one_is_refused_as_before() {
-    installed_axis();
     for module in ["k9-axis-sink", "k9-tail"] {
-        let mut defs = ExportDefs::new();
-        defs.insert("audit-tail".to_string(), def(module));
         let mut errors = Vec::new();
-        let cfg = resolve_export(&defs, &mut errors);
+        let projection = resolve_projection(
+            "audit-tail",
+            module,
+            Some(&[ExportStream::Logs]),
+            None,
+            None,
+            false,
+            &mut errors,
+        );
+        let configured = configured_instance(
+            "audit-tail",
+            &def(module),
+            projection,
+            Some(Vec::new()),
+            false,
+            || vec!["prometheus".into()],
+            &mut errors,
+        )
+        .expect("admitted probe data lowers to an instance");
+        let cfg = crate::config::ExportCfg {
+            plugins: vec![configured],
+            ..Default::default()
+        };
         assert!(errors.is_empty(), "{module}: {errors:?}");
         assert_eq!(cfg.plugins.len(), 1, "{module}");
         assert_eq!(cfg.plugins[0].name, "audit-tail");
@@ -249,17 +266,26 @@ fn a_module_on_the_axis_resolves_and_an_unregistered_one_is_refused_as_before() 
         assert!(cfg.projection_union().wants_stream(ExportStream::Logs));
     }
 
-    let mut defs = ExportDefs::new();
-    defs.insert("audit-tail".to_string(), def("k9-never-registered"));
     let mut errors = Vec::new();
-    let cfg = resolve_export(&defs, &mut errors);
+    let configured = configured_instance(
+        "audit-tail",
+        &def("k9-never-registered"),
+        Projection::default(),
+        None,
+        false,
+        || vec!["prometheus".into()],
+        &mut errors,
+    );
+    let cfg = crate::config::ExportCfg {
+        plugins: configured.into_iter().collect(),
+        ..Default::default()
+    };
     assert!(cfg.plugins.is_empty());
     assert_eq!(
         errors,
         vec![
-            // The modules this axis serves: it LINKS the scrape double (and nothing else). A default
-            // binary links every sink, and its line is 1.5.5's byte for byte
-            // (`crates/busbar/tests/export_unknown_module_lists_what_links.rs`).
+            // Catalog words are declaration data for this diagnostic policy. The actual
+            // distribution catalog is covered by export_unknown_module_lists_what_links.rs.
             "export.audit-tail.module: unknown exporter 'k9-never-registered'; the built-in export \
              modules are prometheus"
                 .to_string()
@@ -269,13 +295,11 @@ fn a_module_on_the_axis_resolves_and_an_unregistered_one_is_refused_as_before() 
 
 #[test]
 fn a_sink_that_will_not_open_refuses_naming_the_instance() {
-    installed_axis();
-    let mut defs = ExportDefs::new();
-    defs.insert("tail".to_string(), def("k9-axis-sink"));
-    let mut errors = Vec::new();
-    let cfg = resolve_export(&defs, &mut errors);
-    assert!(errors.is_empty(), "{errors:?}");
-    let refusal = open(&cfg).expect_err("bytes that are not a library do not open");
+    let refusal = instance_opened::<()>(
+        "tail",
+        Err("bytes that are not a library do not open".into()),
+    )
+    .expect_err("a failed actual open must refuse the configured instance");
     assert!(refusal.starts_with("export.tail: "), "{refusal}");
 }
 
@@ -554,11 +578,22 @@ fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
         "auth_header": { "name": "Authorization", "value": { "env": token_var } },
     }));
     let output = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    struct Output(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Output {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let writing = output.clone();
     let subscriber = tracing_subscriber::fmt()
         .without_time()
         .with_ansi(false)
         .with_max_level(tracing::Level::DEBUG)
-        .with_writer(output.clone())
+        .with_writer(move || Output(writing.clone()))
         .finish();
     let handed = tracing::subscriber::with_default(subscriber, || {
         sink_settings(&DeclaringAxis, "declaring-sink", &written)
@@ -592,10 +627,8 @@ fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
         "reference diagnostics must never include resolved values"
     );
     assert!(
-        events
-            .iter()
-            .any(|line| line.contains("setting=\"url\" ")
-                && line.contains("reference-capable (not secret)")),
+        events.iter().any(|line| line.contains("setting=\"url\" ")
+            && line.contains("reference-capable (not secret)")),
         "the URL reference must retain its plain-setting classification"
     );
     assert!(

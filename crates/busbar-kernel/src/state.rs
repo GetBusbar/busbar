@@ -552,12 +552,50 @@ pub struct AppParts {
 
 #[must_use]
 pub fn planes_awaiting_restart_added(installed: &App, previous: &App) -> Vec<String> {
+    awaiting_restart_added(
+        &installed.planes_awaiting_restart,
+        &previous.planes_awaiting_restart,
+    )
+}
+
+pub(crate) fn awaiting_restart_added(installed: &[String], previous: &[String]) -> Vec<String> {
     installed
-        .planes_awaiting_restart
         .iter()
-        .filter(|s| !previous.planes_awaiting_restart.contains(s))
+        .filter(|s| !previous.contains(s))
         .cloned()
         .collect()
+}
+
+// The snapshot's ownership-bearing identity is moved together without consulting a root,
+// subscribing the journal, or constructing any runtime capability.
+struct SnapshotFields {
+    root_rules: Arc<dyn crate::appbuild::RootRules>,
+    amendments: Arc<crate::audit::amend::NodeAmendments>,
+    request_id_counter: Arc<std::sync::atomic::AtomicU64>,
+    config_version: u64,
+    public_url: Option<String>,
+    login_methods: Arc<crate::auth::login::LoginMethods>,
+    export_projections: crate::export::projection::ProjectionUnion,
+}
+
+fn snapshot_fields(
+    root_rules: Arc<dyn crate::appbuild::RootRules>,
+    amendments: Arc<crate::audit::amend::NodeAmendments>,
+    request_id_counter: Arc<std::sync::atomic::AtomicU64>,
+    config_version: u64,
+    public_url: Option<String>,
+    login_methods: Arc<crate::auth::login::LoginMethods>,
+    export_projections: crate::export::projection::ProjectionUnion,
+) -> SnapshotFields {
+    SnapshotFields {
+        root_rules,
+        amendments,
+        request_id_counter,
+        config_version,
+        public_url,
+        login_methods,
+        export_projections,
+    }
 }
 
 impl App {
@@ -632,6 +670,23 @@ impl App {
             boot_route_paths,
             planes_awaiting_restart,
         } = parts;
+        let SnapshotFields {
+            root_rules,
+            amendments,
+            request_id_counter,
+            config_version,
+            public_url,
+            login_methods,
+            export_projections,
+        } = snapshot_fields(
+            root_rules,
+            amendments,
+            request_id_counter,
+            config_version,
+            public_url,
+            login_methods,
+            export_projections,
+        );
         Self {
             tslots,
             fallback_runtime_key,
@@ -727,30 +782,38 @@ impl App {
     }
 
     pub fn flush_verified_credentials(&self, module: Option<&str>) -> Result<u64, String> {
-        let mut flushed = 0;
-        let mut failure = None;
-        for (_, instance) in self
-            .admin_modules
-            .modules
-            .iter()
-            .filter(|(name, _)| module.is_none_or(|m| m == name.as_str()))
-        {
-            match instance.calls.refresh() {
-                Ok(count) => flushed += count,
-                Err(error) => {
-                    failure.get_or_insert(error);
-                }
-            }
-        }
-        match self.auth.flush_verified(module) {
+        credential_flush_results(
+            self.admin_modules
+                .modules
+                .iter()
+                .filter(|(name, _)| module.is_none_or(|m| m == name.as_str()))
+                .map(|(_, instance)| instance.calls.refresh())
+                .chain(std::iter::once_with(|| self.auth.flush_verified(module))),
+        )
+    }
+}
+
+// Fold settled refresh answers without short-circuiting: all selected admin modules,
+// followed by the data chain, must be attempted even after a refusal.
+fn credential_flush_results(
+    results: impl IntoIterator<Item = Result<u64, String>>,
+) -> Result<u64, String> {
+    let mut flushed = 0;
+    let mut failure = None;
+    for result in results {
+        match result {
             Ok(count) => flushed += count,
             Err(error) => {
                 failure.get_or_insert(error);
             }
         }
-        failure.map_or(Ok(flushed), Err)
     }
+    failure.map_or(Ok(flushed), Err)
 }
+
+#[cfg(test)]
+#[path = "tests/credential_flush_results.rs"]
+mod credential_flush_result_tests;
 
 impl App {
     pub fn plane_configured(&self, decl: &crate::plane_driver::registry::PlaneDeclaration) -> bool {

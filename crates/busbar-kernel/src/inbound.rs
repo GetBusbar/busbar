@@ -496,47 +496,73 @@ impl RequestAdmission {
     }
 
     pub(crate) fn verdict(&self) -> crate::auth::ChainVerdict {
-        match &self.inner.admitted {
-            None => crate::auth::ChainVerdict::Open,
-            Some(admitted) => crate::auth::ChainVerdict::Identified {
-                module: admitted.provider.clone(),
-                principal: admitted.resolved.as_ref().map_or_else(
-                    || busbar_contract::auth::Principal {
-                        id: admitted.identity.subject.clone(),
-                        name: admitted.identity.name.clone(),
-                        roles: admitted.identity.groups.clone(),
-                        ttl_secs: admitted.identity.ttl_secs,
-                    },
-                    |key| crate::auth::principal_from_vkey(key),
-                ),
-                resolved: admitted.resolved.clone(),
-            },
-        }
+        admission_verdict(self.inner.admitted.as_ref())
     }
 
     pub(crate) async fn claim_replay(&self) -> bool {
-        if !self.inner.alive.load(std::sync::atomic::Ordering::Acquire) {
-            return false;
-        }
-        let Some(replay) = &self.inner.replay else {
-            return true;
-        };
-        if self
-            .inner
-            .deadline
-            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
-        {
-            return false;
-        }
-        let won = until_deadline(
+        claim_request_replay(
+            &self.inner.alive,
+            self.inner.replay.as_deref(),
             self.inner.deadline,
-            replay.won.get_or_init(|| replay.pending.win()),
         )
+        .await
+    }
+}
+
+fn admitted_identity(
+    provider: String,
+    mut identity: VerifiedIdentity,
+    resolved: Option<Arc<crate::governance::VirtualKey>>,
+) -> (Admitted, Option<Secret<String>>) {
+    let credential = identity.credential.take();
+    (
+        Admitted {
+            provider,
+            identity,
+            resolved,
+        },
+        credential,
+    )
+}
+
+fn admission_verdict(admitted: Option<&Admitted>) -> crate::auth::ChainVerdict {
+    match admitted {
+        None => crate::auth::ChainVerdict::Open,
+        Some(admitted) => crate::auth::ChainVerdict::Identified {
+            module: admitted.provider.clone(),
+            principal: admitted.resolved.as_ref().map_or_else(
+                || busbar_contract::auth::Principal {
+                    id: admitted.identity.subject.clone(),
+                    name: admitted.identity.name.clone(),
+                    roles: admitted.identity.groups.clone(),
+                    ttl_secs: admitted.identity.ttl_secs,
+                },
+                |key| crate::auth::principal_from_vkey(key),
+            ),
+            resolved: admitted.resolved.clone(),
+        },
+    }
+}
+
+async fn claim_request_replay(
+    alive: &std::sync::atomic::AtomicBool,
+    replay: Option<&ReplayAdmission>,
+    deadline: Option<std::time::Instant>,
+) -> bool {
+    if !alive.load(std::sync::atomic::Ordering::Acquire) {
+        return false;
+    }
+    let Some(replay) = replay else {
+        return true;
+    };
+    if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+        return false;
+    }
+    let won = until_deadline(deadline, replay.won.get_or_init(|| replay.pending.win()))
         .await
         .copied()
         .unwrap_or(false);
-        won && self.inner.alive.load(std::sync::atomic::Ordering::Acquire)
-    }
+    won && alive.load(std::sync::atomic::Ordering::Acquire)
 }
 
 fn same_request(left: &Head, right: &Head) -> bool {
@@ -715,20 +741,17 @@ impl UnitState {
     fn settle(&mut self) {
         match self.fixed() {
             Some(Fixed::Admitted(i)) if self.admitted.is_none() => {
-                if let Some(mut id) = self.identities.get_mut(i).and_then(Option::take) {
+                if let Some(id) = self.identities.get_mut(i).and_then(Option::take) {
                     self.replay = self.replays.get_mut(i).and_then(Option::take);
-                    self.credential = id.credential.take();
                     let provider = self.providers.get(i).cloned().unwrap_or_default();
                     let resolved = if provider == crate::config::KEYS_MODULE {
                         self.resolved.take()
                     } else {
                         None
                     };
-                    self.admitted = Some(Admitted {
-                        provider,
-                        identity: id,
-                        resolved,
-                    });
+                    let (admitted, credential) = admitted_identity(provider, id, resolved);
+                    self.credential = credential;
+                    self.admitted = Some(admitted);
                 }
                 self.identities.clear();
                 self.replays.clear();
@@ -748,23 +771,198 @@ impl UnitState {
     }
 
     fn fixed_at(&self, peer: bool) -> Option<Fixed> {
-        for (i, a) in self.answers.iter().enumerate() {
-            if peer
-                && self.table.request_auths.contains(&self.providers[i])
-                && matches!(a, Some(Judged::Identity | Judged::Pass))
+        fixed_answer_at(
+            &self.answers,
+            &self.providers,
+            &self.table.request_auths,
+            peer,
+        )
+    }
+}
+
+fn fixed_answer_at(
+    answers: &[Option<Judged>],
+    providers: &[String],
+    request_auths: &HashSet<String>,
+    peer: bool,
+) -> Option<Fixed> {
+    for (i, a) in answers.iter().enumerate() {
+        if peer
+            && request_auths.contains(&providers[i])
+            && matches!(a, Some(Judged::Identity | Judged::Pass))
+        {
+            return None;
+        }
+        match a {
+            None => return None,
+            Some(Judged::Pass) => {}
+            Some(Judged::Identity) => return Some(Fixed::Admitted(i)),
+            Some(Judged::Denied) => return Some(Fixed::Denied),
+            Some(Judged::Overloaded) => return Some(Fixed::Overloaded),
+        }
+    }
+
+    Some(Fixed::Denied)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PositionWork {
+    Finished,
+    Answered,
+    Verify,
+}
+
+fn position_work(fixed: Option<Fixed>, answer: Option<Judged>) -> PositionWork {
+    match (fixed, answer) {
+        (Some(_), _) => PositionWork::Finished,
+        (None, Some(_)) => PositionWork::Answered,
+        (None, None) => PositionWork::Verify,
+    }
+}
+
+struct InheritedPeerAnswer {
+    index: usize,
+    answer: Option<Judged>,
+    identity: Option<VerifiedIdentity>,
+    replay: Option<Arc<ReplayAdmission>>,
+}
+
+fn inherited_peer_answers<'a>(
+    providers: &'a [String],
+    request_auths: &'a HashSet<String>,
+    answers: &'a [Option<Judged>],
+    identities: &'a [Option<VerifiedIdentity>],
+    replays: &'a [Option<Arc<ReplayAdmission>>],
+) -> impl Iterator<Item = InheritedPeerAnswer> + 'a {
+    answers
+        .iter()
+        .copied()
+        .enumerate()
+        .filter_map(move |(index, answer)| {
+            if request_auths.contains(&providers[index])
+                && matches!(answer, Some(Judged::Identity | Judged::Pass))
             {
                 return None;
             }
-            match a {
-                None => return None,
-                Some(Judged::Pass) => {}
-                Some(Judged::Identity) => return Some(Fixed::Admitted(i)),
-                Some(Judged::Denied) => return Some(Fixed::Denied),
-                Some(Judged::Overloaded) => return Some(Fixed::Overloaded),
-            }
-        }
+            Some(InheritedPeerAnswer {
+                index,
+                answer,
+                identity: identities.get(index).cloned().flatten(),
+                replay: replays.get(index).cloned().flatten(),
+            })
+        })
+}
 
-        Some(Fixed::Denied)
+fn peer_capacity(existing: bool, held: usize) -> Result<(), &'static str> {
+    if !existing && held >= PEER_CONNECTIONS_MAX {
+        Err(PEER_TABLE_FULL)
+    } else {
+        Ok(())
+    }
+}
+
+fn take_framing_peers<T>(peers: &mut HashMap<(u64, u64, u64), T>, framing: u64) -> Vec<T> {
+    peers
+        .extract_if(|(_, _, f), _| *f == framing)
+        .map(|(_, peer)| peer)
+        .collect()
+}
+
+fn peer_payload_empty(unit: UnitRef, head: &Head, body: Option<&[u8]>) -> bool {
+    unit.is_none() && body.is_none() && head.is_empty()
+}
+
+fn inbound_answer(fixed: Option<Fixed>, unit: UnitRef, peer: bool, strips: &[Strip]) -> Answer {
+    Answer {
+        flow: match fixed {
+            Some(Fixed::Denied | Fixed::Overloaded) => FLOW_STOP,
+            Some(Fixed::Admitted(_)) | None => FLOW_CONTINUE,
+        },
+        unit,
+        strips: if peer { Vec::new() } else { strips.to_vec() },
+    }
+}
+
+fn checked_line_ids(ids: &[u64], lines: usize) -> Result<HashMap<u64, u32>, &'static str> {
+    let lines_by_id: HashMap<u64, u32> = ids.iter().copied().zip(0u32..).collect();
+    if ids.len() != lines || lines_by_id.len() != lines || !ids.iter().all(|id| is_line_id(*id)) {
+        return Err(IDS_REFUSED);
+    }
+    Ok(lines_by_id)
+}
+
+fn connection_allows_key_prestep(answers: &[Option<Judged>]) -> bool {
+    !answers
+        .iter()
+        .any(|answer| matches!(answer, Some(Judged::Denied | Judged::Overloaded)))
+}
+
+enum SignedReaderStep {
+    Pass(Vec<Strip>),
+    Final(Option<VerifyAnswer>),
+}
+
+fn signed_reader_step(answer: Option<VerifyAnswer>, faulted: bool) -> SignedReaderStep {
+    match answer {
+        Some(answer) if !faulted && matches!(&answer.verified, Verified::Pass) => {
+            SignedReaderStep::Pass(answer.strips)
+        }
+        answer => SignedReaderStep::Final(answer),
+    }
+}
+
+fn matched_handin_line<'a>(
+    guests: &'a GuestList,
+    auth_line: Option<u32>,
+    requested: u32,
+    head: &Head,
+) -> Option<&'a Line> {
+    let line = guests.lines().get(requested as usize)?;
+    if auth_line != Some(requested) {
+        return None;
+    }
+    let fields: Vec<(&str, &[u8])> = head
+        .fields
+        .iter()
+        .map(|(n, v)| (n.as_str(), v.as_slice()))
+        .collect();
+    match guests.matched(&head.method, &head.target, &fields) {
+        Matched::Line(m) if std::ptr::eq::<Line>(m, line) => Some(line),
+        _ => None,
+    }
+}
+
+fn handin_state_matches(
+    unit_line: u32,
+    generation: u64,
+    signed_pending: bool,
+    original: Option<&Head>,
+    strips: &[Strip],
+    h: &HandIn,
+) -> bool {
+    if unit_line != h.line || generation != h.generation || signed_pending {
+        return false;
+    }
+    if let Some(original) = original {
+        if !original
+            .stripped(strips)
+            .is_some_and(|original| same_request(&original, &h.head))
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn position_deadline_expired(deadline: Option<std::time::Instant>) -> bool {
+    deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline)
+}
+
+fn overloaded_refusal(cause: u32, overloaded: bool) -> Option<axum::response::Response> {
+    if matches!(cause, REFUSE_STOPPED | REFUSE_CHECK_FAILED) && overloaded {
+        Some(crate::auth::verifier_unavailable_response())
+    } else {
+        None
     }
 }
 
@@ -1113,14 +1311,7 @@ impl Inbound {
         generation: u64,
         listener: Listener,
     ) -> Result<(), &'static str> {
-        let lines = listener.guests.lines().len();
-        let lines_by_id: HashMap<u64, u32> = listener.ids.iter().copied().zip(0u32..).collect();
-        if listener.ids.len() != lines
-            || lines_by_id.len() != lines
-            || !listener.ids.iter().all(|id| is_line_id(*id))
-        {
-            return Err(IDS_REFUSED);
-        }
+        let lines_by_id = checked_line_ids(&listener.ids, listener.guests.lines().len())?;
         let doors = crate::core_routes::CoreRouteTable::default()
             .with_door_refusals(listener.door_refusals.clone());
         let request_auths = listener
@@ -1644,11 +1835,7 @@ impl Inbound {
             .extract_if(|_, u| u.binding.framing == Some(framing))
             .map(|(_, u)| u)
             .collect();
-        let retired_peers: Vec<_> = self
-            .peers()
-            .extract_if(|(_, _, f), _| *f == framing)
-            .map(|(_, u)| u)
-            .collect();
+        let retired_peers = take_framing_peers(&mut self.peers(), framing);
         self.framing_conns
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -1754,15 +1941,16 @@ impl Inbound {
                 .get(&(owner, generation, framing))
                 .filter(|p| p.providers == providers)
             {
-                for (index, answer) in peer.answers.iter().copied().enumerate() {
-                    if state.table.request_auths.contains(&providers[index])
-                        && matches!(answer, Some(Judged::Identity | Judged::Pass))
-                    {
-                        continue;
-                    }
-                    state.answers[index] = answer;
-                    state.identities[index] = peer.identities.get(index).cloned().flatten();
-                    state.replays[index] = peer.replays.get(index).cloned().flatten();
+                for inherited in inherited_peer_answers(
+                    providers,
+                    &state.table.request_auths,
+                    &peer.answers,
+                    &peer.identities,
+                    &peer.replays,
+                ) {
+                    state.answers[inherited.index] = inherited.answer;
+                    state.identities[inherited.index] = inherited.identity;
+                    state.replays[inherited.index] = inherited.replay;
                 }
             }
         }
@@ -1898,7 +2086,7 @@ impl Inbound {
         let providers = ordered(names);
 
         let peer = point == AuthPoint::Peer;
-        if peer && (!call.unit.is_none() || body.is_some() || !call.head.is_empty()) {
+        if peer && !peer_payload_empty(call.unit, &call.head, body.as_deref().map(Vec::as_slice)) {
             return Err(PEER_BYTES);
         }
         if body
@@ -1920,7 +2108,7 @@ impl Inbound {
             }
             let key = (call.owner, call.generation, call.framing);
             let mut peers = self.peers();
-            if !peers.contains_key(&key) && peers.len() >= PEER_CONNECTIONS_MAX {
+            if peer_capacity(peers.contains_key(&key), peers.len()).is_err() {
                 tracing::error!(
                     owner = call.owner,
                     conn = call.conn,
@@ -2020,11 +2208,7 @@ impl Inbound {
                 .ok_or(UNIT_FOREIGN)?;
             if unfinished && !peer && table.listener.app.auth.keys_in_chain {
                 let connection_denied = me
-                    .with_state(target, |u| {
-                        u.answers.iter().any(|answer| {
-                            matches!(answer, Some(Judged::Denied | Judged::Overloaded))
-                        })
-                    })
+                    .with_state(target, |u| !connection_allows_key_prestep(&u.answers))
                     .ok_or(UNIT_FOREIGN)?;
                 let method = axum::http::Method::from_bytes(head.method.as_bytes()).ok();
                 let prefix = method
@@ -2072,13 +2256,11 @@ impl Inbound {
                         let mut verifying = calls.verify(req);
                         let answer = until_deadline(deadline, &mut verifying).await;
                         let faulted = verifying.faulted();
-                        match answer {
-                            Some(answer)
-                                if !faulted && matches!(&answer.verified, Verified::Pass) =>
-                            {
+                        match signed_reader_step(answer, faulted) {
+                            SignedReaderStep::Pass(strips) => {
                                 me.with_state(target, |u| {
                                     u.signed_pending = false;
-                                    for strip in answer.strips {
+                                    for strip in strips {
                                         if !u.strips.contains(&strip) {
                                             u.strips.push(strip);
                                         }
@@ -2086,7 +2268,7 @@ impl Inbound {
                                 })
                                 .ok_or(UNIT_FOREIGN)?;
                             }
-                            answer => {
+                            SignedReaderStep::Final(answer) => {
                                 me.preflight_keys(target, keys.index)?;
                                 let judging = match answer {
                                     Some(answer) => Judging::Keys(
@@ -2169,18 +2351,17 @@ impl Inbound {
                 }
             }
             for p in positions {
-                let undecided = me
+                let position = me
                     .with_state(target, |u| {
-                        (u.fixed_at(peer).is_none())
-                            .then(|| u.answers.get(p.index).copied().flatten())
+                        position_work(u.fixed_at(peer), u.answers.get(p.index).copied().flatten())
                     })
                     .ok_or(UNIT_FOREIGN)?;
-                match undecided {
-                    None => break,
-                    Some(Some(_)) => continue,
-                    Some(None) => {}
+                match position {
+                    PositionWork::Finished => break,
+                    PositionWork::Answered => continue,
+                    PositionWork::Verify => {}
                 }
-                if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                if position_deadline_expired(deadline) {
                     me.record(target, p.index, &p.provider, Judging::Nothing, &table);
                     break;
                 }
@@ -2236,13 +2417,8 @@ impl Inbound {
     }
 
     fn answer(&self, target: Target, unit: UnitRef, peer: bool) -> Result<Answer, &'static str> {
-        self.with_state(target, |u| Answer {
-            flow: match u.fixed_at(peer) {
-                Some(Fixed::Denied | Fixed::Overloaded) => FLOW_STOP,
-                Some(Fixed::Admitted(_)) | None => FLOW_CONTINUE,
-            },
-            unit,
-            strips: if peer { Vec::new() } else { u.strips.clone() },
+        self.with_state(target, |u| {
+            inbound_answer(u.fixed_at(peer), unit, peer, &u.strips)
         })
         .ok_or(UNIT_FOREIGN)
     }
@@ -2413,42 +2589,27 @@ impl Inbound {
     }
 
     fn admits(&self, table: &Table, h: &HandIn, unit: UnitRef) -> bool {
-        let lines = table.listener.guests.lines();
-        let Some(line) = lines.get(h.line as usize) else {
+        let Some(line) = matched_handin_line(
+            &table.listener.guests,
+            table.line_of(h.auth),
+            h.line,
+            &h.head,
+        ) else {
             return false;
         };
-
-        if table.line_of(h.auth) != Some(h.line) {
-            return false;
-        }
-        let fields: Vec<(&str, &[u8])> = h
-            .head
-            .fields
-            .iter()
-            .map(|(n, v)| (n.as_str(), v.as_slice()))
-            .collect();
-        match table
-            .listener
-            .guests
-            .matched(&h.head.method, &h.head.target, &fields)
-        {
-            Matched::Line(m) if std::ptr::eq::<Line>(m, line) => {}
-            _ => return false,
-        }
         let units = self.units();
         let Some(u) = units.get(&unit.id) else {
             return false;
         };
-        if u.line != h.line || u.generation != h.generation || u.signed_pending {
+        if !handin_state_matches(
+            u.line,
+            u.generation,
+            u.signed_pending,
+            u.head.as_ref(),
+            &u.strips,
+            h,
+        ) {
             return false;
-        }
-        if let Some(original) = &u.head {
-            if !original
-                .stripped(&u.strips)
-                .is_some_and(|original| same_request(&original, &h.head))
-            {
-                return false;
-            }
         }
 
         if matches!(line.auth, LineAuth::Chain(..))
@@ -2522,6 +2683,9 @@ impl Inbound {
         );
         let app = &table.listener.app;
         let respond = || {
+            if let Some(response) = overloaded_refusal(r.cause, overloaded) {
+                return Ok(response);
+            }
             Ok(match r.cause {
                 REFUSE_NO_ROUTE => crate::router::fallback_error_response(
                     &app.planes,
@@ -2544,9 +2708,6 @@ impl Inbound {
                     busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
                     "request body exceeds the maximum allowed size",
                 ),
-                REFUSE_STOPPED | REFUSE_CHECK_FAILED if overloaded => {
-                    crate::auth::verifier_unavailable_response()
-                }
                 REFUSE_STOPPED | REFUSE_CHECK_FAILED => {
                     let method = head
                         .as_ref()
@@ -2585,5 +2746,17 @@ impl Inbound {
 }
 
 #[cfg(test)]
-#[path = "tests/inbound_tests.rs"]
-mod tests;
+#[path = "tests/inbound_owner_policies.rs"]
+mod owner_policies;
+
+#[cfg(test)]
+#[path = "tests/inbound_peer_owner_policies.rs"]
+mod peer_owner_policies;
+
+#[cfg(test)]
+#[path = "tests/inbound_handin_owner_policies.rs"]
+mod handin_owner_policies;
+
+#[cfg(test)]
+#[path = "tests/inbound_signed_order_policies.rs"]
+mod signed_order_policies;

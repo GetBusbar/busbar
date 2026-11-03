@@ -16,8 +16,8 @@ use super::SecretRows;
 use crate::boot::Candidate;
 use crate::dispatch::{DispatchConfig, Dispatcher};
 
-use crate::both_ways::secret_fixture;
-use secret_fixture::door::door;
+use crate::actual_env_secret as secret_fixture;
+use secret_fixture::door;
 use secret_fixture::NAME;
 
 const MATERIAL: &str = "s3cr3t-on-the-disk-lane";

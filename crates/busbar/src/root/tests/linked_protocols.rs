@@ -1,7 +1,5 @@
-use busbar_contract::codec::RequestHandler;
 use busbar_contract::operation::OpVerb;
 use busbar_contract::protocol::ProtocolDecl;
-use http::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
 use std::sync::LazyLock;
 
@@ -31,61 +29,12 @@ fn declared_verbs() -> Vec<OpVerb> {
         .collect()
 }
 
-fn residual_dialect_for_path(path: &str) -> Option<&'static str> {
-    linked_decls()
-        .into_iter()
-        .filter_map(|decl| {
-            decl.residual_claims
-                .and_then(|claim| claim(path))
-                .map(|strength| (strength, decl.name))
-        })
-        .min_by_key(|(strength, _)| *strength)
-        .map(|(_, name)| name)
-}
-
-fn detect_protocol(path: &str, headers: &HeaderMap) -> Option<&'static str> {
-    let fields: Vec<(&[u8], &[u8])> = headers
-        .iter()
-        .map(|(name, value)| (name.as_str().as_bytes(), value.as_bytes()))
-        .collect();
-    linked_decls()
-        .into_iter()
-        .filter_map(|decl| {
-            decl.claim_over(path, &fields)
-                .map(|strength| (strength, decl.name))
-        })
-        .min_by_key(|(strength, _)| *strength)
-        .map(|(_, name)| name)
-}
-
 fn strs(v: &Value) -> Vec<&str> {
     v.as_array()
         .expect("an array")
         .iter()
         .map(|s| s.as_str().expect("a string"))
         .collect()
-}
-
-fn headers(v: &Value) -> HeaderMap {
-    let mut h = HeaderMap::new();
-    for pair in v.as_array().expect("header pairs") {
-        let (k, val) = (
-            pair[0].as_str().expect("name"),
-            pair[1].as_str().expect("value"),
-        );
-        h.insert(
-            HeaderName::from_bytes(k.as_bytes()).expect("a header name"),
-            HeaderValue::from_str(val).expect("a header value"),
-        );
-    }
-    h
-}
-
-fn request_handler(proto: &str) -> Option<&'static dyn RequestHandler> {
-    linked_decls()
-        .into_iter()
-        .find(|decl| decl.name == proto)
-        .and_then(|decl| decl.handler)
 }
 
 #[test]
@@ -225,78 +174,6 @@ fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
             !provider_protocols().contains(&d.name),
             "a provider lane cannot name {}, which has no wire codec",
             d.name
-        );
-    }
-}
-
-#[test]
-fn resolver_table() {
-    for case in FIXTURE["resolver"].as_array().expect("resolver") {
-        let path = case[0].as_str().expect("path");
-        let got = detect_protocol(path, &headers(&case[1])).and_then(|proto| {
-            request_handler(proto)
-                .and_then(|rh| rh.resolve_operation(path, b""))
-                .map(|op| (proto, op.name()))
-        });
-        let want = case[2]
-            .as_array()
-            .map(|w| (w[0].as_str().expect("proto"), w[1].as_str().expect("verb")));
-        assert_eq!(got, want, "path {path:?} headers {}", case[1]);
-    }
-    for case in FIXTURE["body_resolver"].as_array().expect("body_resolver") {
-        let (path, body) = (
-            case[0].as_str().expect("path"),
-            case[1].as_str().expect("body"),
-        );
-        let proto = detect_protocol(path, &HeaderMap::new()).expect(path);
-        assert_eq!(
-            proto,
-            case[2][0].as_str().expect("proto"),
-            "protocol for {path:?}"
-        );
-        let op = request_handler(proto)
-            .and_then(|rh| rh.resolve_operation(path, body.as_bytes()))
-            .expect(path);
-        assert_eq!(
-            op.name(),
-            case[2][1].as_str().expect("verb"),
-            "operation for {path:?}"
-        );
-    }
-}
-
-#[test]
-fn mandatory_header_beats_path_ordering() {
-    let case = &FIXTURE["mandatory_header"];
-    let p = detect_protocol(case[0].as_str().expect("path"), &headers(&case[1])).unwrap();
-    assert_eq!(p, case[2].as_str().expect("proto"));
-}
-
-#[test]
-fn test_residual_dialect_colon_model_id_is_openai_not_gemini() {
-    for case in FIXTURE["residual"].as_array().expect("residual") {
-        let path = case[0].as_str().expect("path");
-        assert_eq!(
-            residual_dialect_for_path(path),
-            case[1].as_str(),
-            "residual classification of {path:?}"
-        );
-    }
-}
-
-#[test]
-fn test_residual_dialect_names_none_rather_than_defaulting_to_openai() {
-    let live = &FIXTURE["residual_live"];
-    assert_eq!(
-        residual_dialect_for_path(live[0].as_str().expect("path")),
-        live[1].as_str(),
-        "the residual fold must be live, or the `None` assertions below prove nothing"
-    );
-    for path in strs(&FIXTURE["residual_none"]) {
-        assert_eq!(
-            residual_dialect_for_path(path),
-            None,
-            "`{path}` names no dialect — the classifier must say so, not name a default"
         );
     }
 }

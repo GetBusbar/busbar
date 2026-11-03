@@ -23,19 +23,76 @@ use tower::ServiceExt as _;
 #[path = "../../../../crates/busbar/src/root/tests/test_plugins.rs"]
 mod plugins;
 
-static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
-    std::sync::LazyLock::new(|| {
-        let history = crate::root::kernel::RootHistory::default();
-        history.apply(
-            crate::root::kernel::card_from_config(
-                std::iter::empty::<(&str, busbar_contract::billing::RawTierRates)>(),
-                0,
-                true,
-            ),
-            1_000,
+// Each ordinary case owns a real root process: ROOT_CARD's Store binding is
+// intentionally one-time, and a full test binary must not reuse another case's book.
+fn isolated_case() -> bool {
+    const CHILD: &str = "BUSBAR_DECISIONS_HOOKS_CHILD";
+    const WITNESS: &str = "actual Decisions hook assertions completed";
+    let name = std::thread::current()
+        .name()
+        .expect("the exact test is named")
+        .to_owned();
+    if std::env::var(CHILD).ok().as_deref() == Some(name.as_str()) {
+        return false;
+    }
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", &name, "--nocapture"])
+        .env(CHILD, &name)
+        .stdout(std::process::Stdio::piped());
+    let mut settings: Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("actual Store settings");
+    if settings.get("db_path").is_some() {
+        let directory = plugins::scratch("decisions-child-store");
+        settings["db_path"] = json!(directory.join("governance.sqlite"));
+        command.env(
+            "BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS",
+            settings.to_string(),
         );
-        history
-    });
+    }
+    let mut child = Child(
+        command
+            .spawn()
+            .expect("start the exact isolated Decisions case"),
+    );
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            use std::io::Read;
+            let mut output = String::new();
+            child
+                .0
+                .stdout
+                .take()
+                .unwrap()
+                .read_to_string(&mut output)
+                .unwrap();
+            assert!(
+                status.success(),
+                "the actual Decisions child failed: {status}: {output}"
+            );
+            assert!(
+                output.contains(WITNESS),
+                "the exact child did not complete its assertions: {output}"
+            );
+            return true;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "the actual Decisions child timed out"
+        );
+        std::thread::park_timeout(std::time::Duration::from_millis(5));
+    }
+}
 
 #[derive(Clone, Copy)]
 enum Bound {
@@ -71,11 +128,7 @@ fn stage(directory: &Path, file: &str, variable: &str, kind: &str) -> (String, S
         .expect("the actual product exports its statement");
     let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
         .expect("the actual product statement is valid");
-    let mut manifest = plugins::manifest(
-        kind,
-        &facts.name,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-    );
+    let mut manifest = plugins::manifest(kind, &facts.name, "third-party");
     manifest.version = facts.version;
     manifest.statement = Some(hex::encode(statement));
     if kind == "hook" {
@@ -91,7 +144,7 @@ fn stage(directory: &Path, file: &str, variable: &str, kind: &str) -> (String, S
         };
     }
     let library = std::fs::read(path).expect("read the actual product cdylib");
-    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    let archive = plugins::signed(&plugins::key(0x33), manifest, &library);
     let hash = busbar_contract::redacted::sha256_hex(&archive);
     std::fs::write(directory.join(file), archive).expect("stage the signed actual product");
     (facts.name, hash)
@@ -152,6 +205,7 @@ struct Served {
     token: String,
     heard: tokio::sync::mpsc::UnboundedReceiver<String>,
     _handle: Arc<AppHandle>,
+    _book: crate::root::durability::NodeBook,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -182,11 +236,7 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
     );
     let signing_key = directory.join("signing.key");
     let provider_key = directory.join("provider.key");
-    std::fs::write(
-        &signing_key,
-        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    )
-    .unwrap();
+    std::fs::write(&signing_key, hex::encode([9u8; 32])).unwrap();
     std::fs::write(&provider_key, "sk-decisions-hooks").unwrap();
     let store_settings: Value = serde_json::from_str(
         &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
@@ -195,7 +245,7 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
     assert!(store_settings.is_object());
     let mut document = json!({
         "store":{"module":store,"settings":store_settings},
-        "providers":{"typesafe":{"protocol":"jev","base_url":format!("http://127.0.0.1:{provider_port}"),"api_key":{"file":provider_key}}},
+        "providers":{"typesafe":{"api_key":{"file":provider_key}}},
         "models":{},
         "decisions":{"models":{"m":{"provider":"typesafe"}}},
         "auth":{"chain":["keys"],"signing_key":{"file":signing_key},"admin_auth":[]},
@@ -204,16 +254,25 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
     if attach {
         document["hooks"] = json!({"cell":{
             "kind":"gate","module":webrequest,"timeout_ms":10_000,"on_error":"weighted",
-            "prompt":prompt,"user":"ro","priority":0,"global":matches!(bound,Bound::Global),
-            "default":false,"signals":[],"groups":[],"phase":[],"settings":{"url":hook_url}
+            "prompt":prompt,"user":"ro","priority":0,
+            "groups":[],"phase":[],"settings":{"url":hook_url}
         }});
         if matches!(bound, Bound::Section) {
             document["decisions"]["hooks"] = json!(["cell"]);
+        } else {
+            document["pools"] = json!({"hooks":["cell"]});
         }
     }
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("actual decisions deployment parses");
-    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let definitions = std::collections::HashMap::from([(
+        "typesafe".to_owned(),
+        serde_json::from_value(json!({
+            "protocol":"jev", "base_url":format!("http://127.0.0.1:{provider_port}")
+        }))
+        .expect("the actual provider definition parses"),
+    )]);
+    let cfg = busbar_kernel::config::resolve(&deploy, &definitions)
         .expect("actual decisions deployment resolves");
     let providers = crate::root::door_steps::provider_routes(
         &cfg.providers,
@@ -226,7 +285,7 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
     crate::root::serve::compose(judge, &late, credentials);
     let dispatcher = Arc::new(crate::root::dispatch::build(2, &late));
     crate::root::connector::install_io(&dispatcher);
-    let plugins = busbar_kernel::config::PluginsCfg {
+    let mut plugins = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
         fetch: serde_json::from_value(
@@ -235,6 +294,13 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         .expect("actual Store archive pin"),
         ..Default::default()
     };
+    plugins
+        .trust
+        .publishers
+        .push(busbar_kernel::config::PluginPublisher {
+            name: "third-party".into(),
+            public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+        });
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -248,7 +314,17 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         &rules,
     )
     .expect("the production root builds the decisions application");
+    limits.stage_boot();
+    let book = crate::root::boot::book(&app, &store)
+        .expect("the actual Store binds root card history before activation");
     limits.keep().expect("commit actual application limits");
+    let ctx = crate::root::linked::BookCtx {
+        book: &book,
+        app: &app,
+    };
+    for step in crate::ROOT_UNITS.iter().filter_map(|unit| unit.on_book) {
+        step(&ctx);
+    }
     if let Some(rotate) = rotate {
         rotate();
     }
@@ -296,7 +372,6 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         .expect("the actual decisions door binds"),
     );
     let node = Arc::new(crate::root::plane_node::Node::new());
-    let book = crate::root::durability::node_book();
     node.bind_book(book.durability.clone());
     let post = Arc::new(crate::root::plane_node::NodeEndPost::new(node));
     let money_gov = gov.clone();
@@ -348,8 +423,13 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
     )
     .expect("the actual root composes decisions egress and hooks");
     composed.post = Some(post);
-    let doors = crate::root::serve::door_routes(composed, || CARD.pin(), &[], &[])
-        .expect("actual decisions routes mount");
+    let doors = crate::root::serve::door_routes(
+        composed,
+        || crate::root::kernel::ROOT_CARD.pin(),
+        &[],
+        &[],
+    )
+    .expect("actual decisions routes mount");
     let (router, _, handle) =
         busbar_kernel::build_split_routers_serving(app, doors, 1 << 20, 0, false);
     credential_handle.set(handle.clone());
@@ -358,6 +438,7 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         token: token.expose(&busbar_kernel::seal::lend()).to_owned(),
         heard,
         _handle: handle,
+        _book: book,
         tasks: vec![provider_task, hook_task],
     }
 }
@@ -391,6 +472,9 @@ impl Served {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_global_gate_refuses_a_decisions_request_before_its_dial() {
+    if isolated_case() {
+        return;
+    }
     let _one = crate::root::PUBLISHING.lock().await;
     let mut s = served(
         "decisions-hooks-gate",
@@ -407,10 +491,14 @@ async fn a_global_gate_refuses_a_decisions_request_before_its_dial() {
         heard.is_none(),
         "the gated unit reached the provider: {heard:?}"
     );
+    println!("actual Decisions hook assertions completed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_decisions_hooks_rewrite_alters_the_request_the_provider_receives() {
+    if isolated_case() {
+        return;
+    }
     let _one = crate::root::PUBLISHING.lock().await;
     let mut s = served(
         "decisions-hooks-rewrite",
@@ -427,10 +515,14 @@ async fn a_decisions_hooks_rewrite_alters_the_request_the_provider_receives() {
         head.ends_with(r#"{"state":{"amount":0}}"#),
         "the provider received the hook's document, not the caller's: {head}"
     );
+    println!("actual Decisions hook assertions completed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_gate_named_in_decisions_hooks_refuses_the_unit() {
+    if isolated_case() {
+        return;
+    }
     let _one = crate::root::PUBLISHING.lock().await;
     let mut s = served(
         "decisions-hooks-section-gate",
@@ -444,10 +536,14 @@ async fn a_gate_named_in_decisions_hooks_refuses_the_unit() {
     assert_eq!(status.as_u16(), 403, "{body}");
     assert_eq!(body["error"]["message"], "decisions closed", "{body}");
     assert!(heard.is_none(), "{heard:?}");
+    println!("actual Decisions hook assertions completed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn with_no_hook_bound_the_provider_receives_the_callers_bytes() {
+    if isolated_case() {
+        return;
+    }
     let _one = crate::root::PUBLISHING.lock().await;
     let mut s = served(
         "decisions-hooks-none",
@@ -461,4 +557,5 @@ async fn with_no_hook_bound_the_provider_receives_the_callers_bytes() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let head = heard.expect("the provider was dialled");
     assert!(head.ends_with(r#"{"state":{"amount":7}}"#), "{head}");
+    println!("actual Decisions hook assertions completed");
 }

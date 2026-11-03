@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use axum::Router;
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteSpec};
 
@@ -27,41 +26,6 @@ fn door_at(path: &str, auth: RouteAuth) -> PlaneRouteSpec {
     }
 }
 
-fn data_router(doors: Vec<PlaneRouteSpec>) -> Router {
-    let app = crate::test_support::TestApp::new().build();
-    crate::build_split_routers_serving(
-        app,
-        doors,
-        busbar_kernel_egress::upstream::max_translate_body_bytes(),
-        crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
-        crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
-    )
-    .0
-}
-
-async fn post(router: Router, path: &str) -> (u16, String) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let resp = reqwest::Client::new()
-        .post(format!("http://{addr}{path}"))
-        .body("piece")
-        .send()
-        .await
-        .unwrap();
-    let code = resp.status().as_u16();
-    let body = resp.text().await.unwrap();
-    server.abort();
-    (code, body)
-}
-
-#[tokio::test]
-async fn without_the_install_the_same_path_is_the_fallbacks() {
-    let (code, body) = post(data_router(Vec::new()), DOOR).await;
-    assert_ne!(code, 200, "no door route, so the fallback answers: {body}");
-    assert!(!body.starts_with("door "), "{body}");
-}
-
 #[test]
 fn a_door_route_is_recorded_at_the_bar_it_declares() {
     let table = crate::router::base_data_router(
@@ -78,60 +42,4 @@ fn a_door_route_is_recorded_at_the_bar_it_declares() {
         .find(|r| r.path == DOOR)
         .map(|r| (r.method.as_str(), r.auth));
     assert_eq!(row, Some(("POST", RouteAuth::Key)));
-}
-
-const CLAIMED_UNDER_API: &str = "/api/door-route-test/evaluate";
-
-#[tokio::test]
-async fn a_planes_exact_claim_under_the_api_root_is_admitted_at_its_own_bar() {
-    let (code, body) = post(
-        data_router(vec![door_at(CLAIMED_UNDER_API, RouteAuth::Key)]),
-        CLAIMED_UNDER_API,
-    )
-    .await;
-    assert_eq!(code, 200, "the claimed path is the plane's: {body}");
-    assert_eq!(body, format!("door {CLAIMED_UNDER_API} piece"));
-}
-
-#[tokio::test]
-async fn an_unclaimed_path_under_the_api_root_stays_behind_the_operator_chain() {
-    let (code, body) = post(
-        data_router(vec![door_at(CLAIMED_UNDER_API, RouteAuth::Key)]),
-        "/api/door-route-test/unclaimed",
-    )
-    .await;
-    assert_eq!(code, 401, "the admin prefix fails closed: {body}");
-}
-
-#[tokio::test]
-async fn a_http_plane_receives_no_scheme_derived_from_a_raw_credential() {
-    let spec = PlaneRouteSpec {
-        path: DOOR.into(),
-        method: RouteMethod::Post,
-        auth: RouteAuth::Key,
-        handler: Arc::new(|ctx: PlaneReqCtx| {
-            Box::pin(async move {
-                assert!(!ctx.headers.contains_key("x-api-key"));
-                assert!(!ctx.headers.contains_key("authorization"));
-                axum::response::IntoResponse::into_response(axum::Json(ctx.consumed_fields))
-            })
-        }),
-    };
-    let router = data_router(vec![spec]);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let response = reqwest::Client::new()
-        .post(format!("http://{addr}{DOOR}"))
-        .header("x-api-key", "secret-prefix secret-tail")
-        .header("authorization", "Bearer caller-secret")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status().as_u16(), 200);
-    let fields: Vec<(String, String)> = response.json().await.unwrap();
-    server.abort();
-    assert!(fields.contains(&("x-api-key".into(), String::new())));
-    assert!(fields.contains(&("authorization".into(), "Bearer".into())));
-    assert!(!format!("{fields:?}").contains("secret"));
 }

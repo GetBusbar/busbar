@@ -157,6 +157,15 @@ fn node(
 }
 
 fn try_mint(g: &GovState) -> crate::governance::RecordStoreResult<(String, String)> {
+    let kind = crate::tests::frozen_text("signed_credential_kind");
+    let shape = busbar_contract::auth_calls::IssuedShape {
+        id_prefix: "AKIA".to_string(),
+        id_len: 20,
+        id_alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".to_string(),
+        secret_len: 40,
+        secret_alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+            .to_string(),
+    };
     let (_, _, public_id, secret) = g.mint_signed_with_credential(
         NewKeySpec {
             name: "at-rest".to_string(),
@@ -164,8 +173,8 @@ fn try_mint(g: &GovState) -> crate::governance::RecordStoreResult<(String, Strin
         },
         2_000_000_000,
         1_700_000_000,
-        &crate::test_support::issued::double().0,
-        &crate::test_support::issued::double().1,
+        kind.as_str().expect("the frozen credential kind is text"),
+        &shape,
     )?;
     Ok((public_id, secret.expose(&crate::seal::lend()).clone()))
 }
@@ -177,8 +186,12 @@ fn mint(g: &GovState) -> (String, String) {
 const NOW: u64 = 1_700_000_001;
 
 fn read(g: &GovState, public_id: &str) -> (String, bool) {
-    let kind = crate::test_support::issued::double().0;
-    let (s, live) = g.credential_secret(&kind, public_id, NOW);
+    let kind = crate::tests::frozen_text("signed_credential_kind");
+    let (s, live) = g.credential_secret(
+        kind.as_str().expect("the frozen credential kind is text"),
+        public_id,
+        NOW,
+    );
     (s.expose(&crate::seal::lend()).clone(), live)
 }
 

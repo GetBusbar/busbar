@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::*;
+use busbar_contract::abi::auth::{BeginLoginOut, BEGIN_FORM};
 use busbar_contract::abi::auth::{LoginField, FORM_TEXT};
+use busbar_contract::abi::mechanism::call::AbiStr;
+use busbar_contract::auth::{FieldKind, LoginOutcome};
 
 fn form_of(fields: &[LoginField]) -> BeginLoginOut {
     BeginLoginOut {
@@ -28,8 +30,14 @@ fn a_form_over_the_hosts_field_cap_is_malformed_in_the_transcript() {
         required: 0,
     };
     let over = vec![field; 65];
-    assert_eq!(spelled_form(&form_of(&over)), "malformed");
+    assert!(crate::auth_door::login::begun(&form_of(&over)).is_none());
     let at = vec![field; 64];
-    let spelled = spelled_form(&form_of(&at));
-    assert_eq!(spelled, format!("[{}]", vec!["f:text"; 64].join(",")));
+    let Some(LoginOutcome::Prompt(form)) = crate::auth_door::login::begun(&form_of(&at)) else {
+        panic!("the actual capped reader accepts exactly64 live fields");
+    };
+    assert_eq!(form.fields.len(), 64);
+    assert!(form.fields.iter().all(|field| field.name == "f"
+        && field.label == "f"
+        && field.kind == FieldKind::Text
+        && !field.required));
 }

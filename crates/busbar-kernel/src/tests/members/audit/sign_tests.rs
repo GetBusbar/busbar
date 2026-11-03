@@ -739,7 +739,10 @@ fn the_legacy_v4_worked_example_keeps_its_exact_record_hash_and_signature() {
     let mut chain = AuditChain::new()
         .signing_with(signer())
         .sealing_as(WORKED_EXAMPLE_NODE);
-    let mut record = chain.seal(worked_example_inputs(), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
+    let mut record = chain.seal(
+        worked_example_inputs(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
     record.usage.rate_card_version = None;
     record.recipe = busbar_kernel_audit::Recipe::V4 {
         legacy_rate_card_version: 3,
@@ -804,7 +807,10 @@ fn the_worked_examples_preimage_is_the_length_the_spec_quotes() {
     let mut chain = AuditChain::new()
         .signing_with(signer())
         .sealing_as(WORKED_EXAMPLE_NODE);
-    let mut record = chain.seal(worked_example_inputs(), &Pass::<AuditStep>::mint(&crate::seal::acquire()));
+    let mut record = chain.seal(
+        worked_example_inputs(),
+        &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+    );
     record.usage.rate_card_version = None;
     record.recipe = busbar_kernel_audit::Recipe::V4 {
         legacy_rate_card_version: 3,

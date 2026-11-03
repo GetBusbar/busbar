@@ -20,6 +20,57 @@ pub(super) fn axis() -> Option<&'static dyn ExportAxis> {
     crate::preflight::root_rows().export_axis
 }
 
+pub(crate) fn scrape_instance(
+    projection: Projection,
+    declared: Option<&[ExportStream]>,
+    first_party: bool,
+    already_scraping: bool,
+    settings: serde_json::Value,
+) -> (bool, Option<crate::config::PrometheusSettings>) {
+    let metrics = ExportStream::Metrics;
+    let scrape = declared.is_some_and(|streams| streams.contains(&metrics))
+        && first_party
+        && projection.wants_stream(metrics)
+        && !already_scraping;
+    let recorder = if scrape {
+        serde_json::from_value(settings).ok()
+    } else {
+        None
+    };
+    (scrape, recorder)
+}
+
+pub(crate) fn configured_instance(
+    name: &str,
+    def: &crate::config::ExportDefCfg,
+    projection: Projection,
+    problems: Option<Vec<String>>,
+    scrape: bool,
+    linked_modules: impl FnOnce() -> Vec<String>,
+    errors: &mut Vec<String>,
+) -> Option<crate::config::PluginExportSettings> {
+    match problems {
+        Some(problems) => {
+            errors.extend(problems);
+            Some(crate::config::PluginExportSettings {
+                name: name.to_owned(),
+                def: def.clone(),
+                projection,
+                scrape,
+            })
+        }
+        None => {
+            errors.push(format!(
+                "export.{name}.module: unknown exporter '{}'; the built-in export modules are \
+                 {}",
+                def.module.trim(),
+                linked_modules().join(" | ")
+            ));
+            None
+        }
+    }
+}
+
 pub(crate) fn probe(
     name: &str,
     module: &str,
@@ -267,7 +318,7 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
             }
         };
         let opened_sink = axis.open(module, &format!("export.{name}"), settings.as_value());
-        let Ok(sink) = opened_sink.map_err(|e| errors.push(format!("export.{name}: {e}"))) else {
+        let Ok(sink) = instance_opened(name, opened_sink).map_err(|e| errors.push(e)) else {
             continue;
         };
 
@@ -299,6 +350,10 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
 
     tracing::callsite::rebuild_interest_cache();
     Ok(())
+}
+
+fn instance_opened<T>(name: &str, opened: Result<T, String>) -> Result<T, String> {
+    opened.map_err(|error| format!("export.{name}: {error}"))
 }
 
 #[derive(Default)]

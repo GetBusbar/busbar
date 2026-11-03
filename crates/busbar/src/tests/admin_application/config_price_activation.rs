@@ -146,7 +146,7 @@ async fn an_absent_card_and_unchanged_prices_allow_a_successful_settings_handler
         &rules,
     )
     .expect("the actual product builds the swap deployment");
-    limits.keep().expect("the product limits commit");
+    limits.stage_boot();
     if let Some(rotate) = rotate {
         rotate();
     }
@@ -167,6 +167,9 @@ async fn an_absent_card_and_unchanged_prices_allow_a_successful_settings_handler
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
         .expect("actual rate history boots");
+    limits
+        .keep()
+        .expect("the booted actual rates and limits commit");
     let overlay =
         busbar_kernel::config::overlay::OverlayStore::new(calls).expect("actual Store overlay");
     app.overlay_path = Some(overlay.clone());
@@ -337,7 +340,7 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
             &rules,
         )
         .expect("the actual product builds the swap deployment");
-        limits.keep().expect("the product limits commit");
+        limits.stage_boot();
         if let Some(rotate) = rotate {
             rotate();
         }
@@ -359,6 +362,9 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
             .expect("actual rate history boots");
+        limits
+            .keep()
+            .expect("the booted actual rates and limits commit");
         let book = crate::root::kernel::ROOT_CARD
             .card_store()
             .expect("actual loaded card history")
@@ -658,7 +664,7 @@ async fn config_refusal_or_unknown_reply_never_attempts_price_activation() {
             &rules,
         )
         .expect("the actual product builds the swap deployment");
-        limits.keep().expect("the product limits commit");
+        limits.stage_boot();
         if let Some(rotate) = rotate {
             rotate();
         }
@@ -680,6 +686,9 @@ async fn config_refusal_or_unknown_reply_never_attempts_price_activation() {
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
             .expect("actual rate history boots");
+        limits
+            .keep()
+            .expect("the booted actual rates and limits commit");
         let book = crate::root::kernel::ROOT_CARD
             .card_store()
             .expect("actual loaded card history")
@@ -845,7 +854,7 @@ async fn pending_activation_and_canceled_handler_keep_the_old_generation_until_c
         &rules,
     )
     .expect("the actual product builds the swap deployment");
-    limits.keep().expect("the product limits commit");
+    limits.stage_boot();
     if let Some(rotate) = rotate {
         rotate();
     }
@@ -867,6 +876,9 @@ async fn pending_activation_and_canceled_handler_keep_the_old_generation_until_c
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
         .expect("actual rate history boots");
+    limits
+        .keep()
+        .expect("the booted actual rates and limits commit");
     let book = crate::root::kernel::ROOT_CARD
         .card_store()
         .expect("actual loaded card history")
@@ -1091,7 +1103,7 @@ async fn callback_panics_preserve_one_coherent_published_price_generation() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
-    limits.keep().expect("the product limits commit");
+    limits.stage_boot();
     if let Some(rotate) = rotate {
         rotate();
     }
@@ -1113,6 +1125,9 @@ async fn callback_panics_preserve_one_coherent_published_price_generation() {
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
         .expect("actual rate history boots");
+    limits
+        .keep()
+        .expect("the booted actual rates and limits commit");
     let book = crate::root::kernel::ROOT_CARD
         .card_store()
         .expect("actual loaded card history")
