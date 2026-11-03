@@ -327,14 +327,57 @@ async fn a_door_judging_another_token_is_told_apart() {
     );
 }
 
+// The real OIDC image is held while its immutable SDK descriptor is lent to the registry.
+fn actual_oidc() -> (
+    std::path::PathBuf,
+    busbar_contract::abi::mechanism::door::DoorFn,
+) {
+    use busbar_contract::abi::sdk::door::RawDoorFn;
+    use std::sync::OnceLock;
+    static IMAGE: OnceLock<(std::path::PathBuf, libloading::Library, RawDoorFn)> = OnceLock::new();
+    extern "C" fn door() -> &'static busbar_contract::abi::mechanism::door::Door {
+        let image = IMAGE.get_or_init(|| {
+            let path = std::env::var_os("BUSBAR_TEST_OIDC_CDYLIB")
+                .map(std::path::PathBuf::from)
+                .expect("BUSBAR_TEST_OIDC_CDYLIB names the actual qualified OIDC image");
+            assert!(path.is_absolute() && path.is_file());
+            let library = crate::dlopen_on_worker(path.as_os_str())
+                .expect("actual OIDC loads on the plugin worker");
+            // SAFETY: the exact product image exports the typed SDK door entry and remains in IMAGE.
+            let entry = unsafe {
+                *library
+                    .get::<RawDoorFn>(busbar_contract::abi::mechanism::DOOR_SYMBOL)
+                    .expect("actual OIDC door")
+            };
+            (path, library, entry)
+        });
+        let raw = crate::dispatch::load::enter_door(image.2);
+        crate::dispatch::load::validate_door::<crate::dispatch::kinds::auth::Auth>(raw)
+            .expect("actual OIDC auth descriptor validates");
+        // SAFETY: validation establishes the descriptor; IMAGE holds its mapping for every loan.
+        unsafe { &*raw }
+    }
+    let _ = door();
+    (IMAGE.get().unwrap().0.clone(), door)
+}
+
 #[test]
 fn a_third_party_signature_is_a_different_row() {
-    let [linked, dropped] = doors(true);
-    let dropped_row = row(&dropped, "auth-fixture");
+    let (path, door) = actual_oidc();
+    let image = std::fs::read(path).expect("read the actual OIDC image");
+    let manifest = LinkedPlugin::first_party_door("auth", "oidc", "the-auth", door).manifest;
+    let module = manifest.name.clone();
+    let linked = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::door(manifest.clone(), door)])
+        .expect("actual OIDC linked row");
+    let mut third_party = manifest;
+    third_party.publisher = "a-third-party".into();
+    let dropped = dropped_third_party("actual-oidc", third_party, &image);
+    let dropped_row = row(&dropped, &module);
     assert!(!dropped_row.starts_with("no row"), "{dropped_row}");
     assert_ne!(
-        row(&linked, "auth-fixture"),
+        row(&linked, &module),
         dropped_row,
-        "a third-party row must not compare equal to the first-party one"
+        "a third-party actual OIDC row must not compare equal to the first-party one"
     );
 }
