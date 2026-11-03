@@ -353,8 +353,7 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
                         .clone();
                     peer_out
                         .send(peer)
-                        .ok()
-                        .expect("actual far peer remains owned by the test");
+                        .unwrap_or_else(|_| panic!("actual far peer remains owned by the test"));
                     Ok::<_, std::convert::Infallible>(
                         hyper::Response::builder()
                             .status(201)

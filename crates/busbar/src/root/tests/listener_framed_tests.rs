@@ -1994,7 +1994,7 @@ async fn a_parked_stream_does_not_hold_an_independent_stream_behind_its_body() {
         stopped,
     ));
     let (mut sender, connection) = h2::client::handshake(client).await.unwrap();
-    let connection = tokio::spawn(async move { connection.await });
+    let connection = tokio::spawn(connection);
     sender = sender.ready().await.unwrap();
     let (first, _) = sender
         .send_request(

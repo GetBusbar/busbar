@@ -475,7 +475,6 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
         }
     }
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    const CEIL: u64 = 24 * 3600;
 
     fn live_rows(gov: &GovState) -> usize {
         gov.all_keys()

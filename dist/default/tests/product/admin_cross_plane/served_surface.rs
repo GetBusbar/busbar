@@ -643,7 +643,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
             .expect("the actual Store opens its overlay"),
         );
         app.governance = Some(gov("served-openapi-token"));
-        app.plane_sections = Some((&sections).iter().copied().collect());
+        app.plane_sections = Some(sections.iter().copied().collect());
 
         std::sync::Arc::new(app)
     };
@@ -736,7 +736,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
             .expect("the actual Store opens its overlay"),
         );
         app.governance = Some(gov("served-openapi-token"));
-        app.plane_sections = Some((&[]).iter().copied().collect());
+        app.plane_sections = Some([].iter().copied().collect());
 
         std::sync::Arc::new(app)
     };
@@ -849,7 +849,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
             .expect("the actual Store opens its overlay"),
         );
         app.governance = Some(gov("served-openapi-token"));
-        app.plane_sections = Some((&["tools"]).iter().copied().collect());
+        app.plane_sections = Some(["tools"].iter().copied().collect());
 
         std::sync::Arc::new(app)
     };

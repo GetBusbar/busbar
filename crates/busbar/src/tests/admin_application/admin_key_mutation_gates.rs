@@ -478,7 +478,7 @@ impl busbar_kernel::governance::RecordStore for BarrierStore {
         if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
             let _ = self.entered.send(());
 
-            let _ = self
+            self
                 .release
                 .lock()
                 .unwrap()

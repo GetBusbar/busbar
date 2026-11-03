@@ -4233,19 +4233,6 @@ fn test_validate_refuses_per_lane_durations_past_the_runtime_horizon() {
     );
 }
 
-// These values describe classes and fees; they contain no plugin callbacks or registry.
-fn plane_card(
-    plane: &str,
-    lane: &str,
-    entry: &str,
-) -> std::collections::BTreeMap<String, config::RateEntryCfg> {
-    let key = format!(
-        "{plane}{}{lane}",
-        busbar_kernel_ledger::cost::PLANE_LANE_SEP
-    );
-    [(key, serde_yaml::from_str(entry).expect("an entry parses"))].into()
-}
-
 #[test]
 fn an_empty_error_map_is_valid_and_an_unknown_class_word_is_not() {
     let cfg_with = |error_map: HashMap<String, String>| {

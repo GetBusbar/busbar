@@ -120,9 +120,7 @@ pools:
     if let Some(rotate) = rotate {
         rotate();
     }
-    let app = Arc::new(app);
-
-    app
+    Arc::new(app)
 }
 
 async fn stats_json(app: Arc<App>, gov: GovCtx) -> Value {

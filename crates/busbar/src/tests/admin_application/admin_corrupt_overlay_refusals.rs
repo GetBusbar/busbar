@@ -432,8 +432,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
         .unwrap();
     assert!(overlay
         .read_required()
-        .err()
-        .expect("the actual carrier refuses the newer document")
+        .expect_err("the actual carrier refuses the newer document")
         .contains("newer"));
 
     let reset = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/root")))

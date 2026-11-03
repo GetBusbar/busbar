@@ -181,8 +181,10 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
                     .unwrap();
             }
             "newer" => {
-                let mut doc = busbar_kernel::config::overlay::OverlayDoc::default();
-                doc.version = busbar_kernel::config::overlay::OVERLAY_VERSION + 1;
+                let doc = busbar_kernel::config::overlay::OverlayDoc {
+                    version: busbar_kernel::config::overlay::OVERLAY_VERSION + 1,
+                    ..Default::default()
+                };
                 busbar_kernel::config::overlay::write(&overlay, &doc).unwrap();
             }
             _ => unreachable!(),

@@ -67,15 +67,6 @@ fn make_root_cfg(
     }
 }
 
-fn make_root_cfg_with_blocked(
-    providers: HashMap<String, config::ProviderCfg>,
-    blocked_metadata_hosts: Vec<String>,
-) -> RootCfg {
-    let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
-    cfg.blocked_metadata_hosts = blocked_metadata_hosts;
-    cfg
-}
-
 fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::ProviderCfg {
     let mut error_map = std::collections::HashMap::new();
     error_map.insert("400".to_string(), "client_error".to_string());

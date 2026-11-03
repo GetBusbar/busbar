@@ -12,10 +12,6 @@ use kernel::plane_routes::{PlaneReqCtx, PlaneRouteSpec};
 
 const DOOR: &str = "/door-route-test/call";
 
-fn door(auth: RouteAuth) -> PlaneRouteSpec {
-    door_at(DOOR, auth)
-}
-
 fn door_at(path: &str, auth: RouteAuth) -> PlaneRouteSpec {
     PlaneRouteSpec {
         path: path.to_string(),
