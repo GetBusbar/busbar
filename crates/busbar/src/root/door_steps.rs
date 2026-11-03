@@ -1533,6 +1533,7 @@ pub fn owned_anchors_refusal<P: AsRef<str>>(
 /// one destination guard, which hears each committed configuration's destinations through them.
 #[derive(Default)]
 pub struct Rules {
+    member_tls_sections: Mutex<Vec<&'static str>>,
     listeners: std::sync::OnceLock<Arc<crate::root::serve::ListenerPlan>>,
     /// The owned trust anchors the composed door planes name, held as each plane is composed.
     owned_anchors: Mutex<Vec<&'static str>>,
@@ -1576,6 +1577,18 @@ impl Rules {
         Self {
             guard: Some(guard),
             ..Self::default()
+        }
+    }
+
+    pub fn hold_member_tls_sections(&self, sections: &[&'static str]) {
+        let mut held = self
+            .member_tls_sections
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for section in sections {
+            if !held.contains(section) {
+                held.push(section);
+            }
         }
     }
 
@@ -1693,10 +1706,19 @@ impl busbar_kernel::appbuild::RootRules for Rules {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        if anchors.is_empty() {
-            return Ok(());
+        let sections = raw_sections(cfg);
+        owned_anchors_refusal(&anchors, &sections)?;
+        for section in self
+            .member_tls_sections
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+        {
+            if let Some(written) = sections.get(section) {
+                member_tls_section_refusal(written)?;
+            }
         }
-        owned_anchors_refusal(&anchors, &raw_sections(cfg))
+        Ok(())
     }
 
     fn destinations_applied(&self, destinations: &busbar_kernel::config::Destinations) {
@@ -3685,6 +3707,13 @@ fn registration_anchors(
         .need_trust
         .get(need.0 as usize)
         .and_then(|path| busbar_contract::section::member_target(path));
+    let extra_anchors = if identity_at == Some("tls") {
+        registration_ca_anchors(entry, registration)?
+    } else {
+        Vec::new()
+    };
+    // The structured TLS selector retains the existing sibling identity spelling.
+    let identity_at = identity_at.map(|key| if key == "tls" { "client_identity" } else { key });
     let client_identity = match identity_at
         .and_then(|key| Some((key, registration.get(key).filter(|v| !v.is_null())?)))
     {
@@ -3708,9 +3737,66 @@ fn registration_anchors(
         }
     };
     Ok(busbar_contract::transport::trust::Anchors {
+        extra_anchors,
         key_pin: pin,
         client_identity,
         private_reach,
+    })
+}
+
+/// Validate only sections whose actual Need explicitly selects the member TLS bundle.
+pub(crate) fn member_tls_refusal(
+    served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
+    section: &serde_yaml::Value,
+) -> Result<(), String> {
+    if served
+        .need_trust
+        .iter()
+        .any(|path| busbar_contract::section::member_target(path) == Some("tls"))
+    {
+        member_tls_section_refusal(section)?;
+    }
+    Ok(())
+}
+
+fn member_tls_section_refusal(section: &serde_yaml::Value) -> Result<(), String> {
+    if let Some(members) = section.as_mapping() {
+        for (name, registration) in members {
+            if let Some(entry) = name.as_str() {
+                registration_ca_anchors(entry, registration)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Read the explicitly selected member TLS bundle; its certificate material is public,
+/// while client credentials retain their existing sibling secret-reference syntax.
+fn registration_ca_anchors(
+    entry: &str,
+    registration: &serde_yaml::Value,
+) -> Result<Vec<Vec<u8>>, String> {
+    let Some(tls) = registration.get("tls").filter(|v| !v.is_null()) else {
+        return Ok(Vec::new());
+    };
+    let invalid = || {
+        format!("member '{entry}': `tls` must contain only optional `ca_cert_pem` certificate PEM")
+    };
+    let map = tls.as_mapping().ok_or_else(invalid)?;
+    if map.keys().any(|key| key.as_str() != Some("ca_cert_pem")) {
+        return Err(invalid());
+    }
+    let Some(pem) = tls.get("ca_cert_pem") else {
+        return Ok(Vec::new());
+    };
+    let pem = pem
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(invalid)?;
+    busbar_core_connector::tls::client::operator_ca_anchors(pem.as_bytes()).map_err(|_| {
+        format!(
+            "member '{entry}': `tls.ca_cert_pem` must be a nonempty valid certificate PEM bundle"
+        )
     })
 }
 

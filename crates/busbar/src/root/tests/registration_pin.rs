@@ -438,3 +438,125 @@ async fn an_mtls_registration_presents_its_client_identity_and_one_with_none_is_
     let _ = std::fs::remove_file(&cert);
     let _ = std::fs::remove_file(&key);
 }
+
+#[test]
+fn structured_member_tls_validates_certificates_and_does_not_accept_nested_identity() {
+    let pki = Pki::new();
+    let leaf = pki.leaf("member.example");
+    let registration = serde_yaml::to_value(serde_json::json!({
+        "tls": { "ca_cert_pem": leaf.pem }
+    }))
+    .expect("registration");
+    assert_eq!(
+        super::registration_ca_anchors("member", &registration).unwrap(),
+        vec![leaf.der]
+    );
+    for tls in [
+        serde_json::json!({"ca_cert_pem": ""}),
+        serde_json::json!({"ca_cert_pem": "not certificate material"}),
+        serde_json::json!({"ca_cert_pem": leaf.key_pem}),
+        serde_json::json!({"ca_cert_pem": 123}),
+        serde_json::json!({"client_identity": {"cert": "hidden", "key": "hidden"}}),
+        serde_json::json!("not a bundle"),
+    ] {
+        let registration = serde_yaml::to_value(serde_json::json!({"tls": tls})).unwrap();
+        let error = super::registration_ca_anchors("member", &registration)
+            .expect_err("invalid TLS rejected");
+        assert!(error.contains("member"));
+        assert!(!error.contains("PRIVATE KEY"));
+        assert!(!error.contains("hidden"));
+    }
+    for registration in [serde_json::json!({}), serde_json::json!({"tls": {}})] {
+        let registration = serde_yaml::to_value(registration).unwrap();
+        assert!(super::registration_ca_anchors("member", &registration)
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn legacy_identity_selector_does_not_parse_member_tls_bundle() {
+    let served = ServedFacts {
+        section: "tools",
+        need_trust: vec!["settings.*.client_identity"],
+        ..Default::default()
+    };
+    let registration = serde_yaml::from_str("tls: {ca_cert_pem: malformed}").unwrap();
+    let anchors = super::registration_anchors(
+        "member",
+        &registration,
+        NeedId(0),
+        &served,
+        &busbar_kernel::config::secret::SecretResolver::builtins_only(),
+    )
+    .unwrap();
+    assert!(anchors.extra_anchors.is_empty());
+    assert!(anchors.client_identity.is_none());
+}
+
+#[test]
+fn structured_tls_preserves_sibling_identity_requirements() {
+    let registration = serde_yaml::from_str("tls: {}\nclient_identity: {key: secret-key}").unwrap();
+    for selector in ["settings.*.tls", "settings.*.client_identity"] {
+        let served = ServedFacts {
+            section: "tools",
+            need_trust: vec![selector],
+            ..Default::default()
+        };
+        let error = super::registration_anchors(
+            "member",
+            &registration,
+            NeedId(0),
+            &served,
+            &busbar_kernel::config::secret::SecretResolver::builtins_only(),
+        )
+        .expect_err("identity certificate remains required");
+        assert_eq!(
+            error,
+            "member 'member': `client_identity.cert:` is required"
+        );
+        assert!(!error.contains("secret-key"));
+    }
+}
+
+#[test]
+fn member_tls_rules_reject_candidate_before_apply_and_ignore_unselected_sections() {
+    use busbar_kernel::appbuild::RootRules as _;
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "store: {module: memory}\nmodels: {}\nproviders: {}\n",
+    )
+    .unwrap();
+    let mut cfg =
+        busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new()).unwrap();
+    let invalid: serde_yaml::Value =
+        serde_yaml::from_str("member: {tls: {ca_cert_pem: invalid}}").unwrap();
+    cfg.endpoint_resources
+        .insert("unrelated", Arc::new(("unrelated", invalid.clone())));
+    let rules = super::Rules::default();
+    rules.hold_member_tls_sections(&["tools"]);
+    assert!(
+        rules.check(&cfg).is_ok(),
+        "unselected TLS-shaped data is not reinterpreted"
+    );
+    cfg.endpoint_resources
+        .insert("tools", Arc::new(("tools", invalid)));
+    let error = rules
+        .check(&cfg)
+        .expect_err("candidate must fail before apply callbacks");
+    assert!(error.contains("tls.ca_cert_pem"));
+    let selected = ServedFacts {
+        section: "tools",
+        need_trust: vec!["settings.*.tls"],
+        ..Default::default()
+    };
+    let legacy = ServedFacts {
+        section: "tools",
+        need_trust: vec!["settings.*.client_identity"],
+        ..Default::default()
+    };
+    let candidate = cfg.endpoint_resources["tools"]
+        .downcast_ref::<(&'static str, serde_yaml::Value)>()
+        .unwrap();
+    assert!(super::member_tls_refusal(&selected, &candidate.1).is_err());
+    assert!(super::member_tls_refusal(&legacy, &candidate.1).is_ok());
+}

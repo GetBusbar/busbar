@@ -623,6 +623,7 @@ impl DoorApply {
         secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
         scope: &busbar_contract::config_time::ConfigScope,
     ) -> Result<DoorLive, String> {
+        crate::root::door_steps::member_tls_refusal(&self.served_facts, section)?;
         let admission = self
             .driver
             .prepare_section((self.served_facts.section, section))?;
@@ -764,6 +765,10 @@ impl DoorAppliers {
                 }
             };
             let walked = walked_section(facts, section, sections);
+            if let Err(e) = crate::root::door_steps::member_tls_refusal(facts, &walked) {
+                tracing::error!(plane = name, error = %e, "door plane's TLS configuration is invalid; it keeps serving the previous one");
+                continue;
+            }
             let now = p.current();
             let next = now.generation + 1;
             let owned = match owned_bytes(&owned_sections(facts, sections)) {
@@ -892,6 +897,22 @@ impl Served {
         self.planes
             .iter()
             .flat_map(|p| p.live.served_facts.need_trust.iter().copied())
+            .collect()
+    }
+
+    #[must_use]
+    pub fn member_tls_sections(&self) -> Vec<&'static str> {
+        self.planes
+            .iter()
+            .filter(|plane| {
+                plane
+                    .live
+                    .served_facts
+                    .need_trust
+                    .iter()
+                    .any(|path| busbar_contract::section::member_target(path) == Some("tls"))
+            })
+            .map(|plane| plane.live.served_facts.section)
             .collect()
     }
 
@@ -1490,6 +1511,8 @@ pub(crate) fn compose_planes_over(
         let dialects = egress
             .map(|e| crate::root::door_steps::dialect_facts(&walked, e.reach.providers))
             .unwrap_or_default();
+        crate::root::door_steps::member_tls_refusal(&served_facts, &walked)
+            .map_err(|e| format!("{instance}: {e}"))?;
         let opened = open(
             plugin,
             settings_path(&served_facts),

@@ -103,6 +103,15 @@ fn server(chain: &[Vec<u8>], key: &[u8], client_ca: Option<&[u8]>) -> Tls {
 
 /// Dial `server` through a [`TlsDial`] built from `trust`, offering `name`, and exchange one
 async fn dial(server: Tls, trust: &EgressTrust, name: &str) -> Result<(), String> {
+    dial_config(
+        server,
+        build_client_config(trust).expect("a usable client config"),
+        name,
+    )
+    .await
+}
+
+async fn dial_config(server: Tls, config: rustls::ClientConfig, name: &str) -> Result<(), String> {
     let (server_io, client_io) = tokio::io::duplex(8192);
     let serving = tokio::spawn(async move {
         let raw: Box<dyn RawIo> = Box::new(TokioAsyncReadCompatExt::compat(server_io));
@@ -120,7 +129,7 @@ async fn dial(server: Tls, trust: &EgressTrust, name: &str) -> Result<(), String
     });
 
     let dial = TlsDial::new(
-        Arc::new(build_client_config(trust).expect("a usable client config")),
+        Arc::new(config),
         ServerName::try_from(name.to_string()).unwrap(),
     );
     let raw: Box<dyn RawIo> = Box::new(TokioAsyncReadCompatExt::compat(client_io));
@@ -342,6 +351,7 @@ fn a_sealed_identity_keeps_its_key_redacted_until_the_seal_parses_it() {
     let sealed = seal(
         Some(&base),
         &Anchors {
+            extra_anchors: Vec::new(),
             key_pin: None,
             client_identity: Some(identity),
             private_reach: false,
@@ -351,6 +361,7 @@ fn a_sealed_identity_keeps_its_key_redacted_until_the_seal_parses_it() {
     assert!(sealed.identity.is_some(), "the sealed identity presents");
 
     let bad = Anchors {
+        extra_anchors: Vec::new(),
         key_pin: None,
         client_identity: Some(ClientIdentity {
             cert_chain: chain,
@@ -362,4 +373,85 @@ fn a_sealed_identity_keeps_its_key_redacted_until_the_seal_parses_it() {
         seal(Some(&base), &bad),
         Err(BadAnchors::Identity(BadClientIdentity(_)))
     ));
+}
+
+/// Member roots extend the effective policy without bypassing its pins or client identity.
+#[tokio::test]
+async fn member_ca_preserves_effective_pins_identity_and_retained_policy() {
+    use busbar_contract::transport::trust::{Anchors, ClientIdentity};
+    let (base_ca, base_chain, base_key) = ca_and_leaf(&["base.test"]);
+    let (member_ca, member_chain, member_key) = ca_and_leaf(&["member.test"]);
+    let (client_ca, client_chain, client_key) = ca_and_leaf(&["client.test"]);
+    let policy = EgressTrust {
+        extra_anchors: vec![base_ca],
+        pinned_public_keys: vec![pin_of(&base_chain[0]), pin_of(&member_chain[0])],
+        client_identity: Some(ClientIdentity {
+            cert_chain: client_chain,
+            private_key: client_key.into(),
+        }),
+    };
+    let base = build_client_config(&policy).unwrap();
+    let anchors = Anchors {
+        extra_anchors: vec![member_ca],
+        ..Default::default()
+    };
+    assert!(
+        seal(Some(&base), &anchors).is_err(),
+        "opaque policy must fail closed"
+    );
+    let sealed = seal_with_policy(Some(&base), Some(&policy), &anchors).unwrap();
+    let extended = sealed.tls.as_ref().unwrap();
+    assert!(dial_config(
+        server(&member_chain, &member_key, Some(&client_ca)),
+        (**extended).clone(),
+        "member.test"
+    )
+    .await
+    .is_ok());
+    assert!(dial_config(
+        server(&base_chain, &base_key, Some(&client_ca)),
+        (**extended).clone(),
+        "base.test"
+    )
+    .await
+    .is_ok());
+    assert!(
+        dial_config(
+            server(&member_chain, &member_key, None),
+            base.clone(),
+            "member.test"
+        )
+        .await
+        .is_err(),
+        "retained base does not gain member roots"
+    );
+    assert!(dial_config(
+        server(&member_chain, &member_key, None),
+        (**extended).clone(),
+        "wrong.test"
+    )
+    .await
+    .is_err());
+    let wrong_pin = EgressTrust {
+        pinned_public_keys: vec![[0; 32]],
+        ..policy
+    };
+    let refused = rebase(&sealed, Some(&wrong_pin)).unwrap();
+    let reused = rebase(&sealed, Some(&wrong_pin)).unwrap();
+    assert!(
+        Arc::ptr_eq(&refused, &reused),
+        "unchanged effective policy retains pooled seal identity"
+    );
+    assert!(dial_config(
+        server(&member_chain, &member_key, None),
+        (**refused.tls.as_ref().unwrap()).clone(),
+        "member.test"
+    )
+    .await
+    .is_err());
+    let malformed = Anchors {
+        extra_anchors: vec![vec![1, 2, 3]],
+        ..Default::default()
+    };
+    assert!(seal_with_policy(Some(&base), Some(&wrong_pin), &malformed).is_err());
 }

@@ -53,3 +53,22 @@ fn client_identity_debug_text_is_the_1_5_5_text() {
         "ClientIdentity { cert_chain: [[1, 2]], private_key: \"<redacted>\" }"
     );
 }
+
+#[test]
+fn member_ca_is_security_and_keeps_identity_redacted() {
+    let mut anchors = super::Anchors::default();
+    anchors.private_reach = true;
+    assert!(anchors.is_empty(), "reach alone does not anchor security");
+    anchors.extra_anchors.push(vec![1, 2, 3]);
+    assert!(anchors.secures());
+    assert!(!anchors.is_empty());
+    assert_ne!(anchors, super::Anchors::default());
+    anchors.client_identity = Some(ClientIdentity {
+        cert_chain: Vec::new(),
+        private_key: vec![KEY_BYTE; 8].into(),
+    });
+    let shown = format!("{anchors:?}");
+    assert!(shown.contains("extra_anchors: [[1, 2, 3]]"));
+    assert!(shown.contains("<redacted>"));
+    assert!(!shown.contains(&KEY_BYTE.to_string()));
+}
