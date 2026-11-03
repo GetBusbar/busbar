@@ -827,3 +827,97 @@ fn audit_rate_card_provenance_keeps_the_actual_key_across_peer_insertion() {
     let zero = pinned(vec![(0, configured(1))]);
     assert_eq!(card_in_force(Some(&zero), 0), Some([0; 20]));
 }
+
+#[tokio::test]
+async fn a_completed_terminal_receipt_requires_actual_seal_success_even_when_the_chain_advances() {
+    struct RefusingShipper;
+    impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for RefusingShipper {
+        fn ship(
+            &mut self,
+            _: &[busbar_kernel_wal::Record],
+        ) -> Result<(), busbar_kernel_wal::ShipError> {
+            Err(busbar_kernel_wal::ShipError::Unavailable(
+                "deliberate seal refusal".to_owned(),
+            ))
+        }
+    }
+    for refuses in [false, true] {
+        let node = Arc::new(Node::new());
+        let shipper: Box<dyn busbar_kernel_wal::Shipper<busbar_kernel_wal::Record>> = if refuses {
+            Box::new(RefusingShipper)
+        } else {
+            Box::new(busbar_kernel_wal::NullShipper::new())
+        };
+        let durability = crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            shipper,
+        )
+        .expect("the journal opens before its deliberate write refusal");
+        let book = Arc::new(Mutex::new(durability));
+        node.bind_book(Arc::clone(&book));
+        let post = NodeEndPost::new(Arc::clone(&node));
+        let key = node.mint();
+        let arrived = node.arrived();
+        let who = PrincipalId::new("acct:seal");
+        let ctx = UnitCtx {
+            call: node.kernel.next_call(),
+            key,
+            origin: OriginKind::Client,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+        };
+        let cell = busbar_contract::caps::HoldCell::new(busbar_kernel::inflight::arrival_hold(
+            &node.kernel,
+            &node.door,
+            who.clone(),
+            ctx.call,
+        ));
+        let leases = busbar_kernel::slice::LeaseCell::new();
+        let meter = AccrualMeter::new();
+        post.open(key, who.clone(), arrived, None);
+        let ended = busbar_kernel::teller::run_unit_async(
+            &node.kernel,
+            &ToDestination,
+            &ctx,
+            busbar_kernel::teller::Run {
+                cell: &cell,
+                parent: None,
+                leases: &leases,
+                gauge: &node.gauge,
+                canary: &node.canary,
+                meter: &meter,
+                taps: Some(&post),
+            },
+            &ToDestination,
+        )
+        .await;
+        assert!(matches!(&ended, Ended::Settled { end, .. } if end.outcome().is_completed()));
+        let open = post
+            .take(key)
+            .expect("the actual completed unit retained its audit facts");
+        let seal = open
+            .sealing
+            .into_seal(key, node.kernel.origin(OriginKind::Client), None)
+            .unwrap();
+        let before = book.lock().unwrap().journal.next_seq();
+        let acknowledgment = node.seal_end_ack(&who, arrived, None, ended, seal, Vec::new());
+        assert_eq!(
+            acknowledgment.is_some(),
+            !refuses,
+            "only actual successful durable sealing acknowledges completion"
+        );
+        let book = book.lock().unwrap();
+        assert_eq!(
+            book.audit_records.len(),
+            1,
+            "the failed seal still cached its audit chain record"
+        );
+        assert!(
+            book.journal.next_seq() > before,
+            "both outcomes advanced the chain; sequence advancement proves no success"
+        );
+        assert_eq!(post.open_units(), 0);
+    }
+}
