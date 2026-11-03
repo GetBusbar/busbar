@@ -160,6 +160,20 @@ async fn two_apps_lent_two_tables_each_serve_only_their_own_instance() {
             &rules,
         )
         .expect("the actual product builds the host deployment");
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            limits.stage_boot();
+            crate::root::kernel::ROOT_CARD.keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the actual deployment configured governance")
+                    .store_calls()
+                    .expect("the configured Store exposes its rate-history slots"),
+                147,
+            );
+            crate::root::kernel::ROOT_CARD
+                .boot_in_store(None)
+                .expect("the configured Store boots its initial rate history");
+        }
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -271,6 +285,20 @@ async fn a_rebuild_carries_the_published_admin_table() {
         &rules,
     )
     .expect("the actual product builds the host deployment");
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        limits.stage_boot();
+        crate::root::kernel::ROOT_CARD.keep_in_store(
+            boot.governance
+                .as_ref()
+                .expect("the actual deployment configured governance")
+                .store_calls()
+                .expect("the configured Store exposes its rate-history slots"),
+            147,
+        );
+        crate::root::kernel::ROOT_CARD
+            .boot_in_store(None)
+            .expect("the configured Store boots its initial rate history");
+    }
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
