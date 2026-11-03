@@ -5268,6 +5268,12 @@ pub(crate) mod door_boundary {
         row: &'static PlaneDecl,
         slot: &Arc<dyn std::any::Any + Send + Sync>,
     ) -> App {
+        // This fixture has actually built this configured section above. Retain
+        // appbuild's configured-section metadata as well as its mounted object,
+        // so the admin shim can distinguish it from an unopened declaration.
+        app.plane_sections
+            .get_or_insert_with(Default::default)
+            .insert(row.config_section);
         for (path, wire) in (row.claims)(&**slot) {
             app.planes = Arc::new((*app.planes).clone().mount(row.key, &path, wire));
         }
