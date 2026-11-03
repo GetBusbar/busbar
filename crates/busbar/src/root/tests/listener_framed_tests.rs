@@ -3089,6 +3089,18 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
     use busbar_contract::abi::transport::route::{METHOD_GET, METHOD_POST, PATH_CONTAINS};
     use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
     use ring::signature::KeyPair as _;
+    struct JwksPeer {
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        release: std::sync::mpsc::Sender<()>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Drop for JwksPeer {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::Release);
+            let _ = self.release.send(());
+            if let Some(worker) = self.worker.take() { let _ = worker.join(); }
+        }
+    }
     let _publishing = crate::root::PUBLISHING.lock().await;
     crate::dist_root_install::install();
     for first_body in ["", "hi"] {
@@ -3123,16 +3135,30 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
             .unwrap(),
         );
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
         let jwks_url = format!("https://{}/jwks", listener.local_addr().unwrap());
         let (entered, waiting) = tokio::sync::oneshot::channel();
         let (release, held) = std::sync::mpsc::channel();
         let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let peer_armed = armed.clone();
-        let peer = std::thread::spawn(move || {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let peer_stop = stop.clone();
+        let worker = std::thread::spawn(move || {
             use std::io::{Read as _, Write as _};
             let mut entered = Some(entered);
+            let mut released = false;
             loop {
-                let (socket, _) = listener.accept().unwrap();
+                let socket = loop {
+                    if peer_stop.load(std::sync::atomic::Ordering::Acquire) { return; }
+                    match listener.accept() {
+                        Ok((socket, _)) => break socket,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(error) => panic!("the actual JWKS peer cannot accept: {error}"),
+                    }
+                };
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(10)))
                     .unwrap();
@@ -3155,19 +3181,20 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
                 let (status, body) = if !gated {
                     ("503 Service Unavailable", "{}")
                 } else {
-                    entered.take().unwrap().send(()).unwrap();
-                    held.recv_timeout(Duration::from_secs(10)).unwrap();
+                    if !released {
+                        entered.take().unwrap().send(()).unwrap();
+                        held.recv_timeout(Duration::from_secs(10)).unwrap();
+                        released = true;
+                    }
                     ("200 OK", jwks.as_str())
                 };
                 write!(socket, "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
                 socket.flush().unwrap();
                 socket.conn.send_close_notify();
                 let _ = socket.flush();
-                if gated {
-                    break;
-                }
             }
         });
+        let mut peer = JwksPeer { stop, release: release.clone(), worker: Some(worker) };
         let now = busbar_kernel::store::now();
         let header = b64.encode(
             serde_json::to_vec(
@@ -3515,7 +3542,10 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
             b"whole",
             "the actual decoder's PIECE_END remains whole across pending authentication and EOF"
         );
-        peer.join()
-            .expect("the real TLS peer completes both requests");
+        // The product opens independent inbound and login verifier instances. Keep this real
+        // issuer available to both until the decoder and application body have completed.
+        peer.stop.store(true, std::sync::atomic::Ordering::Release);
+        peer.worker.take().unwrap().join()
+            .expect("the owned real TLS peer completes all actual verifier requests");
     }
 }
