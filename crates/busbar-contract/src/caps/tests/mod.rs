@@ -5,6 +5,33 @@
 
 use crate::caps::*;
 
+#[cfg(feature = "test-seal")]
+#[test]
+fn admitted_cell_authority_requires_its_call_principal_and_live_admission() {
+    let seal = KernelSeal::acquire_for_kernel();
+    let call = CallId::seal(&seal, 41);
+    let admit = Grant::<Admittance>::mint_bound(&seal, call);
+    let other = Grant::<Admittance>::mint_bound(&seal, CallId::seal(&seal, 42));
+    let principal = PrincipalId::new("caller");
+    let stranger = PrincipalId::new("stranger");
+    let cell = HoldCell::new(Hold::open(&admit, principal.clone()));
+    assert!(!cell.admitted_for(&admit, &principal));
+    assert_eq!(cell.state(), HoldCellState::Arrival);
+    let arrival = cell
+        .admit(Hold::open(&admit, principal.clone()), &admit)
+        .unwrap();
+    assert!(cell.admitted_for(&admit, &principal));
+    assert!(!cell.admitted_for(&other, &principal));
+    assert!(!cell.admitted_for(&admit, &stranger));
+    assert_eq!(cell.state(), HoldCellState::Admitted);
+    assert_eq!(cell.accruals(), 0);
+    let exit = Grant::<Exit>::mint_bound(&seal, call);
+    let admitted = cell.take(&exit).unwrap();
+    assert!(!cell.admitted_for(&admit, &principal));
+    assert_eq!(cell.state(), HoldCellState::Taken);
+    drop((arrival, admitted));
+}
+
 /// The lint rule data. It is a proof, not surface: no plugin, unit or kernel path names it, so it
 mod lint {
     include!("../fixtures/lint_rules.rs");

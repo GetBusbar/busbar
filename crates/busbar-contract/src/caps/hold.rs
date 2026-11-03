@@ -288,6 +288,13 @@ impl HoldCell {
         }
     }
 
+    /// Whether this cell still holds the admission opened by this grant for this principal.
+    /// This observes authority without changing the cell or creating a hold or accrual.
+    pub fn admitted_for(&self, token: &Grant<Admittance>, principal: &PrincipalId) -> bool {
+        matches!(&*self.slot(), Slot::Admitted(hold)
+            if hold.call() == token.call() && hold.principal() == principal)
+    }
+
     /// The one transition: swap the arrival hold for the admitted one, and hand the arrival hold
     pub fn admit(&self, admitted: Hold, token: &Grant<Admittance>) -> Result<Hold, AdmitRejected> {
         if token.call() != admitted.call {
