@@ -4152,7 +4152,11 @@ async fn test_admin_v1_identity_provider_delete_rejects_a_dangling_reference() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-fn try_publish_door(section: &str, settings: &str) -> Result<ServeTables, String> {
+fn try_publish_door(
+    section: &str,
+    settings: &str,
+) -> Result<(ServeTables, Arc<busbar_kernel::plane_driver::PlaneDriver>), String> {
+    use busbar_contract::plane_calls::PlaneCalls;
     use busbar_plugin_loader::dispatch::kinds::plane::{open_door, Plane};
     use busbar_plugin_loader::dispatch::{
         load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
@@ -4168,14 +4172,16 @@ fn try_publish_door(section: &str, settings: &str) -> Result<ServeTables, String
     let services = crate::root::serve::LateServices::new();
     let kernel = Arc::new(
         busbar_kernel::host_services::KernelServices::new()
-            .with_signer(gov)
+            .with_signer(gov.clone())
             .with_pool(Arc::new(busbar_kernel::host_services::BlockingPool::new(
                 tokio::runtime::Handle::current(),
                 busbar_kernel::host_records::QUEUE_CAP,
             )))
             .with_records(Arc::new(busbar_kernel::host_records::StoreRows(store))),
     );
-    services.install_kernel(kernel.clone(), kernel).unwrap();
+    services
+        .install_kernel(kernel.clone(), kernel.clone())
+        .unwrap();
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
         services.served(),
@@ -4215,9 +4221,39 @@ fn try_publish_door(section: &str, settings: &str) -> Result<ServeTables, String
         })
         .collect();
     let audit_kind = plane.served().audit_kind.to_string();
+    let op_classes = plane
+        .served()
+        .op_classes
+        .iter()
+        .map(|class| busbar_contract::ids::OpClassId::new(class))
+        .collect();
     let calls = Arc::new(
         busbar_plugin_loader::dispatch::plane_calls::PlaneInstance::new(plane, dispatcher, 0),
     );
+    let refusal_statuses = calls.refusal_statuses();
+    let calls: Arc<dyn PlaneCalls> = calls;
+    let node = Arc::new(crate::root::plane_node::Node::new());
+    let money = Arc::new(busbar_kernel::plane_driver::PlaneMoney::new(
+        gov,
+        Arc::new(crate::root::plane_node::NodeEndPost::new(node)),
+    ));
+    let settings = serde_yaml::from_str(settings)
+        .expect("the exact opened section also supplies the normal host admission");
+    // The real trust verbs read admitted counterparties. Keep normal driver custody until the
+    // generation's requests finish, rather than opening a raw unadmitted plugin and dropping it.
+    let admission = Arc::new(busbar_kernel::plane_driver::PlaneDriver::new(
+        calls.clone(),
+        busbar_kernel::plane_driver::DriverConfig {
+            caps: busbar_kernel::plane_driver::BufferCaps::default(),
+            op_classes,
+            status_of: busbar_kernel::plane_driver::refusal_status,
+            refusal_statuses,
+            caller_refs: money.caller_refs(),
+        },
+        money,
+        kernel,
+        (section, &settings),
+    )?);
     let tables = ServeTables::default();
     tables
         .publish(
@@ -4232,10 +4268,13 @@ fn try_publish_door(section: &str, settings: &str) -> Result<ServeTables, String
             &[],
         )
         .expect("its admin routes publish");
-    Ok(tables)
+    Ok((tables, admission))
 }
 
-fn publish_door(section: &str, settings: &str) -> ServeTables {
+fn publish_door(
+    section: &str,
+    settings: &str,
+) -> (ServeTables, Arc<busbar_kernel::plane_driver::PlaneDriver>) {
     try_publish_door(section, settings).expect("the door opens")
 }
 
@@ -4259,7 +4298,7 @@ fn assert_passthrough_is_refused_before_publication() {
 
 async fn drive_door_verb_errors() {
     assert_passthrough_is_refused_before_publication();
-    let tables = publish_door(
+    let (tables, _admission) = publish_door(
         "tools",
         r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "cert_spki", "key": "sha256/l5WGzHWyALvI/qjcwI1ctxb3Jp8+8Ztd0NTYTcL0Q4s="}, "upstream_credentials": "own", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
     );
@@ -4294,7 +4333,7 @@ async fn drive_door_verb_errors() {
 #[tokio::test]
 async fn a_door_admin_route_is_served_only_by_the_generation_lent_its_table() {
     assert_passthrough_is_refused_before_publication();
-    let tables = publish_door(
+    let (tables, _admission) = publish_door(
         "tools",
         r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "cert_spki", "key": "sha256/l5WGzHWyALvI/qjcwI1ctxb3Jp8+8Ztd0NTYTcL0Q4s="}, "upstream_credentials": "own", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
     );
@@ -4351,7 +4390,7 @@ async fn drive_agent_door_verb_errors() {
             "pin": {"mechanism": "jws_issuer_key", "key": issuer_key_info(&issuer)}
         }
     });
-    let tables = publish_door("agents", &section.to_string());
+    let (tables, _admission) = publish_door("agents", &section.to_string());
     let (_dir, _overlay, addr, handle) = named_map_app_serving("agent-door-verbs", tables).await;
     let client = reqwest::Client::new();
     let send = |path: &str, body: &str| {
