@@ -275,9 +275,13 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
                     },
                     claimant: Claimant::Plane("inbound-signed-custody".into()),
                     dialect: 0,
-                    auth: LineAuth::Chain(vec!["keys".into()], AuthPoints::HEAD_BODY),
+                    // The fixture exercises both request phases, including the pending head.
+                    auth: LineAuth::Chain(
+                        vec!["keys".into()],
+                        AuthPoints(POINT_HEAD | POINT_HEAD_BODY),
+                    ),
                     upgrade: None,
-                    offered: AuthPoints::HEAD_BODY,
+                    offered: AuthPoints(POINT_HEAD | POINT_HEAD_BODY),
                 }])
                 .expect("actual host declaration seals"),
                 auths: Default::default(),

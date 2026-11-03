@@ -447,7 +447,7 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
             }),
             Ok((FLOW_CONTINUE, unit))
         );
-        let receipt = inbound.claim_request(7, 11, stream, &sanitized).unwrap();
+        let receipt = inbound.claim_request(7, 21, stream, &sanitized).unwrap();
         held.push((unit, receipt));
     }
     inbound.framing_detached(7, 21).unwrap();
@@ -504,7 +504,7 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
             }),
             Ok((FLOW_CONTINUE, unit))
         );
-        let receipt = inbound.claim_request(7, conn, 1, &sanitized).unwrap();
+        let receipt = inbound.claim_request(7, source_leg, 1, &sanitized).unwrap();
         inbound.framing_detached(7, source_leg).unwrap();
         let moved = inbound
             .framing_adopting(
