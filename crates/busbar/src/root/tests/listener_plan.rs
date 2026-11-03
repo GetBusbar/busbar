@@ -452,6 +452,9 @@ fn identical_plane_paths_on_distinct_listeners_are_sealed_independently() {
         )
         .unwrap();
     let mut candidate = projection_boundary_app(topology, Vec::new(), 1);
+    // The two boundary claims belong to configured sections of this generation.
+    Arc::get_mut(&mut candidate).unwrap().plane_sections =
+        Some(["left-resource", "right-resource"].into_iter().collect());
     Arc::get_mut(&mut candidate).unwrap().planes =
         Arc::new(["left-module", "right-module"].into_iter().fold(
             busbar_kernel::plane_driver::dispatch::PlaneDispatch::default(),
@@ -646,7 +649,43 @@ async fn physical_routers_share_publication_but_keep_handlers_and_refusals_separ
             )
         })
     };
-    let first = projection_boundary_app(topology(), Vec::new(), 1);
+    // Readiness is a genuine product condition, independent of these synthetic routes.
+    // Reuse the actual decisions door's minimal valid OPEN, as the lane-less health tests do.
+    fn healthy_app(generation: u64) -> Arc<busbar_kernel::state::App> {
+        use busbar_kernel::plane_driver::door::DoorSection;
+        use busbar_kernel::plane_driver::registry::BuildCtx;
+        let mut app = projection_boundary_app(topology(), Vec::new(), generation);
+        let decl =
+            busbar_kernel::plane_driver::registry::plane_decl_for_config_section("decisions")
+                .expect("the actual decisions plane is installed");
+        assert!(
+            !decl.fallback,
+            "readiness requires a configured nonfallback plane"
+        );
+        let section = DoorSection::new(
+            decl.door,
+            decl.config_section,
+            serde_yaml::from_str("models: {}").expect("the actual valid decisions section"),
+        );
+        let definitions = section.as_defs();
+        let slot = (decl.build)(
+            decl,
+            &BuildCtx {
+                endpoint_slot: None,
+                plane_defs: &definitions,
+                public_url: None,
+                prior: None,
+                providers: None,
+            },
+        )
+        .expect("the actual decisions door creates its generation");
+        assert!(busbar_kernel::plane_driver::door::opened(slot.as_ref()));
+        let configured = Arc::get_mut(&mut app).unwrap();
+        configured.plane_sections = Some([decl.config_section].into_iter().collect());
+        configured.plane_slots.insert(decl.key, slot);
+        app
+    }
+    let first = healthy_app(1);
     let (left, _, handle) = busbar_kernel::build_split_routers_serving_doors(
         first,
         vec![mounted("left")],
@@ -669,7 +708,7 @@ async fn physical_routers_share_publication_but_keep_handlers_and_refusals_separ
         false,
     );
     for generation in 2..=4 {
-        let next = projection_boundary_app(topology(), Vec::new(), generation);
+        let next = healthy_app(generation);
         handle.swap(next);
         for (router, label) in [(&left, "left"), (&right, "right")] {
             let answer = router
