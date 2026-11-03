@@ -159,6 +159,16 @@ models:
 }
 
 fn request(addr: &str, method: &str, path: &str, token: Option<&str>) -> (u16, String) {
+    let (status, body, _) = request_with_challenge(addr, method, path, token);
+    (status, body)
+}
+
+fn request_with_challenge(
+    addr: &str,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+) -> (u16, String, Option<String>) {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async {
         let client = reqwest::Client::builder()
@@ -171,9 +181,15 @@ fn request(addr: &str, method: &str, path: &str, token: Option<&str>) -> (u16, S
             req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {t}"));
         }
         let resp = req.send().await.expect("request");
+        let challenge = resp
+            .headers()
+            .get(reqwest::header::WWW_AUTHENTICATE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
         (
             resp.status().as_u16(),
             resp.text().await.unwrap_or_default(),
+            challenge,
         )
     })
 }
@@ -195,8 +211,25 @@ fn read_to_string(path: &Path) -> String {
     s
 }
 
-fn is_plane_door(body: &str) -> bool {
-    body.contains("error_description")
+fn plane_challenge(b: &Booted, door: &str) -> String {
+    let resource = match door {
+        "/v1/realtime/client_secrets" | "/v1/realtime/gemini" => "/v1/realtime",
+        "/mcp" => "/mcp",
+        "/a2a" => "/a2a",
+        _ => panic!("the plane-door fixture must state a known resource: {door}"),
+    };
+    format!(
+        "Bearer resource_metadata=\"http://{}/.well-known/oauth-protected-resource{resource}\"",
+        b.data
+    )
+}
+
+fn is_plane_door(b: &Booted, door: &str, response: &(u16, String, Option<String>)) -> bool {
+    let expected = plane_challenge(b, door);
+    response.0 == 401
+        && response.2.as_deref() == Some(expected.as_str())
+        && serde_json::from_str::<serde_json::Value>(&response.1)
+            .is_ok_and(|body| body == serde_json::json!({"error": "unauthorized"}))
 }
 
 #[test]
@@ -226,10 +259,11 @@ fn a_1_5_5_config_serves_the_1_5_5_surface_and_each_configured_plane_serves_its_
     );
     assert_eq!(admin(&b, "DELETE", "/overlay/tools").0, 400);
     for (door, _) in plane_doors() {
-        let (_, body) = request(&b.data, "POST", door, None);
+        let response = request_with_challenge(&b.data, "POST", door, None);
         assert!(
-            !is_plane_door(&body),
-            "POST {door} must fall to the fallback catch-all on a 1.5.5 config, not a plane door: {body}"
+            !is_plane_door(&b, door, &response)
+                && response.2.as_deref() != Some(plane_challenge(&b, door).as_str()),
+            "POST {door} must fall to the fallback catch-all on a 1.5.5 config, not a plane door: {response:?}"
         );
     }
     drop(b);
@@ -254,10 +288,10 @@ fn a_1_5_5_config_serves_the_1_5_5_surface_and_each_configured_plane_serves_its_
         .into_iter()
         .filter_map(|(door, configured)| configured.then_some(door))
     {
-        let (status, body) = request(&b.data, "POST", door, None);
+        let response = request_with_challenge(&b.data, "POST", door, None);
         assert!(
-            status == 401 && is_plane_door(&body),
-            "POST {door} must reach the configured plane's door: {status} {body}"
+            is_plane_door(&b, door, &response),
+            "POST {door} must reach the configured plane's door: {response:?}"
         );
     }
 }
@@ -354,10 +388,10 @@ fn a_1_5_5_config_boot_prints_nothing_from_an_unconfigured_plane() {
     );
     let b = boot("181-control", true);
     for (door, _) in plane_doors() {
-        let (_, body) = request(&b.data, "POST", door, None);
+        let response = request_with_challenge(&b.data, "POST", door, None);
         assert!(
-            is_plane_door(&body),
-            "with every plane configured POST {door} reaches that plane's door: {body}"
+            is_plane_door(&b, door, &response),
+            "with every plane configured POST {door} reaches that plane's door: {response:?}"
         );
     }
 }

@@ -205,6 +205,17 @@ fn request(
     body: Option<&str>,
     token: Option<&str>,
 ) -> (u16, String) {
+    let (status, body, _) = request_with_challenge(addr, method, path, body, token);
+    (status, body)
+}
+
+fn request_with_challenge(
+    addr: &str,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    token: Option<&str>,
+) -> (u16, String, Option<String>) {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async {
         let client = reqwest::Client::builder()
@@ -222,9 +233,15 @@ fn request(
                 .body(b.to_string());
         }
         let resp = req.send().await.expect("request");
+        let challenge = resp
+            .headers()
+            .get(reqwest::header::WWW_AUTHENTICATE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
         (
             resp.status().as_u16(),
             resp.text().await.unwrap_or_default(),
+            challenge,
         )
     })
 }
@@ -255,8 +272,19 @@ fn kept_files(dir: &Path) -> Vec<(String, Vec<u8>)> {
     out
 }
 
-fn is_plane_door(body: &str) -> bool {
-    body.contains("error_description")
+fn plane_challenge(b: &Booted, plane: &Plane) -> String {
+    format!(
+        "Bearer resource_metadata=\"http://{}/.well-known/oauth-protected-resource{}\"",
+        b.data, plane.door
+    )
+}
+
+fn is_plane_door(b: &Booted, plane: &Plane, response: &(u16, String, Option<String>)) -> bool {
+    let expected = plane_challenge(b, plane);
+    response.0 == 401
+        && response.2.as_deref() == Some(expected.as_str())
+        && serde_json::from_str::<serde_json::Value>(&response.1)
+            .is_ok_and(|body| body == serde_json::json!({"error": "unauthorized"}))
 }
 
 #[test]
@@ -325,10 +353,11 @@ fn a_first_section_of_an_unloaded_plane_is_refused_whole_and_served_after_a_rest
         unmounted,
         "the plane serves nothing after a refused change"
     );
-    let (_, door) = request(&b.data, "POST", plane.door, None, None);
+    let door = request_with_challenge(&b.data, "POST", plane.door, None, None);
     assert!(
-        !is_plane_door(&door),
-        "the plane's door is not mounted after a refused change: {door}"
+        !is_plane_door(&b, &plane, &door)
+            && door.2.as_deref() != Some(plane_challenge(&b, &plane).as_str()),
+        "the plane's door is not mounted after a refused change: {door:?}"
     );
     assert_eq!(
         kept_files(&dir),
@@ -343,10 +372,10 @@ fn a_first_section_of_an_unloaded_plane_is_refused_whole_and_served_after_a_rest
         200,
         "after a restart the plane serves its section"
     );
-    let (status, door) = request(&b.data, "POST", plane.door, None, None);
+    let door = request_with_challenge(&b.data, "POST", plane.door, None, None);
     assert!(
-        status == 401 && is_plane_door(&door),
-        "after a restart the plane's door answers as that plane's door: {status} {door}"
+        is_plane_door(&b, &plane, &door),
+        "after a restart the plane's door answers as that plane's door: {door:?}"
     );
     drop(b);
     let _ = std::fs::remove_dir_all(&dir);
