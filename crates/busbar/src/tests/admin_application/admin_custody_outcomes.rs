@@ -346,10 +346,7 @@ fn app() -> (
 ) {
     busbar_kernel::snapshot::init_for_test(Duration::from_secs(3600));
     crate::dist_root_install::install();
-    let library = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("actual built Store artifact"),
-    );
+    let library = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library)
         .unwrap()
         .unwrap();
@@ -366,10 +363,7 @@ fn app() -> (
     );
     let archive_sha256 = busbar_plugin_loader::sign::sha256_hex(&archive);
     std::fs::write(directory.join("store.tar.gz"), archive).unwrap();
-    let settings: Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .unwrap();
+    let settings: Value = crate::root::test_plugins::application_store_settings(&directory);
     assert!(settings.is_object());
     let oidc_path = common::plugins::token_verifier_cdylib_path().expect("actual OIDC artifact");
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
