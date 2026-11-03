@@ -166,12 +166,8 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
         document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
         let deploy = busbar_kernel::config::deploy_from_deserializer(document)
             .expect("the actual admin deployment parses");
-        let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the actual admin deployment resolves");
-        // The read witness's intentionally unpriced card must be the activated card, not a
-        // replacement CostModel attached after the root has activated an unrelated empty card.
-        cfg.rate_card = Some(card.clone());
-        cfg.groups = groups.clone();
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -202,6 +198,20 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
             )
             .expect("the actual Store opens its overlay"),
         );
+        // Model the historical unpriced card through the actual Store-backed rate holder;
+        // the normal boot configuration remains valid and receives its ordinary validation.
+        let historical = busbar_kernel::config::card::CardFields {
+            rate_card: Some(card.clone()),
+            ..Default::default()
+        };
+        let rates = historical.rates();
+        busbar_kernel::rate_apply::with_origin("historical unpriced usage fixture", || {
+            busbar_kernel::rate_apply::prepare(&historical, &rates.raw())
+        })
+        .expect("the actual Store prepares the historical unpriced card")
+        .confirm_activation()
+        .expect("the actual Store confirms the historical card's activation")
+        .commit();
         let now = busbar_kernel::store::now();
         let mut in_team = minted.clone();
         in_team.group = Some("team".to_string());
