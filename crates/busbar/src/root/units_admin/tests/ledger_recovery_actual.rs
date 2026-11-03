@@ -14,7 +14,7 @@ use busbar_contract::records::{
     UsageLedger, VirtualKey,
 };
 use busbar_kernel::governance::recovery::RecoveryState;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 const MODEL: &str = "oracle-recovery-observed-model";
 const INPUT: u64 = 7;

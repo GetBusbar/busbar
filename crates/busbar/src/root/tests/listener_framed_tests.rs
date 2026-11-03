@@ -1884,11 +1884,14 @@ async fn a_final_body_emit_remains_alive_through_graceful_drain() {
     let (stop, stopped) = tokio::sync::watch::channel(false);
     // An unknown-length response puts its final HTTP chunk on the wire. The peer can
     // drain the payload while retaining pressure on that distinct terminal Emit.
-    let router = Router::new().route("/hello", axum::routing::get(|| async {
-        axum::response::Response::new(axum::body::Body::from_stream(
-            futures::stream::once(async { Ok::<_, std::convert::Infallible>(Bytes::from_static(b"hi")) }),
-        ))
-    }));
+    let router = Router::new().route(
+        "/hello",
+        axum::routing::get(|| async {
+            axum::response::Response::new(axum::body::Body::from_stream(futures::stream::once(
+                async { Ok::<_, std::convert::Infallible>(Bytes::from_static(b"hi")) },
+            )))
+        }),
+    );
     let mut served = tokio::spawn(super::serve(
         server,
         framer,
@@ -2194,7 +2197,11 @@ async fn a_session_waits_for_its_parked_message_before_emitting_the_next() {
         .await
         .expect("the real WS close frame drains before the server retires")
         .unwrap();
-    assert_eq!(close_wire, [0x88, 0x02, 0x03, 0xe8], "exact unmasked normal WS close");
+    assert_eq!(
+        close_wire,
+        [0x88, 0x02, 0x03, 0xe8],
+        "exact unmasked normal WS close"
+    );
     tokio::time::timeout(Duration::from_secs(10), served)
         .await
         .unwrap()
@@ -2835,12 +2842,18 @@ async fn cancelled_pending_adoption_and_commit_ignore_their_late_wakes() {
             before,
             "late readiness cannot emit a message or repeat a commit"
         );
-        assert_eq!(http.count(|call| matches!(call, ObservedCall::Detach)), usize::from(!adopting),
-            "only a committed transfer consumes the old HTTP framing");
+        assert_eq!(
+            http.count(|call| matches!(call, ObservedCall::Detach)),
+            usize::from(!adopting),
+            "only a committed transfer consumes the old HTTP framing"
+        );
         assert_eq!(http.count(|call| matches!(call, ObservedCall::Finish)), usize::from(adopting),
             "cancel before transfer finishes HTTP; terminal detach must not finish its consumed token again");
-        assert_eq!(ws.count(|call| matches!(call, ObservedCall::Finish)), usize::from(!adopting),
-            "after transfer the adopted WS framing owns exactly one finish");
+        assert_eq!(
+            ws.count(|call| matches!(call, ObservedCall::Finish)),
+            usize::from(!adopting),
+            "after transfer the adopted WS framing owns exactly one finish"
+        );
         if adopting {
             assert!(
                 admitted.await.is_err(),
@@ -3150,7 +3163,9 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
                 socket.flush().unwrap();
                 socket.conn.send_close_notify();
                 let _ = socket.flush();
-                if gated { break; }
+                if gated {
+                    break;
+                }
             }
         });
         let now = busbar_kernel::store::now();

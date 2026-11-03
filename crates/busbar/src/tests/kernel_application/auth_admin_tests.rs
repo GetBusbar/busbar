@@ -1136,10 +1136,14 @@ fn a_slow_admin_door_does_not_stall_healthz() {
                         });
                         (held, client_bytes, issuer_bytes)
                     }));
-                    if gated { break; }
+                    if gated {
+                        break;
+                    }
                 }
                 let verify = transfers.pop().unwrap().join().expect("VERIFY relay joins");
-                for transfer in transfers { transfer.join().expect("READY relay joins"); }
+                for transfer in transfers {
+                    transfer.join().expect("READY relay joins");
+                }
                 verify
             })
         });
