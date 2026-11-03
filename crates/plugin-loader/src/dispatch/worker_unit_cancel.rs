@@ -374,8 +374,7 @@ impl Worker {
         } else {
             let (back, crossed) = self.cross(
                 st,
-                primary,
-                &instance,
+                (primary, &instance),
                 slot::CANCEL,
                 heads,
                 env.budgets.of(slot::CANCEL, class),
