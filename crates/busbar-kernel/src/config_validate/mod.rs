@@ -1260,7 +1260,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             }
             if !lane.is_empty()
                 && tiers.iter().all(|(_, v)| v.is_finite() && *v == 0.0)
-                && r.units.is_empty()
+                && r.units.values().all(|rate| rate.nanos_per_unit() == 0)
             {
                 diag_warn!(
                     CONFIG_RATE_CARD_ALL_ZERO,
