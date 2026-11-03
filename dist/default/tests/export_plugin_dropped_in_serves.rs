@@ -77,6 +77,9 @@ fn write_tarball_declaring(dir: &Path, lib: &[u8], destinations: &[&str]) {
     m.alias = PLUGIN.into();
     m.former_names.clear();
     m.publisher = common::plugins::FIXTURE_PUBLISHER.into();
+    // Republishing as a configured third party cannot claim the first-party diagnostic
+    // catalogue. Keep the real Statement and every other package capability intact.
+    m.declares.diagnostics.clear();
     m.declares.destinations = destinations.iter().map(|d| d.to_string()).collect();
 
     common::plugins::state(&mut m, lib);
