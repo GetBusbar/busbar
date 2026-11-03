@@ -2921,6 +2921,9 @@ impl Connector {
                 .get(program::member_of(desc.target))
                 .map(|declaration| declaration.member())
                 .ok_or(ConnError::Refused)?;
+            // An in-flight open owns the Member, not declaration custody. Replacement must
+            // retire a member even while its carrier spawn is blocked.
+            drop(members);
             let lease = member.lease(&desc.body, expected)?;
             let mut held = Held::over(None, None, None).bounded(desc.timeout_ms);
             held.lease = Some((member, lease));
