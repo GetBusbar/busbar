@@ -519,14 +519,28 @@ async fn a_keyed_unit_is_admitted_and_its_money_settles_at_its_end() {
 }
 
 #[tokio::test]
-async fn an_unknown_route_is_admitted_then_refused_and_settles() {
+async fn an_unknown_route_is_refused_before_admission_and_opens_no_hold() {
     let _one = PUBLISHING.lock().await;
     let g = governed("serve-money-unknown", true);
     let (status, body) = g.post("/call/direct:nowhere", true).await;
 
     assert_eq!((status, body.as_str()), (404, "refused:404:no_destination"));
-    assert_eq!(g.requests(), 1, "charged before its route was refused");
+    assert_eq!(
+        g.requests(),
+        0,
+        "no destination can acquire a paid admission"
+    );
     assert_eq!(g.money.open_units(), 0, "its money facts closed at its end");
+    assert_eq!(g.post.open_units(), 0, "no node hold remains");
+    let book = g.book.lock().expect("unpoisoned");
+    assert_eq!(book.audit_records.len(), 1, "the refusal is sealed once");
+    assert!(matches!(
+        book.audit_records[0].outcome.unit_end,
+        busbar_contract::caps::Outcome::Refused(
+            _,
+            busbar_contract::caps::ReasonCode::NoDestination
+        )
+    ));
 }
 
 #[tokio::test]
