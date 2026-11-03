@@ -77,7 +77,8 @@ fn the_scrape_sink_answers_the_same_through_either_door() {
         actual_exports::prometheus::path(),
     );
     let transcripts = doors.map(|registry| {
-        let rows = ExportRows::new(&registry, dispatcher());
+        let rows = ExportRows::new(&registry, dispatcher())
+            .with_conns(Arc::new(crate::needs_restated::Inert));
         let module = row;
         let good = serde_json::json!({ "buffer_seconds": 60 });
         let (streams, clean) = rows.probe(module, "metrics", &good).expect("an export row");
@@ -231,7 +232,8 @@ fn check_runs_when_the_first_instance_does_not_open() {
             actual_exports::prometheus::door,
         )])
         .expect("the linked door admits the sink");
-    let rows = ExportRows::new(&registry, dispatcher());
+    let rows =
+        ExportRows::new(&registry, dispatcher()).with_conns(Arc::new(crate::needs_restated::Inert));
     let findings = rows
         .check(
             row,
