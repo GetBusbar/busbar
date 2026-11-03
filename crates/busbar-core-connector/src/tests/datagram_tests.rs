@@ -1254,14 +1254,9 @@ fn a_session_opening_waits_for_real_caller_metadata_and_wakes_on_publication() {
         assert!(pairing.opening().is_empty(), "no channel is invented");
         let pieces = vec![got(7, b"label: actual-events\r\n", true)];
         if publication {
-            pairing.publish(
-                super::Leg::Caller,
-                crate::framer::Yielded {
-                    pieces,
-                    ..Default::default()
-                },
-                Instant::now(),
-            );
+            let mut yielded = crate::framer::Yielded::default();
+            yielded.pieces = pieces;
+            pairing.publish(super::Leg::Caller, yielded, Instant::now());
         } else {
             pairing.sort(super::Leg::Caller, pieces, Instant::now());
         }
