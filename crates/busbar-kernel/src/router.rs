@@ -496,6 +496,9 @@ fn mount_plane_route(
                 .and_then(|c| c.caller.as_ref())
                 .map(auth::CallerCredential::lend);
             let ticket = consumed.as_deref().and_then(|c| c.ticket.clone());
+            let host_ticket_admission = consumed
+                .as_deref()
+                .and_then(|c| c.host_ticket_admission.clone());
             let handler = handler.clone();
             let slot = slot.clone();
             let ctx_path = ctx_path.clone();
@@ -511,6 +514,7 @@ fn mount_plane_route(
                     principal: principal.map(|axum::extract::Extension(p)| p),
                     caller_credential,
                     ticket,
+                    host_ticket_admission,
                     consumed_fields,
                     engine,
                     slot,
@@ -560,6 +564,9 @@ fn mount_plane_session(
                 .and_then(|c| c.caller.as_ref())
                 .map(auth::CallerCredential::lend);
             let ticket = consumed.as_deref().and_then(|c| c.ticket.clone());
+            let host_ticket_admission = consumed
+                .as_deref()
+                .and_then(|c| c.host_ticket_admission.clone());
             let handler = handler.clone();
             let slot = slot.clone();
             let ctx_path = ctx_path.clone();
@@ -581,6 +588,7 @@ fn mount_plane_session(
                         |axum::extract::Extension(l)| l.0,
                     ),
                     ticket,
+                    host_ticket_admission,
                     consumed_fields,
                 };
                 match handler(ctx).await {

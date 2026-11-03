@@ -484,6 +484,15 @@ pub trait RootRules: Send + Sync {
 
     fn destinations_applied(&self, _destinations: &config::Destinations) {}
 
+    /// Move host-owned, single-use admission custody before durable ticket redemption.
+    /// This hook must not call Store or retain its locks across the auth await.
+    fn claim_ticket_admission(
+        &self,
+        _identity: &crate::host_services::VerifiedTicketIdentity,
+    ) -> crate::host_services::TicketClaimDisposition {
+        crate::host_services::TicketClaimDisposition::Ordinary
+    }
+
     fn unloaded_plane_refusal(&self, _keys: &[&str]) -> Option<String> {
         None
     }

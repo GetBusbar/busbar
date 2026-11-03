@@ -138,3 +138,33 @@ async fn final_ticket_record_wait_keeps_the_reactor_live_and_resolves_the_actual
     assert!(matches!(verdict, ChainVerdict::Identified { principal, .. } if principal.id == id));
     assert!(gov.admit_ticket("tk_", &ticket, now).is_none());
 }
+
+#[tokio::test]
+async fn refused_host_custody_never_spends_the_durable_ticket() {
+    struct Refuse;
+    impl crate::appbuild::RootRules for Refuse {
+        fn check(&self, _: &crate::config::RootCfg) -> Result<(), String> {
+            Ok(())
+        }
+        fn claim_ticket_admission(
+            &self,
+            _: &crate::host_services::VerifiedTicketIdentity,
+        ) -> crate::host_services::TicketClaimDisposition {
+            crate::host_services::TicketClaimDisposition::Refused
+        }
+    }
+    let (gov, _, ticket, now) = actual_ticket("missing-host-custody");
+    assert!(claimed_ticket_verdict(
+        false,
+        true,
+        Some("tk_"),
+        Some(&ticket),
+        Some(&gov),
+        now,
+        &Refuse,
+    )
+    .await
+    .is_err());
+    assert!(gov.peek_ticket_async("tk_", &ticket, now).await.is_some());
+    assert!(gov.admit_ticket("tk_", &ticket, now).is_some());
+}
