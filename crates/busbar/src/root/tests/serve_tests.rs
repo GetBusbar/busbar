@@ -98,11 +98,16 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
         },
     )
     .expect("the actual HTTP exporter loads through its memory ABI");
-    let routes = plugin
+    let facts = plugin
         .context::<ExportFacts>()
-        .expect("the actual exporter declares its routes")
-        .routes
-        .clone();
+        .expect("the actual exporter declares its routes");
+    let routes = facts.routes.clone();
+    let public_routes = facts.public_routes.clone();
+    assert!(
+        public_routes.iter().any(|path| path == "/metrics")
+            && public_routes.iter().any(|path| path == "/metrics/hooks"),
+        "the qualified actual Prometheus image declares both public scrape grants"
+    );
     assert!(
         routes.iter().any(|route| route.path == "/metrics"),
         "the actual exporter declares the scrape route"
@@ -123,7 +128,8 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
             source_instance: "serve-http-metrics".into(),
             dispatch_available: true,
             kind: busbar_kernel::plugin_routes::RouteKind::Export,
-            scrape: route.path == "/metrics",
+            // Match production's first-party scrape grant for this qualified actual image.
+            scrape: public_routes.contains(&route.path),
             persistent: false,
             route,
             dispatch: dispatch.clone(),
