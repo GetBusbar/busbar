@@ -383,6 +383,124 @@ pub struct ServedPlane {
     pub dialects: Vec<&'static str>,
 }
 
+// Egress snapshots can outlive their DoorLive (for example, a retained probe).
+// Keep the exact loader generation with the connection table they retain.
+struct BoundConns {
+    inner: Arc<dyn busbar_contract::conn::PollConns>,
+    _binding: crate::root::loader::dispatch::plugin::ConnectionBinding,
+}
+
+impl busbar_contract::conn::Conns for BoundConns {
+    fn open(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        desc: &busbar_contract::conn::OpenDesc<'_>,
+    ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+        self.inner.open(caller, need, desc)
+    }
+    fn open_with_security(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        desc: &busbar_contract::conn::OpenDesc<'_>,
+        secure: bool,
+    ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+        self.inner.open_with_security(caller, need, desc, secure)
+    }
+    fn write(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+        bytes: &[u8],
+        end: bool,
+        text: bool,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        self.inner.write(caller, conn, bytes, end, text)
+    }
+    fn read(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+        ticket: busbar_contract::conn::Ticket,
+        buf: &mut [u8],
+    ) -> Result<busbar_contract::conn::Piece, busbar_contract::conn::ConnError> {
+        self.inner.read(caller, conn, ticket, buf)
+    }
+    fn wait(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        set: &[busbar_contract::conn::ConnId],
+        ticket: busbar_contract::conn::Ticket,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        self.inner.wait(caller, set, ticket)
+    }
+    fn facts(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+    ) -> Result<busbar_contract::transport::ConnFacts, busbar_contract::conn::ConnError> {
+        self.inner.facts(caller, conn)
+    }
+    fn close(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        self.inner.close(caller, conn)
+    }
+}
+impl busbar_contract::conn::PollConns for BoundConns {
+    fn poll_read(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut [u8],
+    ) -> std::task::Poll<Result<busbar_contract::conn::Piece, busbar_contract::conn::ConnError>>
+    {
+        self.inner.poll_read(caller, conn, cx, buf)
+    }
+    fn anchor(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        member: &str,
+        target: &str,
+        anchors: &busbar_contract::transport::trust::Anchors,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        self.inner.anchor(owner, need, member, target, anchors)
+    }
+    fn head_defaults(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        target: &str,
+    ) -> busbar_contract::conn::HeadDefaults {
+        self.inner.head_defaults(owner, need, target)
+    }
+    fn seal_reach(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        member: &str,
+        target: &str,
+        reach: bool,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        self.inner.seal_reach(owner, need, member, target, reach)
+    }
+}
+
+fn bound_conns(
+    binding: crate::root::loader::dispatch::plugin::ConnectionBinding,
+    inner: Arc<dyn busbar_contract::conn::PollConns>,
+) -> Arc<dyn busbar_contract::conn::PollConns> {
+    Arc::new(BoundConns {
+        inner,
+        _binding: binding,
+    })
+}
+
 pub struct DoorLive {
     pub section: serde_yaml::Value,
 
@@ -519,6 +637,7 @@ impl DoorApply {
             &owned_bytes(owned)?,
             generation,
         )?;
+        let binding = self.plugin.connection_binding();
         let table = routes_of(
             section,
             self.reach.as_ref().and_then(|r| r.catalog.as_ref()),
@@ -548,8 +667,8 @@ impl DoorApply {
                 let egress = crate::root::door_steps::compose_egress(
                     &self.facts,
                     &pools,
-                    self.plugin.instance(),
-                    Arc::clone(&r.conns),
+                    binding.owner(),
+                    bound_conns(binding.clone(), Arc::clone(&r.conns)),
                     &routes,
                     Arc::clone(&r.journal),
                     Arc::clone(&self.clock),
@@ -563,7 +682,13 @@ impl DoorApply {
         };
         admission.commit()?;
         if let Some(routes) = fetches {
-            bind_fetches(&self.plugin, &self.served_facts, &routes, &self.units);
+            bind_fetches(
+                &self.plugin,
+                binding.owner(),
+                &self.served_facts,
+                &routes,
+                &self.units,
+            );
         }
         Ok(DoorLive {
             section: section.clone(),
@@ -1649,6 +1774,7 @@ fn seal_live(
         );
     }
 
+    let binding = plugin.connection_binding();
     let table = routes_of(section, egress.and_then(|e| e.reach.catalog));
     let pools =
         DoorPools::of(&table, served_facts.section).map_err(|e| format!("{instance}: {e}"))?;
@@ -1666,8 +1792,8 @@ fn seal_live(
                 Some(models) if models_plane => crate::root::model_egress::compose(
                     &facts,
                     models,
-                    plugin.instance(),
-                    Arc::clone(&egress.reach.conns),
+                    binding.owner(),
+                    bound_conns(binding.clone(), Arc::clone(&egress.reach.conns)),
                     &routes,
                     Arc::clone(&egress.journal),
                     Arc::clone(clock),
@@ -1677,8 +1803,8 @@ fn seal_live(
                 _ => crate::root::door_steps::compose_egress(
                     &facts,
                     &pools,
-                    plugin.instance(),
-                    Arc::clone(&egress.reach.conns),
+                    binding.owner(),
+                    bound_conns(binding.clone(), Arc::clone(&egress.reach.conns)),
                     &routes,
                     Arc::clone(&egress.journal),
                     Arc::clone(clock),
@@ -1688,7 +1814,7 @@ fn seal_live(
             };
             let (sealed, shown) = sealed.map_err(|e| format!("{instance}: {e}"))?;
 
-            bind_fetches(plugin, served_facts, &routes, units);
+            bind_fetches(plugin, binding.owner(), served_facts, &routes, units);
             Some((Arc::new(sealed), shown))
         }
         None => None,
@@ -1710,6 +1836,7 @@ fn seal_live(
 
 fn bind_fetches(
     plugin: &DoorPlane,
+    owner: busbar_contract::conn::InstanceId,
     served_facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     routes: &BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>,
     units: &Arc<busbar_kernel::host_units::UnitRecords>,
@@ -1718,7 +1845,7 @@ fn bind_fetches(
         crate::root::door_steps::bind_member_fetches(
             served_facts,
             routes,
-            plugin.instance(),
+            owner,
             &*conn_table,
             units,
         );

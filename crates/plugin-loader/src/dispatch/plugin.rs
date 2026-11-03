@@ -2380,6 +2380,22 @@ pub(crate) fn with_test_slot_override<R>(change: TestSlotOverride, bind: impl Fn
     bind()
 }
 
+/// A retained connection authority generation for host-side routes.
+#[derive(Clone)]
+pub struct ConnectionBinding {
+    owner: InstanceId,
+    _instance: Arc<Instance>,
+    _generation: Option<Arc<super::export_bindings::Generation>>,
+}
+
+impl ConnectionBinding {
+    #[must_use]
+    /// The owner to use for every connection seal and call in this snapshot.
+    pub fn owner(&self) -> InstanceId {
+        self.owner
+    }
+}
+
 impl<K: Kind> Plugin<K> {
     pub(crate) fn bind(v: Validated, lib: Option<Lib>, bind: Bind) -> Result<Self, LoadError> {
         #[cfg(test)]
@@ -2611,6 +2627,21 @@ impl<K: Kind> Plugin<K> {
 
     pub fn instance(&self) -> InstanceId {
         self.inner.instance
+    }
+
+    /// Snapshot the connection authority published by the last successful lifecycle call.
+    /// Retain this guard with host-side routes that use its owner.
+    pub fn connection_binding(&self) -> ConnectionBinding {
+        let generation = self.inner.wake.exports.pin(Ticket::NONE);
+        let owner = generation
+            .as_ref()
+            .and_then(|generation| generation.conn.as_ref().map(|(owner, _)| *owner))
+            .unwrap_or(self.inner.instance);
+        ConnectionBinding {
+            owner,
+            _instance: Arc::clone(&self.inner),
+            _generation: generation,
+        }
     }
 
     pub fn conn_table(&self) -> Option<Arc<dyn busbar_contract::conn::DeclaredConns>> {
