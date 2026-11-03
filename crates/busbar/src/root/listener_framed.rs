@@ -24,6 +24,10 @@ pub const DATA_SCHEME: &str = "http";
 
 const UPGRADE_CLAIMS: [&str; 2] = ["ws", "wss"];
 
+pub(crate) fn upgrade_claim(secured: bool) -> &'static str {
+    UPGRADE_CLAIMS[usize::from(secured)]
+}
+
 pub const DATA_LINE: u32 = 1;
 
 pub const DATA_LINE_REF: u64 = 0x6461_7461_6c69_6e65;
@@ -1175,7 +1179,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             let _ = reply.send(false);
             return;
         }
-        let claim = UPGRADE_CLAIMS[usize::from(self.secured)];
+        let claim = upgrade_claim(self.secured);
         let Some(door) = (self.framer.upgrade)(claim) else {
             let _ = reply.send(false);
             return;

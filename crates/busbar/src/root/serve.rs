@@ -2784,7 +2784,7 @@ impl ListenerPlan {
         for need in &next.needs {
             if need.kind == KindCode::Plane && self.planes.get().is_some_and(|lines|
                 !lines.iter().any(|route| matches!(&route.line.claimant, Claimant::Plane(owner) if owner == &need.instance)
-                    && !route.root_only && (route.transport == need.transport || route.line.upgrade.is_some()))) {
+                    && !route.root_only && route.transport == need.transport)) {
                 return Err(format!("{}: inbound need {} has no served plane claim", need.instance, need.need));
             }
             let Some((owner, datagram)) = self.framers.get(&need.transport) else {
@@ -2819,11 +2819,26 @@ impl ListenerPlan {
                 } else {
                     &bind.transport
                 };
+                let physical = self.framers.get(scheme);
+                let upgrades_here = bind.owner == BindOwner::Root
+                    && bind.at == "listen"
+                    && need.kind == KindCode::Plane
+                    && !*datagram
+                    && self.upgrades.get().is_some_and(|upgrades| upgrades.contains(&need.transport))
+                    && physical.is_some_and(|(_, datagram)| !datagram)
+                    && self.framers.get(crate::root::listener::framed::upgrade_claim(
+                        bind.tls.is_some(),
+                    )).is_some_and(|(upgrade_owner, datagram)| {
+                        upgrade_owner == owner && !datagram
+                    })
+                    && self.planes.get().is_some_and(|lines| lines.iter().any(|route| {
+                        matches!(&route.line.claimant, Claimant::Plane(instance) if instance == &need.instance)
+                            && !route.root_only
+                            && route.transport == need.transport
+                            && route.line.upgrade.as_deref() == Some(need.transport.as_str())
+                    }));
                 if bind.at == "admin_listen"
-                    || self
-                        .framers
-                        .get(scheme)
-                        .is_none_or(|(physical, _)| physical != owner)
+                    || (physical.is_none_or(|(physical, _)| physical != owner) && !upgrades_here)
                 {
                     return Err(format!(
                         "{}: inbound need {} has incompatible physical framing at {}",

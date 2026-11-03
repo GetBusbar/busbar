@@ -1396,3 +1396,131 @@ async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
     }
     inbound.framing_ended(FRAMING);
 }
+
+#[test]
+fn registered_http_listener_accepts_only_its_planes_registered_upgrade() {
+    use busbar_contract::abi::transport::route::{METHOD_GET, PATH_EXACT};
+    use busbar_kernel::guest::{Line, Route};
+
+    crate::dist_root_install::install();
+    let late = super::LateServices::new();
+    let dispatcher = Arc::new(crate::root::dispatch::build(2, &late));
+    let entries = crate::root::connector::entries_on(
+        &dispatcher,
+        crate::LINKED_TRANSPORT_DOORS,
+        &crate::root::policy::client_settings(&Default::default()),
+    )
+    .expect("the actual linked transport doors open through the normal loader");
+    let framer = move |scheme: &str| {
+        entries
+            .iter()
+            .find(|entry| entry.door.facts().claims.contains(&scheme))
+            .map(|entry| Arc::clone(&entry.door))
+    };
+    let http = framer("http").expect("the actual HTTP framer is registered");
+    let ws = framer("ws").expect("the actual WS upgrade framer is registered");
+    assert_ne!(http.instance(), ws.instance());
+    assert_eq!(ws.instance(), framer("wss").unwrap().instance());
+    let offers = super::transport_offers(crate::LINKED.transports, &[]);
+    assert!(super::upgrade_carriers(crate::LINKED.transports, &[]).contains(&"ws"));
+
+    let check = |upgrade: Option<&str>,
+                 claimant: &str,
+                 transport: &str,
+                 at: &str,
+                 disabled: bool,
+                 datagram: bool,
+                 secured: bool| {
+        let mut topology = topology();
+        topology
+            .binds
+            .retain(|bind| bind.at == "listen" || bind.at == "admin_listen");
+        topology.needs = vec![ListenerNeed {
+            instance: "streaming".into(),
+            module: "streaming".into(),
+            kind: KindCode::Plane,
+            need: 0,
+            transport: transport.into(),
+            auth: String::new(),
+            at: at.into(),
+        }];
+        if secured {
+            topology
+                .binds
+                .iter_mut()
+                .find(|bind| bind.at == "listen")
+                .unwrap()
+                .tls = Some(serde_json::json!({}));
+        }
+        let app = projection_boundary_app(topology.clone(), vec![], 1);
+        let mut plan = ListenerPlan::new(topology, offers.clone(), &framer);
+        plan.upgrades
+            .set(
+                super::upgrade_carriers(crate::LINKED.transports, &[])
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            )
+            .unwrap();
+        if disabled {
+            plan.framers.remove("ws");
+        }
+        if datagram {
+            plan.framers.get_mut("ws").unwrap().1 = true;
+        }
+        plan.planes
+            .set(vec![super::ListenerPlaneLine {
+                line: Line {
+                    route: Route {
+                        methods: METHOD_GET,
+                        path_form: PATH_EXACT,
+                        path: "/live".into(),
+                        fields: vec![],
+                        rung: 0,
+                    },
+                    claimant: Claimant::Plane(claimant.into()),
+                    dialect: 0,
+                    auth: LineAuth::None,
+                    upgrade: upgrade.map(str::to_string),
+                    offered: AuthPoints::HEAD,
+                },
+                transport: transport.into(),
+                root_only: false,
+            }])
+            .unwrap();
+        plan.lists(&app)
+    };
+    assert!(check(Some("ws"), "streaming", "ws", "listen", false, false, false).is_ok());
+    assert!(
+        check(Some("ws"), "streaming", "ws", "listen", false, false, true).is_ok(),
+        "TLS uses the registered wss alias of the same actual upgrade owner"
+    );
+    assert!(check(None, "streaming", "ws", "listen", false, false, false).is_err());
+    assert!(check(Some("ws"), "foreign", "ws", "listen", false, false, false).is_err());
+    assert!(check(Some("ws"), "streaming", "ws", "listen", true, false, false).is_err());
+    assert!(check(
+        Some("http"),
+        "streaming",
+        "ws",
+        "listen",
+        false,
+        false,
+        false
+    )
+    .is_err());
+    assert!(check(Some("ws"), "streaming", "ws", "listen", false, true, false).is_err());
+    assert!(check(
+        Some("ws"),
+        "streaming",
+        "ws",
+        "admin_listen",
+        false,
+        false,
+        false
+    )
+    .is_err());
+    assert!(
+        check(None, "streaming", "http", "listen", false, false, false).is_ok(),
+        "ordinary matching physical framing retains its existing path"
+    );
+}
