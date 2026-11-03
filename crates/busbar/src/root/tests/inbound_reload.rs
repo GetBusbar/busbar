@@ -404,12 +404,12 @@ async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
         first.is_ok(),
         "the configured auth must run for the actual owner"
     );
-    assert_eq!(before_reload, vec![Some(before.name.into())]);
+    assert_eq!(before_reload, vec![Some(format!("oidc:{}", before.name))]);
     assert!(
         second.is_ok(),
         "the next stream must use the newly published list"
     );
-    assert_eq!(after_reload, vec![Some(after.name.into())]);
+    assert_eq!(after_reload, vec![Some(format!("oidc:{}", after.name))]);
     assert_eq!(retained_identity, before_reload);
     assert!(
         retained_app,
@@ -486,7 +486,7 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
         1,
         "one actual auth call for the selected stream"
     );
-    assert_eq!(first, vec![Some(before.name.into())]);
+    assert_eq!(first, vec![Some(format!("oidc:{}", before.name))]);
     let after = provider("need-after", &units);
     stage_at(&after, "/data-only/");
     let next = app(&after);
@@ -500,7 +500,10 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
         )
         .unwrap();
     settle(&mut framing).await;
-    assert_eq!(identities(&after), vec![Some(after.name.into())]);
+    assert_eq!(
+        identities(&after),
+        vec![Some(format!("oidc:{}", after.name))]
+    );
     assert_eq!(
         calls.load(Ordering::SeqCst),
         2,
@@ -538,7 +541,7 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
     );
     assert_eq!(
         identities(&after),
-        vec![Some(after.name.into())],
+        vec![Some(format!("oidc:{}", after.name))],
         "a route miss never invokes the selected listener's auth"
     );
     ordinary.finish(CLOSE_NORMAL);
