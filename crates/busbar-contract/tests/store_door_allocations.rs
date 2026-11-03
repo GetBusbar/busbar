@@ -33,6 +33,7 @@ thread_local! {
     static COUNT: Cell<u64> = const { Cell::new(0) };
     /// This thread's allocations of a store wire read buffer's size or more, armed or not.
     static READ_SIZED: Cell<u64> = const { Cell::new(0) };
+    static SNAPSHOT_SCAN_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
 fn note() {
@@ -110,7 +111,9 @@ fn down<T>() -> RecordStoreResult<T> {
     Err(RecordStoreError(DOWN_TEXT.to_string()))
 }
 
-struct Canned<const CONDITIONAL: bool = false>;
+struct Canned<const CONDITIONAL: bool = false> {
+    snapshot_rows: std::sync::Mutex<std::collections::BTreeMap<Vec<u8>, RecordBytes>>,
+}
 
 impl<const CONDITIONAL: bool> StoreSlots for Canned<CONDITIONAL> {
     const RECORD_TRANSACTION: bool = CONDITIONAL;
@@ -148,7 +151,9 @@ impl<const CONDITIONAL: bool> StoreSlots for Canned<CONDITIONAL> {
         Ok(())
     }
     fn open(_: &[u8], _: Option<Host>) -> Result<Self, String> {
-        Ok(Self)
+        Ok(Self {
+            snapshot_rows: std::sync::Mutex::default(),
+        })
     }
     fn append_plane_record_op(
         &self,
@@ -167,10 +172,18 @@ impl<const CONDITIONAL: bool> StoreSlots for Canned<CONDITIONAL> {
     fn record_put(
         &self,
         _: &mut StoreOp<'_>,
-        _: &str,
-        _: &[u8],
-        _: &[u8],
+        schema: &str,
+        key: &[u8],
+        value: &[u8],
     ) -> Step<Result<(), String>> {
+        if schema == "snapshot" {
+            unwitnessed(|| {
+                self.snapshot_rows
+                    .lock()
+                    .unwrap()
+                    .insert(key.to_vec(), RecordBytes::new(value.to_vec()).unwrap());
+            });
+        }
         Step::Ready(Ok(()))
     }
     fn record_get(
@@ -197,10 +210,24 @@ impl<const CONDITIONAL: bool> StoreSlots for Canned<CONDITIONAL> {
     fn record_scan(
         &self,
         _: &mut StoreOp<'_>,
-        _: &str,
-        _: &[u8],
-        _: u32,
+        schema: &str,
+        prefix: &[u8],
+        limit: u32,
     ) -> Step<Result<Scanned, String>> {
+        if schema == "snapshot" {
+            SNAPSHOT_SCAN_CALLS.with(|calls| calls.set(calls.get() + 1));
+            return Step::Ready(unwitnessed(|| {
+                Ok(self
+                    .snapshot_rows
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(key, _)| key.starts_with(prefix))
+                    .take(limit as usize)
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect())
+            }));
+        }
         let v = || RecordBytes::new(b"v".to_vec()).expect("a small record");
         Step::Ready(unwitnessed(|| {
             Ok(vec![(b"k1".to_vec(), v()), (b"k2".to_vec(), v())])
@@ -911,6 +938,264 @@ fn release(instance: *mut c_void, lease: u64) -> Outcome {
     };
     let mut out = out_head::<OutHead>();
     call(ops().head.release, instance, &input, &mut out)
+}
+
+fn borrowed_octets(bytes: &[u8]) -> Blob {
+    Blob {
+        ptr: bytes.as_ptr(),
+        len: bytes.len(),
+        fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+        flags: 0,
+    }
+}
+
+fn put_snapshot(instance: *mut c_void, key: &[u8], bytes: &[u8]) {
+    let input = RecordPutIn {
+        head: in_head::<RecordPutIn>(slot::RECORD_PUT),
+        schema: s(b"snapshot"),
+        key: borrowed_octets(key),
+        value: borrowed_octets(bytes),
+    };
+    assert_eq!(
+        call(
+            ops().record_put,
+            instance,
+            &input,
+            &mut out_head::<OutHead>()
+        ),
+        Outcome::Ready
+    );
+}
+
+fn scan_output() -> HostListOut {
+    let mut output: HostListOut = zeroed();
+    output.head = out_head::<HostListOut>();
+    output
+}
+
+fn scan_reference(output: &HostListOut) -> Vec<u8> {
+    assert_ne!(output.head.lease, 0);
+    assert!(!output.head.extensions.ptr.is_null());
+    assert!(output.head.extensions.len > 0);
+    assert_eq!(
+        output.head.extensions.fmt,
+        busbar_contract::abi::mechanism::call::BLOB_OCTETS
+    );
+    // SAFETY: the real SDK's SHORT answer owns these bytes until release; copy while held.
+    unsafe { std::slice::from_raw_parts(output.head.extensions.ptr, output.head.extensions.len) }
+        .to_vec()
+}
+
+fn close_store(instance: *mut c_void) {
+    assert_eq!(
+        call(
+            ops().head.close,
+            instance,
+            &in_head::<InHead>(life::CLOSE),
+            &mut out_head::<OutHead>()
+        ),
+        Outcome::Ready
+    );
+}
+
+#[test]
+fn a_short_record_scan_replays_its_completed_snapshot_when_the_store_grows() {
+    for ticket in [
+        Ticket::NONE,
+        Ticket {
+            slot: 17,
+            generation: 3,
+        },
+    ] {
+        let instance = open();
+        let value = vec![42; busbar_contract::MAX_RECORD_BYTES];
+        let mut expected = Vec::new();
+        for index in 0..33 {
+            let key = format!("k{index:02}");
+            put_snapshot(instance, key.as_bytes(), &value);
+            expected.extend_from_slice(key.as_bytes());
+            expected.extend_from_slice(&value);
+        }
+        assert!(expected.len() > 16 * 1024);
+        SNAPSHOT_SCAN_CALLS.with(|calls| calls.set(0));
+        let mut small_bytes = vec![0; 16];
+        let mut small_items = vec![zeroed::<RecordEntry>(); 4];
+        let mut input = RecordScanIn {
+            head: in_head::<RecordScanIn>(slot::RECORD_SCAN),
+            schema: s(b"snapshot"),
+            prefix: octets(b"k"),
+            limit: 100,
+            _reserved: 0,
+            out: HostRecords {
+                items: small_items.as_mut_ptr(),
+                items_cap: small_items.len(),
+                bytes: bytes_buf(&mut small_bytes),
+            },
+        };
+        input.head.ticket = ticket;
+        let mut short = scan_output();
+        assert_eq!(
+            call(ops().record_scan, instance, &input, &mut short),
+            Outcome::Failed
+        );
+        assert_ne!(
+            short.head.lease, 0,
+            "the immutable completed scan is owned by a lease"
+        );
+        busbar_contract::abi::store::check_record_scan(
+            Outcome::Failed,
+            &short,
+            &input.out,
+            &[],
+            input.limit,
+        )
+        .unwrap();
+        let reference = scan_reference(&short);
+        // Destroy the original buffers: the retained reply must own rows, never host pointers.
+        drop(small_bytes);
+        drop(small_items);
+        put_snapshot(instance, b"k99", &[7; 330]);
+        let mut bytes = vec![0; short.needed_bytes as usize];
+        let mut items = vec![zeroed::<RecordEntry>(); short.needed_items as usize];
+        input.out = HostRecords {
+            items: items.as_mut_ptr(),
+            items_cap: items.len(),
+            bytes: bytes_buf(&mut bytes),
+        };
+        input.head.extensions = borrowed_octets(&reference);
+        let mut recalled = scan_output();
+        assert_eq!(
+            call(ops().record_scan, instance, &input, &mut recalled),
+            Outcome::Ready
+        );
+        busbar_contract::abi::store::check_record_scan(
+            Outcome::Ready,
+            &recalled,
+            &input.out,
+            &items[..recalled.items_written as usize],
+            input.limit,
+        )
+        .unwrap();
+        assert_eq!(recalled.items_written, 33);
+        assert_eq!(recalled.bytes_written, expected.len() as u64);
+        assert_eq!(bytes, expected);
+        assert_eq!(
+            SNAPSHOT_SCAN_CALLS.with(Cell::get),
+            1,
+            "recall must not ask the mutable backend again"
+        );
+        assert_eq!(release(instance, short.head.lease), Outcome::Ready);
+        assert_eq!(
+            call(ops().record_scan, instance, &input, &mut scan_output()),
+            Outcome::Refused
+        );
+        // A genuinely new read sees the new Store state after the retained snapshot is released.
+        input.head.extensions = Blob::ABSENT;
+        bytes.resize(32 * 1024, 0);
+        items.resize(64, zeroed());
+        input.out = HostRecords {
+            items: items.as_mut_ptr(),
+            items_cap: items.len(),
+            bytes: bytes_buf(&mut bytes),
+        };
+        let mut fresh = scan_output();
+        assert_eq!(
+            call(ops().record_scan, instance, &input, &mut fresh),
+            Outcome::Ready
+        );
+        assert_eq!(fresh.items_written, 34);
+        assert_eq!(SNAPSHOT_SCAN_CALLS.with(Cell::get), 2);
+        close_store(instance);
+    }
+}
+
+#[test]
+fn a_short_record_scan_reference_rejects_other_reads_and_expires_when_abandoned() {
+    let instance = open();
+    let other = open();
+    put_snapshot(instance, b"k0", b"original value");
+    SNAPSHOT_SCAN_CALLS.with(|calls| calls.set(0));
+    let ticket = Ticket {
+        slot: 18,
+        generation: 4,
+    };
+    let mut input = RecordScanIn {
+        head: in_head::<RecordScanIn>(slot::RECORD_SCAN),
+        schema: s(b"snapshot"),
+        prefix: octets(b"k"),
+        limit: 10,
+        _reserved: 0,
+        out: HostRecords {
+            items: ptr::null_mut(),
+            items_cap: 0,
+            bytes: HostBuf {
+                ptr: ptr::null_mut(),
+                cap: 0,
+            },
+        },
+    };
+    input.head.ticket = ticket;
+    let mut short = scan_output();
+    assert_eq!(
+        call(ops().record_scan, instance, &input, &mut short),
+        Outcome::Failed
+    );
+    let reference = scan_reference(&short);
+    let mut bytes = vec![0; short.needed_bytes as usize];
+    let mut items = vec![zeroed::<RecordEntry>(); short.needed_items as usize];
+    input.out = HostRecords {
+        items: items.as_mut_ptr(),
+        items_cap: items.len(),
+        bytes: bytes_buf(&mut bytes),
+    };
+    input.head.extensions = borrowed_octets(&reference);
+    input.head.ticket.generation += 1;
+    assert_eq!(
+        call(ops().record_scan, instance, &input, &mut scan_output()),
+        Outcome::Refused
+    );
+    input.head.ticket = ticket;
+    assert_eq!(
+        call(ops().record_scan, other, &input, &mut scan_output()),
+        Outcome::Refused
+    );
+    input.schema = s(b"other-schema");
+    assert_eq!(
+        call(ops().record_scan, instance, &input, &mut scan_output()),
+        Outcome::Refused
+    );
+    input.schema = s(b"snapshot");
+    input.prefix = octets(b"different");
+    assert_eq!(
+        call(ops().record_scan, instance, &input, &mut scan_output()),
+        Outcome::Refused
+    );
+    input.prefix = octets(b"k");
+    input.limit += 1;
+    assert_eq!(
+        call(ops().record_scan, instance, &input, &mut scan_output()),
+        Outcome::Refused
+    );
+    input.limit -= 1;
+    let malformed =
+        busbar_contract::abi::mechanism::extensions::encode(&[("busbar.sdk.short-reply", &[2; 9])]);
+    input.head.extensions = borrowed_octets(&malformed);
+    assert_eq!(
+        call(ops().record_scan, instance, &input, &mut scan_output()),
+        Outcome::Refused
+    );
+    input.head.extensions = borrowed_octets(&reference);
+    assert_eq!(SNAPSHOT_SCAN_CALLS.with(Cell::get), 1);
+    // Completed SHORT answers are not pending operations: abandonment releases the owned reply.
+    assert_eq!(release(instance, short.head.lease), Outcome::Ready);
+    assert_eq!(release(instance, short.head.lease), Outcome::Refused);
+    assert_eq!(
+        call(ops().record_scan, instance, &input, &mut scan_output()),
+        Outcome::Refused
+    );
+    assert_eq!(SNAPSHOT_SCAN_CALLS.with(Cell::get), 1);
+    close_store(instance);
+    close_store(other);
 }
 
 /// RELEASING AN UNKNOWN LEASE IS REFUSED (THE DESIGN §11, KIND-SHARE: "releasing an unknown lease
