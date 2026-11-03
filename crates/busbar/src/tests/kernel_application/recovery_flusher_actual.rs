@@ -196,6 +196,7 @@ fn era_now() -> u64 {
     busbar_kernel::rate_apply::effective_from_at(busbar_kernel::store::now_ms())
 }
 fn metered(store: &dyn RecordStore, key_id: &str, model: &str, n: u64, now: u64) {
+    let era = busbar_kernel::rate_apply::era_at(busbar_kernel::store::now_ms());
     store
         .add_metering(&MeteringDelta {
             key_id: key_id.into(),
@@ -209,8 +210,11 @@ fn metered(store: &dyn RecordStore, key_id: &str, model: &str, n: u64, now: u64)
             requests: 1,
             billable_requests: 1,
             key_group_at_use: String::new(),
-            pricing_version: String::new(),
-            priced_from_ms: era_now(),
+            pricing_version: era
+                .entry_id
+                .map(|id| id.metering_version())
+                .unwrap_or_default(),
+            priced_from_ms: era.effective_from,
             usage_units: Default::default(),
         })
         .unwrap();
