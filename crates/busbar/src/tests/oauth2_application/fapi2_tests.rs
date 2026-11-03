@@ -262,7 +262,7 @@ async fn serve(fapi2: bool) -> Subject {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
-    let origin = format!("http://{}", listener.local_addr().expect("addr"));
+    let origin = format!("https://{}", listener.local_addr().expect("addr"));
     let (key, other) = (Key::new("fapi-client-key"), Key::new("fapi-client-2-key"));
     let rsa = RsaKey::new("fapi-client-ps256-key");
     let declared = |client_id: &str, jwk: StaticClientJwk| StaticClientCfg {
@@ -289,12 +289,12 @@ async fn serve(fapi2: bool) -> Subject {
     let app = application_with_resource_auth(Some(&cfg), None, true);
     let router = busbar_kernel::build_router(Arc::clone(&app));
     tokio::spawn(async move {
-        axum::serve(listener, router).await.expect("serve");
+        super::serve_tls(listener, router).await;
     });
     Subject {
         app,
         origin,
-        client: reqwest::Client::builder()
+        client: super::client_builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("client"),
@@ -1147,7 +1147,7 @@ async fn resource_after_inbound(s: &Subject, token: &str, scheme: &str, proofs: 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        axum::serve(listener, router).await.unwrap();
+        super::serve_tls(listener, router).await;
     });
     let mut request = s.client.get(format!("http://{addr}/stats"));
     for (name, value) in &head.fields {

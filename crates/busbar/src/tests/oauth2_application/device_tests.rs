@@ -72,7 +72,7 @@ struct Subject {
 async fn setup() -> Subject {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let origin = format!("https://{}", listener.local_addr().unwrap());
     let key = Key::new();
     let config = OauthAsCfg {
         issuer: origin.clone(),
@@ -90,12 +90,12 @@ async fn setup() -> Subject {
     let app = application_with_resource_auth(Some(&config), None, true);
     let router = busbar_kernel::build_router(Arc::clone(&app));
     tokio::spawn(async move {
-        axum::serve(listener, router).await.unwrap();
+        super::serve_tls(listener, router).await;
     });
     Subject {
         origin,
         app,
-        client: reqwest::Client::builder()
+        client: super::client_builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap(),
@@ -365,7 +365,7 @@ async fn device_forms_refuse_missing_forged_replayed_and_cross_origin_csrf_and_a
 #[tokio::test]
 async fn the_browser_device_routes_require_admin_and_public_registration_keeps_its_grant_policy() {
     let (origin, _app) = super::consent_tests::serve(&["read"], true).await;
-    let client = reqwest::Client::new();
+    let client = super::client();
     for method in [reqwest::Method::GET, reqwest::Method::POST] {
         let response = client
             .request(method, format!("{origin}/device"))
