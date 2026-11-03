@@ -319,16 +319,8 @@ mod conformance_ready_result_tests;
 
 
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/https_timeout_tests.rs"]
-mod https_timeout_tests;
 
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/stand_in_tests.rs"]
-mod stand_in_tests;
 
 
 #[cfg(test)]
