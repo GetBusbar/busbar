@@ -4185,7 +4185,7 @@ async fn drive_door_verb_errors() {
         let body: serde_json::Value = r.json().await.unwrap();
         assert_eq!(body.pointer("/error/code").unwrap(), "not_found", "{body}");
     }
-    let r = send(reqwest::Method::POST, "/tools/base-tools/connect")
+    let r = send(reqwest::Method::GET, "/tools/base-tools/changes")
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
@@ -4207,21 +4207,23 @@ async fn a_door_admin_route_is_served_only_by_the_generation_lent_its_table() {
     let (unlent_dir, _unlent_overlay, unlent, unlent_handle) =
         named_map_app("door-table-unlent", false).await;
     let client = reqwest::Client::new();
-    let connect = |addr: std::net::SocketAddr| {
+    // A read observes this exact published generation without starting an unrelated
+    // operator refresh that requires a fully composed connector and trust writer.
+    let changes = |addr: std::net::SocketAddr| {
         client
-            .post(format!(
-                "http://{addr}/api/v1/admin/tools/base-tools/connect"
+            .get(format!(
+                "http://{addr}/api/v1/admin/tools/base-tools/changes"
             ))
             .header("x-admin-token", "admintok")
             .send()
     };
-    let r = connect(lent).await.unwrap();
+    let r = changes(lent).await.unwrap();
     let status = r.status().as_u16();
     let body: serde_json::Value = r.json().await.unwrap();
     assert_eq!(status, 200, "the lent generation serves the door: {body}");
     assert_eq!(body.get("name").unwrap(), "base-tools", "{body}");
     assert!(body.get("error").is_none(), "{body}");
-    let r = connect(unlent).await.unwrap();
+    let r = changes(unlent).await.unwrap();
     let status = r.status().as_u16();
     let body: serde_json::Value = r.json().await.unwrap();
     assert_eq!(
