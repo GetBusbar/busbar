@@ -5,7 +5,7 @@ use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 fn resolve_linked(secret: &SecretRef) -> Result<Vec<u8>, String> {
-    SecretResolver::builtins_only()
+    actual_product_resolver()
         .resolve(secret)
         .map(|held| held.expose(&crate::seal::lend()).clone())
 }
@@ -140,7 +140,9 @@ fn resolve_linked_unknown_module_is_fail_closed_and_names_the_module() {
 fn resolve_linked_string_trims_trailing_newlines() {
     let var = unique("STR_TRIM");
     std::env::set_var(&var, "top-secret\r\n");
-    let got = resolve_linked_string(&SecretRef::env(&var)).unwrap();
+    let got = actual_product_resolver()
+        .resolve_string(&SecretRef::env(&var))
+        .unwrap();
     assert_eq!(got.expose(&crate::seal::lend()), "top-secret");
     std::env::remove_var(&var);
 }
@@ -150,7 +152,9 @@ fn resolve_linked_string_empty_after_trim_is_fail_closed() {
     let var = unique("STR_EMPTY_AFTER_TRIM");
 
     std::env::set_var(&var, "\n\r\n");
-    let err = resolve_linked_string(&SecretRef::env(&var)).unwrap_err();
+    let err = actual_product_resolver()
+        .resolve_string(&SecretRef::env(&var))
+        .unwrap_err();
     assert!(
         err.contains("empty") || err.contains("BLANK"),
         "a value with no content must be refused fail-closed: {err}"
@@ -163,7 +167,9 @@ fn resolve_linked_string_empty_after_trim_is_fail_closed() {
 fn resolve_linked_string_non_utf8_is_an_error() {
     let path = temp_path("STR_NON_UTF8");
     std::fs::write(&path, [0xFF, 0xFE, 0xFD]).unwrap();
-    let err = resolve_linked_string(&SecretRef::file(path.to_str().unwrap())).unwrap_err();
+    let err = actual_product_resolver()
+        .resolve_string(&SecretRef::file(path.to_str().unwrap()))
+        .unwrap_err();
     assert!(err.contains("non-UTF-8"), "{err}");
     let _ = std::fs::remove_file(&path);
 }
@@ -171,7 +177,9 @@ fn resolve_linked_string_non_utf8_is_an_error() {
 #[test]
 fn resolve_linked_string_propagates_the_underlying_resolve_error() {
     let path = temp_path("STR_MISSING");
-    let err = resolve_linked_string(&SecretRef::file(path.to_str().unwrap())).unwrap_err();
+    let err = actual_product_resolver()
+        .resolve_string(&SecretRef::file(path.to_str().unwrap()))
+        .unwrap_err();
     assert!(err.contains("cannot resolve"), "{err}");
 }
 

@@ -1685,18 +1685,18 @@ fn test_secret_ref_malformed_shapes_rejected() {
 
 #[test]
 fn test_secret_ref_builtin_resolution_fail_closed() {
-    use crate::config::secret::{resolve_linked_string, SecretResolver};
+    use crate::config::secret::actual_product_resolver;
 
     std::env::set_var("BUSBAR_T_SECRET_ENV_OK", "s3cr3t-value");
     assert_eq!(
-        SecretResolver::builtins_only()
+        actual_product_resolver()
             .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_OK"))
             .unwrap(),
         busbar_contract::redacted::Secret::new(b"s3cr3t-value".to_vec())
     );
     std::env::remove_var("BUSBAR_T_SECRET_ENV_OK");
 
-    let err = SecretResolver::builtins_only()
+    let err = actual_product_resolver()
         .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_UNSET"))
         .unwrap_err();
     assert!(
@@ -1705,7 +1705,7 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     );
 
     std::env::set_var("BUSBAR_T_SECRET_ENV_EMPTY", "");
-    let err = SecretResolver::builtins_only()
+    let err = actual_product_resolver()
         .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_EMPTY"))
         .unwrap_err();
     std::env::remove_var("BUSBAR_T_SECRET_ENV_EMPTY");
@@ -1716,17 +1716,17 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     std::fs::write(&path, "file-secret\n").unwrap();
     let sref = SecretRef::file(path.to_str().unwrap());
     assert_eq!(
-        SecretResolver::builtins_only().resolve(&sref).unwrap(),
+        actual_product_resolver().resolve(&sref).unwrap(),
         busbar_contract::redacted::Secret::new(b"file-secret\n".to_vec())
     );
     assert_eq!(
-        resolve_linked_string(&sref).unwrap(),
+        actual_product_resolver().resolve_string(&sref).unwrap(),
         busbar_contract::redacted::Secret::new("file-secret".to_string())
     );
     std::fs::remove_file(&path).unwrap();
 
     let missing = SecretRef::file("/nonexistent/busbar-secret-test");
-    assert!(SecretResolver::builtins_only().resolve(&missing).is_err());
+    assert!(actual_product_resolver().resolve(&missing).is_err());
 
     let mut settings = serde_json::Map::new();
     settings.insert("path".to_string(), serde_json::Value::String("x".into()));
@@ -1734,9 +1734,7 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
         module: "vault".to_string(),
         settings,
     };
-    let err = SecretResolver::builtins_only()
-        .resolve(&unknown)
-        .unwrap_err();
+    let err = actual_product_resolver().resolve(&unknown).unwrap_err();
     assert!(
         err.contains("vault") && err.contains("fail-closed"),
         "{err}"

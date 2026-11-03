@@ -6,7 +6,7 @@ use busbar_contract::redacted::Secret;
 
 #[test]
 fn resolver_builtins_resolve_without_plugin() {
-    let r = SecretResolver::builtins_only();
+    let r = actual_product_resolver();
     let var = format!("BUSBAR_RESOLVER_TEST_{}", std::process::id());
     std::env::set_var(&var, "abc\n");
     assert_eq!(
@@ -22,7 +22,7 @@ fn resolver_builtins_resolve_without_plugin() {
 
 #[test]
 fn resolver_unknown_module_without_plugin_fails_closed() {
-    let r = SecretResolver::builtins_only();
+    let r = actual_product_resolver();
     let s = SecretRef {
         module: "vault".to_string(),
         settings: serde_json::Map::new(),
@@ -45,7 +45,11 @@ fn resolver_delegates_to_plugin_and_fails_closed_on_empty_or_error() {
                 _ => Err("no such path".to_string()),
             }
         } else {
-            Err("unknown module".to_string())
+            let settings = serde_json::from_str(settings).expect("reference settings JSON");
+            actual_product_resolver().resolve(&SecretRef {
+                module: module.into(),
+                settings,
+            })
         }
     }));
     let mk = |path: &str| {
