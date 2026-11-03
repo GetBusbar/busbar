@@ -160,7 +160,7 @@
     {
       "repo": "busbar-transport-http",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-transport-http",
-      "commit": "b5d7ef20700c806276b67e7cb87c73b6c25bdc06",
+      "commit": "7ecfa7b62d38a2407e765d9f42fc735295851e89",
       "package": "busbar-transport-http-plugin",
       "kind": "transport",
       "alias": "http",
