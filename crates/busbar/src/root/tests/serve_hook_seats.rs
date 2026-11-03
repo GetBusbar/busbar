@@ -437,7 +437,8 @@ pub(crate) struct RigOpts<'a> {
     pub model_yaml: &'a [&'a str],
     /// More pools beside `p`: each its name and its members as (member index, weight).
     pub more_pools: &'a [(&'a str, &'a [(usize, u32)])],
-    /// The key's group as configured: its name and its limits (replaces `budget_cents`' group).
+    /// The key's group and limits. A zero Budget/Requests test limit means a valid
+    /// one-unit limit already consumed by a separate admitted key before the tested request.
     pub group: Option<(&'a str, &'a [busbar_kernel::config::groups::LimitCfg])>,
     /// The group the key names, configured or not (`None`: the configured group, if any).
     pub key_group: Option<&'a str>,
@@ -897,7 +898,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             },
         )
     });
-    let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = opts
+    let mut groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = opts
         .budget_cents
         .filter(|_| configured.is_none())
         .map(|amount| {
@@ -924,6 +925,24 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         .into_iter()
         .chain(configured)
         .collect();
+    let mut exhausted_groups = Vec::new();
+    for (name, group) in &mut groups {
+        if group.limits.iter().any(|limit| limit.amount == 0) {
+            // Product configuration rejects a zero cap. Express the same exhausted
+            // admission state with a valid cap, then consume it through real governance.
+            for limit in &mut group.limits {
+                if limit.amount == 0 {
+                    assert!(matches!(
+                        limit.metric,
+                        busbar_kernel::config::groups::LimitMetric::Budget
+                            | busbar_kernel::config::groups::LimitMetric::Requests
+                    ));
+                    limit.amount = 1;
+                }
+            }
+            exhausted_groups.push(name.clone());
+        }
+    }
     // The deployed authority declares the same group tree the fixture's governor uses.
     // A key deliberately naming an absent group is minted only after boot below, so
     // those cells still exercise runtime admission's fail-closed refusal.
@@ -1033,6 +1052,31 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             1_700_000_000,
         )
         .expect("mint");
+    for group in exhausted_groups {
+        let (warm, _) = gov
+            .mint_signed(
+                NewKeySpec {
+                    name: "pre-exhausted-group".to_string(),
+                    group: Some(group),
+                    ..Default::default()
+                },
+                4_000_000_000,
+                1_700_000_000,
+            )
+            .expect("the prior caller uses the actual configured group");
+        // This admission charges the shared group once without dialing a backend or
+        // writing usage on the tested key. Dropping its grant releases concurrency
+        // gauges; its successful request/fee remains consumed, as a completed request's.
+        drop(
+            gov.try_admit(&cost, &warm, "p", busbar_kernel::store::now())
+                .expect("the prior caller consumes the configured one-unit cap"),
+        );
+        assert!(
+            gov.try_admit(&cost, &warm, "p", busbar_kernel::store::now())
+                .is_err(),
+            "the actual configured group is exhausted before the tested request"
+        );
+    }
     app.governance = Some(Arc::clone(&gov));
     app.cost = Arc::new(cost);
     let mut app = Arc::new(app);
