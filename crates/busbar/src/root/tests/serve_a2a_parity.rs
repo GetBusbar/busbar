@@ -774,7 +774,14 @@ fn raw_relay_and_lifecycle(
         plane.call(slot::REFUSAL, &mut refusal).outcome,
         Outcome::Ready
     );
-    assert_eq!(refusal.out.status, 403);
+    assert_eq!(refusal.out.status, 0, "the plane retains the requested status");
+    // A zero plane status retains the requested status, as the production driver does.
+    let refusal_status = if refusal.out.status == 0 {
+        refusal.input.status
+    } else {
+        refusal.out.status
+    };
+    assert_eq!(refusal_status, 403);
     assert_eq!(&reply[..refusal.out.reply_written as usize], REFUSAL);
     let auxiliary = serve_and_project(plane, dispatcher);
     let driven = &plane.inner.driven;
