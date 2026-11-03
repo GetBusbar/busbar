@@ -157,7 +157,7 @@ impl StoreCalls for MixedScan {
 fn bulky_audit(sealed: &mut Sealed, wall: u64) -> JournalRecord {
     let mut inputs = crate::root::durability::audit::tests::inputs(sealed.audit.next_seq());
     inputs.wall = wall;
-    inputs.what.destination = Some("x".repeat(4_096));
+    inputs.what.destination = Some("x".repeat(8_192));
     let audit = sealed.audit.seal(
         inputs,
         &busbar_kernel::teller::verb_audit_pass(&crate::root::kernel::new_kernel()),
@@ -166,7 +166,7 @@ fn bulky_audit(sealed: &mut Sealed, wall: u64) -> JournalRecord {
 }
 
 #[test]
-fn concurrent_atomic_append_can_produce_a_mixed_prefix_view_that_fails_closed() {
+fn concurrent_atomic_append_after_saturated_4096_probe_fails_closed() {
     let slots = RecordSlots::new();
     let taken = take_node(&slots, "actual-prefix-race-writer").unwrap();
     let node = taken.id;
@@ -197,6 +197,13 @@ fn concurrent_atomic_append_can_produce_a_mixed_prefix_view_that_fails_closed() 
             );
         }
     }
+    assert_eq!(
+        wait_for(slots.record_scan(JOURNAL_SCHEMA, &node.to_be_bytes(), 4096))
+            .unwrap()
+            .len(),
+        4096,
+        "genuine sealed parts saturate the actual root probe before the mixed epochs"
+    );
     let upper_prefix = part_key(node, 256, 0)[..15].to_vec();
     assert_eq!(
         wait_for(slots.record_scan(JOURNAL_SCHEMA, &upper_prefix, 256))
