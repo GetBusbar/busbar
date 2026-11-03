@@ -4,11 +4,11 @@
 //! Distribution-only equivalence of the same real OIDC image admitted through both origins.
 #![cfg(linked_operator_auth)]
 
+use crate::test_common as common;
 use busbar_contract::auth_calls::{AuthCalls, Verified, VerifyAnswer, VerifyRequest};
 use busbar_contract::Secret;
 use busbar_plugin_loader::{auth_axis::AuthRows, LinkedPlugin, PluginRegistry};
 use std::sync::Arc;
-use crate::test_common as common;
 #[path = "../../root/tests/test_plugins.rs"]
 mod plugins;
 

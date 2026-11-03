@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_kernel::config::{IdentityProviderCfg, IdentityProviders};
 use crate::test_common as common;
+use busbar_kernel::config::{IdentityProviderCfg, IdentityProviders};
 
 #[test]
 fn a_real_plugin_module_is_still_refused_with_plugins_off() {

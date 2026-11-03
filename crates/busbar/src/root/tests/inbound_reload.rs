@@ -4,7 +4,6 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::test_common as common;
 use crate::root::doors::{bind_on, Dispatched};
 use crate::root::inbound;
 use crate::root::listener::framed::{self as listener_framed, FramerFor, DATA_SCHEME};
@@ -13,6 +12,7 @@ use crate::root::loader::dispatch::auth_handle::{
     RefuseAsk, StreamPolicy, UnitSecret,
 };
 use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
+use crate::test_common as common;
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
 use busbar_contract::abi::host::service::UnitRef;
 use busbar_contract::abi::transport::route::{METHOD_POST, PATH_CONTAINS};

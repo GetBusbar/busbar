@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::Arc;
 use crate::test_common as common;
+use std::sync::Arc;
 #[path = "../../root/tests/test_plugins.rs"]
 mod plugins;
 
