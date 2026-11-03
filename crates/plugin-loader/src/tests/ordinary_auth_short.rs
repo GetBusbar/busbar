@@ -51,6 +51,7 @@ impl VerifyPlugin for Probe {
         JUDGMENTS.fetch_add(1, Ordering::SeqCst);
         Verdict::Identity(VerifiedIdentity {
             subject: SUBJECT.to_string(),
+            groups: (0..300).map(|n| format!("group-{n}")).collect(),
             ..Default::default()
         })
         .into()
@@ -238,6 +239,10 @@ fn verify(auth: &dyn busbar_contract::auth_calls::AuthCalls) {
         panic!("identity refused");
     };
     assert_eq!(identity.subject, SUBJECT.as_str());
+    if JUDGMENTS.load(Ordering::SeqCst) != 0 {
+        assert_eq!(identity.groups.len(), 300);
+        assert_eq!(identity.groups[299], "group-299");
+    }
 }
 #[test]
 fn actual_retained_short_decision_is_judged_once_and_its_lease_released_once() {
@@ -373,7 +378,8 @@ fn an_actual_held_short_lease_is_released_exactly_once_when_its_token_drops() {
     assert_ne!(frame.out.head.lease, 0);
     let held_lease = frame.out.head.lease;
     let reference = short_reply::encode(frame.out.head.lease);
-    let mut bytes = vec![0; SUBJECT.len()];
+    let mut bytes = vec![0; frame.out.needed_bytes as usize];
+    let mut groups = vec![Span { offset: 0, len: 0 }; frame.out.needed_groups as usize];
     frame.input.head.extensions = Blob {
         ptr: reference.as_ptr(),
         len: reference.len(),
@@ -382,9 +388,17 @@ fn an_actual_held_short_lease_is_released_exactly_once_when_its_token_drops() {
     };
     frame.input.out_buf.buf = bytes.as_mut_ptr();
     frame.input.out_buf.buf_cap = bytes.len();
+    frame.input.out_buf.groups = groups.as_mut_ptr();
+    frame.input.out_buf.groups_cap = groups.len() as u32;
     let copied = plugin.call(slot::VERIFY, &mut frame);
     assert_eq!(copied.outcome, Outcome::Ready);
     assert_eq!(frame.out.verdict, VERDICT_IDENTITY);
+    assert_eq!(frame.out.identity.groups_len, 300);
+    let last_group = groups[299];
+    assert_eq!(
+        &bytes[last_group.offset as usize..last_group.offset as usize + last_group.len as usize],
+        b"group-299"
+    );
     let subject = frame.out.identity.subject;
     assert_eq!(
         &bytes[subject.offset as usize..subject.offset as usize + subject.len as usize],

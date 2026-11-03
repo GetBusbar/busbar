@@ -337,9 +337,9 @@ fn actual_oidc() -> (
     static IMAGE: OnceLock<(std::path::PathBuf, libloading::Library, RawDoorFn)> = OnceLock::new();
     extern "C" fn door() -> &'static busbar_contract::abi::mechanism::door::Door {
         let image = IMAGE.get_or_init(|| {
-            let path = std::env::var_os("BUSBAR_TEST_OIDC_CDYLIB")
+            let path = std::env::var_os("BUSBAR_AUTH_TEST_OIDC_PLUGIN")
                 .map(std::path::PathBuf::from)
-                .expect("BUSBAR_TEST_OIDC_CDYLIB names the actual qualified OIDC image");
+                .expect("BUSBAR_AUTH_TEST_OIDC_PLUGIN names the actual qualified OIDC image");
             assert!(path.is_absolute() && path.is_file());
             let library = crate::dlopen_on_worker(path.as_os_str())
                 .expect("actual OIDC loads on the plugin worker");
