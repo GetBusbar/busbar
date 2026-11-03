@@ -92,7 +92,7 @@
     {
       "repo": "busbar-plane-llm",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-plane-llm",
-      "commit": "47733adda3b1ab66c8df1d2f055f295be4bbfbeb",
+      "commit": "d81787ed595977f05e6c58fa382dd546e356f32d",
       "package": "busbar-plane-llm-plugin",
       "kind": "plane",
       "alias": "llm",
@@ -282,7 +282,7 @@
     {
       "repo": "busbar-plane-a2a",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-plane-a2a",
-      "commit": "42d6f31042391903becc6c85a901ee666222d624",
+      "commit": "8873a65b66d4a75f04daa04a75e9a8c069dad401",
       "package": "busbar-plane-a2a-plugin",
       "kind": "plane",
       "alias": "a2a",
@@ -293,7 +293,7 @@
     {
       "repo": "busbar-plane-decisions",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-plane-decisions",
-      "commit": "c7fef9d012b3115e58de87278bc73ee0dc7d1eef",
+      "commit": "3373aec9a58848855d10aebf3007777749af0122",
       "package": "busbar-plane-decisions-plugin",
       "kind": "plane",
       "alias": "decisions",
@@ -304,7 +304,7 @@
     {
       "repo": "busbar-plane-mcp",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-plane-mcp",
-      "commit": "049f75986a12ddde0d5648596e535de09b528edd",
+      "commit": "13486cf7f09e2f4851a5d5119282af3d0144a7d3",
       "package": "busbar-plane-mcp-plugin",
       "kind": "plane",
       "alias": "mcp",
@@ -315,7 +315,7 @@
     {
       "repo": "busbar-plane-streaming",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-plane-streaming",
-      "commit": "a12e66818739c2890b3ad3dc72248928824a86b2",
+      "commit": "cc08dc0fdc9570bb9304affdaad456c1e7bd4243",
       "package": "busbar-plane-streaming-plugin",
       "kind": "plane",
       "alias": "streaming",
