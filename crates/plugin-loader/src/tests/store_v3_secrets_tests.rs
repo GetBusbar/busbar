@@ -68,6 +68,15 @@ fn mint() -> OpId {
 
 #[test]
 fn a_declared_store_secret_reaches_open_as_a_secret_never_in_its_settings() {
+    let rendering = crate::dispatch::rendering_of(actual_store::door)
+        .expect("the actual SQLite artifact renders its Statement");
+    let stated = busbar_contract::abi::mechanism::rendering::read(&rendering)
+        .expect("the actual SQLite artifact's Statement reads");
+    assert_eq!(
+        stated.secret_refs,
+        vec!["license_key".to_string()],
+        "the qualified artifact must declare the exact secret field supplied below"
+    );
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let p = load_linked::<Store>(
         &LinkedRow::of(observing_door).expect("the actual Store states itself"),
