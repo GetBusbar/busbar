@@ -675,6 +675,17 @@ pub(super) fn fold_stored_records(
     calls: &dyn StoreCalls,
     node: u64,
     prefix: Vec<u8>,
+    visit: impl FnMut(Record) -> Result<(), String>,
+) -> Result<(), String> {
+    fold_stored_records_observed(calls, node, prefix, &mut false, visit)
+}
+
+// Preserve ordinary torn-tail omission while keeping its provenance for retry eligibility.
+fn fold_stored_records_observed(
+    calls: &dyn StoreCalls,
+    node: u64,
+    prefix: Vec<u8>,
+    omitted: &mut bool,
     mut visit: impl FnMut(Record) -> Result<(), String>,
 ) -> Result<(), String> {
     struct Partial {
@@ -687,11 +698,14 @@ pub(super) fn fold_stored_records(
     fn finish(
         node: u64,
         pending: &mut Option<Partial>,
+        omitted: &mut bool,
         visit: &mut impl FnMut(Record) -> Result<(), String>,
     ) -> Result<(), String> {
         if let Some(record) = pending.take() {
             if record.valid && record.next == record.count {
                 visit(Record::new(node, record.sequence, record.bytes))?;
+            } else {
+                *omitted = true;
             }
         }
         Ok(())
@@ -727,7 +741,7 @@ pub(super) fn fold_stored_records(
                 .as_ref()
                 .is_some_and(|record| record.sequence != sequence)
             {
-                finish(node, &mut pending, &mut visit)?;
+                finish(node, &mut pending, omitted, &mut visit)?;
             }
             let record = pending.get_or_insert_with(|| Partial {
                 sequence,
@@ -750,7 +764,7 @@ pub(super) fn fold_stored_records(
         }
         Ok(())
     })?;
-    finish(node, &mut pending, &mut visit)
+    finish(node, &mut pending, omitted, &mut visit)
 }
 
 fn checked_record(record: Record) -> Result<JournalRecord, String> {
@@ -780,7 +794,7 @@ pub(super) fn read_record_exact(
     found.ok_or_else(|| "selected recovery journal record is missing or incomplete".into())
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ChainPoint {
     node: u64,
     sequence: u64,
@@ -792,12 +806,14 @@ fn bridge_covers(
     calls: &dyn StoreCalls,
     previous: ChainPoint,
     current: ChainPoint,
+    omitted: &mut bool,
 ) -> Result<bool, String> {
     let mut covered = false;
-    fold_stored_records(
+    fold_stored_records_observed(
         calls,
         current.node,
         current.node.to_be_bytes().to_vec(),
+        omitted,
         |record| {
             let record = checked_record(record)?;
             let bridge = (record.class == RecordClass::ChainBreak)
@@ -845,59 +861,223 @@ impl RecordSeal {
 /// The same sealed hash/sequence authority as the ordinary journal reader, folded without a
 /// history Vec. Quarantine bridge lookup rescans only on an actual gap, retaining no bridge log.
 pub(super) fn verify_stored_chain(calls: &dyn StoreCalls, node: u64) -> Result<(), String> {
-    verify_stored_chain_with_seals(calls, node, &[])
+    // Cold multi-owner proofs deliberately do not acquire a fresh retry budget per owner.
+    verify_stored_chain_once(calls, node, &[], None).map_err(ChainProofFailure::reason)
 }
 
-/// Verify the entire node exactly as before, and bind every requested, sorted record seal to
-/// that fresh fold. The caller bounds the transcript; no historical payloads are retained.
+#[derive(Clone, Copy)]
+struct GapWitness {
+    node: u64,
+    prefix_digest: [u8; 32],
+    prefix_count: u64,
+    before: ChainPoint,
+    after: ChainPoint,
+    tail: ChainPoint,
+}
+
+enum ChainProofFailure {
+    Fatal(String),
+    SequenceGap(GapWitness),
+}
+impl ChainProofFailure {
+    fn reason(self) -> String {
+        match self {
+            Self::Fatal(reason) => reason,
+            Self::SequenceGap(_) => {
+                "the streamed Store journal has a broken hash link or sequence".into()
+            }
+        }
+    }
+}
+impl From<String> for ChainProofFailure {
+    fn from(reason: String) -> Self {
+        Self::Fatal(reason)
+    }
+}
+
+fn extend_chain_digest(digest: [u8; 32], point: ChainPoint) -> [u8; 32] {
+    // Fixed-width, domain-separated canonical transcript; no historical bodies are retained.
+    let mut bytes = [0u8; 160];
+    let mut used = 0;
+    for field in [
+        b"busbar/journal/verified-prefix/v1\0".as_slice(),
+        &digest,
+        &point.node.to_be_bytes(),
+        &point.sequence.to_be_bytes(),
+        &point.hash,
+        &point.previous,
+    ] {
+        bytes[used..used + field.len()].copy_from_slice(field);
+        used += field.len();
+    }
+    busbar_kernel_wal::body_digest(&bytes[..used])
+}
+
+/// The sole retry belongs to this entire sealed-node proof. Original requested seals remain
+/// immutable; OriginRead still checks its captured HEADs and fences after this returns.
 pub(super) fn verify_stored_chain_with_seals(
     calls: &dyn StoreCalls,
     node: u64,
     seals: &[RecordSeal],
 ) -> Result<(), String> {
+    match verify_stored_chain_once(calls, node, seals, None) {
+        Ok(()) => Ok(()),
+        Err(ChainProofFailure::Fatal(reason)) => Err(reason),
+        Err(ChainProofFailure::SequenceGap(witness)) => {
+            verify_stored_chain_once(calls, node, seals, Some(witness))
+                .map_err(ChainProofFailure::reason)
+        }
+    }
+}
+
+fn verify_stored_chain_once(
+    calls: &dyn StoreCalls,
+    node: u64,
+    seals: &[RecordSeal],
+    retry: Option<GapWitness>,
+) -> Result<(), ChainProofFailure> {
     if seals.iter().any(|seal| seal.node != node)
         || seals
             .windows(2)
             .any(|pair| pair[0].sequence >= pair[1].sequence)
     {
-        return Err("invalid same-read journal seal transcript".into());
+        return Err(ChainProofFailure::Fatal(
+            "invalid same-read journal seal transcript".into(),
+        ));
     }
     let mut matched = 0;
     let mut previous: Option<ChainPoint> = None;
-    fold_stored_records(calls, node, node.to_be_bytes().to_vec(), |record| {
-        let record = checked_record(record)?;
-        let current = ChainPoint {
-            node: record.node,
-            sequence: record.node_seq,
-            hash: record.hash,
-            previous: record.prev_hash,
-        };
-        drop(record);
-        if let Some(previous) = previous {
-            let follows = current.previous == previous.hash
-                && current.sequence == previous.sequence.saturating_add(1);
-            if !follows && !bridge_covers(calls, previous, current)? {
-                return Err("the streamed Store journal has a broken hash link or sequence".into());
+    let mut digest = [0; 32];
+    let mut count = 0u64;
+    let mut gap = None;
+    let mut omitted = false;
+    let mut bridge_omitted = false;
+    let mut prefix_matched = retry.is_none();
+    let mut after_matched = retry.is_none();
+    let mut tail_matched = retry.is_none();
+    fold_stored_records_observed(
+        calls,
+        node,
+        node.to_be_bytes().to_vec(),
+        &mut omitted,
+        |record| {
+            let record = checked_record(record)?;
+            let current = ChainPoint {
+                node: record.node,
+                sequence: record.node_seq,
+                hash: record.hash,
+                previous: record.prev_hash,
+            };
+            drop(record);
+            if let Some(witness) = retry {
+                if witness.node != node {
+                    return Err("retry node differs".into());
+                }
+                if current.sequence == witness.after.sequence {
+                    if current != witness.after {
+                        return Err("retry gap boundary changed".into());
+                    }
+                    after_matched = true;
+                }
+                if current.sequence == witness.tail.sequence {
+                    if current != witness.tail {
+                        return Err("retry observed tail changed".into());
+                    }
+                    tail_matched = true;
+                }
             }
-        }
-        if let Some(seal) = seals.get(matched) {
-            if seal.sequence < current.sequence {
-                return Err("a same-read recovery record is missing from its verified node".into());
+            if let Some(before) = previous {
+                let follows = current.previous == before.hash
+                    && before.sequence.checked_add(1) == Some(current.sequence);
+                // The original missing interval must now be filled by actual consecutive sealed
+                // records. A newly observed quarantine note cannot substitute for gap fill.
+                if retry.is_some_and(|witness| {
+                    before.sequence >= witness.before.sequence
+                        && before.sequence < witness.after.sequence
+                }) && !follows
+                {
+                    return Err("retry did not fill the original sequence gap".into());
+                }
+                if !follows && !bridge_covers(calls, before, current, &mut bridge_omitted)? {
+                    // Only a positive sequence gap between canonical validated records is eligible.
+                    // Same-sequence/hash corruption and another mixed gap are never retried.
+                    if retry.is_some()
+                        || gap.is_some()
+                        || before
+                            .sequence
+                            .checked_add(1)
+                            .is_none_or(|next| current.sequence <= next)
+                    {
+                        return Err(
+                            "the streamed Store journal has a broken hash link or sequence".into(),
+                        );
+                    }
+                    gap = Some(GapWitness {
+                        node,
+                        prefix_digest: digest,
+                        prefix_count: count,
+                        before,
+                        after: current,
+                        tail: current,
+                    });
+                }
             }
-            if seal.sequence == current.sequence {
-                if seal.hash != current.hash {
+            if let Some(seal) = seals.get(matched) {
+                if seal.sequence < current.sequence {
                     return Err(
-                        "a same-read recovery record changed before node verification".into(),
+                        "a same-read recovery record is missing from its verified node".into(),
                     );
                 }
-                matched += 1;
+                if seal.sequence == current.sequence {
+                    if seal.hash != current.hash {
+                        return Err(
+                            "a same-read recovery record changed before node verification".into(),
+                        );
+                    }
+                    matched += 1;
+                }
             }
-        }
-        previous = Some(current);
-        Ok(())
-    })?;
+            digest = extend_chain_digest(digest, current);
+            count = count
+                .checked_add(1)
+                .ok_or("journal prefix count overflow")?;
+            if let Some(witness) = retry {
+                if count == witness.prefix_count {
+                    if digest != witness.prefix_digest || current != witness.before {
+                        return Err("retry verified prefix changed".into());
+                    }
+                    prefix_matched = true;
+                }
+            }
+            previous = Some(current);
+            Ok(())
+        },
+    )?;
     if matched != seals.len() {
-        return Err("a same-read recovery record is missing from its verified node".into());
+        return Err(ChainProofFailure::Fatal(
+            "a same-read recovery record is missing from its verified node".into(),
+        ));
+    }
+    if !prefix_matched || !after_matched || !tail_matched {
+        return Err(ChainProofFailure::Fatal(
+            "retry is missing its original prefix, boundary or tail".into(),
+        ));
+    }
+    if let Some(mut witness) = gap {
+        // Incomplete/malformed partials in this fold or its quarantine authority may not heal
+        // into retryable absence, even if a later scan happens to return complete bytes.
+        if omitted || bridge_omitted {
+            return Err(ChainProofFailure::Fatal(
+                "a torn journal record cannot authorize a gap retry".into(),
+            ));
+        }
+        witness.tail = previous.expect("a gap has validated boundary records");
+        return Err(ChainProofFailure::SequenceGap(witness));
+    }
+    if retry.is_some() && (omitted || bridge_omitted) {
+        return Err(ChainProofFailure::Fatal(
+            "a gap retry encountered a torn journal record".into(),
+        ));
     }
     Ok(())
 }
