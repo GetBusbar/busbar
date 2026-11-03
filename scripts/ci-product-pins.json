@@ -125,24 +125,26 @@
     {
       "repo": "busbar-store-memory",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-store-memory",
-      "commit": "6736c6a664ad66bee8c98edaf3794af676deeb07",
+      "commit": "569f08d683cf20bba1eac21614a92e81a8c0de23",
       "package": "busbar-store-memory-plugin",
       "kind": "store",
       "alias": "memory",
       "image": "libbusbar_store_memory_plugin.so",
       "declares": "store-memory/declares.json",
-      "lock_sha256": "f5dbc02deff663e565e9bd5d72374a43633566bfbbedf3844f89ba09e0266e39"
+      "lock_sha256": "97970300b94ed62da9cb0625390c5a970bacf395661308a6c3ae05a07403ab01",
+      "sdk": "16530bfbda93e34caa5bbf81b8e6c65307305477"
     },
     {
       "repo": "busbar-store-sqlite",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-store-sqlite",
-      "commit": "aec7d834f862713ff1ce21595008a9ea08bff512",
+      "commit": "77e26f72a86266ece8e3e00468cf90099499c18e",
       "package": "busbar-store-sqlite-plugin",
       "kind": "store",
       "alias": "sqlite",
       "image": "libbusbar_store_sqlite_plugin.so",
       "declares": "store-sqlite/declares.json",
-      "lock_sha256": "951c965e221d9be9e130135e789388aac46868557940ae98040d9a73ba803118"
+      "lock_sha256": "85c7388f6c3b4508a275fd0cc41f76f9a2e1fa4ffdf6d2bf0f4a31a46d374061",
+      "sdk": "16530bfbda93e34caa5bbf81b8e6c65307305477"
     },
     {
       "repo": "busbar-transport-grpc",

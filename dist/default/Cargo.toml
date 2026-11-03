@@ -951,7 +951,7 @@ busbar-transport-webrtc = { git = "https://git.getbusbar.dev/GetBusbar/busbar-tr
 # (oracle BOOT-W15). d7a62c4 is 5927d5e plus the upsert-by-id fix (492c728, busbar-store-memory fj#44):
 # a parented upserted plane record is keyed on its own id, so get/delete by (kind, id) reach it.
 # Explicit usage cleanup preserves billing; unsigned expiry cells retain permanent node claims.
-busbar-store-memory = { git = "https://git.getbusbar.dev/GetBusbar/busbar-store-memory", rev = "6736c6a664ad66bee8c98edaf3794af676deeb07" }
+busbar-store-memory = { git = "https://git.getbusbar.dev/GetBusbar/busbar-store-memory", rev = "569f08d683cf20bba1eac21614a92e81a8c0de23" }
 # THE MCP PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the mcp plane's
 # door row (`plane-mcp-door`, `busbar_plane_mcp::tool_door::door`) and installs in every build's tests.
 # Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.
