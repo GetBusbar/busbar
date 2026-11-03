@@ -367,8 +367,12 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
         "the actual exporter declares the scrape route"
     );
     let exporter = std::sync::Arc::new(
-        crate::root::loader::export_door::ExportInstance::open(plugin, dispatcher, b"{}")
-            .expect("the actual HTTP exporter opens"),
+        crate::root::loader::export_door::ExportInstance::open(
+            plugin,
+            dispatcher,
+            br#"{"buffer_seconds":60}"#,
+        )
+        .expect("the actual HTTP exporter opens"),
     );
     let dispatch = busbar_kernel::export::serve_test_sink(exporter);
     let declarations = routes
