@@ -141,7 +141,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         std::fs::write(&old_path, [3_u8; 32]).unwrap();
         std::fs::write(&new_path, [4_u8; 32]).unwrap();
         let mut disk = document.clone();
-        disk["plugins"] = serde_json::json!({"enabled": true, "dir": directory.to_string_lossy()});
+        disk["plugins"] = plugins::config_document(&app.plugins_cfg);
         disk["credentials"] = serde_json::json!({"at_rest": {"key": {"file": new_path}, "previous": {"file": old_path}}});
         std::fs::write(&config_path, serde_yaml::to_string(&disk).unwrap()).unwrap();
         std::fs::write(&providers_path, "{}\n").unwrap();
@@ -164,7 +164,11 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         let meta = CredentialMeta {
             id: "rewrap-credential".into(),
             key_id: "rewrap-owner".into(),
-            kind: "signed-request".into(),
+            kind: app
+                .auth
+                .issued_credential()
+                .expect("the actual linked credential reader declares the recoverable kind")
+                .0,
             slot: 0,
             public_id: "rewrap-public".into(),
             secret_form: SecretForm::Recoverable,
