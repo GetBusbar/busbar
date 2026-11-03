@@ -749,7 +749,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://git.getbusbar.dev/GetBusbar/busbar-plane-a2a?rev=a83188f566e8fc98f96601efb32160c9ad0a23a5#a83188f566e8fc98f96601efb32160c9ad0a23a5"
+source = "git+https://git.getbusbar.dev/GetBusbar/busbar-plane-a2a?rev=2eee74a92d791fd8d5e139b199ceedbdb5e07683#2eee74a92d791fd8d5e139b199ceedbdb5e07683"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -850,7 +850,7 @@ dependencies = [
 [[package]]
 name = "busbar-secret-env"
 version = "1.6.0"
-source = "git+https://git.getbusbar.dev/GetBusbar/busbar-secret-env?rev=2a23a0afd4315d52214bd067817490caed4824ab#2a23a0afd4315d52214bd067817490caed4824ab"
+source = "git+https://git.getbusbar.dev/GetBusbar/busbar-secret-env?rev=b11f698e9d19282085b6c420388c50ea67a46f75#b11f698e9d19282085b6c420388c50ea67a46f75"
 dependencies = [
  "busbar-contract",
  "serde_json",
