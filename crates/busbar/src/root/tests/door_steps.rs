@@ -1280,7 +1280,9 @@ fn a_live_parent_at_the_request_cap_admits_and_ledgers_its_child() {
     let child_ctx = context(7002);
     let unopened = HoldCell::new(Hold::open(&parent_token, principal.clone()));
     assert!(
-        parent.parent_admission(&parent_ctx, &unopened).is_err(),
+        parent
+            .parent_admission(&parent_ctx, &unopened, &parent_token)
+            .is_err(),
         "an arrival cell cannot authorize a free child"
     );
     let foreign = PrincipalId::new("foreign-held-principal");
@@ -1291,7 +1293,9 @@ fn a_live_parent_at_the_request_cap_admits_and_ledgers_its_child() {
             .expect("foreign cell is actually admitted"),
     );
     assert!(
-        parent.parent_admission(&parent_ctx, &foreign_cell).is_err(),
+        parent
+            .parent_admission(&parent_ctx, &foreign_cell, &parent_token)
+            .is_err(),
         "another principal's admitted cell cannot lend this parent's money"
     );
     let other_call = kernel.next_call();
@@ -1303,11 +1307,13 @@ fn a_live_parent_at_the_request_cap_admits_and_ledgers_its_child() {
             .expect("same principal's other call is actually admitted"),
     );
     assert!(
-        parent.parent_admission(&parent_ctx, &other_cell).is_err(),
+        parent
+            .parent_admission(&parent_ctx, &other_cell, &parent_token)
+            .is_err(),
         "the same principal's other call cannot substitute for this parent's hold"
     );
     let authority = parent
-        .parent_admission(&parent_ctx, &cell)
+        .parent_admission(&parent_ctx, &cell, &parent_token)
         .expect("actual parent money and hold authorize its child");
     let child = steps().under_admission(&authority);
     child.lock().routed = pools.resolve(ROUTE_POOL, Some(b"frontier"));
@@ -1353,7 +1359,9 @@ fn a_live_parent_at_the_request_cap_admits_and_ledgers_its_child() {
     );
     money.settle_end(parent_ctx.key, 200);
     assert!(
-        parent.parent_admission(&parent_ctx, &cell).is_err(),
+        parent
+            .parent_admission(&parent_ctx, &cell, &parent_token)
+            .is_err(),
         "an admitted cell without a live parent money entry has no authority"
     );
 }
