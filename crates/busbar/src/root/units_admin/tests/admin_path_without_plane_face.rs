@@ -261,6 +261,21 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
         &rules,
     )
     .expect("the product builds the actual admin application");
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        limits.stage_boot();
+        crate::root::kernel::ROOT_CARD.keep_in_store(
+            built
+                .governance
+                .as_ref()
+                .expect("the application has its configured governance Store")
+                .store_calls()
+                .expect("the configured Store exposes its actual rate-history calls"),
+            busbar_kernel::door::op_id().counter(),
+        );
+        crate::root::kernel::ROOT_CARD
+            .boot_in_store(None)
+            .expect("the actual configured Store boots its initial rate history");
+    }
     limits.keep().expect("the real application limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -430,6 +445,21 @@ async fn the_mounted_live_admin_door_keeps_no_verdict_apart_from_bad_credentials
             &rules,
         )
         .expect("the product builds the actual admin application");
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            limits.stage_boot();
+            crate::root::kernel::ROOT_CARD.keep_in_store(
+                built
+                    .governance
+                    .as_ref()
+                    .expect("the application has its configured governance Store")
+                    .store_calls()
+                    .expect("the configured Store exposes its actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            );
+            crate::root::kernel::ROOT_CARD
+                .boot_in_store(None)
+                .expect("the actual configured Store boots its initial rate history");
+        }
         limits.keep().expect("the real application limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -724,6 +754,21 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
         &rules,
     )
     .expect("the product builds the actual admin application");
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        limits.stage_boot();
+        crate::root::kernel::ROOT_CARD.keep_in_store(
+            built
+                .governance
+                .as_ref()
+                .expect("the application has its configured governance Store")
+                .store_calls()
+                .expect("the configured Store exposes its actual rate-history calls"),
+            busbar_kernel::door::op_id().counter(),
+        );
+        crate::root::kernel::ROOT_CARD
+            .boot_in_store(None)
+            .expect("the actual configured Store boots its initial rate history");
+    }
     limits.keep().expect("the real application limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -850,6 +895,21 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
         &rules,
     )
     .expect("the product builds the actual admin application");
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        limits.stage_boot();
+        crate::root::kernel::ROOT_CARD.keep_in_store(
+            built
+                .governance
+                .as_ref()
+                .expect("the application has its configured governance Store")
+                .store_calls()
+                .expect("the configured Store exposes its actual rate-history calls"),
+            busbar_kernel::door::op_id().counter(),
+        );
+        crate::root::kernel::ROOT_CARD
+            .boot_in_store(None)
+            .expect("the actual configured Store boots its initial rate history");
+    }
     limits.keep().expect("the real application limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -914,6 +974,21 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
         &rules,
     )
     .expect("the product builds the actual admin application");
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        limits.stage_boot();
+        crate::root::kernel::ROOT_CARD.keep_in_store(
+            built
+                .governance
+                .as_ref()
+                .expect("the application has its configured governance Store")
+                .store_calls()
+                .expect("the configured Store exposes its actual rate-history calls"),
+            busbar_kernel::door::op_id().counter(),
+        );
+        crate::root::kernel::ROOT_CARD
+            .boot_in_store(None)
+            .expect("the actual configured Store boots its initial rate history");
+    }
     limits.keep().expect("the real application limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1030,6 +1105,21 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
         &rules,
     )
     .expect("the product builds the actual admin application");
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        limits.stage_boot();
+        crate::root::kernel::ROOT_CARD.keep_in_store(
+            built
+                .governance
+                .as_ref()
+                .expect("the application has its configured governance Store")
+                .store_calls()
+                .expect("the configured Store exposes its actual rate-history calls"),
+            busbar_kernel::door::op_id().counter(),
+        );
+        crate::root::kernel::ROOT_CARD
+            .boot_in_store(None)
+            .expect("the actual configured Store boots its initial rate history");
+    }
     limits.keep().expect("the real application limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1253,6 +1343,21 @@ fn a_q71_node_trusting(
         &rules,
     )
     .expect("the product builds the actual admin application");
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        limits.stage_boot();
+        crate::root::kernel::ROOT_CARD.keep_in_store(
+            built
+                .governance
+                .as_ref()
+                .expect("the application has its configured governance Store")
+                .store_calls()
+                .expect("the configured Store exposes its actual rate-history calls"),
+            busbar_kernel::door::op_id().counter(),
+        );
+        crate::root::kernel::ROOT_CARD
+            .boot_in_store(None)
+            .expect("the actual configured Store boots its initial rate history");
+    }
     limits.keep().expect("the real application limits commit");
     if let Some(rotate) = rotate {
         rotate();
