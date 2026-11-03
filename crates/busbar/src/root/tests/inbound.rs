@@ -385,6 +385,56 @@ fn red_every_over_gate_cell_answers_its_1_5_5_bytes() {
 }
 
 #[test]
+fn actual_listener_refusal_uses_only_its_sealed_claimant_route_and_dialect() {
+    let (app, config) = app(true);
+    let listener = actual_listener(app, &config, true);
+    let (name, head, _) = crosscut("wrong-method")
+        .into_iter()
+        .find(|(_, head, credentialed)| head.target == "/v1/messages" && *credentialed)
+        .expect("the actual dialect has a retained method-miss golden");
+    let selected = selected_line(&listener.guests, &head);
+    let line = &listener.guests.lines()[selected as usize];
+    let renderer = listener
+        .scope
+        .as_ref()
+        .and_then(|scope| scope.refuse.as_ref())
+        .expect("the actual prepared listener retains its real refusal producer");
+    let render = |selected_line| {
+        renderer(&busbar_kernel::plane_routes::KernelRefusal {
+            reason: busbar_contract::caps::ReasonCode::MethodNotAllowed,
+            status: 405,
+            text: "method not allowed for this resource",
+            path: &head.target,
+            target: &head.target,
+            selected_line: Some(selected_line),
+        })
+    };
+    let actual = kin::Refusal::of(render(line).expect("the actual sealed claimant renders"));
+    assert!(differences(&actual, &name).is_empty());
+    let mut foreign = line.clone();
+    foreign.claimant = busbar_kernel::guest::Claimant::Plane("unpublished-foreign-plane".into());
+    assert!(
+        render(&foreign).is_none(),
+        "a foreign claimant cannot borrow the actual image"
+    );
+    let mut foreign_route = line.clone();
+    foreign_route.route.rung = foreign_route.route.rung.wrapping_add(1);
+    assert!(
+        render(&foreign_route).is_none(),
+        "an unsealed route rung cannot select another operation"
+    );
+    let mut caller_dialect = line.clone();
+    caller_dialect.dialect = caller_dialect.dialect.wrapping_add(1);
+    let sealed = kin::Refusal::of(
+        render(&caller_dialect).expect("the sealed actual route remains selected"),
+    );
+    assert!(
+        differences(&sealed, &name).is_empty(),
+        "the renderer reads the actual sealed dialect instead of caller-supplied metadata"
+    );
+}
+
+#[test]
 fn retained_listener_refusals_keep_the_actual_llm_producer_after_its_claims_are_removed() {
     let (side, guests) = side();
     let (name, head, _) = crosscut("wrong-method")
