@@ -4,8 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn test_admin_v1_register_hook_takes_effect_live() {

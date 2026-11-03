@@ -2,8 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 fn live_limits() -> (Option<String>, usize, usize) {
     std::thread::spawn(|| {
         (

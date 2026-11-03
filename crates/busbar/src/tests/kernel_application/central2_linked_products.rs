@@ -2,8 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 fn gov_with_store(store: &str) -> busbar_kernel::config::StoreCfg {
     busbar_kernel::config::StoreCfg {
         module: store.into(),

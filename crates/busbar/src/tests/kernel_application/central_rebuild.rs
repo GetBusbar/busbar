@@ -3,8 +3,7 @@
 
 use std::sync::Arc;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[test]
 fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {

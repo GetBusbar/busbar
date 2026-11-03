@@ -16,8 +16,7 @@ fn register_planes() {
     crate::dist_root_install::install();
 }
 
-#[path = "../../../../crates/busbar/src/root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 fn init() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));

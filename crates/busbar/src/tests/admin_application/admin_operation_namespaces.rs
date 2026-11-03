@@ -4,8 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn create_and_rotate_operation_namespaces_survive_cache_loss() {

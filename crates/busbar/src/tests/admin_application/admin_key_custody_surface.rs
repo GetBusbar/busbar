@@ -6,8 +6,7 @@ use std::sync::Arc;
 
 use busbar_kernel::audit_ring;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn test_admin_v1_auth_read_keys_chain_reports_1_5_5_open() {

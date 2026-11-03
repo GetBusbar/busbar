@@ -18,8 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 static ACCEPTED: AtomicUsize = AtomicUsize::new(0);
 fn accepted(entry: &busbar_kernel::audit_ring::AuditEntry) {

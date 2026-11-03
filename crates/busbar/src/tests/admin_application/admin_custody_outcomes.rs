@@ -12,8 +12,7 @@ use serde_json::{json, Value};
 use tokio::sync::Notify;
 
 use crate::test_common as common;
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[derive(Default)]
 struct Pause {

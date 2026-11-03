@@ -11,8 +11,7 @@ use busbar_plugin_loader::dispatch::plane_calls::PlaneInstance;
 use busbar_plugin_loader::dispatch::{load_linked, Bind, ConnTable, LinkedRow, NoSink};
 use kernel::plane_driver::serve::{AdminServe, ServeRoute, ServeTable};
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 fn actual_mcp_health_calls(
     app: &kernel::state::App,

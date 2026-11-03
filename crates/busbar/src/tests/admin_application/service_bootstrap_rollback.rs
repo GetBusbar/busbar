@@ -3,8 +3,7 @@
 
 use base64::Engine as _;
 use std::sync::Arc;
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 fn trust_document(config: &busbar_kernel::config::PluginsCfg) -> serde_json::Value {
     let publishers: Vec<_> = config.trust.publishers.iter().map(|publisher| {

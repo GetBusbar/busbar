@@ -13,8 +13,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_state() {

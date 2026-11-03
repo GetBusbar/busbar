@@ -12,8 +12,7 @@ mod openapi;
 mod served_surface;
 mod service;
 
-#[path = "../../../../../crates/busbar/src/root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[cfg(feature = "openapi-schema")]
 use self::openapi::openapi_doc_seamed;

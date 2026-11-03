@@ -2,8 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 #[test]
 fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_banner() {
     const CHILD: &str = "BUSBAR_CENTRAL2_UNBOUNDED_CHILD";

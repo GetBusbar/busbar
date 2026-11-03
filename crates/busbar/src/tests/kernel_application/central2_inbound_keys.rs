@@ -10,8 +10,7 @@ use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use busbar_kernel::inbound::{Call, HandIn, Head, Listener, Refuse};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn actual_inbound_keys_preserve_resolution_revocation_rotation_and_carrier_custody() {

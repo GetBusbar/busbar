@@ -11,8 +11,7 @@ use std::sync::{
     Arc,
 };
 use std::time::{Duration, Instant};
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 #[tokio::test]
 async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery() {
     const CHILD: &str = "BUSBAR_ADMIN_REWRAP_CHILD";

@@ -15,8 +15,7 @@ use busbar_kernel::governance::recovery::{
 use busbar_kernel::governance::GovState;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 const MODEL: &str = "m";
 #[derive(Clone, Copy)]
 enum Reply {

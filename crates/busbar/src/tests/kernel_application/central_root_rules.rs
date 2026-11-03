@@ -31,8 +31,7 @@ impl Hearing {
     }
 }
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[test]
 fn boot_refusal_releases_the_completed_candidates_routes_without_committing_limits() {

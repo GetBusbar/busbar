@@ -5,8 +5,7 @@ use axum::Router;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn split_admin_listener_no_double_exposure() {

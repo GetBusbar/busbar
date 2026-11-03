@@ -6,8 +6,7 @@ use std::sync::Arc;
 
 use busbar_kernel::governance::NewKeySpec;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn test_admin_v1_list_keys_filters() {

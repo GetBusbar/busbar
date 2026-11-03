@@ -12,8 +12,7 @@ use kernel::ingress::{
 };
 use kernel::state::App;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 fn deployment(pool: &str) -> Arc<App> {
     crate::dist_root_install::install();

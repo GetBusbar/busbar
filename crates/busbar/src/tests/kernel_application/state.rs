@@ -6,8 +6,7 @@ use std::sync::Arc;
 
 use busbar_kernel::plane_driver::EngineHost;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 static ATTACHED: AtomicUsize = AtomicUsize::new(0);
 

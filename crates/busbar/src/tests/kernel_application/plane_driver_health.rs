@@ -7,8 +7,7 @@ use busbar_kernel as kernel;
 use busbar_kernel::plane_driver::door::DoorSection;
 use busbar_kernel::plane_driver::registry::BuildCtx;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 // The control is section DATA handed to the actual installed door's FACING call.
 // No test implementation decides whether OPEN succeeded.

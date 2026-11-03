@@ -2,8 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::sync::Arc;
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn test_audience_bound_token_is_rejected_on_the_data_plane() {

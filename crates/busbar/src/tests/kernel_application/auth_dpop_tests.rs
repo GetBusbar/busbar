@@ -3,8 +3,7 @@
 
 use crate::test_common as common;
 use std::sync::Arc;
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn without_an_authorization_server_a_dpop_presentation_is_no_credential() {

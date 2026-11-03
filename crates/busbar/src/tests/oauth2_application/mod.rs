@@ -9,8 +9,7 @@ use std::sync::{Arc, Mutex};
 use busbar_core_oauth2::config::OauthAsCfg;
 use busbar_kernel::state::App;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 mod browser;
 mod code_flow_tests;

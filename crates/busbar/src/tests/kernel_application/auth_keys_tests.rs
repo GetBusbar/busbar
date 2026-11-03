@@ -5,8 +5,7 @@ use busbar_kernel::auth::ChainVerdict;
 use busbar_kernel::governance::NewKeySpec;
 use std::sync::Arc;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn test_1_5_2_keys_arm_resolves_the_vkey() {

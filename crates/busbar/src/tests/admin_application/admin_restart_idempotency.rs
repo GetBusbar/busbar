@@ -4,8 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn an_idempotent_mint_retried_after_a_restart_is_refused_not_minted_twice() {

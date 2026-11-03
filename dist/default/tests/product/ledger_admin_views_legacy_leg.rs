@@ -4,8 +4,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-#[path = "../../../../crates/busbar/src/root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 fn app() -> Arc<busbar_kernel::state::App> {
     crate::dist_root_install::install();

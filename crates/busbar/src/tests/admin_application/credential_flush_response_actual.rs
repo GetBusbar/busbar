@@ -6,8 +6,7 @@ use busbar_kernel::audit_ring;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 static ACCEPTED: Mutex<Option<tokio::sync::mpsc::UnboundedSender<audit_ring::AuditEntry>>> =
     Mutex::new(None);

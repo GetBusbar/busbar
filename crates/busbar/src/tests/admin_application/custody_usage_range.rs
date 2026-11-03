@@ -8,8 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 const KEY: &str = "adjustment-range-key";
 const LANE: &str = "adjustment-range-model";

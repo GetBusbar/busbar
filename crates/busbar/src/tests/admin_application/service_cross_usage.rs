@@ -7,8 +7,7 @@ use busbar_kernel::cost::{
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 const LANE: &str = "m-priced-chat";
 const PROVIDER: &str = "priced-chat";

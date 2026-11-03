@@ -6,8 +6,7 @@ use busbar_contract::authz::{Grants, Scope};
 use busbar_kernel::auth::dry_run_admin_scope;
 use std::sync::Arc;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn test_dry_run_empty_admin_chain_is_not_full() {

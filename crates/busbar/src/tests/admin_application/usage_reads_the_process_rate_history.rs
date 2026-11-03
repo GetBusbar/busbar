@@ -8,8 +8,7 @@ use std::time::{Duration, Instant};
 use busbar_contract::records::MeteringDelta;
 use busbar_kernel::governance::METERING_BUCKET_SECS;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 const LANE: &str = "m-dated-read";
 const PROVIDER: &str = "dated-read";

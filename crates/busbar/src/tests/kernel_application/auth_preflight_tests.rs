@@ -3,8 +3,7 @@
 
 use busbar_kernel::auth::AuthMiddleware;
 use busbar_kernel::config::{AuthCfg, AuthChainEntry, PluginsCfg};
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 fn chain_with(module: &str, settings: serde_json::Map<String, serde_json::Value>) -> AuthCfg {
     let mut entry = AuthChainEntry::bare(module);

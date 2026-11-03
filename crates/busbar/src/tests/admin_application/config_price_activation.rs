@@ -12,8 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 const BASE_FEE: i64 = 0;
 const CANDIDATE_BODY_CAP: usize = 5_000_123;
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 async fn put(addr: std::net::SocketAddr, fee: i64) -> reqwest::Response {
     reqwest::Client::new().put(format!("http://{addr}/api/v1/admin/config/settings"))
         .json(&serde_json::json!({"per_request_fee": fee, "limits": {"request_body_max_bytes": CANDIDATE_BODY_CAP}}))

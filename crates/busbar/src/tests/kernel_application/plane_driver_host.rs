@@ -6,8 +6,7 @@ use std::sync::Arc;
 use busbar_kernel as kernel;
 use busbar_kernel::plane_driver::live_standing;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[test]
 fn a_role_bound_standing_is_rechecked_against_the_live_snapshot_bindings() {

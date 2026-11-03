@@ -4,8 +4,7 @@
 use busbar_kernel as kernel;
 use std::sync::Arc;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 use axum::Router;
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};

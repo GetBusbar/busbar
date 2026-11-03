@@ -14,8 +14,7 @@ use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use busbar_kernel::inbound::{Call, HandIn, Head, Listener, Refuse};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 // Ordinary signed-request fixture. The pinned SigV4 cfg(test) signer delegates
 // to the contract AWS4 recipe; dependency cfg(test) APIs are not exported to a

@@ -5,8 +5,7 @@ use busbar_kernel as kernel;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[test]
 fn the_actual_builder_wires_the_snapshot_ownership_fields() {

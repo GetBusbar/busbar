@@ -5,8 +5,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 /// Migrates the four pool_rw_gate_resolves_as_rewrite_not_decision oracles through
 /// the actual root, loader, signed webrequest product and committed App chains.

@@ -5,8 +5,7 @@ use busbar_kernel as kernel;
 use kernel::trust::book::RulingRow;
 use std::sync::Arc;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[test]
 fn boot_hydration_makes_the_trust_record_durable_on_the_configured_store() {

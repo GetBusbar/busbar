@@ -6,8 +6,7 @@ use busbar_kernel::config::{GroupCfg, LimitCfg};
 use busbar_kernel::governance::group_provision::{build_with_group, MAX_GROUP_NAME_LEN};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[derive(Debug, serde::Deserialize)]
 struct PageRead {

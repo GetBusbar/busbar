@@ -2,8 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::sync::Arc;
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_closed() {

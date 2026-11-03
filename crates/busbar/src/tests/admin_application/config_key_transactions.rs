@@ -9,8 +9,7 @@ use std::sync::{
     Arc,
 };
 use std::time::{Duration, Instant};
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn slow_store_read_does_not_stall_the_executor() {
     const CHILD: &str = "BUSBAR_ADMIN_KEY_TRANSACTION_CHILD";

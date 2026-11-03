@@ -5,8 +5,7 @@ use axum::http::StatusCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn hook_register_and_replace_refuse_oversized_timeouts_without_swapping() {

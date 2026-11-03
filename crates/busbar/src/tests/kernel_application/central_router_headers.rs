@@ -3,8 +3,7 @@
 
 use std::sync::Arc;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn server_timing_header_absent_by_default_present_when_enabled() {

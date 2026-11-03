@@ -8,8 +8,7 @@ use busbar_core_admin::{
 use busbar_kernel::config::{HookCfg, HookKind, PromptAccess, UserAccess};
 use std::path::PathBuf;
 use std::sync::Arc;
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 fn hook(module: &str, kind: HookKind, global: bool) -> HookCfg {
     HookCfg {

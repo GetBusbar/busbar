@@ -5,8 +5,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 /// Ordinary hook wire, deadline, cache and configure oracles through actual products.
 #[tokio::test]

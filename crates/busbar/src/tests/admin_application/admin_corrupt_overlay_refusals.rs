@@ -8,8 +8,7 @@ use std::time::{Duration, Instant};
 use busbar_contract::kinds::RecordBytes;
 use busbar_kernel::audit_ring;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 const OVERLAY_SCHEMA: &str = "busbar.config.overlay.v1";
 

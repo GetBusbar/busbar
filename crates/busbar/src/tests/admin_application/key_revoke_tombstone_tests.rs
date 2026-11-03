@@ -6,8 +6,7 @@ use std::sync::Arc;
 
 use busbar_kernel::audit_ring;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 const X_ADMIN_TOKEN: &str = "x-admin-token";
 

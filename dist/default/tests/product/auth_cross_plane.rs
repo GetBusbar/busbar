@@ -4,8 +4,7 @@
 use busbar_kernel::auth::UpstreamCreds;
 use std::sync::Arc;
 
-#[path = "../../../../crates/busbar/src/root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[test]
 fn test_open_door_regardless_of_upstream_creds() {

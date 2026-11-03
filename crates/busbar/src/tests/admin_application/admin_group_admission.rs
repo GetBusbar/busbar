@@ -4,8 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
     busbar_kernel::config::groups::LimitCfg {

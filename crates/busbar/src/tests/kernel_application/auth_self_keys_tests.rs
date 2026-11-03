@@ -4,8 +4,7 @@
 use std::sync::Arc;
 
 use crate::test_common as common;
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 use busbar_contract::abi::store::OpId;
 use busbar_contract::kinds::RecordBytes;

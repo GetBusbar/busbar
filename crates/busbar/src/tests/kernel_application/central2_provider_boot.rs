@@ -2,8 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 #[test]
 fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
     const CHILD: &str = "BUSBAR_CENTRAL2_PROVIDER_CHILD";

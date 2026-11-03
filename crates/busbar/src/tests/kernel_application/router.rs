@@ -3,8 +3,7 @@
 
 use std::sync::Arc;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn a_door_route_installed_at_construction_is_answered_ahead_of_the_fallback() {

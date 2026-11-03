@@ -6,8 +6,7 @@ use busbar_kernel::governance::NewKeySpec;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 struct CountingStore {
     inner: Arc<dyn RecordStore>,

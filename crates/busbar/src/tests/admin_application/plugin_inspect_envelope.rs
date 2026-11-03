@@ -4,8 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[tokio::test(flavor = "current_thread")]
 async fn inspect_plugin_still_refuses_a_bad_candidate_in_the_envelope() {

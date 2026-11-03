@@ -8,8 +8,7 @@ use busbar_kernel::audit_ring;
 use std::sync::Arc;
 
 use crate::test_common as common;
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 struct RefusesKeyWrites(Arc<dyn busbar_contract::records::RecordStore>);
 

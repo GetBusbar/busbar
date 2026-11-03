@@ -8,8 +8,7 @@ use busbar_contract::records::VirtualKey;
 use busbar_kernel::cost::{CostModel, PlaneFees};
 use busbar_kernel::governance::PLANE_LANE_SEP;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 const KEY: &str = "vk_plane_fees";
 const POOLS_MODEL: &str = "m";

@@ -8,8 +8,7 @@ use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use busbar_kernel::inbound::{Call, Head, Listener, Refusal, Refuse};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real_sink_events() {

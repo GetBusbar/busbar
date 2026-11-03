@@ -9,8 +9,7 @@ use busbar_contract::auth_calls::{AuthCalls, Verified, VerifyAnswer, VerifyReque
 use busbar_contract::Secret;
 use busbar_plugin_loader::{auth_axis::AuthRows, LinkedPlugin, PluginRegistry};
 use std::sync::Arc;
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 fn request(token: Option<&str>) -> VerifyRequest {
     let mut request = VerifyRequest::default();

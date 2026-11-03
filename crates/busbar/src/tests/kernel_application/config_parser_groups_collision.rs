@@ -4,8 +4,7 @@
 use busbar_kernel::config::GroupCfg;
 use std::collections::BTreeMap;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[test]
 fn boot_group_updates_and_self_mint_all_refuse_bucket_identity_collisions() {

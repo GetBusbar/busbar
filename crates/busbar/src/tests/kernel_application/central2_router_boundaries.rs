@@ -2,8 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 #[tokio::test]
 async fn oversized_request_413_is_reshaped_on_the_live_stack() {
     const CHILD: &str = "BUSBAR_CENTRAL2_BODY_LIMIT_CHILD";

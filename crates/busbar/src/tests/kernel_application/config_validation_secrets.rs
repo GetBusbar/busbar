@@ -4,8 +4,7 @@
 //! The original built-in-secret resolution assertions run through the actual product check.
 use busbar_kernel::config;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[test]
 fn unreferenced_identity_provider_token_is_not_resolved_by_actual_validate() {
