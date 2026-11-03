@@ -33,6 +33,8 @@ fn write_configs(
     upstream: u16,
     name_dropped: bool,
 ) {
+    let mut plugins = common::plugins::trusted_config_document(&dir.join("plugins"));
+    plugins["logs"] = serde_json::json!({ "dir": dir.join("plugin-logs") });
     let dropped = if name_dropped {
         format!(
             "  dropped: {{ module: {DROPPED}, settings: {{ url: \"http://127.0.0.1:{collector}{DROPPED_PATH}\" }} }}\n"
@@ -56,12 +58,7 @@ store: {{module: memory}}
 admin_require_mtls: false
 auth:
   chain: []
-plugins:
-  enabled: true
-  dir: '{plugins}'
-  trust:
-    allow_unsigned: true
-  logs: {{ dir: '{logs}' }}
+plugins: {plugins}
 export:
   linked: {{ module: otlp, settings: {{ url: "http://127.0.0.1:{collector}{LINKED_PATH}" }} }}
 {dropped}providers:
@@ -71,8 +68,6 @@ models:
   test-model:
     provider: mock
 "#,
-            plugins = dir.join("plugins").display(),
-            logs = dir.join("plugin-logs").display(),
         ),
     )
     .unwrap();
@@ -109,20 +104,27 @@ fn real_producer_span_records_survive_both_otlp_doors() {
         .unwrap_or_else(|| common::plugins::missing(CDYLIB, common::plugins::BUILD_PINNED));
     let dir = common::plugins::scratch("otlp-span-records");
     std::fs::create_dir_all(dir.join("plugins")).unwrap();
-    let mut manifest = common::plugins::manifest("export", DROPPED, "acme");
+    let mut manifest =
+        common::plugins::manifest("export", DROPPED, common::plugins::FIXTURE_PUBLISHER);
     common::plugins::state(&mut manifest, &lib);
     assert!(
         manifest.statement.is_some(),
         "the dropped OTLP library must export its memory-ABI door"
     );
-    let tarball = common::plugins::seal(manifest, &lib);
+    let tarball = common::plugins::signed(&common::plugins::key(0x5a), manifest, &lib);
     std::fs::write(dir.join("plugins").join("otlp.tar.gz"), tarball).unwrap();
 
     if !LINKED_TRANSPORTS.iter().any(|w| w.key == WIRE) {
         let (lib, _) = common::plugins::transport_cdylib_under(&[WIRE]).unwrap_or_else(|| {
             common::plugins::missing(&format!("{WIRE} transport"), common::plugins::BUILD_PINNED)
         });
-        let bytes = common::plugins::pack("transport", "dropped-wire", &lib, "acme");
+        let mut manifest = common::plugins::manifest(
+            "transport",
+            "dropped-wire",
+            common::plugins::FIXTURE_PUBLISHER,
+        );
+        common::plugins::state(&mut manifest, &lib);
+        let bytes = common::plugins::signed(&common::plugins::key(0x5a), manifest, &lib);
         std::fs::write(dir.join("plugins").join("dropped-wire.tar.gz"), bytes).unwrap();
     }
     let (collector_port, seen) = common::otlp::collector();
