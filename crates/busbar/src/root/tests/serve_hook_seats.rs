@@ -930,11 +930,23 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     cfg.groups = groups.clone();
     let fee = opts.fee_cents.unwrap_or(1);
     cfg.per_request_fee = fee;
-    cfg.rate_card = opts.rate_card.cloned();
-    let cost = if groups.is_empty() && opts.rate_card.is_none() {
+    let rate_card = opts.rate_card.cloned().map(|mut card| {
+        // These positive fixtures price only their named classes. Explicitly configure
+        // every other class the actual plane declares as free, as product validation requires.
+        for entry in card.values_mut() {
+            for class in &plane.served().billable_classes {
+                if !busbar_contract::records::RESERVED_UNITS.contains(class) {
+                    entry.units.entry((*class).to_string()).or_default();
+                }
+            }
+        }
+        card
+    });
+    cfg.rate_card = rate_card.clone();
+    let cost = if groups.is_empty() && rate_card.is_none() {
         CostModel::flat(fee)
     } else {
-        CostModel::resolve_parts(opts.rate_card, fee, &groups)
+        CostModel::resolve_parts(rate_card.as_ref(), fee, &groups)
     };
     for (bucket, requests) in opts.seed {
         gov.store()
