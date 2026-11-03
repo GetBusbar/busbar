@@ -877,7 +877,7 @@ struct GapWitness {
 
 enum ChainProofFailure {
     Fatal(String),
-    SequenceGap(GapWitness),
+    SequenceGap(Box<GapWitness>),
 }
 impl ChainProofFailure {
     fn reason(self) -> String {
@@ -924,7 +924,7 @@ pub(super) fn verify_stored_chain_with_seals(
         Ok(()) => Ok(()),
         Err(ChainProofFailure::Fatal(reason)) => Err(reason),
         Err(ChainProofFailure::SequenceGap(witness)) => {
-            verify_stored_chain_once(calls, node, seals, Some(witness))
+            verify_stored_chain_once(calls, node, seals, Some(*witness))
                 .map_err(ChainProofFailure::reason)
         }
     }
@@ -1072,7 +1072,7 @@ fn verify_stored_chain_once(
             ));
         }
         witness.tail = previous.expect("a gap has validated boundary records");
-        return Err(ChainProofFailure::SequenceGap(witness));
+        return Err(ChainProofFailure::SequenceGap(Box::new(witness)));
     }
     if retry.is_some() && (omitted || bridge_omitted) {
         return Err(ChainProofFailure::Fatal(

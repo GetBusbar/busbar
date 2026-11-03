@@ -1430,12 +1430,7 @@ pub(super) mod session_door {
     }
     impl Drop for RtcTasks {
         fn drop(&mut self) {
-            let tasks: Vec<_> = self
-                .0
-                .get_mut()
-                .expect("the peer tasks")
-                .drain(..)
-                .collect();
+            let tasks = std::mem::take(self.0.get_mut().expect("the peer tasks"));
             for task in &tasks {
                 task.abort();
             }
