@@ -220,7 +220,16 @@ fn populated() -> (RecordSlots, Vec<JournalRecord>) {
     let slots = RecordSlots::new();
     let mut sealed = Sealed::new();
     for index in 0..300 {
-        sealed.audit(START + index);
+        // Genuine sealed audit payloads saturate the new 4096-row probe as well as
+        // the old 256-row descendants; no fabricated journal filler is inserted.
+        let mut inputs = crate::root::durability::audit::tests::inputs(sealed.audit.next_seq());
+        inputs.wall = START + index;
+        inputs.what.destination = Some("x".repeat(8_192));
+        let audit = sealed.audit.seal(
+            inputs,
+            &busbar_kernel::teller::verb_audit_pass(&crate::root::kernel::new_kernel()),
+        );
+        sealed.append(crate::root::durability::audit_entry(&audit).unwrap());
     }
     for record in &sealed.records {
         let bytes = record.encode();
@@ -234,6 +243,16 @@ fn populated() -> (RecordSlots, Vec<JournalRecord>) {
                 &value,
             );
         }
+    }
+    let lower_prefix = part_key(NODE, 1, 0)[..15].to_vec();
+    for prefix in [NODE.to_be_bytes().to_vec(), lower_prefix] {
+        assert_eq!(
+            wait_for(slots.record_scan(JOURNAL_SCHEMA, &prefix, 4096))
+                .unwrap()
+                .len(),
+            4096,
+            "the actual Store must saturate even the probe above the targeted window"
+        );
     }
     (slots, sealed.records)
 }
