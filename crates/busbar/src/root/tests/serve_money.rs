@@ -1054,7 +1054,7 @@ async fn an_arrival_opens_its_claims_span_with_the_units_forward_span_beneath_it
 
 fn session_custody_routes(g: &mut Governed, pools_plane: bool) -> Arc<super::DataRoutes> {
     g.router = axum::Router::new();
-    let mut served = std::mem::take(&mut g.served);
+    let served = std::mem::take(&mut g.served);
     if pools_plane {
         assert_eq!(
             served.planes[0].live.served_facts.section,
