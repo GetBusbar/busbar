@@ -340,7 +340,11 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
     let statement = rendering_of_library(&path)
         .expect("the actual exporter statement reads")
         .expect("the actual exporter carries its statement");
+    crate::dist_root_install::install();
+    let connector = crate::root::connector::installed()
+        .expect("the normal root installs the actual transport connector");
     let dispatcher = std::sync::Arc::new(Dispatcher::new(DispatchConfig::default()));
+    crate::root::connector::install_io(&dispatcher);
     let plugin = load_dropped::<Export>(
         &path,
         &statement,
@@ -349,7 +353,8 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
             max_inflight_cap: 64,
             sink: std::sync::Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: ConnTable::NoNeeds,
+            conns: ConnTable::Host(std::sync::Arc::clone(connector)
+                as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
         },
     )
     .expect("the actual HTTP exporter loads through its memory ABI");
