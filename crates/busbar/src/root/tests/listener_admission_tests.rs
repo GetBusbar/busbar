@@ -1,14 +1,14 @@
 use http_body::{Body, Frame};
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::http::{Request, StatusCode, Version};
 use busbar_contract::abi::mechanism::endpoint::{EndpointRequest, EndpointResponse};
 use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
-use busbar_kernel::plugin_routes::{PluginHttpDispatch, RouteDecl, RouteKind, build_route_table};
+use busbar_kernel::plugin_routes::{build_route_table, PluginHttpDispatch, RouteDecl, RouteKind};
 use bytes::Bytes;
 
 const PATH: &str = "/exports/admission-probe/read";
