@@ -556,7 +556,6 @@ fn checked_row(facts: TransportFacts) -> Result<RowFacts, String> {
     })
 }
 
-
 /// [`RowFacts`] of a linked row's `door`, as the boot seal reads them.
 #[must_use]
 pub fn row_facts(door: DoorFn) -> RowFacts {
