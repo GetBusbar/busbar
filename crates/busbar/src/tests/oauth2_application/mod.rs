@@ -155,6 +155,7 @@ fn build_application(
     document: Option<serde_json::Value>,
     auth_library: Option<&std::path::Path>,
 ) -> Arc<App> {
+    let hosted_credentials = auth_library.is_some();
     static BUILDING: Mutex<()> = Mutex::new(());
     let _building = BUILDING
         .lock()
@@ -294,7 +295,7 @@ fn build_application(
     });
     // Completing a hosted credential login provisions a subject leaf through the
     // normal config transaction. Anchor its writable overlay in the same actual Store.
-    let (opened_store, overlay) = if auth_library.is_some() {
+    let (opened_store, overlay) = if hosted_credentials {
         let opened = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugins)
             .expect("the actual hosted-login Store anchors its config authority");
         let overlay = busbar_kernel::config::overlay::OverlayStore::new(
