@@ -738,7 +738,7 @@ fn a_refused_facing_keeps_only_the_same_successful_serving_slot() {
         prior: Some(&prior),
         providers: None,
     };
-    let active_owned = serde_yaml::from_str("enabled: true\n").unwrap();
+    let active_owned: serde_yaml::Value = serde_yaml::from_str("enabled: true\n").unwrap();
     refuse.store(false, Ordering::SeqCst);
     let owned = (decl.build)(decl, &owned_ctx(active_owned.clone())).unwrap();
     assert!(!Arc::ptr_eq(&old, &owned));
