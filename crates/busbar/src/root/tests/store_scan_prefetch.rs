@@ -249,8 +249,8 @@ fn prefetched_pages_overlap_within_the_bound_and_preserve_nested_prefix_lexical_
     })
     .unwrap();
     assert!(
-        view.peak.load(Ordering::SeqCst) > 1,
-        "the one-poll boundary makes actual overlap observable"
+        view.peak.load(Ordering::SeqCst) > 4,
+        "the one-poll boundary exercises overlap beyond the prior four-page window"
     );
     assert!(view.peak.load(Ordering::SeqCst) <= 16);
     assert_eq!(view.active.load(Ordering::SeqCst), 0);
