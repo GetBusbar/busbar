@@ -2583,3 +2583,65 @@ fn record_claim_replay_uses_store_time_when_the_host_clock_runs_ahead() {
     }
     assert_eq!(claim().value, svc::CLAIM_WON);
 }
+
+#[test]
+fn ticket_press_receives_the_exact_host_unit_caller_and_principal() {
+    struct BoundPress {
+        principal: Arc<VirtualKey>,
+    }
+    impl TicketPress for BoundPress {
+        fn mint(
+            &self,
+            _: &str,
+            _: &str,
+            _: u64,
+            _: &[u8],
+            _: u64,
+        ) -> Result<(String, u64), &'static str> {
+            panic!("the host must use unit-aware minting")
+        }
+        fn mint_for_unit(
+            &self,
+            unit: u64,
+            caller: &Caller,
+            principal: &Arc<VirtualKey>,
+            prefix: &str,
+            ttl_secs: u64,
+            record: &[u8],
+            now: u64,
+        ) -> Result<(String, u64), &'static str> {
+            assert_eq!(unit, 71);
+            assert_eq!(&*caller.instance, "minter");
+            assert!(Arc::ptr_eq(principal, &self.principal));
+            assert_eq!(principal.generation_hash, "full-generation-binding");
+            assert_eq!(prefix, "tk_");
+            assert_eq!(record, b"opaque");
+            Ok(("published".into(), now + ttl_secs))
+        }
+    }
+    let r = rig();
+    r.s.admit(
+        "minter",
+        InstanceFacts {
+            ticket_prefix: Some("tk_".into()),
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+    let principal = Arc::new(VirtualKey {
+        id: "vk_caller".into(),
+        generation_hash: "full-generation-binding".into(),
+        ..VirtualKey::default()
+    });
+    r.s.units().admitted(
+        71,
+        UnitRecord {
+            principal: Some(Arc::clone(&principal)),
+            depth: 0,
+        },
+    );
+    assert!(r.s.attach_tickets(Arc::new(BoundPress { principal })));
+    let result = r.s.ticket_mint(&caller("minter"), Some(71), 600, b"opaque");
+    assert_eq!(result.outcome, Outcome::Ready);
+    assert_eq!(result.bytes, b"published");
+}

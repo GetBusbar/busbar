@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use crate::host_services::VerifiedTicketIdentity;
 use busbar_contract::records::{PlaneDisposition, PlaneRecordRef, Retention};
 
 pub const TICKET_RECORD_KIND: &str = "ticket";
@@ -61,6 +62,43 @@ impl GovState {
         (current.id == admitted.id).then(|| (current, std::mem::take(&mut *record)))
     }
 
+    /// Verify against the authoritative Store without blocking the async caller.
+    pub async fn prepare_ticket_redemption_async(
+        self: &Arc<Self>,
+        prefix: &str,
+        credential: &str,
+        now: u64,
+    ) -> Option<VerifiedTicketIdentity> {
+        let gov = Arc::clone(self);
+        let prefix = prefix.to_owned();
+        let credential = zeroize::Zeroizing::new(credential.to_owned());
+        crate::auth::ticket_store(move || gov.prepare_ticket_redemption(&prefix, &credential, now))
+            .await
+    }
+
+    /// Offload the durable spend after a host has claimed its linear custody. Cancellation
+    /// never restores custody: the detached store operation may already have committed.
+    pub async fn redeem_verified_ticket_async(
+        self: &Arc<Self>,
+        identity: VerifiedTicketIdentity,
+        now: u64,
+    ) -> Option<(Arc<VirtualKey>, Vec<u8>)> {
+        let gov = Arc::clone(self);
+        let (admitted, mut record) = crate::auth::ticket_store(move || {
+            gov.redeem_verified_ticket(identity, now)
+                .map(|(key, record)| (key, zeroize::Zeroizing::new(record)))
+        })
+        .await?;
+        let current = self.lookup_by_sub(&admitted.id)?;
+        if !current.enabled
+            || self.is_revoked(&current.id)
+            || current.generation_hash != admitted.generation_hash
+        {
+            return None;
+        }
+        Some((current, std::mem::take(&mut *record)))
+    }
+
     pub(crate) async fn peek_ticket_async(
         self: &Arc<Self>,
         prefix: &str,
@@ -84,6 +122,23 @@ impl GovState {
         ceiling_secs: Option<u64>,
         record: &[u8],
         now: u64,
+    ) -> Result<(String, u64), TicketRefusal> {
+        self.mint_ticket_bound(key_id, prefix, ttl_secs, ceiling_secs, record, now, |_| {
+            Ok(())
+        })
+    }
+
+    /// Bind host-owned custody after the opaque record is kept, before publishing a credential.
+    /// A failed binding must retain no reservation; its unpublished record is deleted here.
+    pub fn mint_ticket_bound(
+        &self,
+        key_id: &str,
+        prefix: &str,
+        ttl_secs: u64,
+        ceiling_secs: Option<u64>,
+        record: &[u8],
+        now: u64,
+        bind: impl FnOnce(&VerifiedTicketIdentity) -> Result<(), TicketRefusal>,
     ) -> Result<(String, u64), TicketRefusal> {
         let material = self.signing_material().ok_or(TicketRefusal::NoSigner)?;
         let key = self
@@ -118,7 +173,21 @@ impl GovState {
         let body = material
             .signer
             .mint_ticket_body(&key.id, exp, generation, &id);
-        Ok((format!("{prefix}{body}"), exp))
+        let credential = format!("{prefix}{body}");
+        let mut identity = VerifiedTicketIdentity {
+            id,
+            principal: key,
+            expires_at: exp,
+            store: Arc::clone(&store),
+            prefix: prefix.to_owned(),
+            credential: zeroize::Zeroizing::new(credential),
+        };
+        if let Err(why) = bind(&identity) {
+            let _deleted = store.delete_plane_record(TICKET_RECORD_KIND, &identity.id);
+            return Err(why);
+        }
+        // Nothing fallible follows binding: custody is now published with this credential.
+        Ok((std::mem::take(&mut *identity.credential), exp))
     }
 
     pub fn admit_ticket(
@@ -127,8 +196,54 @@ impl GovState {
         credential: &str,
         now: u64,
     ) -> Option<(Arc<VirtualKey>, Vec<u8>)> {
-        let (key, id, exp) = self.checked_ticket(prefix, credential, now)?;
+        let identity = self.prepare_ticket_redemption(prefix, credential, now)?;
+        self.redeem_verified_ticket(identity, now)
+    }
+
+    /// Verify without spending, so the host can first move its one-shot custody out of an entry.
+    pub fn prepare_ticket_redemption(
+        &self,
+        prefix: &str,
+        credential: &str,
+        now: u64,
+    ) -> Option<VerifiedTicketIdentity> {
+        let (principal, id, expires_at) = self.checked_ticket(prefix, credential, now)?;
         let store = self.store();
+        if !store
+            .plane_token_live(TICKET_RECORD_KIND, &id, expires_at, now)
+            .ok()?
+        {
+            return None;
+        }
+        Some(VerifiedTicketIdentity {
+            id,
+            principal,
+            expires_at,
+            store,
+            prefix: prefix.to_owned(),
+            credential: zeroize::Zeroizing::new(credential.to_owned()),
+        })
+    }
+
+    /// Spend a prepared identity after the host has claimed custody and released its locks.
+    /// Any failure is terminal for that host claim: a store error may have committed the spend.
+    pub fn redeem_verified_ticket(
+        &self,
+        identity: VerifiedTicketIdentity,
+        now: u64,
+    ) -> Option<(Arc<VirtualKey>, Vec<u8>)> {
+        let store = self.store();
+        if !Arc::ptr_eq(&store, &identity.store) {
+            return None;
+        }
+        let (key, id, exp) = self.checked_ticket(&identity.prefix, &identity.credential, now)?;
+        if id != identity.id
+            || exp != identity.expires_at
+            || key.id != identity.principal.id
+            || key.generation_hash != identity.principal.generation_hash
+        {
+            return None;
+        }
         if !store
             .redeem_plane_token(TICKET_SPENT_KIND, &id, exp, now)
             .unwrap_or(false)
