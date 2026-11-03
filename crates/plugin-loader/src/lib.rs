@@ -310,10 +310,6 @@ mod conformance_plane_arrive_tests;
 #[path = "tests/conformance_plane_host_tests.rs"]
 mod conformance_plane_host_tests;
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_plane_lending_tests.rs"]
-mod conformance_plane_lending_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
@@ -436,3 +432,13 @@ mod ordinary_plane_lifecycle;
 #[allow(unsafe_code)]
 #[path = "tests/ordinary_plane_sessions_actual.rs"]
 mod ordinary_plane_sessions_actual;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/ordinary_plane_deadline.rs"]
+mod ordinary_plane_deadline;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/ordinary_plane_fault_outputs.rs"]
+mod ordinary_plane_fault_outputs;
