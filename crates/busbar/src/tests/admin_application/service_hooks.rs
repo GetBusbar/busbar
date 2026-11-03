@@ -86,7 +86,7 @@ async fn build_with_hook_registers_and_wires_global_tap() {
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
-        "store": { "module": store_module.expect("the actual Store was staged"), "settings": settings },
+        "store": { "module": store_module.as_ref().expect("the actual Store was staged"), "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
@@ -106,6 +106,14 @@ async fn build_with_hook_registers_and_wires_global_tap() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(
+        &app,
+        store_module
+            .as_deref()
+            .expect("the actual Store was staged"),
+    )
+    .expect("the actual Store binds the rate-card authority before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -187,7 +195,7 @@ async fn build_with_hook_demotes_global_false_removes_wiring() {
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
-        "store": { "module": store_module.expect("the actual Store was staged"), "settings": settings },
+        "store": { "module": store_module.as_ref().expect("the actual Store was staged"), "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
@@ -207,6 +215,14 @@ async fn build_with_hook_demotes_global_false_removes_wiring() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(
+        &app,
+        store_module
+            .as_deref()
+            .expect("the actual Store was staged"),
+    )
+    .expect("the actual Store binds the rate-card authority before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -295,7 +311,7 @@ async fn build_with_hook_caps_oversized_name() {
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
-        "store": { "module": store_module.expect("the actual Store was staged"), "settings": settings },
+        "store": { "module": store_module.as_ref().expect("the actual Store was staged"), "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
@@ -315,6 +331,14 @@ async fn build_with_hook_caps_oversized_name() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(
+        &app,
+        store_module
+            .as_deref()
+            .expect("the actual Store was staged"),
+    )
+    .expect("the actual Store binds the rate-card authority before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -389,7 +413,7 @@ async fn build_with_hook_rejects_invalid_definitions() {
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
-        "store": { "module": store_module.expect("the actual Store was staged"), "settings": settings },
+        "store": { "module": store_module.as_ref().expect("the actual Store was staged"), "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
@@ -409,6 +433,14 @@ async fn build_with_hook_rejects_invalid_definitions() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(
+        &app,
+        store_module
+            .as_deref()
+            .expect("the actual Store was staged"),
+    )
+    .expect("the actual Store binds the rate-card authority before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -491,7 +523,7 @@ async fn build_with_hook_enforces_grant_immutability() {
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
-        "store": { "module": store_module.expect("the actual Store was staged"), "settings": settings },
+        "store": { "module": store_module.as_ref().expect("the actual Store was staged"), "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
@@ -511,6 +543,14 @@ async fn build_with_hook_enforces_grant_immutability() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(
+        &app,
+        store_module
+            .as_deref()
+            .expect("the actual Store was staged"),
+    )
+    .expect("the actual Store binds the rate-card authority before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -592,7 +632,7 @@ async fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
-        "store": { "module": store_module.expect("the actual Store was staged"), "settings": settings },
+        "store": { "module": store_module.as_ref().expect("the actual Store was staged"), "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
@@ -612,6 +652,14 @@ async fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(
+        &app,
+        store_module
+            .as_deref()
+            .expect("the actual Store was staged"),
+    )
+    .expect("the actual Store binds the rate-card authority before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -689,7 +737,7 @@ async fn build_with_hook_demote_only_removes_the_target_hook() {
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
-        "store": { "module": store_module.expect("the actual Store was staged"), "settings": settings },
+        "store": { "module": store_module.as_ref().expect("the actual Store was staged"), "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
@@ -709,6 +757,14 @@ async fn build_with_hook_demote_only_removes_the_target_hook() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(
+        &app,
+        store_module
+            .as_deref()
+            .expect("the actual Store was staged"),
+    )
+    .expect("the actual Store binds the rate-card authority before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -793,7 +849,7 @@ async fn build_without_hook_only_removes_the_target_from_global_wiring() {
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
-        "store": { "module": store_module.expect("the actual Store was staged"), "settings": settings },
+        "store": { "module": store_module.as_ref().expect("the actual Store was staged"), "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
@@ -813,6 +869,14 @@ async fn build_without_hook_only_removes_the_target_from_global_wiring() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(
+        &app,
+        store_module
+            .as_deref()
+            .expect("the actual Store was staged"),
+    )
+    .expect("the actual Store binds the rate-card authority before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -892,7 +956,7 @@ async fn build_with_hook_caps_oversized_settings() {
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
-        "store": { "module": store_module.expect("the actual Store was staged"), "settings": settings },
+        "store": { "module": store_module.as_ref().expect("the actual Store was staged"), "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
@@ -912,6 +976,14 @@ async fn build_with_hook_caps_oversized_settings() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(
+        &app,
+        store_module
+            .as_deref()
+            .expect("the actual Store was staged"),
+    )
+    .expect("the actual Store binds the rate-card authority before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
