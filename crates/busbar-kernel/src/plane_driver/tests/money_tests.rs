@@ -1963,7 +1963,7 @@ fn the_actual_reservation_grant_holds_concurrency_across_settled_mint_and_adopti
 
 #[test]
 fn reserved_ticket_adoption_checks_receiving_authority_and_binding() {
-    for mismatch in 0..11 {
+    for mismatch in 0..13 {
         let r = rig(None, 7, ExhaustionMode::FinishUnit);
         let kernel = crate::teller::Kernel::new();
         let source_call = kernel.next_call();
@@ -2050,10 +2050,25 @@ fn reserved_ticket_adoption_checks_receiving_authority_and_binding() {
             if mismatch == 10 {
                 receiving.call = kernel.next_call();
             }
-            assert_eq!(
-                lineage.consume(&receiving, &principal).is_ok(),
-                mismatch == 0
+            if mismatch == 11 {
+                receiving.key = UnitKey::new(3);
+            }
+            let terminal_principal = if mismatch == 12 {
+                PrincipalId::new("foreign")
+            } else {
+                principal
+            };
+            let drawn = crate::settlement::requests_drawn_with_lineage(
+                &receiving,
+                &terminal_principal,
+                true,
+                Some(lineage),
             );
+            if mismatch == 0 {
+                assert_eq!(drawn, Ok(0), "real Client posting draws no second request");
+            } else {
+                assert!(drawn.is_err(), "stale terminal lineage {mismatch}");
+            }
             assert_eq!(
                 r.money.checkpoint(&ctx(2), &reported(1_000_000)),
                 Checkpoint::Continue
