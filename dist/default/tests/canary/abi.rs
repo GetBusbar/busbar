@@ -352,8 +352,9 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
     });
     assert!(
         matches!(answer.verified, Verified::Identity(ref identity) if identity.subject == "oidc:canary"),
-        "the observed dropped-in door verifies a signed token over the real TLS connection: {:?}",
+        "the observed dropped-in door verifies a signed token over the real TLS connection: {:?}; host trace: {}",
         answer.verified,
+        String::from_utf8_lossy(&tracing.lock().unwrap_or_else(|p| p.into_inner())),
     );
     drop(oidc);
 
