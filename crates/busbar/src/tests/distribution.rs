@@ -481,3 +481,7 @@ mod kernel_application_central2_inbound_signed;
 
 #[path = "kernel_application/central2_inbound_refusals.rs"]
 mod kernel_application_central2_inbound_refusals;
+
+#[cfg(linked_operator_auth)]
+#[path = "kernel_application/auth_verify_both_origins.rs"]
+mod kernel_application_auth_verify_both_origins;
