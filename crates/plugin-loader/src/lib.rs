@@ -427,3 +427,13 @@ mod ordinary_declared_metadata;
 #[allow(unsafe_code)]
 #[path = "tests/store_lifecycle_actual.rs"]
 mod store_lifecycle_actual;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/store_actual_opid_tests.rs"]
+mod store_actual_opid_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/store_actual_pending_tests.rs"]
+mod store_actual_pending_tests;
