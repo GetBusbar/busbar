@@ -818,12 +818,15 @@ mod metrics_scrape {
             .send()
             .await
             .unwrap();
-        assert_eq!(
-            scrape.status().as_u16(),
-            200,
-            "the built-in prometheus exporter must serve /metrics on this router"
-        );
+        let scrape_status = scrape.status().as_u16();
         let exposition = scrape.text().await.unwrap();
+        assert_eq!(
+            scrape_status,
+            200,
+            "the built-in prometheus exporter must serve /metrics on this router; \
+             actual recorder installed={}: {exposition:?}",
+            busbar_kernel::snapshot::recorder_installed(),
+        );
         server.abort();
 
         for plane in [door_plane().key, agents_plane().key] {
