@@ -294,3 +294,59 @@ fn actual_http_target_and_request_path_reach_the_same_real_peer() {
     assert_eq!(heads, 1);
     assert_eq!(body, b"answer");
 }
+
+#[test]
+fn actual_member_targets_declare_without_one_resolved_target() {
+    let _reactor = runtime().enter();
+    let judged = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&judged);
+    let connector = Connector::serving(
+        Transports::new(vec![
+            actual_transport("BUSBAR_TEST_TCP_CDYLIB"),
+            actual_transport("BUSBAR_TEST_HTTP_CDYLIB"),
+        ])
+        .unwrap(),
+        Arc::new(move |_: &str, _: u32, _: Judged| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Some(Err::<std::net::SocketAddr, Verdict>(
+                busbar_contract::abi::host::service::DEST_UNRESOLVABLE,
+            ))
+        }),
+        None,
+        Arc::new(|_, _| {}),
+    );
+    for (index, (target, trust)) in [
+        ("settings.*.url", "settings.*.client_identity"),
+        ("settings.*.url", ""),
+        ("", "owned.push.ca"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut spec = need("http", EGRESS_LOOPBACK_ALLOWED);
+        spec.target_from = target.into();
+        spec.trust_from = trust.into();
+        let id = NeedId(u32::try_from(index).unwrap());
+        assert_eq!(
+            DeclaredConns::declare(&connector, OWNER, id, &spec, None, None),
+            Ok(()),
+            "{target} / {trust}"
+        );
+        assert_eq!(DeclaredConns::declared(&connector, OWNER, id), Some(Ok(())));
+    }
+    let mut unresolved = need("http", EGRESS_LOOPBACK_ALLOWED);
+    unresolved.target_from = "settings.url".into();
+    assert_eq!(
+        DeclaredConns::declare(&connector, OWNER, NeedId(7), &unresolved, None, None),
+        Err(ConnError::Refused)
+    );
+    assert_eq!(
+        DeclaredConns::declared(&connector, OWNER, NeedId(7)),
+        Some(Err(ConnError::Refused))
+    );
+    assert_eq!(
+        judged.load(Ordering::SeqCst),
+        0,
+        "declaration does not dial a member's destination"
+    );
+}
