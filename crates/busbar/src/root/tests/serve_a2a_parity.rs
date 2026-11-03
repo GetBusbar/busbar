@@ -195,13 +195,18 @@ async fn http_bytes(
     })
 }
 
-fn bind_plane(origin: Origin, instance: &str, dispatcher: &Dispatcher) -> Plugin<Plane> {
+fn bind_plane(
+    origin: Origin,
+    instance: &str,
+    dispatcher: &Dispatcher,
+    conns: Arc<dyn DeclaredConns>,
+) -> Plugin<Plane> {
     let bind = Bind {
         instance: Arc::from(instance),
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher.adopter(),
-        conns: ConnTable::Host(crate::root::connector::the().clone() as Arc<dyn DeclaredConns>),
+        conns: ConnTable::Host(conns),
     };
     let (row, getter) = crate::LINKED
         .plane_doors
@@ -1002,6 +1007,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         step(&config.limits);
     }
     let destinations = config.destinations();
+    let transport_settings = crate::root::policy::client_settings(&config.limits);
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
         plugins,
@@ -1139,7 +1145,31 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             services.served(),
         ));
         let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
-        let plane = Arc::new(bind_plane(origin, &instance, &dispatcher));
+        crate::root::connector::install_io(&dispatcher);
+        // Pending connections must wake this plane's dispatcher, which owns their tickets.
+        // The process connector belongs to the process dispatcher, not this isolated origin.
+        let conns = busbar_core_connector::process::build_with_secrets(
+            || {
+                crate::root::connector::entries_on(
+                    &dispatcher,
+                    crate::LINKED_TRANSPORT_DOORS,
+                    &transport_settings,
+                )
+            },
+            crate::root::connector::guard_for(&destinations)
+                .expect("the normal deployment destination policy resolves"),
+            &[],
+            dispatcher.conn_waker(),
+            crate::root::connector::pool_posture(&transport_settings),
+            crate::root::connector::spawn_secret_resolver(),
+        )
+        .expect("the actual transports compose on the plane's dispatcher");
+        let plane = Arc::new(bind_plane(
+            origin,
+            &instance,
+            &dispatcher,
+            conns.clone() as Arc<dyn DeclaredConns>,
+        ));
         assert_eq!(plane.served().section, "agents");
         assert_eq!(
             plane.served().billable_classes,
@@ -1157,7 +1187,6 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             post.clone() as Arc<dyn EndPost>,
         ));
         let providers = BTreeMap::new();
-        let conns = crate::root::connector::the().clone();
         let reach = crate::root::door_steps::DoorReach {
             providers: &providers,
             secrets: Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
@@ -1168,7 +1197,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
                 ConnTable::Host(conns.clone() as Arc<dyn DeclaredConns>),
                 busbar_kernel::diagnostics::Catalogue::NEUTRAL,
             )),
-            conns: conns as Arc<dyn PollConns>,
+            conns: conns.clone() as Arc<dyn PollConns>,
             stream_ceiling_secs: 15,
             catalog: None,
             models: None,
@@ -1290,7 +1319,12 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         // admission and paid billing above. The public owner seam holds the real verified key's
         // exact agent:vendor grant for these original raw unit ids. The opaque caller_ref bytes
         // below are original protocol input, never the source of authority.
-        let raw = bind_plane(origin, &instance, &dispatcher);
+        let raw = bind_plane(
+            origin,
+            &instance,
+            &dispatcher,
+            conns.clone() as Arc<dyn DeclaredConns>,
+        );
         let mut units = RawA2aUnits {
             records: kernel.units().clone(),
             owned: Vec::new(),
