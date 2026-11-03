@@ -147,10 +147,7 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
             "admin-root-{}",
             busbar_kernel::door::op_id().counter()
         ));
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual Store statement reads")
             .expect("the actual Store states itself");
@@ -169,10 +166,7 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
             .expect("stage the actual Store product");
         std::fs::write(directory.join("admin.token"), "admintok")
             .expect("write the operator credential");
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("the actual Store settings are JSON");
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let mut document = serde_json::json!({});
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
@@ -274,10 +268,7 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
             "admin-root-{}",
             busbar_kernel::door::op_id().counter()
         ));
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual Store statement reads")
             .expect("the actual Store states itself");
@@ -296,10 +287,7 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
             .expect("stage the actual Store product");
         std::fs::write(directory.join("admin.token"), "admintok")
             .expect("write the operator credential");
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("the actual Store settings are JSON");
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let mut document = serde_json::json!({});
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
@@ -419,10 +407,7 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
             "admin-root-{}",
             busbar_kernel::door::op_id().counter()
         ));
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual Store statement reads")
             .expect("the actual Store states itself");
@@ -441,10 +426,7 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
             .expect("stage the actual Store product");
         std::fs::write(directory.join("admin.token"), "admintok")
             .expect("write the operator credential");
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("the actual Store settings are JSON");
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let mut document = serde_json::json!({});
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
@@ -614,10 +596,7 @@ async fn drive_key_cap_and_delegation_errors() {
             "admin-root-{}",
             busbar_kernel::door::op_id().counter()
         ));
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual Store statement reads")
             .expect("the actual Store states itself");
@@ -636,10 +615,7 @@ async fn drive_key_cap_and_delegation_errors() {
             .expect("stage the actual Store product");
         std::fs::write(directory.join("admin.token"), "admintok")
             .expect("write the operator credential");
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("the actual Store settings are JSON");
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let mut document = serde_json::json!({"groups": groups});
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
@@ -836,10 +812,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
             "admin-root-{}",
             busbar_kernel::door::op_id().counter()
         ));
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual Store statement reads")
             .expect("the actual Store states itself");
@@ -858,10 +831,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
             .expect("stage the actual Store product");
         std::fs::write(directory.join("admin.token"), "admintok")
             .expect("write the operator credential");
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("the actual Store settings are JSON");
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let mut document = serde_json::json!({});
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
@@ -1078,11 +1048,7 @@ async fn serve_keys_fixture(
                     "admin-root-{}",
                     busbar_kernel::door::op_id().counter()
                 ));
-                let library_path = std::path::PathBuf::from(
-                    std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN").expect(
-                        "BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product",
-                    ),
-                );
+                let library_path = crate::root::test_plugins::application_store_library();
                 let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
                     .expect("the actual Store statement reads")
                     .expect("the actual Store states itself");
@@ -1104,11 +1070,7 @@ async fn serve_keys_fixture(
                     .expect("stage the actual Store product");
                 std::fs::write(directory.join("admin.token"), "admintok")
                     .expect("write the operator credential");
-                let settings: serde_json::Value = serde_json::from_str(
-                    &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS")
-                        .unwrap_or_else(|_| "{}".into()),
-                )
-                .expect("the actual Store settings are JSON");
+                let settings = crate::root::test_plugins::application_store_settings(&directory);
                 let mut document = serde_json::json!({});
                 document["providers"] = serde_json::json!({});
                 document["models"] = serde_json::json!({});
@@ -1164,11 +1126,7 @@ async fn serve_keys_fixture(
                     "admin-root-{}",
                     busbar_kernel::door::op_id().counter()
                 ));
-                let library_path = std::path::PathBuf::from(
-                    std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN").expect(
-                        "BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product",
-                    ),
-                );
+                let library_path = crate::root::test_plugins::application_store_library();
                 let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
                     .expect("the actual Store statement reads")
                     .expect("the actual Store states itself");
@@ -1190,11 +1148,7 @@ async fn serve_keys_fixture(
                     .expect("stage the actual Store product");
                 std::fs::write(directory.join("admin.token"), "admintok")
                     .expect("write the operator credential");
-                let settings: serde_json::Value = serde_json::from_str(
-                    &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS")
-                        .unwrap_or_else(|_| "{}".into()),
-                )
-                .expect("the actual Store settings are JSON");
+                let settings = crate::root::test_plugins::application_store_settings(&directory);
                 let mut document = serde_json::json!({});
                 document["providers"] = serde_json::json!({});
                 document["models"] = serde_json::json!({});
@@ -1247,10 +1201,7 @@ async fn serve_keys_fixture(
                 "admin-root-{}",
                 busbar_kernel::door::op_id().counter()
             ));
-            let library_path = std::path::PathBuf::from(
-                std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                    .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
-            );
+            let library_path = crate::root::test_plugins::application_store_library();
             let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
                 .expect("the actual Store statement reads")
                 .expect("the actual Store states itself");
@@ -1269,11 +1220,7 @@ async fn serve_keys_fixture(
                 .expect("stage the actual Store product");
             std::fs::write(directory.join("admin.token"), "admintok")
                 .expect("write the operator credential");
-            let settings: serde_json::Value = serde_json::from_str(
-                &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS")
-                    .unwrap_or_else(|_| "{}".into()),
-            )
-            .expect("the actual Store settings are JSON");
+            let settings = crate::root::test_plugins::application_store_settings(&directory);
             let mut document = serde_json::json!({});
             document["providers"] = serde_json::json!({});
             document["models"] = serde_json::json!({});
@@ -1775,10 +1722,7 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
             "admin-root-{}",
             busbar_kernel::door::op_id().counter()
         ));
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual Store statement reads")
             .expect("the actual Store states itself");
@@ -1797,10 +1741,7 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
             .expect("stage the actual Store product");
         std::fs::write(directory.join("admin.token"), "admintok")
             .expect("write the operator credential");
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("the actual Store settings are JSON");
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let mut document = serde_json::json!({"groups": {"team": {"enabled": true, "limits": []}}, "hooks": {"basehook": {"kind":"gate","module":"hooks-ranking","settings":{"policy":"cheapest"},"timeout_ms":25,"on_error":"reject"}}});
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
@@ -2634,10 +2575,7 @@ async fn drive_plugin_reload_errors() {
             "admin-root-{}",
             busbar_kernel::door::op_id().counter()
         ));
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual Store statement reads")
             .expect("the actual Store states itself");
@@ -2656,10 +2594,7 @@ async fn drive_plugin_reload_errors() {
             .expect("stage the actual Store product");
         std::fs::write(directory.join("admin.token"), "admintok")
             .expect("write the operator credential");
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("the actual Store settings are JSON");
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let mut document = serde_json::json!({});
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
@@ -2751,10 +2686,7 @@ async fn drive_plugin_rollback_errors() {
             "admin-root-{}",
             busbar_kernel::door::op_id().counter()
         ));
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual Store statement reads")
             .expect("the actual Store states itself");
@@ -2773,10 +2705,7 @@ async fn drive_plugin_rollback_errors() {
             .expect("stage the actual Store product");
         std::fs::write(directory.join("admin.token"), "admintok")
             .expect("write the operator credential");
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("the actual Store settings are JSON");
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let mut document = serde_json::json!({});
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
@@ -2943,10 +2872,7 @@ async fn drive_plugin_inspect_errors() {
             "admin-root-{}",
             busbar_kernel::door::op_id().counter()
         ));
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual Store statement reads")
             .expect("the actual Store states itself");
@@ -2965,10 +2891,7 @@ async fn drive_plugin_inspect_errors() {
             .expect("stage the actual Store product");
         std::fs::write(directory.join("admin.token"), "admintok")
             .expect("write the operator credential");
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("the actual Store settings are JSON");
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let mut document = serde_json::json!({});
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
@@ -3363,10 +3286,7 @@ async fn named_map_app_opts(
     linked_export_axis();
     let (dir, config_path, providers_path) =
         write_named_map_fixture(tag, reference_corp_ad, base_export);
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual Store statement reads")
         .expect("the actual Store states itself");
@@ -3385,10 +3305,7 @@ async fn named_map_app_opts(
     std::fs::create_dir_all(&plugin_dir).expect("the product plugin directory");
     std::fs::write(plugin_dir.join("store.tar.gz"), archive)
         .expect("stage the actual Store product");
-    let settings: serde_yaml::Value = serde_yaml::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("the actual Store settings are JSON");
+    let settings = crate::root::test_plugins::application_store_settings(&dir);
     let mut disk: serde_yaml::Value =
         serde_yaml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
     disk["store"] =
@@ -4516,10 +4433,7 @@ async fn drive_named_map_errors() {
                 "admin-root-{}",
                 busbar_kernel::door::op_id().counter()
             ));
-            let library_path = std::path::PathBuf::from(
-                std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                    .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
-            );
+            let library_path = crate::root::test_plugins::application_store_library();
             let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
                 .expect("the actual Store statement reads")
                 .expect("the actual Store states itself");
@@ -4538,11 +4452,7 @@ async fn drive_named_map_errors() {
                 .expect("stage the actual Store product");
             std::fs::write(directory.join("admin.token"), "admintok")
                 .expect("write the operator credential");
-            let settings: serde_json::Value = serde_json::from_str(
-                &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS")
-                    .unwrap_or_else(|_| "{}".into()),
-            )
-            .expect("the actual Store settings are JSON");
+            let settings = crate::root::test_plugins::application_store_settings(&directory);
             let mut document = serde_json::json!({});
             document["providers"] = serde_json::json!({});
             document["models"] = serde_json::json!({});

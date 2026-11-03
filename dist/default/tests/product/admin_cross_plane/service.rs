@@ -38,10 +38,7 @@ fn build_with_hook_makes_a_plane_attach_live() {
             "admin-root-{}",
             busbar_kernel::door::op_id().counter()
         ));
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual Store statement reads")
             .expect("the actual Store states itself");
@@ -80,10 +77,7 @@ fn build_with_hook_makes_a_plane_attach_live() {
             .expect("stage the actual signed hook product");
         std::fs::write(directory.join("admin.token"), "admintok")
             .expect("write the operator credential");
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("the actual Store settings are JSON");
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let mut document = serde_json::json!({"tools": {"fs": {"url":"https://tools.internal/fs","pin":{"mechanism":"cert_spki","key":"sha256/BASE="},"hooks":["screen"]}}});
         // A parsed deployment must define every attached hook. Exercise a missing live
         // definition through the real delete API after this valid deployment has booted.
