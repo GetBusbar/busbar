@@ -153,6 +153,9 @@ fn the_audit_naming_is_derived_from_the_plane() {
         &rules,
     )
     .expect("the actual product builds the audit deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, "configured-store")
+        .expect("the actual configured Store binds boot rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();

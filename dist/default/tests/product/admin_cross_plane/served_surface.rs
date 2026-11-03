@@ -263,6 +263,9 @@ async fn admin_corpus_reconciles_with_the_served_router() {
             &rules,
         )
         .expect("the product root builds the actual admin application");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, "configured-store")
+            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -628,6 +631,9 @@ async fn served_openapi_lists_only_the_configured_planes() {
             &rules,
         )
         .expect("the product root builds the actual admin application");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, "configured-store")
+            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -721,6 +727,9 @@ async fn served_openapi_lists_only_the_configured_planes() {
             &rules,
         )
         .expect("the product root builds the actual admin application");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, "configured-store")
+            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -834,6 +843,9 @@ async fn served_openapi_lists_only_the_configured_planes() {
             &rules,
         )
         .expect("the product root builds the actual admin application");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, "configured-store")
+            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -920,6 +932,9 @@ async fn named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body(
             &rules,
         )
         .expect("the product root builds the actual admin application");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, "configured-store")
+            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
