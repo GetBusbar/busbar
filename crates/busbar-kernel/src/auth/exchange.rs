@@ -60,7 +60,7 @@ pub(crate) async fn exchange(
     .await;
     let verdict = match exchange_verdict_result(judged) {
         Ok(verdict) => verdict,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
 
     let (
@@ -103,12 +103,12 @@ pub(crate) async fn exchange(
 
 fn exchange_verdict_result(
     judged: Result<super::ChainVerdict, super::VerifierUnavailable>,
-) -> Result<super::ChainVerdict, Response> {
+) -> Result<super::ChainVerdict, Box<Response>> {
     match judged {
         Ok(verdict) => Ok(verdict),
-        Err(super::VerifierUnavailable::NoVerdict) => {
-            Err(crate::limits::admission::inbound_overloaded_response())
-        }
+        Err(super::VerifierUnavailable::NoVerdict) => Err(Box::new(
+            crate::limits::admission::inbound_overloaded_response(),
+        )),
         Err(super::VerifierUnavailable::Overloaded) => Ok(super::ChainVerdict::Denied),
     }
 }

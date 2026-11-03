@@ -1092,22 +1092,22 @@ impl AuthMiddleware {
     }
 }
 
-async fn auth_admission_permit() -> Result<tokio::sync::SemaphorePermit<'static>, Judgement> {
+async fn auth_admission_permit() -> Result<tokio::sync::SemaphorePermit<'static>, Box<Judgement>> {
     match tokio::time::timeout(AUTH_ADMISSION_WAIT, AUTH_ADMISSION_PERMITS.acquire()).await {
         Ok(Ok(permit)) => Ok(permit),
         _ => {
             auth_saturated();
-            Err(Judgement::of(AuthVerdict::Reject))
+            Err(Box::new(Judgement::of(AuthVerdict::Reject)))
         }
     }
 }
 
-async fn admin_admission_permit() -> Result<tokio::sync::SemaphorePermit<'static>, Judgement> {
+async fn admin_admission_permit() -> Result<tokio::sync::SemaphorePermit<'static>, Box<Judgement>> {
     match tokio::time::timeout(ADMIN_ADMISSION_WAIT, ADMIN_ADMISSION_PERMITS.acquire()).await {
         Ok(Ok(permit)) => Ok(permit),
         _ => {
             admin_saturated();
-            Err(Judgement::of(AuthVerdict::Reject))
+            Err(Box::new(Judgement::of(AuthVerdict::Reject)))
         }
     }
 }
@@ -1135,7 +1135,7 @@ async fn judge(
         Reach::RequestPath => {
             let permit = match auth_admission_permit().await {
                 Ok(permit) => permit,
-                Err(refusal) => return Ok(refusal),
+                Err(refusal) => return Ok(*refusal),
             };
             let mut call = entry.calls.verify(request);
             let answer = (&mut call).await;
@@ -1372,7 +1372,7 @@ async fn external_admin_module(
 
     let permit = match admin_admission_permit().await {
         Ok(permit) => permit,
-        Err(refusal) => return Some(refusal),
+        Err(refusal) => return Some(*refusal),
     };
     let mut call = module.calls.verify(request);
     let answered = tokio::time::timeout(ADMIN_ADMISSION_WAIT, &mut call).await;
@@ -1940,14 +1940,14 @@ pub const ADMIN_AUTH_UNAVAILABLE_MESSAGE: &str =
 
 pub const ADMIN_AUTH_RETRY_AFTER: &str = crate::limits::admission::OVERLOADED_RETRY_AFTER;
 
-fn admin_principal_or_response(door: AdminDoor) -> Result<Option<Principal>, Response> {
+fn admin_principal_or_response(door: AdminDoor) -> Result<Option<Principal>, Box<Response>> {
     match door {
         AdminDoor::Identified(principal, _) | AdminDoor::Listed(principal, _, _) => {
             Ok(Some(principal))
         }
         AdminDoor::Open => Ok(None),
-        AdminDoor::Denied => Err(admin_unauthorized_response()),
-        AdminDoor::Unavailable(_) => Err(admin_unavailable_response()),
+        AdminDoor::Denied => Err(Box::new(admin_unauthorized_response())),
+        AdminDoor::Unavailable(_) => Err(Box::new(admin_unavailable_response())),
     }
 }
 
@@ -2167,7 +2167,7 @@ pub(crate) async fn auth_middleware(
 
         let principal = match admin_principal_or_response(door) {
             Ok(principal) => principal,
-            Err(response) => return Err(response),
+            Err(response) => return Err(*response),
         };
         let required = crate::admin::gate::required_scope(req.method(), &path);
 
