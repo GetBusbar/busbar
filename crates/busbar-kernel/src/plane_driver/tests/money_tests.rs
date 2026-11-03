@@ -1306,3 +1306,245 @@ fn served_requests_keep_each_units_pinned_group_until_settlement() {
         .collect();
     assert_eq!(counts, [("g".into(), 1), ("later".into(), 1)].into());
 }
+
+fn admit_parent(r: &Rig) -> ParentMoney {
+    let grant = Arc::new(
+        r.gov
+            .try_admit(&r.cost, &r.key, "", NOW)
+            .expect("real admission"),
+    );
+    r.money
+        .open_admitted(UnitKey::new(1), r.unit.clone(), grant);
+    r.money
+        .parent_money(UnitKey::new(1), &r.key)
+        .expect("live admitted parent")
+}
+
+fn child(r: &Rig, parent: &ParentMoney, id: u64) -> Result<(), ReasonCode> {
+    r.money.open_child(
+        parent,
+        UnitKey::new(id),
+        "m".into(),
+        r.unit.classes.clone(),
+        r.unit.fee.clone(),
+    )
+}
+
+#[test]
+fn admitted_child_prices_nonzero_usage_under_exactly_one_real_fee() {
+    let baseline = rig_with(None, 0, ExhaustionMode::FinishUnit, plane_fees());
+    let _ = baseline.money.checkpoint(&ctx(1), &reported(1_000_000));
+    baseline.money.settle_end(UnitKey::new(1), 200);
+    let priced = usage(&baseline).1;
+    assert!(priced > 0, "the media control has a real nonzero price");
+
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+    let parent = admit_parent(&r);
+    child(&r, &parent, 2).expect("borrow real admission");
+    assert_eq!(usage(&r).1, 5, "registration cannot charge a second fee");
+    assert_eq!(r.money.session_opened(&ctx(2)), Ok(()));
+    let _ = r
+        .money
+        .checkpoint(&ctx(2), &[reported(1_000_000)[0], fee_reported(1)]);
+    r.money.settle_end(UnitKey::new(1), 503);
+    assert_eq!(usage(&r).1, 5, "parent refund waits for the actual child");
+    r.money.session_ended(&ctx(2));
+    r.money.settle_end(UnitKey::new(2), 200);
+    r.money.session_ended(&ctx(2));
+    r.money.settle_end(UnitKey::new(2), 200);
+    assert_eq!(
+        usage(&r),
+        (1_000_000, priced + 5),
+        "one fee and one priced media line"
+    );
+    assert_eq!(r.money.open_units(), 0);
+}
+
+#[test]
+fn parent_and_all_children_must_finish_refundable_before_the_single_refund() {
+    for child_first in [false, true] {
+        let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+        let parent = admit_parent(&r);
+        child(&r, &parent, 2).unwrap();
+        child(&r, &parent, 3).unwrap();
+        if child_first {
+            r.money.settle_end(UnitKey::new(2), 503);
+        } else {
+            r.money.settle_end(UnitKey::new(1), 503);
+        }
+        assert_eq!(usage(&r).1, 5);
+        if child_first {
+            r.money.settle_end(UnitKey::new(1), 503);
+        } else {
+            r.money.settle_end(UnitKey::new(2), 503);
+        }
+        assert_eq!(usage(&r).1, 5, "the second child still owns participation");
+        r.money.settle_end(UnitKey::new(3), 503);
+        assert_eq!(usage(&r).1, 0, "all participants refundable: one refund");
+        r.money.settle_end(UnitKey::new(1), 503);
+        r.money.settle_end(UnitKey::new(2), 503);
+        r.money.settle_end(UnitKey::new(3), 503);
+        assert_eq!(
+            usage(&r).1,
+            0,
+            "repeated terminal calls cannot refund again"
+        );
+    }
+}
+
+#[test]
+fn child_cancellation_bills_its_actual_media_once_and_keeps_an_incurred_fee() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+    let parent = admit_parent(&r);
+    child(&r, &parent, 2).unwrap();
+    let _ = r
+        .money
+        .checkpoint(&ctx(2), &[reported(90)[0], fee_reported(1)]);
+    r.money
+        .cancelled(&ctx(2), &bill(ReasonCode::ClientGone, 70));
+    r.money
+        .cancelled(&ctx(2), &bill(ReasonCode::ClientGone, 70));
+    r.money.settle_end(UnitKey::new(1), 503);
+    r.money.settle_end(UnitKey::new(2), 499);
+    assert_eq!(usage(&r), (70, 5));
+    assert_eq!(r.money.open_units(), 0);
+}
+
+#[test]
+fn abandoned_child_closes_fee_participation_once_without_inventing_a_refund() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+    let parent = admit_parent(&r);
+    child(&r, &parent, 2).unwrap();
+    let _ = r.money.checkpoint(&ctx(2), &reported(55));
+    r.money.abandoned(&ctx(2), Ended::AlreadySettled);
+    r.money.settle_end(UnitKey::new(1), 503);
+    r.money
+        .cancelled(&ctx(2), &bill(ReasonCode::ClientGone, 40));
+    r.money
+        .cancelled(&ctx(2), &bill(ReasonCode::ClientGone, 40));
+    r.money.settle_end(UnitKey::new(2), 503);
+    assert_eq!(usage(&r), (40, 5));
+    assert_eq!(r.money.open_units(), 0);
+}
+
+#[test]
+fn parent_money_requires_the_actual_live_governor_registration() {
+    let r = rig(None, 5, ExhaustionMode::FinishUnit);
+    assert!(
+        r.money.parent_money(UnitKey::new(1), &r.key).is_err(),
+        "ordinary open is not an admission"
+    );
+    assert!(
+        r.money.parent_money(UnitKey::new(99), &r.key).is_err(),
+        "missing parent"
+    );
+    let parent = admit_parent(&r);
+    let mut foreign = r.key.as_ref().clone();
+    foreign.generation_hash = "another-generation".into();
+    assert!(
+        r.money.parent_money(UnitKey::new(1), &foreign).is_err(),
+        "foreign billing key"
+    );
+    let other = rig(None, 5, ExhaustionMode::FinishUnit);
+    let _other_parent = admit_parent(&other);
+    assert!(
+        child(&other, &parent, 2).is_err(),
+        "foreign book's genuine parent"
+    );
+    assert!(
+        child(&r, &parent, 1).is_err(),
+        "parent cannot overwrite itself"
+    );
+    child(&r, &parent, 2).unwrap();
+    assert!(
+        child(&r, &parent, 2).is_err(),
+        "cannot replace a registered child"
+    );
+    r.money.finished(&ctx(1));
+    assert!(
+        r.money.parent_money(UnitKey::new(1), &r.key).is_err(),
+        "finished parent"
+    );
+    assert!(
+        child(&r, &parent, 3).is_err(),
+        "held token cannot revive finished parent"
+    );
+    r.money.settle_end(UnitKey::new(1), 200);
+    assert!(child(&r, &parent, 3).is_err(), "closed parent");
+    let _replacement = admit_parent(&r);
+    assert!(
+        child(&r, &parent, 3).is_err(),
+        "same key reused by another real registration"
+    );
+}
+
+#[test]
+fn selecting_a_parent_lane_does_not_invalidate_real_admission_provenance() {
+    let r = rig(None, 5, ExhaustionMode::FinishUnit);
+    let parent = admit_parent(&r);
+    r.money.served(&ctx(1), "m2", "provider");
+    r.money.laned(&ctx(1), "m");
+    child(&r, &parent, 17).expect("same-shard child after parent Arc changed");
+    assert_eq!(r.money.serving(UnitKey::new(17)).as_deref(), Some("m"));
+    let _ = r.money.checkpoint(&ctx(17), &reported(31));
+    r.money.settle_end(UnitKey::new(1), 200);
+    r.money.settle_end(UnitKey::new(17), 200);
+    assert_eq!(usage(&r), (31, 5));
+}
+
+#[test]
+fn child_exit_authority_requires_a_real_matching_live_child_even_after_parent_closes() {
+    let r = rig(None, 5, ExhaustionMode::FinishUnit);
+    let parent = admit_parent(&r);
+    assert_eq!(r.money.validate_parent(&parent, &r.key), Ok(()));
+    assert!(r
+        .money
+        .validate_child(&parent, UnitKey::new(2), &r.key)
+        .is_err());
+    child(&r, &parent, 2).unwrap();
+    assert_eq!(
+        r.money.validate_child(&parent, UnitKey::new(2), &r.key),
+        Ok(())
+    );
+    let mut foreign = r.key.as_ref().clone();
+    foreign.generation_hash = "foreign".into();
+    assert!(r.money.validate_parent(&parent, &foreign).is_err());
+    assert!(r
+        .money
+        .validate_child(&parent, UnitKey::new(2), &foreign)
+        .is_err());
+    assert!(r
+        .money
+        .validate_child(&parent, UnitKey::new(1), &r.key)
+        .is_err());
+    let other = rig(None, 5, ExhaustionMode::FinishUnit);
+    let other_parent = admit_parent(&other);
+    child(&other, &other_parent, 2).unwrap();
+    assert!(r
+        .money
+        .validate_child(&other_parent, UnitKey::new(2), &r.key)
+        .is_err());
+    r.money.settle_end(UnitKey::new(1), 200);
+    assert!(r.money.validate_parent(&parent, &r.key).is_err());
+    assert_eq!(
+        r.money.validate_child(&parent, UnitKey::new(2), &r.key),
+        Ok(())
+    );
+    r.money.finished(&ctx(2));
+    assert!(r
+        .money
+        .validate_child(&parent, UnitKey::new(2), &r.key)
+        .is_err());
+    r.money.settle_end(UnitKey::new(2), 200);
+    assert!(r
+        .money
+        .validate_child(&parent, UnitKey::new(2), &r.key)
+        .is_err());
+    r.money.open(UnitKey::new(2), r.unit.clone());
+    assert!(
+        r.money
+            .validate_child(&parent, UnitKey::new(2), &r.key)
+            .is_err(),
+        "a new ordinary registration cannot impersonate the actual child"
+    );
+}
