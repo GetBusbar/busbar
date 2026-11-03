@@ -986,6 +986,11 @@ mod actual_boundary {
             mut out: Out<'_, Self::Out>,
         ) -> Outcome {
             let query = input.field(|i| &i.query).bytes();
+            if query == b"unsupported" {
+                return out.fail(busbar_contract::abi::sdk::life::Refusal::refused(
+                    "adversarial SERVE unsupported",
+                ));
+            }
             if query == b"sleep" {
                 std::thread::sleep(Duration::from_millis(100));
                 return Outcome::Refused;
@@ -1095,16 +1100,19 @@ async fn hook_routes_serve_leased_responses_through_both_doors_and_refused_stubs
             calls.serve(serve_request(), BUDGET).await.unwrap().body,
             response.body
         );
-        let stub = ranking_rows(way)
-            .open(
-                &ranking_name(),
-                "receiver",
-                &json!({"policy":"fastest"}),
-                BUDGET,
-            )
-            .unwrap();
-        assert!(stub.routes().is_empty());
-        assert!(stub.serve(serve_request(), BUDGET).await.is_err());
+        // Ranking's default SERVE is not a refusing product stub. Exercise the original
+        // routed-REFUSED host facet explicitly at the same retained-image SDK boundary.
+        let mut unsupported = serve_request();
+        unsupported.query = "unsupported".into();
+        let error = calls.serve(unsupported, BUDGET).await.unwrap_err();
+        assert!(
+            error.contains("adversarial SERVE unsupported"),
+            "{way:?}: {error}"
+        );
+        assert_eq!(
+            calls.serve(serve_request(), BUDGET).await.unwrap().body,
+            response.body
+        );
     }
 }
 
