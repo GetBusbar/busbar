@@ -1027,7 +1027,7 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual Store library reads");
@@ -1062,11 +1062,7 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (built, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
+        crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
         Default::default(),
@@ -1525,7 +1521,7 @@ fn answer_over_counts(
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual Store library reads");
@@ -1560,11 +1556,7 @@ fn answer_over_counts(
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut built, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
+        crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
         Default::default(),
@@ -1739,7 +1731,7 @@ fn real_admin_dispatch() -> RouterDispatch {
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual Store library reads");
@@ -1774,11 +1766,7 @@ fn real_admin_dispatch() -> RouterDispatch {
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut built, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
+        crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
         Default::default(),

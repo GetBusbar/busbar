@@ -114,7 +114,7 @@ async fn the_live_record_sink_writes_through_the_store_calls() {
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual Store library reads");
@@ -149,11 +149,7 @@ async fn the_live_record_sink_writes_through_the_store_calls() {
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut built, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
+        crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
         Default::default(),
@@ -207,7 +203,7 @@ async fn the_live_record_sink_writes_through_the_store_calls() {
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual Store library reads");
@@ -242,11 +238,7 @@ async fn the_live_record_sink_writes_through_the_store_calls() {
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut built, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
+        crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
         Default::default(),

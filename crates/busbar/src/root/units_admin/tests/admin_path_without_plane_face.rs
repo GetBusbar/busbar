@@ -223,7 +223,7 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual Store library reads");
@@ -258,11 +258,7 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut built, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
+        crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
         Default::default(),
@@ -402,7 +398,7 @@ async fn the_mounted_live_admin_door_keeps_no_verdict_apart_from_bad_credentials
         let mut manifest = crate::root::test_plugins::manifest(
             "store",
             &module,
-            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual Store library reads");
@@ -437,11 +433,7 @@ async fn the_mounted_live_admin_door_keeps_no_verdict_apart_from_bad_credentials
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut built, rotate, limits) = busbar_kernel::build_app_from_config(
             config,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            crate::root::test_plugins::trusted_config(&directory),
             None,
             Default::default(),
             Default::default(),
@@ -706,7 +698,7 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual Store library reads");
@@ -741,11 +733,7 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (built, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
+        crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
         Default::default(),
@@ -842,7 +830,7 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual Store library reads");
@@ -877,11 +865,7 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut built, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
+        crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
         Default::default(),
@@ -916,7 +900,7 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual Store library reads");
@@ -951,11 +935,7 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (built, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
+        crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
         Default::default(),
@@ -1042,7 +1022,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual Store library reads");
@@ -1077,11 +1057,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (built, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
+        crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
         Default::default(),
@@ -1275,7 +1251,7 @@ fn a_q71_node_trusting(
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual Store library reads");
@@ -1310,11 +1286,7 @@ fn a_q71_node_trusting(
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (built, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
+        crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
         Default::default(),
