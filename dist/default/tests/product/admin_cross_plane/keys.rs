@@ -3782,6 +3782,18 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
 #[tokio::test]
 async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
     linked_export_axis();
+    use busbar_contract::export_calls::ExportAxis as _;
+    const REQLOG_RESTART_NOTE: &str = "stored, but the export instance(s) export.reqlog require a \
+RESTART to apply membership, module or streams/fields projection changes to push delivery; this \
+process keeps its boot-opened sinks and their projections until then. Settings refreshes for \
+existing instances of the same module still apply live";
+    assert!(crate::root::exports::EXPORTS.linked("request-log-file"));
+    assert!(
+        crate::root::exports::EXPORTS
+            .routes("request-log-file")
+            .is_empty(),
+        "the actual file sink declares no route; its restart requirement is push membership"
+    );
 
     let (dir, _overlay, addr, handle) =
         named_map_app_opts("bootfrozen", false, false, ServeTables::default()).await;
@@ -3804,9 +3816,18 @@ async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
     let put_body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(put_body["note"], REQLOG_RESTART_NOTE);
+    assert_eq!(
+        put_body["reload_to_apply"],
+        serde_json::json!(["export.reqlog"])
+    );
     assert!(
-        put_body.get("reload_to_apply").is_none(),
-        "the route-free sink's PUT itself reports no restart requirement: {put_body}"
+        put_body["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("RESTART")
+                && note.contains("membership")
+                && note.contains("push delivery")),
+        "the route-free sink names its boot-bound push membership: {put_body}"
     );
     let body: serde_json::Value =
         admin(client.get(format!("http://{addr}/api/v1/admin/export/reqlog")))
@@ -3816,9 +3837,13 @@ async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
             .json()
             .await
             .unwrap();
-    assert!(
-        body.get("reload_to_apply").is_none(),
-        "a sink that declares no route needs no restart: {body}"
+    assert_eq!(
+        body["reload_to_apply"],
+        serde_json::json!(["export.reqlog"])
+    );
+    assert_eq!(
+        body["note"], REQLOG_RESTART_NOTE,
+        "GET retains the pending push-delivery membership independently of routes"
     );
 
     let r = admin(client.put(format!("http://{addr}/api/v1/admin/export/prom")))
@@ -3834,11 +3859,16 @@ async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
     assert_eq!(r.status().as_u16(), 200, "the definition is still stored");
     let body: serde_json::Value = r.json().await.unwrap();
     let empty = Vec::new();
+    assert_eq!(
+        body["reload_to_apply"],
+        serde_json::json!(["/metrics", "export.prom"])
+    );
     let flagged: Vec<&str> = body["reload_to_apply"]
         .as_array()
         .unwrap_or(&empty)
         .iter()
         .filter_map(|v| v.as_str())
+        .filter(|name| name.starts_with('/'))
         .collect();
     assert_eq!(
         flagged,
@@ -3865,6 +3895,9 @@ async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
         "`/metrics` is not mounted, exactly as the response just said"
     );
 
+    // This instance is still newly added, so a settings-only edit cannot clear its pending
+    // membership. The existing-instance live-settings control is retained in the actual kernel's
+    // `export_restart_metadata_compares_boot_membership_module_and_effective_projection` test.
     let r = admin(client.patch(format!("http://{addr}/api/v1/admin/export/reqlog/settings")))
         .body(
             serde_json::json!({"settings": {"path": dir.join("req2.jsonl").to_string_lossy()}})
@@ -3875,9 +3908,13 @@ async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
     let body: serde_json::Value = r.json().await.unwrap();
-    assert!(
-        body.get("reload_to_apply").is_none(),
-        "an edit that adds no path must not re-flag an already-pending route: {body}"
+    assert_eq!(
+        body["reload_to_apply"],
+        serde_json::json!(["export.reqlog"])
+    );
+    assert_eq!(
+        body["note"], REQLOG_RESTART_NOTE,
+        "settings cannot open a newly added sink; no unrelated pending route is re-flagged"
     );
 
     let r = admin(client.delete(format!("http://{addr}/api/v1/admin/export/prom")))
