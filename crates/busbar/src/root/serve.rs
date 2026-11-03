@@ -106,7 +106,6 @@ struct TicketEntry {
 }
 
 struct TicketSource {
-    facts: DoorFacts,
     store: Arc<dyn busbar_contract::records::RecordStore>,
     key: Arc<busbar_contract::records::VirtualKey>,
     money: std::sync::Weak<PlaneMoney>,
@@ -187,7 +186,6 @@ impl TicketCustody {
         app: &busbar_kernel::state::App,
     ) -> Option<TicketSourceOwner> {
         let source = Arc::new(TicketSource {
-            facts: live.facts.clone(),
             store: app.governance.as_ref()?.store(),
             key: Arc::clone(key?),
             money: Arc::downgrade(&served.money),
@@ -365,37 +363,6 @@ impl TicketCustody {
             entries.tickets.remove(identity.id())
         };
         removed.map(|entry| entry.reservation)
-    }
-
-    pub(crate) fn source_report(
-        &self,
-        unit: busbar_contract::UnitKey,
-    ) -> Option<crate::root::linked::node::Reported> {
-        let source = self
-            .sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&unit)
-            .cloned()?;
-        report_of(&source.money.upgrade()?, unit, &source.facts)
-    }
-
-    pub(crate) fn abandon_source_money(&self, ctx: &busbar_kernel::teller::UnitCtx) {
-        let source = self
-            .sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&ctx.key)
-            .cloned();
-        if let Some(money) = source.and_then(|source| source.money.upgrade()) {
-            // The real Own hold and its one audit have already completed. Reuse existing
-            // abandoned financial cleanup; the post sees no remaining open audit facts.
-            busbar_kernel::plane_driver::MoneySeam::abandoned(
-                &*money,
-                ctx,
-                busbar_kernel::teller::Ended::AlreadySettled,
-            );
-        }
     }
 
     fn shutdown(&self) {
@@ -4862,6 +4829,7 @@ impl DataRoutes {
             let _ = verdict.send(Err(None));
             return;
         };
+        let slot = slot.with_money(&served.money, &live.facts);
         let admitted = match opened {
             SessionOpen::Admitted {
                 route,
@@ -5418,7 +5386,7 @@ struct Nesting {
     depth: u32,
 }
 
-fn report_of(
+pub(crate) fn report_of(
     money: &PlaneMoney,
     unit: busbar_contract::UnitKey,
     facts: &DoorFacts,

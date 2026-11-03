@@ -607,6 +607,7 @@ impl Node {
             ctx: ctx.clone(),
             meter,
             own,
+            money: None,
         };
         Some((opened, ctx, session))
     }
@@ -1029,6 +1030,10 @@ pub struct SessionSlot<'n> {
     ctx: UnitCtx,
     meter: Arc<AccrualMeter>,
     own: Option<busbar_kernel::teller::SessionOwn>,
+    money: Option<(
+        std::sync::Weak<busbar_kernel::plane_driver::PlaneMoney>,
+        crate::root::door_steps::DoorFacts,
+    )>,
 }
 
 impl std::fmt::Debug for SessionSlot<'_> {
@@ -1040,6 +1045,20 @@ impl std::fmt::Debug for SessionSlot<'_> {
 }
 
 impl SessionSlot<'_> {
+    pub(crate) fn with_money(
+        mut self,
+        money: &Arc<busbar_kernel::plane_driver::PlaneMoney>,
+        facts: &crate::root::door_steps::DoorFacts,
+    ) -> Self {
+        self.money = Some((Arc::downgrade(money), facts.clone()));
+        self
+    }
+
+    fn money_report(&self) -> Option<crate::root::linked::node::Reported> {
+        let (money, facts) = self.money.as_ref()?;
+        crate::root::serve::report_of(&money.upgrade()?, self.key, facts)
+    }
+
     pub fn finish(mut self, post: &NodeEndPost) {
         self.finish_inner(post, None, Evidence::default());
     }
@@ -1059,7 +1078,7 @@ impl SessionSlot<'_> {
         let mut open = post.take(self.key);
         if let Some(open) = open.as_mut() {
             if open.sealing.report.is_none() {
-                open.sealing.report = node.ticket_custody.source_report(self.key).map(Report::of);
+                open.sealing.report = self.money_report().map(Report::of);
             }
         }
         let outcome = override_outcome
@@ -1098,10 +1117,7 @@ impl Drop for SessionSlot<'_> {
         if self.own.is_some() {
             if let Some(post) = self.occupied.post {
                 let evidence = self
-                    .occupied
-                    .node
-                    .ticket_custody
-                    .source_report(self.key)
+                    .money_report()
                     .map(|(_, fee_units, _)| Evidence {
                         fee_units,
                         ..Evidence::default()
@@ -1114,10 +1130,13 @@ impl Drop for SessionSlot<'_> {
                     })),
                     evidence,
                 );
-                self.occupied
-                    .node
-                    .ticket_custody
-                    .abandon_source_money(&self.ctx);
+                if let Some(money) = self.money.as_ref().and_then(|(money, _)| money.upgrade()) {
+                    busbar_kernel::plane_driver::MoneySeam::abandoned(
+                        &*money,
+                        &self.ctx,
+                        Ended::AlreadySettled,
+                    );
+                }
             }
         }
     }
