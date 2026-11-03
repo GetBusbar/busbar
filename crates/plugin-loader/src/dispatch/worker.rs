@@ -2079,11 +2079,13 @@ impl Dispatcher {
     pub fn conn_waker(&self) -> busbar_contract::conn::ConnWake {
         let pool = Arc::downgrade(&self.pool);
         Arc::new(move |owner, n| {
+            let supplier = super::handle::supplier_of(owner);
+            if let Some(waking) = supplier.and_then(super::ticket::Waking::of) {
+                waking.wake(super::conn_services::ticket_of(n));
+                return;
+            }
             if let Some(pool) = pool.upgrade() {
-                pool.wake(
-                    super::conn_services::ticket_of(n),
-                    super::handle::supplier_of(owner),
-                );
+                pool.wake(super::conn_services::ticket_of(n), supplier);
             }
         })
     }
