@@ -104,8 +104,16 @@ fn real_producer_span_records_survive_both_otlp_doors() {
         .unwrap_or_else(|| common::plugins::missing(CDYLIB, common::plugins::BUILD_PINNED));
     let dir = common::plugins::scratch("otlp-span-records");
     std::fs::create_dir_all(dir.join("plugins")).unwrap();
-    let mut manifest =
-        common::plugins::manifest("export", DROPPED, common::plugins::FIXTURE_PUBLISHER);
+    let manifest_path = std::env::var_os("BUSBAR_TEST_EXPORT_OTLP_MANIFEST")
+        .expect("the actual OTLP package manifest is provided");
+    let mut manifest: busbar_plugin_loader::sign::Manifest = serde_json::from_slice(
+        &std::fs::read(manifest_path).expect("read the actual OTLP manifest"),
+    )
+    .expect("the OTLP manifest parses");
+    manifest.name = DROPPED.into();
+    manifest.alias = DROPPED.into();
+    manifest.former_names.clear();
+    manifest.publisher = common::plugins::FIXTURE_PUBLISHER.into();
     common::plugins::state(&mut manifest, &lib);
     assert!(
         manifest.statement.is_some(),
