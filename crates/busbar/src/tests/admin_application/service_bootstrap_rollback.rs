@@ -90,6 +90,9 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual application Store binds history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -151,7 +154,9 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(calls)
         .expect("the actual Store opens its overlay");
     app.overlay_path = Some(overlay.clone());
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::boot::hydrate_all(&app).expect("the actual root hydrates before admin rollback");
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -264,6 +269,9 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
             &rules,
         )
         .expect("the actual product builds the swap deployment");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, &module)
+            .expect("the actual application Store binds history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -359,7 +367,10 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
         let prior = std::collections::BTreeMap::from([("prior-plugin".into(), "3.0.0".into())]);
         busbar_kernel::config::overlay::try_persist_plugin_versions(Some(&overlay), &prior)
             .expect("the prior pin persists in the real Store");
-        let router = busbar_kernel::build_router(Arc::new(app));
+        let app = Arc::new(app);
+        busbar_kernel::boot::hydrate_all(&app)
+            .expect("the actual root hydrates before admin rollback");
+        let router = busbar_kernel::build_router(app);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -461,6 +472,9 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual application Store binds history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -528,7 +542,9 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
         "the attempted replacement differs from the installed signed archive"
     );
     std::fs::write(directory.join("target.tar.gz"), &original).unwrap();
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::boot::hydrate_all(&app).expect("the actual root hydrates before admin rollback");
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -623,6 +639,9 @@ async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_sto
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual application Store binds history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -721,7 +740,9 @@ async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_sto
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(calls)
         .expect("the actual Store opens its overlay");
     app.overlay_path = Some(overlay.clone());
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::boot::hydrate_all(&app).expect("the actual root hydrates before admin rollback");
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
