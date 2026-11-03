@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::Arc;
 use crate::root::test_plugins as plugins;
+use std::sync::Arc;
 
 fn stage_plugin(directory: &std::path::Path, kind: &str, variable: &str) -> String {
     let path = if kind == "store" {

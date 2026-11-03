@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::root::test_plugins as plugins;
 use busbar_contract::abi::store::OpId;
 use busbar_contract::records::{
     MeteringDelta, MeteringRow, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta,
@@ -15,7 +16,6 @@ use busbar_kernel::governance::recovery::{
 use busbar_kernel::governance::GovState;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
-use crate::root::test_plugins as plugins;
 const MODEL: &str = "m";
 #[derive(Clone, Copy)]
 enum Reply {

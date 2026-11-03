@@ -4,8 +4,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::test_common as common;
 use crate::root::test_plugins as plugins;
+use crate::test_common as common;
 
 const AUDIENCE: &str = "api://admin-rotate-pool-ceiling";
 

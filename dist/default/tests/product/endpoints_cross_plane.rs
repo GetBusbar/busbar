@@ -19,13 +19,13 @@ mod linked {
     }
 }
 
+use crate::root::test_plugins as plugins;
 use axum::extract::Extension;
 use busbar_contract::records::{ScopeRef, VirtualKey};
 use busbar_kernel::endpoints::{catalog_names, stats};
 use busbar_kernel::governance::GovCtx;
 use busbar_kernel::state::{App, CurrentApp};
 use busbar_kernel::store::now;
-use crate::root::test_plugins as plugins;
 use serde_json::{json, Value};
 use std::sync::Arc;
 

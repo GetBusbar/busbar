@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
+use crate::root::test_plugins as plugins;
 use axum::http::StatusCode;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 use std::time::{Duration, Instant};
-use crate::root::test_plugins as plugins;
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn slow_secret_plugin_does_not_stall_the_executor() {
     const CHILD: &str = "BUSBAR_ADMIN_SECRET_TRANSACTION_CHILD";

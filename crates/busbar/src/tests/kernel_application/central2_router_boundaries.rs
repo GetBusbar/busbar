@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
+use crate::root::test_plugins as plugins;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use crate::root::test_plugins as plugins;
 #[tokio::test]
 async fn oversized_request_413_is_reshaped_on_the_live_stack() {
     const CHILD: &str = "BUSBAR_CENTRAL2_BODY_LIMIT_CHILD";

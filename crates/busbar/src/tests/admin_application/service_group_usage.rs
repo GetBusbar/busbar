@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::root::test_plugins as plugins;
 use busbar_kernel::config::groups::{LimitMetric, LimitWindow};
 use busbar_kernel::config::{GroupCfg, LimitCfg};
 use busbar_kernel::governance::VirtualKey;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use crate::root::test_plugins as plugins;
 
 #[derive(Debug, serde::Deserialize)]
 struct GroupUsageRead {

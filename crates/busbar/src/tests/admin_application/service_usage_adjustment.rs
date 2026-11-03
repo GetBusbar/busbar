@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::root::test_plugins as plugins;
 use busbar_contract::records::VirtualKey;
 use busbar_kernel::governance::{AdjustRefused, Adjustment, GovState};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use crate::root::test_plugins as plugins;
 
 const LANE: &str = "m-priced-chat";
 const PROVIDER: &str = "priced-chat";

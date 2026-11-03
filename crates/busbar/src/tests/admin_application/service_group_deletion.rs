@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::root::test_plugins as plugins;
 use busbar_kernel::config::groups::{LimitMetric, LimitWindow};
 use busbar_kernel::config::{GroupCfg, LimitCfg};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use crate::root::test_plugins as plugins;
 
 fn budget(cents: u64, per: LimitWindow) -> LimitCfg {
     LimitCfg {

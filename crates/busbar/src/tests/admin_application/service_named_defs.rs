@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::root::test_plugins as plugins;
 use busbar_contract::{
     abi::store::OpId,
     kinds::RecordBytes,
@@ -11,7 +12,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use crate::root::test_plugins as plugins;
 
 struct OverlayReads {
     actual: Arc<dyn StoreCalls>,

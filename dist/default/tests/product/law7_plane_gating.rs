@@ -34,9 +34,9 @@ mod linked {
     }
 }
 
+use crate::root::test_plugins as plugins;
 use busbar_kernel::plane_driver::registry::{PlaneDecl, PlaneDeclaration};
 use std::sync::Arc;
-use crate::root::test_plugins as plugins;
 
 static PROBE_RUN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

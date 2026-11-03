@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::root::test_plugins as plugins;
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
 use busbar_contract::abi::host::service::REFUSE_STOPPED;
 use busbar_contract::abi::host::service::{UnitRef, FLOW_CONTINUE};
@@ -10,7 +11,6 @@ use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use busbar_kernel::inbound::{Call, HandIn, Head, Listener, Refuse, UNIT_FOREIGN};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn actual_inbound_foreign_binding_and_session_custody() {

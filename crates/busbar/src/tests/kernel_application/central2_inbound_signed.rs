@@ -3,6 +3,7 @@
 
 #![cfg(all(distribution_root, linked_every_auth))]
 
+use crate::root::test_plugins as plugins;
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY};
 use busbar_contract::abi::host::service::{
     UnitRef, FLOW_CONTINUE, FLOW_STOP, REFUSE_OVER_GATE, REFUSE_STOPPED,
@@ -14,7 +15,6 @@ use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use busbar_kernel::inbound::{Call, HandIn, Head, Listener, Refuse};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use crate::root::test_plugins as plugins;
 
 // Ordinary signed-request fixture. The pinned SigV4 cfg(test) signer delegates
 // to the contract AWS4 recipe; dependency cfg(test) APIs are not exported to a

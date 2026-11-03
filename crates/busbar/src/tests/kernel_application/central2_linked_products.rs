@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
+use crate::root::test_plugins as plugins;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use crate::root::test_plugins as plugins;
 fn gov_with_store(store: &str) -> busbar_kernel::config::StoreCfg {
     busbar_kernel::config::StoreCfg {
         module: store.into(),

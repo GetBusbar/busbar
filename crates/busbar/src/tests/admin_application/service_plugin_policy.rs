@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::root::test_plugins as plugins;
 use base64::Engine as _;
 use std::sync::Arc;
-use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn inspect_bounds_pathological_schema_nesting_depth() {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::root::test_plugins as plugins;
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
 use busbar_contract::abi::host::service::{UnitRef, FLOW_STOP, REFUSE_STOPPED};
 use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
@@ -8,7 +9,6 @@ use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use busbar_kernel::inbound::{Call, Head, Listener, Refusal, Refuse};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real_sink_events() {

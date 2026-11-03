@@ -7,8 +7,8 @@ use busbar_core_admin::admin_state::AppAdmin as _;
 use busbar_kernel::audit_ring;
 use std::sync::Arc;
 
-use crate::test_common as common;
 use crate::root::test_plugins as plugins;
+use crate::test_common as common;
 
 struct RefusesKeyWrites(Arc<dyn busbar_contract::records::RecordStore>);
 

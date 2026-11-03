@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::Arc;
 use crate::root::test_plugins as plugins;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn test_audience_bound_token_is_rejected_on_the_data_plane() {

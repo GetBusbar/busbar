@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::root::test_plugins as plugins;
 use busbar_contract::records::*;
 use busbar_kernel::config::groups::{LimitMetric, LimitWindow};
 use busbar_kernel::config::{GroupCfg, LimitCfg};
@@ -10,7 +11,6 @@ use std::sync::{
     Arc,
 };
 use std::time::{Duration, Instant};
-use crate::root::test_plugins as plugins;
 
 struct RecordReads {
     actual: Arc<dyn RecordStore>,

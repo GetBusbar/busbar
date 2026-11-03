@@ -11,8 +11,8 @@ use busbar_kernel::state::AppHandle;
 use serde_json::{json, Value};
 use tokio::sync::Notify;
 
-use crate::test_common as common;
 use crate::root::test_plugins as plugins;
+use crate::test_common as common;
 
 #[derive(Default)]
 struct Pause {

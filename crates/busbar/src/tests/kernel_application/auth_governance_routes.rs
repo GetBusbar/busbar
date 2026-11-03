@@ -4,8 +4,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::test_common as common;
 use crate::root::test_plugins as plugins;
+use crate::test_common as common;
 
 // ROOT_CARD has process lifetime. Each ordinary test owns one cold root and one Store lineage.
 fn in_isolated_root() -> bool {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
-use std::time::{Duration, Instant};
 use crate::root::test_plugins as plugins;
+use std::time::{Duration, Instant};
 #[test]
 fn secrets_block_rejects_builtin_resolver_names() {
     const CHILD: &str = "BUSBAR_CENTRAL2_VALIDATOR_CHILD";

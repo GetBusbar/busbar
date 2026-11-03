@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
+use crate::root::test_plugins as plugins;
 use axum::http::StatusCode;
 use busbar_contract::abi::store::OpId;
 use busbar_contract::kinds::RecordBytes;
@@ -11,7 +12,6 @@ use std::sync::{
     Arc,
 };
 use std::time::{Duration, Instant};
-use crate::root::test_plugins as plugins;
 #[tokio::test]
 async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery() {
     const CHILD: &str = "BUSBAR_ADMIN_REWRAP_CHILD";

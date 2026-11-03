@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::root::test_plugins as plugins;
 use busbar_kernel::auth::AuthMiddleware;
 use busbar_kernel::config::{AuthCfg, AuthChainEntry, PluginsCfg};
-use crate::root::test_plugins as plugins;
 
 fn chain_with(module: &str, settings: serde_json::Map<String, serde_json::Value>) -> AuthCfg {
     let mut entry = AuthChainEntry::bare(module);

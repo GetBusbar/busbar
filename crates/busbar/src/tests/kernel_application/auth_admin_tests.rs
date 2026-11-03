@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::root::test_plugins as plugins;
 use crate::test_common as common;
 use std::sync::Arc;
-use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn admin_plugin_full_binding_allows_mutation() {

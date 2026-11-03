@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
-use std::time::{Duration, Instant};
 use crate::root::test_plugins as plugins;
+use std::time::{Duration, Instant};
 #[test]
 fn store_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
     const CHILD: &str = "BUSBAR_CENTRAL2_PREFLIGHT_CHILD";

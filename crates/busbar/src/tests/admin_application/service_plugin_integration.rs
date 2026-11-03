@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::root::test_plugins as plugins;
 use base64::Engine as _;
 use busbar_kernel::admission::{Admitted, Inventoried, Judged, PluginAdmission, Refusal, Stated};
 use busbar_kernel::config::PluginsCfg;
@@ -9,7 +10,6 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
 };
-use crate::root::test_plugins as plugins;
 
 pub(super) fn trust_document(config: &PluginsCfg) -> serde_json::Value {
     let publishers: Vec<_> = config.trust.publishers.iter().map(|publisher| {

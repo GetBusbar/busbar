@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::root::test_plugins as plugins;
 use busbar_core_admin::{
     v1::service::{build_with_hook, build_without_hook},
     AppAdmin,
@@ -8,7 +9,6 @@ use busbar_core_admin::{
 use busbar_kernel::config::{HookCfg, HookKind, PromptAccess, UserAccess};
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::root::test_plugins as plugins;
 
 fn hook(module: &str, kind: HookKind, global: bool) -> HookCfg {
     HookCfg {

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::root::test_plugins as plugins;
 use busbar_kernel::appbuild::AcceptAll;
 use busbar_kernel::config::overlay::{persist_root, RootSettings};
 use std::sync::Arc;
-use crate::root::test_plugins as plugins;
 
 #[test]
 fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() {
