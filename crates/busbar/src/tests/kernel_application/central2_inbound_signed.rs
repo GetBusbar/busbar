@@ -17,6 +17,87 @@ use std::time::{Duration, Instant};
 #[path = "../../root/tests/test_plugins.rs"]
 mod plugins;
 
+// Ordinary signed-request fixture. The pinned SigV4 cfg(test) signer delegates
+// to the contract AWS4 recipe; dependency cfg(test) APIs are not exported to a
+// root test. Keep the same canonical header, request and day-key/HMAC recipe here
+// using the already direct contract SDK HMAC and SHA-256 dependencies. This only
+// creates a request: the actual plugin still performs every verification/read.
+#[allow(clippy::too_many_arguments)]
+fn sign_fixture(
+    secret: &str,
+    region: &str,
+    service: &str,
+    method: &str,
+    canonical_uri: &str,
+    canonical_query: &str,
+    headers: &[(String, String)],
+    payload_hash: &str,
+    amzdate: &str,
+    datestamp: &str,
+) -> (String, String) {
+    use busbar_contract::abi::sdk::hmac::hmac_sha256;
+    use sha2::Digest as _;
+    let canonical_value = |value: &str| {
+        let mut out = String::with_capacity(value.len());
+        let mut pending_space = false;
+        for character in value.chars() {
+            if character == ' ' {
+                pending_space = true;
+            } else {
+                if pending_space && !out.is_empty() {
+                    out.push(' ');
+                }
+                pending_space = false;
+                out.push(character);
+            }
+        }
+        out
+    };
+    let mut headers: Vec<_> = headers
+        .iter()
+        .map(|(name, value)| (name.to_lowercase(), canonical_value(value)))
+        .collect();
+    headers.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut canonical_headers = String::new();
+    let mut signed_headers = String::new();
+    let mut previous = None;
+    for (name, value) in &headers {
+        if previous == Some(name) {
+            canonical_headers.pop();
+            canonical_headers.push(',');
+        } else {
+            canonical_headers.push_str(name);
+            canonical_headers.push(':');
+            if !signed_headers.is_empty() {
+                signed_headers.push(';');
+            }
+            signed_headers.push_str(name);
+        }
+        canonical_headers.push_str(value);
+        canonical_headers.push('\n');
+        previous = Some(name);
+    }
+    let canonical_request = [
+        method,
+        canonical_uri,
+        canonical_query,
+        &canonical_headers,
+        &signed_headers,
+        payload_hash,
+    ]
+    .join("\n");
+    let request_hash = hex::encode(sha2::Sha256::digest(canonical_request.as_bytes()));
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{amzdate}\n{datestamp}/{region}/{service}/aws4_request\n{request_hash}"
+    );
+    let date_key = hmac_sha256(format!("AWS4{secret}").as_bytes(), datestamp.as_bytes());
+    let region_key = hmac_sha256(date_key.as_ref(), region.as_bytes());
+    let service_key = hmac_sha256(region_key.as_ref(), service.as_bytes());
+    let signing_key = hmac_sha256(service_key.as_ref(), b"aws4_request");
+    let signature = hmac_sha256(signing_key.as_ref(), string_to_sign.as_bytes());
+    (hex::encode(signature.as_ref()), signed_headers)
+}
+
 #[tokio::test]
 async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_custody() {
     const CHILD: &str = "BUSBAR_CENTRAL2_INBOUND_SIGNED_CHILD";
@@ -201,8 +282,8 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
         .expect("actual signed reader listener installs");
     let handle = inbound.specs(71, 3).unwrap()[0].auth;
     let body = b"hello".to_vec();
-    // Sign with the product's public signing implementation, not a fabricated
-    // AuthCalls verdict. The actual plugin reads the encrypted Store credential.
+    // Sign a real request with the pinned recipe, never a fabricated AuthCalls
+    // verdict. The actual plugin reads the encrypted Store credential.
     let timestamp = std::process::Command::new("date")
         .args(["-u", "+%Y%m%dT%H%M%SZ"])
         .output()
@@ -219,7 +300,7 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
         ("x-amz-date".to_string(), timestamp.clone()),
         ("x-amz-content-sha256".to_string(), hash.clone()),
     ];
-    let (signature, signed_headers) = busbar_auth_sigv4::inbound::sign_v4(
+    let (signature, signed_headers) = sign_fixture(
         &secret,
         "us-east-1",
         "busbar",
