@@ -206,6 +206,18 @@ fn refused(dir: &Path) -> Output {
     }
 }
 
+fn assert_duplicate_transport(out: &Output, key: &str) {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "stderr:\n{stderr}");
+    let expected = format!(
+        "busbar: the connector did not build: transports `{key}` and `{key}` both claim the scheme `{key}`"
+    );
+    assert!(
+        stderr.lines().any(|line| line == expected),
+        "the actual transport Statements must collide on their exact scheme; stderr:\n{stderr}"
+    );
+}
+
 fn exchange(port: u16) -> Option<Vec<u8>> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream
@@ -290,12 +302,7 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
 
         drop_in(&dir, &lib);
         let out = refused(&dir);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(2), "stderr:\n{stderr}");
-        assert!(
-            stderr.contains(&format!("DuplicateKey {{ kind: Transport, key: {key:?} }}")),
-            "stderr:\n{stderr}"
-        );
+        assert_duplicate_transport(&out, key);
     } else {
         let (served, _, _) = serve_once(&dir, data_port, WORKERS);
         assert_eq!(served, pinned(), "no layer waits on the unlinked key");
@@ -339,9 +346,7 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
 
         drop_in_as(&dir, &lib, "dropped-wire-again");
         let out = refused(&dir);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(2), "stderr:\n{stderr}");
-        assert!(stderr.contains(&format!("{key:?}")), "stderr:\n{stderr}");
+        assert_duplicate_transport(&out, key);
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
