@@ -3727,7 +3727,12 @@ pub(super) mod session_door {
         .await
         .expect("the build links the session door");
         let before = session_open_refusals(&s);
-        let (_browser, offer) = Peer::browser();
+        let (_browser, offer) = RtcPeer::offer(
+            s.connector
+                .framer_for("webrtc")
+                .expect("the real WebRTC framer"),
+        )
+        .await;
         let (status, content_type, body) = post_offer(&s, &offer).await;
         assert_eq!(status.as_u16(), 404, "{}", String::from_utf8_lossy(&body));
         assert!(content_type.contains("json"), "{content_type}");
@@ -3758,86 +3763,6 @@ pub(super) mod session_door {
         );
         assert_eq!(session_open_refusals(&s), before + 1, "audited");
         assert!(s.heard.try_recv().is_err(), "nothing dialled");
-    }
-
-    const PLACED_CALL: &str = "rtc_root0001";
-
-    async fn far_calls_and_socket() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("a loopback port");
-        let port = listener.local_addr().expect("its address").port();
-        let (sent, heard) = tokio::sync::mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            while let Ok((mut socket, _)) = listener.accept().await {
-                let sent = sent.clone();
-                tokio::spawn(async move {
-                    let Some(head) = read_head(&mut socket).await else {
-                        return;
-                    };
-                    let line = head.lines().next().unwrap_or_default().to_string();
-                    let key = head.lines().find_map(|l| {
-                        let (name, value) = l.split_once(':')?;
-                        name.eq_ignore_ascii_case("sec-websocket-key")
-                            .then(|| value.trim().to_string())
-                    });
-                    let Some(key) = key else {
-                        let length = head
-                            .lines()
-                            .find_map(|l| {
-                                let (name, value) = l.split_once(':')?;
-                                name.eq_ignore_ascii_case("content-length")
-                                    .then(|| value.trim().parse::<usize>().ok())
-                                    .flatten()
-                            })
-                            .unwrap_or(0);
-                        let mut body = vec![0u8; length];
-                        if socket.read_exact(&mut body).await.is_err() {
-                            return;
-                        }
-                        let request = format!("{head}\r\n{}", String::from_utf8_lossy(&body));
-                        let _ = sent.send(format!("OFFER {request}"));
-                        let Some((peer, answer)) = Peer::accept(&call_offer(&request)) else {
-                            return;
-                        };
-                        tokio::spawn(peer.run());
-                        let reply = format!(
-                            "HTTP/1.1 201 Created\r\ncontent-type: application/sdp\r\n\
-                             location: /v1/realtime/calls/{PLACED_CALL}\r\ncontent-length: {}\r\n\
-                             connection: close\r\n\r\n",
-                            answer.len()
-                        );
-                        let _ = socket.write_all(reply.as_bytes()).await;
-                        let _ = socket.write_all(&answer).await;
-                        let _ = socket.shutdown().await;
-                        return;
-                    };
-                    let _ = sent.send(format!("DIAL {line}"));
-                    let reply = format!(
-                        "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\n\
-                         connection: Upgrade\r\nsec-websocket-accept: {}\r\n\r\n",
-                        ws_accept(&key)
-                    );
-                    if socket.write_all(reply.as_bytes()).await.is_err() {
-                        return;
-                    }
-                    if socket.write_all(&server_text(FAR_OPENING)).await.is_err() {
-                        return;
-                    }
-                    while let Some((opcode, payload)) = read_frame(&mut socket).await {
-                        match opcode {
-                            0x1 => {
-                                let _ = sent
-                                    .send(format!("TEXT {}", String::from_utf8_lossy(&payload)));
-                            }
-                            0x8 => return,
-                            _ => {}
-                        }
-                    }
-                });
-            }
-        });
-        (port, heard)
     }
 
     async fn next_report(
