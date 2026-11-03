@@ -516,7 +516,7 @@ pub fn read_chain(calls: &dyn StoreCalls, node: u64) -> Result<Vec<Record>, Stri
 
 type JournalPage = Vec<(Vec<u8>, RecordBytes)>;
 const JOURNAL_PAGE_ROWS: u32 = 256;
-const JOURNAL_PREFETCH: usize = 4;
+const JOURNAL_PREFETCH: usize = 16;
 enum JournalReadWork {
     Prefix(Vec<u8>),
     Page(JournalPage),
@@ -626,7 +626,7 @@ fn visit_journal_pages(
                     serial = true;
                 }
                 // A depth-first stack preserves exactly the old lexicographic consumption.
-                // At most four pages/futures TOTAL belong to this traversal, independent of
+                // At most sixteen pages/futures TOTAL belong to this traversal, independent of
                 // prefix depth. Empty pages and saturated parent pages release slots now;
                 // nonempty later siblings remain behind every child of an earlier parent.
                 for (prefix, answer) in prefixes.into_iter().zip(answers).rev() {
@@ -656,7 +656,7 @@ fn visit_journal_pages(
 }
 
 /// Fold bounded Store pages in key order. Neither a node's journal nor its historical bodies
-/// accumulate here: one record is assembled beside at most four 256-row pages/futures.
+/// accumulate here: one record is assembled beside at most sixteen 256-row pages/futures.
 pub(super) fn fold_stored_records(
     calls: &dyn StoreCalls,
     node: u64,

@@ -239,7 +239,7 @@ fn populated() -> (RecordSlots, Vec<JournalRecord>) {
 }
 
 #[test]
-fn prefetched_pages_overlap_at_most_four_and_preserve_nested_prefix_lexical_records() {
+fn prefetched_pages_overlap_within_the_bound_and_preserve_nested_prefix_lexical_records() {
     let (slots, expected) = populated();
     let view = ScanView::new(&slots, ScanMode::Healthy);
     let mut observed = Vec::new();
@@ -252,7 +252,7 @@ fn prefetched_pages_overlap_at_most_four_and_preserve_nested_prefix_lexical_reco
         view.peak.load(Ordering::SeqCst) > 1,
         "the one-poll boundary makes actual overlap observable"
     );
-    assert!(view.peak.load(Ordering::SeqCst) <= 4);
+    assert!(view.peak.load(Ordering::SeqCst) <= 16);
     assert_eq!(view.active.load(Ordering::SeqCst), 0);
     assert_eq!(
         observed,
@@ -321,7 +321,7 @@ fn faults_malformed_pages_and_nonbudget_refusals_cannot_hide_behind_budget_fallb
         assert_eq!(view.active.load(Ordering::SeqCst), 0);
     }
     // Begin at the saturated prefix immediately above record sequences 0..255,
-    // so one four-page window contains both the transient invalid successful
+    // so one bounded page window contains both the transient invalid successful
     // answer for record 1 and an overloaded answer for record 2.
     let view = ScanView::new(&slots, ScanMode::TransientCountAndBudget);
     let prefix = part_key(NODE, 1, 0)[..15].to_vec();
