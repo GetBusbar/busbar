@@ -221,6 +221,7 @@ pub(super) async fn run(
     piece.fields_cap = fields.len();
     piece.arena_buf = arena.as_mut_ptr();
     piece.arena_cap = arena.len();
+    let body; // The far-end bytes outlive the frame that lends them to the plugin.
     let mut frame: Frame<OnPieceIn, OnPieceOut> = Frame::new(piece, blank_out());
     let mut waiter = RetireWaiter {
         plane,
@@ -332,7 +333,7 @@ pub(super) async fn run(
         .expect("the actual waiter reaches the peer");
     let status = u32::from(response.status().as_u16());
     assert_eq!(status, 200);
-    let body = response.bytes().await.expect("the actual peer card answer");
+    body = response.bytes().await.expect("the actual peer card answer");
     frame.input.from = FROM_FAR_END;
     frame.input.flags = PIECE_LAST | PIECE_HAS_STATUS;
     frame.input.status_code = status;
