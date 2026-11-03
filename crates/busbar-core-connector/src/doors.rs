@@ -556,6 +556,51 @@ fn checked_row(facts: TransportFacts) -> Result<RowFacts, String> {
     })
 }
 
+
+/// [`RowFacts`] of a linked row's `door`, as the boot seal reads them.
+#[must_use]
+pub fn row_facts(door: DoorFn) -> RowFacts {
+    stated_row(door).unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+}
+
+/// Every scheme a linked row's door claims, its own first, read off the door's Statement (ONE ENTRY
+#[must_use]
+pub fn claims_of(door: DoorFn) -> Vec<&'static str> {
+    busbar_plugin_loader::dispatch::kinds::transport::linked_facts(door)
+        .map(|facts| facts.claims)
+        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+}
+
+/// The auth points a linked row's door offers, read off its Statement's `extensions`
+#[must_use]
+pub fn offered_of(door: DoorFn) -> busbar_contract::abi::auth::AuthPoints {
+    busbar_plugin_loader::dispatch::kinds::transport::linked_facts(door)
+        .map(|facts| facts.offered)
+        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+}
+
+/// The auth points a row that states no record offers (a row off the door axis states none).
+#[must_use]
+pub fn offers_unstated() -> busbar_contract::abi::auth::AuthPoints {
+    busbar_contract::abi::transport::check::check_offered_points(&[]).unwrap_or_default()
+}
+
+/// The claims a linked row's door opens at an UPGRADE (their row's `unit0_trigger`), read off the
+#[must_use]
+pub fn upgrades_of(door: DoorFn) -> Vec<&'static str> {
+    busbar_plugin_loader::dispatch::kinds::transport::linked_facts(door)
+        .map(|facts| facts.upgrades)
+        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+}
+
+/// The claims a linked row's door opens on their FIRST LINE (their row's `unit0_trigger`), read off
+#[must_use]
+pub fn lines_of(door: DoorFn) -> Vec<&'static str> {
+    busbar_plugin_loader::dispatch::kinds::transport::linked_facts(door)
+        .map(|facts| facts.lines)
+        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+}
+
 #[cfg(test)]
 mod identity_tests {
     use super::*;
@@ -606,48 +651,4 @@ mod identity_tests {
             "the actual identity validator names both spellings: {refused}"
         );
     }
-}
-
-/// [`RowFacts`] of a linked row's `door`, as the boot seal reads them.
-#[must_use]
-pub fn row_facts(door: DoorFn) -> RowFacts {
-    stated_row(door).unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
-}
-
-/// Every scheme a linked row's door claims, its own first, read off the door's Statement (ONE ENTRY
-#[must_use]
-pub fn claims_of(door: DoorFn) -> Vec<&'static str> {
-    busbar_plugin_loader::dispatch::kinds::transport::linked_facts(door)
-        .map(|facts| facts.claims)
-        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
-}
-
-/// The auth points a linked row's door offers, read off its Statement's `extensions`
-#[must_use]
-pub fn offered_of(door: DoorFn) -> busbar_contract::abi::auth::AuthPoints {
-    busbar_plugin_loader::dispatch::kinds::transport::linked_facts(door)
-        .map(|facts| facts.offered)
-        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
-}
-
-/// The auth points a row that states no record offers (a row off the door axis states none).
-#[must_use]
-pub fn offers_unstated() -> busbar_contract::abi::auth::AuthPoints {
-    busbar_contract::abi::transport::check::check_offered_points(&[]).unwrap_or_default()
-}
-
-/// The claims a linked row's door opens at an UPGRADE (their row's `unit0_trigger`), read off the
-#[must_use]
-pub fn upgrades_of(door: DoorFn) -> Vec<&'static str> {
-    busbar_plugin_loader::dispatch::kinds::transport::linked_facts(door)
-        .map(|facts| facts.upgrades)
-        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
-}
-
-/// The claims a linked row's door opens on their FIRST LINE (their row's `unit0_trigger`), read off
-#[must_use]
-pub fn lines_of(door: DoorFn) -> Vec<&'static str> {
-    busbar_plugin_loader::dispatch::kinds::transport::linked_facts(door)
-        .map(|facts| facts.lines)
-        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }
