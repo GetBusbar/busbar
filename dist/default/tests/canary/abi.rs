@@ -193,12 +193,28 @@ fn host() -> &'static (Arc<Dispatcher>, Arc<Connector>) {
                 .expect("the actual HTTP transport admits");
         let door = Dispatched::open_on(plugin, &settings, dispatcher.clone())
             .expect("the actual HTTP transport opens");
+        // HTTP frames requests; the production TCP carrier reaches their peer addresses.
+        let carrier_row = LinkedRow::of(busbar_transport_tcp::door)
+            .expect("the actual TCP carrier states itself");
+        let carrier_plugin = load_linked::<Transport>(
+            &carrier_row,
+            busbar_core_connector::doors::bind_on(&dispatcher),
+        )
+        .expect("the actual TCP carrier admits");
+        let carrier = Dispatched::open_on(carrier_plugin, &settings, dispatcher.clone())
+            .expect("the actual TCP carrier opens");
         let connector = process::build_with_secrets(
             || {
-                Ok(vec![Entry {
-                    door: Arc::new(door),
-                    alpn: Vec::new(),
-                }])
+                Ok(vec![
+                    Entry {
+                        door: Arc::new(door),
+                        alpn: Vec::new(),
+                    },
+                    Entry {
+                        door: Arc::new(carrier),
+                        alpn: Vec::new(),
+                    },
+                ])
             },
             guard,
             &[],
@@ -207,6 +223,10 @@ fn host() -> &'static (Arc<Dispatcher>, Arc<Connector>) {
             busbar_core_connector::spawn_env::linked_spawn_secret,
         )
         .expect("the real connector builds");
+        assert!(
+            connector.address_via().is_some(),
+            "the actual HTTP framer has an address carrier"
+        );
         (dispatcher, connector)
     })
 }
