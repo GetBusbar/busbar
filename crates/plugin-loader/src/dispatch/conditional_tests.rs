@@ -729,7 +729,9 @@ fn plane_rig() -> (
             max_inflight_cap: 2,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: ConnTable::NoNeeds,
+            // The actual MCP descriptor declares HTTP and stdio needs. These
+            // host-boundary controls use no destination, so bind its probe table.
+            conns: ConnTable::Probe,
         },
     )
     .unwrap();
@@ -1551,7 +1553,9 @@ fn actual_bound_instance_drop_and_quarantine_release_completed_retired_owners() 
                 max_inflight_cap: 2,
                 sink: Arc::new(NoSink),
                 dispatcher: Adopter::unwatched(),
-                conns: ConnTable::NoNeeds,
+                // The actual MCP descriptor declares HTTP and stdio needs. These
+                // host-boundary controls use no destination, so bind its probe table.
+                conns: ConnTable::Probe,
             },
         )
         .unwrap();
