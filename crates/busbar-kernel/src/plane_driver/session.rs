@@ -175,10 +175,7 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         ctx: &UnitCtx,
         sealed: &[VerifiedDestination],
     ) -> Result<(), ReasonCode> {
-        let local = self.lock().decoded.as_ref().is_some_and(|decoded| {
-            decoded.route == ROUTE_LOCAL || decoded.route == ROUTE_SCOPE_LOCAL
-        });
-        self.session_priced(token, ctx, sealed, !local).await
+        self.session_priced(token, ctx, sealed, true).await
     }
 
     /// Pump a session with the composition root's actual admission charge state.
@@ -191,6 +188,10 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         sealed: &[VerifiedDestination],
         priced: bool,
     ) -> Result<(), ReasonCode> {
+        let local = self.lock().decoded.as_ref().is_some_and(|decoded| {
+            decoded.route == ROUTE_LOCAL || decoded.route == ROUTE_SCOPE_LOCAL
+        });
+        let priced = priced && !local;
         let d = self.driver;
         self.open_hooks(token, ctx).await?;
         if priced {

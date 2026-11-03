@@ -2575,7 +2575,7 @@ pub(super) mod session_door {
                 )
             };
             let result = tokio::time::timeout(ANSWER_BOUND, exchange).await;
-            serving.abort();
+            self.peers.keep(serving);
             let (status, head, body) = result.expect("the signal answers within its bound");
             if status.is_success() {
                 assert!(

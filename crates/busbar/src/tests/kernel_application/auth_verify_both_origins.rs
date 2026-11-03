@@ -11,20 +11,20 @@ use busbar_contract::Secret;
 use busbar_plugin_loader::{auth_axis::AuthRows, LinkedPlugin, PluginRegistry};
 use std::sync::Arc;
 
-fn request(token: Option<&str>) -> VerifyRequest {
+fn request(token: Option<&str>, timestamp: u64) -> VerifyRequest {
     let mut request = VerifyRequest::default();
     request.credential = token.map(|token| Secret::new(token.as_bytes().to_vec()));
     request.method = "GET".into();
     request.authority = "node.example".into();
     request.path = "/admin/v1/keys".into();
-    request.timestamp = busbar_kernel::store::now();
+    request.timestamp = timestamp;
     request
 }
 
-async fn answered(auth: &dyn AuthCalls, token: Option<&str>) -> VerifyAnswer {
+async fn answered(auth: &dyn AuthCalls, token: Option<&str>, timestamp: u64) -> VerifyAnswer {
     tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        Box::into_pin(auth.verify(request(token))),
+        Box::into_pin(auth.verify(request(token, timestamp))),
     )
     .await
     .expect("real OIDC verification is bounded")
@@ -236,6 +236,7 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
     let other_settings = serde_json::Value::Object(common::credentials::settings(
         "api://different-verifier-policy",
     ));
+    let timestamp = busbar_kernel::store::now();
     let mut transcripts = Vec::new();
     for registry in [linked, dropped] {
         let rows =
@@ -243,7 +244,7 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
         let auth = rows
             .open(&manifest.name, "the-auth", &settings)
             .expect("actual OIDC opens with its production HTTPS table");
-        let warm = answered(&*auth, Some(&valid)).await;
+        let warm = answered(&*auth, Some(&valid), timestamp).await;
         let Verified::Identity(identity) = warm.verified else {
             panic!("the real signed JWT must identify: {warm:?}");
         };
@@ -259,8 +260,8 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
             None,
         ] {
             transcript.push((
-                auth.verify_now(&request(token)),
-                answered(&*auth, token).await,
+                auth.verify_now(&request(token, timestamp)),
+                answered(&*auth, token, timestamp).await,
             ));
         }
         assert!(matches!(transcript[0].1.verified, Verified::Identity(_)));
@@ -284,23 +285,26 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
         let other_auth = rows
             .open(&manifest.name, "the-auth-other-policy", &other_settings)
             .expect("the real OIDC verifier opens with the other audience policy");
-        let other_answer = answered(&*other_auth, Some(&valid)).await;
+        let other_answer = answered(&*other_auth, Some(&valid), timestamp).await;
         assert!(
             matches!(other_answer.verified, Verified::Reject),
             "the same valid JWT must reject under another verifier's audience policy"
         );
-        let other_transcript = (other_auth.verify_now(&request(Some(&valid))), other_answer);
+        let other_transcript = (
+            other_auth.verify_now(&request(Some(&valid), timestamp)),
+            other_answer,
+        );
         assert_ne!(
             transcript[0], other_transcript,
             "changing the verifier policy for the same token must change its full verdict"
         );
 
         let wide_transcript = vec![
-            auth.verify_now(&request(Some(&wide)))
+            auth.verify_now(&request(Some(&wide), timestamp))
                 .expect("the warmed verifier answers the first wide JWT on the spot"),
-            answered(&*auth, Some(&wide)).await,
-            answered(&*auth, Some(&wide)).await,
-            auth.verify_now(&request(Some(&wide)))
+            answered(&*auth, Some(&wide), timestamp).await,
+            answered(&*auth, Some(&wide), timestamp).await,
+            auth.verify_now(&request(Some(&wide), timestamp))
                 .expect("the warmed verifier answers the fourth wide JWT on the spot"),
         ];
         for answer in &wide_transcript {

@@ -127,8 +127,6 @@ async fn busy_raw_ingress_drops_before_acceptance_and_other_real_associations_pr
     assert_eq!(b.caller.read().await, Some(Vec::new()));
     assert_eq!(a.caller.read().await, Some(Vec::new()));
 
-    a.pause().await;
-    b.pause().await;
     for pair in [&a, &b] {
         pair.send(b"pause barrier").await;
         assert_eq!(
@@ -138,6 +136,10 @@ async fn busy_raw_ingress_drops_before_acceptance_and_other_real_associations_pr
             Some(b"pause barrier".to_vec())
         );
     }
+    // Finish the real channel exchange before parking its protocol driver: an
+    // accepted SCTP message may still require the peer's advertised timer or ACK.
+    a.pause().await;
+    b.pause().await;
     let (parked, inside) = Parked::start(&a);
     inside.recv_timeout(WAIT).expect("host crossing paused");
     let wake = Waker::noop();
