@@ -3201,8 +3201,16 @@ fn the_auth_request_signs_the_authority_the_socket_dials() {
             None,
         ),
     ] {
-        let asked = super::auth_request(&binding, &head, target, b"", None, &[])
-            .expect("a non-passthrough binding asks");
+        let asked = super::auth_request(
+            &binding,
+            crate::dispatch::services::serving_unit(),
+            &head,
+            target,
+            b"",
+            None,
+            &[],
+        )
+        .expect("a non-passthrough binding asks");
         assert_eq!(asked.authority, authority, "{target}");
         assert_eq!(asked.path, path, "{target}");
         assert_eq!(asked.query.as_deref(), query, "{target}");
@@ -3247,6 +3255,7 @@ fn the_auth_request_signs_the_lines_the_open_completes_the_head_with() {
     );
     let asked = super::auth_request(
         &binding,
+        crate::dispatch::services::serving_unit(),
         &head,
         "https://svc.example/x",
         b"{}",
