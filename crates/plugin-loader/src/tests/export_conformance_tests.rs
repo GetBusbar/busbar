@@ -586,10 +586,6 @@ fn deliver(sink: &dyn ExportCalls, line: &serde_json::Value) {
     assert!(matches!(queued, Delivered::Queued), "{queued:?}");
 }
 
-fn line(n: u32, pad: usize) -> serde_json::Value {
-    serde_json::json!({ "n": n, "pad": "x".repeat(pad) })
-}
-
 fn scratch(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("busbar-11-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

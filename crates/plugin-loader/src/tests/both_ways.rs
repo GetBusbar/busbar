@@ -17,20 +17,6 @@ pub(crate) fn door_fixture(
     }
 }
 
-pub(crate) fn fixture(row: &str) -> (&'static str, &'static str) {
-    match row {
-        "mcp" => ("busbar-plane-mcp", "busbar_plane_mcp"),
-        _ => panic!("retired both-ways fixture row `{row}` has no actual product binding; migrate the caller to its owning product"),
-    }
-}
-
-pub(crate) fn fixture_cdylib(row: &str) -> PathBuf {
-    match row {
-        "mcp" => crate::actual_mcp::cdylib(),
-        _ => panic!("retired both-ways fixture row `{row}` has no actual product binding; migrate the caller to its owning product"),
-    }
-}
-
 pub(crate) fn statement(kind: &str, name: &str, alias: &str, abi_version: u32) -> Manifest {
     Manifest {
         name: name.into(),
