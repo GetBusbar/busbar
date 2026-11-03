@@ -56,8 +56,10 @@ fn client_identity_debug_text_is_the_1_5_5_text() {
 
 #[test]
 fn member_ca_is_security_and_keeps_identity_redacted() {
-    let mut anchors = super::Anchors::default();
-    anchors.private_reach = true;
+    let mut anchors = super::Anchors {
+        private_reach: true,
+        ..Default::default()
+    };
     assert!(anchors.is_empty(), "reach alone does not anchor security");
     anchors.extra_anchors.push(vec![1, 2, 3]);
     assert!(anchors.secures());
