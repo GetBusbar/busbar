@@ -109,7 +109,7 @@ struct TicketSource {
     facts: DoorFacts,
     store: Arc<dyn busbar_contract::records::RecordStore>,
     key: Arc<busbar_contract::records::VirtualKey>,
-    money: Arc<PlaneMoney>,
+    money: std::sync::Weak<PlaneMoney>,
     instance: String,
     instance_nonce: Arc<()>,
     live: std::sync::Weak<DoorApply>,
@@ -190,7 +190,7 @@ impl TicketCustody {
             facts: live.facts.clone(),
             store: app.governance.as_ref()?.store(),
             key: Arc::clone(key?),
-            money: Arc::clone(&served.money),
+            money: Arc::downgrade(&served.money),
             instance: served.instance.clone(),
             instance_nonce: Arc::clone(&live.ticket_nonce),
             live: Arc::downgrade(&served.live),
@@ -250,6 +250,7 @@ impl TicketCustody {
             .ok_or(TicketRefusal::NotKept)?;
         let slot = slot.upgrade().ok_or(TicketRefusal::NotKept)?;
         let principal = PrincipalId::new(source.key.id.as_str());
+        let money = source.money.upgrade().ok_or(TicketRefusal::NotKept)?;
         let reservation = slot
             .cell()
             .with_admitted_call(call, &principal, || {
@@ -263,7 +264,7 @@ impl TicketCustody {
                         std::sync::atomic::Ordering::Acquire,
                     )
                     .map_err(|_| ReasonCode::Replayed)?;
-                source.money.reserve_ticket_admission(
+                money.reserve_ticket_admission(
                     source.unit,
                     call,
                     &source.key,
@@ -376,7 +377,7 @@ impl TicketCustody {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&unit)
             .cloned()?;
-        report_of(&source.money, unit, &source.facts)
+        report_of(&source.money.upgrade()?, unit, &source.facts)
     }
 
     fn shutdown(&self) {
