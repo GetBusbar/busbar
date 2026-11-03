@@ -4988,14 +4988,22 @@ mod tools_door {
                     .collect(),
                 ..busbar_kernel::config::AuthCfg::default_none()
             };
-            app.admin_modules = Arc::new(
-                busbar_kernel::auth::AdminAuthChain::build(
-                    &auth,
-                    &app.hook_env.registry,
-                    &app.secret_resolver,
-                )
-                .expect("the real operator admin chain opens"),
-            );
+            let mut modules = busbar_kernel::auth::AdminAuthChain::build(
+                &auth,
+                &app.hook_env.registry,
+                &app.secret_resolver,
+            )
+            .expect("the real operator admin chain opens");
+            modules.operator = busbar_kernel::auth::open_operator(
+                &app.hook_env.registry,
+                app.governance
+                    .as_ref()
+                    .expect("the configured governance book")
+                    .admin_token_hash(),
+                &Default::default(),
+            )
+            .expect("the actual operator authenticates the configured governance credential");
+            app.admin_modules = Arc::new(modules);
             app.admin_chain = chain.clone();
             app
         });
