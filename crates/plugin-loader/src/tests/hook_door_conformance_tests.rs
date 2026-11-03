@@ -33,9 +33,31 @@ fn decide(p: &Plugin<Hook>, messages: u64) -> String {
     )
 }
 
+// STATUS returns a validated leased blob; copy it before releasing its owner.
+#[allow(unsafe_code)]
 fn status(p: &Plugin<Hook>) -> String {
+    use busbar_contract::abi::mechanism::call::{Outcome, BLOB_JSON};
     let mut s: Frame<InHead, StatusOut> = Frame::new(input(), output());
-    line("status", &p.call(slot::STATUS, &mut s))
+    let called = p.call(slot::STATUS, &mut s);
+    assert_eq!(called.outcome, Outcome::Ready);
+    assert_ne!(
+        called.lease, 0,
+        "the SDK owns its status answer under a lease"
+    );
+    assert_eq!(s.out.status.fmt, BLOB_JSON);
+    assert_eq!(s.out.status.len, 2);
+    assert!(!s.out.status.ptr.is_null());
+    // SAFETY: the dispatcher validated this READY blob, and its lease remains live here.
+    let bytes = unsafe { std::slice::from_raw_parts(s.out.status.ptr, s.out.status.len) }.to_vec();
+    // Ranking uses the SDK default: the exact 1.5.5 unsupported-status envelope is {}.
+    assert_eq!(bytes, b"{}");
+    let released = both::release(p, called.lease);
+    assert_eq!(released.outcome, Outcome::Ready);
+    format!(
+        "{} bytes={bytes:?} {}",
+        line("status", &called),
+        line("release status", &released)
+    )
 }
 
 fn ranking_path() -> std::path::PathBuf {
@@ -154,7 +176,11 @@ fn a_linked_and_a_dropped_in_hook_decide_identically() {
     assert!(linked[3].contains("Ready"), "{}", linked[3]);
     assert!(linked[4].contains("Ready"), "{}", linked[4]);
     assert!(linked[5].contains("Ready"), "{}", linked[5]);
-    assert!(linked[6].contains("Refused"), "{}", linked[6]);
+    assert!(
+        linked[6].contains("Ready") && linked[6].contains("bytes=[123, 125]"),
+        "{}",
+        linked[6]
+    );
     assert!(linked[7].contains("Ready"), "{}", linked[7]);
 }
 
