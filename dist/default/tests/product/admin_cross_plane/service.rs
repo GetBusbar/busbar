@@ -111,6 +111,9 @@ fn build_with_hook_makes_a_plane_attach_live() {
             &rules,
         )
         .expect("the product root builds the actual admin application");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, "configured-store")
+            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
