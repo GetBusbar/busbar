@@ -93,7 +93,7 @@ fn a_recorded_demotion_is_found_by_a_second_handle_on_the_same_store() {
         "ONE demotion for one demoted upstream. Zero here is the defect the record exists for — the \
          write returned `Ok(())` and the row is nowhere. The store at {} holds: {}",
         file.display(),
-        format!("{:?}", std::fs::metadata(&file).map(|m| m.len()))
+        format_args!("{:?}", std::fs::metadata(&file).map(|m| m.len()))
     );
     assert_eq!(rows[0].upstream, "fs");
     assert_eq!(
