@@ -22,6 +22,53 @@ impl PluginHttpDispatch for Answer {
     }
 }
 
+// These tests supply boundary topology and handlers explicitly. Keep the actual plugin rows
+// available to auth/store/secret consumers, while using ListenerPlan's neutral projection
+// seam rather than rediscovering a different topology from the loader's concrete registry.
+#[derive(Debug)]
+struct ListenerRows(Arc<dyn busbar_contract::plugin_rows::PluginRows>);
+impl busbar_contract::plugin_rows::PluginRows for ListenerRows {
+    fn resolve(&self, name: &str) -> Option<busbar_contract::plugin_rows::Row> {
+        self.0.resolve(name)
+    }
+    fn archive_sha256(&self, name: &str) -> Option<String> {
+        self.0.archive_sha256(name)
+    }
+    fn unresolved_reason(&self, name: &str) -> Option<busbar_contract::plugin_rows::Skipped> {
+        self.0.unresolved_reason(name)
+    }
+    fn loadable(&self) -> Vec<busbar_contract::plugin_rows::Row> {
+        self.0.loadable()
+    }
+    fn linked(&self) -> Vec<busbar_contract::plugin_rows::Row> {
+        self.0.linked()
+    }
+    fn skipped(&self) -> Vec<busbar_contract::plugin_rows::Skipped> {
+        self.0.skipped()
+    }
+    fn store_door(&self, name: &str) -> Result<busbar_contract::store_calls::StoreDoor, String> {
+        self.0.store_door(name)
+    }
+    fn secret_refusal(&self, name: &str) -> String {
+        self.0.secret_refusal(name)
+    }
+    fn kind_refusal(&self, kind: &str, purpose: &str, name: &str) -> String {
+        self.0.kind_refusal(kind, purpose, name)
+    }
+    fn secret_slots(&self, name: &str) -> Vec<String> {
+        self.0.secret_slots(name)
+    }
+    fn reference_slots(&self, name: &str) -> Vec<String> {
+        self.0.reference_slots(name)
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn into_any(self: Arc<Self>) -> Arc<dyn std::any::Any + Send + Sync> {
+        self
+    }
+}
+
 fn route(owner: &str, path: &str, auth: RouteAuth) -> RouteDecl {
     RouteDecl {
         owner: owner.into(),
@@ -100,7 +147,7 @@ fn plan(topology: ListenerNeeds) -> Arc<ListenerPlan> {
     })
 }
 
-fn app(
+fn projection_boundary_app(
     topology: ListenerNeeds,
     routes: Vec<RouteDecl>,
     generation: u64,
@@ -150,6 +197,7 @@ fn app(
     if let Some(rotate) = rotate {
         rotate();
     }
+    candidate.hook_env.registry = Arc::new(ListenerRows(Arc::clone(&candidate.hook_env.registry)));
     candidate.plugin_routes =
         Arc::new(build_route_table(routes).expect("valid endpoint declarations"));
     candidate.config_version = generation;
@@ -174,7 +222,7 @@ fn app(
 fn export_only_lists_enforce_physical_ownership_admin_placement_and_method_auth() {
     let topology = topology();
     let plan = plan(topology.clone());
-    let app = app(
+    let app = projection_boundary_app(
         topology,
         vec![
             route("private", "/exports/private/scrape", RouteAuth::Key),
@@ -222,7 +270,7 @@ fn export_only_lists_enforce_physical_ownership_admin_placement_and_method_auth(
 fn listener_policy_retains_each_candidate_across_three_new_generations() {
     let topology = topology();
     let plan = plan(topology.clone());
-    let first = app(
+    let first = projection_boundary_app(
         topology.clone(),
         vec![route("private", "/exports/private/scrape", RouteAuth::Key)],
         1,
@@ -241,7 +289,7 @@ fn listener_policy_retains_each_candidate_across_three_new_generations() {
     plan.check(&first).unwrap();
     let retained = select(&source(Arc::clone(&first))).unwrap();
     for generation in 2..=4 {
-        let next = app(
+        let next = projection_boundary_app(
             topology.clone(),
             vec![route("private", "/exports/private/scrape", RouteAuth::None)],
             generation,
@@ -263,7 +311,7 @@ fn listener_policy_retains_each_candidate_across_three_new_generations() {
     }
     let mut changed = topology;
     changed.binds[2].listen.set_port(9090);
-    let refused = app(
+    let refused = projection_boundary_app(
         changed,
         vec![route("private", "/exports/private/scrape", RouteAuth::None)],
         5,
@@ -276,7 +324,7 @@ fn listener_policy_retains_each_candidate_across_three_new_generations() {
 fn replacement_without_a_need_does_not_inherit_old_instance_listener_authority() {
     let initial = topology();
     let plan = plan(initial.clone());
-    let boot = app(
+    let boot = projection_boundary_app(
         initial.clone(),
         vec![route("private", "/exports/private/scrape", RouteAuth::None)],
         1,
@@ -286,7 +334,7 @@ fn replacement_without_a_need_does_not_inherit_old_instance_listener_authority()
     let mut replacement = initial;
     replacement.needs.clear();
     replacement.binds.truncate(2);
-    let replacement = app(
+    let replacement = projection_boundary_app(
         replacement,
         vec![route("private", "/exports/private/scrape", RouteAuth::None)],
         2,
@@ -311,7 +359,7 @@ fn replacement_without_a_need_does_not_inherit_old_instance_listener_authority()
 fn moving_data_routes_between_bound_listeners_keeps_admin_placement_separate() {
     let initial = topology();
     let plan = plan(initial.clone());
-    let boot = app(
+    let boot = projection_boundary_app(
         initial.clone(),
         vec![route("private", "/exports/private/scrape", RouteAuth::Key)],
         1,
@@ -321,7 +369,7 @@ fn moving_data_routes_between_bound_listeners_keeps_admin_placement_separate() {
         .unwrap();
     let mut moved = initial.clone();
     moved.needs[0].at = "listen".into();
-    let moved = app(
+    let moved = projection_boundary_app(
         moved,
         vec![route("private", "/exports/private/scrape", RouteAuth::Key)],
         2,
@@ -330,7 +378,7 @@ fn moving_data_routes_between_bound_listeners_keeps_admin_placement_separate() {
         .expect("data routes can move between existing physical listeners");
     let mut admin = initial;
     admin.needs.clear();
-    let admin = app(
+    let admin = projection_boundary_app(
         admin,
         vec![route(
             "private",
@@ -403,7 +451,7 @@ fn identical_plane_paths_on_distinct_listeners_are_sealed_independently() {
             .into(),
         )
         .unwrap();
-    let mut candidate = app(topology, Vec::new(), 1);
+    let mut candidate = projection_boundary_app(topology, Vec::new(), 1);
     Arc::get_mut(&mut candidate).unwrap().planes =
         Arc::new(["left-module", "right-module"].into_iter().fold(
             busbar_kernel::plane_driver::dispatch::PlaneDispatch::default(),
@@ -460,7 +508,7 @@ fn declared_default_is_required_only_for_key_routes_without_operator_chain() {
     let mut topology = topology();
     topology.needs[0].auth = "unavailable-inbound-style".into();
     let plan = plan(topology.clone());
-    let with_operator = app(
+    let with_operator = projection_boundary_app(
         topology.clone(),
         vec![route("private", "/exports/private/scrape", RouteAuth::Key)],
         1,
@@ -468,7 +516,7 @@ fn declared_default_is_required_only_for_key_routes_without_operator_chain() {
     plan.check(&with_operator)
         .expect("explicit operator chain overrides a declared default");
     for (auth, allowed) in [(RouteAuth::Key, false), (RouteAuth::None, true)] {
-        let mut candidate = app(
+        let mut candidate = projection_boundary_app(
             topology.clone(),
             vec![route("private", "/exports/private/scrape", auth)],
             2,
@@ -501,7 +549,7 @@ fn retained_boot_dispatch_keeps_only_its_exact_source_instances_binding() {
     let mut removed = initial.clone();
     removed.needs.clear();
     removed.binds.truncate(2);
-    let candidate = app(removed, vec![retained()], 2);
+    let candidate = projection_boundary_app(removed, vec![retained()], 2);
     plan.check(&candidate).unwrap();
     assert!(matches!(
         plan.guests(&candidate, "export.private.settings.ingress")
@@ -517,7 +565,7 @@ fn retained_boot_dispatch_keeps_only_its_exact_source_instances_binding() {
     ));
     let mut replacement = initial;
     replacement.needs[0].module = "different-module".into();
-    let replacement = app(replacement, vec![retained()], 3);
+    let replacement = projection_boundary_app(replacement, vec![retained()], 3);
     assert!(
         plan.check(&replacement).is_err(),
         "retained dispatch does not serve a replacement module's Need"
@@ -557,7 +605,7 @@ fn datagram_session_description_keeps_its_existing_http_post_route() {
             root_only: false,
         }])
         .unwrap();
-    let candidate = app(topology, Vec::new(), 1);
+    let candidate = projection_boundary_app(topology, Vec::new(), 1);
     plan.check(&candidate).unwrap();
     assert!(matches!(
         plan.data_guests(&candidate)
@@ -598,7 +646,7 @@ async fn physical_routers_share_publication_but_keep_handlers_and_refusals_separ
             )
         })
     };
-    let first = app(topology(), Vec::new(), 1);
+    let first = projection_boundary_app(topology(), Vec::new(), 1);
     let (left, _, handle) = busbar_kernel::build_split_routers_serving_doors(
         first,
         vec![mounted("left")],
@@ -621,7 +669,7 @@ async fn physical_routers_share_publication_but_keep_handlers_and_refusals_separ
         false,
     );
     for generation in 2..=4 {
-        let next = app(topology(), Vec::new(), generation);
+        let next = projection_boundary_app(topology(), Vec::new(), generation);
         handle.swap(next);
         for (router, label) in [(&left, "left"), (&right, "right")] {
             let answer = router
@@ -673,11 +721,83 @@ async fn physical_routers_share_publication_but_keep_handlers_and_refusals_separ
     }
 }
 
+// Independent production metadata companion: unlike the projection-only boundary fixtures,
+// this case admits the actual exporter image and asks the concrete registry for its Need.
+#[test]
+fn actual_nonempty_export_descriptor_supplies_the_candidate_listener_need() {
+    use crate::root::test_plugins as fixtures;
+    let path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_TEST_PROMETHEUS_CDYLIB")
+            .expect("the qualified actual Prometheus exporter image"),
+    );
+    let bytes = std::fs::read(&path).expect("the actual exporter image reads");
+    let rendering = crate::root::loader::dispatch::rendering_of_library(&path)
+        .expect("the actual image exports a descriptor")
+        .expect("the actual image states its metadata");
+    let stated = busbar_contract::abi::mechanism::rendering::read(&rendering)
+        .expect("the actual descriptor is valid");
+    let mut manifest = fixtures::manifest("export", &stated.name, "busbar");
+    manifest.version = stated.version.clone();
+    manifest.statement = Some(hex::encode(&rendering));
+    let release = fixtures::key(0x39);
+    let directory = fixtures::scratch("listener-actual-nonempty");
+    std::fs::write(
+        directory.join("actual-exporter.tar.gz"),
+        fixtures::signed(&release, manifest, &bytes),
+    )
+    .expect("the exact actual image archive is staged");
+    let registry = fixtures::boot_with(&directory, &fixtures::release_policy(&release));
+    assert_eq!(registry.loadable().len(), 1);
+    assert!(registry.skipped().is_empty());
+    assert_eq!(
+        registry.resolve(&stated.name).unwrap().statement(),
+        Some(rendering),
+        "the admitted metadata belongs to the same retained actual image"
+    );
+    assert!(
+        crate::root::boot::REGISTRY.set(registry).is_ok(),
+        "this isolated case installs the actual registry before boot"
+    );
+    let topology = topology();
+    let plan = plan(topology.clone());
+    let mut candidate = projection_boundary_app(topology, Vec::new(), 2);
+    let candidate_mut = Arc::get_mut(&mut candidate).unwrap();
+    // A real concrete registry selects the production metadata path. Export candidates
+    // come from the admitted boot registry rather than the synthetic projection.
+    candidate_mut.hook_env.registry = Arc::new(crate::root::loader::PluginRegistry::empty());
+    candidate_mut.export_defs = serde_json::from_value(serde_json::json!({
+        "actual-metrics": {"module": stated.name.clone(), "settings": {"buffer_seconds": 60}}
+    }))
+    .expect("the actual export instance configuration");
+    let actual = plan
+        .needs(&candidate)
+        .expect("the actual descriptor supplies its listener Need");
+    assert_eq!(
+        actual.binds.len(),
+        2,
+        "only the actual root listeners remain"
+    );
+    assert_eq!(
+        actual.needs,
+        vec![ListenerNeed {
+            instance: "actual-metrics".into(),
+            module: stated.name,
+            kind: KindCode::Export,
+            need: 0,
+            transport: "http".into(),
+            auth: String::new(),
+            at: "listen".into(),
+        }],
+        "the actual nonempty descriptor replaces the early private projection"
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
 #[test]
 fn actual_candidate_registry_replaces_the_early_boot_need_projection() {
     let topology = topology();
     let plan = plan(topology.clone());
-    let mut candidate = app(topology, Vec::new(), 2);
+    let mut candidate = projection_boundary_app(topology, Vec::new(), 2);
     let candidate_mut = Arc::get_mut(&mut candidate).unwrap();
     candidate_mut.hook_env.registry = Arc::new(crate::root::loader::PluginRegistry::empty());
     candidate_mut.hook_registry.clear();
@@ -699,20 +819,20 @@ fn unopened_dispatch_cannot_replace_a_serving_route_but_new_paths_still_need_res
         route.dispatch_available = false;
         route
     };
-    let missing_at_boot = app(
+    let missing_at_boot = projection_boundary_app(
         topology.clone(),
         vec![unavailable("/exports/private/scrape")],
         1,
     );
     assert!(plan.check(&missing_at_boot).is_err());
-    let boot = app(
+    let boot = projection_boundary_app(
         topology.clone(),
         vec![route("private", "/exports/private/scrape", RouteAuth::None)],
         1,
     );
     plan.mount_planes(&super::Served::default(), &boot, &[])
         .unwrap();
-    let replacement = app(
+    let replacement = projection_boundary_app(
         topology.clone(),
         vec![unavailable("/exports/private/scrape")],
         2,
@@ -720,7 +840,7 @@ fn unopened_dispatch_cannot_replace_a_serving_route_but_new_paths_still_need_res
     assert!(plan.check(&replacement).is_err());
     let mut no_need = topology;
     no_need.needs.clear();
-    let new_path = app(no_need, vec![unavailable("/exports/private/new")], 2);
+    let new_path = projection_boundary_app(no_need, vec![unavailable("/exports/private/new")], 2);
     plan.check(&new_path)
         .expect("new unmounted paths retain the existing restart-to-apply behavior");
     let mounted = plan.mounted_plugin_paths(&new_path).unwrap();
@@ -744,16 +864,16 @@ fn renamed_plugin_uses_its_candidate_physical_listener() {
         route.scrape = true;
         route
     };
-    let boot = app(initial.clone(), vec![declared("private")], 1);
+    let boot = projection_boundary_app(initial.clone(), vec![declared("private")], 1);
     plan.mount_planes(&super::Served::default(), &boot, &[])
         .unwrap();
     let mut renamed = initial;
     renamed.needs[0].instance = "renamed".into();
-    let next = app(renamed.clone(), vec![declared("renamed")], 2);
+    let next = projection_boundary_app(renamed.clone(), vec![declared("renamed")], 2);
     plan.check(&next)
         .expect("the same generic route resolves the renamed configuration's current dispatcher");
     renamed.needs[0].at = "listen".into();
-    let moved = app(renamed, vec![declared("renamed")], 3);
+    let moved = projection_boundary_app(renamed, vec![declared("renamed")], 3);
     plan.check(&moved)
         .expect("the renamed candidate can move its actual generic handler");
 }
@@ -762,7 +882,7 @@ fn renamed_plugin_uses_its_candidate_physical_listener() {
 fn a_new_data_method_on_a_boot_plugin_path_prepares_a_new_router() {
     let initial = topology();
     let plan = plan(initial.clone());
-    let boot = app(
+    let boot = projection_boundary_app(
         initial.clone(),
         vec![route("private", "/exports/private/scrape", RouteAuth::None)],
         1,
@@ -771,7 +891,7 @@ fn a_new_data_method_on_a_boot_plugin_path_prepares_a_new_router() {
         .unwrap();
     let mut post = route("private", "/exports/private/scrape", RouteAuth::None);
     post.route.method = RouteMethod::Post;
-    let candidate = app(initial, vec![post], 2);
+    let candidate = projection_boundary_app(initial, vec![post], 2);
     plan.check(&candidate)
         .expect("the candidate constructs its own method router");
 }
@@ -824,7 +944,7 @@ async fn actual_handlers_migrate_only_on_publication_and_old_requests_keep_their
     let plan = plan(initial.clone());
     let rules = Arc::new(crate::root::door_steps::Rules::default());
     rules.hold_listeners(plan.clone()).unwrap();
-    let mut boot = app(initial.clone(), vec![labeled_route("boot")], 1);
+    let mut boot = projection_boundary_app(initial.clone(), vec![labeled_route("boot")], 1);
     Arc::get_mut(&mut boot).unwrap().root_rules = rules.clone();
     plan.mount_planes(&super::Served::default(), &boot, &[])
         .unwrap();
@@ -841,7 +961,7 @@ async fn actual_handlers_migrate_only_on_publication_and_old_requests_keep_their
 
     let mut moved = initial.clone();
     moved.needs[0].at = "listen".into();
-    let mut discarded = app(moved.clone(), vec![labeled_route("discarded")], 2);
+    let mut discarded = projection_boundary_app(moved.clone(), vec![labeled_route("discarded")], 2);
     Arc::get_mut(&mut discarded).unwrap().root_rules = rules.clone();
     plan.check(&discarded).unwrap();
     let discarded_routes = Arc::downgrade(&plan.prepared(&discarded, "listen").unwrap());
@@ -857,13 +977,13 @@ async fn actual_handlers_migrate_only_on_publication_and_old_requests_keep_their
 
     let mut incompatible = moved.clone();
     incompatible.needs[0].transport = "missing-accepting-framer".into();
-    let rejected = app(incompatible, vec![labeled_route("rejected")], 2);
+    let rejected = projection_boundary_app(incompatible, vec![labeled_route("rejected")], 2);
     assert!(plan.check(&rejected).is_err());
     assert!(plan.prepared(&rejected, "listen").is_none());
     assert!(Arc::ptr_eq(&handle.load(), &boot));
     drop(rejected);
 
-    let unmountable = app(
+    let unmountable = projection_boundary_app(
         initial.clone(),
         vec![route(
             "private",
@@ -882,7 +1002,7 @@ async fn actual_handlers_migrate_only_on_publication_and_old_requests_keep_their
     assert!(unmountable_lifetime.upgrade().is_none());
     assert_eq!(physical_answer(&private, None).await.1.as_ref(), b"boot");
 
-    let mut next = app(moved, vec![labeled_route("published")], 2);
+    let mut next = projection_boundary_app(moved, vec![labeled_route("published")], 2);
     Arc::get_mut(&mut next).unwrap().root_rules = rules.clone();
     plan.check(&next).unwrap();
     let next_lifetime = Arc::downgrade(&next);
@@ -928,10 +1048,10 @@ async fn a_swap_between_route_selection_and_auth_keeps_the_selected_generation()
     let mut initial = topology();
     initial.needs[0].at = "listen".into();
     let plan = plan(initial.clone());
-    let boot = app(initial.clone(), vec![labeled_route("selected")], 1);
+    let boot = projection_boundary_app(initial.clone(), vec![labeled_route("selected")], 1);
     plan.mount_planes(&super::Served::default(), &boot, &[])
         .unwrap();
-    let next = app(initial, vec![labeled_route("later")], 2);
+    let next = projection_boundary_app(initial, vec![labeled_route("later")], 2);
     plan.check(&next).unwrap();
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(boot));
     let swapping = Arc::downgrade(&handle);
@@ -959,10 +1079,10 @@ async fn newly_opened_data_paths_are_physically_served_without_a_restart_report(
     const ADDED_PATH: &str = "/exports/private/added";
     let initial = topology();
     let plan = plan(initial.clone());
-    let boot = app(initial.clone(), vec![labeled_route("boot")], 1);
+    let boot = projection_boundary_app(initial.clone(), vec![labeled_route("boot")], 1);
     plan.mount_planes(&super::Served::default(), &boot, &[])
         .unwrap();
-    let next = app(
+    let next = projection_boundary_app(
         initial,
         vec![
             labeled_route("current"),
@@ -1035,7 +1155,7 @@ async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
         .unwrap();
     let token_grant = busbar_kernel::seal::lend();
     let live_token = token.expose(&token_grant).as_str();
-    let mut candidate = app(
+    let mut candidate = projection_boundary_app(
         topology,
         vec![route("private", PATH, RouteAuth::Key)],
         GENERATION,
