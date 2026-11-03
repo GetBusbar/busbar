@@ -1831,16 +1831,17 @@ pub(super) mod session_door {
             serde_yaml::from_str(&models_yaml).expect("the models section"),
         );
 
-        let live_app: Arc<std::sync::OnceLock<Arc<busbar_kernel::state::App>>> = Arc::default();
+        let live_app: Arc<std::sync::OnceLock<std::sync::Weak<busbar_kernel::state::AppHandle>>> =
+            Arc::default();
         let stage = (!opts.hooks.is_empty()).then(|| crate::root::serve::HookStage {
             host: {
                 let live_app = Arc::clone(&live_app);
                 Arc::new(move || {
-                    busbar_kernel::plane_driver::engine_host(
-                        live_app
-                            .get()
-                            .expect("the cell's App is built before any unit"),
-                    )
+                    let handle = live_app
+                        .get()
+                        .and_then(std::sync::Weak::upgrade)
+                        .expect("the session AppHandle outlives its requests");
+                    busbar_kernel::plane_driver::engine_host(&handle.load())
                 })
             },
             gov: Arc::clone(&gov),
@@ -2029,7 +2030,6 @@ pub(super) mod session_door {
         app.serve_tables = tables.clone();
         app.plugin_routes = super::metrics_routes();
         let app = std::sync::Arc::new(app);
-        let _ = live_app.set(Arc::clone(&app));
 
         let upgrades = crate::root::serve::upgrade_carriers(crate::LINKED.transports, &[]);
         let offers = crate::root::serve::transport_offers(crate::LINKED.transports, &[]);
@@ -2045,6 +2045,9 @@ pub(super) mod session_door {
             0,
             false,
         );
+        live_app
+            .set(Arc::downgrade(&handle))
+            .expect("the session handle installs once");
         services
             .kernel()
             .expect("the actual kernel is installed")
