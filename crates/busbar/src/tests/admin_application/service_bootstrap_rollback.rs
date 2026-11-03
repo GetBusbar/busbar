@@ -272,10 +272,7 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
         let (target_name, target_version, library, manifest) = if anchor_target {
             (module.clone(), module_version.clone(), library, manifest)
         } else {
-            let target_path = std::path::PathBuf::from(
-                std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                    .expect("the actual distinct memory Store artifact is available"),
-            );
+            let target_path = crate::root::test_plugins::application_store_library();
             let target_statement =
                 busbar_plugin_loader::dispatch::rendering_of_library(&target_path)
                     .expect("the actual nonanchor Store Statement reads")
@@ -560,10 +557,7 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
 #[tokio::test]
 async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_store_pin() {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -590,10 +584,8 @@ async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_sto
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"

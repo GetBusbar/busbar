@@ -99,10 +99,7 @@ fn planes() -> &'static PlaneKeys {
 
 fn app(cost: CostModel) -> busbar_kernel::state::App {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual Store statement reads")
         .expect("the actual Store exports its statement");
@@ -125,10 +122,8 @@ fn app(cost: CostModel) -> busbar_kernel::state::App {
         plugins::signed(&crate::dist_root_install::release_key(), manifest, &library),
     )
     .unwrap();
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("the actual Store settings are JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(settings.is_object());
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {}, "models": {},
