@@ -786,6 +786,8 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         std::process::id()
     ));
     let own_key = format!("{{ file: '{}' }}", key_file.display());
+    let signing_file = key_file.with_extension("signing");
+    std::fs::write(&signing_file, [7u8; 32]).expect("the actual token signing secret");
     if opts.api_key.is_none() {
         std::fs::write(&key_file, "sk-seats").expect("the credential file");
     }
@@ -852,14 +854,28 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     } else {
         "auth:\n  chain: [keys]\n  admin_auth: []\n"
     });
-    let store_module = crate::LINKED
-        .stores
-        .iter()
-        .find(|row| row.1)
-        .expect("the assembled product links an ephemeral store")
-        .0;
+    if !opts.open_door {
+        yaml.push_str(&format!(
+            "  signing_key: {{ file: '{}' }}\n",
+            signing_file.display()
+        ));
+    }
+    let store_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("the actual configured Store image"),
+    );
+    let statement = crate::root::loader::dispatch::rendering_of_library(&store_path)
+        .expect("the actual Store statement reads")
+        .expect("the actual Store states its contract");
+    let store_module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual Store statement is valid")
+        .name;
+    let store_settings =
+        std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".to_string());
+    let store_settings: serde_json::Value =
+        serde_json::from_str(&store_settings).expect("the actual Store settings are JSON");
     yaml.push_str(&format!(
-        "store:\n  module: {store_module}\n  settings: {{}}\n"
+        "store:\n  module: {store_module}\n  settings: {store_settings}\n"
     ));
     let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).map_err(|e| e.to_string())?;
     let mut defs_yaml = String::new();
@@ -879,11 +895,11 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     let sections = kernel_sections(&cfg);
     let model_pools = crate::root::model_egress::ModelPools::of(&cfg);
 
+    let store = crate::root::real_store::store();
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
-    let gov = Arc::new(
-        GovState::new_with_signer(crate::root::real_store::records(), None, Some(signer))
-            .expect("governance"),
-    );
+    let gov =
+        Arc::new(GovState::new_with_signer(store.clone(), None, Some(signer)).expect("governance"));
+    gov.attach_store_calls(store.clone());
     let configured = opts.group.map(|(name, limits)| {
         (
             name.to_string(),
@@ -980,7 +996,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
 
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         cfg,
         Default::default(),
         None,
@@ -989,6 +1005,11 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         (None, None),
         None,
         &rules,
+        Some(busbar_contract::store_calls::OpenedStore {
+            records: store.clone(),
+            calls: Some(store),
+        }),
+        false,
     )?;
     limits.keep()?;
     if let Some(rotate) = rotate {
@@ -1064,8 +1085,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         }
     }
 
-    let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
-        Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
+    let secrets: Arc<dyn busbar_contract::secret::SecretResolve> = app.secret_resolver.clone();
     let auths = Arc::new(OutboundAuths::new(
         Arc::clone(&dispatcher),
         crate::LINKED.auths,
@@ -1121,6 +1141,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         &busbar_contract::config_time::ConfigScope::config_time(),
         &app.serve_tables,
     );
+    let _ = std::fs::remove_file(&signing_file);
     let _ = std::fs::remove_file(&key_file);
     for file in &member_key_files {
         let _ = std::fs::remove_file(file);
@@ -1137,7 +1158,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         let (sections, providers) = (sections.clone(), providers.clone());
         Arc::new(move || {
             let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
-                Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
+                app.secret_resolver.clone();
             let models = crate::root::model_egress::ModelServing {
                 pools: model_pools.clone(),
                 lanes: (0..lanes).map(|i| (format!("m{i}"), i)).collect(),
