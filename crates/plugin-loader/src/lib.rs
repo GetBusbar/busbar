@@ -291,10 +291,6 @@ mod conformance_auth_unjudged_tests;
 // The retired datagram harness tested its own string renderer and script judge.
 // Actual transport behavior remains owned by the product tests.
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_declared_tests.rs"]
-mod conformance_declared_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
@@ -421,3 +417,8 @@ mod ordinary_plane_deadline;
 #[allow(unsafe_code)]
 #[path = "tests/ordinary_plane_fault_outputs.rs"]
 mod ordinary_plane_fault_outputs;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/ordinary_declared_metadata.rs"]
+mod ordinary_declared_metadata;
