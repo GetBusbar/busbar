@@ -230,6 +230,7 @@ mod dispatch_kind_plane_tests;
 mod dispatch_kind_store_tests;
 
 #[cfg(test)]
+#[allow(unsafe_code)]
 #[path = "tests/stub_store_plane_tests.rs"]
 mod stub_store_plane_tests;
 
@@ -262,6 +263,7 @@ mod secret_door_conformance_tests;
 mod transport_door_conformance_tests;
 
 #[cfg(test)]
+#[allow(unsafe_code)]
 #[path = "tests/transport_door_tests.rs"]
 mod transport_door_tests;
 
