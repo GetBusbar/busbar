@@ -471,3 +471,12 @@ mod linked_secret_hardening_tests;
 #[cfg(test)]
 #[path = "tests/loader_declared_settings.rs"]
 mod loader_declared_settings;
+
+#[cfg(test)]
+#[path = "tests/actual_product_resolver.rs"]
+mod actual_product_resolver;
+
+#[cfg(test)]
+pub(crate) fn actual_product_resolver() -> SecretResolver {
+    actual_product_resolver::resolver()
+}
