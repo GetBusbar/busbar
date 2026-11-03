@@ -124,9 +124,9 @@ async fn test_admin_v1_overlay_reset_hooks_reverts_to_base() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
-    document["plugins"] =
-        serde_json::to_value(crate::root::test_plugins::trusted_config(&directory))
-            .expect("the exact signed plugin deployment serializes");
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });

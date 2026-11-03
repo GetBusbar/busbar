@@ -124,9 +124,9 @@ async fn test_admin_v1_config_versions_rollback_and_diff() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
-    document["plugins"] =
-        serde_json::to_value(crate::root::test_plugins::trusted_config(&directory))
-            .expect("the exact signed plugin deployment serializes");
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -390,9 +390,9 @@ async fn test_admin_v1_config_plane_golden_path() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
-    document["plugins"] =
-        serde_json::to_value(crate::root::test_plugins::trusted_config(&directory))
-            .expect("the exact signed plugin deployment serializes");
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -657,9 +657,9 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
-    document["plugins"] =
-        serde_json::to_value(crate::root::test_plugins::trusted_config(&directory))
-            .expect("the exact signed plugin deployment serializes");
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -744,7 +744,7 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
         .post(format!("http://{addr}/api/v1/admin/config/apply"))
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"config": {"providers": {}, "models": {}, "store": {"module": module, "settings": settings}, "plugins": crate::root::test_plugins::trusted_config(&directory)}}).to_string())
+        .body(serde_json::json!({"config": {"providers": {}, "models": {}, "store": {"module": module, "settings": settings}, "plugins": crate::root::test_plugins::config_document(&crate::root::test_plugins::trusted_config(&directory))}}).to_string())
         .send()
         .await
         .unwrap();
