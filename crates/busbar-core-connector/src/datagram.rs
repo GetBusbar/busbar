@@ -2628,7 +2628,10 @@ pub struct Pairing {
     /// The caller leg's port address: the upstream leg binds a port of its own on the same host
     local: SocketAddr,
     memory: Arc<Memory>,
+    /// Metadata and attachment progress for opening and the publication actor.
     published: tokio::sync::Notify,
+    /// Actual publication quiescence or terminal failure.
+    publication_completed: tokio::sync::Notify,
 }
 
 struct PairState {
@@ -2678,6 +2681,7 @@ impl Pairing {
             local,
             memory: Memory::new(limit),
             published: tokio::sync::Notify::new(),
+            publication_completed: tokio::sync::Notify::new(),
         });
         pair.memory.observe(Arc::downgrade(&pair));
         pair
@@ -2785,6 +2789,7 @@ impl Pairing {
         self.memory.close();
         self.retire_metadata_if_closed();
         self.published.notify_waiters();
+        self.publication_completed.notify_waiters();
         for leg in legs.into_iter().flatten() {
             leg.close();
         }
