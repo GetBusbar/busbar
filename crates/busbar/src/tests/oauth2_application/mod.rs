@@ -122,6 +122,33 @@ fn build_application(
             .expect("stage the actual auth archive");
         name
     });
+    // The shipped OIDC document need is TLS-only. Serve this application's actual JWKS
+    // through a separately trusted TLS listener, rather than relaxing its egress policy.
+    let jwks_tls = resource_auth.then(|| {
+        let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()])
+            .expect("the OAuth JWKS certificate");
+        let ca = cert.cert.pem();
+        let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("TLS versions")
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.cert.der().clone()],
+            rustls_pki_types::PrivateKeyDer::Pkcs8(rustls_pki_types::PrivatePkcs8KeyDer::from(
+                cert.signing_key.serialize_der(),
+            )),
+        )
+        .expect("the actual JWKS TLS identity");
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("the OAuth JWKS TLS listener");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking JWKS listener");
+        let url = format!("https://{}/jwks", listener.local_addr().unwrap());
+        (listener, tls, ca, url)
+    });
     if resource_auth {
         let block = oauth_as.expect("resource auth verifies this configured authorization server");
         let name = auth_name.expect("the actual resource verifier was staged");
@@ -131,7 +158,8 @@ fn build_application(
                 "settings": {
                     "issuer": block.issuer,
                     "audience": block.issuer,
-                    "jwks_url": format!("{}/jwks", block.issuer),
+                    "jwks_url": jwks_tls.as_ref().expect("the JWKS TLS listener").3,
+                    "ca_cert_pem": jwks_tls.as_ref().expect("the JWKS TLS certificate").2,
                     "role_claim": "scope",
                 },
             },
@@ -166,5 +194,31 @@ fn build_application(
     if let Some(rotate) = rotate {
         rotate();
     }
-    Arc::new(app)
+    let app = Arc::new(app);
+    if let Some((listener, tls, _, _)) = jwks_tls {
+        let listener = tokio::net::TcpListener::from_std(listener)
+            .expect("the actual JWKS TLS listener enters the runtime");
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
+        let router = busbar_kernel::build_router(Arc::clone(&app));
+        tokio::spawn(async move {
+            loop {
+                let (socket, _) = listener.accept().await.expect("accept actual JWKS socket");
+                let acceptor = acceptor.clone();
+                let router = router.clone();
+                tokio::spawn(async move {
+                    let stream = acceptor
+                        .accept(socket)
+                        .await
+                        .expect("authenticate JWKS TLS");
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(
+                            hyper_util::rt::TokioIo::new(stream),
+                            hyper_util::service::TowerToHyperService::new(router),
+                        )
+                        .await;
+                });
+            }
+        });
+    }
+    app
 }
