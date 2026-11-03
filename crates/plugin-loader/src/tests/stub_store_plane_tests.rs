@@ -2,8 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector, RecordStore};
-#[path = "actual_store.rs"]
-mod actual_store;
+use crate::actual_store;
 
 fn child(id: &str, body: &[u8]) -> PlaneRecord {
     PlaneRecord {
