@@ -102,6 +102,28 @@ fn only_a_wholly_withheld_opened_public_surface_retires_its_listener_need() {
         run(&["/metrics"], &["/metrics"], &[], false, true),
         (0, true)
     );
+    // The real Prometheus Statement declares both its scrape endpoint and the
+    // separately projected persistent hooks endpoint as public.
+    assert_eq!(
+        run(
+            &["/metrics", "/metrics/hooks"],
+            &["/metrics", "/metrics/hooks"],
+            &["/metrics/hooks"],
+            false,
+            true
+        ),
+        (0, true)
+    );
+    assert_eq!(
+        run(
+            &["/metrics", "/exports/tp/private"],
+            &["/metrics"],
+            &["/exports/tp/private"],
+            false,
+            true
+        ),
+        (0, false)
+    );
     assert_eq!(run(&[], &[], &[], false, true), (0, false));
     assert_eq!(
         run(
