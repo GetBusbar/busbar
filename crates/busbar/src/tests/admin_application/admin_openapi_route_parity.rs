@@ -205,18 +205,6 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     const JSON_ROUTER: &str = include_str!("../../../../busbar-core-admin/src/v1/json/mod.rs");
     // Read the same literal route mounts used by the production JSON transport.
     let literal = literal_admin_routes(JSON_ROUTER);
-    let declared_get_source = include_str!("../../../../busbar-core-admin/src/v1/json/handlers.rs");
-    let declared_get_table = declared_get_source
-        .split_once("const V1_GET_PATHS:")
-        .unwrap()
-        .1
-        .split_once("= &[")
-        .unwrap()
-        .1
-        .split_once("];")
-        .unwrap()
-        .0;
-    let declared_get_count = declared_get_table.matches('(').count();
     let literal_get_paths: Vec<&str> = literal
         .iter()
         .filter(|(method, _)| method == "GET")
@@ -297,6 +285,15 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         .filter(|row| loop_verbs.contains(row.verb))
         .map(|row| (row.method.to_string(), row.template.to_string()))
         .collect();
+    let documented_operations: BTreeSet<(String, String)> = documented.keys().cloned().collect();
+    let expected_skipped: BTreeSet<(String, String)> = documented_operations
+        .intersection(&kernel_loop)
+        .cloned()
+        .collect();
+    let expected_probed: BTreeSet<(String, String)> = documented_operations
+        .difference(&expected_skipped)
+        .cloned()
+        .collect();
     let concrete = |path: &str| {
         path.split('/')
             .map(|seg| {
@@ -325,14 +322,21 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
 
     handle.abort();
 
-    let mut probed = 0usize;
+    let mut probed = BTreeSet::new();
+    let mut skipped = BTreeSet::new();
     let paths: BTreeSet<&String> = documented.keys().map(|(_, p)| p).collect();
     for path in paths {
         let (addr, handle) = spawn().await;
         for m in METHODS {
             let op = (m.to_string(), path.clone());
             let answer = match documented.get(&op) {
-                Some(_) if kernel_loop.contains(&op) => continue,
+                Some(_) if kernel_loop.contains(&op) => {
+                    assert!(
+                        skipped.insert(op.clone()),
+                        "documented kernel-loop operation skipped twice: {op:?}"
+                    );
+                    continue;
+                }
                 _ => ask(addr, m, &concrete(path)).await,
             };
             let Some(statuses) = documented.get(&op) else {
@@ -345,7 +349,10 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
                 continue;
             };
 
-            probed += 1;
+            assert!(
+                probed.insert(op.clone()),
+                "documented operation probed twice: {op:?}"
+            );
             if answer == fallback[m] {
                 failures.push(format!(
                     "{m} {path} is documented but the router answers its unmatched-path \
@@ -365,9 +372,21 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         }
         handle.abort();
     }
-    assert!(
-        probed > declared_get_count * 4,
-        "only {probed} documented operations were probed on the router"
+    assert_eq!(
+        skipped, expected_skipped,
+        "only documented operations in the closed kernel-loop table may be skipped"
+    );
+    assert_eq!(probed, expected_probed, "every published operation outside the closed kernel-loop table must be probed exactly once");
+    assert_eq!(
+        probed.len() + skipped.len(),
+        documented_operations.len(),
+        "the exact operation census must cover the entire published document"
+    );
+    println!(
+        "OpenAPI operation census: documented={}, probed={}, skipped_documented_kernel_loop={}",
+        documented_operations.len(),
+        probed.len(),
+        skipped.len()
     );
 
     assert!(
