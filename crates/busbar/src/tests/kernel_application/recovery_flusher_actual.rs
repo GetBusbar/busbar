@@ -356,7 +356,11 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
     )]);
     let key = virtual_key("vk_live_cost_verdict", Some("g"));
     store.put_key(&key).unwrap();
-    let now = busbar_kernel::store::now();
+    // The real boot's opening card can begin within this wall-clock second.
+    // Keep the corrected unit's millisecond arrival, rather than truncating it
+    // to an instant before that card existed.
+    let card_epoch_ms = busbar_kernel::store::now_ms();
+    let now = card_epoch_ms / 1_000;
     let first = GovState::new(store.clone(), None).unwrap();
     first.attach_recovery_sink(journal.clone()).unwrap();
     first.try_admit(&old_cost, &key, "", now).unwrap();
@@ -372,11 +376,15 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
         model: MODEL,
         entry_era: era_now(),
         entry_id: None,
-        card_epoch_ms: now * 1_000,
+        card_epoch_ms,
         delta: &correction_delta,
         now,
     };
-    assert!(first.adjust_usage(&old_cost, &adjustment).is_err());
+    let adjusted = first.adjust_usage(&old_cost, &adjustment);
+    assert!(
+        adjusted.is_err(),
+        "the journal's lost selection reply must fail the adjustment: {adjusted:?}"
+    );
     let original = journal
         .selected
         .lock()
