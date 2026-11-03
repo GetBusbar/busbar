@@ -455,6 +455,8 @@ pub struct DoorFacts {
     pub plane: String,
     /// The grant kind that admits its traffic (its tail's first scope kind); `None` = it states none.
     pub scope_kind: Option<String>,
+    /// Host-sealed catalog entries and their declared secondary grant kind.
+    pub secondary_scopes: BTreeMap<String, String>,
     /// Its billable classes, in its tail's order: a unit count's class indexes them.
     pub classes: Arc<[String]>,
     /// The validated plane recipe: billable-class index and default expected units.
@@ -904,12 +906,17 @@ impl DriverSteps for DoorSteps<'_> {
                 .iter()
                 .filter(|entry| candidates.as_ref().is_none_or(|c| c.contains(entry)))
                 .filter(|entry| {
-                    self.pools.granted(
-                        self.facts.scope_kind.as_deref(),
-                        self.key.as_deref(),
-                        ROUTE_DIRECT,
-                        Some(entry.as_bytes()),
-                    )
+                    // An explicit host-sealed catalog selection is checked in APPROVE,
+                    // before admission. Its name is not a primary-scope entry.
+                    (class == ROUTE_SCOPE_LOCAL
+                        && candidates.as_ref().is_some_and(|c| c.contains(entry))
+                        && self.facts.secondary_scopes.contains_key(entry.as_str()))
+                        || self.pools.granted(
+                            self.facts.scope_kind.as_deref(),
+                            self.key.as_deref(),
+                            ROUTE_DIRECT,
+                            Some(entry.as_bytes()),
+                        )
                 })
                 .cloned()
                 .collect();
@@ -982,6 +989,19 @@ impl DriverSteps for DoorSteps<'_> {
     ) -> Result<busbar_contract::ScopeFacts, Refusal> {
         let (class, named) = self.lock().named.clone().unwrap_or((ROUTE_POOL, None));
         let counterparty = self.lock().counterparty.clone();
+        let selected = self.lock().resolved.clone();
+        if class == ROUTE_SCOPE_LOCAL
+            && named.is_some()
+            && selected.as_ref().is_some_and(|entry| {
+                self.facts.secondary_scopes.get(entry).is_some_and(|kind| {
+                    self.key
+                        .as_ref()
+                        .is_some_and(|key| !key.scope_allowed(kind, entry))
+                })
+            })
+        {
+            return Err(Refusal::new(ReasonCode::ScopeDenied));
+        }
 
         if class == ROUTE_SCOPE_LOCAL
             && counterparty.as_deref().is_some_and(|counterparty| {
@@ -1243,6 +1263,7 @@ pub fn door_facts(
     DoorFacts {
         plane: plane.to_string(),
         scope_kind: scope_kinds.first().map(|k| (*k).to_string()),
+        secondary_scopes: BTreeMap::new(),
         classes: classes.iter().map(|c| (*c).to_string()).collect(),
         route_cost: Vec::new(),
         meter_classes: classes.iter().map(|c| MeterClassId::new(c)).collect(),
