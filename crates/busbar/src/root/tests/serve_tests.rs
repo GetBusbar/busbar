@@ -367,7 +367,11 @@ impl ProviderEndpoint {
                         }
                     };
                     let length = body.len() + usize::from(transport_error);
-                    let head = format!("HTTP/1.1 {} {}\r\ncontent-type: {content_type}\r\ncontent-length: {length}\r\n{extra}connection: close\r\n\r\n", status.as_u16(), status.canonical_reason().unwrap_or("response"));
+                    let head = format!(
+                        "HTTP/1.1 {} {}\r\ncontent-type: {content_type}\r\ncontent-length: {length}\r\n{extra}connection: close\r\n\r\n",
+                        status.as_u16(),
+                        status.canonical_reason().unwrap_or("response")
+                    );
                     if socket.write_all(head.as_bytes()).await.is_err() {
                         return;
                     }
@@ -1524,6 +1528,7 @@ pub(super) mod session_door {
     }
 
     pub(in crate::root::serve) struct SessionDoor {
+        _handle: Arc<busbar_kernel::state::AppHandle>,
         router: axum::Router,
         heard: tokio::sync::mpsc::UnboundedReceiver<String>,
         gov: Arc<GovState>,
@@ -1673,7 +1678,11 @@ pub(super) mod session_door {
             (None, None) => far_end_answering(MINTED).await,
         };
         let connector = connector();
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let services = composed_services();
+        let dispatcher = Arc::new(Dispatcher::with_services(
+            DispatchConfig::default(),
+            services.clone(),
+        ));
         let plane = session_door(
             instance,
             &dispatcher,
@@ -1744,6 +1753,7 @@ pub(super) mod session_door {
             GovState::new_with_signer(crate::root::real_store::records(), None, Some(signer))
                 .expect("governance"),
         );
+        super::super::door_rig::attach_late(&services, &gov);
         let (key, plain) = gov
             .mint_signed(
                 NewKeySpec {
@@ -1839,7 +1849,7 @@ pub(super) mod session_door {
         let mut served = match compose_planes(
             &[(instance.to_string(), Arc::new(plane))],
             &dispatcher,
-            &composed_services(),
+            &services,
             &sections,
             Some(PUBLIC),
             &move || Arc::clone(&one),
@@ -2024,7 +2034,7 @@ pub(super) mod session_door {
         let mounts =
             crate::root::serve::door_mounts(served, || CARD.pin(), &[], &[], &upgrades, &offers)
                 .expect("its claims mount");
-        let (router, _admin, _handle) = busbar_kernel::build_split_routers_serving_doors(
+        let (router, _admin, handle) = busbar_kernel::build_split_routers_serving_doors(
             Arc::clone(&app),
             mounts.routes,
             mounts.sessions,
@@ -2033,7 +2043,14 @@ pub(super) mod session_door {
             0,
             false,
         );
+        services
+            .kernel()
+            .expect("the actual kernel is installed")
+            .attach_tickets(Arc::new(crate::root::serve::LiveTickets(Arc::downgrade(
+                &handle,
+            ))));
         Some(Ok(SessionDoor {
+            _handle: handle,
             router,
             heard,
             gov,
@@ -2763,7 +2780,8 @@ pub(super) mod session_door {
         let open = format!(
             "GET {REALTIME} HTTP/1.1\r\nhost: {address}\r\nupgrade: websocket\r\nconnection: Upgrade\r\n\
              sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\
-             authorization: Bearer {}\r\n\r\n", s.plain,
+             authorization: Bearer {}\r\n\r\n",
+            s.plain,
         );
         caller.write_all(open.as_bytes()).await.unwrap();
         let head = tokio::time::timeout(
@@ -11885,12 +11903,15 @@ async fn the_model_plane_families_stay_v1_5_4_shaped_on_a_real_scrape() {
     let exposition = crate::root::serve::door_tests::render_metrics();
     let model_counters = exposition_family(&exposition, busbar_kernel::snapshot::REQUESTS_TOTAL);
     assert!(
-        model_counters.iter().any(|line| line.contains("pool=\"t065-model-family-pool\"") && exposition_label_keys(line)
-            == vec![
-                "ingress_protocol".to_string(),
-                "outcome".to_string(),
-                "pool".to_string()
-            ]),
+        model_counters
+            .iter()
+            .any(|line| line.contains("pool=\"t065-model-family-pool\"")
+                && exposition_label_keys(line)
+                    == vec![
+                        "ingress_protocol".to_string(),
+                        "outcome".to_string(),
+                        "pool".to_string()
+                    ]),
         "no v1.5.4-shaped `{}` series {{ingress_protocol,pool,outcome}} after driving model traffic \
          (model {model_status}). Exposition:\n{exposition}",
         busbar_kernel::snapshot::REQUESTS_TOTAL,
