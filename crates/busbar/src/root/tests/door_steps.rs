@@ -6206,6 +6206,15 @@ pub(crate) mod door_boundary {
             app.admin_chain = chain.clone();
             dispatched(app, row, &booted)
         });
+        // Complete an actual pre-apply connect before separating its traffic
+        // from the applied generation's connect. Composition may already have
+        // asked for the initial tool list without the binding added below.
+        let (before_status, before_body) = admin(&rig, "POST", "/tools/fs/connect").await;
+        assert_eq!(
+            before_status, 200,
+            "the pre-apply connect settles: {before_body}"
+        );
+        while server.heard.try_recv().is_ok() {}
         let generation = rig.live.current().generation;
 
         let applied = Arc::new(dispatched((*rig.app).clone(), row, &slot_over(row, after)));

@@ -249,7 +249,15 @@ fn registration(
         let mut id = Mapping::new();
         id.insert("cert".into(), file(cert));
         id.insert("key".into(), file(private));
-        r.insert(trust.into(), Value::Mapping(id));
+        // `tls` now owns only the optional operator CA bundle. Its identity
+        // remains the established sibling object; legacy identity selectors
+        // continue to name that object directly.
+        let identity = if trust == "tls" {
+            "client_identity"
+        } else {
+            trust
+        };
+        r.insert(identity.into(), Value::Mapping(id));
     }
     Value::Mapping(r)
 }
