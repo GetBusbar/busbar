@@ -159,6 +159,9 @@ fn build_application(
         &rules,
     )
     .expect("the actual product builds the OAuth deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds OAuth rate history and usage recovery before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
