@@ -4109,7 +4109,30 @@ fn try_publish_door(section: &str, settings: &str) -> Result<ServeTables, String
     crate::distribution::admin_cross_plane::ensure_seam();
     let owner = busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
         .unwrap_or_else(|| panic!("a test-linked plane owns `{section}:`"));
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    // These are serving instances, so their advertised conditional-record protocol needs
+    // the actual Store-backed host services used by the composition root.
+    let store = crate::root::real_store::store();
+    let gov = gov_with_signer(store.clone(), None);
+    assert!(gov.attach_store_calls(store.clone()));
+    let services = crate::root::serve::LateServices::new();
+    let kernel = Arc::new(
+        busbar_kernel::host_services::KernelServices::new()
+            .with_signer(gov)
+            .with_pool(Arc::new(busbar_kernel::host_services::BlockingPool::new(
+                tokio::runtime::Handle::current(),
+                busbar_kernel::host_records::QUEUE_CAP,
+            )))
+            .with_records(Arc::new(busbar_kernel::host_records::StoreRows(store))),
+    );
+    services.install_kernel(kernel.clone(), kernel).unwrap();
+    let dispatcher = Arc::new(Dispatcher::with_services(
+        DispatchConfig::default(),
+        services.served(),
+    ));
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
+    let conns = crate::root::connector::installed()
+        .expect("the actual root installs its declared connection table")
+        .clone();
     let (instance, plane) = crate::distribution::admin_cross_plane::test_seams::linked_doors()
         .iter()
         .find_map(|(label, door)| {
@@ -4122,7 +4145,7 @@ fn try_publish_door(section: &str, settings: &str) -> Result<ServeTables, String
                     max_inflight_cap: 64,
                     sink: Arc::new(NoSink),
                     dispatcher: dispatcher.adopter(),
-                    conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
+                    conns: busbar_plugin_loader::dispatch::ConnTable::Host(conns.clone()),
                 },
             )
             .ok()?;
