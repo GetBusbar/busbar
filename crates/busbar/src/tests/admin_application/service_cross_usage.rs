@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 const LANE: &str = "m-priced-chat";
 const PROVIDER: &str = "priced-chat";
 const KEY: &str = "vk_auditor";
+const GROUP: &str = "cross-usage-day";
 
 const TOKENS: u64 = 1_000;
 const DAY: u64 = busbar_kernel::governance::METERING_BUCKET_SECS;
@@ -33,6 +34,13 @@ fn card(micro_per_token: f64) -> RateCard {
     )
 }
 
+fn enforcement_groups() -> BTreeMap<String, busbar_kernel::config::GroupCfg> {
+    serde_json::from_value(serde_json::json!({
+        (GROUP): {"limits": [{"tokens": u64::MAX, "per": "day"}]}
+    }))
+    .expect("the actual day enforcement group parses")
+}
+
 fn current_cost() -> busbar_kernel::cost::CostModel {
     let rates = std::collections::BTreeMap::from([(
         LANE.to_string(),
@@ -44,11 +52,7 @@ fn current_cost() -> busbar_kernel::cost::CostModel {
             ..Default::default()
         },
     )]);
-    busbar_kernel::cost::CostModel::resolve_parts(
-        Some(&rates),
-        0,
-        &std::collections::BTreeMap::new(),
-    )
+    busbar_kernel::cost::CostModel::resolve_parts(Some(&rates), 0, &enforcement_groups())
 }
 
 fn history(edit_ms: u64) -> History {
@@ -67,6 +71,7 @@ fn enforcement_key() -> busbar_contract::records::VirtualKey {
     busbar_contract::records::VirtualKey {
         id: KEY.to_string(),
         generation_hash: format!("h:{KEY}"),
+        group: Some(GROUP.into()),
         enabled: true,
         ..Default::default()
     }
@@ -193,7 +198,7 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
         "rate_card": BTreeMap::from([(LANE, busbar_kernel::config::RateEntryCfg {
             input_utok: RATE_EARNED, output_utok: 0.0, ..Default::default()
         })]),
-        "groups": {},
+        "groups": enforcement_groups(),
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
@@ -320,26 +325,41 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
             })
             .expect("the actual Store retains the metering delta");
     }
-    let ledger = busbar_contract::records::UsageLedger {
-        requests: 2,
-        billable_requests: 2,
-        models: vec![busbar_contract::records::ModelTokens {
-            model: LANE.into(),
-            usage_units: BTreeMap::from([(
-                busbar_contract::records::UNIT_INPUT.into(),
-                TOKENS * 2,
-            )]),
-        }],
-    };
-    for window in [
-        busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_TOTAL, now),
-        busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_DAY, now),
-    ] {
-        store
-            .put_usage(KEY, window, &ledger)
-            .expect("the actual Store retains the usage ledger");
-    }
     gov.refresh().expect("the actual keys refresh");
+    // A raw put_usage row is a legacy undated opening-era ledger. Record these enforcement
+    // postings through the actual admission/accrual API so their current serving era survives
+    // the Store flush and hydration. The separate dated metering rows above stay unchanged.
+    let key = enforcement_key();
+    let units = BTreeMap::from([(busbar_contract::records::UNIT_INPUT.into(), TOKENS)]);
+    for _ in 0..2 {
+        let _admitted = gov
+            .try_admit(&cost, &key, "", now)
+            .expect("the actual enforcement book admits the posting");
+        gov.record_usage_served(&cost, &key, "", LANE, Some(PROVIDER), &units, now);
+    }
+    gov.flush_budgets();
+    let group_bucket = &cost
+        .group_named(GROUP)
+        .expect("the actual day group")
+        .buckets[0]
+        .bucket_id;
+    for (bucket_id, window) in [
+        (
+            KEY,
+            busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_TOTAL, now),
+        ),
+        (
+            group_bucket.as_str(),
+            busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_DAY, now),
+        ),
+    ] {
+        let ledger = store
+            .get_usage(bucket_id, window)
+            .expect("the actual raw usage flush persists");
+        assert_eq!(ledger.requests, 2);
+        assert_eq!(ledger.billable_requests, 2);
+        assert_eq!(ledger.tokens_for(LANE), Some(TOKENS * 2));
+    }
     let router = busbar_kernel::build_router(Arc::new(app));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -359,7 +379,13 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
         .expect("the key ledger hydrates");
 
     let group_cents = gov
-        .derived_bucket_usage(&cost, KEY, busbar_kernel::governance::WINDOW_DAY, true, now)
+        .derived_bucket_usage(
+            &cost,
+            group_bucket,
+            busbar_kernel::governance::WINDOW_DAY,
+            true,
+            now,
+        )
         .expect("the group bucket reads")
         .spend_cents;
 
