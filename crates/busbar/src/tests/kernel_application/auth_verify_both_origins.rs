@@ -168,17 +168,28 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
     let stated = busbar_plugin_loader::dispatch::rendering_of_library(&path)
         .expect("read actual OIDC")
         .expect("OIDC statement");
-    let (key, canonical, door) = crate::LINKED
-        .auths
-        .iter()
-        .find(|(_, _, door)| {
-            busbar_plugin_loader::dispatch::rendering_of(*door)
-                .ok()
-                .as_deref()
-                == Some(stated.as_slice())
-        })
-        .copied()
-        .expect("the linked OIDC Statement must match the exact qualified dropped image");
+    let linked_statements: Vec<_> = crate::LINKED.auths.iter().map(|(key, canonical, door)| {
+        let rendering = busbar_plugin_loader::dispatch::rendering_of(*door);
+        let diagnostic = match &rendering {
+            Ok(bytes) => serde_json::json!({
+                "key": key, "canonical": canonical,
+                "statement_sha256": busbar_contract::redacted::sha256_hex(bytes),
+                "rendering": String::from_utf8_lossy(bytes),
+            }),
+            Err(error) => serde_json::json!({"key": key, "canonical": canonical, "rendering_error": error.to_string()}),
+        };
+        ((*key, *canonical, *door), rendering, diagnostic)
+    }).collect();
+    let (key, canonical, door) = linked_statements.iter()
+        .find_map(|(row, rendering, _)| (rendering.as_ref().ok().map(Vec::as_slice) == Some(stated.as_slice())).then_some(*row))
+        .unwrap_or_else(|| panic!(
+            "the linked OIDC Statement must match the exact qualified dropped image: dropped_path={} dropped_image_sha256={} dropped_statement_sha256={} dropped_rendering={} linked_rows={}",
+            path.display(),
+            busbar_contract::redacted::sha256_hex(&std::fs::read(&path).expect("read actual dropped OIDC image for mismatch provenance")),
+            busbar_contract::redacted::sha256_hex(&stated),
+            String::from_utf8_lossy(&stated),
+            serde_json::Value::Array(linked_statements.iter().map(|(_, _, diagnostic)| diagnostic.clone()).collect()),
+        ));
     let mut manifest = LinkedPlugin::auth_door_named(canonical, key, door).manifest;
     // Admission metadata names the same explicitly configured normal publisher on both origins.
     manifest.publisher = PUBLISHER.into();
