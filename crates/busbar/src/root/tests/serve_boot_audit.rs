@@ -81,10 +81,7 @@ pub(super) async fn run() {
     let rows = busbar_kernel::preflight::root_rows();
     assert!(rows.rate_apply.is_some() && rows.rate_epoch.is_some());
 
-    let store_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("the boot audit requires the freshly built actual Store image"),
-    );
+    let store_path = crate::root::test_plugins::application_store_library();
     let statement = rendering_of_library(&store_path)
         .expect("the actual Store image reads")
         .expect("the actual Store states its identity");
@@ -104,10 +101,7 @@ pub(super) async fn run() {
         &std::fs::read(store_path).expect("the actual Store bytes read"),
     );
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("the actual Store settings are JSON");
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(settings.is_object());
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {}, "models": {},

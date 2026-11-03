@@ -515,10 +515,7 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
         }
     }
     let release = crate::root::test_plugins::key(0x5a);
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -538,10 +535,7 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
         crate::root::test_plugins::signed(&release, manifest, &library),
     )
     .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     let late = crate::root::serve::LateServices::new();
     let dispatcher = crate::root::dispatch::boot(1, &late);
     crate::root::doors::install_dispatcher(dispatcher);

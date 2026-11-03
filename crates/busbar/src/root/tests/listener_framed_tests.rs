@@ -816,10 +816,7 @@ async fn anonymous_policy_with_upgrade(
     .unwrap();
     crate::root::inbound::stage(guests, Vec::new());
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -844,10 +841,7 @@ async fn anonymous_policy_with_upgrade(
     );
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
@@ -924,10 +918,7 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
     .unwrap();
     inbound::stage(guests, Vec::new());
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -952,10 +943,7 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
     );
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
@@ -1013,10 +1001,7 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
     scope.operation_finished(Ticket::NONE, false);
     drop(old_app);
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -1041,10 +1026,7 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
     );
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
@@ -1189,10 +1171,7 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
     let admitted_app = Arc::downgrade(&new_app);
     drop(new_app);
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -1217,10 +1196,7 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
     );
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
@@ -3174,13 +3150,17 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
         let mut store_module = None;
         let mut auth_module = None;
         for (kind, variable) in [
-            ("store", "BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN"),
+            ("store", "BUSBAR_TEST_SQLITE_CDYLIB"),
             ("auth", "BUSBAR_TEST_OIDC_CDYLIB"),
         ] {
-            let path = std::path::PathBuf::from(
-                std::env::var_os(variable)
-                    .unwrap_or_else(|| panic!("{variable} names the actual built product")),
-            );
+            let path = if kind == "store" {
+                crate::root::test_plugins::application_store_library()
+            } else {
+                std::path::PathBuf::from(
+                    std::env::var_os(variable)
+                        .unwrap_or_else(|| panic!("{variable} names the actual built product")),
+                )
+            };
             let statement = crate::root::loader::dispatch::rendering_of_library(&path)
                 .unwrap()
                 .unwrap();
@@ -3206,10 +3186,7 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
                 store_module = Some(module);
             }
         }
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .unwrap();
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {}, "models": {},
         "store": {"module": store_module.unwrap(), "settings": settings},

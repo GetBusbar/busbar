@@ -77,10 +77,7 @@ fn accessed(journal: &NodeAmendments) -> Vec<String> {
 
 fn application(slots: &crate::root::store_double::RecordSlots) -> Arc<busbar_kernel::state::App> {
     crate::dist_root_install::install();
-    let path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the built product store"),
-    );
+    let path = crate::root::test_plugins::application_store_library();
     let statement = crate::root::loader::dispatch::rendering_of_library(&path)
         .expect("the product store statement reads")
         .expect("the product store exports its statement");
@@ -102,10 +99,7 @@ fn application(slots: &crate::root::store_double::RecordSlots) -> Arc<busbar_ker
     );
     std::fs::write(directory.0.join("store.tar.gz"), archive)
         .expect("the actual store archive is staged");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings = crate::root::test_plugins::application_store_settings(&directory.0);
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
