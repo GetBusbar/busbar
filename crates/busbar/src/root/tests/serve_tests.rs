@@ -83,7 +83,12 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
     crate::dist_root_install::install();
     let connector = crate::root::connector::installed()
         .expect("the normal root installs the actual transport connector");
-    let dispatcher = std::sync::Arc::new(Dispatcher::new(DispatchConfig::default()));
+    // The actual exporter serves its scrape by reading the snapshot host service.
+    // The route's grant and the dispatcher must both carry the normal service path.
+    let dispatcher = std::sync::Arc::new(Dispatcher::with_services(
+        DispatchConfig::default(),
+        std::sync::Arc::new(busbar_kernel::host_services::KernelServices::new()),
+    ));
     crate::root::connector::install_io(&dispatcher);
     let plugin = load_dropped::<Export>(
         &path,
