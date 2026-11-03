@@ -44,6 +44,8 @@ fn ranking_path() -> std::path::PathBuf {
         .expect("the qualified actual Ranking image")
 }
 
+// The retained product image supplies the typed ABI entry and validated descriptor.
+#[allow(unsafe_code)]
 extern "C" fn ranking_door() -> &'static busbar_contract::abi::mechanism::door::Door {
     use busbar_contract::abi::sdk::door::RawDoorFn;
     static IMAGE: std::sync::OnceLock<(libloading::Library, RawDoorFn)> =
@@ -65,6 +67,8 @@ extern "C" fn ranking_door() -> &'static busbar_contract::abi::mechanism::door::
     unsafe { &*door }
 }
 
+// This test initializes plain wire structs; their zero-valid fields are documented below.
+#[allow(unsafe_code)]
 fn ranking_decide(p: &Plugin<Hook>, with_costs: bool) -> String {
     use busbar_contract::abi::hook::{
         CandidateDynamic, CandidateStatic, CANDIDATE_HAS_COST_PER_MTOK,
