@@ -414,7 +414,7 @@ fn a_slow_auth_door_does_not_park_the_reactor() {
         .expect("the issuer endpoint is an actual loopback socket");
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind the one-connection external peer");
     listener.set_nonblocking(true).unwrap();
-    // READY warms the real cache; expire it before exercising request-path Pending.
+
     settings.insert("jwks_ttl_secs".into(), serde_json::json!(1));
     settings.insert("jwks_min_refetch_secs".into(), serde_json::json!(1));
     settings.insert(
@@ -425,8 +425,6 @@ fn a_slow_auth_door_does_not_park_the_reactor() {
     let (entered_tx, entered_rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
 
-    // An owned wire peer forwards READY unchanged, then holds the next genuine TLS byte
-    // for expired-cache VERIFY; it fabricates no protocol or outcome.
     std::thread::scope(|peers| {
         let wire = peers.spawn(move || {
             std::thread::scope(|connections| {
@@ -532,7 +530,7 @@ fn a_slow_auth_door_does_not_park_the_reactor() {
             )
             .expect("the actual OIDC verifier warms its keys through the unheld READY relay"),
         );
-        // Wait for the configured real JWKS cache lifetime, not for a synthetic verifier.
+
         std::thread::sleep(Duration::from_millis(1100));
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)

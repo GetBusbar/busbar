@@ -2,12 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A real HTTP owner's cancellation wakes an actual A2A card-flight waiter.
-//!
-//! The parent composes this case with a zero re-verification TTL, the actual Store, signed card,
-//! verified caller and the same linked or dropped plugin instance used by its HTTP router.
-//! The waiter's Pending result and wake are observed through the existing safe inline-ticket
-//! API. No plugin slot or host service is replaced. Its final status is a raw SDK reply status;
-//! the owner is an actual root HTTP request whose future is dropped while the peer stays held.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -27,13 +21,11 @@ use tokio::sync::{oneshot, Notify};
 
 use crate::root::loader::dispatch::{kinds::plane::Plane, Dispatcher, Frame, InlineTicket, Plugin};
 
-// The original cancelled message/send input. It never reaches the peer's POST handler: its
-// verification card GET is held until after the owner has been cancelled and the waiter finishes.
 const OWNER_REQUEST: &[u8] = br#"{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"kind":"message","messageId":"m-1","role":"user","parts":[{"kind":"text","text":"plan"}]}}}"#;
 pub(super) const WAITER_REQUEST: &[u8] =
     br#"{"jsonrpc":"2.0","id":1,"method":"GetExtendedAgentCard","params":{}}"#;
 const TARGET: &[u8] = b"/a2a/agents/vendor";
-// The parent's asserted actual A2A snapshot puts POST /a2a/agents/{agent_id} at this index.
+
 const AGENT_RPC_CLAIM: u32 = 14;
 const DEADLINE: Duration = Duration::from_secs(5);
 
@@ -100,8 +92,6 @@ impl Wake for WaiterWake {
     }
 }
 
-// Declared after the piece frame and all its backing buffers. Unwinding cancels the actual unit
-// before those loans are freed; the inline ticket is recycled only after this Drop returns.
 struct RetireWaiter {
     plane: Arc<Plugin<Plane>>,
     ticket: InlineTicket,
@@ -138,7 +128,6 @@ impl RetireWaiter {
 impl Drop for RetireWaiter {
     fn drop(&mut self) {
         if self.active {
-            // A2A's actual CANCEL is synchronous; cleanup is also required on assertion unwind.
             let _ = self.retire();
         }
     }
@@ -207,7 +196,7 @@ pub(super) async fn run(
     piece.claim = AGENT_RPC_CLAIM;
     piece.from = FROM_KERNEL;
     piece.member = AbiStr::of("vendor");
-    // Authority stays in HostUnits. The guest sees only the original opaque caller reference.
+
     piece.caller_ref = AbiStr::of("c0ffee01");
     piece.attempt_no = 1;
     piece.bytes = Blob::of(b"");
@@ -221,7 +210,7 @@ pub(super) async fn run(
     piece.fields_cap = fields.len();
     piece.arena_buf = arena.as_mut_ptr();
     piece.arena_cap = arena.len();
-    let body; // The far-end bytes outlive the frame that lends them to the plugin.
+    let body;
     let mut frame: Frame<OnPieceIn, OnPieceOut> = Frame::new(piece, blank_out());
     let mut waiter = RetireWaiter {
         plane,
@@ -260,8 +249,7 @@ pub(super) async fn run(
     let wake = Arc::new(WaiterWake::default());
     let waker = Waker::from(wake.clone());
     waiter.ticket.register(&waker);
-    // Re-enter the same Pending continuation while the first card is still held. No replacement
-    // frame, host callback, or peer completion can manufacture this slot result or its ticket wake.
+
     let called = waiter
         .plane
         .call_inline(waiter.ticket.ticket(), true, slot::ON_PIECE, &mut frame);
@@ -270,7 +258,6 @@ pub(super) async fn run(
     assert!(control.held.load(Ordering::SeqCst));
     assert_eq!(control.fetches.load(Ordering::SeqCst), fetched + 1);
 
-    // The actual root request's future owns cancellation. No raw CANCEL is sent to its owner.
     drop(owner);
     tokio::time::timeout(DEADLINE, async {
         wake.notified.notified().await;
@@ -301,8 +288,7 @@ pub(super) async fn run(
         control.held.load(Ordering::SeqCst),
         "the first response stayed held"
     );
-    // The resumed kernel piece opens the verified relay attempt. Complete the same actual
-    // caller/far-end exchange before observing a reply head: an attempt is not a caller reply.
+
     assert_eq!(frame.out.reply_status, 0);
     assert_ne!(frame.out.flags & EMIT_TO_FAR_END, 0);
     let span = |span: busbar_contract::abi::mechanism::call::Span| {

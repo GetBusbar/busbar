@@ -35,8 +35,6 @@ fn actual_ranking_door() -> &'static busbar_contract::abi::mechanism::door::Door
     door
 }
 
-// Metadata-only adversarial boundary: retain Ranking's actual image and every operation,
-// changing only the declared route list. This is not a product SERVE implementation.
 #[allow(unsafe_code)]
 pub extern "C" fn door() -> &'static busbar_contract::abi::mechanism::door::Door {
     use busbar_contract::abi::hook::{Route as AbiRoute, Tail, ROUTE_AUTH_KEY};

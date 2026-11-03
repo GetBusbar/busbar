@@ -161,8 +161,6 @@ impl AbiCanaries {
     }
 }
 
-// The ABI observer owns its FFI boundary, while all services and I/O are the
-// public product implementations. It never installs a substitute kernel root.
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
@@ -209,7 +207,7 @@ fn host() -> &'static (Arc<Dispatcher>, Arc<Connector>) {
                 .expect("the actual HTTP transport admits");
         let door = Dispatched::open_on(plugin, &settings, dispatcher.clone())
             .expect("the actual HTTP transport opens");
-        // HTTP frames requests; the production TCP carrier reaches their peer addresses.
+
         let carrier_row = LinkedRow::of(busbar_transport_tcp::door)
             .expect("the actual TCP carrier states itself");
         let carrier_plugin = load_linked::<Transport>(
@@ -375,8 +373,7 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
         "oidc settings (${VAR} interpolation)",
         open(&rows, &d.oidc.0, s),
     );
-    // Prove that the observed dropped-in OIDC door reaches the TLS JWKS server
-    // through the actual connector, rather than only recording a refused open.
+
     let oidc = rows
         .open(
             &d.oidc.0,

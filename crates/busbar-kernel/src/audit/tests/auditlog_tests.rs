@@ -893,7 +893,11 @@ fn a_clean_restore_captures_no_unreadable_row_diagnostic() {
         let _ = h.log.restore_from_store(plane.as_ref());
     }
     assert!(
-        cap.0.lock().unwrap().iter().all(|d| !d.contains("BUSBAR-2047")),
+        cap.0
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|d| !d.contains("BUSBAR-2047")),
         "a clean restore must not report an unreadable audit row: capture state leaked between tests"
     );
 }
@@ -1587,8 +1591,6 @@ fn an_enqueued_event_cannot_pass_an_older_failed_drain() {
     assert_eq!(*delivered.lock().unwrap(), vec![1, 2]);
 }
 
-// Accepted-events projection is a producer policy. None of the four current product
-// exporters declares Events, so these tests intentionally claim no exporter delivery.
 #[test]
 fn accepted_event_projection_preserves_pinned_identity_and_bounds_disclosure() {
     use crate::export::projection::Projection;
@@ -1656,8 +1658,10 @@ fn accepted_event_origin_cannot_be_forged_by_mutation_resource_text() {
         "delivery-failed",
     );
     assert!(resource.contains("accepted-events-failure"));
-    assert!(!EventOrigin::for_plugin_refusal(PluginRefusal::Op, Kind::Export.root()).redispatch(),
-        "an asynchronous export operation failure is durable evidence without recursive Events delivery");
+    assert!(
+        !EventOrigin::for_plugin_refusal(PluginRefusal::Op, Kind::Export.root()).redispatch(),
+        "an asynchronous export operation failure is durable evidence without recursive Events delivery"
+    );
     assert!(
         EventOrigin::for_plugin_refusal(PluginRefusal::Op, Kind::Auth.root()).redispatch(),
         "an auth operation failure remains an Events producer"

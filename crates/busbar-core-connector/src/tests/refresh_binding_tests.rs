@@ -94,7 +94,6 @@ fn actual_transport(dispatcher: &Arc<Dispatcher>, variable: &str) -> Entry {
     }
 }
 
-// Only a bounded loopback wire peer; all transport, secret and connector code is the real product.
 struct VaultPeer {
     addr: String,
     requests: Arc<AtomicUsize>,
@@ -165,10 +164,11 @@ fn request(stream: &mut TcpStream) {
     }
     let head = std::str::from_utf8(&head).expect("HTTP request text");
     assert!(head.starts_with("GET /v1/kv/data/x HTTP/1.1\r\n"));
-    assert!(head.lines().any(|line| line
-        .split_once(':')
-        .is_some_and(|(name, value)| name.eq_ignore_ascii_case("x-vault-token")
-            && value.trim().as_bytes() == TOKEN)));
+    assert!(head.lines().any(|line| {
+        line.split_once(':').is_some_and(|(name, value)| {
+            name.eq_ignore_ascii_case("x-vault-token") && value.trim().as_bytes() == TOKEN
+        })
+    }));
 }
 
 impl Drop for VaultPeer {
@@ -208,7 +208,6 @@ impl Drop for OpenVault {
     }
 }
 
-// Caller-owned settings and mutable output stay lent until the actual dispatcher retires the call.
 struct ResolveLoan {
     settings: Vec<u8>,
     material: Mutex<Vec<u8>>,
@@ -273,8 +272,7 @@ fn resolve(plugin: &Plugin<Secret>, dispatcher: &Dispatcher) -> Vec<u8> {
     }
     dispatcher.recycle(ticket);
     let done = done.expect("actual Vault resolve finishes within its deadline");
-    // Retire an error lease before any assertion can unwind the case. The copied
-    // caller buffer below is never guest-leased.
+
     release(plugin, done.lease);
     assert_eq!(
         done.outcome,
@@ -326,7 +324,7 @@ fn refused_vault_refresh_preserves_the_committed_connector_binding() {
     let _entered = runtime.enter();
     let first = VaultPeer::new("known");
     let second = VaultPeer::new("moved");
-    // A real deployment policy explicitly allowing this loopback infrastructure fixture.
+
     let destinations = Destinations {
         block_private_addresses: false,
         ..Destinations::default()

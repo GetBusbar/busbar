@@ -730,7 +730,7 @@ impl PluginRegistry {
                     return Err(format!(
                         "transport plugin '{name}' exports no memory-ABI door \
                          (`busbar_plugin_door`): a transport loads only through its door"
-                    ))
+                    ));
                 }
             }
         }
@@ -811,7 +811,9 @@ impl LinkedCopy {
 }
 
 pub fn both_doors(name: &str, version: &str, file: &str) -> String {
-    format!("plugin '{name}' v{version} is linked and also dropped in ({file}); the linked build serves it")
+    format!(
+        "plugin '{name}' v{version} is linked and also dropped in ({file}); the linked build serves it"
+    )
 }
 
 pub fn one_version(linked: &LoadablePlugin, file: &str, dropped: &str) -> Result<String, String> {
@@ -824,7 +826,9 @@ pub fn one_version(linked: &LoadablePlugin, file: &str, dropped: &str) -> Result
 }
 
 pub fn unversioned(name: &str) -> String {
-    format!("plugin '{name}' states no version in its Statement: the one-version rule cannot compare it")
+    format!(
+        "plugin '{name}' states no version in its Statement: the one-version rule cannot compare it"
+    )
 }
 
 pub fn two_versions(name: &str, linked: &str, file: &str, dropped: &str) -> Result<String, String> {
@@ -1199,7 +1203,7 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                 manifest: None,
                 signature: "-".into(),
                 status: format!("INVALID: {e}"),
-            }]
+            }];
         }
     };
     let mut loadable = Vec::new();

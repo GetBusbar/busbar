@@ -326,9 +326,7 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
             .expect("the actual Store retains the metering delta");
     }
     gov.refresh().expect("the actual keys refresh");
-    // A raw put_usage row is a legacy undated opening-era ledger. Record these enforcement
-    // postings through the actual admission/accrual API so their current serving era survives
-    // the Store flush and hydration. The separate dated metering rows above stay unchanged.
+
     let key = enforcement_key();
     let units = BTreeMap::from([(busbar_contract::records::UNIT_INPUT.into(), TOKENS)]);
     for _ in 0..2 {

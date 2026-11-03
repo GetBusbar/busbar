@@ -28,8 +28,6 @@ use crate::{Connector, DialJudge, Judged, Verdict};
 
 const OWNER: InstanceId = InstanceId(1);
 
-// Enter this reactor only for these fixtures. Installing the process fallback would also move
-// other tests' registrations and deadline timers onto this concurrently driven runtime.
 fn runtime() -> &'static tokio::runtime::Handle {
     static RUNTIME: OnceLock<tokio::runtime::Handle> = OnceLock::new();
     RUNTIME.get_or_init(|| {

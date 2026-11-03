@@ -131,7 +131,7 @@ pub fn reference_positions(
     out
 }
 
-/// RESOLVE the REFERENCE-CAPABLE positions of `tree` in place (lead ruling item 7a): each secret
+/// RESOLVE the REFERENCE-CAPABLE positions of `tree` in place: each secret
 pub fn resolve_references(
     tree: &mut Value,
     secret: &[String],

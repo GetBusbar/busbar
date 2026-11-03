@@ -596,9 +596,7 @@ fn project_routes(
             }
             None => continue,
         };
-        // Persistent public routes are projected separately, before this policy
-        // withholds the remaining public surface. Require at least one such
-        // withheld route; persistent-only, empty or private surfaces stay strict.
+
         let wholly_withheld = opened.is_some()
             && !p.scrape
             && routes

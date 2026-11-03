@@ -67,8 +67,7 @@ impl CoreRouteTable {
         mut refusals: Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
     ) -> Self {
         use busbar_contract::abi::transport::route::{PATH_EXACT, PATH_PATTERN};
-        // A fallback can precede an exact claim in the mounted plane list. Select admission
-        // metadata with the same path precedence as the sealed guest list, not plane order.
+
         refusals.sort_by_cached_key(|r| {
             std::cmp::Reverse(
                 crate::guest::Route {

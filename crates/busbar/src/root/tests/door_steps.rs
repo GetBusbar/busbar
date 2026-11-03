@@ -534,7 +534,9 @@ fn the_grant_is_judged_over_the_named_pool_then_its_fallback() {
 #[test]
 fn test_adhoc_governance_pool_acl_403_via_router() {
     use busbar_contract::records::{ScopeRef, VirtualKey};
-    let p = pools("models:\n  configured-model: {provider: p}\npools:\n  other-pool:\n    members: [configured-model]");
+    let p = pools(
+        "models:\n  configured-model: {provider: p}\npools:\n  other-pool:\n    members: [configured-model]",
+    );
     let elsewhere = VirtualKey {
         allowed_scopes: Some(vec![ScopeRef::pool("other-pool")]),
         ..VirtualKey::default()
@@ -1063,8 +1065,7 @@ fn downgrade_book(
         )]);
         let mut cfg = busbar_kernel::config::resolve(&deploy, &providers)
             .expect("the door deployment resolves");
-        // Admission reads the kept, dated card, so the configured authority must
-        // carry the same ten-cent fee and group tree as this boundary's CostModel.
+
         cfg.per_request_fee = 10;
         cfg.groups = groups.clone();
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
@@ -1190,7 +1191,6 @@ fn charge_once_at(
     }
 }
 
-// A held child must reuse admission without losing its own billable usage.
 #[test]
 fn a_live_parent_at_the_request_cap_admits_and_ledgers_its_child() {
     use busbar_contract::caps::{Admission, Hold, HoldCell, PrincipalId};
@@ -5578,9 +5578,6 @@ pub(crate) mod door_boundary {
         row: &'static PlaneDecl,
         slot: &Arc<dyn std::any::Any + Send + Sync>,
     ) -> App {
-        // This fixture has actually built this configured section above. Retain
-        // appbuild's configured-section metadata as well as its mounted object,
-        // so the admin shim can distinguish it from an unopened declaration.
         app.plane_sections
             .get_or_insert_with(Default::default)
             .insert(row.config_section);
@@ -5590,7 +5587,7 @@ pub(crate) mod door_boundary {
         if let Some(admission) = (row.admission)(&**slot) {
             app.planes = Arc::new((*app.planes).clone().admit(row.key, admission));
         }
-        // Keep the built object under its declaration key, as appbuild does.
+
         app.plane_slots.insert(row.key, Arc::clone(slot));
         app.plane_slots.insert(
             busbar_kernel::state::runtime_slot_key(row.key),
@@ -6091,9 +6088,7 @@ pub(crate) mod door_boundary {
             &app.secret_resolver,
         )
         .expect("the actual root opens the admin chain");
-        // Match appbuild: opening the chain alone does not install its operator
-        // credential. Keep the actual configured governor's credential, not an
-        // uncredentialed placeholder Operator.
+
         modules.operator = busbar_kernel::auth::open_operator(
             &app.hook_env.registry,
             app.governance
@@ -6402,9 +6397,7 @@ pub(crate) mod door_boundary {
             app.admin_chain = chain.clone();
             dispatched(app, row, &booted)
         });
-        // Complete an actual pre-apply connect before separating its traffic
-        // from the applied generation's connect. Composition may already have
-        // asked for the initial tool list without the binding added below.
+
         let (before_status, before_body) = admin(&rig, "POST", "/tools/fs/connect").await;
         assert_eq!(
             before_status, 200,
@@ -6415,8 +6408,7 @@ pub(crate) mod door_boundary {
 
         let next_slot = slot_over(row, after.clone());
         let mut applied = dispatched((*rig.app).clone(), row, &next_slot);
-        // The rig names its serving instance separately from the declaration.
-        // Apply resolves that instance's actual configured slot, not row.key.
+
         applied.plane_slots.insert(instance, next_slot);
         let applied = Arc::new(applied);
         rig.live.apply(&applied);
@@ -8101,12 +8093,7 @@ pub(crate) mod hook_parity {
         );
         drop(weighted);
 
-        let mut required = gate(
-            "rw",
-            // The same actual operation failure now follows on_error: reject.
-            // Explicit hook rejects are client errors, not host unavailability.
-            serde_json::json!({ "http_status": 503 }),
-        );
+        let mut required = gate("rw", serde_json::json!({ "http_status": 503 }));
         required.on_error =
             serde_json::from_value(serde_json::json!("reject")).expect("an on_error disposition");
         let required = rig(instance, &server, vec![("required-outcome", required)]);

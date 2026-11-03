@@ -57,9 +57,6 @@ fn inbound_default_cannot_reinterpret_a_provider_name_as_host_auth() {
     );
 }
 
-// Actual opened-instance reuse, lookup custody, and generation replacement live in
-// busbar's auth_login_tests::inbound_provider_retains_the_actual_opened_instance.
-
 fn idp_with_secret(env: &str) -> crate::config::AuthCfg {
     let mut cfg = crate::config::AuthCfg::default_none();
     cfg.methods.insert(
@@ -94,7 +91,6 @@ fn browser_login_secret_required_for_redirect_absent_for_credential() {
 
 #[test]
 fn the_client_secret_is_lent_at_open() {
-    // Internal production settings continuation: actual secret resolution and slot policy.
     const SECRET: &str = "REAL-SECRET-XYZ";
     std::env::set_var("BUSBAR_TEST_LOGIN_SECRET_LENT", SECRET);
     let cfg = idp_with_secret("BUSBAR_TEST_LOGIN_SECRET_LENT");
@@ -164,7 +160,6 @@ fn the_lent_settings_are_wiped() {
 
 #[test]
 fn a_login_method_with_no_auth_axis_is_refused_in_1_5_5_words() {
-    // Internal production error formatter for an absent axis; no fake rows/axis are built.
     let refusal = missing_login_axis("idp", "idp-plugin");
     assert_eq!(
         refusal,
@@ -179,8 +174,6 @@ fn a_login_method_with_no_auth_axis_is_refused_in_1_5_5_words() {
 
 #[tokio::test]
 async fn without_a_registered_flow_the_kernel_has_no_hosted_login_response() {
-    // Internal fallback response. The real root installs the genuine hosted flow; this
-    // defensive no-registration branch is not presented as a real-root HTTP route.
     let response = unregistered_browser_response();
     assert_eq!(
         response.status().as_u16(),

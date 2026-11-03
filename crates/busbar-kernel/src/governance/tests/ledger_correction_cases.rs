@@ -462,7 +462,6 @@ fn conditional_conflict_revalidates_shared_rows_and_preserves_common_refund_and_
     metered(&gov, &key.id, MODEL, INITIAL_INPUT, now);
     let (writer, mutator, mutated_key) = (store.clone(), gov.clone(), key.clone());
     *store.before_add.lock().unwrap() = Some(Box::new(move || {
-        // Another node changes a shared row after this candidate captured its condition.
         writer
             .inner
             .add_usage(
@@ -1013,8 +1012,7 @@ fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_before_
         .clone();
     drop(grant);
     drop(first);
-    // Retire only the fault-injection wrapper. Its actual loaded Store, conditional receipt
-    // and raw rows survive both runtime restarts.
+
     let backend = faulting.inner.clone();
     drop(faulting);
     backend
@@ -1079,8 +1077,11 @@ fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_before_
         (input(&row), row.billable_requests),
         (hydrated + CONCURRENT_INPUT, 1)
     );
-    assert_eq!(third.usage_for(&cm, &key.id, now).unwrap().unwrap().tokens, hydrated,
-        "posting common raw work never installs the old whole before/accepted aggregates into hydrated RAM");
+    assert_eq!(
+        third.usage_for(&cm, &key.id, now).unwrap().unwrap().tokens,
+        hydrated,
+        "posting common raw work never installs the old whole before/accepted aggregates into hydrated RAM"
+    );
     assert_eq!(
         third.recovery_event(original.operation_id).unwrap().state,
         RecoveryState::LandedUnknown
@@ -1089,8 +1090,15 @@ fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_before_
         third.recovery_event(child_id).unwrap().state,
         RecoveryState::Settled
     );
-    assert_eq!(third.quarantined_correction_negative_capacity(&key.id, 0).unwrap().0.billable_requests, 0,
-        "the fee negative already selected in the accepted branch consumes its original positive exposure");
+    assert_eq!(
+        third
+            .quarantined_correction_negative_capacity(&key.id, 0)
+            .unwrap()
+            .0
+            .billable_requests,
+        0,
+        "the fee negative already selected in the accepted branch consumes its original positive exposure"
+    );
     third.resume_correction_verdicts(&cm).unwrap();
     assert_eq!(backend.get_usage(&key.id, 0).unwrap(), row);
     assert_eq!(
@@ -1200,8 +1208,7 @@ fn independent_entry_refund_posts_while_only_the_matching_entry_negative_is_quar
         0,
         "distinct entries sharing a start never grant each other dependency capacity"
     );
-    // A real new-runtime session charge is durably recorded, then its own era-specific
-    // refund must post without waiting for the unrelated entry-B operator verdict.
+
     gov.record_usage_served_in_era(&cm, &key, "", &lane, None, &one, now, entry_a);
     gov.flush_budgets();
     assert_eq!(

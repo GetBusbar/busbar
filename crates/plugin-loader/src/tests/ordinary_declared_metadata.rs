@@ -147,8 +147,7 @@ fn the_store_host_lends_nothing_and_hands_the_settings_as_resolved() {
     let opened =
         crate::store_v3::LoadedStore::open(plugin, dispatcher, &settings, actual_store::mint)
             .expect("the production Store host opens its actual SQLite database");
-    // SQLite declares one license_key slot. An absent key still has an empty ABI
-    // placeholder; no secret value is lent, and the settings stay byte-identical.
+
     assert_eq!(*OPENED.lock().unwrap(), Some((settings, vec![Vec::new()])));
     drop(opened);
 }
@@ -171,8 +170,7 @@ extern "C" fn referencing() -> &'static Door {
             }
             .to_vec()
         };
-        // Replace the product's existing reference_fields entry rather than appending
-        // a duplicate: extension lookup deliberately reads the first entry.
+
         let mut entries: Vec<_> = busbar_contract::abi::mechanism::extensions::entries(&original)
             .filter(|(key, _)| *key != EXT_REFERENCE_FIELDS.as_bytes())
             .map(|(key, value)| {

@@ -41,7 +41,7 @@ fn actual_lane_acknowledges_only_the_whole_published_prefix_and_restarts_without
     let lane = JournalLane::with_capacity(slots.calls(), "actual-memory", 32).unwrap();
     lane.hold_lease(taken.lease.unwrap());
     let gate = Arc::new(PublicationGate::default());
-    // Created after lane: panic unwinding releases the gate before lane retirement joins it.
+
     let _release = ReleaseGate(gate.clone());
     let callback = gate.clone();
     slots.on_transaction(move |request| {
@@ -82,7 +82,6 @@ fn actual_lane_acknowledges_only_the_whole_published_prefix_and_restarts_without
     slots.on_transaction(|_| None);
     lane.release_held_lease();
 
-    // Reconstruct from actual persisted journal bytes under a freshly taken holder.
     let replay = read_chain(&slots, node).unwrap();
     assert_eq!(replay.len(), records.len());
     for (old, stored) in records.iter().zip(&replay) {

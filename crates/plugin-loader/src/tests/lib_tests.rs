@@ -139,5 +139,3 @@ fn plugin_library_filename_matches_this_platforms_naming_convention() {
 
 #[path = "ffi_guard_tests.rs"]
 mod ffi_guard_tests;
-#[path = "store_adapter_tests.rs"]
-mod store_adapter_tests;

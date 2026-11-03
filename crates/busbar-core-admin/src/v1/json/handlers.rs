@@ -1742,8 +1742,6 @@ pub(crate) async fn flush_credential_cache(
     )
 }
 
-// HTTP/audit projection of the completed refresh operation. Module invocation and
-// selection remain owned by App::flush_verified_credentials.
 fn credential_flush_response(
     result: Result<u64, String>,
     module: Option<&str>,
@@ -2538,7 +2536,6 @@ pub(crate) async fn put_config_settings(
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct PatchSettingsReq {
-    // settings-leak-lint: allow — INBOUND request body (`Deserialize` only). This is the operator
     settings: serde_json::Map<String, serde_json::Value>,
 }
 

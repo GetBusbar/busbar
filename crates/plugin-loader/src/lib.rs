@@ -48,7 +48,6 @@ pub mod settings_schema;
 pub mod sign;
 #[allow(unsafe_code)]
 mod stage;
-pub mod store_adapter;
 #[allow(unsafe_code)]
 pub mod store_v3;
 pub mod tarball;
@@ -281,9 +280,6 @@ mod conformance_auth_form_tests;
 #[allow(unsafe_code)]
 #[path = "tests/conformance_auth_unjudged_tests.rs"]
 mod conformance_auth_unjudged_tests;
-
-// The retired datagram harness tested its own string renderer and script judge.
-// Actual transport behavior remains owned by the product tests.
 
 #[cfg(test)]
 #[allow(unsafe_code)]

@@ -74,8 +74,6 @@ pub fn compose(
     }
 }
 
-// Host-service custody shares the existing bounded work policy. Entries contain no credential.
-// The plane's requested lifetime and deployment/key ceilings remain Store-governed.
 const TICKET_CUSTODY_CAP: usize = busbar_kernel::host_records::QUEUE_CAP;
 const TICKET_SWEEP_BATCH: usize = busbar_kernel::host_records::BATCH_CAP;
 
@@ -133,7 +131,7 @@ impl Drop for TicketSourceOwner {
         self.source
             .active
             .store(false, std::sync::atomic::Ordering::Release);
-        // Unregister first; a binder that already owns the source still must pass its actual cell.
+
         let removed = self
             .custody
             .sources
@@ -252,7 +250,6 @@ impl TicketCustody {
         let reservation = slot
             .cell()
             .with_admitted_call(call, &principal, || {
-                // The failed unpublished attempt is conservatively terminal for this mint source.
                 source
                     .reserved
                     .compare_exchange(
@@ -346,7 +343,7 @@ impl TicketCustody {
             }
             (Arc::clone(&entry.source), entry.version)
         };
-        // Resolve current host generation outside custody lock. Adoption rechecks the identity.
+
         let live = source.live.upgrade()?.current();
         if !Arc::ptr_eq(&live.ticket_nonce, &source.instance_nonce) {
             return None;
@@ -379,7 +376,6 @@ impl TicketCustody {
     }
 
     pub(crate) async fn sweep(&self) {
-        // Snapshot identity only. A cancelled blocking Store check never owns financial custody.
         let snapshots = {
             let mut entries = self
                 .entries
@@ -416,7 +412,6 @@ impl TicketCustody {
             snapshots
                 .into_iter()
                 .filter_map(|(id, version, exp, store)| {
-                    // An uncertain Store result fails closed and burns this bounded local authority.
                     (!store
                         .plane_token_live(
                             busbar_kernel::governance::TICKET_RECORD_KIND,
@@ -469,8 +464,7 @@ pub(crate) fn claim_ticket_custody(
     identity: &busbar_kernel::host_services::VerifiedTicketIdentity,
 ) -> busbar_kernel::host_services::TicketClaimDisposition {
     use busbar_kernel::host_services::TicketClaimDisposition;
-    // This composition's issued plane tickets require a local actual reservation. Unknown/missing
-    // custody is refused, including process restarts; the prefix grants no financial authority.
+
     for node in ticket_nodes() {
         if let Some(reservation) = node.claim(identity) {
             return TicketClaimDisposition::Reserved(reservation);
@@ -844,8 +838,6 @@ pub struct ServedPlane {
     pub dialects: Vec<&'static str>,
 }
 
-// Egress snapshots can outlive their DoorLive (for example, a retained probe).
-// Keep the exact loader generation with the connection table they retain.
 struct BoundConns {
     inner: Arc<dyn busbar_contract::conn::PollConns>,
     _binding: crate::root::loader::dispatch::plugin::ConnectionBinding,
@@ -1434,7 +1426,7 @@ impl LeaseTick {
         at.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let this = Arc::new(self);
         let shutdown = busbar_kernel::detached::worker_shutdown();
-        // One owned sweep future at a time. Store liveness never stalls the journal cadence.
+
         let mut sweep: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> =
             None;
         loop {
@@ -2234,7 +2226,7 @@ fn routes_of(
 }
 
 /// A route synthesized from the catalog and a matching declared secondary kind are host facts.
-/// Neither an ARRIVE candidate nor a trust counterparty can create this obligation.
+
 fn seal_secondary_scopes(
     facts: &mut DoorFacts,
     scope_kinds: &[&str],
@@ -3215,7 +3207,10 @@ impl ListenerPlan {
                     .get()
                     .is_none_or(|mounted| mounted.iter().any(|(path, _, _)| path == route.path))
             {
-                return Err(format!("{}: the candidate has no opened SERVE dispatcher for this mounted route; restart required", route.path));
+                return Err(format!(
+                    "{}: the candidate has no opened SERVE dispatcher for this mounted route; restart required",
+                    route.path
+                ));
             }
         }
         if let Some(mounted) = self.plugin_mounts.get() {
@@ -3227,7 +3222,10 @@ impl ListenerPlan {
                             && (!*admin || *method == route.method)
                     })
                 {
-                    return Err(format!("{}: changing a mounted admin plugin method or physical admin placement requires a restart", route.path));
+                    return Err(format!(
+                        "{}: changing a mounted admin plugin method or physical admin placement requires a restart",
+                        route.path
+                    ));
                 }
             }
         }
@@ -3302,8 +3300,7 @@ impl ListenerPlan {
         if candidate.kind != KindCode::Export || candidate.name != need.module {
             return false;
         }
-        // Only the exact single root-HTTP inbound declaration can be retired with
-        // this wholly withheld surface. Unrelated or private Needs remain strict.
+
         candidate
             .needs
             .iter()
@@ -3398,9 +3395,7 @@ impl ListenerPlan {
                     &bind.transport
                 };
                 let physical = self.framers.get(scheme);
-                // App construction checks physical framing before OPEN has mounted plane
-                // claims. Defer only that claim proof; mount_planes checks again with both
-                // snapshots installed, before any listener is published.
+
                 let upgrade_claims_match = match (self.planes.get(), self.upgrades.get()) {
                     (None, None) => true,
                     (Some(lines), Some(upgrades)) => upgrades.contains(&need.transport)
@@ -3789,8 +3784,6 @@ impl ListenerPlan {
     }
 }
 
-// A configured empty data chain is an explicit operator policy, not an empty
-// credential requirement. Keep the latter represented by chain_auth([]).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DataChainMode {
     Credentialed,
@@ -4902,7 +4895,7 @@ impl DataRoutes {
                 return stated(
                     (refusal_status(ReasonCode::DecodeFailed), Vec::new()),
                     Body::empty(),
-                )
+                );
             }
         };
         let serve_datagram::Opened {

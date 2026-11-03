@@ -222,7 +222,7 @@ impl AdoptionProof {
             _ => {
                 return Err(invalid(
                     "handover does not end an unresolved foreign operation",
-                ))
+                ));
             }
         };
         let expected = match previous.1.event.state {
@@ -308,8 +308,6 @@ fn head(
 
 type Chains = BTreeMap<u64, Vec<JournalRecord>>;
 
-// An optimization budget, never a history/admission limit: larger or nonlocal reads use the
-// unchanged cold verifier. Only sealed identities are kept, never a history of payloads.
 const MAX_ORIGIN_FACTS: usize = 128;
 struct OriginFacts {
     node: u64,
@@ -374,8 +372,7 @@ fn stream_selection_inner(
         if at.version != 1 || at.node == 0 || at.sequence == 0 {
             return Err(invalid("invalid recovery predecessor pointer"));
         }
-        // A node segment is checked once, in pages, with no retained journal payload index.
-        // Revisiting a former owner after another handover performs a new cold verification.
+
         if let Some(facts) = facts.as_ref() {
             if at.node != facts.node {
                 return Ok(None);
@@ -491,7 +488,7 @@ fn selected_checkpoint_inner(
         return Ok(None);
     }
     let at = found.ok_or_else(|| invalid(missing))?;
-    // Materialize only this one payload, after the selected lineage has verified.
+
     let record = read_record_exact(calls, at.node, at.sequence).map_err(invalid)?;
     if let Some(facts) = facts {
         if !facts.capture(&record)? {
@@ -594,7 +591,7 @@ fn selected_chain(
             _ => {
                 return Err(invalid(
                     "recovery ownership changed without an attested verdict",
-                ))
+                ));
             }
         }
     }
@@ -1239,7 +1236,9 @@ impl StoreRecovery {
             || resolution.reason.len() > 4096
             || !(1..=2).contains(&transitions.len())
         {
-            return Err(invalid("handover requires explicit sender/backend quiescence, actor, reason and a legal verdict chain"));
+            return Err(invalid(
+                "handover requires explicit sender/backend quiescence, actor, reason and a legal verdict chain",
+            ));
         }
         let verdict = if resolution.verdict == RecoveryVerdict::Landed {
             RecoveryState::VerdictLanded
@@ -1414,8 +1413,7 @@ impl StoreRecovery {
             }],
         );
         drop(request.encode_held().map_err(invalid)?);
-        // One head CAS selects the complete verdict chain; an intermediate unknown checkpoint
-        // can never transfer custody by itself. Attestations authorize this explicit path only.
+
         let decision = wait_for(calls.record_transaction(&request));
         let observed = head(calls.as_ref(), &resolution.operation_id)?;
         if let Some((tip, observed_raw)) = &observed {
@@ -1505,7 +1503,7 @@ impl StoreRecovery {
             };
             prefix.run = Some(run);
         }
-        // Pure transition checks cannot escape as an accepted result before the complete fold.
+
         if prefix
             .current
             .as_ref()
@@ -1530,7 +1528,6 @@ impl StoreRecovery {
         &self,
         event: &RecoveryEvent,
     ) -> Result<PersistPrefix, RecoveryError> {
-        // A fresh old-style preflight only: never recurse into persist or retain tentative facts.
         let mut prefix = self.persist_prefix_inputs(event)?;
         self.verify_origin_at(event)?;
         prefix.run = prefix
@@ -1684,8 +1681,7 @@ impl StoreRecovery {
                 "recovery predecessor changed before selection".into(),
             ));
         }
-        // No usage send, dead transfer, verdict effect or forgetting is authorized until the
-        // complete candidate is in the Store AND its operation head selects it.
+
         let _ = lane.wait_acked(node, candidate.record.node_seq, ACK_DEADLINE);
         lane.confirm_recovery_record(&candidate.record)
             .map_err(unavailable)?;
@@ -1708,10 +1704,7 @@ impl StoreRecovery {
             }],
         );
         drop(request.encode_held().map_err(invalid)?);
-        // Selection heads only advance and are never deleted or restored. A later attempt may
-        // use a fresh conditional id for this exact prior-row -> immutable-candidate CAS: the
-        // full prior predicate prevents replaying an effect or replacing a winning branch even
-        // after conditional receipt retention expires. This does not renew a usage operation.
+
         let decision = wait_for(calls.record_transaction(&request));
         let observed = head(calls.as_ref(), &event.operation_id)?;
         if let Some((selected_head, selected_raw)) = &observed {
@@ -1795,7 +1788,6 @@ impl RecoverySink for StoreRecovery {
         resolution: &RecoveryResolution,
         transitions: &[RecoveryEvent],
     ) -> Result<Vec<RecoveryEvent>, RecoveryError> {
-        // Compatibility only. Production ownership handover consumes the bounded selection API.
         off_runtime(|| {
             self.adopt_verdict_selection_at(resolution, transitions)?;
             let (lane, node) = self.inputs()?;
@@ -1811,7 +1803,6 @@ impl RecoverySink for StoreRecovery {
     }
 
     fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError> {
-        // Compatibility only. Production startup uses replay_selections instead of history Vecs.
         off_runtime(|| {
             let (lane, node) = self.inputs()?;
             let predicates = lane.recovery_predicates(node).map_err(unavailable)?;
@@ -1980,8 +1971,6 @@ mod tests {
         };
         use std::sync::atomic::{AtomicBool, Ordering};
 
-        // The real Store lands the exact fenced head CAS. Only its reply is lost; the
-        // current holder's lease then renews before readback confirms that selected head.
         for change in 0..3 {
             let slots = RecordSlots::new();
             let host = format!("selected-head-renewal-{change}");
@@ -2035,7 +2024,7 @@ mod tests {
                 ))
             });
             let result = sink.persist(&sent);
-            // The fault probe owns a Store/lane handle; release it before fixture teardown.
+
             slots.on_transaction(|_| None);
             assert!(applied.load(Ordering::Acquire), "the actual head CAS ran");
             if change == 0 {
@@ -2135,7 +2124,7 @@ mod tests {
     fn fresh_node_mode_is_bound_to_its_minted_registry_row() {
         let slots = RecordSlots::new();
         let first = opened(&slots, "recovery-fresh");
-        // Keep the first writer live while take_node watches for an expired host lease.
+
         super::super::store_identity::set_lease_expiry(
             slots.calls().as_ref(),
             "recovery-fresh",
@@ -2840,8 +2829,7 @@ mod tests {
         old_sink.persist(&initial).unwrap();
         old_sink.persist(&unknown).unwrap();
         old_sink.confirm_owned_checkpoint(&initial).unwrap();
-        // This fixture has no per-operation backend sender. Keep the old node alive so a
-        // read-only ancestry proof still works after the explicitly attested handover.
+
         let request = attestation(&unknown, RecoveryVerdict::NotLanded);
         let transitions = handover_events(&unknown, RecoveryVerdict::NotLanded);
         new_sink

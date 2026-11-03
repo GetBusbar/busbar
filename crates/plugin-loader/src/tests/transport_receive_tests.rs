@@ -8,8 +8,6 @@ use busbar_contract::abi::mechanism::lifecycle::ReleaseIn;
 use busbar_contract::abi::transport::{slot, FramerOut, IngestIn};
 use busbar_contract::framing_scope::FramingScope;
 
-// This is an adversarial ABI accounting control, not a wire-protocol producer.
-// The qualified TCP image owns the real descriptor, lifecycle, and instance.
 mod pressure_boundary {
     use super::*;
     use busbar_contract::abi::mechanism::call::{Blob, RawOutcome, BLOB_OCTETS};

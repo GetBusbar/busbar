@@ -13,11 +13,6 @@ use crate::dispatch::{
     NoSink,
 };
 
-// Carrier bytes, pending exchanges, and complete linked/dropped transcript parity belong to
-// the actual TCP product's conformance test, the_linked_and_the_dropped_in_door_are_one_plugin.
-// Its BUSBAR_CONFORMANCE_RED=count branch also checks the transcript count comparator.
-// Keep the separate loader-boundary refusal here: descriptor validation alone does not exercise
-// either load_linked or load_dropped's manifest kind check.
 #[test]
 fn the_door_asked_for_as_another_kind_is_refused_both_ways() {
     let path = std::env::var_os("BUSBAR_TEST_TCP_CDYLIB")

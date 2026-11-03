@@ -208,7 +208,7 @@ impl FramerDoor for LoanDoor {
         match call {
             Call::Begin(_, out) => out.framing = 21,
             Call::Timer(input, out) if self.timer => {
-                return self.answer(Ticket::NONE, input.sink, out)
+                return self.answer(Ticket::NONE, input.sink, out);
             }
             _ => {}
         }

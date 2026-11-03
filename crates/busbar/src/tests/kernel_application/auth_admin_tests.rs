@@ -500,8 +500,7 @@ async fn roleless_external_admin_principal_denied() {
         rotate();
     }
     let app = Arc::new(app);
-    // The actual OIDC product namespaces the subject. The raw operator-id collision policy
-    // is separately pinned as Principal DATA by auth::tests::admin_scope_resolution.
+
     let token = common::credentials::token_for("admin", &[], "api://auth-self-groups");
     let response = tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -835,7 +834,7 @@ fn actual_operator_requests_keep_credentials_out_of_core_logs() {
     const EXPECTED: &str = "configured-operator-secret-46da";
     const BEARER: &str = "secret-bearer-value-7f3a";
     const HEADER: &str = "secret-header-value-91cc";
-    // Test-local passive log sink. Only current-thread boot/request core events are claimed.
+
     #[derive(Clone, Default)]
     struct LogBytes(Arc<Mutex<Vec<u8>>>);
     impl Write for LogBytes {
@@ -1025,7 +1024,7 @@ fn a_slow_admin_door_does_not_stall_healthz() {
         .expect("the issuer endpoint is an actual loopback socket");
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind the one-connection external peer");
     listener.set_nonblocking(true).unwrap();
-    // READY warms the real cache; expire it before exercising request-path Pending.
+
     oidc_settings.insert("jwks_ttl_secs".into(), serde_json::json!(1));
     oidc_settings.insert("jwks_min_refetch_secs".into(), serde_json::json!(1));
     oidc_settings.insert(
@@ -1034,8 +1033,7 @@ fn a_slow_admin_door_does_not_stall_healthz() {
     );
     let mut token =
         common::credentials::token_for("alice", &["minters"], "api://auth-admin-pending");
-    // A real ES256 JWT with one changed signature sextet reaches the genuine JWKS verifier
-    // and is refused after its network need completes; no synthetic verifier result is used.
+
     let signature = token.rfind('.').unwrap() + 1;
     let replacement = if token.as_bytes()[signature] == b'A' {
         "B"
@@ -1047,8 +1045,7 @@ fn a_slow_admin_door_does_not_stall_healthz() {
     let (release_tx, release_rx) = std::sync::mpsc::channel();
     let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let peer_armed = armed.clone();
-    // An owned wire peer forwards READY unchanged, then holds the next genuine TLS byte
-    // for expired-cache VERIFY; it fabricates no protocol or outcome.
+
     std::thread::scope(|peers| {
         let wire = peers.spawn(move || {
             std::thread::scope(|connections| {
@@ -1069,8 +1066,7 @@ fn a_slow_admin_door_does_not_stall_healthz() {
                             Err(error) => panic!("actual peer accept failed: {error}"),
                         }
                     };
-                    // Construction may warm more than one real OIDC instance. Gate only
-                    // after the fully built application arms request-path verification.
+
                     let gated = peer_armed.load(std::sync::atomic::Ordering::Acquire);
                     let gate = if gated { gate.take() } else { None };
                     transfers.push(connections.spawn(move || {
@@ -1205,7 +1201,7 @@ fn a_slow_admin_door_does_not_stall_healthz() {
         let app = Arc::new(app);
         let router = busbar_kernel::build_router(app);
         armed.store(true, std::sync::atomic::Ordering::Release);
-        // Wait for the configured real JWKS cache lifetime, not for a synthetic verifier.
+
         std::thread::sleep(Duration::from_millis(1100));
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)

@@ -562,7 +562,7 @@ pub(crate) fn tmp_plugin_dir(tag: &str) -> std::path::PathBuf {
 
 pub(crate) fn dropped(name: &str, alias: &str, kind: &str) -> busbar_contract::plugin_rows::Row {
     use busbar_contract::plugin_rows::{NeedLevel, Row, Trust};
-    // Inert metadata only: no plugin, door, registry, or registration is created.
+
     Row {
         file: format!("{name}.tar.gz"),
         key: name.into(),
@@ -618,7 +618,7 @@ fn the_preflight_warns_about_a_malformed_floor() {
             .with_ansi(false)
             .with_writer(move || file.try_clone().expect("warning capture writer")),
     );
-    // The actual CLI/bootstrap caller invokes this production policy owner directly.
+
     tracing::subscriber::with_default(subscriber, || cfg.warn_invalid_floors());
     let captured = std::fs::read_to_string(&path).expect("actual diagnostic output");
     assert!(
@@ -628,14 +628,10 @@ fn the_preflight_warns_about_a_malformed_floor() {
     let _ = std::fs::remove_dir_all(directory);
 }
 
-// ROOT pure-framework disposition: env_var_guard_restores_on_panic tested only
-// the deleted test kit's EnvVarGuard destructor, not product interpolation or policy.
-// Its two fake-helper bookkeeping assertions retire with that helper.
-
 #[test]
 fn is_real_auth_plugin_ref_exempts_keys_always_and_in_process_modules_only_where_answered() {
     let none: fn(&str) -> bool = |_| false;
-    // A pure classifier input, not an AuthModule/axis or a registration backend.
+
     let test_modules: fn(&str) -> bool = |module| module == "test-groups-module";
     assert!(!is_real_auth_plugin_ref(config::KEYS_MODULE, test_modules));
     assert!(!is_real_auth_plugin_ref(config::KEYS_MODULE, none));
@@ -711,10 +707,6 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
     assert!(awaiting_restart_added(&pending, &pending).is_empty());
 }
 
-// Panic status/envelopes, both listener survival and exactly-once logs are exercised
-// against actual application routers in central2_handler_panic. The old synthetic
-// auth producer and fake TestApp were solely fault injection machinery.
-
 #[tokio::test]
 async fn a_500_on_the_native_api_root_is_the_frozen_internal_envelope() {
     let resp = fallback_error_response(
@@ -782,6 +774,3 @@ async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
     );
     assert_eq!(v["error"]["message"], "everything is on fire");
 }
-
-// Door refusal custody, exact fields/target, failed-render fallback and native API
-// exclusion now run over actual served routers in central2_handler_panic.

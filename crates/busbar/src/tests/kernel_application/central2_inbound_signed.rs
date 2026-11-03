@@ -16,11 +16,6 @@ use busbar_kernel::inbound::{Call, HandIn, Head, Listener, Refuse};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-// Ordinary signed-request fixture. The pinned SigV4 cfg(test) signer delegates
-// to the contract AWS4 recipe; dependency cfg(test) APIs are not exported to a
-// root test. Keep the same canonical header, request and day-key/HMAC recipe here
-// using the already direct contract SDK HMAC and SHA-256 dependencies. This only
-// creates a request: the actual plugin still performs every verification/read.
 #[allow(clippy::too_many_arguments)]
 fn sign_fixture(
     secret: &str,
@@ -292,8 +287,7 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
         .expect("actual signed reader listener installs");
     let handle = inbound.specs(71, 3).unwrap()[0].auth;
     let body = b"hello".to_vec();
-    // Sign a real request with the pinned recipe, never a fabricated AuthCalls
-    // verdict. The actual plugin reads the encrypted Store credential.
+
     let timestamp = std::process::Command::new("date")
         .args(["-u", "+%Y%m%dT%H%M%SZ"])
         .output()
@@ -483,8 +477,7 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
         FLOW_CONTINUE,
         "the actual reader's Pass result falls through to the valid bearer"
     );
-    // A pending signed unit belongs to its exact original request, before any
-    // real reader verdict exists. A substitution must not consume that unit.
+
     for (index, mutation) in [
         "method",
         "path",
@@ -597,8 +590,7 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
         );
         inbound.exit(first.unit.id);
     }
-    // SigV4 declares a credential FIELD strip, not query-key stripping. Test
-    // only its real declaration; no synthetic query-strip capability is added.
+
     for (index, form) in ["original", "field", "case"].into_iter().enumerate() {
         let stream = 30 + index as u64;
         let first = call(head.clone(), None, POINT_HEAD, UnitRef::NONE, stream).await;

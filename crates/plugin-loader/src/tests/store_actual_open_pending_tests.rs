@@ -52,8 +52,7 @@ extern "C" fn open_pending(
             return answer;
         }
         kept.lock().unwrap().insert(key, output.instance as usize);
-        // A pending OPEN must retain the actual instance so the loader resumes
-        // the same half-open owner; the retained map only schedules its READY reply.
+
         output.head.outcome = RawOutcome::of(Outcome::Pending);
         output.head.wake_at_ns = crate::dispatch::now_ns().saturating_add(1_000_000);
         RawOutcome::of(Outcome::Pending)

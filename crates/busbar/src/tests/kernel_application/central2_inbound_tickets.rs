@@ -146,8 +146,7 @@ async fn actual_ticket_preflight_preserves_unspent_custody_and_invalid_prefix_re
         .expect("the real store supplies governance");
 
     let inbound = Arc::clone(crate::root::inbound::host());
-    // A typed listener declaration exercises the actual public host API over the
-    // normally built application; no auth verifier or Store result is fabricated.
+
     inbound
         .install(
             7,
@@ -251,7 +250,7 @@ async fn actual_ticket_preflight_preserves_unspent_custody_and_invalid_prefix_re
     let (ticket, _) = gov
         .mint_ticket(&key.id, "tk_", 600, None, b"ticket-record", now)
         .unwrap();
-    // Repeated preflight and rejected/abandoned hand-ins must not consume a ticket.
+
     for _ in 0..2 {
         let original = bearer(&ticket);
         let answer = call(original.clone()).await;

@@ -354,7 +354,6 @@ auth:
         "boot reads no identity-provider token from this config, so the boot-resolved walk must \
          report none; got: {boot:?}"
     );
-    // Actual linked-secret resolution is checked at the owning distribution root.
 
     let yaml = r#"
 listen: "127.0.0.1:8080"
@@ -392,7 +391,6 @@ auth:
         vec![&format!("auth.admin_auth.{op}.token")],
         "exactly the operator credential boot resolves must be reported; got: {boot:?}"
     );
-    // The matching missing-env refusal assertion lives in config_validation_secrets.rs.
 }
 
 #[test]

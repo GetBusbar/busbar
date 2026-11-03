@@ -435,8 +435,7 @@ fn a_called_op_keeps_a_copy_of_its_envelope() {
             })
             .collect::<Vec<_>>();
     release(table, instance, output.lease);
-    // The SDK keeps this envelope until the next crossing or instance destruction, separately
-    // from leased payloads. Retire its actual owner before checking our concrete owned copies.
+
     close(table, instance);
     assert_eq!(
         diags,

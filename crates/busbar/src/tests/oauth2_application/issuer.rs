@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-// A single OIDC input for these distribution tests. Both the public key document and
-// the tokens come from this key; the plugin fetches the document over a real TLS socket.
 const KEY_ID: &str = "distribution-oidc";
 
 struct Idp {

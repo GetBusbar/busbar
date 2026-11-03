@@ -194,8 +194,6 @@ async fn session_delivery_and_close_allow_the_receiver_waker_to_reenter_the_leg(
     }
 }
 
-// Peer-only WebRTC controls: the caller supplies the real framer door, while
-// admission remains entirely with the HTTP fixture using this peer.
 pub(crate) mod peer {
     use std::collections::VecDeque;
     use std::net::SocketAddr;
@@ -354,8 +352,6 @@ pub(crate) mod peer {
     }
 }
 
-// These controls drive genuine WebRTC bytes over the root's UDP socket. The
-// observer never fabricates a yield or alters the product's returned ABI data.
 #[cfg(feature = "transport-webrtc")]
 pub(crate) mod real {
     use super::*;
@@ -813,8 +809,7 @@ impl ControlledDoor {
                 .build()
                 .unwrap();
             let pair = runtime.block_on(real::Pair::new(&[]));
-            // The real product channel is established. Control only the host's
-            // notification boundary to exercise early-drainer scheduling.
+
             lock(&pair.caller.leg.outbound).channel = None;
             ready
                 .send(pair)

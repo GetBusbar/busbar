@@ -3,8 +3,6 @@
 
 use std::path::Path;
 
-// A single OIDC input for these distribution tests. Both the public key document and
-// the tokens come from this key; the plugin fetches the document over a real TLS socket.
 const ISSUER: &str = "https://issuer.e2e.invalid";
 const KEY_ID: &str = "distribution-oidc";
 

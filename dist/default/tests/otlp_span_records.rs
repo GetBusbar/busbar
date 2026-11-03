@@ -118,8 +118,7 @@ fn real_producer_span_records_survive_both_otlp_doors() {
     manifest.alias = DROPPED.into();
     manifest.former_names.clear();
     manifest.publisher = common::plugins::FIXTURE_PUBLISHER.into();
-    // This re-publication is operator-trusted third party; reserved BUSBAR codes
-    // belong to the original first-party package, whose linked copy keeps them.
+
     manifest.declares.diagnostics.clear();
     common::plugins::state(&mut manifest, &lib);
     assert!(
@@ -201,8 +200,7 @@ fn real_producer_span_records_survive_both_otlp_doors() {
     };
     let mut verified = std::collections::BTreeSet::new();
     let mut served = 0;
-    // Preserve the original real OpenAI-to-Anthropic event control. Its forward is
-    // a root span under the 1.5.5 entry facts. Gemini adds a real arrival parent.
+
     for (path, body, has_parent) in [
         ("/v1/chat/completions", openai_body, false),
         (
@@ -239,7 +237,9 @@ fn real_producer_span_records_survive_both_otlp_doors() {
             assert!(
                 Instant::now() < deadline,
                 "producer records for {path} did not reach both collectors: linked {:?}, dropped {:?}\n{}",
-                names(LINKED_PATH), names(DROPPED_PATH), read_log()
+                names(LINKED_PATH),
+                names(DROPPED_PATH),
+                read_log()
             );
             std::thread::sleep(Duration::from_millis(50));
         }

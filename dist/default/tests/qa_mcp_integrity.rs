@@ -121,8 +121,6 @@ impl Upstream {
     fn start() -> Upstream {
         use rcgen::PublicKeyData as _;
 
-        // Authenticate the actual loopback peer as well as the tool content it serves.
-        // A fabricated manifest key authenticates neither and cannot carry an approval.
         let ca_key = rcgen::KeyPair::generate().expect("a CA key");
         let mut ca_params = rcgen::CertificateParams::new(Vec::new()).expect("CA parameters");
         ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);

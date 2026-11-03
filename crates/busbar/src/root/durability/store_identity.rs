@@ -374,8 +374,6 @@ pub fn take_node(calls: &dyn StoreCalls, host: &str) -> Result<TakenNode, String
     Ok(TakenNode { id, lease: None })
 }
 
-// Only the boot-bound lease row has a volatile renewal deadline. Its holder is the
-// fencing generation; registry identities and every other predicate remain byte-exact.
 fn same_recovery_fence(
     before: &[Predicate],
     after: &[Predicate],
@@ -431,8 +429,6 @@ impl HeldLease {
         }
         let mut key = host_key(host);
         if held.is_none() {
-            // take_node's existing fresh-node branch has an immutable, uniquely minted registry
-            // row rather than a host lease. Preserve that mode and bind its exact namespace.
             key.push(0);
             key.extend_from_slice(format!("{node:016x}").as_bytes());
         }
@@ -482,7 +478,7 @@ impl HeldLease {
     }
 
     /// Revalidate read-only recovery custody across normal lease renewal. Write CAS requests
-    /// must continue to use `recovery_predicates` with their complete, exact row bytes.
+
     pub(super) fn recovery_fence_matches(
         &self,
         calls: &dyn StoreCalls,
@@ -848,7 +844,7 @@ mod renewal_fence_tests {
         held.hold(lease.clone());
         held.bind_recovery_identity(calls.as_ref(), host, node)
             .unwrap();
-        // Deterministically make the next real refresh change the deadline; no clock sleep.
+
         set_lease_expiry(calls.as_ref(), host, 1);
         let before = held.recovery_predicates(calls.as_ref(), node).unwrap();
         assert!(lease.refresh(calls.as_ref()).unwrap());

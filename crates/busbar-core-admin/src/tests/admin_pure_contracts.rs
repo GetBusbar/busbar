@@ -50,7 +50,6 @@ fn test_config_settings_scope_matrix() {
     );
 }
 
-// Keep the private cache namespace mapped to the actual HTTP sentinel controls.
 #[test]
 fn key_replay_names_match_the_actual_http_controls() {
     assert_eq!(

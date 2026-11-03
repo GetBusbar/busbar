@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Actual MCP plane calls using member TLS settings through the ordinary Root connector.
-//! The fixture deliberately never uses TlsToolServer::rig/footing, which preload a CA.
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;

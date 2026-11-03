@@ -928,8 +928,6 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     let mut exhausted_groups = Vec::new();
     for (name, group) in &mut groups {
         if group.limits.iter().any(|limit| limit.amount == 0) {
-            // Product configuration rejects a zero cap. Express the same exhausted
-            // admission state with a valid cap, then consume it through real governance.
             for limit in &mut group.limits {
                 if limit.amount == 0 {
                     assert!(matches!(
@@ -943,19 +941,13 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             exhausted_groups.push(name.clone());
         }
     }
-    // The deployed authority declares the same group tree the fixture's governor uses.
-    // A key deliberately naming an absent group is minted only after boot below, so
-    // those cells still exercise runtime admission's fail-closed refusal.
+
     cfg.groups = groups.clone();
     let fee = opts.fee_cents.unwrap_or(1);
     cfg.per_request_fee = fee;
     let rate_card = opts.rate_card.cloned().map(|mut card| {
-        // These positive fixtures price only their named classes. Explicitly configure
-        // every other class the actual plane declares as free, as product validation requires.
         for entry in card.values_mut() {
             for class in &plane.served().billable_classes {
-                // Fee units are configured by per_request_fee/plane fees, not by
-                // the open-unit rate card. Listing one here would price it twice.
                 if !busbar_contract::records::RESERVED_UNITS.contains(class)
                     && !plane.served().fee_units.contains(class)
                 {
@@ -1068,9 +1060,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
                 1_700_000_000,
             )
             .expect("the prior caller uses the actual configured group");
-        // This admission charges the shared group once without dialing a backend or
-        // writing usage on the tested key. Dropping its grant releases concurrency
-        // gauges; its successful request/fee remains consumed, as a completed request's.
+
         drop(
             gov.try_admit(&cost, &warm, "p", busbar_kernel::store::now())
                 .expect("the prior caller consumes the configured one-unit cap"),

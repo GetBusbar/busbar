@@ -562,33 +562,27 @@ fn dest_judge_answers_an_odd_spelling_as_the_ascii_host_it_maps_to() {
         got.value
     };
     let rows = [
-
         (
             "\u{ff4c}\u{ff4f}\u{ff43}\u{ff41}\u{ff4c}\u{ff48}\u{ff4f}\u{ff53}\u{ff54}",
             "localhost",
             svc::DEST_INTERNAL,
         ),
-
         (
             "\u{2460}\u{2461}\u{2466}.0.0.1",
             "127.0.0.1",
             svc::DEST_INTERNAL,
         ),
-
         (
             "\u{2460}\u{2465}\u{2468}.\u{2461}\u{2464}\u{2463}.\u{2460}\u{2465}\u{2468}.\u{2461}\u{2464}\u{2463}",
             "169.254.169.254",
             svc::DEST_METADATA,
         ),
-
         ("LOCALHOST\u{3002}", "localhost", svc::DEST_INTERNAL),
-
         (
             "\u{ff10}\u{ff58}\u{ff17}\u{ff46}\u{ff0e}\u{ff11}",
             "0x7f.1",
             svc::DEST_OBFUSCATED,
         ),
-
         (
             "\u{ff10}\u{ff11}\u{ff17}\u{ff17}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff11}",
             "017700000001",

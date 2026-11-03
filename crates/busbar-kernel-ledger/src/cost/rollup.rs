@@ -5,7 +5,7 @@
 
 use super::MoneyError;
 
-/// Two priced figures (micro-units) as one, CHECKED like the one function it sums (item 28): a
+/// Two priced figures (micro-units) as one, CHECKED like the one function it sums: a
 pub fn sum_spend(rollup: i64, figure: i64) -> Result<i64, MoneyError> {
     rollup.checked_add(figure).ok_or(MoneyError::Overflow)
 }

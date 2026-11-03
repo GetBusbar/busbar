@@ -206,9 +206,6 @@ fn provided_metering_id_replays_across_handles_and_refuses_changed_counts() {
     assert_eq!(rows[0].key_group_at_use, "historical-group");
 }
 
-// The original unknown-commit adversary wraps only the actual SQLite batch slot:
-// the real database commits first, one host ticket resumes, and its first settled
-// reply is lost. No record or usage business implementation is supplied here.
 mod pending_lost {
     use super::*;
     use busbar_contract::abi::mechanism::call::{

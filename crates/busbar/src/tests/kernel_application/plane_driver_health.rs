@@ -9,8 +9,6 @@ use busbar_kernel::plane_driver::registry::BuildCtx;
 
 use crate::root::test_plugins as plugins;
 
-// The control is section DATA handed to the actual installed door's FACING call.
-// No test implementation decides whether OPEN succeeded.
 fn lane_less_healthz(opening: Option<bool>) -> (u16, Vec<u8>) {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();

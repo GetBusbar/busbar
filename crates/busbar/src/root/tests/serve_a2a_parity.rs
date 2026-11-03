@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The actual distribution's A2A relay, through its typed linked row and actual dropped image.
-//! Mounted only by the distribution's ordinary bin tests. Both product origins are mandatory.
-//! Original ce4f transfer inputs keep their caller/agent bytes; the peer now authenticates its
-//! card and the operator approves it through the real administrative routes.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
@@ -242,8 +239,7 @@ fn bind_plane(
                 row.statement, stated,
                 "linked and dropped A2A must state identical public metadata and declarations"
             );
-            // This first-party getter is the reviewed plugin_door! expansion: it returns only
-            // promoted static Door/Statement/Ops constants and invokes no host or plugin slot.
+
             let linked = getter();
             let dropped = dispatch::load::door_addresses_of_library(&path)
                 .expect("the actual dropped descriptor reads")
@@ -366,8 +362,7 @@ fn piece(
     }
     if flags & PIECE_HAS_STATUS != 0 {
         input.status_code = 200;
-        // These exact static fields are process-lived. Keeping the tiny Field list permanent
-        // avoids an unsafe Send implementation in the root for pointer-bearing input metadata.
+
         let fields = Box::leak(
             vec![Field {
                 name: abi(b"content-type"),
@@ -470,7 +465,6 @@ fn caller_body(
     assert_ne!(body.out().flags & EMIT_TO_FAR_END, 0);
 }
 
-// Only the old SERVE/PROJECT output capacities and observed fields for this actual A2A case.
 struct A2aAuxBuffers {
     reply: Vec<u8>,
     fields: Vec<OutField>,
@@ -528,9 +522,6 @@ fn serve_and_project(plane: &Plugin<Plane>, dispatcher: &Dispatcher) -> [String;
     );
     dispatcher.recycle(ticket);
 
-    // u128 backing is aligned for SignalEntry and owns its exact output extent without putting
-    // pointer-bearing signal values in a Send/Sync loan. Only the returned count is observed,
-    // matching the old PROJECT predicate; no signal pointer is dereferenced by this test.
     assert_eq!(
         std::mem::align_of::<u128>() % std::mem::align_of::<SignalEntry>(),
         0
@@ -555,8 +546,7 @@ fn serve_and_project(plane: &Plugin<Plane>, dispatcher: &Dispatcher) -> [String;
     input.arena_buf = b.arena.as_mut_ptr();
     input.arena_cap = b.arena.len();
     let mut frame = Frame::new(input, blank_out::<ProjectOut>());
-    // PROJECT is the production pure/ticketless crossing. Pending is therefore Fault; giving
-    // it a fresh ticket here would weaken the original non-FAULT predicate.
+
     let called = plane.call(slot::PROJECT, &mut frame);
     assert_ne!(
         called.outcome,
@@ -596,7 +586,6 @@ fn raw_relay_and_lifecycle(
         Outcome::Refused
     );
 
-    // VALIDATE receives the dealt verb envelope; OPEN receives the section itself.
     let section = serde_json::to_vec(&serde_json::json!({"vendor": entry})).unwrap();
     let mut opened: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(blank_in(), blank_out());
     opened.input.open.generation = 1;
@@ -725,8 +714,7 @@ fn raw_relay_and_lifecycle(
         .done
         .frame
         .expect("the terminal SHORT returns its input for one fresh recall");
-    // A prior Pending resume may be reflected in the returned input. Terminal SHORT ends
-    // that invocation; its one recall is a fresh call, retaining only the original ticket/body.
+
     frame.input.head.flags &= !FLAG_RESUME;
     assert_eq!(
         frame.input.head.flags & FLAG_RESUME,
@@ -778,7 +766,7 @@ fn raw_relay_and_lifecycle(
         refusal.out.status, 0,
         "the plane retains the requested status"
     );
-    // A zero plane status retains the requested status, as the production driver does.
+
     let refusal_status = if refusal.out.status == 0 {
         refusal.input.status
     } else {
@@ -795,8 +783,7 @@ fn raw_relay_and_lifecycle(
         Some(Outcome::Ready)
     );
     let _ = driven.drain();
-    // Retire the background driver before direct lifecycle calls. The fresh tick is queued
-    // after retirement on the same worker, so REFRESH cannot race a later driver crossing.
+
     dispatcher.recycle(driver);
     let lifecycle = dispatcher
         .mint(0)
@@ -822,7 +809,6 @@ fn raw_relay_and_lifecycle(
                 && released.error.as_deref() == Some(b"release: no such lease"))
     );
 
-    // REFRESH receives the section itself, just as the production composition hands it.
     let settings =
         serde_json::to_vec(&serde_json::json!({"vendor": entry, "other": entry})).unwrap();
     let mut refresh: Frame<life::RefreshIn, PlaneRefreshOut> = Frame::new(blank_in(), blank_out());
@@ -861,12 +847,10 @@ fn raw_relay_and_lifecycle(
         arrive(plane, 7, 14, b"POST", b"/a2a", true).0.outcome,
         Outcome::Fault
     );
-    // The after-CLOSE payload is deliberately never inspected.
+
     auxiliary
 }
 
-// The actual root owns a one-time Store binding; this ordinary case keeps its
-// book independent when the full binary runs other root cases.
 fn isolated_a2a_case() -> bool {
     const CHILD: &str = "BUSBAR_A2A_PARITY_CHILD";
     const WITNESS: &str = "actual A2A parity assertions completed";
@@ -1171,8 +1155,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         ));
         let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
         crate::root::connector::install_io(&dispatcher);
-        // Pending connections must wake this plane's dispatcher, which owns their tickets.
-        // The process connector belongs to the process dispatcher, not this isolated origin.
+
         let conns = busbar_core_connector::process::build_with_secrets(
             || {
                 crate::root::connector::entries_on(
@@ -1302,8 +1285,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             continue;
         }
         gov.flush_budgets();
-        // Plane admissions keep their fee units in the plane's named fee lane; the legacy
-        // scalar belongs to pool-plane requests. Read the actual persisted quantity here.
+
         let fee_lane = busbar_kernel_ledger::cost::plane_fee_lane(plane.name());
         let fee_quantity = |ledger: &busbar_contract::records::UsageLedger| {
             ledger
@@ -1355,10 +1337,6 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             "a plane fee must not also charge the pool-plane legacy fee scalar"
         );
 
-        // This is raw ABI/host-services qualification, separate from the governed HTTP
-        // admission and paid billing above. The public owner seam holds the real verified key's
-        // exact agent:vendor grant for these original raw unit ids. The opaque caller_ref bytes
-        // below are original protocol input, never the source of authority.
         let raw = bind_plane(
             origin,
             &instance,

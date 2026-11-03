@@ -499,7 +499,6 @@ impl DoorFacts {
         explicit: bool,
         entry: &str,
     ) -> bool {
-        // Only a host-proven catalog selection defers its secondary grant to APPROVE.
         (class == ROUTE_SCOPE_LOCAL && explicit && self.secondary_scopes.contains_key(entry))
             || pools.granted(
                 self.scope_kind.as_deref(),
@@ -1050,8 +1049,7 @@ impl DriverSteps for DoorSteps<'_> {
             }
         }
         let routed = named.and_then(|(class, n)| self.pools.resolve(class, n.as_deref()));
-        // A scope-local answer still belongs to the one entry admitted by its grant.
-        // Seal that identity for the unit's audit without giving it a pool or a walk.
+
         let sealed: Vec<VerifiedDestination> = routed
             .iter()
             .flat_map(|(_, members)| members)
@@ -1148,7 +1146,6 @@ impl DriverSteps for DoorSteps<'_> {
         }
 
         if let Some(holder) = &self.host_ticket_admission {
-            // Some(empty) is a consumed capability and must never retry ordinary admission.
             let spent = holder
                 .take()
                 .ok_or_else(|| Refusal::new(ReasonCode::Replayed))?;
@@ -1270,8 +1267,6 @@ impl DriverSteps for DoorSteps<'_> {
             Admission::Keyed | Admission::Anonymous => {}
         }
 
-        // Preserve the existing separately charged nesting path until it supplies the typed
-        // monetary authority. Only under_admission borrows the retained admission above.
         if self.parent_admission.is_none() {
             if let Some(cell) = self.parent {
                 if let Ok(accrual) = cell.accrue_child(principal, admit) {
@@ -3156,7 +3151,7 @@ fn upstream_credential(
                 return Err(format!(
                     "member '{member_name}': its upstream credential's placement is neither \
                      `{PLACEMENT_BEARER}` nor `{{{PLACEMENT_HEADER_KEY}: <name>}}`"
-                ))
+                ));
             }
         },
     };
@@ -3973,7 +3968,7 @@ fn registration_anchors(
     } else {
         Vec::new()
     };
-    // The structured TLS selector retains the existing sibling identity spelling.
+
     let identity_at = identity_at.map(|key| if key == "tls" { "client_identity" } else { key });
     let client_identity = match identity_at
         .and_then(|key| Some((key, registration.get(key).filter(|v| !v.is_null())?)))
@@ -4032,7 +4027,7 @@ fn member_tls_section_refusal(section: &serde_yaml::Value) -> Result<(), String>
 }
 
 /// Read the explicitly selected member TLS bundle; its certificate material is public,
-/// while client credentials retain their existing sibling secret-reference syntax.
+
 fn registration_ca_anchors(
     entry: &str,
     registration: &serde_yaml::Value,

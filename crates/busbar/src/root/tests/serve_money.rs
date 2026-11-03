@@ -142,7 +142,7 @@ fn governed_full(
         let late = super::LateServices::new();
         let dispatcher = crate::root::dispatch::boot(1, &late);
         crate::root::doors::install_dispatcher(dispatcher);
-        // Match main: publish the actual plane declarations before config parsing reads them.
+
         crate::register_protocols();
         crate::register_planes();
         crate::register_diagnostics();
@@ -360,8 +360,7 @@ fn governed_full(
         serde_yaml::from_str("m: {}\npools: {p: {members: [m]}}").expect("yaml"),
     );
     config.groups = groups;
-    // Publish the same prices that this fixture asks its governance reads to use.
-    // Once the real rate history is active it, rather than the detached CostModel, prices units.
+
     if budget.is_some() {
         config.plane_fees.insert(
             TEST_PLANE.to_string(),
@@ -433,8 +432,6 @@ fn governed_full(
     .expect("the door plane composes");
     served.post = Some(Arc::clone(&post));
     if pools_arrival {
-        // This arrival-rule boundary deliberately presents the existing fixture as the pools
-        // section. Set that classification while it is unique, before any router can retain it.
         Arc::get_mut(&mut served.planes[0].live)
             .expect("the composed fixture has not been published")
             .served_facts
@@ -1574,8 +1571,7 @@ async fn nested_anonymous_admission_matches_the_arrival_rule() {
 }
 
 /// A real governor admission and matching admitted cell, kept separate from the custody state
-/// assertions below. These controls exercise host ownership; the retained session cohort proves
-/// the actual request's draft/hold/audit path.
+
 struct ReservedSource {
     owner: super::TicketSourceOwner,
     money: Arc<PlaneMoney>,
@@ -1627,8 +1623,7 @@ fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
             now,
         )
         .expect("the actual governor mints a source key");
-    // Match the host's authenticated principal: a real Store may normalize persisted key
-    // metadata, so the mint's write input is not the source's resolved binding.
+
     let key = g
         .gov
         .lookup_by_sub(&key.id)
@@ -1731,9 +1726,6 @@ fn mint_reserved_source(g: &Governed, source: &ReservedSource, at: u64) -> (Stri
         .expect("the admitted source binds its sole ticket")
 }
 
-// Probe the real public admission path using a separate key in the same capped group.
-// The dependency's gauge introspection is cfg(test)-private to its own crate. A second probe
-// while the first is held also detects a double release that would leave the gauge negative.
 fn assert_concurrent_custody(g: &Governed, group: &str, held: bool, now: u64) {
     use busbar_kernel::config::groups::{GroupCfg, LimitCfg, LimitMetric};
     let groups = BTreeMap::from([(

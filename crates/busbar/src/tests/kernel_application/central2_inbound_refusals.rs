@@ -145,8 +145,7 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
     );
 
     let inbound = Arc::clone(crate::root::inbound::host());
-    // A typed listener declaration exercises the actual public host API over the
-    // normally built application; no auth verifier or Store result is fabricated.
+
     let listener = Listener {
         guests: GuestList::seal(vec![Line {
             route: Route {
@@ -337,8 +336,7 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
         before + 1,
         "an already-retired unit emits no second refusal event"
     );
-    // The same real verifier refusal must retain its physical plane's challenge, even if the
-    // transport strips its credential or a replacement table changes the current listener.
+
     const METADATA: &str = "https://plane.example/.well-known/oauth-protected-resource/mcp";
     for cause in [
         REFUSE_STOPPED,
@@ -390,7 +388,6 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
         }
     }
 
-    // A mount on a different physical listener must not lend this listener its metadata.
     let mut elsewhere_app = (*app).clone();
     elsewhere_app.planes = Arc::new(
         (*app.planes)

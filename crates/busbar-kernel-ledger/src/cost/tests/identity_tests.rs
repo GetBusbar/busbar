@@ -47,7 +47,7 @@ fn the_two_projections_agree_at_every_generated_total_below_the_micro_ceiling() 
     );
 }
 
-/// PAST THE MICRO CEILING THE MICRO PROJECTION REFUSES, AND THE MINOR ONE DOES NOT (item 28).
+/// PAST THE MICRO CEILING THE MICRO PROJECTION REFUSES, AND THE MINOR ONE DOES NOT.
 #[test]
 fn past_the_micro_ceiling_the_micro_projection_refuses_and_the_minor_one_does_not() {
     let nanos = 10_000_000_000_000_000_000_000u128;

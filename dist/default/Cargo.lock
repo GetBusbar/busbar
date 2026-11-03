@@ -830,7 +830,6 @@ version = "1.5.0"
 dependencies = [
  "arc-swap",
  "busbar-contract",
- "busbar-kernel-seams",
  "ed25519-dalek",
  "flate2",
  "futures",

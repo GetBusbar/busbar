@@ -461,8 +461,6 @@ fn a_lane_releases_its_host_lease_only_after_the_pending_writer_drains_and_retir
     successor.lease.unwrap().release(calls.as_ref()).unwrap();
 }
 
-// Probe controls use rows from the existing Store double; only read-boundary selection or a named
-// refusal is injected. They inspect traversal directly, without inventing sealed chain data.
 use busbar_contract::abi::store::OpId;
 use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
 use busbar_contract::store_calls::{StoreCall, StoreFailure};
@@ -896,7 +894,10 @@ fn late_torn_or_truncated_suffix_cannot_heal_an_already_observed_gap() {
         broken.put_row(JOURNAL_SCHEMA, &part_key(9, 6, 0), &value);
         let view = proof_epochs(&[&broken, &complete, &complete]);
         assert!(verify_stored_chain_with_seals(&view, 9, &[]).is_err());
-        assert_eq!(view.starts.lock().unwrap().len(), 2,
-            "after observing the gap, the original held page's torn or truncated suffix remains fatal; only bridge lookup may rescan");
+        assert_eq!(
+            view.starts.lock().unwrap().len(),
+            2,
+            "after observing the gap, the original held page's torn or truncated suffix remains fatal; only bridge lookup may rescan"
+        );
     }
 }

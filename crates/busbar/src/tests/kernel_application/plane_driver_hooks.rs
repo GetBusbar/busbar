@@ -60,8 +60,6 @@ async fn a_routed_planes_section_attach_binds_to_its_units() {
         );
         manifest.statement = Some(hex::encode(statement));
         if kind == "hook" {
-            // These are the actual webrequest product's declared content needs,
-            // signed alongside its exact door rendering, not a synthetic hook tail.
             manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
             manifest.needs.user = busbar_contract::plugin_rows::NeedLevel::Ro;
             hook_module = Some(facts.name);

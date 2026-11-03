@@ -155,8 +155,6 @@ impl Drop for ReleaseAll {
     }
 }
 
-// This observer preserves the product's inputs, outputs, tickets and contexts.
-// Its sole fault injection is the mismatch test's invalid provisional host token.
 struct TraceDoor {
     inner: Arc<Dispatched>,
     ingests: Mutex<Vec<(Ticket, bool, usize)>>,
@@ -338,7 +336,9 @@ fn settled_stream(
                 .keys()
                 .copied()
                 .collect::<Vec<_>>();
-            panic!("real HTTP stream {stream} did not complete; last yield={yielded:?}; host calls={seen}; pending={pending:?}");
+            panic!(
+                "real HTTP stream {stream} did not complete; last yield={yielded:?}; host calls={seen}; pending={pending:?}"
+            );
         }
         let generation = *wake.generation.lock().unwrap();
         match framing.poll_parked(&mut cx) {

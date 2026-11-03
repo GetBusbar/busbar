@@ -188,8 +188,7 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
             .map(|k| k.generation_hash)
     };
     let before = generation();
-    // These bytes are pinned against the private production key producers by
-    // keys::admin_pure_contracts::key_replay_names_match_the_actual_http_controls.
+
     for key in [
         ("admin".to_string(), "create:10:stuck-mint".to_string()),
         (

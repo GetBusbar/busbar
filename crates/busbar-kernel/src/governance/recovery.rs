@@ -39,20 +39,19 @@ pub struct RecoveryEvent {
 }
 
 /// Per-opened-Store persistence. A repeated operation/revision must name exactly
-/// the same event; success confirms its full immutable identity in the Store.
+
 pub trait RecoverySink: Send + Sync {
     fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError>;
     fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError>;
 
     /// Return one bounded summary per operation only AFTER verifying its complete
-    /// current selected ancestry, including genesis, identities, legal states,
-    /// predecessor fingerprints and every revision. Endpoint equality is not proof.
+
     fn replay_selections(&self) -> Result<Vec<RecoverySelection>, RecoveryError> {
         summarize_recovery_chains(self.replay()?)
     }
 
     /// Confirm exact membership in the CURRENT selected predecessor chain. An
-    /// immutable journal candidate by itself never establishes this authority.
+
     fn verify_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         let events = self.replay()?;
         let present = events.iter().any(|selected| selected == event);
@@ -67,8 +66,7 @@ pub trait RecoverySink: Send + Sync {
     }
 
     /// Confirm exact selected ancestry AND current ownership by this sink. The
-    /// compatibility replay contract is owned-only; production streams both
-    /// ancestry and current head/node fences without granting authority by age.
+
     fn confirm_owned_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         let events = self.replay()?;
         let present = events.iter().any(|selected| selected == event);
@@ -83,7 +81,7 @@ pub trait RecoverySink: Send + Sync {
     }
 
     /// Adopt through the same full ancestry proof, retaining only its verified
-    /// initial and selected events at the caller. Production adapters stream it.
+
     fn adopt_verdict_selection(
         &self,
         resolution: &RecoveryResolution,
@@ -111,7 +109,7 @@ pub trait RecoverySink: Send + Sync {
     }
 
     /// Verify a child's immutable origin against the parent's currently selected
-    /// predecessor chain without granting ownership of that parent.
+
     fn verify_origin(&self, _event: &RecoveryEvent) -> Result<(), RecoveryError> {
         Err(RecoveryError::Unavailable(
             "recovery Store cannot verify external child origin".into(),
@@ -119,7 +117,7 @@ pub trait RecoverySink: Send + Sync {
     }
 
     /// Select a fully journaled, audited ownership handover in one exact head CAS.
-    /// The returned selected predecessor chain is the only authority to resume effects.
+
     fn adopt_verdict(
         &self,
         _resolution: &RecoveryResolution,
@@ -401,8 +399,7 @@ impl RecoveryBook {
                 "recovery sink already attached".into(),
             ));
         }
-        // This production-used sink method proves every legal predecessor in
-        // the CURRENT selected chain before issuing each bounded summary.
+
         let selections = sink.replay_selections()?;
         let mut replayed = std::collections::BTreeMap::<[u8; 16], RecoveryEntry>::new();
         for selection in selections {
@@ -519,8 +516,7 @@ impl RecoveryBook {
         let _running = runner
             .enter(false)
             .map_err(|reason| RecoveryError::Conflict(reason.into()))?;
-        // No Book or budget mutex is held during Store I/O. The runner marker
-        // prevents concurrent drivers, including reentrant Store callbacks.
+
         sink.persist(event)?;
         let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
         let entry = entries
@@ -749,8 +745,6 @@ impl RecoveryAdmin<'_> {
         let selection = match sink.adopt_verdict_selection(&resolution, &adoption.transitions) {
             Ok(selection) => selection,
             Err(error) => {
-                // Conflict is a definitive refusal of this exact prior head;
-                // an ambiguous Store error retains the immutable candidate.
                 if matches!(error, RecoveryError::Conflict(_)) {
                     governance.clear_unselected_adoption(&resolution);
                 }
@@ -867,8 +861,7 @@ impl super::GovState {
                 }
             }
         }
-        // Fresh Store hydration remains authoritative. Registration never sends
-        // a historical body or makes startup depend on an age-quarantine write.
+
         for event in self.selected_recovery_events() {
             self.forget_confirmed_recovery(event.operation_id);
         }
@@ -900,7 +893,7 @@ impl super::GovState {
     }
 
     /// Only a retained same-process monotonic clock authorizes receipt replay.
-    /// Wall timestamps survive reboot as evidence, not as proof of receipt age.
+
     pub(super) fn recovery_retention_expired(&self, operation_id: [u8; 16]) -> Option<bool> {
         self.recovery_book
             .entries
@@ -931,7 +924,7 @@ impl super::GovState {
     }
 
     /// Local successful roots need no live administrative custody after their
-    /// flight is retired. Their immutable Store journals remain untouched.
+
     pub(super) fn forget_confirmed_recovery(&self, operation_id: [u8; 16]) {
         let mut entries = self
             .recovery_book
@@ -1049,8 +1042,6 @@ impl super::GovState {
         adoption: &RecoveryAdoption,
         selection: RecoverySelection,
     ) -> Result<(), RecoveryError> {
-        // The sink's production selection method has already stream-verified the
-        // full adopted selected chain. These checks preserve our local identity.
         selection.validate_identity()?;
         let operation_id = adoption.resolution.operation_id;
         if selection.selected.operation_id != operation_id
@@ -1063,8 +1054,6 @@ impl super::GovState {
         loop {
             let previous = self.recovery_event(operation_id);
             if let Some(previous) = previous.as_ref() {
-                // Verify exact CURRENT selected ancestry outside every Book and
-                // shard mutex before replacing a locally confirmed predecessor.
                 self.recovery_book
                     .sink
                     .get()
@@ -2338,9 +2327,6 @@ pub(in crate::governance) mod tests {
         assert!(captured.child.is_none());
         assert!(gov.recovery_event(owner.operation_id).unwrap().revision < prerequisite.revision);
 
-        // This public admin operation really calls the global raw resumer. It
-        // confirms the captured candidate and settles its owner before its
-        // original budget-flight driver gets control again.
         gov.recovery()
             .resolve(
                 &crate::cost::CostModel::flat(0),
@@ -2464,7 +2450,7 @@ pub(in crate::governance) mod tests {
             let child_initial = first.recovery_event(child.operation_id).unwrap();
             let mut unselected = None;
             match mode {
-                1 => {} // The actual foreign current head remains Intent.
+                1 => {}
                 2 => {
                     let mut raw: super::super::raw_recovery::UsageCustody =
                         serde_json::from_slice(&child_initial.payload).unwrap();
@@ -2488,8 +2474,6 @@ pub(in crate::governance) mod tests {
                 _ => {
                     first.drive_raw_recovery(child.operation_id).unwrap();
                     if mode == 3 {
-                        // Same child header/body fingerprint, but a different full
-                        // template than its older actual authorization/genesis.
                         let mut changed = custody.clone();
                         let mut payload: serde_json::Value =
                             serde_json::from_slice(&changed.handoffs[0].payload).unwrap();
@@ -2525,8 +2509,6 @@ pub(in crate::governance) mod tests {
             sink.make_foreign(child.operation_id, 42);
             drop(first);
 
-            // The same host replays its own parent; the child belongs to another
-            // node and is never imported into this Gov's writable Book.
             let gov = GovState::new(store.clone(), None).unwrap();
             gov.attach_recovery_sink(sink.clone()).unwrap();
             let cost = crate::cost::CostModel::flat(0);
@@ -2552,8 +2534,10 @@ pub(in crate::governance) mod tests {
                         &proof,
                     )
                     .unwrap();
-                assert_eq!(held.deferred_plain.billable_requests, -1,
-                    "a settled child with an unknown descendant does not prove its whole exposure settled");
+                assert_eq!(
+                    held.deferred_plain.billable_requests, -1,
+                    "a settled child with an unknown descendant does not prove its whole exposure settled"
+                );
                 continue;
             }
             let before = store.get_usage(&key.id, 0).unwrap().billable_requests;
@@ -2566,8 +2550,11 @@ pub(in crate::governance) mod tests {
             gov.refund_charge(grant.charge());
             gov.flush_budgets();
             let after = store.get_usage(&key.id, 0).unwrap().billable_requests;
-            assert_eq!(after, if mode == 0 { before } else { before + 1 },
-                "only an exact fully settled foreign subtree releases the matching fresh refund (mode {mode})");
+            assert_eq!(
+                after,
+                if mode == 0 { before } else { before + 1 },
+                "only an exact fully settled foreign subtree releases the matching fresh refund (mode {mode})"
+            );
             assert!(gov.recovery_event(child.operation_id).is_none());
             assert!(sink.adoption_attempts.lock().unwrap().is_empty());
         }

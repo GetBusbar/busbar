@@ -61,7 +61,7 @@ fn window_debt(cell: &BudgetCell, window: u64, dated: bool) -> ExactUsageDelta {
 }
 
 /// Resolve the signed dated segments before taking their positive parts. Taking positive parts
-/// after plain aggregation would hide a +5 in one era behind a -3 in another era.
+
 fn positive_rolled(
     plain: &ExactUsageDelta,
     dated: &ExactUsageDelta,
@@ -318,7 +318,6 @@ struct RawModel {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawDebt {
-    // Decimal strings preserve the complete signed range, including values beyond JSON u64.
     requests: String,
     billable_requests: String,
     models: BTreeMap<String, BTreeMap<String, String>>,
@@ -496,8 +495,7 @@ impl RawCell {
             last_touch: self.last_touch,
             ..Default::default()
         };
-        // Runtime flight locks are not durable ownership. The recovery coordinator restores
-        // any still-unresolved additive flights before admission; their payloads own that debt.
+
         cell.dirty = has_debt(&cell);
         Ok(cell)
     }
@@ -1070,8 +1068,7 @@ impl Custody {
             .transpose()?
             .unwrap_or_default();
         remaining.merge(&SegmentedUsage::of(&held_plain, &held_dated)?);
-        // The applied branch's still-owned negative deltas already depend on the sealed
-        // positive body, even when they predate the separately absorbed quarantine folds.
+
         let accepted = target.accepted.clone_raw()?;
         let mut dependent_plain = window_debt(&accepted, window, false);
         let mut dependent_dated = window_debt(&accepted, window, true);
@@ -1128,7 +1125,7 @@ impl Custody {
     }
 
     /// Validate immutable raw evidence and register quarantine, without installing old aggregate
-    /// snapshots over the fresh Store-backed admission state.
+
     pub(super) fn restore(
         self,
         _gov: &GovState,
@@ -1143,7 +1140,6 @@ impl Custody {
         }
         let mut targets = Vec::new();
         for target in self.targets {
-            // Validate the immutable evidence without claiming an old aggregate as current RAM.
             target.before.restore()?;
             target.accepted.restore()?;
             targets.push((target.bucket, target.window));
@@ -1176,7 +1172,7 @@ impl RawCell {
 }
 
 /// A cut's exact raw debt has moved into parent-authorized child operations. Advance only that
-/// cut, preserving accruals, refunds and rolls that happened while its checkpoint was persisting.
+
 pub(super) fn apply_selected_cut(
     live: &mut BudgetCell,
     cut: &BudgetCell,
@@ -1213,8 +1209,7 @@ pub(super) fn apply_selected_cut(
                 model.flushed_era = base.cur.clone();
             }
         }
-        // A fully refunded segment may have disappeared from the live vector; its cut baseline
-        // must still carry the dependent negative until the next ordinary flush.
+
         for base in &cut.models {
             if !live
                 .models

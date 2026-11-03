@@ -146,7 +146,7 @@ async fn door_metadata_follows_guest_precedence_instead_of_plane_mount_order() {
                 .unwrap()
         }),
     };
-    // The full product mounts a key-only plane fallback before this exact ticket claim.
+
     for ticket_path in ["/v1/realtime/calls", "/v1/{session}/calls"] {
         for reverse in [false, true] {
             let mut rows = vec![
@@ -223,8 +223,6 @@ async fn door_metadata_follows_guest_precedence_instead_of_plane_mount_order() {
         }
     }
 
-    // Overlapping parameter routes with equal path rank cannot assign ticket authority to
-    // different claimants. The existing guest seal refuses that ambiguity before mounting.
     let tied = |path: &str, owner: &str, rung| Line {
         route: Route {
             methods: method_bit("POST"),

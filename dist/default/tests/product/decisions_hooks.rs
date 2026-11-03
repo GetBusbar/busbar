@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Decisions hook cells through the shipped root, signed Store and dropped webrequest products.
-//! The four original names/oracles remain in the plugin source until this replacement is ACKed.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -22,8 +21,6 @@ use tower::ServiceExt as _;
 
 use crate::root::test_plugins as plugins;
 
-// Each ordinary case owns a real root process: ROOT_CARD's Store binding is
-// intentionally one-time, and a full test binary must not reuse another case's book.
 fn isolated_case() -> bool {
     const CHILD: &str = "BUSBAR_DECISIONS_HOOKS_CHILD";
     const WITNESS: &str = "actual Decisions hook assertions completed";
@@ -139,8 +136,7 @@ fn stage(directory: &Path, file: &str, variable: &str, kind: &str) -> (String, S
             facts.name, "busbar-hook-webrequest",
             "the supplied hook must be the actual webrequest product"
         );
-        // The real webrequest module asks for prompt:rw/user:ro; the operator grant below
-        // determines what each configured instance receives.
+
         manifest.needs = busbar_plugin_loader::sign::HookNeeds {
             prompt: busbar_plugin_loader::sign::NeedLevel::Rw,
             user: busbar_plugin_loader::sign::NeedLevel::Ro,

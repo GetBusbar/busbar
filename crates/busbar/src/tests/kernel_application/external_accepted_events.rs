@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Actual SQLite acceptance/recovery controls. The four production exporters do
-//! not declare Events; projection and origin policy are checked beside auditlog's
-//! private production functions, without claiming nonexistent exporter delivery.
 
 use busbar_contract::plugin::Kind;
 use busbar_contract::records::PlaneSelector;
@@ -34,8 +32,6 @@ fn accepted(entry: &busbar_kernel::audit_ring::AuditEntry) {
     }
 }
 
-// A second real SQLite connection holds the writer lock. No Store implementation
-// or append answer is substituted: the product's own append receives SQLITE_BUSY.
 struct WriterLock(std::process::Child);
 impl WriterLock {
     fn acquire(database: &Path) -> Self {

@@ -614,8 +614,7 @@ unsafe fn recording_tables(label: &str, real: *const HostTables) -> *const HostT
     }
     // SAFETY: as above.
     let mut t: HostTables = unsafe { real.read_unaligned() };
-    // The loader owns these tables per instance. A later instance may reuse the allocation,
-    // so its current host context must participate in the cache key.
+
     let key = (real as usize, t.ctx.handle);
     if let Some(&rec) = made.get(&key) {
         // SAFETY: every recorded table is leaked below and remains live for the process.

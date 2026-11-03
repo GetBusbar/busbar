@@ -719,7 +719,7 @@ impl IoHost for HostIo {
                 _ => {
                     return Err(IoRefusal::Refused(
                         "the host did not admit this for the op that asked".into(),
-                    ))
+                    ));
                 }
             }
         };

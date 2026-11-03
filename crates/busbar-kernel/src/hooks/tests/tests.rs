@@ -19,10 +19,6 @@ const EXTRA_STRATEGY: &str = "operator-order";
 
 #[test]
 fn inbound_feedback_reaches_the_policy_instance_and_reload_keeps_old_state_separate() {
-    // Arbitrary inbound routes are host-boundary metadata, not an advertised
-    // webrequest/ranking product capability. Keep the actual route reuse rule
-    // and response forwarding here; actual product transport identity is also
-    // exercised by distribution::hooks_runtime_replies.
     let settings = serde_json::Map::new();
     type Identity<'a> = (
         &'a str,
@@ -122,8 +118,6 @@ fn plugin_strategy_word_survives_parse_and_uses_the_admitted_axis() {
     )
     .expect("admitted strategy construction succeeds");
     assert_eq!(name, EXTRA_STRATEGY);
-    // The old synthetic Prefer([1,0]) answer is preserved through actual HTTP
-    // in distribution::hooks_runtime_replies, alongside unknown-index filtering.
 }
 
 #[test]
@@ -408,12 +402,6 @@ fn weighted_default_resolves_none() {
     assert!(resolve_policy(&pool_policy(PoolPolicy::Weighted)).is_none());
 }
 
-// resolution::Entry and resolution::Paths retain Weak references to their registry.
-// The Weak control block retains that allocation until the last Weak is dropped;
-// a live cache entry therefore cannot observe an allocator-recycled registry address.
-// Missing-row behavior remains asserted below; replacement identity is asserted by
-// resolution_tests::replacing_the_public_registry_cannot_reuse_a_stale_path_snapshot,
-// and actual transport reuse/change is asserted in distribution::hooks_runtime_replies.
 #[test]
 fn missing_plugin_gate_is_absent_not_stranded() {
     let hooks = registry("h", base_gate());
@@ -1120,8 +1108,6 @@ async fn dlopen_user_identity_projection_rides_the_wire() {
 
 #[test]
 fn dlopen_empty_management_reads_are_fail_open_none() {
-    // The actual product always publishes its own status/schema. Empty replies
-    // exercise the wire documents HookPolicy consumes, without a fake plugin.
     let status = serde_json::from_slice::<busbar_contract::hook_wire::reply::StatusEnvelope>(b"")
         .ok()
         .and_then(|reply| reply.status);

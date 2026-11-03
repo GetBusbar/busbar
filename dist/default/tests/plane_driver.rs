@@ -1789,9 +1789,7 @@ async fn a_dropped_session_cleans_up_exactly_once() {
         };
         assert_eq!(ended(), 1, "{way:?}: the dropped session's one cleanup");
         assert_eq!(r.driver.buried(), 2, "{way:?}: one ticket per side, buried");
-        // Sweeping polls the real worker's asynchronous CANCEL answers; a first poll may only
-        // enqueue them. Both tickets belong to one unit, whose terminal cancellation retires
-        // both bindings. Observe their retirement before checking the exactly-once counts.
+
         eventually("both session ticket cancellations settle", || {
             r.driver.sweep();
             r.driver.buried() == 0

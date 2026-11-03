@@ -694,7 +694,6 @@ fn networked_rows() -> AuthRows {
     AuthRows::new(Arc::new(registry), dispatcher())
 }
 
-// Observe only the existing inert declaration boundary: this case never dials a socket.
 #[derive(Default)]
 struct DeclarationObserver {
     declarations: AtomicU64,
@@ -1098,7 +1097,7 @@ mod ticketed {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Ok(held)) => held,
                 Poll::Ready(Err(_)) => {
-                    return Poll::Ready(Verdict::reject("the secret could not be read").into())
+                    return Poll::Ready(Verdict::reject("the secret could not be read").into());
                 }
             };
 
@@ -1176,7 +1175,9 @@ mod ticketed {
             panic!("unexpected host service in the records-secret scheduling boundary: trust_sight")
         }
         fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
-            panic!("unexpected host service in the records-secret scheduling boundary: trust_unreached")
+            panic!(
+                "unexpected host service in the records-secret scheduling boundary: trust_unreached"
+            )
         }
         fn trust_sight_item(
             &self,
@@ -1185,7 +1186,9 @@ mod ticketed {
             item: &str,
             digest: &str,
         ) -> Stored {
-            panic!("unexpected host service in the records-secret scheduling boundary: trust_sight_item")
+            panic!(
+                "unexpected host service in the records-secret scheduling boundary: trust_sight_item"
+            )
         }
         fn trust_decide(
             &self,
@@ -1227,7 +1230,9 @@ mod ticketed {
             )
         }
         fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
-            panic!("unexpected host service in the records-secret scheduling boundary: entitlement_check")
+            panic!(
+                "unexpected host service in the records-secret scheduling boundary: entitlement_check"
+            )
         }
         fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
             panic!(

@@ -404,9 +404,7 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
         statement: Some(hex::encode(&rendering)),
         former_names: Vec::new(),
     };
-    // MCP's real host-service needs include a first-party-only egress class. The
-    // dropped origin must carry an authenticated first-party grant just as its
-    // linked origin does; an unsigned opt-in does not confer that grant.
+
     let release = crate::sign::SigningKey::from_bytes(&[37u8; 32]);
     let manifest = crate::sign::sign(&release, manifest, &lib);
     let tarball = crate::tarball::package(&manifest, "lib.so", &lib).unwrap();

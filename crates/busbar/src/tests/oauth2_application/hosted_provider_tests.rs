@@ -290,7 +290,11 @@ async fn callback_nonce_mismatch_rejected() {
     );
     let body = response.text().await.unwrap();
     assert!(!body.contains("bbk_"), "no key issued");
-    assert_eq!(issuer::exchanges_for(&code),1,"the real plugin exchanges the callback once; start_cookie proved it received the core's nonce");
+    assert_eq!(
+        issuer::exchanges_for(&code),
+        1,
+        "the real plugin exchanges the callback once; start_cookie proved it received the core's nonce"
+    );
     handle.abort();
 }
 

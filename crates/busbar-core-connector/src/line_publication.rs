@@ -621,8 +621,7 @@ impl Pairing {
     }
 
     /// Await actual publication quiescence, or explicit terminal failure. Intermediate metadata
-    /// and attachment progress cannot wake a completion callback before admission custody retires.
-    /// Channel ownership
+
     pub async fn published(&self) -> PublicationOutcome {
         loop {
             let changed = self.publication_completed.notified();

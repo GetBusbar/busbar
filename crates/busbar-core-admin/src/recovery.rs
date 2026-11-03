@@ -2,10 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The dedicated operator surface for retained, ambiguous ledger operations.
-//!
-//! The ledger recovery facade owns custody, fencing, durable verdicts and replay identity.
-//! This adapter only accepts the exact operation the operator inspected; it never mints an
-//! operation id or infers resolution authority from a list result.
 
 use std::sync::Arc;
 
@@ -227,8 +223,7 @@ pub(crate) async fn resolve(
         sender_quiesced: request.sender_quiesced,
         backend_quiesced: request.backend_quiesced,
     };
-    // Once scheduled, the owned Store operation survives cancellation of the HTTP waiter.
-    // The facade confirms its durable, attributed verdict before returning a safe observation.
+
     match tokio::task::spawn_blocking(move || governance.recovery().resolve(&cost, resolution))
         .await
     {

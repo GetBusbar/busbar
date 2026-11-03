@@ -501,7 +501,10 @@ impl fmt::Display for LoadError {
                 "the door's mechanism version {door} is not this host's {host} — {REBUILD}"
             ),
             Self::DoorSize { door, host } => {
-                write!(f, "the door is {door} bytes; this host reads at least {host}")
+                write!(
+                    f,
+                    "the door is {door} bytes; this host reads at least {host}"
+                )
             }
             Self::UnknownKind(k) => write!(f, "the door names kind {k}, which no kind has"),
             Self::WrongKind { door, want } => {

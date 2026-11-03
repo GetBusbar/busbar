@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-// These are the host's physical disk and callback-custody obligations. The exporter
-// is an independently built product input; the disk lane and every append are real.
 #![allow(unsafe_code)]
 
 use std::collections::VecDeque;
@@ -50,8 +48,6 @@ fn input(variable: &str) -> PathBuf {
     path
 }
 
-// load_dropped holds the actual image before the public loader reports its descriptor
-// address. The extra native-library reference is released only after a holder exists.
 extern "C" fn file_door() -> &'static Door {
     static IMAGE: OnceLock<(Plugin<Export>, Arc<Dispatcher>, usize)> = OnceLock::new();
     let image = IMAGE.get_or_init(|| {
@@ -423,8 +419,7 @@ fn declared_destination_writes_and_undeclared_destination_refuses_each_delivery_
         let tape = Arc::new(Tape::default());
         let plugin = load_file(dropped, &d, tape.clone());
         let mut grants = file_declares();
-        // This policy input grants a destination with no retention declaration:
-        // the host must truncate it, whatever retention the product normally declares.
+
         grants.keep.clear();
         if !declared {
             grants.destinations.clear();
@@ -467,9 +462,6 @@ fn declared_destination_writes_and_undeclared_destination_refuses_each_delivery_
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-// A real DiskLane with only its worker scheduling held by the test. Append is the
-// production queue item; both the owned destination and its original callback stay
-// together until complete() runs the unmodified append implementation.
 struct HeldDisk {
     lane: Arc<DiskLane>,
     receiver: Mutex<std::sync::mpsc::Receiver<Append>>,
@@ -543,9 +535,7 @@ fn refresh(plugin: &Plugin<Export>, settings: &serde_json::Value, generation: u6
     release(plugin, called.lease);
     called.outcome
 }
-// An inline ticket recycles its generation when dropped; it does not cancel the
-// plugin's outstanding loan. This owner therefore retires the actual call before
-// either its stable frame or its batch bytes can be released, including on unwind.
+
 struct PendingDiskDelivery {
     ticket: busbar_plugin_loader::dispatch::InlineTicket,
     frame: Box<Frame<DeliverIn, OutHead>>,
@@ -574,15 +564,13 @@ impl PendingDiskDelivery {
     }
 
     fn cross(&mut self, resume: bool) -> Outcome {
-        // A panic after entry must also cancel while the original allocations live.
         self.may_be_pending = true;
         let ticket = self.ticket();
         let called =
             self.sink
                 .plugin()
                 .call_inline(ticket, resume, export_slot::DELIVER, &mut *self.frame);
-        // READY proves completion. A host-side refusal may precede plugin entry,
-        // so conservatively retain custody on every other unexpected answer.
+
         if called.outcome == Outcome::Ready {
             self.may_be_pending = false;
         }
@@ -615,8 +603,6 @@ impl PendingDiskDelivery {
         let mut frame = Frame::new(input, output);
         let called = self.sink.plugin().call(life::CANCEL, &mut frame);
         if called.outcome != Outcome::Ready {
-            // The unexpected answer may itself be PENDING: stop before even the
-            // cancellation frame, as well as the original delivery owners, drops.
             use std::io::Write as _;
             let _ = writeln!(
                 std::io::stderr(),
@@ -634,7 +620,6 @@ impl PendingDiskDelivery {
 impl Drop for PendingDiskDelivery {
     fn drop(&mut self) {
         if self.may_be_pending {
-            // cancel() either confirms retirement or stops with both frames live.
             let _ = self.cancel();
         }
     }
@@ -1072,8 +1057,6 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir");
 
-    // The descriptor holder keeps the actual product image loaded throughout this
-    // narrow envelope-withholding observer. Every op below forwards unchanged.
     let door = *FILE_DOOR();
     // SAFETY: as above: the export kind's table, `'static` in the image.
     let real_ops = unsafe { *door.ops().cast::<Ops>() };

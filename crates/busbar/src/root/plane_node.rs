@@ -1556,8 +1556,7 @@ impl Ran {
         let lane = match (self.dialled, served) {
             (Some(dialled), _) => Some(dialled.as_str()),
             (None, Some(served)) if sealed(served) => Some(served),
-            // A plane's ledger lane may differ from its route entry. It cannot erase
-            // the one verified entry of a local unit, or choose among several entries.
+
             (None, _) => match self.verified.as_slice() {
                 [only] => Some(only.as_str()),
                 _ => None,

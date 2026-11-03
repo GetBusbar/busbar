@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-// App/router assertions run in the actual distribution binary. This owner unit
-// case retains access to the private config identity without widening its API.
 const ISSUER: &str = "https://as.example.com";
 
 #[test]

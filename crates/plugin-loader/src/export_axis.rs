@@ -245,7 +245,7 @@ impl<'r> ExportRows<'r> {
                     return Some(
                         export_door::check(opened.plugin(), phase, &listed)
                             .unwrap_or_else(|e| vec![format!("export `module: {module}`: {e}")]),
-                    )
+                    );
                 }
                 Err(why) => unopened = Some(why),
             }

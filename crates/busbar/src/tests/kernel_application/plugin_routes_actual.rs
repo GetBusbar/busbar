@@ -18,9 +18,7 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
         .expect("the actual exporter carries its statement");
     let connector = crate::root::connector::installed()
         .expect("the normal root installs the actual transport connector");
-    // The real exporter reads the snapshot host service during SERVE. The
-    // route grant below lends that snapshot; the dispatcher must also expose
-    // the normal service which receives the actual plugin's read.
+
     let dispatcher = std::sync::Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
         std::sync::Arc::new(busbar_kernel::host_services::KernelServices::new()),
@@ -60,8 +58,6 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
     let declarations = routes
         .into_iter()
         .map(|mut route| {
-            // A neutral host declaration changes only admission placement: the body is
-            // still handled by the actual exporter through its real dispatcher.
             if route.path == "/metrics/hooks" {
                 route.auth = busbar_contract::abi::mechanism::route::RouteAuth::Admin;
             }
@@ -201,8 +197,18 @@ async fn actual_export_dispatch_resolves_the_live_table_on_the_same_listener() {
     }));
     let client = reqwest::Client::new();
     let path = "/metrics/hooks";
-    assert_eq!(client.get(format!("http://{address}{path}")).header("x-admin-token", "actual-route-operator").send().await.unwrap().status().as_u16(), 404,
-        "the plugin auth:admin dispatcher route is physically absent from the data listener even with valid authority");
+    assert_eq!(
+        client
+            .get(format!("http://{address}{path}"))
+            .header("x-admin-token", "actual-route-operator")
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        404,
+        "the plugin auth:admin dispatcher route is physically absent from the data listener even with valid authority"
+    );
     let admin_crossing = client
         .get(format!("http://{admin_address}{path}"))
         .header("x-admin-token", "actual-route-operator")
@@ -241,8 +247,11 @@ async fn actual_export_dispatch_resolves_the_live_table_on_the_same_listener() {
     let mut withdrawn = (*app).clone();
     withdrawn.plugin_routes = Arc::new(busbar_kernel::plugin_routes::PluginRouteTable::empty());
     handle.swap(Arc::new(withdrawn));
-    assert_eq!(client.get(&url).send().await.unwrap().status().as_u16(), 404,
-        "the SAME listener resolves the current withdrawn table instead of retaining the old exporter");
+    assert_eq!(
+        client.get(&url).send().await.unwrap().status().as_u16(),
+        404,
+        "the SAME listener resolves the current withdrawn table instead of retaining the old exporter"
+    );
     assert_eq!(
         client.head(&url).send().await.unwrap().status().as_u16(),
         404,

@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Ordinary checks of the production completion-retirement ABI boundary. These
-//! do not replace the autonomous DispatcherDrive/answer-lease integration cases.
 
 use super::*;
 use crate::dispatch::ticket::WakeRoute;

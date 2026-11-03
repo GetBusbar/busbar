@@ -524,7 +524,6 @@ fn hook_route_lists_require_alignment_before_copying() {
     assert_eq!(context.routes[0].method, RouteMethod::Post);
     assert_eq!(context.routes[0].auth, RouteAuth::Key);
 
-    // Only the fixed loader sees this raw misaligned address; the test never dereferences it.
     let misaligned = routes.as_ptr().cast::<u8>().wrapping_add(1).cast::<Route>();
     assert!(!misaligned.is_aligned());
     tail.routes = misaligned;

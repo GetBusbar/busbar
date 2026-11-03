@@ -1036,7 +1036,10 @@ fn validate_keeps_legacy_overlay_files_outside_the_store_only_root() {
             "native validation must not import, quarantine, or rewrite a legacy overlay file"
         );
     }
-    write_configs(&dir, "limits:\n  reasoning_effort_budgets: {minimal: 16384, low: 8192, medium: 4096, high: 1024}\n");
+    write_configs(
+        &dir,
+        "limits:\n  reasoning_effort_budgets: {minimal: 16384, low: 8192, medium: 4096, high: 1024}\n",
+    );
     write_legacy_overlay_selector(&dir, &overlay);
     for args in [vec!["--validate"], vec!["--validate", "--safe-mode"]] {
         let before = overlay_validation_tree(&dir);
@@ -1104,9 +1107,12 @@ fn validate_deprecated_overlay_env_does_not_override_or_mutate_the_store_only_ro
         before,
         "the deprecated selector must not import, rewrite, or quarantine files"
     );
-    // A legacy file cannot repair an invalid real root, either.
+
     std::fs::write(&overlay, r#"{"version":1,"root":{"limits":{"reasoning_effort_budgets":{"minimal":1024,"low":4096,"medium":8192,"high":16384}}}}"#).unwrap();
-    write_configs(&dir, "limits:\n  reasoning_effort_budgets: {minimal: 16384, low: 8192, medium: 4096, high: 1024}\n");
+    write_configs(
+        &dir,
+        "limits:\n  reasoning_effort_budgets: {minimal: 16384, low: 8192, medium: 4096, high: 1024}\n",
+    );
     let before = overlay_validation_tree(&dir);
     let out = command(&dir)
         .current_dir(&dir)

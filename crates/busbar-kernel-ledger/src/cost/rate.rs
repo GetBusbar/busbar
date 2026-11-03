@@ -366,7 +366,7 @@ impl RateCard {
         card
     }
 
-    /// **THE OPEN CLASSES a deployment configured** (item 123): each `(lane, class)` cell set to an
+    /// **THE OPEN CLASSES a deployment configured**: each `(lane, class)` cell set to an
     pub fn with_unit_rates(mut self, cells: impl IntoIterator<Item = (LaneClass, u64)>) -> Self {
         for (cell, nanos) in cells {
             let (plane, lane) = split_plane_lane(&cell.lane);

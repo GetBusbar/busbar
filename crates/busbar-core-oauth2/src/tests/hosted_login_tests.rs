@@ -5,8 +5,6 @@ use super::*;
 
 #[test]
 fn the_button_brands_are_the_legacy_row_and_with_no_row_every_method_is_generic() {
-    // This crate's unit binary has no composition root. Supply the same frozen
-    // customer rows that the real root's migration-table contract pins.
     static ROWS: std::sync::Once = std::sync::Once::new();
     ROWS.call_once(|| {
         let frozen: serde_yaml::Value = serde_yaml::from_str(include_str!(

@@ -451,11 +451,11 @@ fn test_validate_rejects_zero_attempt_timeout_ms() {
         "expected a model-level attempt_timeout_ms:0 error for 'zerocap'; got: {errs:?}"
     );
     assert!(
-            errs.iter().any(|e| e.contains("mypool")
-                && e.contains("okcap")
-                && e.contains("attempt_timeout_ms: 0")),
-            "expected a member-level attempt_timeout_ms:0 error for pool 'mypool' member 'okcap'; got: {errs:?}"
-        );
+        errs.iter().any(|e| e.contains("mypool")
+            && e.contains("okcap")
+            && e.contains("attempt_timeout_ms: 0")),
+        "expected a member-level attempt_timeout_ms:0 error for pool 'mypool' member 'okcap'; got: {errs:?}"
+    );
     assert!(
         !errs
             .iter()
@@ -1103,8 +1103,7 @@ fn test_validate_rejects_admin_token_without_module() {
     entry.token = Some(config::SecretRef::env("BUSBAR_ADMIN_TOKEN"));
     auth.admin_auth = vec![entry];
     cfg.auth = Some(auth.clone());
-    // The actual distribution includes its operator door. Shape validation is therefore
-    // allowed; absence of an external module is decided by the boot constructor's registry.
+
     validate(&cfg).expect("the distribution includes the configured operator module");
     let directory = crate::root::test_plugins::scratch("missing-admin-auth-module");
     let plugins = crate::root::test_plugins::trusted_config(&directory);
@@ -1411,9 +1410,9 @@ fn test_validate_passthrough_warns_on_nonempty_configured_key() {
     );
 
     assert!(
-            !msgs.iter().any(|m| m.contains("vendor-b")),
-            "a provider whose api_key_env resolves empty must NOT warn (legit signature-auth passthrough); got: {msgs:?}"
-        );
+        !msgs.iter().any(|m| m.contains("vendor-b")),
+        "a provider whose api_key_env resolves empty must NOT warn (legit signature-auth passthrough); got: {msgs:?}"
+    );
 }
 
 #[test]
@@ -2004,8 +2003,8 @@ fn test_validate_rejects_queue_max_ms_exceeding_resolved_budget() {
     let errs = validate(&cfg)
         .expect_err("a max_ms above the resolved failover budget must fail validation");
     assert!(
-        errs.iter().any(|e| e.contains("exceeds the resolved failover budget")
-            && e.contains("mypool")),
+        errs.iter()
+            .any(|e| e.contains("exceeds the resolved failover budget") && e.contains("mypool")),
         "expected a budget-exceeded error resolved against the pool's own 1s timeout; got: {errs:?}"
     );
 }
@@ -4443,7 +4442,6 @@ fn an_env_placeholder_base_url_skips_the_scheme_check_under_validate_only() {
     assert!(with_unset("http://api.example.com").is_err());
 }
 
-// Observes actual tracing events; it supplies no application or plugin behavior.
 #[derive(Clone, Default)]
 struct WarnCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
 

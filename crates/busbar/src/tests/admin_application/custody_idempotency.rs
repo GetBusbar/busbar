@@ -57,8 +57,7 @@ fn key(actor: &str, header: &str) -> (String, String) {
 #[test]
 fn create_and_rotate_claims_are_disjoint_after_cache_loss() {
     let now = busbar_kernel::store::now();
-    // Framing belongs to core-admin's private factory tests. Here the public durable API
-    // receives distinct original header inputs as data, without recreating that framing.
+
     let rotate = key("alice", "h");
     let create = key("alice", "rotate:1:x:1:h");
     for (first, second) in [(&create, &rotate), (&rotate, &create)] {
@@ -147,8 +146,6 @@ fn a_released_claim_frees_the_key_for_exactly_one_retry() {
 
 #[test]
 fn an_unsettled_claim_is_in_flight_until_it_lapses() {
-    // The actual Store owns token time and ignores the caller's `now` for expiry. Start
-    // this claim just before its real deadline, then let that clock pass the deadline.
     let now = busbar_kernel::store::now() - IDEMPOTENCY_TTL_SECS + 5;
     let store = durable_store();
     let k = key("alice", "unsettled-1");

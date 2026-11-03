@@ -284,8 +284,6 @@ impl RecordStore for Store {
     }
 }
 
-// Each ordinary case runs one production root in its own process because the
-// node book and rate-card authority are process-owned.
 fn isolated() -> bool {
     const CHILD: &str = "BUSBAR_CUSTODY_OUTCOME_CHILD";
     if std::env::var_os(CHILD).is_some() {
@@ -478,8 +476,6 @@ async fn mint(
     .await
 }
 
-// Same production create-key framing, retained here as an explicit boundary
-// assertion without widening the crate-private convenience function.
 fn create_replay_key(header: &str) -> String {
     format!("create:{}:{}", header.len(), header)
 }
@@ -816,8 +812,7 @@ async fn committed_mint_refresh_failure_is_truthful_and_same_idempotency_cannot_
     store
         .fail_refresh_after_write
         .store(false, Ordering::SeqCst);
-    // A new response cache forces this retry to consult the actual Store's durable
-    // receipt. The previous process-local response must not mask a missing settlement.
+
     let fresh_cache = Arc::new(busbar_core_admin::keys::KeyReplayCache::new());
     let retry = mint(
         router.clone().layer(axum::Extension(fresh_cache)),

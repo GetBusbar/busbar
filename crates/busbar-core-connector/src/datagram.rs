@@ -2454,6 +2454,7 @@ pub struct Bridge {
     upstream: Vec<(u64, String)>,
     /// The caller's channels' labels, in the order it opened them.
     channels: Vec<String>,
+    opening_pending: bool,
     stopped: bool,
     custody: Vec<Custody>,
 }
@@ -2539,6 +2540,15 @@ impl Bridge {
         let mut session = Vec::new();
         let mut across = Vec::new();
         for g in pieces {
+            if leg == Leg::Caller && g.fields {
+                if let Ok(fields) = std::str::from_utf8(&g.bytes) {
+                    for (name, value) in fields.lines().filter_map(|line| line.split_once(':')) {
+                        if name.trim() == "opening-pending" {
+                            self.opening_pending = value.trim() != "0";
+                        }
+                    }
+                }
+            }
             let known = self.lines(leg).iter().any(|(s, _)| *s == g.stream);
             if g.fields && !known {
                 match stream_head(&g.bytes) {
@@ -2723,7 +2733,9 @@ impl Pairing {
                 if state.closed {
                     return Err(busbar_contract::conn::ConnError::Closed);
                 }
-                if !state.bridge.caller.is_empty() || !state.bridge.channels.is_empty() {
+                if !state.bridge.opening_pending
+                    && (!state.bridge.caller.is_empty() || !state.bridge.channels.is_empty())
+                {
                     return Ok(());
                 }
             }

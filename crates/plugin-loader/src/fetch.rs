@@ -143,9 +143,6 @@ pub fn fetch_plugins(
             }
         }
 
-        // An HTTP success (even with a matching pin) is not necessarily a plugin archive.
-        // Refuse unreadable downloads before replacing any installed artifact; admission still
-        // judges the manifest's signature, publisher, ABI and version floors at load time.
         let manifest = match crate::tarball::unpack(&bytes) {
             Ok(unpacked) => unpacked.manifest,
             Err(error) => {
@@ -164,8 +161,14 @@ pub fn fetch_plugins(
             .is_ok_and(|installed| sha256_hex(&installed) == sha256_hex(&bytes));
         if !unchanged {
             if let Err(refusal) = fresh(&manifest) {
-                record_problem(&mut errors, &mut outcomes, format!(
-                    "release seal refused ({}): {refusal} (not written; a NEW download is judged at install time, and any installed copy is kept)", refusal.code()));
+                record_problem(
+                    &mut errors,
+                    &mut outcomes,
+                    format!(
+                        "release seal refused ({}): {refusal} (not written; a NEW download is judged at install time, and any installed copy is kept)",
+                        refusal.code()
+                    ),
+                );
                 continue;
             }
         }

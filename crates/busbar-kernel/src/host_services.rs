@@ -440,7 +440,7 @@ pub struct InstanceFacts {
 }
 
 /// Verified, in-process ticket identity. Its credential remains host-private and zeroised.
-/// This value is deliberately not clonable; durable redemption still enforces single use.
+
 pub struct VerifiedTicketIdentity {
     pub(crate) id: String,
     pub(crate) principal: Arc<busbar_contract::records::VirtualKey>,
@@ -477,7 +477,7 @@ impl std::fmt::Debug for VerifiedTicketIdentity {
 }
 
 /// Host policy classifies an authenticated ticket before its durable single-use spend.
-/// Only a real reservation grants reservation-backed financial authority.
+
 pub enum TicketClaimDisposition {
     Ordinary,
     Reserved(crate::plane_driver::TicketReservation),
@@ -495,8 +495,6 @@ impl HostTicketAdmission {
     }
 
     pub fn take(&self) -> Option<crate::plane_driver::SpentTicketReservation> {
-        // A poisoned holder fails closed. In either case no financial destructor runs
-        // while the mutex is held: the removed token is returned to the caller.
         let mut held = self.0.lock().ok()?;
         held.take()
     }
@@ -511,9 +509,7 @@ impl std::fmt::Debug for HostTicketAdmission {
 
 pub trait TicketPress: Send + Sync {
     /// Mint with the host's exact admitted unit and caller identity. Reservation-aware presses
-    /// override this method and bind custody before returning the credential.
-    // Keep the admitted unit, caller and full principal explicit at this authority boundary.
-    // These host bindings extend the existing mint inputs without changing its request schema.
+
     #[allow(clippy::too_many_arguments)]
     fn mint_for_unit(
         &self,
@@ -2086,7 +2082,7 @@ impl HostServices for KernelServices {
                 Ok(v) => v,
                 Err(Unjudged::UnknownInstance) => return Ran::Now(Stored::refused(NOT_ADMITTED)),
                 Err(Unjudged::UnknownCounterparty) => {
-                    return Ran::Now(Stored::refused(NOT_A_COUNTERPARTY))
+                    return Ran::Now(Stored::refused(NOT_A_COUNTERPARTY));
                 }
             };
         let answer = Stored::ready(sight_code(sight));
@@ -2444,7 +2440,7 @@ impl HostServices for KernelServices {
         let permit = match self.nested.enter(depth as usize) {
             Ok(p) => p,
             Err(busbar_contract::caps::ReasonCode::InFlightCap) => {
-                return Ran::Now(Stored::refused(NEST_FULL))
+                return Ran::Now(Stored::refused(NEST_FULL));
             }
             Err(_) => return Ran::Now(Stored::refused(NEST_TOO_DEEP)),
         };

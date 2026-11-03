@@ -235,7 +235,7 @@ impl ServeTables {
             match found {
                 Some(f) => f,
                 None if named => {
-                    return Some(crate::admin::gate::err_json(&ApiError::MethodNotAllowed))
+                    return Some(crate::admin::gate::err_json(&ApiError::MethodNotAllowed));
                 }
                 None => return None,
             }

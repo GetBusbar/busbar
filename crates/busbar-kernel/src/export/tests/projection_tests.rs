@@ -12,8 +12,6 @@ fn resolve_errs(yaml: &str) -> Vec<String> {
     let defs: ExportDefs = serde_yaml::from_str(yaml).expect("fixture parses");
     let mut errors = Vec::new();
     for (name, def) in defs {
-        // Grammar inputs are declarations, not an exporter implementation. Product
-        // loading and config-axis wiring are exercised in the distribution tests.
         let carries = match def.module.as_str() {
             "request-log-webhook" => &[ExportStream::Logs][..],
             "prometheus" => &[ExportStream::Metrics][..],
@@ -74,10 +72,13 @@ fn produced_streams_are_accepted() {
         "req-log:\n  module: request-log-webhook\n  streams: [logs]\n  settings:\n    url: https://sink.example.com/l\n",
     );
     assert!(errors.is_empty(), "logs should validate: {errors:#?}");
-    let errors = resolve_errs("metrics:\n  module: prometheus\n  streams: [metrics]\n  settings:\n    buffer_seconds: 60\n");
+    let errors = resolve_errs(
+        "metrics:\n  module: prometheus\n  streams: [metrics]\n  settings:\n    buffer_seconds: 60\n",
+    );
     assert!(errors.is_empty(), "metrics should validate: {errors:#?}");
-    let errors =
-        resolve_errs("traces:\n  module: otlp\n  streams: [traces]\n  settings:\n    url: http://localhost:4318/v1/traces\n");
+    let errors = resolve_errs(
+        "traces:\n  module: otlp\n  streams: [traces]\n  settings:\n    url: http://localhost:4318/v1/traces\n",
+    );
     assert!(errors.is_empty(), "traces should validate: {errors:#?}");
 }
 

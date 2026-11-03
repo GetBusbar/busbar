@@ -683,8 +683,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         {
             return;
         }
-        // EOF is not PIECE_END. First let any parked ingest yield its final pieces; only bodies
-        // still owned here after that completion have ended without their transport's whole end.
+
         for inflow in self.inflows.values_mut() {
             if let Some(body) = inflow.body.take() {
                 let error = std::io::Error::new(

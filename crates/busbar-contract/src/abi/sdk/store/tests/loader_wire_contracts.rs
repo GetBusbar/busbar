@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The loader's former SDK connector/wire controls, at their actual private SDK boundary.
-//! These are HostTables ABI controls; they do not claim actual TCP/TLS transport qualification.
+
 use crate::abi::host::conn::connector::{ConnectorSlots, EstablishIn, IoIn, StreamIn};
 use crate::abi::host::service::ServiceOut;
 use crate::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};

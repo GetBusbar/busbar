@@ -556,7 +556,6 @@ impl Advance {
     }
 }
 
-// One bounded queue prefix, never a retained history or a new persisted protocol.
 pub(super) struct GroupAdvance {
     node: u64,
     previous: Option<Vec<u8>>,
@@ -622,7 +621,7 @@ pub(super) fn prepare_group(
         heads.push((head, audit.prev_hash));
     }
     let current = checkpoint(calls, first.node)?;
-    // Rare reconstructed reoffer: prove only the exact prefix ending at the stored tip.
+
     if let Some((stored, raw)) = &current {
         if let Some(index) = heads.iter().position(|(head, _)| head == &stored.tip) {
             let count = index + 1;

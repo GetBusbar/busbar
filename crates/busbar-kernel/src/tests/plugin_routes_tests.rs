@@ -246,10 +246,6 @@ fn only_the_scrape_sink_claims_metrics_hooks() {
     }
 }
 
-// Actual export dispatch, same-listener generation swaps and GET/HEAD crossings live in
-// busbar/src/tests/kernel_application/plugin_routes_actual.rs, where a real root and
-// a real dropped Prometheus owner replace the former label-echo application fixture.
-
 #[test]
 fn admin_auth_route_is_classified_to_the_admin_plane_only() {
     let table = build_route_table(vec![decl(
@@ -271,12 +267,6 @@ fn admin_auth_route_is_classified_to_the_admin_plane_only() {
         "an auth:admin route is on the admin plane"
     );
 }
-
-// The former injected audit-sink response only proved its own fake body. The actual
-// core-admin info owner now witnesses physical listener isolation (404 data / 200
-// authenticated admin) in plugin_routes_actual.rs. The policy test above separately
-// retains plugin auth:admin -> admin-plane classification; it does not claim a real
-// plugin auth:admin wire crossing.
 
 #[test]
 fn head_is_looked_up_as_the_declared_get_route() {
@@ -303,10 +293,6 @@ fn head_is_looked_up_as_the_declared_get_route() {
     assert_eq!(route_method_of(&axum::http::Method::OPTIONS), None);
     assert_eq!(route_method_of(&axum::http::Method::TRACE), None);
 }
-
-// HEAD's actual owner crossing is retained beside GET in plugin_routes_actual.rs.
-// Its withdrawn-owner 404 control proves the response came from the current owner,
-// replacing the fixture's self-authored x-served-by label assertion.
 
 #[test]
 fn over_cap_request_headers_are_marked_not_silently_cut() {

@@ -13,8 +13,7 @@ fn chain_with(module: &str, settings: serde_json::Map<String, serde_json::Value>
 }
 
 /// Internal policy continuation after identity has been verified. The root's
-/// a_verified_oidc_role_is_bound_under_the_provider_name separately checks that the actual
-/// OIDC product delivers the provider identity and platform role used here.
+
 #[test]
 fn auth_plugin_role_binding_and_scope_cap_apply() {
     use busbar_contract::authz::Scope;

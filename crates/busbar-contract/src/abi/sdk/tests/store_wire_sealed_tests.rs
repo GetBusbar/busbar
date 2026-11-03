@@ -608,7 +608,7 @@ fn a_kept_connection_requires_fresh_secure_facts_for_the_next_credential() {
 }
 
 /// Forwarding only: actual TLS and operator-class enforcement remain the connector's
-/// cryptographic tests. This observes the existing ABI boundary without a new host adapter.
+
 #[test]
 fn wire_dial_timeout_and_upgrade_flags_reach_the_host_unchanged() {
     let _serial = serial();
@@ -636,7 +636,7 @@ fn wire_dial_timeout_and_upgrade_flags_reach_the_host_unchanged() {
 }
 
 /// Target/byte forwarding only. The actual connector's unix-target ordinary test
-/// proves the separate real socket crossing; this existing ABI witness does not.
+
 #[test]
 fn a_unix_store_target_and_its_bytes_reach_the_host_unchanged() {
     let _serial = serial();

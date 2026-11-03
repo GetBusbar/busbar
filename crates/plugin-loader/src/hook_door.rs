@@ -70,7 +70,7 @@ type Rebind = Box<dyn Fn() -> Result<Plugin<Hook>, String> + Send + Sync>;
 enum State {
     Live {
         plugin: Arc<Plugin<Hook>>,
-        // Opening a trial alone does not show that its serving slots recovered.
+
         next_fault_window: Duration,
     },
 
@@ -206,7 +206,6 @@ struct Inner {
     dispatcher: Arc<Dispatcher>,
     rebind: Rebind,
 
-    // settings-leak-lint: allow — NON-PROJECTION engine type: the instance's own settings bytes,
     settings: zeroize::Zeroizing<Vec<u8>>,
 
     configured: Mutex<Configuration>,
@@ -938,7 +937,7 @@ impl HookCalls for HookInstance {
                 Err(Answered::TimedOut) => return Err("hook serve exceeded its budget".into()),
                 Err(Answered::Broken(why)) => return Err(why),
                 Err(Answered::Answer { .. }) => {
-                    return Err("hook serve answered out of turn".into())
+                    return Err("hook serve answered out of turn".into());
                 }
             };
             if done.outcome != Outcome::Ready {

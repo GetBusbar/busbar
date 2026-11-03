@@ -221,8 +221,6 @@ const LANE_FAMILIES: &[&str] = &[
     "busbar_lane_inflight",
 ];
 
-// 1.5.5 deliberately primed this undescribed counter to zero at recorder install.
-// The frozen scrape and the observability inventory both carry TYPE without HELP.
 const TYPE_ONLY_COUNTER: &str = "busbar_billing_truncated_total";
 const TYPE_ONLY_COUNTER_TYPE: &str = "# TYPE busbar_billing_truncated_total counter";
 const TYPE_ONLY_COUNTER_SAMPLE: &str = "busbar_billing_truncated_total 0";

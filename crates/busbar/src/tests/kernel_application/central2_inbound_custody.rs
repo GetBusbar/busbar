@@ -209,8 +209,7 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
         body: None,
         deadline: None,
     };
-    // Every refusal must leave the original request's authority intact. Unlike
-    // the former scripted verifier, these units are admitted by the real key path.
+
     let mut sanitized = original.clone();
     sanitized.fields.clear();
     for (conn, stream, framing) in [
@@ -296,8 +295,7 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
             inbound.exit(unit.id);
         }
     }
-    // A claimed admission is the only authority transferable to a detached
-    // destination. The public host API enforces the same private verified check.
+
     inbound.framing_started(7, 71, 1, 3).unwrap();
     inbound.grant_stream(7, 1, 1, 3).unwrap();
     let (send, receive) = tokio::sync::oneshot::channel();
@@ -407,9 +405,7 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
     inbound.framing_ended(19);
     assert!(inbound.unit_secret(97, unit.id).is_none());
     assert!(inbound.with_credential(unit.id, |_| ()).is_none());
-    // Retain the claimed receipt until the final actual App lifetime control.
-    // Two independently claimed requests on one detached connection cannot be
-    // guessed into a session. Each actual Store-backed key admission remains held.
+
     inbound.framing_started(7, 71, 21, 3).unwrap();
     let mut held = Vec::new();
     for stream in [1, 2] {
@@ -466,8 +462,6 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
     }
     drop(held);
 
-    // Ending either side of a staged transfer retires its credential and prevents
-    // a late commit; repeat with distinct genuine framing/connection identities.
     for (source_leg, destination_leg, conn, ended) in [(31, 39, 21, 31), (41, 49, 31, 49)] {
         inbound.framing_started(7, 71, source_leg, 3).unwrap();
         inbound.grant_stream(7, source_leg, 1, 3).unwrap();
@@ -521,9 +515,7 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
         inbound.framing_ended(destination_leg);
         drop(receipt);
     }
-    // Actual credential stripping never authorizes deletion of framing fields,
-    // including duplicate fields named by Connection. The original opaque signed
-    // verifier claim is narrower here: key authentication is real, no fake signer.
+
     inbound.framing_started(7, 71, 61, 3).unwrap();
     inbound.grant_stream(7, 61, 1, 3).unwrap();
     let mut framed = original.clone();
@@ -617,8 +609,7 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
     );
     drop(receipt);
     inbound.framing_ended(61);
-    // An open line allocates authority only at hand-in. Asking it for auth
-    // answers LINE_OPEN synchronously and never enters an asynchronous verifier.
+
     inbound
         .install(
             107,
@@ -695,9 +686,6 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
     ));
     inbound.exit(open_unit.id);
 
-    // The transferred request's receipt owns its original genuine application,
-    // even after both framing incarnations and all installed tables are retired.
-    // This observes the public lifetime contract without exposing receipt internals.
     let old_app = Arc::downgrade(&app);
     inbound.retire_before(100);
     drop(app);

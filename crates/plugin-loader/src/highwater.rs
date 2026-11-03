@@ -35,7 +35,7 @@ impl HighWaterMarks {
                         marks: BTreeMap::new(),
                     },
                     None,
-                )
+                );
             }
             Err(e) => {
                 return (
@@ -49,7 +49,7 @@ impl HighWaterMarks {
                          be refused until the floor is re-established by a successful load.",
                         path.display()
                     )),
-                )
+                );
             }
         };
         let parsed: BTreeMap<String, String> = match serde_json::from_slice(&bytes) {
@@ -67,7 +67,7 @@ impl HighWaterMarks {
                          load.",
                         path.display()
                     )),
-                )
+                );
             }
         };
         let mut dropped = Vec::new();

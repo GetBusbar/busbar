@@ -74,7 +74,6 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
     }
 }
 
-// Inert protocol names for pure validation functions with an explicit allowed-set input.
 fn proto_a() -> &'static str {
     "host-input-a"
 }
@@ -446,9 +445,9 @@ fn test_ssrf_allows_private_and_loopback_by_default() {
         "https://API.LOCALHOST/",
     ] {
         assert!(
-                ssrf_blocked_host(allowed, &[], false, &[]).is_none(),
-                "expected '{allowed}' to be ALLOWED (private/loopback is a local-model target, not metadata)"
-            );
+            ssrf_blocked_host(allowed, &[], false, &[]).is_none(),
+            "expected '{allowed}' to be ALLOWED (private/loopback is a local-model target, not metadata)"
+        );
     }
 }
 
@@ -460,9 +459,9 @@ fn test_ssrf_cgnat_allowed_but_alibaba_literal_blocked() {
     assert!(ssrf_blocked_host("https://100.128.0.1/", &[], false, &[]).is_none());
 
     assert!(
-            ssrf_blocked_host("https://100.100.100.200/", &[], false, &[]).is_some(),
-            "the Alibaba metadata literal 100.100.100.200 must stay blocked even though CGNAT is allowed"
-        );
+        ssrf_blocked_host("https://100.100.100.200/", &[], false, &[]).is_some(),
+        "the Alibaba metadata literal 100.100.100.200 must stay blocked even though CGNAT is allowed"
+    );
 }
 
 #[test]
@@ -706,7 +705,9 @@ fn datagram_line_memory_limit_zero_is_a_config_validation_error() {
     validate_limits(&cfg.limits, &mut errors);
     assert_eq!(
         errors,
-        ["limits.datagram_line_memory_bytes must be >= 1 when set (omit it or use null to disable the limit)"],
+        [
+            "limits.datagram_line_memory_bytes must be >= 1 when set (omit it or use null to disable the limit)"
+        ],
     );
 }
 

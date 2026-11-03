@@ -426,7 +426,7 @@ impl ConnState {
         }
         let (owner, creating_table) = &dial.authority.conn;
         let _ = creating_table.close(*owner, dial.conn);
-        // The dial's generation remains live through close, outside the state lock.
+
         drop(dial);
         None
     }
@@ -469,7 +469,7 @@ impl ConnState {
     }
 
     /// Detach only the candidate's resources. Dropping the returned owner closes connections
-    /// and auth calls without holding any ConnState lock, before releasing their generations.
+
     pub(crate) fn retire_binding(
         &self,
         binding: &Arc<super::export_bindings::Generation>,
@@ -534,7 +534,6 @@ impl Drop for Closes {
                 let (owner, table) = &stream.authority.conn;
                 let _ = table.close(*owner, *conn);
             }
-            // In-flight auth is dropped here too; its generation outlives the fielding call.
         }
         self.waits.clear();
     }
@@ -1332,7 +1331,7 @@ struct Stream {
     headed: bool,
     /// The reply's terminal piece was read.
     ended: bool,
-    // Drop auth/open state before releasing its creating generation.
+
     authority: Authority,
 }
 
@@ -1556,9 +1555,6 @@ extern "C" fn write_request(
                     let bound = if waived {
                         None
                     } else {
-                        // Member auth belongs to the same captured generation as this
-                        // request's I/O. Retained streams keep their old authority;
-                        // new streams must not inherit a removed or rotated binding.
                         table.auth_of(id, need, &member, &target)
                     };
 
@@ -2399,9 +2395,8 @@ mod creating_authority_tests {
             );
         });
         wake.exports.publish(new.clone());
-        // The following services execute in the newly published operation context.
+
         super::super::export_bindings::crossing(Some(new.clone()), || {
-            // A new generation owns both this request's I/O and its member-auth lookup.
             let framed = held_id();
             wake.conn_state.streams().insert(
                 framed,
@@ -2771,7 +2766,6 @@ mod creating_authority_tests {
         });
         wake.exports.publish(generations[2].clone());
         super::super::export_bindings::crossing(Some(generations[2].clone()), || {
-            // Both frames were opened before this publication and end afterward.
             end_header_request(ctx, old);
             end_header_request(ctx, rotated);
             let removed = held_header_request(wake, owners[2], &table);
@@ -2782,12 +2776,25 @@ mod creating_authority_tests {
             let added = held_header_request(wake, owners[3], &table);
             end_header_request(ctx, added);
         });
-        assert_eq!(*lock(&actual.opened_fields), vec![
-            (owners[0], vec![("authorization".to_owned(), b"Bearer generation-11".to_vec())]),
-            (owners[1], vec![("authorization".to_owned(), b"Bearer generation-22".to_vec())]),
-            (owners[2], Vec::new()),
-            (owners[3], vec![("authorization".to_owned(), b"Bearer generation-33".to_vec())]),
-        ], "the actual request service must send each captured generation's fields, with no old-binding fallback");
+        assert_eq!(
+            *lock(&actual.opened_fields),
+            vec![
+                (
+                    owners[0],
+                    vec![("authorization".to_owned(), b"Bearer generation-11".to_vec())]
+                ),
+                (
+                    owners[1],
+                    vec![("authorization".to_owned(), b"Bearer generation-22".to_vec())]
+                ),
+                (owners[2], Vec::new()),
+                (
+                    owners[3],
+                    vec![("authorization".to_owned(), b"Bearer generation-33".to_vec())]
+                ),
+            ],
+            "the actual request service must send each captured generation's fields, with no old-binding fallback"
+        );
         for generation in &generations {
             drop(wake.conn_state.retire_binding(generation));
         }

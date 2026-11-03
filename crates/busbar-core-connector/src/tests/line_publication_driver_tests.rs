@@ -348,9 +348,6 @@ fn a_close_during_a_non_accepting_batch_retires_the_held_source_immediately() {
     assert_eq!((outcome.accepted_frames, outcome.handed_frames), (0, 0));
 }
 
-// Fixed opaque samples exercise the publication actor, not a transport or an
-// invented graph protocol. Each continuation accepts one independently specified
-// input and yields only its precomputed values; no input byte selects behavior.
 #[test]
 fn fixed_finite_publication_frontiers_preserve_exact_paths_counts_and_quiescent_recalls() {
     const EDGES4: &[(u8, u8, u8)] = &[
@@ -608,8 +605,7 @@ fn a_fixed_partial_frontier_exhausts_without_replay_and_preserves_earlier_reader
     });
     upstream.then(move |input| {
         assert_eq!(input.unwrap().bytes, expected_first);
-        // This concrete next owned batch exceeds the remaining configured
-        // custody. No invented transport generates or parses a feedback protocol.
+
         LineStep::Batch {
             yielded: {
                 let mut y = Yielded::default();
@@ -766,9 +762,7 @@ fn a_ready_batch_after_reentrant_close_counts_taken_source_and_cancels_its_line_
     caller.then(move |input| {
         assert_eq!(input.unwrap().bytes, SOURCE);
         let pairing = weak.upgrade().unwrap();
-        // Actual DatagramTurn::cross holds a producer while the framer is
-        // crossing. Keep that same concrete owner across the reentrant close
-        // so the returned LINE is classified before bridge metadata retires.
+
         let producer = pairing.memory.producer().unwrap();
         pairing.close();
         LineStep::Batch {
@@ -833,8 +827,7 @@ fn fixed_channel_outputs_from_application_and_bridged_line_inputs_publish_once_i
     let weak = Arc::downgrade(&pairing);
     caller.then(move |input| {
         assert_eq!(input.unwrap().bytes, b"application");
-        // A concrete other-leg publication arrives while this source crossing
-        // owns the actor. It must follow the current source's channel output.
+
         let session = weak.upgrade().unwrap().publish(
             Leg::Upstream,
             {
@@ -1001,8 +994,7 @@ fn a_real_credit_refusal_cancels_a_partial_frontier_instead_of_waiting_on_queued
         .iter()
         .map(|owner| owner.reader_on(Leg::Caller))
         .collect::<Vec<_>>();
-    // This batch has completed its handoff: its queued readers own storage, but
-    // no active producer or consumption transfer can make independent progress.
+
     retained.producer = crate::publication::ProducerCustody::default();
     caller.then(|input| {
         assert_eq!(input.unwrap().bytes, b"seed");

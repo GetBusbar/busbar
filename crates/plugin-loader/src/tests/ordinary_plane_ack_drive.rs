@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Adversarial completion-ACK metadata at an actual MCP descriptor's raw DRIVE
-//! boundary. The actual image owns OPEN/CLOSE and every unchanged operation.
-//! No settings script or business-session interpreter is installed.
 
 use crate::dispatch::kinds::plane::{open_door, Plane};
 use crate::dispatch::{
@@ -140,7 +138,7 @@ extern "C" fn drive(
         let state = all
             .get_mut(&input.drive.head.host.handle)
             .expect("actual OPEN captured services");
-        // The preceding answer lease must have been released before reentry.
+
         if !state.leases.is_empty() {
             return RawOutcome::of(Outcome::Fault);
         }
@@ -403,7 +401,6 @@ extern "C" fn close(
         let result =
             unsafe { actual_ops().head.close.expect("actual MCP CLOSE")(instance, input, output) };
         if result.outcome() == Outcome::Ready {
-            // Services callbacks are no longer retained beyond their actual instance lifetime.
             states().lock().unwrap().remove(&host);
         }
         result
@@ -682,8 +679,7 @@ impl busbar_contract::services::HostServices for Provider {
         busbar_contract::services::Ran::Now(result)
     }
 }
-// Raw loaded Plugin values do not own an automatic CLOSE lifecycle. Keep the
-// actual image live until its explicit CLOSE has released the boundary state.
+
 fn close_actual(plugin: &crate::dispatch::Plugin<Plane>, host: u64) {
     use crate::dispatch::{in_head, out_head, Frame};
     use busbar_contract::abi::mechanism::lifecycle::slot;
@@ -939,10 +935,7 @@ fn a_pending_driver_delivers_ids_resumes_and_retires_late_service_custody() {
             .answered_after(2, Duration::from_secs(5)),
         Some(Outcome::Ready)
     );
-    // Accepting the third DRIVE's ACK autonomously wakes a fourth crossing to
-    // deliver the host's confirmation nonce. Observe that exact crossing before
-    // beginning another service cycle; the third lease can be released too
-    // quickly for a polling assertion to observe its intermediate count.
+
     until(|| {
         plugin.inner.driven.answers() == 4
             && states()

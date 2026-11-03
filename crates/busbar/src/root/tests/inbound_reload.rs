@@ -32,8 +32,6 @@ fn provider(name: &'static str, units: &Arc<Mutex<Vec<u64>>>) -> Arc<Provider> {
     })
 }
 
-// Observe the actual adapter's answers; authority, asynchronous completion, and
-// every framing lifetime operation stay with the production adapter.
 struct ObserveActual {
     actual: inbound::LoaderSide,
     calls: Arc<AtomicUsize>,
@@ -149,8 +147,7 @@ fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
     let directory = common::plugins::scratch(&format!("{}-store", provider.name));
     let library = std::fs::read(&library_path).expect("the actual Store image reads");
     let archive = common::plugins::signed(&common::plugins::key(0x33), manifest, &library);
-    // The normal product can already link this Store. The supplied ABI instance
-    // remains the fixture's Store; do not introduce a second owner of its name.
+
     if !crate::LINKED.stores.iter().any(|row| row.0 == store.name()) {
         std::fs::write(directory.join("store.tar.gz"), archive)
             .expect("the actual signed Store is staged");
@@ -232,8 +229,7 @@ fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
     let mut entry = busbar_kernel::config::AuthChainEntry::bare(provider.name);
     entry.settings = common::credentials::settings(provider.name);
     auth.chain.push(entry);
-    // These cases exercise listener policy ownership on a supplied actual Store.
-    // They do not activate a cold root deployment or assert limit/rate activation.
+
     app.auth = Arc::new(
         busbar_kernel::auth::AuthMiddleware::new(
             &auth,
@@ -280,8 +276,6 @@ fn identities(provider: &Provider) -> Vec<Option<String>> {
         .collect()
 }
 
-// A literal HTTP/2 HEADERS block: POST, http, and a non-Huffman path. Keeping
-// END_STREAM clear holds the real request open while later streams use a new policy.
 pub(super) fn request(stream: u32, path: &str, preface: bool) -> Vec<u8> {
     assert!(path.len() < 127);
     let mut bytes = Vec::new();
@@ -308,7 +302,7 @@ fn authenticated_request(stream: u32, path: &str, preface: bool, provider: &Prov
         "Bearer {}",
         common::credentials::token_for(provider.name, &[], provider.name)
     );
-    // Literal never-indexed authorization, static-table name index 23.
+
     bytes.extend_from_slice(&[0x1f, 8]);
     let mut len = token.len();
     if len < 127 {

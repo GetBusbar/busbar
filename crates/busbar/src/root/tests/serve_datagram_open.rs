@@ -23,8 +23,6 @@ const CARRIER: &str = "webrtc";
 
 type Callback = Arc<dyn Fn() + Send + Sync>;
 
-// Observe retirement of an actual loaded product. Every input and output crosses
-// the WebRTC door unchanged; the host-side callback checks its lock boundary.
 struct OpeningFramer {
     inner: Arc<dyn FramerDoor>,
     finishes: AtomicUsize,
@@ -131,9 +129,6 @@ impl Deployment {
     }
 }
 
-// Assemble ordinary production objects around the actual registered streaming
-// plane. The loopback peer drains requests but leaves its response pending; it
-// introduces no plane, transport, protocol parser or manufactured plane output.
 async fn deployment(instance: &'static str) -> Deployment {
     use crate::root::door_steps::{provider_routes, DoorReach, OutboundAuths};
     use crate::root::loader::dispatch::kinds::plane::Plane;
@@ -185,8 +180,7 @@ async fn deployment(instance: &'static str) -> Deployment {
         busbar_core_connector::spawn_env::linked_spawn_secret,
     )
     .unwrap();
-    // The production builder can bind credential readers through the root's
-    // actual AuthAxis. Give that process-wide axis the composed connector.
+
     if crate::root::connector::installed().is_none() {
         let _ = crate::root::connector::install(connector.clone());
     }
@@ -291,9 +285,7 @@ async fn deployment(instance: &'static str) -> Deployment {
         post.clone() as Arc<dyn EndPost>,
     ));
     let tables = busbar_kernel::plane_driver::serve::ServeTables::default();
-    // These tests supply an already authenticated Arrival directly. Keep the
-    // same signed-key governance and concrete cost in that owned App; router
-    // authentication and durable boot publication are separate boundaries.
+
     app.governance = Some(gov.clone());
     app.cost = Arc::new(cost);
     app.serve_tables = tables.clone();
@@ -662,9 +654,7 @@ async fn abandoning_an_unjoined_opening_drops_its_pairing_outside_the_state_mute
 #[tokio::test]
 async fn a_host_head_wait_timeout_retires_real_custody_and_a_ready_plane_response_transfers_it() {
     let _one = PUBLISHING.lock().await;
-    // Streaming states its real 201 head immediately. A bounded pending host
-    // receiver independently exercises the existing head-wait mechanism; this
-    // does not claim the real plane withholds a head or an end-to-end timeout.
+
     {
         let mut g = deployment("datagram-host-head-timeout").await;
         let (routes, claim) = routes(&mut g);

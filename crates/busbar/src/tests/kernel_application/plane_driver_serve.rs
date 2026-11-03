@@ -90,8 +90,7 @@ fn actual_mcp_health_calls(
         ),
         post,
     ));
-    // MCP's real health verb reads its admitted counterparties through the host.
-    // Use the normal driver admission rather than an unadmitted raw Plugin.
+
     let section = serde_yaml::from_str(
         r#"x: {url: 'http://127.0.0.1:1', allow_private: true, pin: {mechanism: unpinned}}"#,
     )

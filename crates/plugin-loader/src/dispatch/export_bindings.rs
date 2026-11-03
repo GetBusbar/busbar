@@ -29,7 +29,7 @@ pub(crate) struct Bindings(Mutex<State>);
 #[derive(Default)]
 struct State {
     current: Option<Arc<Generation>>,
-    // Root-installed member authentication remains bound to the original authority.
+
     root: Option<Arc<Generation>>,
     tickets: HashMap<Ticket, Arc<Generation>>,
     staged: HashMap<Ticket, Arc<Generation>>,

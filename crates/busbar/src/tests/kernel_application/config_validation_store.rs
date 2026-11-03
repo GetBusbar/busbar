@@ -9,7 +9,7 @@ const NO_STORE: &str = "listen: \"127.0.0.1:8080\"\nproviders:\n  acme:\n    api
 #[test]
 fn a_config_without_a_store_block_is_refused() {
     crate::dist_root_install::install();
-    // Store presence is host metadata validation; no executable store is required.
+
     let deploy: config::DeployCfg = serde_yaml::from_str(
         "providers: {}\nmodels: {}\nstore: {module: inert-store-metadata}\nauth: {chain: [], admin_auth: []}\n",
     )

@@ -623,8 +623,7 @@ async fn refused_against(family: &str, cause: u32) -> Vec<String> {
     let mut failing = Vec::new();
     for (name, head, credentialed) in crosscut(family) {
         let captured = captured_request(&name);
-        // Arrival can classify a declared fallback path before the transport calls
-        // unit.refuse. Native admin availability likewise belongs to its real router.
+
         if cause == REFUSE_NO_ROUTE || captured["listener"] == "admin" {
             let router = if captured["listener"] == "admin" {
                 admin.clone()

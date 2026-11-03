@@ -243,9 +243,7 @@ fn actual_sqlite_rewrap_never_accepts_an_unleased_or_unjudged_result() {
         (unleased_door as DoorFn, "without a leased result"),
     ] {
         let store = open(door);
-        // Seed through a genuine ordinary PUT before the hostile maintenance slot is used.
-        // Missing/invalid wrappers forward it unchanged; the unleased witness cannot seed,
-        // so use a real expected row from its own genuine database-independent owner below.
+
         let expected = if std::ptr::fn_addr_eq(door, unleased_door as DoorFn) {
             seed(&actual_store::open())
         } else {

@@ -321,7 +321,7 @@ fn program_custody_survives_two_owner_refreshes_candidate_rollback_and_old_owner
         assert_eq!(handoff_pid(&c, third, current, "third").await, pid);
         let rejected = InstanceId(4);
         handoff_declare(&c, third, rejected, &spec, "m", program);
-        c.forget(rejected); // The candidate never publishes.
+        c.forget(rejected);
         assert_eq!(handoff_pid(&c, third, current, "after-rollback").await, pid);
         c.forget(second);
         c.forget(OWNER);
@@ -379,7 +379,7 @@ fn program_handoff_requires_the_same_need_member_and_program_and_is_not_global()
             "normal declarations never search other owners"
         );
         separate.push((unrelated, unrelated_pid));
-        // Removing the original member retires only its declaration, even while its lease exists.
+
         c.declare_member_programs(OWNER, NEED, &spec, &[]).unwrap();
         assert!(
             !gone(&original_pid),

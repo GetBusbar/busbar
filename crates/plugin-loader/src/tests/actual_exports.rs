@@ -71,8 +71,6 @@ image!(
     "busbar-export-webhook"
 );
 
-// The actual Prometheus product serves pull requests without connector I/O.
-// Match its declared inbound need while refusing unexpected table operations.
 pub(crate) mod prometheus_inbound {
     use std::sync::Arc;
 

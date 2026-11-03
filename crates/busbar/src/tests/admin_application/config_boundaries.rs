@@ -128,7 +128,7 @@ async fn hook_register_and_replace_refuse_oversized_timeouts_without_swapping() 
     }
     let hook =
         serde_json::from_value(serde_json::json!({"kind": "gate", "module": "test-hook"})).unwrap();
-    // Inert negative input: the timeout guard rejects before the named hook can execute.
+
     app.hook_registry.insert("existing".into(), hook);
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
         app.governance

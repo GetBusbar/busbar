@@ -14,8 +14,6 @@ use busbar_contract::abi::sdk::Safe;
 
 use super::{Called, OPEN_REASON_CAP};
 
-// Individual SDK callbacks need capture storage even when their bodies emit no diagnostics.
-// This supplies that storage without building a plugin door, kind table or registry.
 struct CallbackCapture;
 impl CaptureHome for CallbackCapture {
     fn with<R>(f: impl FnOnce(&mut CaptureSlot) -> R) -> R {
@@ -30,8 +28,6 @@ impl CaptureHome for CallbackCapture {
     }
 }
 
-// Failure text is test input. Neither callback can create a successful instance or operate a
-// product; their owned Strings must be copied into the caller's reason loans before returning.
 struct FailureOnly;
 impl Life for FailureOnly {
     const CANCEL: u32 = 0;
@@ -93,8 +89,6 @@ fn failed_open(reason: &[u8], buffer: &mut [u8]) -> (Outcome, OpenOut) {
     (outcome, out)
 }
 
-// The compatibility label is a formatter input. Fictional Store behavior and linked/dropped
-// settings-echo parity are retired; these tests make no public-loader admission claim.
 #[test]
 fn a_store_whose_open_fails_reads_as_1_5_5_did() {
     assert_eq!(

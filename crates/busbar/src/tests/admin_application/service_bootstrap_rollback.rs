@@ -279,8 +279,6 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
         let (target_name, target_version, library, manifest) = if anchor_target {
             (module.clone(), module_version.clone(), library, manifest)
         } else {
-            // The application anchor is SQLite. This nonanchor is an actual different Store
-            // product, admitted for rollback inventory without opening a second backend.
             let target_path = std::path::PathBuf::from(
                 std::env::var_os("BUSBAR_TEST_MYSQL_CDYLIB")
                     .expect("the nonanchor rollback requires the actual built MySQL Store"),
@@ -689,7 +687,14 @@ async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_sto
         &mut |_| {},
     )
     .expect("the actual linked registry resolves");
-    assert!(linked.secret_slots(anchor).into_iter().chain(linked.reference_slots(anchor)).any(|path| path == "token"), "the actual memory Store must declare the token credential reference used by this dependency test");
+    assert!(
+        linked
+            .secret_slots(anchor)
+            .into_iter()
+            .chain(linked.reference_slots(anchor))
+            .any(|path| path == "token"),
+        "the actual memory Store must declare the token credential reference used by this dependency test"
+    );
     manifest = plugins::manifest("secret", &target_name, "acme");
     manifest.statement = Some(hex::encode(secret_statement));
     document["store"] = serde_json::json!({"module":busbar_kernel::config::migrated_store_module(), "settings":{"token":{"module":target_alias, "settings":{}}}});

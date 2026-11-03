@@ -436,8 +436,7 @@ fn copied_channel_payloads_and_empty_message_descriptors_keep_independent_custod
         let baseline = memory.used();
         let sample = vec![b'x'; payload_bytes];
         let mut yielded = Yielded::default();
-        // These are the independent owned copies after the checked ABI boundary.
-        // Its overlap-copy check is exercised separately by framer_more_tests.
+
         yielded.pieces = vec![payload(99, &sample), payload(99, &sample)];
         yielded
             .pieces
@@ -463,7 +462,10 @@ fn copied_channel_payloads_and_empty_message_descriptors_keep_independent_custod
         drop(batch);
         let retained = memory.used();
         let minimum = 2 * payload_bytes + (EMPTY_PIECES + 2) * std::mem::size_of::<Message>();
-        assert!(retained >= baseline + minimum, "payload and empty descriptor charges: retained={retained}, baseline={baseline}, minimum={minimum}");
+        assert!(
+            retained >= baseline + minimum,
+            "payload and empty descriptor charges: retained={retained}, baseline={baseline}, minimum={minimum}"
+        );
         let first = queue.try_recv().unwrap();
         assert_eq!(first.bytes, sample);
         assert!(first.end);

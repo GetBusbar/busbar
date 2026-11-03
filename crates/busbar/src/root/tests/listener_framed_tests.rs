@@ -27,7 +27,7 @@ fn actual_http_framing() -> (DataFramer, busbar_core_connector::framer::Framing)
         framer.guests(),
     )
     .expect("the actual HTTP framing opens on its root-owned policy");
-    // The listener registration owns the published policy throughout decoding.
+
     (framer, framing)
 }
 
@@ -42,8 +42,7 @@ async fn actual_http_streams_a_request_larger_than_its_lent_frame_capacity() {
     )
     .into_bytes();
     request.extend_from_slice(&body);
-    // Every actual yield crosses Framing's production sink-bound checks before this aggregate
-    // is returned. A valid request larger than one loan streams through successive bounded yields.
+
     let yielded = framing
         .ingest(&request, false)
         .expect("every real HTTP yield fits its lent buffers");
@@ -178,8 +177,6 @@ async fn actual_http_keeps_fragmented_headers_and_body_until_their_complete_end(
         .any(|piece| !piece.fields && piece.end));
 }
 
-// Ordinary root continuation tests below seed typed pieces after real host admission.
-// Actual decoder, wire output and upgrade tests separately drive the real transport end to end.
 fn custody_conn(
     router: Router,
 ) -> (
@@ -393,8 +390,7 @@ async fn an_unread_body_continuation_queues_one_refusal_without_retiring_its_sib
         !conn.failed,
         "one oversized stream does not fail the multiplexed connection"
     );
-    // This test exercises typed root continuations, so inspect the refusal command rather
-    // than asking the real decoder to render a stream it did not parse from wire input.
+
     let (stream, refusal) = conn
         .pending
         .pop_front()
@@ -763,8 +759,7 @@ async fn framer_results_retire_failed_continuations_independent_of_response_head
             let (_client, mut conn) = custody_conn(router);
             custody_head(&mut conn, 3, "/stall");
             conn.inflows.get_mut(&3).unwrap().head_sent = head_sent;
-            // Test the root's existing Result continuation directly. These values do not claim
-            // that a real transport produced an invented refusal outcome on a particular input.
+
             let result = if outcome == Outcome::Ready {
                 Ok(Yielded::default())
             } else {
@@ -1298,8 +1293,6 @@ fn actual_http_framer() -> DataFramer {
     .expect("the actual HTTP transport accepts the data listener")
 }
 
-// Passive test-local instrumentation: no input, output, context, ticket or result is changed.
-// Counts carry no pointers or borrowed payload, and every crossing delegates exactly once.
 #[derive(Clone, Copy, Debug)]
 enum ObservedCall {
     Begin {
@@ -1664,8 +1657,7 @@ async fn the_data_listener_is_served_through_its_framers_accept_side() {
         1,
         "the actual framing begins on the accepting side lent the checked anonymous guest line"
     );
-    // Successful admission and a complete wire answer exercise the real transport's Begin,
-    // host-issued guest authorization, response Head and body Emit through the root dispatcher.
+
     s.write_all(b"GET /hello HTTP/1.1\r\nhost: t\r\n\r\n")
         .await
         .unwrap();
@@ -1806,7 +1798,7 @@ async fn a_parked_response_head_keeps_its_body_until_the_head_resumes() {
         (scheme == DATA_SCHEME).then(|| door.clone())
     }))
     .unwrap();
-    // A one-byte real pipe leaves the actual HTTP head waiting for the peer to read.
+
     let (mut client, server) = tokio::io::duplex(1);
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let router = Router::new().route("/hello", axum::routing::get(|| async { "hi" }));
@@ -1882,8 +1874,7 @@ async fn a_final_body_emit_remains_alive_through_graceful_drain() {
     .unwrap();
     let (mut client, server) = tokio::io::duplex(1);
     let (stop, stopped) = tokio::sync::watch::channel(false);
-    // An unknown-length response puts its final HTTP chunk on the wire. The peer can
-    // drain the payload while retaining pressure on that distinct terminal Emit.
+
     let router = Router::new().route(
         "/hello",
         axum::routing::get(|| async {
@@ -2190,8 +2181,7 @@ async fn a_session_waits_for_its_parked_message_before_emitting_the_next() {
         "the actual session handshake commits once"
     );
     let _ = stop.send(true);
-    // The real producer's closed channel finishes WS with a normal close frame. On a
-    // one-byte pipe the peer must drain that wire before the owning server can finish.
+
     let mut close_wire = Vec::new();
     tokio::time::timeout(Duration::from_secs(10), client.read_to_end(&mut close_wire))
         .await
@@ -2276,10 +2266,10 @@ async fn an_ended_session_adoption_refuses_before_any_plane_effect() {
         Duration::from_secs(30),
         stopped,
     ));
-    // A real WebSocket handshake missing its mandatory key ends adoption with its own refusal.
+
     client.write_all(b"GET /first HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\r\n").await.unwrap();
     let mut wire = read_reply(&mut client, b"").await;
-    let _ = stop.send(true); // A real terminal refusal may already have closed the actor.
+    let _ = stop.send(true);
     tokio::time::timeout(Duration::from_secs(10), served)
         .await
         .unwrap()
@@ -2348,7 +2338,7 @@ async fn a_staged_plane_refusal_keeps_its_head_and_body_without_committing_101()
     release.send(()).unwrap();
     let body = b"the staged plane refused";
     let mut wire = read_reply(&mut client, body).await;
-    let _ = stop.send(true); // A real terminal refusal may already have closed the actor.
+    let _ = stop.send(true);
     tokio::time::timeout(Duration::from_secs(10), served)
         .await
         .unwrap()
@@ -2601,7 +2591,7 @@ async fn a_pending_session_adoption_that_refuses_never_admits_the_route() {
         Duration::from_secs(30),
         stopped,
     ));
-    // Withhold the final head delimiter: the actual HTTP decoder needs more peer input.
+
     client.write_all(b"GET /first HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n").await.unwrap();
     let mut byte = [0; 1];
     assert!(
@@ -2847,8 +2837,11 @@ async fn cancelled_pending_adoption_and_commit_ignore_their_late_wakes() {
             usize::from(!adopting),
             "only a committed transfer consumes the old HTTP framing"
         );
-        assert_eq!(http.count(|call| matches!(call, ObservedCall::Finish)), usize::from(adopting),
-            "cancel before transfer finishes HTTP; terminal detach must not finish its consumed token again");
+        assert_eq!(
+            http.count(|call| matches!(call, ObservedCall::Finish)),
+            usize::from(adopting),
+            "cancel before transfer finishes HTTP; terminal detach must not finish its consumed token again"
+        );
         assert_eq!(
             ws.count(|call| matches!(call, ObservedCall::Finish)),
             usize::from(!adopting),
@@ -2895,7 +2888,7 @@ async fn a_dropped_pending_admission_ack_cannot_publish_a_late_acceptance() {
                     .await;
                     drop(admission);
                     let _ = dropped.send(());
-                    // Any acceptance after the acknowledgement receiver was dropped must fail closed.
+
                     axum::http::StatusCode::REQUEST_TIMEOUT
                 }
             },
@@ -3179,8 +3172,7 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
                     assert!(head.len() <= 8192, "bounded JWKS request");
                 }
                 assert!(head.starts_with(b"GET /jwks HTTP/1.1\r\n"));
-                // READY's best-effort warm-up receives an actual outage. The first VERIFY must
-                // fetch its real key document, and this peer withholds that response until EOF.
+
                 let gated = peer_armed.load(std::sync::atomic::Ordering::Acquire);
                 let (status, body) = if !gated {
                     ("503 Service Unavailable", "{}")
@@ -3298,8 +3290,7 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
         }
         let app = Arc::new(app);
         armed.store(true, std::sync::atomic::Ordering::Release);
-        // READY's real 503 starts OIDC's mandatory refetch cooldown. Let that configured
-        // interval elapse so VERIFY can own the second fetch held below through EOF.
+
         tokio::time::sleep(Duration::from_millis(1100)).await;
         let points = app.auth.position_points("held");
         assert!(points.has(busbar_contract::abi::auth::AuthPoint::Head));
@@ -3364,7 +3355,9 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
         }))
         .unwrap();
         let (mut client, mut conn) = custody_conn_with_framer(router, framer);
-        let wire = format!("GET /first HTTP/1.1\r\nhost: t\r\n\r\nPOST /capture HTTP/1.1\r\nhost: t\r\nauthorization: Bearer {token}\r\ncontent-length: 5\r\n\r\nwhole");
+        let wire = format!(
+            "GET /first HTTP/1.1\r\nhost: t\r\n\r\nPOST /capture HTTP/1.1\r\nhost: t\r\nauthorization: Bearer {token}\r\ncontent-length: 5\r\n\r\nwhole"
+        );
         client.write_all(wire.as_bytes()).await.unwrap();
         tokio::time::timeout(Duration::from_secs(10), std::future::poll_fn(|cx| {
         let finished = conn.poll(cx).is_ready();
@@ -3445,8 +3438,7 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
             })
             .unwrap();
         assert!(original_index < pending_index);
-        // Tickets are reusable. Prove this is still the selected operation: no later fresh
-        // head, payload or terminal Emit may intervene before this Pending crossing.
+
         for call in &calls[original_index + 1..pending_index] {
             let same_operation = match call {
                 ObservedCall::Emit {
@@ -3481,8 +3473,6 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
                 "the nonempty answer may park on its original payload operation before terminal ACK"
             );
         } else {
-            // cross_ticketed clears status/bytes/end on a MORE recall while keeping the
-            // original operation and ticket. The real HTTP 200 remains in the owned wire.
             assert!(
                 matches!(
                     calls.get(pending_index - 1),
@@ -3582,8 +3572,7 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
             b"whole",
             "the actual decoder's PIECE_END remains whole across pending authentication and EOF"
         );
-        // The product opens independent inbound and login verifier instances. Keep this real
-        // issuer available to both until the decoder and application body have completed.
+
         peer.stop.store(true, std::sync::atomic::Ordering::Release);
         peer.worker
             .take()

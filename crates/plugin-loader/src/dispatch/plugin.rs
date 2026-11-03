@@ -1035,7 +1035,6 @@ impl Instance {
         op: u32,
         ticket: Ticket,
     ) -> Result<Option<super::export_bindings::Admission>, ()> {
-        // Export's Pending refresh gates new entries, while already admitted work may finish.
         if self.kind == KindCode::Export {
             Ok(None)
         } else {
@@ -1246,8 +1245,6 @@ impl Instance {
         owned: Option<&[u8]>,
         initial: bool,
     ) -> Result<Arc<super::export_bindings::Generation>, String> {
-        // Keep only THIS instance's currently published generation alive through declaration.
-        // Staged or original authorities are never sources of program custody.
         let prior = (!initial)
             .then(|| self.wake.exports.pin(Ticket::NONE))
             .flatten();
@@ -2095,8 +2092,6 @@ impl Instance {
                 && self.uses_bindings()
                 && self.wake.exports.pin(Ticket::NONE).is_none()
             {
-                // Non-export OPEN already declared its original authority. Keep that same
-                // authority alive while later accepted refreshes publish isolated generations.
                 self.wake
                     .exports
                     .publish(Arc::new(super::export_bindings::Generation {
@@ -2652,7 +2647,7 @@ impl<K: Kind> Plugin<K> {
     }
 
     /// Snapshot the connection authority published by the last successful lifecycle call.
-    /// Retain this guard with host-side routes that use its owner.
+
     pub fn connection_binding(&self) -> ConnectionBinding {
         let generation = self.inner.wake.exports.pin(Ticket::NONE);
         let owner = generation

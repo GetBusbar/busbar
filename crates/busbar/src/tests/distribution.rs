@@ -71,9 +71,6 @@ mod auth_scope_tests;
 #[path = "kernel_application/central_config_recovery_boot.rs"]
 mod central_config_recovery_boot;
 
-#[path = "../../../../dist/default/tests/product/store_adapter_verb_seam.rs"]
-mod store_adapter_verb_seam;
-
 #[path = "../../../../dist/default/tests/product/auth_cross_plane.rs"]
 mod auth_cross_plane;
 

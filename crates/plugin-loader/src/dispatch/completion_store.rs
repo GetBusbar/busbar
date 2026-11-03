@@ -82,7 +82,7 @@ impl ServiceStore {
                             ))
                         ) =>
                     {
-                        return Err(())
+                        return Err(());
                     }
                     Domain::Connector if entry.is_some() => return Err(()),
                     _ => {}

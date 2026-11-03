@@ -287,7 +287,7 @@ impl Listening {
             Mode::HandUp => {
                 return Poll::Ready(Err(Failure::Refused(
                     "a stream listener frames nothing".into(),
-                )))
+                )));
             }
         };
         let (got, peer, slot) = std::task::ready!(self.poll_conn(cx));

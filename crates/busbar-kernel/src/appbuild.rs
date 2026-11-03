@@ -456,8 +456,6 @@ impl CommittedLimits {
 
 pub type ConfigProjection = fn(&config::RootCfg) -> std::sync::Arc<dyn std::any::Any + Send + Sync>;
 
-// Keep the slot admission policy over declaration/configuration data: an unopened
-// plane must never be partially served. Fallback declarations remain available.
 pub(crate) fn plane_is_open_for_build(
     fallback: bool,
     section: &str,
@@ -485,7 +483,7 @@ pub trait RootRules: Send + Sync {
     fn destinations_applied(&self, _destinations: &config::Destinations) {}
 
     /// Move host-owned, single-use admission custody before durable ticket redemption.
-    /// This hook must not call Store or retain its locks across the auth await.
+
     fn claim_ticket_admission(
         &self,
         _identity: &crate::host_services::VerifiedTicketIdentity,
@@ -639,7 +637,9 @@ pub fn validate_bootstrap_archive(
     for target in targets.into_iter().filter(|target| target.filename == file) {
         let Some(hash) = target.sha256 else { continue };
         if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(format!("plugins.fetch archive pin for '{file}' must be exactly 64 hexadecimal SHA-256 digits"));
+            return Err(format!(
+                "plugins.fetch archive pin for '{file}' must be exactly 64 hexadecimal SHA-256 digits"
+            ));
         }
         let hash = hash.to_ascii_lowercase();
         if pin.as_ref().is_some_and(|previous| previous != &hash) {

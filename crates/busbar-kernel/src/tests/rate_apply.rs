@@ -17,6 +17,4 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
         crate::preflight::root_rows().rate_apply.is_none(),
         "an uninstalled apply reaches nobody and installs no holder"
     );
-    // The original installed-holder data predicates are exercised against the
-    // actual product CardRepricer in kernel_application/central2_rate_apply.rs.
 }

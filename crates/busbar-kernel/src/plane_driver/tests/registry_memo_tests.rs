@@ -14,8 +14,7 @@ fn keys() -> Vec<&'static str> {
 
 #[test]
 fn two_distinct_registration_sets_of_equal_size_do_not_alias() {
-    const TEST: &str =
-        "plane_driver::registry::registry_memo_tests::two_distinct_registration_sets_of_equal_size_do_not_alias";
+    const TEST: &str = "plane_driver::registry::registry_memo_tests::two_distinct_registration_sets_of_equal_size_do_not_alias";
     const CHILD: &str = "BUSBAR_REGISTRY_MEMO_CHILD";
     if std::env::var(CHILD).as_deref() != Ok(TEST) {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -62,8 +61,7 @@ fn two_distinct_registration_sets_of_equal_size_do_not_alias() {
 
 #[test]
 fn a_re_read_of_one_set_returns_the_one_leaked_fold() {
-    const TEST: &str =
-        "plane_driver::registry::registry_memo_tests::a_re_read_of_one_set_returns_the_one_leaked_fold";
+    const TEST: &str = "plane_driver::registry::registry_memo_tests::a_re_read_of_one_set_returns_the_one_leaked_fold";
     const CHILD: &str = "BUSBAR_REGISTRY_MEMO_CHILD";
     if std::env::var(CHILD).as_deref() != Ok(TEST) {
         let output = std::process::Command::new(std::env::current_exe().unwrap())

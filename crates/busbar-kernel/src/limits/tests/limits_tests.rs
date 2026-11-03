@@ -95,8 +95,6 @@ fn committed_guard_keeps_its_limits_live_after_the_guard_is_gone() {
         "the guard installs its posture immediately"
     );
 
-    // Publishing is the production commit boundary; leaving this scope cannot undo it.
-
     assert_eq!(
         key_gauge_limit(),
         4_242,

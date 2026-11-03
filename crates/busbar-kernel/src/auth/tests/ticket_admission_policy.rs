@@ -122,7 +122,7 @@ async fn final_ticket_record_wait_keeps_the_reactor_live_and_resolves_the_actual
         crate::governance::GovState::paused_ticket_for_test("get", now);
     let auth_gov = Arc::clone(&gov);
     let auth_ticket = ticket.clone();
-    // Drive every auth await while the test observes the later Store-record wait.
+
     let mut admitted = tokio::spawn(async move {
         ticket_verdict(
             false,

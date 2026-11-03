@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The external C ABI witness is a test input, not a shipped secret provider.
-//! CI builds its source against this checkout's public header before running this target.
 
 use std::mem::MaybeUninit;
 use std::path::{Path, PathBuf};

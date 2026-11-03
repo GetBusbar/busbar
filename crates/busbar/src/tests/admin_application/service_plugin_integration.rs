@@ -2064,7 +2064,7 @@ async fn rollback_reads_the_target_and_merges_pins() {
     manifest.version = module_version.clone();
     let target = plugins::signed(&publisher_key, manifest.clone(), &library);
     std::fs::write(directory.join("old.tar.gz"), &target).unwrap();
-    // The actual bootstrap Store may be reopened only under this exact operator base pin.
+
     document["plugins"]["fetch"] = serde_json::json!([{
         "url": "https://distribution-fixtures.example/old.tar.gz",
         "sha256": busbar_contract::redacted::sha256_hex(&target),

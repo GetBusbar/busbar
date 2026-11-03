@@ -623,7 +623,7 @@ impl Drop for Meta {
 }
 
 /// The submitting host's context, never a parent supplied by a plugin. Shared so selecting a
-/// queued crossing under the worker lock calls no subscriber, including `Span::clone`/`drop`.
+
 struct TraceContext {
     dispatch: tracing::Dispatch,
     span: tracing::Span,
@@ -1435,11 +1435,7 @@ impl Worker {
     ) -> Option<(MutexGuard<'a, WorkerState>, Crossed)> {
         let (idx, instance) = selected;
         st.crossing = Some(instance.clone());
-        // Only a raw driver's TICK hands its PENDING frame to a caller. Ordinary PENDING
-        // and DRIVE retain host frames, but no caller owns their intermediate answer leases.
-        // Instance::cross already copied the common head and negotiated reply extensions.
-        // The scheduled host entry owns the context. CANCEL and CLOSE need not carry that
-        // entry's ticket in their common head, so they cannot select it from the ABI frame.
+
         let entry = st.entries.get(idx as usize);
         let tracing = entry.and_then(|e| {
             e.current
@@ -1497,8 +1493,6 @@ impl Worker {
             }
             None
         } else {
-            // A span's final drop can export its record and re-enter this dispatcher.
-            // Its crossing guards ended before the lock; defer the context's owner drop too.
             drop_after_lock(Box::new(tracing));
             Some((st, crossed))
         }
@@ -1728,8 +1722,6 @@ impl Worker {
                     return Some(st);
                 };
                 if idle && !d.pending && d.ticks_held == 0 && env.services.held.held(ticket) == 0 {
-                    // An autonomous wake can start a new cycle without Action::Start.
-                    // Only a custody-empty cycle may release its preceding generation pin.
                     env.services.forget(ticket);
                     forget_conns(d.instance.instance, ticket);
                     env.services.held.forget(ticket);

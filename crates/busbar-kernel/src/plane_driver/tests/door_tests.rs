@@ -763,7 +763,6 @@ fn a_refused_facing_keeps_only_the_same_successful_serving_slot() {
     assert!(old.downcast_ref::<DoorSlot>().unwrap().opened);
     let prior = Prior(decl.key, Arc::clone(&old));
 
-    // A valid public URL change must still produce its own new admission.
     let valid = (decl.build)(
         decl,
         &ctx(&next_defs, Some(&prior), Some("https://new.example")),
@@ -824,14 +823,12 @@ fn a_refused_facing_keeps_only_the_same_successful_serving_slot() {
         (decl.build)(decl, &ctx(&next_defs, None, Some("https://new.example"))).unwrap();
     assert!(!failed_boot.downcast_ref::<DoorSlot>().unwrap().opened);
     assert!((decl.admission)(&*failed_boot).is_none());
-    // Removal never falls back to the previous configured plane.
+
     let absent = std::collections::BTreeMap::new();
     assert!((decl.build)(decl, &ctx(&absent, Some(&prior), None)).is_none());
     let null_defs = section(serde_yaml::Value::Null).as_defs();
     assert!((decl.build)(decl, &ctx(&null_defs, Some(&prior), None)).is_none());
 
-    // A configured owned endpoint still constitutes a configured plane, even when its
-    // named-map section is absent. Keep that existing build path and its refusal policy.
     let owned_ctx = |value| BuildCtx {
         endpoint_slot: Some(Arc::new(DoorOwned {
             section: "refused_facing_owned",

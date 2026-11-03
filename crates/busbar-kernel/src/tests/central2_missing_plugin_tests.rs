@@ -3,7 +3,6 @@
 
 #[test]
 fn unknown_store_name_is_a_clear_boot_error() {
-    // Actual available metadata and operator input passed to the production error policy.
     let available = crate::tests::dropped(
         "acme-store-x",
         "x",

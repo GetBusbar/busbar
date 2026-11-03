@@ -142,8 +142,6 @@ fn hooked_app() -> Arc<busbar_kernel::state::App> {
 }
 
 fn listener(app: Arc<busbar_kernel::state::App>) -> kin::Listener {
-    // This line is a table-retirement boundary; no application request is served.
-    // Keep its metadata local instead of borrowing the actual LLM fixture's claims.
     let open = Line {
         route: Route {
             methods: METHOD_POST,

@@ -94,7 +94,7 @@ impl FramerDoor for Branching {
                                 return Crossed {
                                     outcome: Outcome::Failed,
                                     error: None,
-                                }
+                                };
                             }
                             RecallFailure::Unwind => panic!("the recall unwinds"),
                         }

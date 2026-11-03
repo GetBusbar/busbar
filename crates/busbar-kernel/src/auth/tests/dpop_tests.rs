@@ -35,8 +35,6 @@ fn only_a_token_carrying_cnf_jkt_is_dpop_bound() {
     )));
 }
 
-// These are internal constraint-policy continuations. Unconstrained means the DPoP filter
-// leaves authentication to the actual chain; it never admits an unsigned JWT or opaque string.
 #[test]
 fn an_unbound_bearer_is_judged_exactly_as_before() {
     let unbound = jwt(serde_json::json!({ "sub": "a" }));

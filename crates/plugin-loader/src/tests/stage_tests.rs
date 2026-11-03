@@ -355,8 +355,7 @@ mod staged_file_pin {
     pub(super) fn two_libraries() -> (Vec<u8>, Vec<u8>) {
         let verified = std::fs::read(crate::both_ways::example_cdylib("json_contract_auth"))
             .expect("read the verified fixture library");
-        // Only the verified image is ever allowed to load. The staged-file check must refuse
-        // these changed bytes before dlopen; an invalid-image error cannot pass assert_refused.
+
         let mut other = verified.clone();
         other[0] ^= 0xff;
         assert_ne!(verified, other, "the two fixtures must differ");
@@ -492,7 +491,9 @@ mod on_windows {
                 release(l);
             }
             (Err(t), Err(e)) => {
-                panic!("{what}: the OS refused the tamper ({t}) yet the verified bytes did not load: {e}")
+                panic!(
+                    "{what}: the OS refused the tamper ({t}) yet the verified bytes did not load: {e}"
+                )
             }
         }
     }

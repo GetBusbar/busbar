@@ -881,7 +881,7 @@ impl Drop for Declaration {
 }
 
 /// Declaration custody is distinct from active leases: the last declaring record retires the
-/// child even when a lease still holds its Member until the existing exchange finishes.
+
 pub(crate) type Members = HashMap<String, Arc<Declaration>>;
 
 /// The member an open's target names: its text up to the first `/` (a path the plugin spelled
