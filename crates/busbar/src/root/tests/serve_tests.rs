@@ -1849,7 +1849,13 @@ pub(super) mod session_door {
         busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
         let budget = opts.budget;
         let _ = crate::root::inbound::install(crate::root::doors::dispatcher());
-        let connector = connector();
+        // Datagram admission pairs its unit on the normal process connector.
+        // The plane's provider dial must consume that same pairing.
+        let connector = Arc::clone(
+            crate::root::connector::installed()
+                .expect("normal root bootstrap installs the session connector"),
+        );
+        assert!(Arc::ptr_eq(&connector, crate::root::connector::the()));
         let (media_stop, media_stopped) = tokio::sync::watch::channel(false);
         let peers = Arc::new(RtcTasks::default());
         let (port, heard) = match (opts.far_end, opts.far) {
