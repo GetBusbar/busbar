@@ -2075,6 +2075,11 @@ fn reserved_ticket_adoption_checks_receiving_authority_and_binding() {
             );
             r.money.settle_end(UnitKey::new(2), 200);
             assert_eq!(usage(&r).0, 1_000_000, "actual adopted usage priced once");
+            let total = r
+                .gov
+                .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+                .expect("actual ledger totals");
+            assert_eq!(total.requests, 1, "mint one, reservation and signal zero");
         }
     }
 }
