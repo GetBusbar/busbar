@@ -400,7 +400,7 @@ fn captured_request(name: &str) -> Value {
         .clone()
 }
 
-fn captured_router_crossing(
+async fn captured_router_crossing(
     router: axum::Router,
     head: &kin::Head,
     captured: &Value,
@@ -433,32 +433,26 @@ fn captured_router_crossing(
     let request = request
         .body(axum::body::Body::from(body))
         .expect("the captured real request builds");
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("the actual prepared-router crossing has a runtime")
-        .block_on(async {
-            let response = router
-                .oneshot(request)
-                .await
-                .expect("the actual router answers");
-            let (head, body) = response.into_parts();
-            let body = axum::body::to_bytes(body, usize::MAX)
-                .await
-                .expect("the actual response body drains");
-            kin::Refusal {
-                status: head.status.as_u16(),
-                fields: head
-                    .headers
-                    .iter()
-                    .map(|(name, value)| (name.as_str().into(), value.as_bytes().to_vec()))
-                    .collect(),
-                body: body.to_vec(),
-            }
-        })
+    let response = router
+        .oneshot(request)
+        .await
+        .expect("the actual router answers");
+    let (head, body) = response.into_parts();
+    let body = axum::body::to_bytes(body, usize::MAX)
+        .await
+        .expect("the actual response body drains");
+    kin::Refusal {
+        status: head.status.as_u16(),
+        fields: head
+            .headers
+            .iter()
+            .map(|(name, value)| (name.as_str().into(), value.as_bytes().to_vec()))
+            .collect(),
+        body: body.to_vec(),
+    }
 }
 
-fn refused_against(family: &str, cause: u32) -> Vec<String> {
+async fn refused_against(family: &str, cause: u32) -> Vec<String> {
     let (side, guests) = side();
     let (router_app, router_config, router_book) = app(true);
     let (_, data, admin) =
@@ -474,7 +468,7 @@ fn refused_against(family: &str, cause: u32) -> Vec<String> {
             } else {
                 data.clone()
             };
-            let refusal = captured_router_crossing(router, &head, &captured);
+            let refusal = captured_router_crossing(router, &head, &captured).await;
             let wrong = differences(&refusal, &name);
             if !wrong.is_empty() {
                 failing.push(format!("{name}: {}", wrong.join("; ")));
@@ -504,29 +498,30 @@ fn refused_against(family: &str, cause: u32) -> Vec<String> {
     failing
 }
 
-#[test]
-fn red_every_no_route_cell_answers_its_1_5_5_bytes() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn red_every_no_route_cell_answers_its_1_5_5_bytes() {
     let failing: Vec<String> = refused_against("unknown-path", REFUSE_NO_ROUTE)
+        .await
         .into_iter()
         .filter(|f| !f.contains("status 404 not 400"))
         .collect();
     assert!(failing.is_empty(), "{failing:#?}");
 }
 
-#[test]
-fn red_the_method_miss_cell_answers_its_1_5_5_bytes() {
-    let failing = refused_against("wrong-method", REFUSE_METHOD_MISS);
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn red_the_method_miss_cell_answers_its_1_5_5_bytes() {
+    let failing = refused_against("wrong-method", REFUSE_METHOD_MISS).await;
     assert!(failing.is_empty(), "{failing:#?}");
 }
 
-#[test]
-fn red_every_over_gate_cell_answers_its_1_5_5_bytes() {
-    let failing = refused_against("413", REFUSE_OVER_GATE);
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn red_every_over_gate_cell_answers_its_1_5_5_bytes() {
+    let failing = refused_against("413", REFUSE_OVER_GATE).await;
     assert!(failing.is_empty(), "{failing:#?}");
 }
 
-#[test]
-fn captured_rate_and_admin_availability_requests_match_their_unchanged_wire_goldens() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn captured_rate_and_admin_availability_requests_match_their_unchanged_wire_goldens() {
     let (app, config, book) = app(true);
     let (_, data, admin) = actual_listener_with_routers(app, &config, &book, true);
     for (family, target, router) in [
@@ -538,14 +533,14 @@ fn captured_rate_and_admin_availability_requests_match_their_unchanged_wire_gold
             .find(|(_, head, _)| head.target == target)
             .expect("the existing catalogue captures the actual request");
         let captured = captured_request(&name);
-        let response = captured_router_crossing(router, &head, &captured);
+        let response = captured_router_crossing(router, &head, &captured).await;
         let wrong = differences(&response, &name);
         assert!(wrong.is_empty(), "{name}: {wrong:#?}");
     }
 }
 
-#[test]
-fn actual_listener_refusal_uses_only_its_sealed_claimant_route_and_dialect() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn actual_listener_refusal_uses_only_its_sealed_claimant_route_and_dialect() {
     let (app, config, book) = app(true);
     let listener = actual_listener(app, &config, &book, true);
     let (name, head, _) = crosscut("wrong-method")
@@ -594,8 +589,8 @@ fn actual_listener_refusal_uses_only_its_sealed_claimant_route_and_dialect() {
     );
 }
 
-#[test]
-fn retained_listener_refusals_keep_the_actual_llm_producer_after_its_claims_are_removed() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retained_listener_refusals_keep_the_actual_llm_producer_after_its_claims_are_removed() {
     let (side, guests) = side();
     let (name, head, _) = crosscut("wrong-method")
         .into_iter()
