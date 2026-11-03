@@ -252,15 +252,11 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
     let module = busbar_contract::abi::mechanism::rendering::read(&statement)
         .expect("the actual store statement is valid")
         .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-    );
+    let mut manifest = plugins::manifest("store", &module, "third-party");
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("actual-recovery-flusher");
-    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    let archive = plugins::signed(&plugins::key(0x33), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
     let settings: serde_json::Value = serde_json::from_str(
@@ -292,11 +288,18 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
+    let mut plugin_config = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
         ..Default::default()
     };
+    plugin_config
+        .trust
+        .publishers
+        .push(busbar_kernel::config::PluginPublisher {
+            name: "third-party".into(),
+            public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+        });
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
