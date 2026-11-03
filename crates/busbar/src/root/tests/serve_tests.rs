@@ -375,7 +375,7 @@ async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -401,11 +401,7 @@ async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
     .expect("the empty-plane deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the empty-plane deployment resolves");
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -865,7 +861,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -891,11 +887,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     .expect("the door deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the door deployment resolves");
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -1005,7 +997,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -1031,11 +1023,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     .expect("the door deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the door deployment resolves");
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -1152,7 +1140,7 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -1178,11 +1166,7 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     .expect("the door deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the door deployment resolves");
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -1822,7 +1806,7 @@ pub(super) mod session_door {
         let mut manifest = crate::root::test_plugins::manifest(
             "store",
             &module,
-            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -1848,7 +1832,7 @@ pub(super) mod session_door {
             let mut manifest = crate::root::test_plugins::manifest(
                 "hook",
                 &module,
-                crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+                crate::root::test_plugins::FIXTURE_PUBLISHER,
             );
             manifest.statement = Some(hex::encode(statement));
             manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
@@ -1879,11 +1863,7 @@ pub(super) mod session_door {
         .expect("the session deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the session deployment resolves");
-        let plugins = busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        };
+        let plugins = crate::root::test_plugins::trusted_config(&directory);
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -5757,7 +5737,7 @@ async fn serve_configured(
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -5784,11 +5764,7 @@ async fn serve_configured(
     .expect("the door deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the door deployment resolves");
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
