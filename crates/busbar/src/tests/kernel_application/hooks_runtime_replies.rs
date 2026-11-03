@@ -89,6 +89,8 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
     let credential = directory.join("upstream-credential");
     std::fs::write(&credential, b"pool-admission-unused-upstream-credential")
         .expect("write the normal file-backed upstream credential");
+    // Pool-only instances are separate from the all-pools instances: configuration
+    // intentionally deduplicates an identical attachment inherited by a pool.
     let document = serde_json::json!({
         "providers": {
             "local": {"protocol": "anthropic", "base_url": "http://127.0.0.1:1",
@@ -108,6 +110,10 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
                          "prompt":"rw", "on_error":"reject", "settings":{"url":endpoint}},
             "rw": {"module": hook_module, "kind": "gate", "timeout_ms": 5000, "prompt": "rw",
                    "settings": {"url": endpoint}},
+            "poolclosedrw": {"module": hook_module, "kind":"gate", "timeout_ms":5000,
+                             "prompt":"rw", "on_error":"reject", "settings":{"url":endpoint}},
+            "poolrw": {"module": hook_module, "kind": "gate", "timeout_ms": 5000, "prompt": "rw",
+                       "settings": {"url": endpoint}},
             "read": {"module": hook_module, "kind": "gate", "timeout_ms": 5000, "prompt": "ro",
                      "settings": {"url": endpoint}},
             "plain": {"module": hook_module, "kind": "gate", "timeout_ms": 5000, "prompt": "no",
@@ -115,13 +121,13 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         },
         "pools": {
             "hooks": ["rw","closedrw"],
-            "closedrw": {"members":["local-model"],"hooks":["closedrw"]},
+            "closedrw": {"members":["local-model"],"hooks":["poolclosedrw"]},
             "a": {"members":["local-model"], "hooks":["a"]},
             "n": {"members":["local-model"], "hooks":["n"]},
             "c": {"members":["local-model"], "hooks":["c"]},
             "g": {"members":["local-model"], "hooks":["g"]},
             "read": {"members": ["local-model"], "hooks": ["read"]},
-            "rewrite": {"members": ["local-model"], "hooks": ["rw"]},
+            "rewrite": {"members": ["local-model"], "hooks": ["poolrw"]},
             "decision": {"members": ["local-model"], "hooks": ["plain"]}
         }
     });
