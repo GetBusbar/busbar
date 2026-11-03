@@ -25,7 +25,9 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
             max_inflight_cap: 64,
             sink: std::sync::Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: ConnTable::NoNeeds,
+            // The actual exporter declares its HTTP listener Need. This route-table
+            // fixture serves it through the host and never opens an outbound connection.
+            conns: ConnTable::Probe,
         },
     )
     .expect("the actual HTTP exporter loads through its memory ABI");
@@ -39,8 +41,12 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
         "the actual exporter declares the scrape route"
     );
     let exporter = std::sync::Arc::new(
-        crate::root::loader::export_door::ExportInstance::open(plugin, dispatcher, b"{}")
-            .expect("the actual HTTP exporter opens"),
+        crate::root::loader::export_door::ExportInstance::open(
+            plugin,
+            dispatcher,
+            br#"{"buffer_seconds":60}"#,
+        )
+        .expect("the actual HTTP exporter opens"),
     );
     let dispatch = busbar_kernel::export::serve_test_sink(exporter);
     let declarations = routes
