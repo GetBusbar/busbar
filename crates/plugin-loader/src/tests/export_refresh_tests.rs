@@ -11,20 +11,310 @@ use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelIn, CancelO
 use busbar_contract::abi::mechanism::ticket::Ticket;
 
 fn loaded(dropped: bool, d: &Dispatcher, far: Arc<Far>) -> Plugin<Export> {
-    let door = WEBHOOK_DOOR;
-    let library = webhook_cdylib();
     let mut binding = bind("export-refresh", Arc::new(Tape::default()), d);
     binding.conns = ConnTable::Host(far);
-    if dropped {
-        load_dropped_bytes::<Export>(
-            &cdylib_bytes(library),
-            "export-refresh",
-            &rendering_of(door).unwrap(),
-            binding,
-        )
-        .unwrap()
-    } else {
-        load_linked::<Export>(&LinkedRow::of(door).unwrap(), binding).unwrap()
+    pending_boundary::load(dropped, binding)
+}
+
+// One adversarial lifecycle boundary around the actual Webhook image. Its synchronous
+// business REFRESH cannot itself produce Pending. Only explicitly armed test tickets take
+// two real host-connector probes before that unchanged business slot is called; delivery,
+// settings validation, credentials and all other business slots remain the actual product's.
+mod pending_boundary {
+    use super::*;
+    use busbar_contract::abi::host::conn::connector::{
+        ReplyPiece, RequestPiece, REPLY_END, REQUEST_END, REQUEST_HEAD,
+    };
+    use busbar_contract::abi::mechanism::call::{InHead, Op, RawOutcome, FLAG_RESUME};
+    use busbar_contract::abi::mechanism::ticket::HostTables;
+    use busbar_contract::abi::sdk::conn::{ConnFailure, Host};
+    use busbar_contract::abi::transport::FrameSpan;
+    use std::ffi::c_void;
+    use std::sync::LazyLock;
+    use std::task::Poll;
+
+    struct Root {
+        host: Host,
+        refresh: Op,
+        cancel: Op,
+        close: Op,
+        control_entry: std::sync::atomic::AtomicBool,
+        plans: Mutex<HashMap<Ticket, Plan>>,
+    }
+    struct Plan {
+        refuse: bool,
+        probe: Option<Probe>,
+    }
+    struct Probe {
+        host: Host,
+        ticket: Ticket,
+        issued: u32,
+        stream: Option<u64>,
+        phase: u8,
+        completed: u8,
+        head: Box<RequestPiece>,
+        end: Box<RequestPiece>,
+        reply: Box<ReplyPiece>,
+        buffer: Box<[u8; 128]>,
+        // A probe's last transport close must precede releasing its creating authority.
+        _binding: Arc<crate::dispatch::export_bindings::Generation>,
+    }
+    struct ControlEntry<'a>(&'a std::sync::atomic::AtomicBool);
+    impl Root {
+        fn enter_control(&self) -> ControlEntry<'_> {
+            // These one-off controls cancel between Pending reentries, never inside a
+            // still-running REFRESH callback. Ordinary product delivery/status may run.
+            assert!(
+                !self.control_entry.swap(true, Ordering::SeqCst),
+                "the test must synchronize REFRESH/CANCEL control entries"
+            );
+            ControlEntry(&self.control_entry)
+        }
+    }
+    impl Drop for ControlEntry<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
+    static ROOTS: LazyLock<Mutex<HashMap<u64, Arc<Root>>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    fn root(input: *const c_void) -> Arc<Root> {
+        // SAFETY: every lifecycle input begins with the host's initialized InHead.
+        let owner = unsafe { (*input.cast::<InHead>()).host.handle };
+        ROOTS
+            .lock()
+            .unwrap()
+            .get(&owner)
+            .expect("wrapped actual image")
+            .clone()
+    }
+
+    pub(super) fn arm(plugin: &Plugin<Export>, ticket: Ticket, refuse: bool) {
+        let root = ROOTS
+            .lock()
+            .unwrap()
+            .get(&plugin.inner.ctx().handle)
+            .unwrap()
+            .clone();
+        let prior = root.plans.lock().unwrap().insert(
+            ticket,
+            Plan {
+                refuse,
+                probe: None,
+            },
+        );
+        assert!(prior.is_none(), "one explicit plan per refresh ticket");
+        drop(prior);
+    }
+
+    pub(super) fn load(dropped: bool, binding: Bind) -> Plugin<Export> {
+        // Both origins supply the actual product descriptor and code. The staged image is
+        // held for this test process, exactly as the existing linked-image helper holds its
+        // image. The wrapper is applied only after the real descriptor validates.
+        static IMAGE: OnceLock<(
+            libloading::Library,
+            crate::stage::Staged,
+            busbar_contract::abi::sdk::door::RawDoorFn,
+        )> = OnceLock::new();
+        let actual = if dropped {
+            let image = IMAGE.get_or_init(|| {
+                let (library, staged) = crate::stage::load_library_from_bytes(
+                    &cdylib_bytes(webhook_cdylib()),
+                    "pending-refresh-actual-webhook",
+                )
+                .expect("stage actual Webhook image");
+                // SAFETY: this actual mechanism image exports its typed door; IMAGE owns it.
+                let entry = unsafe {
+                    *library
+                        .get::<busbar_contract::abi::sdk::door::RawDoorFn>(DOOR_SYMBOL)
+                        .unwrap()
+                };
+                (library, staged, entry)
+            });
+            crate::dispatch::load::enter_door(image.2)
+        } else {
+            WEBHOOK_DOOR() as *const Door
+        };
+        let mut validated = crate::dispatch::load::validate_door::<Export>(actual)
+            .expect("the actual Webhook descriptor validates before wrapping");
+        let refresh = validated.slots[life::REFRESH as usize];
+        let cancel = validated.slots[life::CANCEL as usize];
+        let close = validated.slots[life::CLOSE as usize];
+        validated.slots[life::REFRESH as usize] = refresh_slot;
+        validated.slots[life::CANCEL as usize] = cancel_slot;
+        validated.slots[life::CLOSE as usize] = close_slot;
+        let plugin = Plugin::<Export>::bind(validated, None, binding).unwrap();
+        // SAFETY: this is the real production connector table with this bound instance's
+        // registry-backed context. Host snapshots it, retaining no pointer to this stack frame.
+        let host = unsafe {
+            Host::from_raw(&HostTables {
+                size: std::mem::size_of::<HostTables>() as u32,
+                _reserved: 0,
+                ctx: plugin.inner.ctx(),
+                wake: None,
+                conns: &crate::dispatch::conn_services::CONN_SLOTS,
+                services: std::ptr::null(),
+                io: std::ptr::null(),
+            })
+        };
+        let prior = ROOTS.lock().unwrap().insert(
+            plugin.inner.ctx().handle,
+            Arc::new(Root {
+                host,
+                refresh,
+                cancel,
+                close,
+                control_entry: std::sync::atomic::AtomicBool::new(false),
+                plans: Mutex::new(HashMap::new()),
+            }),
+        );
+        assert!(prior.is_none());
+        drop(prior);
+        plugin
+    }
+
+    impl Probe {
+        fn new(host: Host, ticket: Ticket) -> Self {
+            Self {
+                host,
+                ticket,
+                issued: 0,
+                stream: None,
+                phase: 0,
+                completed: 0,
+                head: Box::new(RequestPiece {
+                    kind: REQUEST_HEAD,
+                    method: FrameSpan { offset: 0, len: 3 },
+                    target: FrameSpan { offset: 3, len: 1 },
+                    ..RequestPiece::ZERO
+                }),
+                end: Box::new(RequestPiece {
+                    kind: REQUEST_END,
+                    ..RequestPiece::ZERO
+                }),
+                reply: Box::default(),
+                buffer: Box::new([0; 128]),
+                _binding: crate::dispatch::export_bindings::current()
+                    .expect("candidate crossing authority"),
+            }
+        }
+        fn advance(&mut self) -> Poll<Result<(), ConnFailure>> {
+            loop {
+                let mut conn = self.host.connector_from(self.ticket, self.issued);
+                let answer = match self.phase {
+                    0 => conn.establish(0, None, "").map(|r| {
+                        r.map(|stream| {
+                            self.stream = Some(stream);
+                        })
+                    }),
+                    1 => conn
+                        .write_request(self.stream.unwrap(), &self.head, b"GET/")
+                        .map(|r| r.map(|_| ())),
+                    2 => conn
+                        .write_request(self.stream.unwrap(), &self.end, b"")
+                        .map(|r| r.map(|_| ())),
+                    _ => conn
+                        .read_reply(self.stream.unwrap(), &mut self.buffer[..], &mut self.reply)
+                        .map(|r| {
+                            r.map(|reply| {
+                                if reply.piece.kind == REPLY_END {
+                                    self.phase = 4;
+                                }
+                            })
+                        }),
+                };
+                match answer {
+                    Poll::Pending => return Poll::Pending, // retry this exact handle and live boxed read loan
+                    Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                    Poll::Ready(Ok(())) => self.issued = conn.issued(),
+                }
+                if self.phase == 4 {
+                    self.close();
+                    self.completed += 1;
+                    if self.completed == 2 {
+                        return Poll::Ready(Ok(()));
+                    }
+                    self.phase = 0;
+                } else if self.phase < 3 {
+                    self.phase += 1;
+                }
+            }
+        }
+        fn close(&mut self) {
+            if let Some(stream) = self.stream.take() {
+                let _ = self.host.connector(self.ticket).close(stream);
+            }
+        }
+    }
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            self.close();
+        }
+    }
+
+    crate::dispatch_tests::c_abi! {
+        fn refresh_slot(instance: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
+            let root = root(input);
+            let _control = root.enter_control();
+            // SAFETY: the checked REFRESH input is live for this complete crossing.
+            let ticket = unsafe { (*input.cast::<RefreshIn>()).head.ticket };
+            // Detach before any connector call or product callback, so neither transport
+            // nor business reentry runs under the shim state lock.
+            let plan = root.plans.lock().unwrap().remove(&ticket);
+            let Some(mut plan) = plan else {
+                // SAFETY: forward this actual product's live instance and checked original frame.
+                return unsafe { (root.refresh)(instance, input, out) };
+            };
+            let mut probe = plan.probe.take().unwrap_or_else(|| Probe::new(root.host, ticket));
+            let outcome = match probe.advance() {
+                Poll::Pending => {
+                    plan.probe = Some(probe);
+                    let prior = root.plans.lock().unwrap().insert(ticket, plan);
+                    assert!(prior.is_none());
+                    drop(prior);
+                    Outcome::Pending
+                }
+                Poll::Ready(Err(_)) => Outcome::Refused,
+                Poll::Ready(Ok(())) if plan.refuse => Outcome::Refused,
+                Poll::Ready(Ok(())) => {
+                    drop(probe);
+                    // The actual synchronous business slot enters for the first time only now.
+                    // SAFETY: copy only the checked host-owned RefreshIn; all its loans remain live.
+                    let mut actual = unsafe { *input.cast::<RefreshIn>() };
+                    actual.head.flags &= !FLAG_RESUME;
+                    // SAFETY: forward the live actual instance and this still-live host frame.
+                    return unsafe { (root.refresh)(instance, std::ptr::from_ref(&actual).cast(), out) };
+                }
+            };
+            // SAFETY: the host supplied a complete exclusive OutHead, zeroed before entry.
+            unsafe { (*out.cast::<OutHead>()).outcome = RawOutcome::of(outcome); }
+            RawOutcome::of(outcome)
+        }
+        fn cancel_slot(instance: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
+            let root = root(input);
+            let _control = root.enter_control();
+            // SAFETY: the checked cancel frame names the operation it cancels.
+            let ticket = unsafe { (*input.cast::<CancelIn>()).ticket };
+            let plan = root.plans.lock().unwrap().remove(&ticket);
+            drop(plan); // candidate stream closes and authority drops with no shim lock held
+            // SAFETY: every business CANCEL still reaches the real product exactly as supplied.
+            unsafe { (root.cancel)(instance, input, out) }
+        }
+        fn close_slot(instance: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
+            // SAFETY: checked host lifecycle input begins with InHead.
+            let owner = unsafe { (*input.cast::<InHead>()).host.handle };
+            let root = root(input);
+            // SAFETY: the actual instance and CLOSE frame stay live until this product returns.
+            let answer = unsafe { (root.close)(instance, input, out) };
+            if answer == RawOutcome::of(Outcome::Ready) || answer == RawOutcome::of(Outcome::Fault) {
+                let removed = ROOTS.lock().unwrap().remove(&owner);
+                let plans = std::mem::take(&mut *root.plans.lock().unwrap());
+                drop(plans);
+                drop(removed);
+            }
+            answer
+        }
     }
 }
 
@@ -118,6 +408,15 @@ fn refresh_crossing(
 }
 
 fn start_pending_refresh(
+    plugin: &Plugin<Export>,
+    ticket: Ticket,
+    frame: &mut Frame<RefreshIn, OutHead>,
+) {
+    pending_boundary::arm(plugin, ticket, false);
+    start_armed_refresh(plugin, ticket, frame);
+}
+
+fn start_armed_refresh(
     plugin: &Plugin<Export>,
     ticket: Ticket,
     frame: &mut Frame<RefreshIn, OutHead>,
@@ -344,7 +643,8 @@ fn pending_refresh_refusal_and_cancel_retire_candidate_once_and_unblock_prior_ge
             let held = d.inline_ticket().unwrap();
             let settings = new.to_string();
             let mut frame = pending_refresh(settings.as_bytes(), 2);
-            start_pending_refresh(sink.plugin(), held.ticket(), &mut frame);
+            pending_boundary::arm(sink.plugin(), held.ticket(), true);
+            start_armed_refresh(sink.plugin(), held.ticket(), &mut frame);
             let candidate = owner_of(&far, "refresh-stall.example");
             candidate_is_kept(&far, candidate);
             wake_owner(&far, candidate);
@@ -843,7 +1143,7 @@ fn worker_delivery_releases_inline_refresh_waiter_after_unlock_both_doors() {
             .expect("probe worker slot");
         let far = Arc::new(Far::default());
         assert!(far.waker.set(dispatcher.conn_waker()).is_ok());
-        let plugin = loaded(dropped, false, &dispatcher, Arc::clone(&far));
+        let plugin = loaded(dropped, &dispatcher, Arc::clone(&far));
         let settings = serde_json::json!({"url":"https://collector.example/worker-wake"});
         let sink = ExportInstance::open(
             plugin,
