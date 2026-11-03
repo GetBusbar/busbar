@@ -59,6 +59,18 @@ async fn server_timing_header_absent_by_default_present_when_enabled() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the application has its configured governance Store")
+            .store_calls()
+            .expect("the configured product Store exposes actual calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the configured product Store boots its rate-card history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -131,6 +143,18 @@ async fn server_timing_header_absent_by_default_present_when_enabled() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the application has its configured governance Store")
+            .store_calls()
+            .expect("the configured product Store exposes actual calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the configured product Store boots its rate-card history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -211,6 +235,18 @@ async fn route_policy_headers_absent_by_default_on_the_live_stack() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the application has its configured governance Store")
+            .store_calls()
+            .expect("the configured product Store exposes actual calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the configured product Store boots its rate-card history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
