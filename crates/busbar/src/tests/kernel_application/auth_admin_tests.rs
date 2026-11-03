@@ -1045,6 +1045,8 @@ fn a_slow_admin_door_does_not_stall_healthz() {
     token.replace_range(signature..signature + 1, replacement);
     let (entered_tx, entered_rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let peer_armed = armed.clone();
     // An owned wire peer forwards READY unchanged, then holds the next genuine TLS byte
     // for expired-cache VERIFY; it fabricates no protocol or outcome.
     std::thread::scope(|peers| {
@@ -1052,7 +1054,7 @@ fn a_slow_admin_door_does_not_stall_healthz() {
             std::thread::scope(|connections| {
                 let mut gate = Some((entered_tx, release_rx));
                 let mut transfers = Vec::new();
-                for turn in 0..2 {
+                loop {
                     let accept_deadline = Instant::now() + Duration::from_secs(10);
                     let mut downstream = loop {
                         match listener.accept() {
@@ -1067,7 +1069,10 @@ fn a_slow_admin_door_does_not_stall_healthz() {
                             Err(error) => panic!("actual peer accept failed: {error}"),
                         }
                     };
-                    let gate = if turn == 1 { gate.take() } else { None };
+                    // Construction may warm more than one real OIDC instance. Gate only
+                    // after the fully built application arms request-path verification.
+                    let gated = peer_armed.load(std::sync::atomic::Ordering::Acquire);
+                    let gate = if gated { gate.take() } else { None };
                     transfers.push(connections.spawn(move || {
                         downstream.set_nonblocking(false).unwrap();
                         downstream
@@ -1131,9 +1136,10 @@ fn a_slow_admin_door_does_not_stall_healthz() {
                         });
                         (held, client_bytes, issuer_bytes)
                     }));
+                    if gated { break; }
                 }
                 let verify = transfers.pop().unwrap().join().expect("VERIFY relay joins");
-                transfers.pop().unwrap().join().expect("READY relay joins");
+                for transfer in transfers { transfer.join().expect("READY relay joins"); }
                 verify
             })
         });
@@ -1194,6 +1200,7 @@ fn a_slow_admin_door_does_not_stall_healthz() {
         }
         let app = Arc::new(app);
         let router = busbar_kernel::build_router(app);
+        armed.store(true, std::sync::atomic::Ordering::Release);
         // Wait for the configured real JWKS cache lifetime, not for a synthetic verifier.
         std::thread::sleep(Duration::from_millis(1100));
         let runtime = tokio::runtime::Builder::new_multi_thread()

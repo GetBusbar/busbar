@@ -3088,10 +3088,12 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
         let jwks_url = format!("https://{}/jwks", listener.local_addr().unwrap());
         let (entered, waiting) = tokio::sync::oneshot::channel();
         let (release, held) = std::sync::mpsc::channel();
+        let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let peer_armed = armed.clone();
         let peer = std::thread::spawn(move || {
             use std::io::{Read as _, Write as _};
             let mut entered = Some(entered);
-            for attempt in 0..2 {
+            loop {
                 let (socket, _) = listener.accept().unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(10)))
@@ -3111,7 +3113,8 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
                 assert!(head.starts_with(b"GET /jwks HTTP/1.1\r\n"));
                 // READY's best-effort warm-up receives an actual outage. The first VERIFY must
                 // fetch its real key document, and this peer withholds that response until EOF.
-                let (status, body) = if attempt == 0 {
+                let gated = peer_armed.load(std::sync::atomic::Ordering::Acquire);
+                let (status, body) = if !gated {
                     ("503 Service Unavailable", "{}")
                 } else {
                     entered.take().unwrap().send(()).unwrap();
@@ -3122,6 +3125,7 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
                 socket.flush().unwrap();
                 socket.conn.send_close_notify();
                 let _ = socket.flush();
+                if gated { break; }
             }
         });
         let now = busbar_kernel::store::now();
@@ -3218,6 +3222,7 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
             rotate();
         }
         let app = Arc::new(app);
+        armed.store(true, std::sync::atomic::Ordering::Release);
         // READY's real 503 starts OIDC's mandatory refetch cooldown. Let that configured
         // interval elapse so VERIFY can own the second fetch held below through EOF.
         tokio::time::sleep(Duration::from_millis(1100)).await;
