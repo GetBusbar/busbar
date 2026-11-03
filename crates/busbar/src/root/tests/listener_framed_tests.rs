@@ -3193,7 +3193,7 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
         "identity-providers": {"held": {"module": auth_module.unwrap(), "settings": {
             "issuer": "https://listener-eof.invalid", "audience": "listener-eof",
             "jwks_url": jwks_url, "ca_cert_pem": cert_pem, "role_claim": "roles",
-            "jwks_min_refetch_secs": 0,
+            "jwks_min_refetch_secs": 1,
         }}},
         "auth": {"chain": ["held"], "admin_auth": [], "role_bindings": {"held": {"reader": {"allowed_pools": []}}}},
         "advanced": {"allow_destinations": ["127.0.0.1"]},

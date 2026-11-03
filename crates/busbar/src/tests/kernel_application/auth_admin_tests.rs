@@ -615,6 +615,8 @@ async fn forbidden_admin_requests_audit_once_per_window() {
         rotate();
     }
     let app = Arc::new(app);
+    busbar_kernel::boot::hydrate_all(&app)
+        .expect("the actual boot registers the durable admin audit seam");
     let unique = format!(
         "unbound-{}",
         std::time::SystemTime::now()
