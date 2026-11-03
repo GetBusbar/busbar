@@ -123,8 +123,7 @@ fn the_entropy_failure_guard_restores_its_thread_after_unwind() {
     );
 }
 
-#[path = "../../tests/fixtures/hook_metadata_boundary.rs"]
-mod metadata_boundary;
+use super::metadata_boundary;
 
 fn ranking_metadata_rows(way: Way) -> HookRows {
     rows(metadata_boundary::door, "hook_metadata_boundary", way)
