@@ -16,6 +16,7 @@ struct MixedScan {
     stages: Mutex<Vec<&'static str>>,
     lower_snapshot: AtomicBool,
     upper_seen: AtomicBool,
+    first_upper: AtomicBool,
 }
 impl StoreCalls for MixedScan {
     fn add_usage_batch<'a>(
@@ -100,7 +101,8 @@ impl StoreCalls for MixedScan {
         limit: u32,
     ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
         Box::pin(async move {
-            let upper = prefix == &part_key(self.node, 302, 0)[..16];
+            let upper = prefix == &part_key(self.node, 302, 0)[..16]
+                && !self.first_upper.swap(true, Ordering::SeqCst);
             if upper {
                 // Do not even create the backend future before the append is
                 // confirmed. Registration plus a second Acquire check closes
@@ -243,6 +245,7 @@ fn concurrent_atomic_append_can_produce_a_mixed_prefix_view_that_fails_closed() 
         stages: Mutex::new(Vec::new()),
         lower_snapshot: AtomicBool::new(false),
         upper_seen: AtomicBool::new(false),
+        first_upper: AtomicBool::new(false),
     };
     let result = verify_stored_chain(&view, node);
     assert!(view.lower_snapshot.load(Ordering::SeqCst));
