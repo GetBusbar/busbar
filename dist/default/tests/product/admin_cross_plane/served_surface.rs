@@ -226,11 +226,8 @@ async fn admin_corpus_reconciles_with_the_served_router() {
             .expect("the actual Store states itself");
         let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
             .expect("the actual Store statement parses");
-        let mut manifest = super::plugins::manifest(
-            "store",
-            &facts.name,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-        );
+        let mut manifest =
+            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
         manifest.version = facts.version;
         manifest.statement = Some(hex::encode(statement));
         let archive = super::plugins::signed(
@@ -263,11 +260,7 @@ async fn admin_corpus_reconciles_with_the_served_router() {
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            super::plugins::trusted_config(&directory),
             None,
             Default::default(),
             Default::default(),
@@ -604,11 +597,8 @@ async fn served_openapi_lists_only_the_configured_planes() {
             .expect("the actual Store states itself");
         let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
             .expect("the actual Store statement parses");
-        let mut manifest = super::plugins::manifest(
-            "store",
-            &facts.name,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-        );
+        let mut manifest =
+            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
         manifest.version = facts.version;
         manifest.statement = Some(hex::encode(statement));
         let archive = super::plugins::signed(
@@ -641,11 +631,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            super::plugins::trusted_config(&directory),
             None,
             Default::default(),
             Default::default(),
@@ -710,11 +696,8 @@ async fn served_openapi_lists_only_the_configured_planes() {
             .expect("the actual Store states itself");
         let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
             .expect("the actual Store statement parses");
-        let mut manifest = super::plugins::manifest(
-            "store",
-            &facts.name,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-        );
+        let mut manifest =
+            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
         manifest.version = facts.version;
         manifest.statement = Some(hex::encode(statement));
         let archive = super::plugins::signed(
@@ -747,11 +730,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            super::plugins::trusted_config(&directory),
             None,
             Default::default(),
             Default::default(),
@@ -836,11 +815,8 @@ async fn served_openapi_lists_only_the_configured_planes() {
             .expect("the actual Store states itself");
         let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
             .expect("the actual Store statement parses");
-        let mut manifest = super::plugins::manifest(
-            "store",
-            &facts.name,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-        );
+        let mut manifest =
+            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
         manifest.version = facts.version;
         manifest.statement = Some(hex::encode(statement));
         let archive = super::plugins::signed(
@@ -873,11 +849,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            super::plugins::trusted_config(&directory),
             None,
             Default::default(),
             Default::default(),
@@ -935,11 +907,8 @@ async fn named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body(
             .expect("the actual Store states itself");
         let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
             .expect("the actual Store statement parses");
-        let mut manifest = super::plugins::manifest(
-            "store",
-            &facts.name,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-        );
+        let mut manifest =
+            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
         manifest.version = facts.version;
         manifest.statement = Some(hex::encode(statement));
         let archive = super::plugins::signed(
@@ -972,11 +941,7 @@ async fn named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body(
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            super::plugins::trusted_config(&directory),
             None,
             Default::default(),
             Default::default(),

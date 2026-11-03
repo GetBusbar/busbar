@@ -46,11 +46,8 @@ fn build_with_hook_makes_a_plane_attach_live() {
             .expect("the actual Store states itself");
         let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
             .expect("the actual Store statement parses");
-        let mut manifest = super::plugins::manifest(
-            "store",
-            &facts.name,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-        );
+        let mut manifest =
+            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
         manifest.version = facts.version;
         manifest.statement = Some(hex::encode(statement));
         let archive = super::plugins::signed(
@@ -83,11 +80,7 @@ fn build_with_hook_makes_a_plane_attach_live() {
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (app, rotate, limits) = busbar_kernel::build_app_from_config(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            super::plugins::trusted_config(&directory),
             None,
             Default::default(),
             Default::default(),

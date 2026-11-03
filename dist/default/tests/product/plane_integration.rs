@@ -205,11 +205,7 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
     let module = busbar_contract::abi::mechanism::rendering::read(&statement)
         .expect("the actual store statement is valid")
         .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-    );
+    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -234,11 +230,7 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
             .expect("product settings object")
             .clone(),
     });
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -317,11 +309,7 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
     let module = busbar_contract::abi::mechanism::rendering::read(&statement)
         .expect("the actual store statement is valid")
         .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-    );
+    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -346,11 +334,7 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
             .expect("product settings object")
             .clone(),
     });
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -451,11 +435,7 @@ async fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
     let module = busbar_contract::abi::mechanism::rendering::read(&statement)
         .expect("the actual store statement is valid")
         .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-    );
+    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -480,11 +460,7 @@ async fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
             .expect("product settings object")
             .clone(),
     });
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -609,11 +585,7 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
     let module = busbar_contract::abi::mechanism::rendering::read(&statement)
         .expect("the actual store statement is valid")
         .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-    );
+    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -638,11 +610,7 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
             .expect("product settings object")
             .clone(),
     });
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -767,11 +735,7 @@ mod metrics_scrape {
         let module = busbar_contract::abi::mechanism::rendering::read(&statement)
             .expect("the actual store statement is valid")
             .name;
-        let mut manifest = plugins::manifest(
-            "store",
-            &module,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-        );
+        let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
         manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch(&format!(
@@ -796,11 +760,7 @@ mod metrics_scrape {
                 .expect("product settings object")
                 .clone(),
         });
-        let plugin_config = busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        };
+        let plugin_config = plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
         busbar_kernel::export::plugin::open(&cfg.export).expect("the configured exporter opens");
@@ -1020,11 +980,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     let module = busbar_contract::abi::mechanism::rendering::read(&statement)
         .expect("the actual store statement is valid")
         .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-    );
+    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
@@ -1049,11 +1005,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
             .expect("product settings object")
             .clone(),
     });
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(
