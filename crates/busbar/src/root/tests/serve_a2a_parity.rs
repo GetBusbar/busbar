@@ -834,8 +834,82 @@ fn raw_relay_and_lifecycle(
     auxiliary
 }
 
+// The actual root owns a one-time Store binding; this ordinary case keeps its
+// book independent when the full binary runs other root cases.
+fn isolated_a2a_case() -> bool {
+    const CHILD: &str = "BUSBAR_A2A_PARITY_CHILD";
+    const WITNESS: &str = "actual A2A parity assertions completed";
+    let name = std::thread::current()
+        .name()
+        .expect("the exact test is named")
+        .to_owned();
+    if std::env::var(CHILD).ok().as_deref() == Some(name.as_str()) {
+        return false;
+    }
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", &name, "--nocapture"])
+        .env(CHILD, &name)
+        .stdout(std::process::Stdio::piped());
+    let mut settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("actual Store settings");
+    if settings.get("db_path").is_some() {
+        let directory = crate::root::test_plugins::scratch("a2a-parity-child-store");
+        settings["db_path"] = serde_json::json!(directory.join("governance.sqlite"));
+        command.env(
+            "BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS",
+            settings.to_string(),
+        );
+    }
+    let mut child = Child(
+        command
+            .spawn()
+            .expect("start the exact isolated A2A parity case"),
+    );
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            use std::io::Read;
+            let mut output = String::new();
+            child
+                .0
+                .stdout
+                .take()
+                .unwrap()
+                .read_to_string(&mut output)
+                .unwrap();
+            assert!(
+                status.success(),
+                "the actual A2A parity child failed: {status}: {output}"
+            );
+            assert!(
+                output.contains(WITNESS),
+                "the exact child did not complete its assertions: {output}"
+            );
+            return true;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "the actual A2A parity child timed out"
+        );
+        std::thread::park_timeout(std::time::Duration::from_millis(5));
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
+    if isolated_a2a_case() {
+        return;
+    }
     let _one = crate::root::PUBLISHING.lock().await;
     crate::dist_root_install::install();
     assert_eq!(
@@ -1255,4 +1329,5 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         tables.withdraw(&instance);
     }
     peer.abort();
+    println!("actual A2A parity assertions completed");
 }
