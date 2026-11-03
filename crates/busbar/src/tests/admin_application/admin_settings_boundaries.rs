@@ -116,6 +116,8 @@ async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_appl
         serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write the actual immutable base configuration");
+    let providers_path = directory.join("providers.json");
+    std::fs::write(&providers_path, b"{}").expect("write the actual empty provider definitions");
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
@@ -139,7 +141,7 @@ async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_appl
         Some(overlay),
         HashSet::new(),
         HashSet::new(),
-        (Some(config_path), None),
+        (Some(config_path), Some(providers_path)),
         None,
         &rules,
         Some(anchor),
@@ -300,6 +302,8 @@ async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_
         serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write the actual immutable base configuration");
+    let providers_path = directory.join("providers.json");
+    std::fs::write(&providers_path, b"{}").expect("write the actual empty provider definitions");
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
@@ -323,7 +327,7 @@ async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_
         Some(overlay),
         HashSet::new(),
         HashSet::new(),
-        (Some(config_path), None),
+        (Some(config_path), Some(providers_path)),
         None,
         &rules,
         Some(anchor),
@@ -483,6 +487,8 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
         serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write the actual immutable base configuration");
+    let providers_path = directory.join("providers.json");
+    std::fs::write(&providers_path, b"{}").expect("write the actual empty provider definitions");
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
@@ -506,7 +512,7 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
         Some(overlay),
         HashSet::new(),
         HashSet::new(),
-        (Some(config_path), None),
+        (Some(config_path), Some(providers_path)),
         None,
         &rules,
         Some(anchor),
@@ -680,6 +686,8 @@ async fn test_admin_v1_config_settings_stale_if_match_conflicts() {
         serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write the actual immutable base configuration");
+    let providers_path = directory.join("providers.json");
+    std::fs::write(&providers_path, b"{}").expect("write the actual empty provider definitions");
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
@@ -703,7 +711,7 @@ async fn test_admin_v1_config_settings_stale_if_match_conflicts() {
         Some(overlay),
         HashSet::new(),
         HashSet::new(),
-        (Some(config_path), None),
+        (Some(config_path), Some(providers_path)),
         None,
         &rules,
         Some(anchor),
@@ -858,6 +866,8 @@ async fn test_admin_v1_config_settings_unknown_field_400() {
         serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write the actual immutable base configuration");
+    let providers_path = directory.join("providers.json");
+    std::fs::write(&providers_path, b"{}").expect("write the actual empty provider definitions");
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
@@ -881,7 +891,7 @@ async fn test_admin_v1_config_settings_unknown_field_400() {
         Some(overlay),
         HashSet::new(),
         HashSet::new(),
-        (Some(config_path), None),
+        (Some(config_path), Some(providers_path)),
         None,
         &rules,
         Some(anchor),
