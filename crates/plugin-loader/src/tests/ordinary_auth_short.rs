@@ -371,6 +371,7 @@ fn an_actual_held_short_lease_is_released_exactly_once_when_its_token_drops() {
         .take()
         .expect("actual short reply owns a recall token");
     assert_ne!(frame.out.head.lease, 0);
+    let held_lease = frame.out.head.lease;
     let reference = short_reply::encode(frame.out.head.lease);
     let mut bytes = vec![0; SUBJECT.len()];
     frame.input.head.extensions = Blob {
@@ -406,7 +407,7 @@ fn an_actual_held_short_lease_is_released_exactly_once_when_its_token_drops() {
         ),
         (2, 1, 1)
     );
-    let lease = frame.out.head.lease;
+    let lease = held_lease;
     let mut released = Frame::new(
         busbar_contract::abi::mechanism::lifecycle::ReleaseIn {
             head: crate::dispatch::in_head(),
