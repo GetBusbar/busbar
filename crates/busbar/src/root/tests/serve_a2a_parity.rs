@@ -872,8 +872,14 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
     )
     .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/agent", listener.local_addr().unwrap());
+    let issuer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let card = serde_json::to_vec(&peer_card(&endpoint, &issuer)).unwrap();
+    let entry = peer_entry(&endpoint, &issuer);
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {}, "models": {}, "auth": {"chain": ["keys"], "admin_auth": []},
+        "agents": {"vendor": entry.clone()},
         "store": {"module": module, "settings": settings},
         "advanced": {"allow_destinations": ["127.0.0.1"]}
     }))
@@ -976,11 +982,6 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
     assert!(!verified.scope_allowed("agent", "other"));
     let bearer = format!("Bearer {}", token.expose(&busbar_kernel::seal::lend()));
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = format!("http://{}/agent", listener.local_addr().unwrap());
-    let issuer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-    let card = serde_json::to_vec(&peer_card(&endpoint, &issuer)).unwrap();
-    let entry = peer_entry(&endpoint, &issuer);
     let control = Arc::new(cancellation::CardPeerControl::default());
     let peer_control = control.clone();
     let peer_routes = axum::Router::new().fallback(move |request: axum::extract::Request| {
