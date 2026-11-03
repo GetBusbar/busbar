@@ -25,6 +25,7 @@ pub fn install() {
         let late = crate::root::serve::LateServices::new();
         let dispatcher = crate::root::dispatch::boot(1, &late);
         crate::root::doors::install_dispatcher(dispatcher);
+        crate::root::linked::register_stores(&crate::LINKED);
         crate::register_protocols();
         crate::register_planes();
         crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
