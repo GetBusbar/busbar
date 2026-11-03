@@ -1041,8 +1041,12 @@ fn downgrade_book(
             "store": {"module": module, "settings": settings},
         }))
         .expect("the door deployment parses");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+        let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the door deployment resolves");
+        // Admission reads the kept, dated card, so the configured authority must
+        // carry the same ten-cent fee and group tree as this boundary's CostModel.
+        cfg.per_request_fee = 10;
+        cfg.groups = groups.clone();
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let loaded = crate::root::real_store::store();
@@ -5724,6 +5728,30 @@ pub(crate) mod door_boundary {
         server.close().await;
     }
 
+    fn fixture_operator_chain(
+        app: &busbar_kernel::state::App,
+        auth_cfg: &busbar_kernel::config::AuthCfg,
+    ) -> Arc<busbar_kernel::auth::AdminAuthChain> {
+        let mut modules = busbar_kernel::auth::AdminAuthChain::build(
+            auth_cfg,
+            &app.hook_env.registry,
+            &app.secret_resolver,
+        )
+        .expect("the actual root opens the admin chain");
+        // Match appbuild: opening the chain alone does not install its operator
+        // credential. Keep the actual configured governor's credential, not an
+        // uncredentialed placeholder Operator.
+        modules.operator = busbar_kernel::auth::open_operator(
+            &app.hook_env.registry,
+            app.governance
+                .as_ref()
+                .and_then(|gov| gov.admin_token_hash()),
+            &app.identity_providers,
+        )
+        .expect("the actual operator opens against its configured credential");
+        Arc::new(modules)
+    }
+
     async fn admin(
         rig: &super::tool_door::Rig,
         method: &str,
@@ -5783,14 +5811,7 @@ pub(crate) mod door_boundary {
                     .collect(),
                 ..busbar_kernel::config::AuthCfg::default_none()
             };
-            app.admin_modules = Arc::new(
-                busbar_kernel::auth::AdminAuthChain::build(
-                    &auth_cfg,
-                    &app.hook_env.registry,
-                    &app.secret_resolver,
-                )
-                .expect("the actual root opens the admin chain"),
-            );
+            app.admin_modules = fixture_operator_chain(&app, &auth_cfg);
             app.admin_chain = chain.clone();
             dispatched(app, row, &slot)
         });
@@ -5930,14 +5951,7 @@ pub(crate) mod door_boundary {
                         .collect(),
                     ..busbar_kernel::config::AuthCfg::default_none()
                 };
-                app.admin_modules = Arc::new(
-                    busbar_kernel::auth::AdminAuthChain::build(
-                        &auth_cfg,
-                        &app.hook_env.registry,
-                        &app.secret_resolver,
-                    )
-                    .expect("the actual root opens the admin chain"),
-                );
+                app.admin_modules = fixture_operator_chain(&app, &auth_cfg);
                 app.admin_chain = chain.clone();
                 dispatched(app, row, &slot)
             });
@@ -5974,14 +5988,7 @@ pub(crate) mod door_boundary {
                     .collect(),
                 ..busbar_kernel::config::AuthCfg::default_none()
             };
-            app.admin_modules = Arc::new(
-                busbar_kernel::auth::AdminAuthChain::build(
-                    &auth_cfg,
-                    &app.hook_env.registry,
-                    &app.secret_resolver,
-                )
-                .expect("the actual root opens the admin chain"),
-            );
+            app.admin_modules = fixture_operator_chain(&app, &auth_cfg);
             app.admin_chain = chain.clone();
             app
         }) {
@@ -6038,14 +6045,7 @@ pub(crate) mod door_boundary {
                     .collect(),
                 ..busbar_kernel::config::AuthCfg::default_none()
             };
-            app.admin_modules = Arc::new(
-                busbar_kernel::auth::AdminAuthChain::build(
-                    &auth_cfg,
-                    &app.hook_env.registry,
-                    &app.secret_resolver,
-                )
-                .expect("the actual root opens the admin chain"),
-            );
+            app.admin_modules = fixture_operator_chain(&app, &auth_cfg);
             app.admin_chain = chain.clone();
             dispatched(app, row, &booted)
         });
