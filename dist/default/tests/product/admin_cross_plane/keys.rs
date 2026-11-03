@@ -684,6 +684,7 @@ async fn drive_key_cap_and_delegation_errors() {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.max_keys_per_principal = 2;
     }
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&app);
     let router = crate::distribution::admin_cross_plane::build_router(app);
     let (addr, server, client) = spin_up(router).await;
     let keys_url = format!("http://{addr}/api/v1/admin/keys");
