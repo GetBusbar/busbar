@@ -67,11 +67,20 @@ fn free_port() -> u16 {
 }
 
 fn write_tarball_declaring(dir: &Path, lib: &[u8], destinations: &[&str]) {
-    let mut m = common::plugins::manifest("export", PLUGIN, "acme");
+    let manifest = std::env::var_os("BUSBAR_TEST_EXPORT_FILE_MANIFEST")
+        .expect("the actual file sink package manifest is provided");
+    let mut m: busbar_plugin_loader::sign::Manifest = serde_json::from_slice(
+        &std::fs::read(manifest).expect("read the actual file sink manifest"),
+    )
+    .expect("the file sink manifest parses");
+    m.name = PLUGIN.into();
+    m.alias = PLUGIN.into();
+    m.former_names.clear();
+    m.publisher = common::plugins::FIXTURE_PUBLISHER.into();
     m.declares.destinations = destinations.iter().map(|d| d.to_string()).collect();
 
     common::plugins::state(&mut m, lib);
-    let bytes = common::plugins::seal(m, lib);
+    let bytes = common::plugins::signed(&common::plugins::key(0x5a), m, lib);
     std::fs::write(dir.join("plugins").join("dropped-sink.tar.gz"), bytes).unwrap();
 }
 
@@ -92,11 +101,7 @@ store: {{module: memory}}
 admin_require_mtls: false
 auth:
   chain: []
-plugins:
-  enabled: true
-  dir: '{plugins}'
-  trust:
-    allow_unsigned: true
+plugins: {plugins}
 export:
   metrics: {{ module: prometheus, settings: {{ buffer_seconds: 60 }} }}
   tail: {{ module: {PLUGIN}, streams: [logs], settings: {tail_settings} }}
@@ -107,7 +112,7 @@ models:
   test-model:
     provider: mock
 "#,
-            plugins = dir.join("plugins").display()
+            plugins = common::plugins::trusted_config_document(&dir.join("plugins"))
         ),
     )
     .unwrap();

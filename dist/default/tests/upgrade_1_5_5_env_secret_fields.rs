@@ -41,6 +41,8 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
         include_str!("fixtures/mock_provider.yaml"),
     )
     .unwrap();
+    let mut plugins = common::plugins::trusted_config_document(&dir.join("plugins"));
+    plugins["logs"] = serde_json::json!({"dir": dir.join("plugin-logs")});
     std::fs::write(
         dir.join("config.yaml"),
         format!(
@@ -50,12 +52,7 @@ store: {{module: memory}}
 admin_require_mtls: false
 auth:
   chain: []
-plugins:
-  enabled: true
-  dir: '{plugins}'
-  trust:
-    allow_unsigned: true
-  logs: {{ dir: '{logs}' }}
+plugins: {plugins}
 export:
   trace:
     module: otlp
@@ -73,8 +70,7 @@ models:
   test-model:
     provider: mock
 "#,
-            plugins = dir.join("plugins").display(),
-            logs = dir.join("plugin-logs").display(),
+            plugins = plugins,
         ),
     )
     .unwrap();
@@ -105,7 +101,13 @@ fn drop_in_wire(dir: &Path) {
         let (lib, _) = common::plugins::transport_cdylib_under(&[WIRE]).unwrap_or_else(|| {
             common::plugins::missing(&format!("{WIRE} transport"), common::plugins::BUILD_PINNED)
         });
-        let bytes = common::plugins::pack("transport", "dropped-wire", &lib, "acme");
+        let mut manifest = common::plugins::manifest(
+            "transport",
+            "dropped-wire",
+            common::plugins::FIXTURE_PUBLISHER,
+        );
+        common::plugins::state(&mut manifest, &lib);
+        let bytes = common::plugins::signed(&common::plugins::key(0x5a), manifest, &lib);
         std::fs::write(dir.join("plugins").join("dropped-wire.tar.gz"), bytes).unwrap();
     }
 }
@@ -168,8 +170,8 @@ fn a_1_5_5_config_reading_export_secrets_from_the_environment_boots_and_serves()
     let dir = fixture_dir();
     let (data_port, admin_port) = (common::boot::free_port(), common::boot::free_port());
     let (collector_port, seen) = common::otlp::collector();
-    write_configs(&dir, data_port, admin_port);
     drop_in_wire(&dir);
+    write_configs(&dir, data_port, admin_port);
 
     let out = busbar(&dir, collector_port)
         .arg("--validate")
