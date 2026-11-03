@@ -23,7 +23,7 @@ fn unreferenced_identity_provider_token_is_not_resolved_by_actual_validate() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(path).expect("the actual store library reads");
@@ -46,11 +46,7 @@ fn unreferenced_identity_provider_token_is_not_resolved_by_actual_validate() {
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
     });
-    let plugin_config = config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let resolve_builtins = |cfg: &config::RootCfg| -> Result<(), String> {
         busbar_kernel::config_validate::check(
             cfg,

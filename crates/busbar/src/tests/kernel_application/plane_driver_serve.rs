@@ -123,7 +123,7 @@ async fn two_apps_lent_two_tables_each_serve_only_their_own_instance() {
         let mut manifest = plugins::manifest(
             "store",
             &module,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -152,11 +152,7 @@ async fn two_apps_lent_two_tables_each_serve_only_their_own_instance() {
             .expect("the product deployment resolves");
         let calls_config = kernel::config::resolve(&deploy, &Default::default())
             .expect("the same normal deployment resolves for host services");
-        let plugin_config = kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        };
+        let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn kernel::appbuild::RootRules>;
         let (app, rotate, limits) = kernel::build_app_from_config(
@@ -244,7 +240,7 @@ async fn a_rebuild_carries_the_published_admin_table() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -272,11 +268,7 @@ async fn a_rebuild_carries_the_published_admin_table() {
         .expect("the product deployment resolves");
     let calls_config = kernel::config::resolve(&deploy, &Default::default())
         .expect("the same normal deployment resolves for host services");
-    let plugin_config = kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules =
         Arc::new(crate::root::door_steps::Rules::default()) as Arc<dyn kernel::appbuild::RootRules>;
     let (boot, rotate, limits) = kernel::build_app_from_config(

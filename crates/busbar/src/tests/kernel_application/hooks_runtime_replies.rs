@@ -57,7 +57,7 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         let mut manifest = plugins::manifest(
             kind,
             &facts.name,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.version = facts.version;
         manifest.statement = Some(hex::encode(statement));
@@ -127,11 +127,7 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         .expect("the actual product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual product deployment resolves");
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(
