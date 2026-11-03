@@ -3706,12 +3706,35 @@ fn framed_opens_keep_the_serving_unit_through_sync_and_pending_auth() {
                     .unwrap()
                     .push_back((piece(PieceKind::Fields, Some(200), None, 0), Vec::new()));
                 let mut buf = [0u8; 64];
+                let ticket = dispatcher.inline_ticket().expect("mint a live read ticket");
+                let read = |buf: &mut [u8]| {
+                    let mut piece = ReplyPiece::default();
+                    let mut head = head_of::<ReplyIn>(service::READ_REPLY, seq + 3);
+                    head.handle.ticket = ticket.ticket();
+                    let input = ReplyIn {
+                        head,
+                        stream,
+                        buf: buf.as_mut_ptr(),
+                        len: buf.len(),
+                        piece: std::ptr::from_mut(&mut piece),
+                    };
+                    (call(&p, CONN_SLOTS.read_reply, &input), piece)
+                };
                 let _serving = crate::dispatch::services::serving(Some(999));
-                let (out, _) = read_reply(&p, seq + 3, stream, &mut buf);
-                assert_eq!(out.outcome, RawOutcome::of(Outcome::Pending));
+                let (out, _) = read(&mut buf);
+                assert_eq!(
+                    out.outcome,
+                    RawOutcome::of(Outcome::Pending),
+                    "first read for unit {unit}, index {index}: {}",
+                    error_text(&out)
+                );
                 assert_eq!(table.opened_units.lock().unwrap().len(), index);
-                let (out, got) = read_reply(&p, seq + 3, stream, &mut buf);
-                assert!(ready(&out), "{}", error_text(&out));
+                let (out, got) = read(&mut buf);
+                assert!(
+                    ready(&out),
+                    "second read for unit {unit}, index {index}: {}",
+                    error_text(&out)
+                );
                 assert_eq!(got.kind, REPLY_HEAD);
             }
         }
