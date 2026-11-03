@@ -2647,7 +2647,6 @@ impl<K: Kind> Plugin<K> {
     }
 
     /// Snapshot the connection authority published by the last successful lifecycle call.
-
     pub fn connection_binding(&self) -> ConnectionBinding {
         let generation = self.inner.wake.exports.pin(Ticket::NONE);
         let owner = generation

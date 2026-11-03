@@ -478,7 +478,6 @@ impl HeldLease {
     }
 
     /// Revalidate read-only recovery custody across normal lease renewal. Write CAS requests
-
     pub(super) fn recovery_fence_matches(
         &self,
         calls: &dyn StoreCalls,

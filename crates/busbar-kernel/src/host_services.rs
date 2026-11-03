@@ -440,7 +440,6 @@ pub struct InstanceFacts {
 }
 
 /// Verified, in-process ticket identity. Its credential remains host-private and zeroised.
-
 pub struct VerifiedTicketIdentity {
     pub(crate) id: String,
     pub(crate) principal: Arc<busbar_contract::records::VirtualKey>,
@@ -477,7 +476,6 @@ impl std::fmt::Debug for VerifiedTicketIdentity {
 }
 
 /// Host policy classifies an authenticated ticket before its durable single-use spend.
-
 pub enum TicketClaimDisposition {
     Ordinary,
     Reserved(crate::plane_driver::TicketReservation),
@@ -509,7 +507,6 @@ impl std::fmt::Debug for HostTicketAdmission {
 
 pub trait TicketPress: Send + Sync {
     /// Mint with the host's exact admitted unit and caller identity. Reservation-aware presses
-
     #[allow(clippy::too_many_arguments)]
     fn mint_for_unit(
         &self,
@@ -567,6 +564,22 @@ pub enum AdmitRefused {
         /// The instance refused.
         asked_by: String,
     },
+    /// Another instance owns this delegated-credential consumer namespace.
+    TicketPrefixHeld {
+        /// The declared namespace.
+        prefix: String,
+        /// The instance holding it.
+        held_by: String,
+        /// The instance refused.
+        asked_by: String,
+    },
+    /// An admitted instance tried to release a namespace whose credentials may remain live.
+    TicketPrefixChanged {
+        /// The admitted instance.
+        instance: String,
+        /// Its original namespace.
+        prefix: String,
+    },
     /// A declared chained record kind this host cannot chain: its kind index names no record kind,
     /// or its framing is a word this host does not know. A record kind declared chained is
     /// chained, never silently kept as plain records.
@@ -610,6 +623,20 @@ impl std::fmt::Display for AdmitRefused {
                 f,
                 "instance `{asked_by}` declares the signing domain `{domain}`, which instance \
                  `{held_by}` holds: no instance signs as another"
+            ),
+            Self::TicketPrefixHeld {
+                prefix,
+                held_by,
+                asked_by,
+            } => write!(
+                f,
+                "instance `{asked_by}` declares credential consumer prefix `{prefix}`, which \
+                 instance `{held_by}` holds: no instance redeems another's credentials"
+            ),
+            Self::TicketPrefixChanged { instance, prefix } => write!(
+                f,
+                "instance `{instance}` cannot change credential consumer prefix `{prefix}` \
+                 while credentials issued under it may remain live"
             ),
             Self::ChainUnknown { kind, framing } => write!(
                 f,
@@ -1036,6 +1063,28 @@ impl KernelServices {
             if let Some((held_by, _)) = holder {
                 return Err(AdmitRefused::DomainHeld {
                     domain: domain.to_string(),
+                    held_by: held_by.to_string(),
+                    asked_by: instance.to_string(),
+                });
+            }
+        }
+        if let Some(prefix) = instances
+            .get(instance)
+            .and_then(|f| f.ticket_prefix.as_ref())
+        {
+            if facts.ticket_prefix.as_ref() != Some(prefix) {
+                return Err(AdmitRefused::TicketPrefixChanged {
+                    instance: instance.to_string(),
+                    prefix: prefix.clone(),
+                });
+            }
+        }
+        if let Some(prefix) = &facts.ticket_prefix {
+            if let Some((held_by, _)) = instances.iter().find(|(label, f)| {
+                &***label != instance && f.ticket_prefix.as_ref() == Some(prefix)
+            }) {
+                return Err(AdmitRefused::TicketPrefixHeld {
+                    prefix: prefix.clone(),
                     held_by: held_by.to_string(),
                     asked_by: instance.to_string(),
                 });

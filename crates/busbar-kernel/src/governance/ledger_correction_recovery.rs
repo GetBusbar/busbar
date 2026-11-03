@@ -61,7 +61,6 @@ fn window_debt(cell: &BudgetCell, window: u64, dated: bool) -> ExactUsageDelta {
 }
 
 /// Resolve the signed dated segments before taking their positive parts. Taking positive parts
-
 fn positive_rolled(
     plain: &ExactUsageDelta,
     dated: &ExactUsageDelta,
@@ -1125,7 +1124,6 @@ impl Custody {
     }
 
     /// Validate immutable raw evidence and register quarantine, without installing old aggregate
-
     pub(super) fn restore(
         self,
         _gov: &GovState,
@@ -1172,7 +1170,6 @@ impl RawCell {
 }
 
 /// A cut's exact raw debt has moved into parent-authorized child operations. Advance only that
-
 pub(super) fn apply_selected_cut(
     live: &mut BudgetCell,
     cut: &BudgetCell,

@@ -10,6 +10,10 @@ pub const TOKEN_PREFIX: &str = "bbk_";
 
 pub const TICKET_AUDIENCE: &str = "busbar:ticket";
 
+pub(crate) fn ticket_audience(consumer: &str) -> String {
+    format!("{TICKET_AUDIENCE}:{consumer}")
+}
+
 const ED25519_KEY_INFO_PREFIX: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
 ];
@@ -191,13 +195,14 @@ impl TokenSigner {
         exp: u64,
         generation: Option<&str>,
         ticket: &str,
+        consumer: &str,
     ) -> String {
         self.sign_body(&TokenClaims {
             sub: sub.to_string(),
             exp,
             kid: self.kid.clone(),
             generation: generation.map(str::to_string),
-            aud: Some(TICKET_AUDIENCE.to_string()),
+            aud: Some(ticket_audience(consumer)),
             cid: None,
             ticket: Some(ticket.to_string()),
         })
@@ -253,8 +258,12 @@ impl TokenVerifier {
         self.verify_body_at(body, Some(now), expected_aud)
     }
 
-    pub(crate) fn verify_ticket_body(&self, body: &str) -> Result<TokenClaims, VerifyError> {
-        self.verify_body_at(body, None, Some(TICKET_AUDIENCE))
+    pub(crate) fn verify_ticket_body(
+        &self,
+        body: &str,
+        consumer: &str,
+    ) -> Result<TokenClaims, VerifyError> {
+        self.verify_body_at(body, None, Some(&ticket_audience(consumer)))
     }
 
     fn verify_body_at(

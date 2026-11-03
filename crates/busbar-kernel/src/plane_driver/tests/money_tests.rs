@@ -247,6 +247,55 @@ fn fee_reported(amount: u64) -> UnitCount {
     }
 }
 
+fn requests(r: &Rig) -> u64 {
+    r.gov
+        .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+        .expect("usage")
+        .requests
+}
+
+fn ended(caller_status: u32, refused_unspent: bool) -> UnitEnd {
+    UnitEnd {
+        caller_status,
+        cut: false,
+        refused_unspent,
+    }
+}
+
+#[test]
+fn a_refused_unspent_end_releases_its_request_count() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+    admit(&r);
+    assert_eq!(requests(&r), 1, "admission counted the request");
+    r.money.settle_end_as(UnitKey::new(1), ended(403, true));
+    assert_eq!(requests(&r), 0, "the refusal counts against no cap");
+    assert_eq!(usage(&r).1, 0, "and its fee came back");
+}
+
+#[test]
+fn a_failed_end_keeps_its_request_count() {
+    for rule in [FeeRefund::CallerStatus, plane_fees()] {
+        let r = rig_with(None, 5, ExhaustionMode::FinishUnit, rule);
+        admit(&r);
+        r.money.settle_end_as(UnitKey::new(1), ended(503, false));
+        assert_eq!(requests(&r), 1, "a failure is counted");
+        assert_eq!(usage(&r).1, 0, "its fee refunded, as before");
+    }
+}
+
+#[test]
+fn a_refused_end_that_reported_units_keeps_its_request_count() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+    admit(&r);
+    let _ = r.money.checkpoint(&ctx(1), &reported(10));
+    r.money.settle_end_as(UnitKey::new(1), ended(403, true));
+    assert_eq!(
+        requests(&r),
+        1,
+        "units were reported: the unit was not unspent"
+    );
+}
+
 #[test]
 fn a_plane_that_reports_no_fee_unit_has_its_fee_refunded() {
     let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
@@ -485,6 +534,7 @@ fn a_stream_cut_by_its_far_end_bills_and_meters_what_its_plane_ledgered() {
         UnitEnd {
             caller_status: 200,
             cut: true,
+            refused_unspent: false,
         },
     );
     let rows = metering_rows(&r);

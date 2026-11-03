@@ -232,6 +232,13 @@ impl GovState {
         }
 
         match self.lookup_by_sub(&claims.sub) {
+            Some(key) if key_row_expired(&key, now) => {
+                tracing::debug!(
+                    sub = %claims.sub,
+                    "signed-token rejected: the key row's expires_at has passed"
+                );
+                None
+            }
             Some(key)
                 if key.enabled
                     && generation_matches(&key.generation_hash, claims.generation.as_deref()) =>
@@ -1881,6 +1888,28 @@ impl GovState {
         }
     }
 
+    pub fn release_request(&self, charge: &FeeCharge) {
+        for (bucket_id, window) in &charge.cells {
+            let mut map = self.budget.write(bucket_id);
+            let Some(cell) = map.get_mut(bucket_id) else {
+                continue; // swept: nothing in memory holds the count any more
+            };
+            if cell.window_start == *window {
+                cell.requests = cell.requests.saturating_sub(1);
+                cell.dirty = true;
+            } else if cell.window_start > *window {
+                cell.park(
+                    *window,
+                    UsageDelta {
+                        requests: -1,
+                        ..UsageDelta::default()
+                    },
+                );
+                cell.dirty = true;
+            }
+        }
+    }
+
     pub fn refund_fee_unit(
         &self,
         cost: &crate::cost::CostModel,
@@ -2458,3 +2487,9 @@ fn durable_segments(rows: Vec<busbar_contract::records::ModelTokens>) -> Vec<Mod
 
 #[path = "money_view.rs"]
 pub(super) mod money_view;
+
+/// Whether `key`'s stored `expires_at` has passed as of `now` (owner-signed 2026-10-30, SEC-VKEY):
+/// `expires_at == now` is already expired, as a token's `exp == now` is.
+pub(crate) fn key_row_expired(key: &VirtualKey, now: u64) -> bool {
+    key.expires_at.is_some_and(|exp| exp <= now)
+}

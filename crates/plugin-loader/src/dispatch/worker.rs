@@ -623,7 +623,6 @@ impl Drop for Meta {
 }
 
 /// The submitting host's context, never a parent supplied by a plugin. Shared so selecting a
-
 struct TraceContext {
     dispatch: tracing::Dispatch,
     span: tracing::Span,

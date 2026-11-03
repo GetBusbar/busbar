@@ -39,19 +39,16 @@ pub struct RecoveryEvent {
 }
 
 /// Per-opened-Store persistence. A repeated operation/revision must name exactly
-
 pub trait RecoverySink: Send + Sync {
     fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError>;
     fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError>;
 
     /// Return one bounded summary per operation only AFTER verifying its complete
-
     fn replay_selections(&self) -> Result<Vec<RecoverySelection>, RecoveryError> {
         summarize_recovery_chains(self.replay()?)
     }
 
     /// Confirm exact membership in the CURRENT selected predecessor chain. An
-
     fn verify_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         let events = self.replay()?;
         let present = events.iter().any(|selected| selected == event);
@@ -66,7 +63,6 @@ pub trait RecoverySink: Send + Sync {
     }
 
     /// Confirm exact selected ancestry AND current ownership by this sink. The
-
     fn confirm_owned_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         let events = self.replay()?;
         let present = events.iter().any(|selected| selected == event);
@@ -81,7 +77,6 @@ pub trait RecoverySink: Send + Sync {
     }
 
     /// Adopt through the same full ancestry proof, retaining only its verified
-
     fn adopt_verdict_selection(
         &self,
         resolution: &RecoveryResolution,
@@ -109,7 +104,6 @@ pub trait RecoverySink: Send + Sync {
     }
 
     /// Verify a child's immutable origin against the parent's currently selected
-
     fn verify_origin(&self, _event: &RecoveryEvent) -> Result<(), RecoveryError> {
         Err(RecoveryError::Unavailable(
             "recovery Store cannot verify external child origin".into(),
@@ -117,7 +111,6 @@ pub trait RecoverySink: Send + Sync {
     }
 
     /// Select a fully journaled, audited ownership handover in one exact head CAS.
-
     fn adopt_verdict(
         &self,
         _resolution: &RecoveryResolution,
@@ -893,7 +886,6 @@ impl super::GovState {
     }
 
     /// Only a retained same-process monotonic clock authorizes receipt replay.
-
     pub(super) fn recovery_retention_expired(&self, operation_id: [u8; 16]) -> Option<bool> {
         self.recovery_book
             .entries
@@ -924,7 +916,6 @@ impl super::GovState {
     }
 
     /// Local successful roots need no live administrative custody after their
-
     pub(super) fn forget_confirmed_recovery(&self, operation_id: [u8; 16]) {
         let mut entries = self
             .recovery_book

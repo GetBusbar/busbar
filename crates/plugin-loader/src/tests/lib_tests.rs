@@ -3,8 +3,6 @@
 
 use super::*;
 
-const PUBLISHED_STORE_SCHEMA: u32 = 2;
-
 #[test]
 fn intern_name_reuses_the_same_allocation_for_a_repeated_name() {
     let a1 = intern_name("plugin-a-unique-for-this-test");

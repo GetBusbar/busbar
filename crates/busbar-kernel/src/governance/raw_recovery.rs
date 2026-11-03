@@ -171,7 +171,6 @@ impl GovState {
     }
 
     /// Select missing child Intents only after their exact parent checkpoint is
-
     pub(super) fn drive_recovery_children(&self, parent: &RecoveryEvent) -> RecordStoreResult<()> {
         self.select_recovery_children(parent, false)
     }
@@ -618,7 +617,6 @@ pub(super) struct DurableUsageFlight {
 
 impl GovState {
     /// Retire dependent negatives into a selected unresolved owner before any
-
     pub(super) fn capture_usage_recovery(
         &self,
         bucket: &str,
@@ -843,7 +841,6 @@ impl GovState {
 
 impl GovState {
     /// Resume this parent's raw descendants only. Correction Intents retain
-
     pub(super) fn resume_recovery_children(&self, parent: &RecoveryEvent) -> RecordStoreResult<()> {
         let mut queue = std::collections::VecDeque::from([(parent.clone(), true)]);
         let mut seen = std::collections::BTreeSet::new();
@@ -947,7 +944,6 @@ impl RecoveryEvent {
     }
 
     /// Pure matching only: the caller must prove this exact parent checkpoint is
-
     pub fn authorizes_child(&self, child_genesis: &RecoveryEvent) -> Result<(), RecoveryError> {
         let invalid = |reason: &str| RecoveryError::Invalid(reason.into());
         child_genesis.follows(None)?;
@@ -1107,7 +1103,6 @@ impl RecoveryChild {
 }
 impl GovState {
     /// Called only by the cold flusher before any shard lock. Failed proof leaves
-
     pub(super) fn capture_foreign_settled_snapshot(&self) -> ForeignSettledSnapshot {
         let mut snapshot = ForeignSettledSnapshot::default();
         if !self.recovery_enabled() {

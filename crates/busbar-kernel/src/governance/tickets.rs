@@ -77,7 +77,6 @@ impl GovState {
     }
 
     /// Offload the durable spend after a host has claimed its linear custody. Cancellation
-
     pub async fn redeem_verified_ticket_async(
         self: &Arc<Self>,
         identity: VerifiedTicketIdentity,
@@ -129,7 +128,6 @@ impl GovState {
     }
 
     /// Bind host-owned custody after the opaque record is kept, before publishing a credential.
-
     #[allow(clippy::too_many_arguments)]
     pub fn mint_ticket_bound(
         &self,
@@ -173,7 +171,7 @@ impl GovState {
         let generation = binding_generation(&key.generation_hash);
         let body = material
             .signer
-            .mint_ticket_body(&key.id, exp, generation, &id);
+            .mint_ticket_body(&key.id, exp, generation, &id, prefix);
         let credential = format!("{prefix}{body}");
         let mut identity = VerifiedTicketIdentity {
             id,
@@ -227,7 +225,6 @@ impl GovState {
     }
 
     /// Spend a prepared identity after the host has claimed custody and released its locks.
-
     pub fn redeem_verified_ticket(
         &self,
         identity: VerifiedTicketIdentity,
@@ -285,7 +282,7 @@ impl GovState {
         }
         let body = credential.strip_prefix(prefix)?;
         let material = self.signing_material()?;
-        let claims = match material.verifier.verify_ticket_body(body) {
+        let claims = match material.verifier.verify_ticket_body(body, prefix) {
             Ok(c) => c,
             Err(e) => {
                 tracing::debug!(reason = %e, "ticket verify rejected");

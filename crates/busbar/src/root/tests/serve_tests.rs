@@ -1754,6 +1754,8 @@ pub(super) mod session_door {
         /// (`upstream_model`, Part 2 #51), written in the deployment's `models:` as production
         /// writes it; `None` = the catalog name is the wire name.
         upstream_model: Option<&'static str>,
+        /// The deployment configures no media listener (`media.listen`): no claim door is bound.
+        no_media: bool,
     }
 
     fn session_door(
@@ -2021,8 +2023,12 @@ pub(super) mod session_door {
         let mut sections = BTreeMap::new();
         sections.insert(
             section_key,
-            serde_yaml::from_str("session: {model: m-cap}\nmedia: {listen: '127.0.0.1:0'}")
-                .expect("a section"),
+            serde_yaml::from_str(if opts.no_media {
+                "{session: {model: m-cap}}"
+            } else {
+                "{session: {model: m-cap}, media: {listen: '127.0.0.1:0'}}"
+            })
+            .expect("a section"),
         );
 
         sections.insert(
@@ -3667,6 +3673,171 @@ pub(super) mod session_door {
             Some(6),
             "six seconds of µ-law the provider read are six billed seconds; sealed: {sealed:?}"
         );
+    }
+
+    async fn post_offer(s: &SessionDoor, offer: &[u8]) -> (StatusCode, String, Vec<u8>) {
+        use tower::ServiceExt as _;
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/realtime/calls")
+            .header("content-type", "application/sdp")
+            .header("authorization", format!("Bearer {}", s.plain))
+            .body(axum::body::Body::from(offer.to_vec()))
+            .expect("a request");
+        let response = tokio::time::timeout(ANSWER_BOUND, s.router.clone().oneshot(req))
+            .await
+            .expect("the SDP door answers within the bound")
+            .expect("the router answers");
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        (status, content_type, body_of(response).await.to_vec())
+    }
+
+    fn session_open_refusals(s: &SessionDoor) -> usize {
+        busbar_kernel::audit::auditlog::AUDIT_LOG
+            .list_filtered(0, 1000, Some("door.session_open"), None)
+            .into_iter()
+            .filter(|e| e.principal == s.key.id && e.outcome == "rejected")
+            .count()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_offer_the_door_cannot_open_media_for_is_refused_explained_and_audited() {
+        let _one = PUBLISHING.lock().await;
+        let explained = |body: &[u8]| -> String {
+            let v: serde_json::Value =
+                serde_json::from_slice(body).unwrap_or_else(|_| panic!("a JSON refusal: {body:?}"));
+            v["error"]["message"]
+                .as_str()
+                .unwrap_or_else(|| panic!("an error message: {v}"))
+                .to_owned()
+        };
+        let mut s = session_with(
+            "serve-door-session-no-media",
+            Opts {
+                no_media: true,
+                ..Opts::default()
+            },
+        )
+        .await
+        .expect("the build links the session door");
+        let before = session_open_refusals(&s);
+        let (_browser, offer) = Peer::browser();
+        let (status, content_type, body) = post_offer(&s, &offer).await;
+        assert_eq!(status.as_u16(), 404, "{}", String::from_utf8_lossy(&body));
+        assert!(content_type.contains("json"), "{content_type}");
+        let message = explained(&body);
+        assert!(
+            message.contains(".media.listen"),
+            "names the missing setting: {message}"
+        );
+        assert_eq!(session_open_refusals(&s), before + 1, "audited");
+        assert!(s.heard.try_recv().is_err(), "nothing dialled");
+
+        let mut s = session_with("serve-door-session-no-lines", Opts::default())
+            .await
+            .expect("the build links the session door");
+        let before = session_open_refusals(&s);
+        let (status, content_type, body) = post_offer(
+            &s,
+            b"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=no-lines\r\nt=0 0\r\n",
+        )
+        .await;
+        assert_eq!(status.as_u16(), 400, "{}", String::from_utf8_lossy(&body));
+        assert!(content_type.contains("json"), "{content_type}");
+        let message = explained(&body);
+        assert!(
+            message.to_ascii_lowercase().contains("m-line")
+                || message.to_ascii_lowercase().contains("media"),
+            "names why the offer opens no media: {message}"
+        );
+        assert_eq!(session_open_refusals(&s), before + 1, "audited");
+        assert!(s.heard.try_recv().is_err(), "nothing dialled");
+    }
+
+    const PLACED_CALL: &str = "rtc_root0001";
+
+    async fn far_calls_and_socket() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port");
+        let port = listener.local_addr().expect("its address").port();
+        let (sent, heard) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let sent = sent.clone();
+                tokio::spawn(async move {
+                    let Some(head) = read_head(&mut socket).await else {
+                        return;
+                    };
+                    let line = head.lines().next().unwrap_or_default().to_string();
+                    let key = head.lines().find_map(|l| {
+                        let (name, value) = l.split_once(':')?;
+                        name.eq_ignore_ascii_case("sec-websocket-key")
+                            .then(|| value.trim().to_string())
+                    });
+                    let Some(key) = key else {
+                        let length = head
+                            .lines()
+                            .find_map(|l| {
+                                let (name, value) = l.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        let mut body = vec![0u8; length];
+                        if socket.read_exact(&mut body).await.is_err() {
+                            return;
+                        }
+                        let request = format!("{head}\r\n{}", String::from_utf8_lossy(&body));
+                        let _ = sent.send(format!("OFFER {request}"));
+                        let Some((peer, answer)) = Peer::accept(&call_offer(&request)) else {
+                            return;
+                        };
+                        tokio::spawn(peer.run());
+                        let reply = format!(
+                            "HTTP/1.1 201 Created\r\ncontent-type: application/sdp\r\n\
+                             location: /v1/realtime/calls/{PLACED_CALL}\r\ncontent-length: {}\r\n\
+                             connection: close\r\n\r\n",
+                            answer.len()
+                        );
+                        let _ = socket.write_all(reply.as_bytes()).await;
+                        let _ = socket.write_all(&answer).await;
+                        let _ = socket.shutdown().await;
+                        return;
+                    };
+                    let _ = sent.send(format!("DIAL {line}"));
+                    let reply = format!(
+                        "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\n\
+                         connection: Upgrade\r\nsec-websocket-accept: {}\r\n\r\n",
+                        ws_accept(&key)
+                    );
+                    if socket.write_all(reply.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    if socket.write_all(&server_text(FAR_OPENING)).await.is_err() {
+                        return;
+                    }
+                    while let Some((opcode, payload)) = read_frame(&mut socket).await {
+                        match opcode {
+                            0x1 => {
+                                let _ = sent
+                                    .send(format!("TEXT {}", String::from_utf8_lossy(&payload)));
+                            }
+                            0x8 => return,
+                            _ => {}
+                        }
+                    }
+                });
+            }
+        });
+        (port, heard)
     }
 
     async fn next_report(
@@ -12275,7 +12446,7 @@ fn a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric() {
 
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane() {
+async fn a_key_row_whose_expires_at_is_in_the_past_is_refused_on_the_data_plane() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-key-row-expired";
     let far = seat_far_end(200, door_word("messages_answer")).await;
@@ -12289,6 +12460,19 @@ async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane
         },
     )
     .await;
+    let ask = serde_json::json!({
+        "model": "p",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 8
+    });
+    let path = door_word("messages_path");
+    let (before, _, body) = rig.send("POST", path, Some(ask.clone())).await;
+    assert_eq!(
+        before,
+        200,
+        "with no expires_at on its row the key is admitted: {}",
+        String::from_utf8_lossy(&body)
+    );
 
     let store = rig.gov.store();
     let mut row = store
@@ -12299,24 +12483,19 @@ async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane
         row.expires_at, None,
         "mint never stamps expires_at; it is a stored field nothing in the engine writes"
     );
-    row.expires_at = Some(busbar_kernel::store::now() - 30 * 86_400);
+    let past = busbar_kernel::store::now() - 30 * 86_400;
+    row.expires_at = Some(past);
     store.put_key(&row).expect("rewrite the row");
     rig.gov.refresh().expect("reload caches");
 
-    let ask = serde_json::json!({
-        "model": "p",
-        "messages": [{"role": "user", "content": "hi"}],
-        "max_tokens": 8
-    });
-    let path = door_word("messages_path");
-    let (admitted, _, body) = rig.send("POST", path, Some(ask.clone())).await;
+    let (expired, _, expired_body) = rig.send("POST", path, Some(ask.clone())).await;
     assert_eq!(
-        admitted,
-        200,
-        "a key row with a past expires_at is still admitted (1.5.5 never enforced it; measured): {}",
-        String::from_utf8_lossy(&body)
+        expired,
+        401,
+        "a key row with a past expires_at is refused (owner-signed 2026-10-30): {}",
+        String::from_utf8_lossy(&expired_body)
     );
-    let (refused, _, _) = rig
+    let (refused, _, refused_body) = rig
         .send_bare(
             "POST",
             path,
@@ -12327,6 +12506,19 @@ async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane
     assert_eq!(
         refused, 401,
         "the keys chain is a real gate on this app: a bad token is refused"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&expired_body),
+        String::from_utf8_lossy(&refused_body),
+        "an expired key row is refused with the same body as any bad credential"
+    );
+    assert_eq!(
+        rig.gov
+            .lookup_by_sub(&rig.key_id)
+            .expect("the binding stays resolvable")
+            .expires_at,
+        Some(past),
+        "the stored expires_at is kept, so the admin views keep showing it"
     );
 }
 

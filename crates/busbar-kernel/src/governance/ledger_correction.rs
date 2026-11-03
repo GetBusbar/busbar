@@ -269,7 +269,6 @@ impl GovState {
     }
 
     /// Remaining unknown positive exposure from selected correction owners only. No pending
-
     pub(in crate::governance) fn quarantined_correction_negative_capacity(
         &self,
         bucket: &str,
@@ -906,7 +905,6 @@ impl GovState {
     }
 
     /// Stage an exact parent-owned handoff while the caller still owns the target shard.
-
     pub(in crate::governance) fn stage_correction_handoff(
         &self,
         bucket: &str,
@@ -961,7 +959,6 @@ impl GovState {
     }
 
     /// Transfer only common positive mutations out of the two conditional branches.
-
     pub(in crate::governance) fn take_correction_positives(
         cell: &mut BudgetCell,
         window: u64,
@@ -1261,7 +1258,6 @@ impl GovState {
     }
 
     /// Select a definitive raw branch only after the operation outcome is established.
-
     fn settle_usage_correction(
         &self,
         pending: &PendingCorrection,

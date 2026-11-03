@@ -2,17 +2,17 @@
   "_comment": [
     "Differences from the published 1.5.5 that the OWNER has accepted, each with a rationale and a kind:",
     "  improvement  additive or strictly better; a 1.5.5 client/operator keeps working unchanged",
-    "A matching cell reports as ACCEPTED in its own column — never as a silent pass — so a later change",
+    "A matching cell reports as ACCEPTED in its own column \u2014 never as a silent pass \u2014 so a later change",
     "to the same surface still shows. `cells` are id regexes; `classes` limits the acceptance to those",
     "divergence classes (a status or usage change on an 'improvement' entry is still red).",
     "Zero UNACCEPTED divergences is the ship gate.",
     "An entry with `transform: {candidate: [[regex, replacement], ...]}` is line-precise: the candidate's stderr/body text is rewritten before the diff, so only that token is forgiven; the cell reports ACCEPTED, never PASS.",
-    "  breaking     a deliberate change named in the 1.6.0 CHANGELOG (`changelog` field required) — the ONLY kind that may accept a `status` or `effects.usage` class",
+    "  breaking     a deliberate change named in the 1.6.0 CHANGELOG (`changelog` field required) \u2014 the ONLY kind that may accept a `status` or `effects.usage` class",
     "The differ refuses any entry that accepts `status` or `effects.usage` without kind=breaking and a `changelog` field, and any entry with neither `cells` nor `classes` (a total blanket).",
     "  EVERY entry, improvement or breaking, owes a `changelog` line that appears verbatim in CHANGELOG.md (BUSBAR-1.6.0.md's owner rule accepts an improvement 'named in the CHANGELOG' too), or an explicit `\"changelog\": null` with a `changelog_reason`; a breaking entry may never waive. scripts/changelog-register-check.sh is the gate.",
     "EVERY entry also carries (1.6.0 items 52/119, Law 10; gate `changelog-register` rows entry-signed / entry-expires / entry-premise):",
-    "  `signoff`  {who, when, ruling} — WHO is exactly \"owner (Matthew Jackson)\" plus `signed`, naming where the owner signed THIS scope, or \"ruling:<id>\" for an entry an agent or the architect registered under a standing owner ruling (no owner signature claimed; #59: an agent never signs under the owner's name). `signed` and <id> must resolve in the tree: \"#N\" a Part 2 decision row of docs/design/BUSBAR-1.6.0.md, \"§<text>\" the one line of that spec or docs/design/1.6.0-QUESTIONS.md containing <text>, anything else a 1.6.0-QUESTIONS.md row id.",
-    "  `expires`  {baseline, by} — the golden baseline the entry forgives against and the date it lapses (re-sign or retire).",
+    "  `signoff`  {who, when, ruling} \u2014 WHO is exactly \"owner (Matthew Jackson)\" plus `signed`, naming where the owner signed THIS scope, or \"ruling:<id>\" for an entry an agent or the architect registered under a standing owner ruling (no owner signature claimed; #59: an agent never signs under the owner's name). `signed` and <id> must resolve in the tree: \"#N\" a Part 2 decision row of docs/design/BUSBAR-1.6.0.md, \"\u00a7<text>\" the one line of that spec or docs/design/1.6.0-QUESTIONS.md containing <text>, anything else a 1.6.0-QUESTIONS.md row id.",
+    "  `expires`  {baseline, by} \u2014 the golden baseline the entry forgives against and the date it lapses (re-sign or retire).",
     "  `premise`  a condition the runner (busbar-release src/premise.rs, pin 57da1eb) evaluates against the CANDIDATE recording before the entry may forgive: false or unevaluable WITHHOLDS the entry and the cell scores DIVERGING."
   ],
   "accepted": [
@@ -23,7 +23,7 @@
       "kind": "improvement",
       "changelog": "Every error and warning line carries a diagnostic code.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "rationale": "SCOPE (added 2026-09-06, shadow-oracle round-5): this entry carried no `cells`, so it defaulted to `.` and ran over all 2299 cells -- and a fired transform used to hand the cell's whole raw class list to the accepted column, so any cell where this rewrite happened to fire could have a `status` forgiven by it. The lines it rewrites live in a process's stderr or its stdout, which only the exec- and script-driven cells have; the scope is those families and nothing else. ORIGINAL RATIONALE: 1.6.0 prefixes every [error]/[warn]/warning: stderr line with a diagnostic code (BUSBAR-NNNN:) and every boot log line with diag=BUSBAR-NNNN; the text after the code is byte-identical to 1.5.5. SCOPE COUNT 461 -> 462 (2026-09-07): the new boot.refusal|BOOT-152b|boot cell — the boot-mode twin of BOOT-152, which records the provider-credential refusal that replaced the 1.5.5 degrade (register entry F-016) — is an exec-driven boot cell, so it falls inside this family scope like every other one. The transform's REACH is unchanged; one more cell exists for it to reach. SCOPE COUNT 462 -> 480 (2026-09-24, owner ruling Q53): the 18 config.migrate cells for the configs v1.5.3, v1.5.4 and v1.5.5 shipped (TODO item 48) joined the corpus with their 1.5.5 golden reference; they are exec-driven cells of a family this scope already names, so they fall inside it like the 138 config.migrate cells before them. The regex, the transform and its REACH are unchanged; eighteen more cells exist for it to reach. SCOPE COUNT 480 -> 481 (owner ruling 2026-09-28): BOOT-MCP-01 (the fixed /mcp mount refusing any other path at boot) is new 1.6.0 surface with no 1.5.5 golden; an exec-driven boot cell of a family this scope already names, counted in exactly as BOOT-152b was (461 -> 462). The regex, the transform and its REACH are unchanged. WIDENED 2026-10-02 (owner R2, ORACLE batch, escalate.q 04:20Z): the five boot.deprecated-env cells (582) and the four egress.image-detail cells (585) recorded from the published 1.5.5 join the scope; each differs from 1.5.5 only by the `diag=BUSBAR-NNNN` suffix on a boot log line (the DEPRECATED text and every override's behaviour are 1.5.5's). Scope count 481 -> 490. SCOPE COUNT 490 -> 492 (2026-10-05, busbar Q128 U2, ARCHITECT Q-U2-1 \"prove it with oracle cells for both refusals\"): boot.refusal|BOOT-102|validate and boot.refusal|BOOT-103|validate (a second prometheus / a second otlp instance) joined the corpus with their 1.5.5 golden recorded from the published binary; they are exec-driven cells of a family this scope already names, and each differs from 1.5.5 only by the `BUSBAR-NNNN:` code on its `[error]` line (the refusal text is 1.5.5's byte for byte). The regex, the transform and its REACH are unchanged; two more cells exist for it to reach. COUNT 2026-10-06 (P6 ORACLE-STRICT): 492 -> 495, the three neutrality|routes|{decisions,ws,oauth-as}-shaped-404 cells the corpus generator holds join cells.json and fall under the existing `neutrality` family of the regex; regex, transform and reach unchanged. COUNT 2026-10-07 (ARCHITECT ruling, option A restricted; D2-PROTO busbar #545): 495 -> 496, the NEW cell neutrality|models-empty|surface joins cells.json and falls under the existing `neutrality` family of the regex; regex, transform and reach unchanged. COUNT 2026-10-07 (OWNER 2026-09-30 headroom removal, HEADROOM-REMOVE): 496 -> 495, plugins.load|headroom-hook is retired whole (golden/1.5.5/retired.tsv) because the plugin it lists is out of the product; it leaves the corpus and so this scope. Regex, transform and reach unchanged. SCOPE 495 -> 509 (2026-10-20, PR #1292, OWNER widen-to-signed-behaviour ruling): the 14 boot.refusal|LAW0-(EXP|HOOKWORD)-*|validate cells (6be108b345) carry the same signed behaviour: the 1.5.5 golden's `[error] config errors:` is `[error] BUSBAR-3015: config errors:` on 1.6.0, a prefix this entry's transform already strips; the config.migrate|LAW0-MIG-* cells are not added (see Q-STORE for INLINE; 14X does not diverge). The transform is line-precise, so any other difference on these cells stays a divergence. NARROWED 2026-10-24 (pure tightening, forgives strictly less; no signature owed): auth.lifecycle|aws-credential-chain-without-keys (46b2a82184, status row 186) fell under the `auth.lifecycle` family and took the scope to 510. It is a script cell whose whole recorded output is a JSON object (no stderr or log line), so this entry's transform can never fire on it, and it replays identical to its 1.5.5 golden. The family alternative is replaced by the three cells it was meant for, auth.lifecycle|key-{expiry,revoke,rotate}; 509 stands.",
+      "rationale": "SCOPE (added 2026-09-06, shadow-oracle round-5): this entry carried no `cells`, so it defaulted to `.` and ran over all 2299 cells -- and a fired transform used to hand the cell's whole raw class list to the accepted column, so any cell where this rewrite happened to fire could have a `status` forgiven by it. The lines it rewrites live in a process's stderr or its stdout, which only the exec- and script-driven cells have; the scope is those families and nothing else. ORIGINAL RATIONALE: 1.6.0 prefixes every [error]/[warn]/warning: stderr line with a diagnostic code (BUSBAR-NNNN:) and every boot log line with diag=BUSBAR-NNNN; the text after the code is byte-identical to 1.5.5. SCOPE COUNT 461 -> 462 (2026-09-07): the new boot.refusal|BOOT-152b|boot cell \u2014 the boot-mode twin of BOOT-152, which records the provider-credential refusal that replaced the 1.5.5 degrade (register entry F-016) \u2014 is an exec-driven boot cell, so it falls inside this family scope like every other one. The transform's REACH is unchanged; one more cell exists for it to reach. SCOPE COUNT 462 -> 480 (2026-09-24, owner ruling Q53): the 18 config.migrate cells for the configs v1.5.3, v1.5.4 and v1.5.5 shipped (TODO item 48) joined the corpus with their 1.5.5 golden reference; they are exec-driven cells of a family this scope already names, so they fall inside it like the 138 config.migrate cells before them. The regex, the transform and its REACH are unchanged; eighteen more cells exist for it to reach. SCOPE COUNT 480 -> 481 (owner ruling 2026-09-28): BOOT-MCP-01 (the fixed /mcp mount refusing any other path at boot) is new 1.6.0 surface with no 1.5.5 golden; an exec-driven boot cell of a family this scope already names, counted in exactly as BOOT-152b was (461 -> 462). The regex, the transform and its REACH are unchanged. WIDENED 2026-10-02 (owner R2, ORACLE batch, escalate.q 04:20Z): the five boot.deprecated-env cells (582) and the four egress.image-detail cells (585) recorded from the published 1.5.5 join the scope; each differs from 1.5.5 only by the `diag=BUSBAR-NNNN` suffix on a boot log line (the DEPRECATED text and every override's behaviour are 1.5.5's). Scope count 481 -> 490. SCOPE COUNT 490 -> 492 (2026-10-05, busbar Q128 U2, ARCHITECT Q-U2-1 \"prove it with oracle cells for both refusals\"): boot.refusal|BOOT-102|validate and boot.refusal|BOOT-103|validate (a second prometheus / a second otlp instance) joined the corpus with their 1.5.5 golden recorded from the published binary; they are exec-driven cells of a family this scope already names, and each differs from 1.5.5 only by the `BUSBAR-NNNN:` code on its `[error]` line (the refusal text is 1.5.5's byte for byte). The regex, the transform and its REACH are unchanged; two more cells exist for it to reach. COUNT 2026-10-06 (P6 ORACLE-STRICT): 492 -> 495, the three neutrality|routes|{decisions,ws,oauth-as}-shaped-404 cells the corpus generator holds join cells.json and fall under the existing `neutrality` family of the regex; regex, transform and reach unchanged. COUNT 2026-10-07 (ARCHITECT ruling, option A restricted; D2-PROTO busbar #545): 495 -> 496, the NEW cell neutrality|models-empty|surface joins cells.json and falls under the existing `neutrality` family of the regex; regex, transform and reach unchanged. COUNT 2026-10-07 (OWNER 2026-09-30 headroom removal, HEADROOM-REMOVE): 496 -> 495, plugins.load|headroom-hook is retired whole (golden/1.5.5/retired.tsv) because the plugin it lists is out of the product; it leaves the corpus and so this scope. Regex, transform and reach unchanged. SCOPE 495 -> 509 (2026-10-20, PR #1292, OWNER widen-to-signed-behaviour ruling): the 14 boot.refusal|LAW0-(EXP|HOOKWORD)-*|validate cells (6be108b345) carry the same signed behaviour: the 1.5.5 golden's `[error] config errors:` is `[error] BUSBAR-3015: config errors:` on 1.6.0, a prefix this entry's transform already strips; the config.migrate|LAW0-MIG-* cells are not added (see Q-STORE for INLINE; 14X does not diverge). The transform is line-precise, so any other difference on these cells stays a divergence. NARROWED 2026-10-24 (pure tightening, forgives strictly less; no signature owed): auth.lifecycle|aws-credential-chain-without-keys (46b2a82184, status row 186) fell under the `auth.lifecycle` family and took the scope to 510. It is a script cell whose whole recorded output is a JSON object (no stderr or log line), so this entry's transform can never fire on it, and it replays identical to its 1.5.5 golden. The family alternative is replaced by the three cells it was meant for, auth.lifecycle|key-{expiry,revoke,rotate}; 509 stands.",
       "transform": {
         "candidate": [
           [
@@ -42,7 +42,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 parity triage",
         "resigned": {
@@ -72,7 +72,7 @@
         "body",
         "headers"
       ],
-      "rationale": "Hook views gain fires_at/groups/phase; the overlay-section 404 lists the new sections; openapi.json adds the mcp/a2a endpoints. Every 1.5.5 field is unchanged. SPLIT 2026-09-05 (round-3 audit): effects.readback moved out of this improvement entry into F-011r. effects.readback is now a MONEY class (diff-cells.py rates it 10: it is the proof that the write the cell made actually persisted, and as what), and the readback half is not purely additive — the hook view's always-null `at` field is REMOVED in favour of fires_at, which is a declared breaking change and needs a changelog line. KIND MOVED improvement -> additive 2026-09-08 (busbar-oracle v0.3.3): the owner ruled on 2026-09-07 that key-list and view GROWTH is a new feature and not a break, and `additive` is the kind that makes that ruling checkable — the tool now PROVES the candidate a JSON superset of the golden at every path the golden names before it forgives `body`/`headers`, so this entry can no longer forgive a 1.5.5 field that changed value or went away. DESCRIPTION_CORRECTIONS ADDED 2026-09-11 (keep-oracle-base-reds): admin.ops|DeleteOverlaySection|not-found's `/error/message` string leaf was still standing RED — the overlay-section list growing from four names to eight (the plane-extraction squash that generalized `OverlaySection::all()` over `NamedMapSection::sections()`) also reworded the sentence's lead-in from 1.5.5's \"expected `a`, `b`, ... or `d`\" to \"expected one of ...\" (the SAME convention 1.5.5's own serde-derived unknown-field messages already use elsewhere in this codebase, e.g. `config::augment_config_error`'s \"expected one of `chain`\"), so the leaf is not a byte-for-byte list-growth splice and `text_list_growth` cannot prove it. The count growing from four sections to eight is the exact, intended, CHANGELOG-named growth this entry already claims (\"the overlay-section 404 lists the sections that now exist\"); the wording-convention move onto \"expected one of\" is the same one every other unknown-key message in this tree already uses. Registered as a correction rather than reverted: reverting would put this ONE message back on the only `a, b, or c` phrasing template left in the tree. NARROWED 2026-09-24 (owner ruling Q54 via Q61, P3A-register3): admin.ops|DeleteOverlaySection|not-found LEAVES this entry for its own owner-signed Q54 entry — the refusal is back on 1.5.5's exact sentence shape (\"expected `a`, `b`, or `c`\") with the longer list, which text_list_growth proves directly, so this entry's `/error/message` description_correction (the only leaf it named, and only on that cell) and its `expected one of` premise probe go with it. expected_cells 10 -> 9; forgives strictly less than before.",
+      "rationale": "Hook views gain fires_at/groups/phase; the overlay-section 404 lists the new sections; openapi.json adds the mcp/a2a endpoints. Every 1.5.5 field is unchanged. SPLIT 2026-09-05 (round-3 audit): effects.readback moved out of this improvement entry into F-011r. effects.readback is now a MONEY class (diff-cells.py rates it 10: it is the proof that the write the cell made actually persisted, and as what), and the readback half is not purely additive \u2014 the hook view's always-null `at` field is REMOVED in favour of fires_at, which is a declared breaking change and needs a changelog line. KIND MOVED improvement -> additive 2026-09-08 (busbar-oracle v0.3.3): the owner ruled on 2026-09-07 that key-list and view GROWTH is a new feature and not a break, and `additive` is the kind that makes that ruling checkable \u2014 the tool now PROVES the candidate a JSON superset of the golden at every path the golden names before it forgives `body`/`headers`, so this entry can no longer forgive a 1.5.5 field that changed value or went away. DESCRIPTION_CORRECTIONS ADDED 2026-09-11 (keep-oracle-base-reds): admin.ops|DeleteOverlaySection|not-found's `/error/message` string leaf was still standing RED \u2014 the overlay-section list growing from four names to eight (the plane-extraction squash that generalized `OverlaySection::all()` over `NamedMapSection::sections()`) also reworded the sentence's lead-in from 1.5.5's \"expected `a`, `b`, ... or `d`\" to \"expected one of ...\" (the SAME convention 1.5.5's own serde-derived unknown-field messages already use elsewhere in this codebase, e.g. `config::augment_config_error`'s \"expected one of `chain`\"), so the leaf is not a byte-for-byte list-growth splice and `text_list_growth` cannot prove it. The count growing from four sections to eight is the exact, intended, CHANGELOG-named growth this entry already claims (\"the overlay-section 404 lists the sections that now exist\"); the wording-convention move onto \"expected one of\" is the same one every other unknown-key message in this tree already uses. Registered as a correction rather than reverted: reverting would put this ONE message back on the only `a, b, or c` phrasing template left in the tree. NARROWED 2026-09-24 (owner ruling Q54 via Q61, P3A-register3): admin.ops|DeleteOverlaySection|not-found LEAVES this entry for its own owner-signed Q54 entry \u2014 the refusal is back on 1.5.5's exact sentence shape (\"expected `a`, `b`, or `c`\") with the longer list, which text_list_growth proves directly, so this entry's `/error/message` description_correction (the only leaf it named, and only on that cell) and its `expected one of` premise probe go with it. expected_cells 10 -> 9; forgives strictly less than before.",
       "premise": {
         "all": [
           {
@@ -99,7 +99,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 parity triage",
         "resigned": {
@@ -122,7 +122,7 @@
       "classes": [
         "effects.readback"
       ],
-      "rationale": "RE-ADJUDICATED 2026-09-24 (item 47, P3A-register). The entry used to say the readback LOSES the always-null `at` field in favour of `fires_at`; that premise is false today — `at` was restored on the hook view (\"a 1.5.5 client reading this view must see this field byte-for-byte\") and the in-file AUDIT NOTE of 2026-09-21 said so. MEASURED (measured 2026-09-24 by P3A-register against a fresh local ./bin/oracle record of HEAD 05c826a66): the four hook-write cells' effects.readback differ from 1.5.5 ONLY by the added `/0/body/json/fires_at`, `/groups`, `/phase` members; `at` is byte-identical. That is the view GROWTH the owner ruled a feature on 2026-09-07 (F-011's ruling), so the entry now cites F-011's true CHANGELOG line instead of the false removal line. It stays kind=breaking only because the runner lets no other kind take effects.readback (additive has no superset relation for a readback). PREMISE (evaluated): the served hook view still carries `at` AND carries fires_at/groups/phase — a build that drops `at` withholds this entry, so a real removal can never report ACCEPTED again. The CHANGELOG paragraph that still says the view \"no longer carries `at`\" is false and is a CHANGELOG-owner dependency.",
+      "rationale": "RE-ADJUDICATED 2026-09-24 (item 47, P3A-register). The entry used to say the readback LOSES the always-null `at` field in favour of `fires_at`; that premise is false today \u2014 `at` was restored on the hook view (\"a 1.5.5 client reading this view must see this field byte-for-byte\") and the in-file AUDIT NOTE of 2026-09-21 said so. MEASURED (measured 2026-09-24 by P3A-register against a fresh local ./bin/oracle record of HEAD 05c826a66): the four hook-write cells' effects.readback differ from 1.5.5 ONLY by the added `/0/body/json/fires_at`, `/groups`, `/phase` members; `at` is byte-identical. That is the view GROWTH the owner ruled a feature on 2026-09-07 (F-011's ruling), so the entry now cites F-011's true CHANGELOG line instead of the false removal line. It stays kind=breaking only because the runner lets no other kind take effects.readback (additive has no superset relation for a readback). PREMISE (evaluated): the served hook view still carries `at` AND carries fires_at/groups/phase \u2014 a build that drops `at` withholds this entry, so a real removal can never report ACCEPTED again. The CHANGELOG paragraph that still says the view \"no longer carries `at`\" is false and is a CHANGELOG-owner dependency.",
       "changelog": "Admin views gained fields; none changed.",
       "premise": {
         "all": [
@@ -150,7 +150,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 parity triage; split out 2026-09-05 (round-3 audit); re-adjudicated 2026-09-24 by P3A-register under items 47/52/119 (narrowed or premise-bound; forgives no more than before)",
         "resigned": {
@@ -209,7 +209,7 @@
           }
         ]
       },
-      "rationale": "MEASURED 2026-09-24 by P3A-register3 against a local ./bin/oracle record (pin 3519882) of b712a5763 + the Q54 message fix (busbar-core-admin handlers.rs `overlay_names_sentence`, default all-planes build, the oracle's 1.5.5-shaped config): DELETE /api/v1/admin/overlay/limits answers 400 invalid_request with \"unknown overlay section `limits`: expected `groups`, `hooks`, `root`, `plugin_versions`, `identity-providers`, or `export`\" where 1.5.5 answered \"unknown overlay section `limits`: expected `groups`, `hooks`, `root`, or `plugin_versions`\" — the same sentence, serial comma and `or` before the last name, with the list grown by the two named-map sections a 1.5.5-shaped config serves (`tools`/`agents` join only when their plane is configured). content-length 139 -> 171 follows the body. Owner ruling Q54 (answered in Q61): keep both sections resettable (additive capability) and keep 1.5.5's sentence shape with the longer list. kind=additive with text_list_growth, so the runner proves the backtick list only GREW — every 1.5.5 name still present and every byte outside the list identical; a reworded lead-in (the interim \"expected one of …\") or a dropped name stays red. PREMISE (evaluated): the exact message — 1.5.5's four names plus exactly `identity-providers` and `export`, in 1.5.5's sentence — so a build that lists any other section, or words it any other way, withholds the entry. At b712a5763 WITHOUT the patch the premise is FALSE (the message still reads \"expected one of …\"), so the cell scores DIVERGING until the patch lands."
+      "rationale": "MEASURED 2026-09-24 by P3A-register3 against a local ./bin/oracle record (pin 3519882) of b712a5763 + the Q54 message fix (busbar-core-admin handlers.rs `overlay_names_sentence`, default all-planes build, the oracle's 1.5.5-shaped config): DELETE /api/v1/admin/overlay/limits answers 400 invalid_request with \"unknown overlay section `limits`: expected `groups`, `hooks`, `root`, `plugin_versions`, `identity-providers`, or `export`\" where 1.5.5 answered \"unknown overlay section `limits`: expected `groups`, `hooks`, `root`, or `plugin_versions`\" \u2014 the same sentence, serial comma and `or` before the last name, with the list grown by the two named-map sections a 1.5.5-shaped config serves (`tools`/`agents` join only when their plane is configured). content-length 139 -> 171 follows the body. Owner ruling Q54 (answered in Q61): keep both sections resettable (additive capability) and keep 1.5.5's sentence shape with the longer list. kind=additive with text_list_growth, so the runner proves the backtick list only GREW \u2014 every 1.5.5 name still present and every byte outside the list identical; a reworded lead-in (the interim \"expected one of \u2026\") or a dropped name stays red. PREMISE (evaluated): the exact message \u2014 1.5.5's four names plus exactly `identity-providers` and `export`, in 1.5.5's sentence \u2014 so a build that lists any other section, or words it any other way, withholds the entry. At b712a5763 WITHOUT the patch the premise is FALSE (the message still reads \"expected one of \u2026\"), so the cell scores DIVERGING until the patch lands."
     },
     {
       "id": "Q42/Q46 the rate-card unknown-field refusal lists the `units:` key",
@@ -218,7 +218,7 @@
       "by": "owner (Matthew Jackson), 2026-09-24 rulings Q42 and Q46 (the `units:` rate-card key), under spec #66",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-24",
         "ruling": "Q42 (generic billable-class rule; remedy `units: { search_units: 0 }`) and Q46(B) (the `units:` key names only declared classes), under spec #66 OWNER-LOCKED 2026-09-20 (money is unitless: no currency key)",
         "resigned": {
@@ -256,7 +256,7 @@
           }
         ]
       },
-      "rationale": "MEASURED 2026-09-24 by P3A-measure (predev ddad0c62a, pin 3876913) and re-measured by P3A-register4 at predev b8b554c4f: PUT /api/v1/admin/config/settings with a rate-card entry carrying a `currency` key answers 400 invalid_request in both versions. 1.5.5: \"malformed config settings body: unknown field `currency`, expected one of `input_utok`, `output_utok`, `cache_read_utok`, `cache_write_utok`\". 1.6.0: the same sentence with `, `units`` appended to the backtick list; content-length 189 -> 198 follows the body. Nothing else moves: status, code, audit (0 rows), egress and usage are identical. WHY THE LIST GROWS: the rate-card entry gained the owner-ruled `units:` key (Q42: every billable class a plane declares must be configured, the 1.5.5 upgrade card adds `units: { search_units: 0 }`; Q46(B): `units:` may name only declared classes; decisions in docs/design/1.6.0-QUESTIONS.md), so serde's unknown-field message now names it among the fields an entry accepts — hiding it would make the refusal lie about what the binary takes. WHY `currency` STAYS REFUSED: spec row #66 (docs/design/BUSBAR-1.6.0.md:652, OWNER-LOCKED 2026-09-20) — money is UNITLESS abstract cost, no currency type, no symbol; so this cell's 1.5.5 refusal is the right answer in 1.6.0 too, and D-4's native-currency claim (which wanted this cell at 200) left D-4's scope in the same change. kind=additive with text_list_growth (the Q54 shape): the runner proves the backtick list only GREW — every 1.5.5 field still present, in order, and every byte outside the list identical. PREMISE (evaluated): status 400, code invalid_request, and the exact message = 1.5.5's list plus exactly `units`; any other field, reordering or rewording withholds the entry."
+      "rationale": "MEASURED 2026-09-24 by P3A-measure (predev ddad0c62a, pin 3876913) and re-measured by P3A-register4 at predev b8b554c4f: PUT /api/v1/admin/config/settings with a rate-card entry carrying a `currency` key answers 400 invalid_request in both versions. 1.5.5: \"malformed config settings body: unknown field `currency`, expected one of `input_utok`, `output_utok`, `cache_read_utok`, `cache_write_utok`\". 1.6.0: the same sentence with `, `units`` appended to the backtick list; content-length 189 -> 198 follows the body. Nothing else moves: status, code, audit (0 rows), egress and usage are identical. WHY THE LIST GROWS: the rate-card entry gained the owner-ruled `units:` key (Q42: every billable class a plane declares must be configured, the 1.5.5 upgrade card adds `units: { search_units: 0 }`; Q46(B): `units:` may name only declared classes; decisions in docs/design/1.6.0-QUESTIONS.md), so serde's unknown-field message now names it among the fields an entry accepts \u2014 hiding it would make the refusal lie about what the binary takes. WHY `currency` STAYS REFUSED: spec row #66 (docs/design/BUSBAR-1.6.0.md:652, OWNER-LOCKED 2026-09-20) \u2014 money is UNITLESS abstract cost, no currency type, no symbol; so this cell's 1.5.5 refusal is the right answer in 1.6.0 too, and D-4's native-currency claim (which wanted this cell at 200) left D-4's scope in the same change. kind=additive with text_list_growth (the Q54 shape): the runner proves the backtick list only GREW \u2014 every 1.5.5 field still present, in order, and every byte outside the list identical. PREMISE (evaluated): status 400, code invalid_request, and the exact message = 1.5.5's list plus exactly `units`; any other field, reordering or rewording withholds the entry."
     },
     {
       "id": "Q66 the providers.<name> unknown-key refusal names the key and lists the dialect's options",
@@ -316,7 +316,7 @@
       "classes": [
         "effects.stderr"
       ],
-      "rationale": "BOOT-P32 writes an INLINE LITERAL where a secret reference belongs (`providers.gemini.api_key: 7`). 1.5.5 had no scalar visitor on SecretRef, so that value fell through to serde's DEFAULT invalid-type error, which prints the value it was handed: `invalid type: integer `7`, expected a secret reference map: {…}`. The one path this type exists to keep a secret off — stderr and the boot log — is exactly where the rejected secret went, and an unquoted scalar (`api_key: 483920175534`) is the spelling nobody thinks to check. 1.6.0's SecretRef refuses every inline-scalar spelling through one message that states the RULE and never echoes the value: `a secret value must be a REFERENCE, never an inline literal (the value is not echoed): use { env: <VAR> }, { file: <path> }, or { module: <secret-module>, settings: {…} }` (crates/secret-ref/src/lib.rs, RefVisitor::inline_literal). That is the rule the config inventory already documents for every secret-bearing key, so the new sentence tells the operator what to write instead of what serde could not parse. NOT a plane-work side effect: the wording landed on 2026-08-08, long before this branch's base, and reverting it would restore a message that prints an operator's pasted API key into the log. SCOPE: the refusal itself is unchanged — exit code 1, empty stdout, the same `config.yaml: invalid YAML: providers.gemini.api_key: … at line 42 column 14` frame around the sentence, and the same preceding BUSBAR_PROVIDERS deprecation warning byte-for-byte. The `BUSBAR-3015:` prefix on the [error] line is D-1's and is already rewritten away before this entry is consulted. Narrowed to the ONE recorded cell that drives an inline-literal secret; if a fixture ever adds another, name it here explicitly rather than widening the regex to the boot.refusal family.",
+      "rationale": "BOOT-P32 writes an INLINE LITERAL where a secret reference belongs (`providers.gemini.api_key: 7`). 1.5.5 had no scalar visitor on SecretRef, so that value fell through to serde's DEFAULT invalid-type error, which prints the value it was handed: `invalid type: integer `7`, expected a secret reference map: {\u2026}`. The one path this type exists to keep a secret off \u2014 stderr and the boot log \u2014 is exactly where the rejected secret went, and an unquoted scalar (`api_key: 483920175534`) is the spelling nobody thinks to check. 1.6.0's SecretRef refuses every inline-scalar spelling through one message that states the RULE and never echoes the value: `a secret value must be a REFERENCE, never an inline literal (the value is not echoed): use { env: <VAR> }, { file: <path> }, or { module: <secret-module>, settings: {\u2026} }` (crates/secret-ref/src/lib.rs, RefVisitor::inline_literal). That is the rule the config inventory already documents for every secret-bearing key, so the new sentence tells the operator what to write instead of what serde could not parse. NOT a plane-work side effect: the wording landed on 2026-08-08, long before this branch's base, and reverting it would restore a message that prints an operator's pasted API key into the log. SCOPE: the refusal itself is unchanged \u2014 exit code 1, empty stdout, the same `config.yaml: invalid YAML: providers.gemini.api_key: \u2026 at line 42 column 14` frame around the sentence, and the same preceding BUSBAR_PROVIDERS deprecation warning byte-for-byte. The `BUSBAR-3015:` prefix on the [error] line is D-1's and is already rewritten away before this entry is consulted. Narrowed to the ONE recorded cell that drives an inline-literal secret; if a fixture ever adds another, name it here explicitly rather than widening the regex to the boot.refusal family.",
       "changelog": "An inline literal where a secret reference belongs is refused without echoing it.",
       "premise": {
         "cell": "boot.refusal|BOOT-P32|validate",
@@ -324,7 +324,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-06",
         "ruling": "2026-09-06 oracle-phase0 parity triage",
         "resigned": {
@@ -367,7 +367,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-22",
         "ruling": "2026-09-22 credential-leak triage (parked by the agent with cell, diff, root cause and recommendation; approved on that report -- the path-shaped-heuristic alternative was offered and rejected)",
         "resigned": {
@@ -406,7 +406,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 parity triage",
         "resigned": {
@@ -437,7 +437,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 parity triage",
         "resigned": {
@@ -469,7 +469,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 parity triage",
         "resigned": {
@@ -508,7 +508,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 PR-2 attempt-seam D-table decision",
         "resigned": {
@@ -539,7 +539,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 PR-2 attempt-seam D-table decision",
         "resigned": {
@@ -580,7 +580,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 PR-2 attempt-seam D-table decision; re-adjudicated 2026-09-24 by P3A-register under items 47/52/119 (narrowed or premise-bound; forgives no more than before)",
         "resigned": {
@@ -642,7 +642,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 PR-2 attempt-seam D-table decision",
         "resigned": {
@@ -684,7 +684,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 maximum spec compliance",
         "resigned": {
@@ -726,7 +726,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 maximum spec compliance",
         "resigned": {
@@ -764,7 +764,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 maximum spec compliance",
         "resigned": {
@@ -789,7 +789,7 @@
         "body",
         "headers"
       ],
-      "rationale": "PREMISE ADDED 2026-09-24 (items 119/52, P3A-register): this breaking entry blankets body/headers on the three openapi cells, so it inherits F-011b's plane guard (the MCP/A2A planes answer, or no document advertises their admin paths) — without it, this blanket was the live blindfold that forgave an unconfigured build advertising /api/v1/admin/tools*/agents* (measured ACCEPTED under this entry on HEAD). It also requires the overlay-delete 409 clause it exists to forgive to actually be present. PRIOR RATIONALE: All three cells that serve openapi.json still stand RED at one leaf additive_superset (F-011b) cannot forgive: `/paths//api/v1/admin/overlay/{section}/delete/responses/400/description` (and, once past it, the sibling `summary`/`409` prose on the same endpoint). All three interpolate the overlay-section-names list `OverlaySection::all()` grew from four to eight (handlers.rs/taxonomy.rs), and the `409` clause names a genuinely new delete-time cross-section-reference guard. Both are intended and now carry a CHANGELOG line (1.6.0 Spec-fidelity section: the overlay-delete 400 lists the grown section set and the 409 adds the reference guard). They cannot be registered as leaf `description_corrections` because busbar-oracle's resolve_json_pointer splits a pointer on every `/` and cannot address a leaf under a `paths` object whose own keys are literal URL paths (`/api/v1/admin/overlay/{section}`) — the tool limitation F-011b documents. This is F-011b's own enumerated owner option (\"a `kind: breaking` sibling entry with a `changelog_reason`\"), taken here. COST, stated plainly: breaking forgives whole classes, not leaves, so this blankets `body`/`headers` on these two cells and their document body is no longer gated by the additive superset proof — a future regression in the rest of admin.ops|GetOpenapiJson's body would be masked. That is the price of the tool's `/paths`-pointer gap; it is bounded to the non-money openapi document surface (the money path does not route through openapi.json). All three cells serve the SAME full openapi document, so every one of them additive_superset-walks into the identical unaddressable `/paths` leaf — crosscut.traps|openapi-info-version could not be kept additive-only (it is here for the `/paths` leaf, though its `/info/version` scalar stays leaf-corrected in F-011b for the audit trail); F-011b's additive proof is therefore superseded for all three. The durable fix is the upstream busbar-oracle `/paths`-pointer repair (RFC-6901 `~1` escaping in the build+resolve path convention), after which this entry retires to a leaf correction. `body` is money-rated on admin.ops (BODY_IS_CONTRACT), so this is kind=breaking with its changelog line, per the loader's money guard. NARROWED 2026-09-24 (owner ruling Q56 via Q61, P3A-register3): admin.ops|GetOpenapiJson|ok LEAVES this entry for the owner-signed Q56 entry, which judges that cell's document as a machine-checked JSON superset of 1.5.5's (kind additive) instead of this blanket; expected_cells 3 -> 2; forgives strictly less than before. F-011b RETIRED 2026-09-28: F-011b named exactly this entry's two cells, with a premise that is one conjunct of this entry's, and forgave only `body`/`headers`, which this entry already forgives whole; so it could forgive nothing this entry does not. Measured on origin/predev of 2026-09-28 (the engine oracle-rust.pin names, ./bin/oracle replay --strict over admin.ops, admin.auth, boot.refusal, billing, ledger, teller, crosscut.traps and neutrality): with F-011b removed both cells stay ACCEPTED under this entry and the replay stays green. Its `/info/version` leaf correction lives on in Q56's description_corrections for admin.ops|GetOpenapiJson|ok; on these two cells this entry's blanket covers it. NARROWED 2026-10-27 (ORACLE-116 review): the blanket is retired. The pinned runner resolves `~1`-escaped `/paths` pointers (Q56 names these leaves one by one), so the two cells are now judged as Q56 judges admin.ops|GetOpenapiJson|ok: kind additive, a machine-checked JSON superset of 1.5.5's document with only the named description leaves corrected (this entry's own overlay-delete summary/400/409 prose, and the leaves Q56 lists, each owner-signed). The `Vary: accept-encoding` header the blanket forgave was never signed: the product answers 1.5.5's head again (identity-encoded, no Vary), so headers are compared as an additive superset too.",
+      "rationale": "PREMISE ADDED 2026-09-24 (items 119/52, P3A-register): this breaking entry blankets body/headers on the three openapi cells, so it inherits F-011b's plane guard (the MCP/A2A planes answer, or no document advertises their admin paths) \u2014 without it, this blanket was the live blindfold that forgave an unconfigured build advertising /api/v1/admin/tools*/agents* (measured ACCEPTED under this entry on HEAD). It also requires the overlay-delete 409 clause it exists to forgive to actually be present. PRIOR RATIONALE: All three cells that serve openapi.json still stand RED at one leaf additive_superset (F-011b) cannot forgive: `/paths//api/v1/admin/overlay/{section}/delete/responses/400/description` (and, once past it, the sibling `summary`/`409` prose on the same endpoint). All three interpolate the overlay-section-names list `OverlaySection::all()` grew from four to eight (handlers.rs/taxonomy.rs), and the `409` clause names a genuinely new delete-time cross-section-reference guard. Both are intended and now carry a CHANGELOG line (1.6.0 Spec-fidelity section: the overlay-delete 400 lists the grown section set and the 409 adds the reference guard). They cannot be registered as leaf `description_corrections` because busbar-oracle's resolve_json_pointer splits a pointer on every `/` and cannot address a leaf under a `paths` object whose own keys are literal URL paths (`/api/v1/admin/overlay/{section}`) \u2014 the tool limitation F-011b documents. This is F-011b's own enumerated owner option (\"a `kind: breaking` sibling entry with a `changelog_reason`\"), taken here. COST, stated plainly: breaking forgives whole classes, not leaves, so this blankets `body`/`headers` on these two cells and their document body is no longer gated by the additive superset proof \u2014 a future regression in the rest of admin.ops|GetOpenapiJson's body would be masked. That is the price of the tool's `/paths`-pointer gap; it is bounded to the non-money openapi document surface (the money path does not route through openapi.json). All three cells serve the SAME full openapi document, so every one of them additive_superset-walks into the identical unaddressable `/paths` leaf \u2014 crosscut.traps|openapi-info-version could not be kept additive-only (it is here for the `/paths` leaf, though its `/info/version` scalar stays leaf-corrected in F-011b for the audit trail); F-011b's additive proof is therefore superseded for all three. The durable fix is the upstream busbar-oracle `/paths`-pointer repair (RFC-6901 `~1` escaping in the build+resolve path convention), after which this entry retires to a leaf correction. `body` is money-rated on admin.ops (BODY_IS_CONTRACT), so this is kind=breaking with its changelog line, per the loader's money guard. NARROWED 2026-09-24 (owner ruling Q56 via Q61, P3A-register3): admin.ops|GetOpenapiJson|ok LEAVES this entry for the owner-signed Q56 entry, which judges that cell's document as a machine-checked JSON superset of 1.5.5's (kind additive) instead of this blanket; expected_cells 3 -> 2; forgives strictly less than before. F-011b RETIRED 2026-09-28: F-011b named exactly this entry's two cells, with a premise that is one conjunct of this entry's, and forgave only `body`/`headers`, which this entry already forgives whole; so it could forgive nothing this entry does not. Measured on origin/predev of 2026-09-28 (the engine oracle-rust.pin names, ./bin/oracle replay --strict over admin.ops, admin.auth, boot.refusal, billing, ledger, teller, crosscut.traps and neutrality): with F-011b removed both cells stay ACCEPTED under this entry and the replay stays green. Its `/info/version` leaf correction lives on in Q56's description_corrections for admin.ops|GetOpenapiJson|ok; on these two cells this entry's blanket covers it. NARROWED 2026-10-27 (ORACLE-116 review): the blanket is retired. The pinned runner resolves `~1`-escaped `/paths` pointers (Q56 names these leaves one by one), so the two cells are now judged as Q56 judges admin.ops|GetOpenapiJson|ok: kind additive, a machine-checked JSON superset of 1.5.5's document with only the named description leaves corrected (this entry's own overlay-delete summary/400/409 prose, and the leaves Q56 lists, each owner-signed). The `Vary: accept-encoding` header the blanket forgave was never signed: the product answers 1.5.5's head again (identity-encoded, no Vary), so headers are compared as an additive superset too.",
       "changelog_reason": "The overlay-delete endpoint's response descriptions describe the already-changelogged section-list growth (four -> eight) and a new cross-section-reference guard; the tool cannot leaf-correct a string under a `paths` key, so the cells are owner-declared breaking instead.",
       "premise": {
         "all": [
@@ -863,7 +863,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-15",
         "ruling": "2026-09-15 register decision on F-011b's deferred /paths leaves; re-adjudicated 2026-09-24 by P3A-register under items 47/52/119 (narrowed or premise-bound; forgives no more than before)",
         "resigned": {
@@ -900,7 +900,7 @@
         "who": "owner (Matthew Jackson)",
         "signed": "Q61",
         "when": "2026-09-24",
-        "ruling": "Q56 as answered in Q61: accept additive — core admin verbs served on every node; owner-signed entry",
+        "ruling": "Q56 as answered in Q61: accept additive \u2014 core admin verbs served on every node; owner-signed entry",
         "resigned": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-09-30",
@@ -1038,7 +1038,7 @@
           }
         ]
       },
-      "rationale": "RE-MEASURED 2026-09-28 against origin/predev of 2026-09-28 (release build, the engine oracle-rust.pin names, ./bin/oracle replay --strict over admin.ops, admin.auth, boot.refusal, billing, ledger, teller, crosscut.traps and neutrality, green), the oracle's 1.5.5-shaped config: the served document keeps all 49 of 1.5.5's paths and adds 16 core admin paths, every one marked `x-busbar-since: 1.6.0` and none marked `x-busbar-effect-bound: false` (the architect ruling in Q56 removed the unbound verbs from service and from the document, so the 13 the 2026-09-24 count carried are gone): adjust, audit head/keys/range, chain-break, commit-upgrade, ledger amend-rate-history/checkpoints/migration/openapi.json/reconciliation/totals, plane-facts, plane-record-write, store-restore, verify. No `tools`/`agents` path is served. The 2026-09-24 figures (26 added: 13 bound, 13 unbound) are superseded; commit-upgrade, plane-facts, plane-record-write and verify are core admin verbs added since, and the premise now names all 16 (reseal-epoch-floor was deleted 2026-10-25 by owner ruling). MEASURED 2026-09-24 by P3A-register3 against a local ./bin/oracle record (pin 3519882) of b712a5763 (+ the Q54 message patch, which does not touch the document), default all-planes build, the oracle's 1.5.5-shaped config: the served document keeps all 49 of 1.5.5's paths and adds 26 core admin paths, every one marked `x-busbar-since: 1.6.0` (13 bound: adjust, audit head/keys/range, chain-break, ledger amend-rate-history/checkpoints/migration/openapi.json/reconciliation/totals, reseal-epoch-floor, store-restore; 13 marked `x-busbar-effect-bound: false`, which the architect ruling in Q56 removes from service and from the document); no `tools`/`agents` path is served. Owner ruling Q56 (answered in Q61): accept the core verbs as an additive difference every 1.6.0 node has. REPLACES F-011c's breaking blanket (and F-011b's additive coverage) on THIS cell: kind=additive, so the runner proves the candidate document a JSON superset of 1.5.5's at every leaf 1.5.5 names — a 1.5.5 operation, parameter, response or schema member that changed or went away stays red. What 1.5.5 operations gained is additive and ruled elsewhere: the `409 unpriced_class` response on the three usage reads (#42, owner-locked), the rotate `400` for an overlong id (K-1), the overlay-delete section enum's growth. The pin 3519882 runner resolves `~1`-escaped pointers, so F-011c's `/paths` prose leaves are now named leaf by leaf instead of blanketed. DESCRIPTION_CORRECTIONS (string leaves only, each already owner-signed on this cell): F-011b's six (HookView x2, NamedDefView x2, OverlayResetView reset, info.version); AuditEntry/description (Q41: the record's `scheme` frames the hash); PluginSchemaView restart_required_default/description (a Rust path renamed in prose, previously forgiven under F-011c's blanket); the overlay-delete summary, 400 and 409 descriptions (F-011c's 2026-09-15 owner decision: the grown section list and the new `conflict` guard). PREMISE (evaluated): the cell answers 200, each of the 16 core verbs carries `x-busbar-since: 1.6.0`, and the document advertises no `tools`/`agents` path. LIMIT: the premise grammar cannot say \"no OTHER path was added\" — the superset proof permits additions — so the 16 are enumerated here, and a future unrelated addition is only caught by a reviewer reading this cell's ACCEPTED row. 2026-10-24 (OWNER, in session): the AuditEntry hash description rewritten for scheme 2 (0f44eac783)."
+      "rationale": "RE-MEASURED 2026-09-28 against origin/predev of 2026-09-28 (release build, the engine oracle-rust.pin names, ./bin/oracle replay --strict over admin.ops, admin.auth, boot.refusal, billing, ledger, teller, crosscut.traps and neutrality, green), the oracle's 1.5.5-shaped config: the served document keeps all 49 of 1.5.5's paths and adds 16 core admin paths, every one marked `x-busbar-since: 1.6.0` and none marked `x-busbar-effect-bound: false` (the architect ruling in Q56 removed the unbound verbs from service and from the document, so the 13 the 2026-09-24 count carried are gone): adjust, audit head/keys/range, chain-break, commit-upgrade, ledger amend-rate-history/checkpoints/migration/openapi.json/reconciliation/totals, plane-facts, plane-record-write, store-restore, verify. No `tools`/`agents` path is served. The 2026-09-24 figures (26 added: 13 bound, 13 unbound) are superseded; commit-upgrade, plane-facts, plane-record-write and verify are core admin verbs added since, and the premise now names all 16 (reseal-epoch-floor was deleted 2026-10-25 by owner ruling). MEASURED 2026-09-24 by P3A-register3 against a local ./bin/oracle record (pin 3519882) of b712a5763 (+ the Q54 message patch, which does not touch the document), default all-planes build, the oracle's 1.5.5-shaped config: the served document keeps all 49 of 1.5.5's paths and adds 26 core admin paths, every one marked `x-busbar-since: 1.6.0` (13 bound: adjust, audit head/keys/range, chain-break, ledger amend-rate-history/checkpoints/migration/openapi.json/reconciliation/totals, reseal-epoch-floor, store-restore; 13 marked `x-busbar-effect-bound: false`, which the architect ruling in Q56 removes from service and from the document); no `tools`/`agents` path is served. Owner ruling Q56 (answered in Q61): accept the core verbs as an additive difference every 1.6.0 node has. REPLACES F-011c's breaking blanket (and F-011b's additive coverage) on THIS cell: kind=additive, so the runner proves the candidate document a JSON superset of 1.5.5's at every leaf 1.5.5 names \u2014 a 1.5.5 operation, parameter, response or schema member that changed or went away stays red. What 1.5.5 operations gained is additive and ruled elsewhere: the `409 unpriced_class` response on the three usage reads (#42, owner-locked), the rotate `400` for an overlong id (K-1), the overlay-delete section enum's growth. The pin 3519882 runner resolves `~1`-escaped pointers, so F-011c's `/paths` prose leaves are now named leaf by leaf instead of blanketed. DESCRIPTION_CORRECTIONS (string leaves only, each already owner-signed on this cell): F-011b's six (HookView x2, NamedDefView x2, OverlayResetView reset, info.version); AuditEntry/description (Q41: the record's `scheme` frames the hash); PluginSchemaView restart_required_default/description (a Rust path renamed in prose, previously forgiven under F-011c's blanket); the overlay-delete summary, 400 and 409 descriptions (F-011c's 2026-09-15 owner decision: the grown section list and the new `conflict` guard). PREMISE (evaluated): the cell answers 200, each of the 16 core verbs carries `x-busbar-since: 1.6.0`, and the document advertises no `tools`/`agents` path. LIMIT: the premise grammar cannot say \"no OTHER path was added\" \u2014 the superset proof permits additions \u2014 so the 16 are enumerated here, and a future unrelated addition is only caught by a reviewer reading this cell's ACCEPTED row. 2026-10-24 (OWNER, in session): the AuditEntry hash description rewritten for scheme 2 (0f44eac783)."
     },
     {
       "id": "E7-1 non-Responses doors stream when the backend is Responses-shaped",
@@ -1070,7 +1070,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 E7 conformance-rig triage",
         "resigned": {
@@ -1094,14 +1094,14 @@
       "classes": [
         "body"
       ],
-      "rationale": "NARROWED 2026-09-05 (round-3 audit): was `^llm\\|[a-z_]+\\|[a-z_]+\\|request\\|ok_stream$`, which forgave a body change on EVERY streamed llm cell (32 of them) when the fix can only move the cells whose upstream actually reports an attribution sub-bucket on the streamed path. In this harness that is exactly the six `<door>|responses` cells: mock-upstream.py's /v1/responses is the only dialect whose usage object carries populated sub-buckets (input_tokens_details.cached_tokens / cache_write_tokens, output_tokens_details.reasoning_tokens); anthropic_stream, openai_chat_stream, gemini_stream, cohere_stream and bedrock_stream all send the totals with every sub-bucket null or absent, so no other ok_stream cell has a bucket to gain. `llm|responses|responses|request|ok_stream` is the same-protocol A-tap half of the fix; the other five are the shared trailing-usage fold half. If a fixture ever starts sending sub-buckets on another dialect's stream, add that cell here explicitly rather than restoring the wildcard. ORIGINAL RATIONALE: A stream's usage object now reports every per-dialect attribution sub-bucket the provider sent (reasoning tokens, the two Anthropic cache-creation TTL tiers and its web-search/service-tier pair, the four OpenAI audio and predicted-outputs slices, Gemini's tool-use prompt slice, Cohere's separately-metered billed_units trio), instead of reporting them only when the same request was made with stream:false. 1.5.5 carried NO sub-buckets on either path, so nothing a 1.5.5 client read has changed value or disappeared — the buckets are additive members that were absent before; 1.6.0 recovered them on the buffered path and this closes the streamed half of the same gap, so the two answers for one request finally agree. The totals are untouched: billable_tokens ignores the whole attribution struct. CAVEAT for a future re-record: Cohere's billed_units trio is the one bucket that is NOT a slice of the totals — to_token_usage lets billed_input/billed_output win over the raw counts — so a Cohere backend that reports billed_units on a STREAM will move that stream's ledgered figures to the same numbers its buffered twin already ledgers. No recorded cell exercises it (the oracle mock sends no billed_units on a stream), so this entry accepts `body` only; should a fixture ever start sending it, the effects.usage delta must be re-registered as kind=breaking with a CHANGELOG line rather than folded in here.",
+      "rationale": "NARROWED 2026-09-05 (round-3 audit): was `^llm\\|[a-z_]+\\|[a-z_]+\\|request\\|ok_stream$`, which forgave a body change on EVERY streamed llm cell (32 of them) when the fix can only move the cells whose upstream actually reports an attribution sub-bucket on the streamed path. In this harness that is exactly the six `<door>|responses` cells: mock-upstream.py's /v1/responses is the only dialect whose usage object carries populated sub-buckets (input_tokens_details.cached_tokens / cache_write_tokens, output_tokens_details.reasoning_tokens); anthropic_stream, openai_chat_stream, gemini_stream, cohere_stream and bedrock_stream all send the totals with every sub-bucket null or absent, so no other ok_stream cell has a bucket to gain. `llm|responses|responses|request|ok_stream` is the same-protocol A-tap half of the fix; the other five are the shared trailing-usage fold half. If a fixture ever starts sending sub-buckets on another dialect's stream, add that cell here explicitly rather than restoring the wildcard. ORIGINAL RATIONALE: A stream's usage object now reports every per-dialect attribution sub-bucket the provider sent (reasoning tokens, the two Anthropic cache-creation TTL tiers and its web-search/service-tier pair, the four OpenAI audio and predicted-outputs slices, Gemini's tool-use prompt slice, Cohere's separately-metered billed_units trio), instead of reporting them only when the same request was made with stream:false. 1.5.5 carried NO sub-buckets on either path, so nothing a 1.5.5 client read has changed value or disappeared \u2014 the buckets are additive members that were absent before; 1.6.0 recovered them on the buffered path and this closes the streamed half of the same gap, so the two answers for one request finally agree. The totals are untouched: billable_tokens ignores the whole attribution struct. CAVEAT for a future re-record: Cohere's billed_units trio is the one bucket that is NOT a slice of the totals \u2014 to_token_usage lets billed_input/billed_output win over the raw counts \u2014 so a Cohere backend that reports billed_units on a STREAM will move that stream's ledgered figures to the same numbers its buffered twin already ledgers. No recorded cell exercises it (the oracle mock sends no billed_units on a stream), so this entry accepts `body` only; should a fixture ever start sending it, the effects.usage delta must be re-registered as kind=breaking with a CHANGELOG line rather than folded in here.",
       "premise": {
         "cell": "llm|responses|responses|request|ok_stream",
         "body_contains": "\"input_tokens_details\""
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-05",
         "ruling": "2026-09-05 llm-codec audit",
         "resigned": {
@@ -1124,8 +1124,8 @@
       "classes": [
         "body"
       ],
-      "rationale": "1.5.5 answers the group's own BUDGET-total exhaustion (metric: budget, not the requests-cap `over_budget` arm) with error.type \"insufficient_quota\" — OpenAI's vocabulary, outside the nine types the published Anthropic error envelope declares. 1.6.0 answers the identical 429 with error.type \"billing_error\", the Anthropic-native member for a billing/quota refusal. Status (429), message text, and every other field are byte-identical on both sides; only /error/type differs: \"insufficient_quota\" (1.5.5) -> \"billing_error\" (1.6.0).",
-      "changelog": "An Anthropic-dialect error names an Anthropic error type. Busbar's quota and context-overflow refusals reached an Anthropic client as `insufficient_quota` and `context_length_exceeded` — OpenAI's vocabulary, and outside the nine types the published error envelope declares, so the official SDK raised a generic `APIError`. They are now `billing_error` and `invalid_request_error`. The status, message and every other error type are unchanged.",
+      "rationale": "1.5.5 answers the group's own BUDGET-total exhaustion (metric: budget, not the requests-cap `over_budget` arm) with error.type \"insufficient_quota\" \u2014 OpenAI's vocabulary, outside the nine types the published Anthropic error envelope declares. 1.6.0 answers the identical 429 with error.type \"billing_error\", the Anthropic-native member for a billing/quota refusal. Status (429), message text, and every other field are byte-identical on both sides; only /error/type differs: \"insufficient_quota\" (1.5.5) -> \"billing_error\" (1.6.0).",
+      "changelog": "An Anthropic-dialect error names an Anthropic error type. Busbar's quota and context-overflow refusals reached an Anthropic client as `insufficient_quota` and `context_length_exceeded` \u2014 OpenAI's vocabulary, and outside the nine types the published error envelope declares, so the official SDK raised a generic `APIError`. They are now `billing_error` and `invalid_request_error`. The status, message and every other error type are unchanged.",
       "premise": {
         "cell": "llm|anthropic|anthropic|request|over_budget_total",
         "pointer": "/error/type",
@@ -1133,7 +1133,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-05",
         "ruling": "2026-09-05 oracle Phase 0 group-budget-total cell",
         "resigned": {
@@ -1165,7 +1165,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-06",
         "ruling": "2026-09-06 round-5 codec audit",
         "resigned": {
@@ -1197,7 +1197,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-06",
         "ruling": "2026-09-06 round-5 codec audit",
         "resigned": {
@@ -1229,7 +1229,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-06",
         "ruling": "2026-09-06 round-5 codec audit",
         "resigned": {
@@ -1269,7 +1269,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-06",
         "ruling": "2026-09-06 round-5 codec audit",
         "resigned": {
@@ -1301,7 +1301,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-06",
         "ruling": "2026-09-06 round-5 codec audit",
         "resigned": {
@@ -1361,7 +1361,7 @@
           }
         ]
       },
-      "rationale": "OWNER 2026-10-21 (relayed by the coordinator): PR #1467's 'Owner sign-off, three items', items 1 and 2, approved as proposed. (1) 1.5.5 compared `security.blocked_metadata_hosts`, `security.allow_metadata_hosts` and a provider's `allow_metadata_hosts` as raw strings, so a Unicode or full-width entry matched nothing and its target was dialled; 1.6.0 maps each entry through the same UTS #46 mapping as the target (`list_entry_host`), so `１０.９９.９９.９９` blocks `https://10.99.99.99/`. (2) A host holding a `%` outside an IPv6 zone id (a bare `%6c%6fcalhost`) is refused by the destination guard as DEST_NO_HOST; a `://` URL's host is decoded first and a zone id is judged as its address, as before. Every other ASCII host gets 1.5.5's verdicts and texts. No oracle cell is touched today: no shipped, example or oracle config holds a Unicode list entry, and no cell asks the guard to judge a host holding a `%`. This entry forgives no measured cell today; it registers the contract change, as #1427's entry does, with `cells` naming the owed guard cells and expected_cells 0, the way GEN-LIMITS writes owed cells. The premise holds the candidate's CIDR refusals to 1.5.5's exit 1 and its printed denylist to the built-in set, the list surfaces this entry changes. Proof: net_tests a_list_entry_is_read_as_a_targets_host_is_read, a_bare_authoritys_host_is_mapped_as_a_urls_is; contract judged_host_refuses_a_percent_outside_an_ipv6_zone_id; guard a_percent_escape_outside_a_zone_id_is_refused_as_unjudgeable; dest_judge_refuses_a_bare_host_holding_a_percent_escape; config_validate test_metadata_list_entries_are_mapped. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged."
+      "rationale": "OWNER 2026-10-21 (relayed by the coordinator): PR #1467's 'Owner sign-off, three items', items 1 and 2, approved as proposed. (1) 1.5.5 compared `security.blocked_metadata_hosts`, `security.allow_metadata_hosts` and a provider's `allow_metadata_hosts` as raw strings, so a Unicode or full-width entry matched nothing and its target was dialled; 1.6.0 maps each entry through the same UTS #46 mapping as the target (`list_entry_host`), so `\uff11\uff10.\uff19\uff19.\uff19\uff19.\uff19\uff19` blocks `https://10.99.99.99/`. (2) A host holding a `%` outside an IPv6 zone id (a bare `%6c%6fcalhost`) is refused by the destination guard as DEST_NO_HOST; a `://` URL's host is decoded first and a zone id is judged as its address, as before. Every other ASCII host gets 1.5.5's verdicts and texts. No oracle cell is touched today: no shipped, example or oracle config holds a Unicode list entry, and no cell asks the guard to judge a host holding a `%`. This entry forgives no measured cell today; it registers the contract change, as #1427's entry does, with `cells` naming the owed guard cells and expected_cells 0, the way GEN-LIMITS writes owed cells. The premise holds the candidate's CIDR refusals to 1.5.5's exit 1 and its printed denylist to the built-in set, the list surfaces this entry changes. Proof: net_tests a_list_entry_is_read_as_a_targets_host_is_read, a_bare_authoritys_host_is_mapped_as_a_urls_is; contract judged_host_refuses_a_percent_outside_an_ipv6_zone_id; guard a_percent_escape_outside_a_zone_id_is_refused_as_unjudgeable; dest_judge_refuses_a_bare_host_holding_a_percent_escape; config_validate test_metadata_list_entries_are_mapped. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged."
     },
     {
       "id": "K-1 rotate refuses an overlong key id like its siblings",
@@ -1391,7 +1391,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-06",
         "ruling": "2026-09-06 oracle overlong-id coverage",
         "resigned": {
@@ -1416,7 +1416,7 @@
         "body",
         "effects.script"
       ],
-      "rationale": "RULE 21 (OWNER 2026-10-14, money is ledger x rate card, bank-auditor grade; where 1.5.5 differs from ledger x card, 1.5.5 was wrong): history-mid-window's right figure is each row's ledger quantity priced at the card in force at that row's arrival, 2,500,000 (chat1 at the boot card) / 27,500,000 (+ chat2 at card A, 25,000,000) / 277,530,000 (+ chat3 at card B, 250,030,000), which is the candidate's figure to the digit. 1.5.5's 25,000,000 / 500,060,000 / 750,090,000 re-priced every earlier row at the card in force at READ time, so 1.5.5 was wrong and this entry registers the fix (PARITY-SCOPE lane, 2026-10-14). The cell definition's sentence \"ONLY the final read moves\" is false arithmetic: all three reads move, as the figures above show. RE-MEASURED 2026-09-28 against origin/predev of 2026-09-28 (release build, the engine oracle-rust.pin names, ./bin/oracle replay --strict over admin.ops, admin.auth, boot.refusal, billing, ledger, teller, crosscut.traps and neutrality, green): the five premise figures reproduce to the digit — history-mid-window 2,500,000 / 27,500,000 / 277,530,000 (1.5.5: 25,000,000 / 500,060,000 / 750,090,000), epoch-mid-window total 257,530,000 (1.5.5: 1,000,120,000), rate-history|as-of total 257,530,000 with as_of 0 (1.5.5: 1,000,120,000) — and the three cells score ACCEPTED under this entry. RE-ADJUDICATED 2026-09-24 (items 47/52, P3A-register) under decision #79 (price in force at arrival) and owner ruling Q19/Q32. MEASURED (measured 2026-09-24 by P3A-register against a fresh local ./bin/oracle record of HEAD 05c826a66), against the committed 1.5.5 golden: (1) billing|rate-card|history-mid-window reads 2,500,000 / 27,500,000 / 277,530,000 where 1.5.5 read 25,000,000 / 500,060,000 / 750,090,000 — every read, not only the last, because 1.5.5 repriced chat1 at each read-time card; the moves are in `body` and `effects.script` (the three /usage reads), none in effects.usage. (2) billing|rate-card|epoch-mid-window reads 257,530,000 total where 1.5.5 read 1,000,120,000 — exactly the cell's own 'priced per row at charge time' hypothesis. (3) ledger|rate-history|as-of reads the SAME 257,530,000 and still echoes as_of 0: the move is arrival pricing, NOT the as_of selector (1.6.0 does not honour ?as_of on /admin/usage today; the earlier claim that it does was false). The 2026-09-21 AUDIT NOTE (\"reprice-on-read, M6 not landed\") is superseded by the measurement: arrival pricing is live on GET /admin/usage. PREMISE (evaluated): the five figures above, exactly — a build whose figures differ in any digit withholds this entry, so it cannot forgive a money move the ruling does not describe. OUT OF SCOPE here: ledger|currency|minor-unit-rounding also moves by arrival pricing (rows 18/18/18, total 54 -> 2,500,000/18/2,500,000, total 5,000,018); it is carried by its own owner-signed entry under spec #79, not by this one. PRIOR RATIONALE (2026-09-06/22) is superseded by the above; see git history.",
+      "rationale": "RULE 21 (OWNER 2026-10-14, money is ledger x rate card, bank-auditor grade; where 1.5.5 differs from ledger x card, 1.5.5 was wrong): history-mid-window's right figure is each row's ledger quantity priced at the card in force at that row's arrival, 2,500,000 (chat1 at the boot card) / 27,500,000 (+ chat2 at card A, 25,000,000) / 277,530,000 (+ chat3 at card B, 250,030,000), which is the candidate's figure to the digit. 1.5.5's 25,000,000 / 500,060,000 / 750,090,000 re-priced every earlier row at the card in force at READ time, so 1.5.5 was wrong and this entry registers the fix (PARITY-SCOPE lane, 2026-10-14). The cell definition's sentence \"ONLY the final read moves\" is false arithmetic: all three reads move, as the figures above show. RE-MEASURED 2026-09-28 against origin/predev of 2026-09-28 (release build, the engine oracle-rust.pin names, ./bin/oracle replay --strict over admin.ops, admin.auth, boot.refusal, billing, ledger, teller, crosscut.traps and neutrality, green): the five premise figures reproduce to the digit \u2014 history-mid-window 2,500,000 / 27,500,000 / 277,530,000 (1.5.5: 25,000,000 / 500,060,000 / 750,090,000), epoch-mid-window total 257,530,000 (1.5.5: 1,000,120,000), rate-history|as-of total 257,530,000 with as_of 0 (1.5.5: 1,000,120,000) \u2014 and the three cells score ACCEPTED under this entry. RE-ADJUDICATED 2026-09-24 (items 47/52, P3A-register) under decision #79 (price in force at arrival) and owner ruling Q19/Q32. MEASURED (measured 2026-09-24 by P3A-register against a fresh local ./bin/oracle record of HEAD 05c826a66), against the committed 1.5.5 golden: (1) billing|rate-card|history-mid-window reads 2,500,000 / 27,500,000 / 277,530,000 where 1.5.5 read 25,000,000 / 500,060,000 / 750,090,000 \u2014 every read, not only the last, because 1.5.5 repriced chat1 at each read-time card; the moves are in `body` and `effects.script` (the three /usage reads), none in effects.usage. (2) billing|rate-card|epoch-mid-window reads 257,530,000 total where 1.5.5 read 1,000,120,000 \u2014 exactly the cell's own 'priced per row at charge time' hypothesis. (3) ledger|rate-history|as-of reads the SAME 257,530,000 and still echoes as_of 0: the move is arrival pricing, NOT the as_of selector (1.6.0 does not honour ?as_of on /admin/usage today; the earlier claim that it does was false). The 2026-09-21 AUDIT NOTE (\"reprice-on-read, M6 not landed\") is superseded by the measurement: arrival pricing is live on GET /admin/usage. PREMISE (evaluated): the five figures above, exactly \u2014 a build whose figures differ in any digit withholds this entry, so it cannot forgive a money move the ruling does not describe. OUT OF SCOPE here: ledger|currency|minor-unit-rounding also moves by arrival pricing (rows 18/18/18, total 54 -> 2,500,000/18/2,500,000, total 5,000,018); it is carried by its own owner-signed entry under spec #79, not by this one. PRIOR RATIONALE (2026-09-06/22) is superseded by the above; see git history.",
       "premise": {
         "all": [
           {
@@ -1529,7 +1529,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-07",
         "ruling": "2026-09-07 provider-credential fail-closed decision (\"no carve outs, fix it\")",
         "resigned": {
@@ -1627,7 +1627,7 @@
       "by": "owner (Matthew Jackson), 2026-09-28 ruling",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-28",
         "ruling": "ship 1.6.0's refund: the refund reaches the bucket the charge reached",
         "resigned": {
@@ -1713,7 +1713,7 @@
           }
         ]
       },
-      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): on each of these 34 cells the ONLY effects.metrics difference from 1.5.5 is busbar_lane_state{pool,lane} for the tripped lane reading 2 where 1.5.5 read 1 (every other metrics path is identical). route.failover|fo|primary-cut-body JOINS the list on this measurement: its spend series no longer moves since the cut-body billing fix landed, so lane_state 1 -> 2 is now its only metrics difference; any cell whose metrics move in any other path stays unnamed. Owner ruling Q40 as ruled in Q47: the gauge reads the pool's own cell, 2 when tripped, 1 only on a real half-open probe. SCOPE is the enumerated cell ids, not a family. PREMISE (evaluated, and bounded by what the runner's premise grammar can see — it reads status/body, never effects): the build serves the documented three-state per-(pool,lane) gauge and a HEALTHY lane still reads 0 on the scrape, so the forgiveness cannot cover a build whose healthy lanes moved. First registered from P3A-register's measurement of 05c826a66 (33 cells). WIDENED 2026-10-20 (OWNER ruling Q40, via the metrics lane, PR #1292): the same lane_state 1 -> 2 is the metrics difference on llm|openai|openai|request|stream_upstream_cut, llm|cohere|cohere|request|stream_upstream_cut, llm|gemini|gemini|request|stream_upstream_error@fixture (+3). The two anthropic cells (stream_upstream_cut, stream_upstream_error@fixture) are not listed until a candidate record shows lane_state to be their metrics difference. WIDENED 2026-10-24 (OWNER, in session): the anthropic, cohere and openai stream-cut/error cells and the gemini tool-use cell, whose metrics move by the same breaker reading and the signed #62 / SPEND-LEDGER / RULE21-576 billing (spend and token series). NARROWED 2026-10-27 (ORACLE-116 review): the class blanket becomes a precise `values` spec (busbar-release #441, judge d4f6410f+): each pointer is forgiven only from its exact golden value to its exact candidate value, measured on the dev oracle report of 2026-10-27; any other figure, series or member on these cells stays a divergence. Q40 forgives only `busbar_lane_state` reading 2 where 1.5.5 read 1; the spend and token series of the stream-cut, stream-error and tool-use cells are their money entries' (#62, SPEND-LEDGER, RULE21-576), each pinned to its figure.",
+      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): on each of these 34 cells the ONLY effects.metrics difference from 1.5.5 is busbar_lane_state{pool,lane} for the tripped lane reading 2 where 1.5.5 read 1 (every other metrics path is identical). route.failover|fo|primary-cut-body JOINS the list on this measurement: its spend series no longer moves since the cut-body billing fix landed, so lane_state 1 -> 2 is now its only metrics difference; any cell whose metrics move in any other path stays unnamed. Owner ruling Q40 as ruled in Q47: the gauge reads the pool's own cell, 2 when tripped, 1 only on a real half-open probe. SCOPE is the enumerated cell ids, not a family. PREMISE (evaluated, and bounded by what the runner's premise grammar can see \u2014 it reads status/body, never effects): the build serves the documented three-state per-(pool,lane) gauge and a HEALTHY lane still reads 0 on the scrape, so the forgiveness cannot cover a build whose healthy lanes moved. First registered from P3A-register's measurement of 05c826a66 (33 cells). WIDENED 2026-10-20 (OWNER ruling Q40, via the metrics lane, PR #1292): the same lane_state 1 -> 2 is the metrics difference on llm|openai|openai|request|stream_upstream_cut, llm|cohere|cohere|request|stream_upstream_cut, llm|gemini|gemini|request|stream_upstream_error@fixture (+3). The two anthropic cells (stream_upstream_cut, stream_upstream_error@fixture) are not listed until a candidate record shows lane_state to be their metrics difference. WIDENED 2026-10-24 (OWNER, in session): the anthropic, cohere and openai stream-cut/error cells and the gemini tool-use cell, whose metrics move by the same breaker reading and the signed #62 / SPEND-LEDGER / RULE21-576 billing (spend and token series). NARROWED 2026-10-27 (ORACLE-116 review): the class blanket becomes a precise `values` spec (busbar-release #441, judge d4f6410f+): each pointer is forgiven only from its exact golden value to its exact candidate value, measured on the dev oracle report of 2026-10-27; any other figure, series or member on these cells stays a divergence. Q40 forgives only `busbar_lane_state` reading 2 where 1.5.5 read 1; the spend and token series of the stream-cut, stream-error and tool-use cells are their money entries' (#62, SPEND-LEDGER, RULE21-576), each pinned to its figure.",
       "values": [
         {
           "pointer": "/effects/metrics/busbar_lane_state{pool=\"oracle-fo\",lane=\"m-openai-chat\"}",
@@ -1791,7 +1791,7 @@
           }
         ]
       },
-      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): GET /api/v1/admin/audit's four items each GAIN `scheme: 1` (1.5.5 hash kept; scheme 2 only for records with '|'), Q41 ruling 2026-10-20; every 1.5.5 member is unchanged. kind=additive so the runner still proves the candidate a JSON superset of the 1.5.5 page — a changed or removed audit member stays red. PREMISE (evaluated): the served entries carry scheme 2."
+      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): GET /api/v1/admin/audit's four items each GAIN `scheme: 1` (1.5.5 hash kept; scheme 2 only for records with '|'), Q41 ruling 2026-10-20; every 1.5.5 member is unchanged. kind=additive so the runner still proves the candidate a JSON superset of the 1.5.5 page \u2014 a changed or removed audit member stays red. PREMISE (evaluated): the served entries carry scheme 2."
     },
     {
       "id": "Q41 an audit entry carries its record's scheme (teller audit-record script)",
@@ -1840,7 +1840,7 @@
         "ruling": "OWNER SIGNED 2026-10-27 (relayed by the coordinator; recorded ~/Developer/tmp/cleanup/NEXT.md): audit digest v4, i.e. v3 (currency dropped, #34) plus `incarnation`, is the recipe new audit records sign under",
         "previous": {
           "who": "owner (Matthew Jackson)",
-          "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+          "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
           "when": "2026-09-29",
           "ruling": "#34 OWNER 2026-09-29: remove `currency` from the signed audit digest and migrate: new records sign under a versioned recipe v3 without it, every existing record verifies under the recipe it was sealed under",
           "resigned": {
@@ -1881,7 +1881,7 @@
       "by": "owner (Matthew Jackson), spec #79 OWNER-LOCKED 2026-09-22",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-22",
         "ruling": "spec #79 (docs/design/BUSBAR-1.6.0.md, OWNER-LOCKED 2026-09-22): a posting prices against the card in force when it arrived; publishing a new card never reprices the window before its effective_from. Registered under the architect ruling of 2026-09-24 that a cell whose only difference is a direct, measured consequence of an owner-locked row is registered citing that row with a premise pinning the exact figures",
         "resigned": {
@@ -1933,7 +1933,7 @@
           }
         ]
       },
-      "rationale": "The cell PUTs a card at ONE micro-unit per token, sends one chat (oracle-ok), then reads GET /admin/usage. The two other keys (oracle-broke, oracle-quota) each served one warm-up request BEFORE the PUT, under the boot card. 1.5.5 repriced every row at read time: 18 / 18 / 18, total 54. Spec #79 (owner-locked): each posting is priced at the card in force at its arrival, so the two warm-up rows keep the boot card's 2,500,000 and only the post-edit chat reads 18: 2,500,000 / 18 / 2,500,000, by_model and total 5,000,018. RE-MEASURED 2026-09-28 with NO scratch step, against origin/predev of 2026-09-28 (release build, the engine oracle-rust.pin names, ./bin/oracle replay --strict over admin.ops, admin.auth, boot.refusal, billing, ledger, teller, crosscut.traps and neutrality, green): the committed cell reads exactly 2,500,000 / 18 / 2,500,000, by_model and total 5,000,018, 3 requests, and scores ACCEPTED under this entry. WHY THE 2026-09-24 MEASUREMENT NEEDED A WORKAROUND, AND WHY IT NO LONGER DOES: 1.6.0 refuses a rate card that leaves a billable class its build declares unpriced (#42; Q42 at boot, Q58 at the admin write path), so the cell's 1.5.5-shaped PUT (no `search_units`) answered 400 and the edit never happened (2,500,000 x3 / 7,500,000, a refused write the premise withholds). The engine pinned at the time applied the operator upgrade step only to the configs it boots, so the figures were taken off a hand-edited scratch copy of cells.json. The engine pinned since the step's 2026-09-24 extension applies the same Q42/Q58 upgrade step to a rate card a cell writes through the admin API (each class the build names, added at 0), and the 1.5.5 golden side still receives the body byte for byte, so the committed cell drives the real #79 behaviour with no edit. PREMISE (evaluated): exactly those figures and 3 requests — a build whose figures differ in any digit withholds the entry, so it forgives nothing broader than #79. kind=breaking because it is a money figure a customer reads. D-3's note that this cell was out of its scope stands: this entry, not D-3, carries it."
+      "rationale": "The cell PUTs a card at ONE micro-unit per token, sends one chat (oracle-ok), then reads GET /admin/usage. The two other keys (oracle-broke, oracle-quota) each served one warm-up request BEFORE the PUT, under the boot card. 1.5.5 repriced every row at read time: 18 / 18 / 18, total 54. Spec #79 (owner-locked): each posting is priced at the card in force at its arrival, so the two warm-up rows keep the boot card's 2,500,000 and only the post-edit chat reads 18: 2,500,000 / 18 / 2,500,000, by_model and total 5,000,018. RE-MEASURED 2026-09-28 with NO scratch step, against origin/predev of 2026-09-28 (release build, the engine oracle-rust.pin names, ./bin/oracle replay --strict over admin.ops, admin.auth, boot.refusal, billing, ledger, teller, crosscut.traps and neutrality, green): the committed cell reads exactly 2,500,000 / 18 / 2,500,000, by_model and total 5,000,018, 3 requests, and scores ACCEPTED under this entry. WHY THE 2026-09-24 MEASUREMENT NEEDED A WORKAROUND, AND WHY IT NO LONGER DOES: 1.6.0 refuses a rate card that leaves a billable class its build declares unpriced (#42; Q42 at boot, Q58 at the admin write path), so the cell's 1.5.5-shaped PUT (no `search_units`) answered 400 and the edit never happened (2,500,000 x3 / 7,500,000, a refused write the premise withholds). The engine pinned at the time applied the operator upgrade step only to the configs it boots, so the figures were taken off a hand-edited scratch copy of cells.json. The engine pinned since the step's 2026-09-24 extension applies the same Q42/Q58 upgrade step to a rate card a cell writes through the admin API (each class the build names, added at 0), and the 1.5.5 golden side still receives the body byte for byte, so the committed cell drives the real #79 behaviour with no edit. PREMISE (evaluated): exactly those figures and 3 requests \u2014 a build whose figures differ in any digit withholds the entry, so it forgives nothing broader than #79. kind=breaking because it is a money figure a customer reads. D-3's note that this cell was out of its scope stands: this entry, not D-3, carries it."
     },
     {
       "id": "#79 applying a config does not reprice recorded spend (PostConfigApply metrics series)",
@@ -1942,7 +1942,7 @@
       "by": "owner (Matthew Jackson), spec #79 OWNER-LOCKED 2026-09-22",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-22",
         "ruling": "spec #79 (docs/design/BUSBAR-1.6.0.md, OWNER-LOCKED 2026-09-22): a posting prices against the card in force when it arrived; publishing a new card never reprices the window before its effective_from. Registered under the architect ruling of 2026-09-24 that a cell whose only difference is a direct, measured consequence of an owner-locked row is registered citing that row with a premise pinning the exact figures",
         "resigned": {
@@ -1993,16 +1993,16 @@
           }
         ]
       },
-      "rationale": "Both cells POST /api/v1/admin/config/apply with a config that carries NO rate_card, after the oracle's warm-up in which key oracle-broke (group broke) was charged 250 cents under the boot card. 1.5.5 repriced that recorded spend at the applied (card-less) config: effects.metrics moved busbar_key_spend_cents{broke key} -250, busbar_bucket_spend_cents{group:broke@day} -250 and busbar_bucket_budget_remaining_cents{group:broke@day} +1. Spec #79 (owner-locked): a posting is priced at the card in force when it arrived, and publishing a new card never reprices the window before its effective_from — 1.6.0 leaves all three series unchanged. MEASURED (measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): on both cells those three paths are the ONLY effects.metrics differences. RE-MEASURED 2026-09-24 by P3A-diverge3 (HEAD 35bcb2984, engine pin 3519882): norm.rules IS a #79 consequence and is forgiven here — the engine's `audit.hash` rule is the branch that rewrites `vk_[0-9a-f]{32}` to `vk_<KEY>`, and across the whole golden cell the ONLY such string is the `busbar_key_spend_cents{key=\"vk_...\"}` label inside the #79 metrics series; with those series unmoved the label never reaches the normalizer, so the rule cannot fire (the differ reports only_golden: [audit.hash]; body, audit rows, headers and readback identical). The earlier effects.readback residue does not reproduce: a contiguous HEAD record reads `\"settings\": {}` identical to the golden (the `limits` readback was overlay carry-over from earlier cells' PUTs; the 1.5.5 binary reads the same when those cells run first). PREMISE (evaluated, bounded by what the runner's premise grammar can see — status/body, never effects): each apply was ACCEPTED (200, applied true, config_version 1), so the entry can never cover a build where the metric moved because the apply was refused. kind=breaking because the series are money figures an operator reads."
+      "rationale": "Both cells POST /api/v1/admin/config/apply with a config that carries NO rate_card, after the oracle's warm-up in which key oracle-broke (group broke) was charged 250 cents under the boot card. 1.5.5 repriced that recorded spend at the applied (card-less) config: effects.metrics moved busbar_key_spend_cents{broke key} -250, busbar_bucket_spend_cents{group:broke@day} -250 and busbar_bucket_budget_remaining_cents{group:broke@day} +1. Spec #79 (owner-locked): a posting is priced at the card in force when it arrived, and publishing a new card never reprices the window before its effective_from \u2014 1.6.0 leaves all three series unchanged. MEASURED (measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): on both cells those three paths are the ONLY effects.metrics differences. RE-MEASURED 2026-09-24 by P3A-diverge3 (HEAD 35bcb2984, engine pin 3519882): norm.rules IS a #79 consequence and is forgiven here \u2014 the engine's `audit.hash` rule is the branch that rewrites `vk_[0-9a-f]{32}` to `vk_<KEY>`, and across the whole golden cell the ONLY such string is the `busbar_key_spend_cents{key=\"vk_...\"}` label inside the #79 metrics series; with those series unmoved the label never reaches the normalizer, so the rule cannot fire (the differ reports only_golden: [audit.hash]; body, audit rows, headers and readback identical). The earlier effects.readback residue does not reproduce: a contiguous HEAD record reads `\"settings\": {}` identical to the golden (the `limits` readback was overlay carry-over from earlier cells' PUTs; the 1.5.5 binary reads the same when those cells run first). PREMISE (evaluated, bounded by what the runner's premise grammar can see \u2014 status/body, never effects): each apply was ACCEPTED (200, applied true, config_version 1), so the entry can never cover a build where the metric moved because the apply was refused. kind=breaking because the series are money figures an operator reads."
     },
     {
       "id": "AUTH-ROW the operator credential is chosen by the provider's module, not its name",
       "kind": "breaking",
-      "changelog": "**An admin-auth provider is judged by its module, not by its name.** A provider defined under another name with `module: admin-tokens` (e.g. `ops: { module: admin-tokens, token: ... }`) admitted nobody in 1.5.5 — every admin request was a 401 — and now authenticates the operator token; a provider named `admin-tokens` that is backed by another module was never asked in 1.5.5 and is now consulted, under its own `max_admin_scope`. A config that names the operator credential as `admin-tokens: { module: admin-tokens }`, or leaves `admin_auth` at its default, is unchanged.",
+      "changelog": "**An admin-auth provider is judged by its module, not by its name.** A provider defined under another name with `module: admin-tokens` (e.g. `ops: { module: admin-tokens, token: ... }`) admitted nobody in 1.5.5 \u2014 every admin request was a 401 \u2014 and now authenticates the operator token; a provider named `admin-tokens` that is backed by another module was never asked in 1.5.5 and is now consulted, under its own `max_admin_scope`. A config that names the operator credential as `admin-tokens: { module: admin-tokens }`, or leaves `admin_auth` at its default, is unchanged.",
       "by": "owner (Matthew Jackson), approval of AUTH-ROW (2) 2026-09-27",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+        "signed": "\u00a7OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-27",
         "ruling": "ARCHITECT relay 2026-09-27 (AUTH-ROW): the owner approved the misconfiguration behaviour change (the admin-token check is chosen by module, not by provider name) as an accepted difference",
         "resigned": {
@@ -2038,13 +2038,13 @@
           }
         ]
       },
-      "rationale": "1.5.5 dispatched the operator-credential arm on the admin_auth PROVIDER NAME while every other rule keyed the MODULE, so two misconfigurations served nothing: `ops: {module: admin-tokens}` was skipped at build and logged ADMIN_MODULE_UNRESOLVED then 401 on every admin request; `admin-tokens: {module: <other>}` opened <other> but always ran the operator arm (no token digest, so Pass). 1.6.0 resolves the operator credential through the auth axis by module (AUTH-ROW), so the first authenticates the operator token and the second consults its own module under its own max_admin_scope. RE-CHECKED 2026-09-28: the behaviour this entry forgives was NOT yet live — the chain was still dispatched on the provider name (the operator arm ran only for a provider NAMED like the operator credential, and the full-by-reserved-id grant was keyed on that name), so both misconfigurations still served as in 1.5.5. It is live now: the admin chain's operator credential answers for exactly the providers whose module is the operator credential's (busbar_kernel_identity::operator::Operator), and the ceiling exemption and the reserved-id grant follow it. Pinned RED-then-GREEN by the composition root's linked-auth tests a_renamed_provider_backed_by_the_operator_module_is_the_operator_credential (built from configuration: the operator token earns full scope on both carriers, a wrong one gets 1.5.5's 401) and a_provider_named_like_the_operator_but_backed_by_another_module_is_that_module (403 from the configured module, and the operator token confers nothing through it); both fail on the parent. No corpus cell exercises either configuration (expected_cells 0, the ids reserved for the cells that will); the premise pins that the default operator credential is linked and still answers and refuses as 1.5.5 did."
+      "rationale": "1.5.5 dispatched the operator-credential arm on the admin_auth PROVIDER NAME while every other rule keyed the MODULE, so two misconfigurations served nothing: `ops: {module: admin-tokens}` was skipped at build and logged ADMIN_MODULE_UNRESOLVED then 401 on every admin request; `admin-tokens: {module: <other>}` opened <other> but always ran the operator arm (no token digest, so Pass). 1.6.0 resolves the operator credential through the auth axis by module (AUTH-ROW), so the first authenticates the operator token and the second consults its own module under its own max_admin_scope. RE-CHECKED 2026-09-28: the behaviour this entry forgives was NOT yet live \u2014 the chain was still dispatched on the provider name (the operator arm ran only for a provider NAMED like the operator credential, and the full-by-reserved-id grant was keyed on that name), so both misconfigurations still served as in 1.5.5. It is live now: the admin chain's operator credential answers for exactly the providers whose module is the operator credential's (busbar_kernel_identity::operator::Operator), and the ceiling exemption and the reserved-id grant follow it. Pinned RED-then-GREEN by the composition root's linked-auth tests a_renamed_provider_backed_by_the_operator_module_is_the_operator_credential (built from configuration: the operator token earns full scope on both carriers, a wrong one gets 1.5.5's 401) and a_provider_named_like_the_operator_but_backed_by_another_module_is_that_module (403 from the configured module, and the operator token confers nothing through it); both fail on the parent. No corpus cell exercises either configuration (expected_cells 0, the ids reserved for the cells that will); the premise pins that the default operator credential is linked and still answers and refuses as 1.5.5 did."
     },
     {
       "id": "581 busbar is invisible to upstreams except what it governs",
       "kind": "breaking",
       "changelog": "busbar is invisible to upstreams. On a same-dialect route every client header and body field passes through unchanged, except the fields busbar governs: credential headers (each dialect declares its own, e.g. Authorization, x-api-key, api-key, x-goog-api-key), replaced by busbar's upstream credential; tenant selectors (e.g. OpenAI-Organization, OpenAI-Project), set from busbar's config and never from the caller; the model, which is mapped; hook rewrites; and the HTTP hop-by-hop headers plus Host and Content-Length, re-derived for the upstream connection. On a translated route busbar translates what maps and drops the rest. There are no feature allowlists; beta and version headers are ordinary fields. 1.5.5 forwarded no client header.",
-      "by": "ruling:§busbar is invisible to upstreams. On a same-dialect route (registered under a standing ruling; no owner signature on this entry); 2026-10-02 HARD RULE \"BUSBAR IS INVISIBLE TO UPSTREAMS\" (escalate.q 03:40Z, refined 04:00Z) ; scope extended to the 43 same-dialect cells under the same HARD RULE, owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"",
+      "by": "ruling:\u00a7busbar is invisible to upstreams. On a same-dialect route (registered under a standing ruling; no owner signature on this entry); 2026-10-02 HARD RULE \"BUSBAR IS INVISIBLE TO UPSTREAMS\" (escalate.q 03:40Z, refined 04:00Z) ; scope extended to the 43 same-dialect cells under the same HARD RULE, owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"",
       "cells": "^(concurrency\\|inbound-shed\\|n8|concurrency\\|lane-atcapacity\\|n4|concurrency\\|ok\\|n8|crosscut\\.traps\\|exhausted-retry-after-floor|crosscut\\.traps\\|x-request-id-present|documented\\|changelog\\|retry-after-floor|documented\\|readme\\|six-protocols\\|anthropic|documented\\|readme\\|six-protocols\\|cohere|documented\\|readme\\|six-protocols\\|gemini|documented\\|readme\\|six-protocols\\|openai-chat|documented\\|readme\\|six-protocols\\|openai-responses|egress\\.headers\\|forwarded\\|anthropic-beta|egress\\.headers\\|forwarded\\|openai-beta|llm\\|anthropic\\|anthropic\\|request\\|ok|llm\\|anthropic\\|anthropic\\|request\\|ok_stream|llm\\|anthropic\\|anthropic\\|request\\|upstream_down|llm\\|bedrock\\|bedrock\\|request\\|ok|llm\\|bedrock\\|bedrock\\|request\\|ok_stream|llm\\|bedrock\\|bedrock\\|request\\|upstream_down|llm\\|cohere\\|cohere\\|request\\|ok|llm\\|cohere\\|cohere\\|request\\|ok_stream|llm\\|cohere\\|cohere\\|request\\|upstream_down|llm\\|gemini\\|gemini\\|request\\|ok|llm\\|gemini\\|gemini\\|request\\|ok_stream_array|llm\\|gemini\\|gemini\\|request\\|upstream_down|llm\\|openai\\|openai\\|request\\|ok|llm\\|openai\\|openai\\|request\\|ok_stream|llm\\|openai\\|openai\\|request\\|upstream_down|llm\\|responses\\|responses\\|request\\|ok|llm\\|responses\\|responses\\|request\\|ok_stream|llm\\|responses\\|responses\\|request\\|upstream_down|queue\\|serve\\|n3|queue\\|timeout\\|n2|route\\.failover\\|fb\\|all-down|route\\.failover\\|fb\\|member-down|route\\.failover\\|fo\\|all-down|route\\.failover\\|fo\\|all-down-stream|route\\.failover\\|fo\\|all-up|route\\.failover\\|fo\\|primary-429|route\\.failover\\|fo\\|primary-5xx|route\\.failover\\|fo\\|primary-cut-body|route\\.failover\\|fo\\|primary-cut-stream|route\\.failover\\|fo\\|primary-down|route\\.failover\\|fo\\|primary-slow|route\\.failover\\|fo\\|second-request-after-trip|llm\\|anthropic\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|bedrock\\|bedrock\\|request\\|ok_cachepoint_document@fixture|llm\\|bedrock\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|bedrock\\|bedrock\\|request\\|stream_upstream_cut|llm\\|cohere\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|gemini\\|request\\|ok_stream|llm\\|gemini\\|gemini\\|request\\|ok_stream_array_whole_answer|llm\\|gemini\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|gemini\\|request\\|stream_upstream_cut|llm\\|openai\\|openai\\|request\\|ok_stream_whole_answer|llm\\|responses\\|responses\\|request\\|ok_citation@fixture|llm\\|responses\\|responses\\|request\\|ok_stream_whole_answer|llm\\|responses\\|responses\\|request\\|stream_upstream_error@fixture|hooks\\|hooked\\-pool\\|embedded\\-system\\-turn@hooks\\-webrequest|hooks\\|hooked\\-pool\\|ok@hooks\\-webrequest|hooks\\|hooked\\-pool\\|ok_stream@hooks\\-webrequest|hooks\\|hooked\\-pool\\|unmodelled\\-block@hooks\\-webrequest|hooks\\|unhooked\\-pool\\|ok@hooks\\-webrequest|llm\\|anthropic\\|anthropic\\|request\\|stream_upstream_cut|llm\\|anthropic\\|anthropic\\|request\\|stream_upstream_error@fixture|llm\\|bedrock\\|bedrock\\|request\\|stream_upstream_error@fixture|llm\\|cohere\\|cohere\\|request\\|stream_upstream_cut|llm\\|cohere\\|cohere\\|request\\|stream_upstream_error@fixture|llm\\|gemini\\|gemini\\|request\\|stream_upstream_error@fixture|llm\\|openai\\|openai\\|request\\|stream_upstream_cut|llm\\|openai\\|openai\\|request\\|stream_upstream_error@fixture|llm\\|responses\\|responses\\|request\\|stream_upstream_cut|llm\\|gemini\\|gemini\\|request\\|ok_tool_use_tokens@fixture)$",
       "expected_cells": 73,
       "classes": [
@@ -2071,7 +2071,7 @@
         ]
       },
       "signoff": {
-        "who": "ruling:§busbar is invisible to upstreams. On a same-dialect route",
+        "who": "ruling:\u00a7busbar is invisible to upstreams. On a same-dialect route",
         "when": "2026-10-02",
         "ruling": "2026-10-02 owner HARD RULE \"INVISIBLE, EXCEPT WHAT BUSBAR GOVERNS\" (escalate.q:108-109); R4 signed; scope extended 2026-10-05 under the same rule (owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\")",
         "widened_2026_10_24": {
@@ -2187,7 +2187,7 @@
       "id": "RULE21-576 the plain gemini route bills toolUsePromptTokenCount as input (ledger x rate card)",
       "kind": "breaking",
       "changelog": "1.6.0 Improvements: a Gemini turn that used a server-side tool bills the tool-use tokens Google charges for.",
-      "by": "owner (Matthew Jackson), 2026-10-27 billing standing rule; previously ruling:§MONEY IS LEDGER × RATE CARD (registered under a standing ruling; no owner signature on this entry); RULE 21 2026-10-14 (\"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\"), applying the 2026-10-02 ruling of entry 576 to the llm wire cell",
+      "by": "owner (Matthew Jackson), 2026-10-27 billing standing rule; previously ruling:\u00a7MONEY IS LEDGER \u00d7 RATE CARD (registered under a standing ruling; no owner signature on this entry); RULE 21 2026-10-14 (\"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\"), applying the 2026-10-02 ruling of entry 576 to the llm wire cell",
       "cells": "^llm\\|gemini\\|gemini\\|request\\|ok_tool_use_tokens@fixture$",
       "expected_cells": 1,
       "classes": [
@@ -2218,7 +2218,7 @@
         "when": "2026-10-27",
         "ruling": "OWNER BILLING STANDING RULE 2026-10-27 (recorded ~/Developer/tmp/cleanup/NEXT.md, \"never ask again\"): \"dialects control what was done and ledger what was done. we bill by that. if a dialect did something its ledgered. this isn't ever a decision.\" Billing completeness is never a per-entry owner question; this entry is covered by that rule.",
         "previous": {
-          "who": "ruling:§MONEY IS LEDGER × RATE CARD",
+          "who": "ruling:\u00a7MONEY IS LEDGER \u00d7 RATE CARD",
           "when": "2026-10-14",
           "ruling": "RULE 21 (OWNER 2026-10-14, verbatim \"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\"): where v1.5.5 differs from ledger x rate card, 1.5.5 was wrong; register the oracle cell as an accepted difference citing this ruling. Ledger classes per entry 576 (owner 2026-10-02, LEDGER-SIMPLE 2026-10-03).",
           "widened_2026_10_24": {
@@ -2293,7 +2293,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§two owner-signed exceptions (2026-10-02)",
+        "signed": "\u00a7two owner-signed exceptions (2026-10-02)",
         "when": "2026-10-02",
         "ruling": "2026-10-02 RULING HOOK Q1 (OWNER): SIGN, escalate.q:104; R6 signed"
       },
@@ -2319,7 +2319,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§two owner-signed exceptions (2026-10-02)",
+        "signed": "\u00a7two owner-signed exceptions (2026-10-02)",
         "when": "2026-10-02",
         "ruling": "2026-10-02 RULING HOOK Q2 (OWNER): SIGN, escalate.q:105; R7 signed"
       },
@@ -2332,7 +2332,7 @@
       "id": "ABI-o1 published 1.5.5 JSON-contract plugins no longer load",
       "kind": "breaking",
       "changelog": "1.6.0 Breaking: a published 1.5.5 JSON-contract plugin no longer loads; boot refuses it with a message naming the rebuild against the 1.6.0 SDK (see the SDK migration note).",
-      "by": "ruling:§11.8 No legacy loading (registered under a standing ruling; no owner signature on this entry); spec section 11.8 (owner-locked \"No legacy loading\") + ARCHITECT ruling 2026-10-02T04:00Z (escalate.q:111)",
+      "by": "ruling:\u00a711.8 No legacy loading (registered under a standing ruling; no owner signature on this entry); spec section 11.8 (owner-locked \"No legacy loading\") + ARCHITECT ruling 2026-10-02T04:00Z (escalate.q:111)",
       "cells": "^plugins\\.abi\\|json-contract\\|store-sqlite@1\\.5-line$",
       "expected_cells": 1,
       "classes": [
@@ -2362,7 +2362,7 @@
         ]
       },
       "signoff": {
-        "who": "ruling:§11.8 No legacy loading",
+        "who": "ruling:\u00a711.8 No legacy loading",
         "when": "2026-10-01",
         "ruling": "spec section 11.8 owner-locked \"No legacy loading\"; ARCHITECT ruling escalate.q:111; R8 signed (2026-10-01T23:45Z)"
       },
@@ -2375,7 +2375,7 @@
       "id": "ORPH-Q3a Bedrock usage carries cacheDetails",
       "kind": "additive",
       "changelog": "A Bedrock response served from an Anthropic upstream carries `usage.cacheDetails`, the per-TTL split of the cache-write tokens (additive: billed counts are unchanged).",
-      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); 2026-10-01T23:44Z ORPH-Q3a = A; STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z)",
+      "by": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); 2026-10-01T23:44Z ORPH-Q3a = A; STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z)",
       "cells": "^llm\\.cache-details\\|bedrock\\|anthropic-cache-split$",
       "expected_cells": 0,
       "classes": [
@@ -2387,7 +2387,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+        "who": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
         "when": "2026-10-01",
         "ruling": "ORPH-Q3a = A (owner 2026-10-01T23:44Z, escalate.q); Q57; LLM DIALECT FIDELITY (escalate.q:114)"
       },
@@ -2400,7 +2400,7 @@
       "id": "ORPH-Q3b buffered OpenAI chat citations are nested url_citation annotations",
       "kind": "improvement",
       "changelog": "A buffered OpenAI chat response carries its citations as nested `url_citation` annotations, the shape the published Chat Completions schema defines.",
-      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); ORPH-Q3b = A",
+      "by": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); ORPH-Q3b = A",
       "cells": "^llm\\.citations\\|openai\\|(cohere|gemini)-buffered$",
       "expected_cells": 0,
       "classes": [
@@ -2412,7 +2412,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+        "who": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
         "when": "2026-10-01",
         "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-01T23:45Z, escalate.q:114); ORPH-Q3b = A"
       },
@@ -2452,7 +2452,7 @@
       "id": "R21 an OpenAI transcription answered in its own dialect is metered",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: an OpenAI transcription answered in its own dialect is now metered as a translated one always was (whisper's duration as `audio_ms`, a token-metered model's tokens under the token classes), where 1.5.5 billed it nothing.",
-      "by": "owner (Matthew Jackson), 2026-10-27 billing standing rule; previously ruling:§MONEY IS LEDGER × RATE CARD (registered under a standing ruling; no owner signature on this entry); queue rule 21 (OWNER 2026-10-14: \"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\")",
+      "by": "owner (Matthew Jackson), 2026-10-27 billing standing rule; previously ruling:\u00a7MONEY IS LEDGER \u00d7 RATE CARD (registered under a standing ruling; no owner signature on this entry); queue rule 21 (OWNER 2026-10-14: \"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\")",
       "cells": "^llm\\|openai\\|openai\\|request\\|transcription_metered$",
       "expected_cells": 0,
       "classes": [
@@ -2468,7 +2468,7 @@
         "when": "2026-10-27",
         "ruling": "OWNER BILLING STANDING RULE 2026-10-27 (recorded ~/Developer/tmp/cleanup/NEXT.md, \"never ask again\"): \"dialects control what was done and ledger what was done. we bill by that. if a dialect did something its ledgered. this isn't ever a decision.\" Billing completeness is never a per-entry owner question; this entry is covered by that rule.",
         "previous": {
-          "who": "ruling:§MONEY IS LEDGER × RATE CARD",
+          "who": "ruling:\u00a7MONEY IS LEDGER \u00d7 RATE CARD",
           "when": "2026-10-14",
           "ruling": "queue rule 21 (MONEY, OWNER 2026-10-14): never an owner question; fix to ledger x rate card and register the cell citing the ruling"
         }
@@ -2514,7 +2514,7 @@
         "effects.usage",
         "effects.metrics"
       ],
-      "rationale": "v1.5.5 crates/busbar/src/proxy/response_body.rs:279-283 set `stream_failed` on an upstream transport error after the first byte of a streamed answer, which suppressed the Drop-time token billing: the caller was billed no tokens for what had streamed (the request fee and, on a streamed answer, the request-budget unit were kept). Spec Part 2 #62 (OWNER-LOCKED 2026-09-20, BUSBAR-1.6.0.md l.2252: a stream cut off mid-answer, breaker and timeout named among the causes, bills for what was actually delivered up to the cut; the plane reports the units actually streamed) governs 1.6.0: the kernel's far end marks a cut answer's last piece PIECE_CUT (status row 155, ARCHITECT 2026-10-13), and the llm plane ends the caller's answer in 1.5.5's in-band error and reports the units its stream stated to the caller up to the cut; units the far end produced that never reached the caller are not counted. The request fee and the budget unit are unchanged from 1.5.5. A buffered answer cut mid-body is unchanged: the caller's 502, no tokens. The six `llm|<d>|<d>|request|stream_upstream_cut` cells drop the upstream connection after the first event of a stream (busbar-release #352; golden-add run 38488778377). One diverges: anthropic's first event states 11 input tokens, which 1.6.0 bills and 1.5.5 did not. The other five state no usage before the cut (gemini's first frame states its whole usage, which 1.5.5 billed too), so their usage is 1.5.5's. The premise probes the existing streamed failover cell. The signed line, BUSBAR-1.6.0.md l.2252 (Part 2 #62), verbatim: \"A mid-stream cut is NOT a refund — the customer pays for what actually streamed. OWNER-LOCKED 2026-09-20 (\"LOCKED AGREED\").\" and \"busbar bills for what was actually delivered up to the cut — it does not refund or zero the charge.\" NARROWED 2026-10-27 (ORACLE-116 review): the class blanket becomes a precise `values` spec (busbar-release #441, judge d4f6410f+): each pointer is forgiven only from its exact golden value to its exact candidate value, measured on the dev oracle report of 2026-10-27; any other figure, series or member on these cells stays a divergence. The figure is pinned: /effects/usage/spend_cents -> 110, /effects/usage/tokens -> 11.",
+      "rationale": "v1.5.5 crates/busbar/src/proxy/response_body.rs:279-283 set `stream_failed` on an upstream transport error after the first byte of a streamed answer, which suppressed the Drop-time token billing: the caller was billed no tokens for what had streamed (the request fee and, on a streamed answer, the request-budget unit were kept). Spec Part 2 #62 (OWNER-LOCKED 2026-09-20, BUSBAR-1.6.0.md l.2252: a stream cut off mid-answer, breaker and timeout named among the causes, bills for what was actually delivered up to the cut; the plane reports the units actually streamed) governs 1.6.0: the kernel's far end marks a cut answer's last piece PIECE_CUT (status row 155, ARCHITECT 2026-10-13), and the llm plane ends the caller's answer in 1.5.5's in-band error and reports the units its stream stated to the caller up to the cut; units the far end produced that never reached the caller are not counted. The request fee and the budget unit are unchanged from 1.5.5. A buffered answer cut mid-body is unchanged: the caller's 502, no tokens. The six `llm|<d>|<d>|request|stream_upstream_cut` cells drop the upstream connection after the first event of a stream (busbar-release #352; golden-add run 38488778377). One diverges: anthropic's first event states 11 input tokens, which 1.6.0 bills and 1.5.5 did not. The other five state no usage before the cut (gemini's first frame states its whole usage, which 1.5.5 billed too), so their usage is 1.5.5's. The premise probes the existing streamed failover cell. The signed line, BUSBAR-1.6.0.md l.2252 (Part 2 #62), verbatim: \"A mid-stream cut is NOT a refund \u2014 the customer pays for what actually streamed. OWNER-LOCKED 2026-09-20 (\"LOCKED AGREED\").\" and \"busbar bills for what was actually delivered up to the cut \u2014 it does not refund or zero the charge.\" NARROWED 2026-10-27 (ORACLE-116 review): the class blanket becomes a precise `values` spec (busbar-release #441, judge d4f6410f+): each pointer is forgiven only from its exact golden value to its exact candidate value, measured on the dev oracle report of 2026-10-27; any other figure, series or member on these cells stays a divergence. The figure is pinned: /effects/usage/spend_cents -> 110, /effects/usage/tokens -> 11.",
       "premise": {
         "cell": "route.failover|fb|member-down-stream-openai",
         "status": 200
@@ -2635,7 +2635,7 @@
       "id": "S-16b relayed upstream server/date on the raw header-order cells",
       "kind": "breaking",
       "changelog": "On a same-dialect route the caller receives every upstream response header except hop-by-hop fields, Content-Length, Content-Encoding and the dialect's tenant- and credential-derived headers; 1.5.5 relayed only Content-Type and the dialect's request-id headers.",
-      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-02), F2 response headers; ARCHITECT ruling 2026-10-02 (FOLD-LLM option B) ; applied to ops.raw|header-order and route.cheapest|card-swap, owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"",
+      "by": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-02), F2 response headers; ARCHITECT ruling 2026-10-02 (FOLD-LLM option B) ; applied to ops.raw|header-order and route.cheapest|card-swap, owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"",
       "cells": "^(ops\\.raw\\|header-order|route\\.cheapest\\|card-swap|webrequest\\|gate\\|(abstain|order|prompt-ro|sidecar-500-nothing|sidecar-500-reject)|webrequest\\|tap\\|notify|webrequest\\|transform\\|rewrite)$",
       "expected_cells": 9,
       "classes": [
@@ -2663,7 +2663,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+        "who": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
         "when": "2026-10-02",
         "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-02, pre-approved register entries), F2 response headers; applied by ARCHITECT ruling 2026-10-02 (FOLD-LLM option B); applied to the two raw header-order cells 2026-10-05 (owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\")"
       },
@@ -2676,7 +2676,7 @@
       "id": "DF-WIRE same-dialect request bodies are the caller's bytes",
       "kind": "improvement",
       "changelog": "A same-dialect request reaches the upstream as the caller's own bytes.",
-      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-02) + R4 (invisible to upstreams except what busbar governs) ; route.529|failover|primary named owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\" ; route.cheapest|card-swap named by the ARCHITECT 2026-10-05 under the same premise",
+      "by": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-02) + R4 (invisible to upstreams except what busbar governs) ; route.529|failover|primary named owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\" ; route.cheapest|card-swap named by the ARCHITECT 2026-10-05 under the same premise",
       "cells": "^(route\\.529\\|failover\\|primary|route\\.cheapest\\|card-swap|webrequest\\|gate\\|abstain|webrequest\\|gate\\|order|webrequest\\|gate\\|prompt-ro|webrequest\\|gate\\|sidecar-500-nothing|webrequest\\|gate\\|sidecar-500-reject|webrequest\\|tap\\|notify|webrequest\\|transform\\|rewrite)$",
       "expected_cells": 9,
       "classes": [
@@ -2715,7 +2715,7 @@
         ]
       },
       "signoff": {
-        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+        "who": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
         "when": "2026-10-02",
         "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-02) + R4 (HARD RULE invisible to upstreams, 2026-10-02); DIALECT-FIDELITY-DESIGN FINAL F2/F6; route.529|failover|primary named 2026-10-05 (owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"); route.cheapest|card-swap named 2026-10-05 by the ARCHITECT under the existing premise",
         "widened_2026_10_24": {
@@ -2745,7 +2745,7 @@
       "id": "DF-WIRE-UA same-dialect capture hops carry the caller's user-agent and accept (narrowed out of DF-WIRE)",
       "kind": "improvement",
       "changelog": "A same-dialect request reaches the upstream as the caller's own bytes.",
-      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-02) + R4 (invisible to upstreams except what busbar governs) ; route.529|failover|primary named owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\" ; route.cheapest|card-swap named by the ARCHITECT 2026-10-05 under the same premise",
+      "by": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-02) + R4 (invisible to upstreams except what busbar governs) ; route.529|failover|primary named owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\" ; route.cheapest|card-swap named by the ARCHITECT 2026-10-05 under the same premise",
       "cells": "^(route\\.529\\|failover\\|primary|route\\.cheapest\\|card-swap|webrequest\\|gate\\|abstain|webrequest\\|gate\\|order|webrequest\\|gate\\|prompt-ro|webrequest\\|gate\\|sidecar-500-nothing|webrequest\\|gate\\|sidecar-500-reject|webrequest\\|tap\\|notify|webrequest\\|transform\\|rewrite)$",
       "expected_cells": 9,
       "classes": [
@@ -2795,7 +2795,7 @@
         ]
       },
       "signoff": {
-        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+        "who": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
         "when": "2026-10-02",
         "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-02) + R4 (HARD RULE invisible to upstreams, 2026-10-02); DIALECT-FIDELITY-DESIGN FINAL F2/F6; route.529|failover|primary named 2026-10-05 (owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"); route.cheapest|card-swap named 2026-10-05 by the ARCHITECT under the existing premise",
         "widened_2026_10_24": {
@@ -2814,7 +2814,7 @@
       "id": "DF-DROP an untranslatable content block is dropped, not sent as empty text",
       "kind": "improvement",
       "changelog": "A request translated between LLM dialects no longer carries an empty text block in place of a content block the target dialect cannot represent, and an answer translated back no longer delivers one; the block is dropped with a warning and an audit row naming its wire path.",
-      "by": "owner (Matthew Jackson), 2026-10-27 \"Sign all 5\"; previously ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); design DIALECT-FIDELITY F3 Drops",
+      "by": "owner (Matthew Jackson), 2026-10-27 \"Sign all 5\"; previously ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); design DIALECT-FIDELITY F3 Drops",
       "cells": "^llm\\.unmodelled-block\\|(anthropic|openai)\\|(bedrock|cohere|gemini|openai|anthropic)$",
       "expected_cells": 0,
       "classes": [
@@ -2830,7 +2830,7 @@
         "when": "2026-10-27",
         "ruling": "OWNER SIGNED 2026-10-27 (in session, recorded ~/Developer/tmp/cleanup/NEXT.md \"2026-10-27 owner answers\"): \"Sign all 5\" (DF-DROP, DF-SITES, FID-CHAT, FID-RESPONSES, FID-GEMINI), the behaviour as this entry states it",
         "previous": {
-          "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+          "who": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
           "when": "2026-10-01",
           "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-01T23:45Z, escalate.q:114)"
         }
@@ -2844,7 +2844,7 @@
       "id": "DF-SITES no value is substituted for one the target dialect cannot carry",
       "kind": "breaking",
       "changelog": "A request translated between LLM dialects no longer has a value substituted for one the target dialect cannot carry: an image whose format Bedrock Converse does not accept is dropped instead of relabelled `png`, and a Gemini `thinkingBudget: -1` (\"the model decides\") is dropped on a target with no such setting instead of sent as the `medium` effort; each drop is warned and audited by its wire path. A wrong-typed Gemini `thinkingBudget` or Anthropic image `media_type` is answered with the caller's own 400 error instead of being translated.",
-      "by": "owner (Matthew Jackson), 2026-10-27 \"Sign all 5\"; previously ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); design DIALECT-FIDELITY F3 Drops (never a substitution); spec Part 2 #76 (wrong-typed input = native error envelope)",
+      "by": "owner (Matthew Jackson), 2026-10-27 \"Sign all 5\"; previously ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); design DIALECT-FIDELITY F3 Drops (never a substitution); spec Part 2 #76 (wrong-typed input = native error envelope)",
       "cells": "^llm\\.no-substitution\\|(anthropic|openai|responses|gemini|cohere)\\|(bedrock|openai|responses|anthropic)$",
       "expected_cells": 0,
       "classes": [
@@ -2861,7 +2861,7 @@
         "when": "2026-10-27",
         "ruling": "OWNER SIGNED 2026-10-27 (in session, recorded ~/Developer/tmp/cleanup/NEXT.md \"2026-10-27 owner answers\"): \"Sign all 5\" (DF-DROP, DF-SITES, FID-CHAT, FID-RESPONSES, FID-GEMINI), the behaviour as this entry states it",
         "previous": {
-          "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+          "who": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
           "when": "2026-10-01",
           "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-01T23:45Z, escalate.q:114)"
         }
@@ -2875,7 +2875,7 @@
       "id": "PLANELOG the llm plane's warnings are written to its own plugin log file",
       "kind": "improvement",
       "changelog": "1.6.0 Changed: a plugin's log lines, the LLM plane's included (it is a plugin in 1.6.0), are written to that plugin's own log file under `plugins.logs.dir` (for example `logs/plugins/llm.log`), not to the Busbar log.",
-      "by": "ruling:§OWNER 2026-09-28 amends PLUGIN LOGGING (registered under a standing ruling; no owner signature on this entry); signed 2026-10-04 (PLANELOG, OWNER SIGNED on the p3-flip-llm park); 2026-09-28 PLUGIN LOGGING amendment (\"all plugins should log to their plugin's log file\"), #85",
+      "by": "ruling:\u00a7OWNER 2026-09-28 amends PLUGIN LOGGING (registered under a standing ruling; no owner signature on this entry); signed 2026-10-04 (PLANELOG, OWNER SIGNED on the p3-flip-llm park); 2026-09-28 PLUGIN LOGGING amendment (\"all plugins should log to their plugin's log file\"), #85",
       "cells": "^egress\\.image-detail\\|high\\|(anthropic|gemini)$",
       "expected_cells": 2,
       "classes": [
@@ -2908,7 +2908,7 @@
         ]
       },
       "signoff": {
-        "who": "ruling:§OWNER 2026-09-28 amends PLUGIN LOGGING",
+        "who": "ruling:\u00a7OWNER 2026-09-28 amends PLUGIN LOGGING",
         "when": "2026-10-04",
         "ruling": "OWNER SIGNED 2026-10-04 (PLANELOG): the llm plane's warnings move to its own plugin log file per the 2026-09-28 PLUGIN LOGGING amendment, #85 'log changes from 1.5.5' (BUSBAR-1.6.0.md)"
       },
@@ -3099,20 +3099,20 @@
       "id": "EGRESS-WIDEN the one destination guard also judges a2a peer fetches, streaming upstreams and duplex dials",
       "kind": "breaking",
       "changelog": "1.6.0 Breaking: the destination guard now also judges an A2A peer's fetches, a streaming upstream and a duplex or WebSocket dial, so a private, loopback or cloud-metadata destination there is refused unless the configuration allows it, as a private provider host is.",
-      "by": "ruling:§Destination guard — ONE check for every outbound connection (registered under a standing ruling; no owner signature on this entry); 2026-10-07 in-session signature: egress widening (one guard for every dial); staged by the ARCHITECT 2026-10-07T23:05Z (E1 parity)",
+      "by": "ruling:\u00a7Destination guard \u2014 ONE check for every outbound connection (registered under a standing ruling; no owner signature on this entry); 2026-10-07 in-session signature: egress widening (one guard for every dial); staged by the ARCHITECT 2026-10-07T23:05Z (E1 parity)",
       "cells": "^egress\\.guard\\|(a2a-peer-fetch|streaming-upstream|duplex-dial)\\|private$",
       "expected_cells": 0,
       "classes": [
         "status",
         "body"
       ],
-      "rationale": "The OWNER DESTINATION GUARD ruling (2026-10-02, BUSBAR-1.6.0.md \"Destination guard — ONE check for every outbound connection\") puts every outbound connection through the one guard in the connector, and the owner signed its 1.5.5 default for provider and IdP hosts then. The ARCHITECT's E1 parity work (2026-10-07T23:05Z) staged the remaining widening for the owner, unsigned: the same guard, with its private, loopback and cloud-metadata refusal, also covers an A2A peer's agent-card and task fetches, a streaming upstream and a duplex or WebSocket dial. The owner signed it in-session on 2026-10-07 (\"egress widening, one guard for every dial\"). As for a private provider host, the configuration is the escape hatch (`advanced.allow_destinations`; an A2A registration's own `allow_private` for its private or loopback reach), and cloud metadata is refused whatever `block_private_addresses` says unless an IP or CIDR allowlist entry names it. A refused dial is a refused exchange, so status and body are accepted (kind breaking). CELLS: none moves. The a2a fence and streams cells reach their loopback capture mocks, and every 1.6-line oracle run is handed `advanced.allow_destinations: [\"127.0.0.1\"]` (oracle-rust.pin, owner-approved 2026-10-04), so those dials are allowlisted exactly as a private provider host would be; the egress.* cells are provider and IdP dials the 2026-10-02 signature already covers. No 1.5.5 cell dials a private A2A peer, streaming upstream or duplex target, so `cells` names the owed cell ids and expected_cells is 0 (HOOK-Q1, AUTH-ROW). A `classes` scope with no `cells` was not used: the differ would read `.` and forgive status and body on all 2518 cells. The premise pins that an allowlisted loopback provider is still reached and answers as 1.5.5 did.",
+      "rationale": "The OWNER DESTINATION GUARD ruling (2026-10-02, BUSBAR-1.6.0.md \"Destination guard \u2014 ONE check for every outbound connection\") puts every outbound connection through the one guard in the connector, and the owner signed its 1.5.5 default for provider and IdP hosts then. The ARCHITECT's E1 parity work (2026-10-07T23:05Z) staged the remaining widening for the owner, unsigned: the same guard, with its private, loopback and cloud-metadata refusal, also covers an A2A peer's agent-card and task fetches, a streaming upstream and a duplex or WebSocket dial. The owner signed it in-session on 2026-10-07 (\"egress widening, one guard for every dial\"). As for a private provider host, the configuration is the escape hatch (`advanced.allow_destinations`; an A2A registration's own `allow_private` for its private or loopback reach), and cloud metadata is refused whatever `block_private_addresses` says unless an IP or CIDR allowlist entry names it. A refused dial is a refused exchange, so status and body are accepted (kind breaking). CELLS: none moves. The a2a fence and streams cells reach their loopback capture mocks, and every 1.6-line oracle run is handed `advanced.allow_destinations: [\"127.0.0.1\"]` (oracle-rust.pin, owner-approved 2026-10-04), so those dials are allowlisted exactly as a private provider host would be; the egress.* cells are provider and IdP dials the 2026-10-02 signature already covers. No 1.5.5 cell dials a private A2A peer, streaming upstream or duplex target, so `cells` names the owed cell ids and expected_cells is 0 (HOOK-Q1, AUTH-ROW). A `classes` scope with no `cells` was not used: the differ would read `.` and forgive status and body on all 2518 cells. The premise pins that an allowlisted loopback provider is still reached and answers as 1.5.5 did.",
       "premise": {
         "cell": "llm|openai|openai|request|ok",
         "status": 200
       },
       "signoff": {
-        "who": "ruling:§Destination guard — ONE check for every outbound connection",
+        "who": "ruling:\u00a7Destination guard \u2014 ONE check for every outbound connection",
         "when": "2026-10-07",
         "ruling": "2026-10-07 OWNER SIGNED in-session: egress widening (one guard for every dial), the unsigned accepted difference the ARCHITECT staged 2026-10-07T23:05Z (E1 parity)"
       },
@@ -3769,7 +3769,7 @@
       "id": "FID-CHAT translated Chat answers and requests carry the Chat members the IR maps",
       "kind": "improvement",
       "changelog": "A translated OpenAI Chat answer carries a model refusal in `message.refusal` / `delta.refusal` and the serving `service_tier`, an image answer omits `created` when the upstream sent none, and a translated request keeps a `developer` system prompt in the `developer` role.",
-      "by": "owner (Matthew Jackson), 2026-10-27 \"Sign all 5\"; previously ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); 2026-10-02: THE LLM DIALECT FIDELITY RULE (docs/design/BUSBAR-1.6.0.md:4768-4774)",
+      "by": "owner (Matthew Jackson), 2026-10-27 \"Sign all 5\"; previously ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); 2026-10-02: THE LLM DIALECT FIDELITY RULE (docs/design/BUSBAR-1.6.0.md:4768-4774)",
       "cells": "^llm\\.fidelity\\|openai\\|(refusal|service-tier|image-created|developer-role)$",
       "expected_cells": 0,
       "classes": [
@@ -3785,7 +3785,7 @@
         "when": "2026-10-27",
         "ruling": "OWNER SIGNED 2026-10-27 (in session, recorded ~/Developer/tmp/cleanup/NEXT.md \"2026-10-27 owner answers\"): \"Sign all 5\" (DF-DROP, DF-SITES, FID-CHAT, FID-RESPONSES, FID-GEMINI), the behaviour as this entry states it",
         "previous": {
-          "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+          "who": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
           "when": "2026-10-02",
           "ruling": "THE LLM DIALECT FIDELITY RULE (owner 2026-10-02, standing, no per-item sign-off), docs/design/BUSBAR-1.6.0.md:4768-4774"
         }
@@ -3799,7 +3799,7 @@
       "id": "FID-RESPONSES translated Responses requests and answers carry the Responses members the IR maps",
       "kind": "improvement",
       "changelog": "A translated OpenAI Responses request keeps a `developer` system prompt as a `developer` input item and sends a JSON tool result as the `function_call_output` text, and a translated Responses stream ends at `response.failed` and names the serving `service_tier`.",
-      "by": "owner (Matthew Jackson), 2026-10-27 \"Sign all 5\"; previously ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); 2026-10-02: THE LLM DIALECT FIDELITY RULE (docs/design/BUSBAR-1.6.0.md:4768-4774)",
+      "by": "owner (Matthew Jackson), 2026-10-27 \"Sign all 5\"; previously ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); 2026-10-02: THE LLM DIALECT FIDELITY RULE (docs/design/BUSBAR-1.6.0.md:4768-4774)",
       "cells": "^llm\\.fidelity\\|responses\\|(developer-item|json-tool-output|failed-terminal|service-tier)$",
       "expected_cells": 0,
       "classes": [
@@ -3815,7 +3815,7 @@
         "when": "2026-10-27",
         "ruling": "OWNER SIGNED 2026-10-27 (in session, recorded ~/Developer/tmp/cleanup/NEXT.md \"2026-10-27 owner answers\"): \"Sign all 5\" (DF-DROP, DF-SITES, FID-CHAT, FID-RESPONSES, FID-GEMINI), the behaviour as this entry states it",
         "previous": {
-          "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+          "who": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
           "when": "2026-10-02",
           "ruling": "THE LLM DIALECT FIDELITY RULE (owner 2026-10-02, standing, no per-item sign-off), docs/design/BUSBAR-1.6.0.md:4768-4774"
         }
@@ -3829,7 +3829,7 @@
       "id": "FID-GEMINI translated Gemini requests and answers carry the Gemini members the IR maps",
       "kind": "improvement",
       "changelog": "A translated Gemini request or answer carries `functionCall.id` / `functionResponse.id`, a failed tool result as `functionResponse.response.error`, a `fileData.mimeType`, the caller's transcription prompt and temperature, and reads Vertex `createTime`, a `functionResponse.id` as the call id, and the image content-policy stops as safety stops.",
-      "by": "owner (Matthew Jackson), 2026-10-27 \"Sign all 5\"; previously ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); 2026-10-02: THE LLM DIALECT FIDELITY RULE (docs/design/BUSBAR-1.6.0.md:4768-4774)",
+      "by": "owner (Matthew Jackson), 2026-10-27 \"Sign all 5\"; previously ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); 2026-10-02: THE LLM DIALECT FIDELITY RULE (docs/design/BUSBAR-1.6.0.md:4768-4774)",
       "cells": "^llm\\.fidelity\\|gemini\\|(call-ids|response-error|filedata-mime|transcription-prompt|create-time|image-policy-stops)$",
       "expected_cells": 0,
       "classes": [
@@ -3845,7 +3845,7 @@
         "when": "2026-10-27",
         "ruling": "OWNER SIGNED 2026-10-27 (in session, recorded ~/Developer/tmp/cleanup/NEXT.md \"2026-10-27 owner answers\"): \"Sign all 5\" (DF-DROP, DF-SITES, FID-CHAT, FID-RESPONSES, FID-GEMINI), the behaviour as this entry states it",
         "previous": {
-          "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+          "who": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
           "when": "2026-10-02",
           "ruling": "THE LLM DIALECT FIDELITY RULE (owner 2026-10-02, standing, no per-item sign-off), docs/design/BUSBAR-1.6.0.md:4768-4774"
         }
@@ -3859,7 +3859,7 @@
       "id": "R-22 a translated Anthropic stream's error event carries request_id",
       "kind": "improvement",
       "changelog": "A translated Anthropic stream that fails part way ends with an `error` event that carries a `request_id`, as Anthropic's published ErrorResponse requires.",
-      "by": "ruling:§NAMED CONFORMANCE GAPS ARE 0 (registered under a standing ruling; no owner signature on this entry); rule 22 (2026-10-14): named conformance gaps must be zero; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS)",
+      "by": "ruling:\u00a7NAMED CONFORMANCE GAPS ARE 0 (registered under a standing ruling; no owner signature on this entry); rule 22 (2026-10-14): named conformance gaps must be zero; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS)",
       "cells": "^llm\\|anthropic\\|anthropic\\|request\\|stream_upstream_cut$",
       "expected_cells": 1,
       "classes": [
@@ -3871,7 +3871,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "ruling:§NAMED CONFORMANCE GAPS ARE 0",
+        "who": "ruling:\u00a7NAMED CONFORMANCE GAPS ARE 0",
         "when": "2026-10-14",
         "ruling": "OWNER rule 22 (2026-10-14): named conformance gaps must be 0, a gap is a defect to fix; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS: the anthropic writer's error frame)"
       },
@@ -3884,13 +3884,13 @@
       "id": "GEN-LIMITS an apply's limits are in force only once its generation is live",
       "kind": "improvement",
       "changelog": "A configuration apply puts its `limits:` in force only when the new configuration goes live: while it is validated and built, and when it is refused, live traffic keeps the running configuration's limits.",
-      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md THE DESIGN §6 item 8 (l.980-982); applied by coordinator ruling 2026-10-19 (Q128 p1#6/p12#4, PR #1208)",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md THE DESIGN \u00a76 item 8 (l.980-982); applied by coordinator ruling 2026-10-19 (Q128 p1#6/p12#4, PR #1208)",
       "cells": "^admin\\.ops\\|(PostConfigApply|PutConfigSettings)\\|limits-refused-in-flight$",
       "expected_cells": 0,
       "classes": [
         "body"
       ],
-      "rationale": "v1.5.5 installed a candidate configuration's operational limits process-wide BEFORE validating it (crates/busbar/src/main.rs:2704 `limits::InstallGuard::install(&cfg.limits)` ahead of :2711 `config_validate::validate(&cfg)` at the v1.5.5 tag) and kept them in force for the whole build, rolling back only when the build failed. So while an apply was being validated and built — including one that was then refused — requests served by the running generation read the candidate's body caps, gauge limit, probe timings and hook content ceiling. BUSBAR-1.6.0.md THE DESIGN §6 item 8 (l.980-982): a reload 'builds and checks new lists, swaps them in atomically — requests already inside finish on the old ones — and is refused, leaving the running generation serving, if any check fails'. 1.6.0 validates first, reads the candidate's limits through a build-scoped view no other thread sees (busbar_kernel::config::limits::BuildScope), and publishes them only when the generation goes live (AppHandle::swap, InstalledLimits::keep). The steady state is identical: an accepted apply's limits are in force from its swap, a refused one never changes a live limit. Only the transient window during an apply differs. No oracle cell observes a request served DURING an apply, so the cells are OWED: `cells` names them and expected_cells is 0, the way R-22 writes owed cells. The premise probes the existing successful apply cell. Proof: crates/busbar-kernel/src/tests/tests.rs a_built_generations_limits_are_in_force_only_once_it_is_live. SIGNED 2026-10-27 by the owner; behaviour and scope unchanged.",
+      "rationale": "v1.5.5 installed a candidate configuration's operational limits process-wide BEFORE validating it (crates/busbar/src/main.rs:2704 `limits::InstallGuard::install(&cfg.limits)` ahead of :2711 `config_validate::validate(&cfg)` at the v1.5.5 tag) and kept them in force for the whole build, rolling back only when the build failed. So while an apply was being validated and built \u2014 including one that was then refused \u2014 requests served by the running generation read the candidate's body caps, gauge limit, probe timings and hook content ceiling. BUSBAR-1.6.0.md THE DESIGN \u00a76 item 8 (l.980-982): a reload 'builds and checks new lists, swaps them in atomically \u2014 requests already inside finish on the old ones \u2014 and is refused, leaving the running generation serving, if any check fails'. 1.6.0 validates first, reads the candidate's limits through a build-scoped view no other thread sees (busbar_kernel::config::limits::BuildScope), and publishes them only when the generation goes live (AppHandle::swap, InstalledLimits::keep). The steady state is identical: an accepted apply's limits are in force from its swap, a refused one never changes a live limit. Only the transient window during an apply differs. No oracle cell observes a request served DURING an apply, so the cells are OWED: `cells` names them and expected_cells is 0, the way R-22 writes owed cells. The premise probes the existing successful apply cell. Proof: crates/busbar-kernel/src/tests/tests.rs a_built_generations_limits_are_in_force_only_once_it_is_live. SIGNED 2026-10-27 by the owner; behaviour and scope unchanged.",
       "premise": {
         "cell": "admin.ops|PostConfigApply|ok",
         "status": 200
@@ -3902,7 +3902,7 @@
         "previous": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-19",
-          "ruling": "BUSBAR-1.6.0.md THE DESIGN §6 item 8 (l.980-982), applied by coordinator ruling 2026-10-19 (Q128 p1#6/p12#4: keep the fix over 1.5.5's install-before-validate, v1.5.5 main.rs:2704/2711); not a fresh owner signature"
+          "ruling": "BUSBAR-1.6.0.md THE DESIGN \u00a76 item 8 (l.980-982), applied by coordinator ruling 2026-10-19 (Q128 p1#6/p12#4: keep the fix over 1.5.5's install-before-validate, v1.5.5 main.rs:2704/2711); not a fresh owner signature"
         }
       },
       "expires": {
@@ -4291,7 +4291,7 @@
         "cell": "export|request-log-webhook|loopback-refused",
         "body_contains": "busbar: 1 models"
       },
-      "rationale": "OWNER 2026-10-24 (in session): plugins log to their own files, busbar to its own (BUSBAR-1.6.0.md §11.2). The refused sink still delivers nothing; only where its line is written moved. NARROWED 2026-10-27 (ORACLE-116 review, ~/Developer/tmp/cleanup/core/ORACLE-116-REVIEW.md): the body blanket forgave the whole capture, including the upstream list that proves nothing was delivered to the loopback sink. It is now a transform on the busbar.log read only: a busbar.log that ends at the store warning reads as ending with 1.5.5's refusal line. The upstream list (no delivery to the sink), the status and every other line stay judged.",
+      "rationale": "OWNER 2026-10-24 (in session): plugins log to their own files, busbar to its own (BUSBAR-1.6.0.md \u00a711.2). The refused sink still delivers nothing; only where its line is written moved. NARROWED 2026-10-27 (ORACLE-116 review, ~/Developer/tmp/cleanup/core/ORACLE-116-REVIEW.md): the body blanket forgave the whole capture, including the upstream list that proves nothing was delivered to the loopback sink. It is now a transform on the busbar.log read only: a busbar.log that ends at the store warning reads as ending with 1.5.5's refusal line. The upstream list (no delivery to the sink), the status and every other line stay judged.",
       "transform": {
         "candidate": [
           [
@@ -4396,7 +4396,7 @@
         "cell": "admin.plugins|type-store@hooks-webrequest",
         "status": 200
       },
-      "rationale": "OWNER 2026-10-24 (in session): the manifest's abi_version under the memory ABI (BUSBAR-1.6.0.md §11.1). WIDENED 2026-10-24 (OWNER, in session): boot.warning|BOOT-W24|boot, whose JSON body carries the store plugin's #34 name and its contract's interface_version 3; the judge's text transforms do not reach a JSON body. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged."
+      "rationale": "OWNER 2026-10-24 (in session): the manifest's abi_version under the memory ABI (BUSBAR-1.6.0.md \u00a711.1). WIDENED 2026-10-24 (OWNER, in session): boot.warning|BOOT-W24|boot, whose JSON body carries the store plugin's #34 name and its contract's interface_version 3; the judge's text transforms do not reach a JSON body. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged."
     },
     {
       "id": "N34-WEBREQUEST plugin name busbar-webrequest -> busbar-hook-webrequest",
@@ -6075,7 +6075,7 @@
       "id": "LLM-FIDELITY-20261102 Bedrock document label",
       "kind": "improvement",
       "changelog": "Cross-dialect Bedrock document requests use a neutral attachment label when the source filename is not a valid native document name.",
-      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under standing owner authority; no new owner signature claimed)",
+      "by": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under standing owner authority; no new owner signature claimed)",
       "cells": "^llm\\.fidelity\\|bedrock\\|openai\\|document\\-name$",
       "expected_cells": 0,
       "classes": [
@@ -6087,7 +6087,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+        "who": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
         "when": "2026-11-02",
         "ruling": "Standing fidelity rule preapproves protocol-shaped cross-dialect byte moves; root execution direction2026-11-02 requires per-case register evidence. No per-item owner signature manufactured."
       },
@@ -6100,7 +6100,7 @@
       "id": "LLM-FIDELITY-20261102 Cohere citations to Anthropic",
       "kind": "improvement",
       "changelog": "Cross-dialect Anthropic answers omit unrepresentable citations with a named warning and audit record instead of inventing source indices.",
-      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under standing owner authority; no new owner signature claimed)",
+      "by": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under standing owner authority; no new owner signature claimed)",
       "cells": "^llm\\.fidelity\\|anthropic\\|cohere\\|citation\\-no\\-document\\-index$",
       "expected_cells": 0,
       "classes": [
@@ -6112,7 +6112,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+        "who": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
         "when": "2026-11-02",
         "ruling": "Standing fidelity rule preapproves protocol-shaped cross-dialect byte moves; root execution direction2026-11-02 requires per-case register evidence. No per-item owner signature manufactured."
       },
@@ -6125,7 +6125,7 @@
       "id": "LLM-FIDELITY-20261102 Gemini citations to Anthropic",
       "kind": "improvement",
       "changelog": "Cross-dialect Anthropic answers omit unrepresentable citations with a named warning and audit record instead of inventing source indices.",
-      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under standing owner authority; no new owner signature claimed)",
+      "by": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under standing owner authority; no new owner signature claimed)",
       "cells": "^llm\\.fidelity\\|anthropic\\|gemini\\|citation\\-no\\-encrypted\\-index$",
       "expected_cells": 0,
       "classes": [
@@ -6137,7 +6137,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+        "who": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
         "when": "2026-11-02",
         "ruling": "Standing fidelity rule preapproves protocol-shaped cross-dialect byte moves; root execution direction2026-11-02 requires per-case register evidence. No per-item owner signature manufactured."
       },
@@ -6150,7 +6150,7 @@
       "id": "LLM-FIDELITY-20261102 Cohere citations to Bedrock",
       "kind": "improvement",
       "changelog": "Cross-dialect Bedrock citations use source web locations without reinterpreting answer offsets as source-document coordinates.",
-      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under standing owner authority; no new owner signature claimed)",
+      "by": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under standing owner authority; no new owner signature claimed)",
       "cells": "^llm\\.fidelity\\|bedrock\\|cohere\\|citation\\-answer\\-offsets$",
       "expected_cells": 0,
       "classes": [
@@ -6162,7 +6162,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+        "who": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
         "when": "2026-11-02",
         "ruling": "Standing fidelity rule preapproves protocol-shaped cross-dialect byte moves; root execution direction2026-11-02 requires per-case register evidence. No per-item owner signature manufactured."
       },
@@ -6175,7 +6175,7 @@
       "id": "LLM-FIDELITY-20261102 malformed OpenAI tool input to Anthropic",
       "kind": "breaking",
       "changelog": "Cross-dialect Anthropic delivery refuses malformed tool arguments with a native error while retaining provider-reported work.",
-      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under standing owner authority; no new owner signature claimed)",
+      "by": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under standing owner authority; no new owner signature claimed)",
       "cells": "^llm\\.fidelity\\|anthropic\\|openai\\|malformed\\-tool\\-arguments$",
       "expected_cells": 0,
       "classes": [
@@ -6188,7 +6188,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+        "who": "ruling:\u00a7OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
         "when": "2026-11-02",
         "ruling": "Standing fidelity rule preapproves protocol-shaped cross-dialect byte moves; root execution direction2026-11-02 requires per-case register evidence. No per-item owner signature manufactured."
       },
@@ -6196,6 +6196,375 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "R10-MINT-UPSTREAM local credential mint makes no provider credential request",
+      "kind": "improvement",
+      "changelog": null,
+      "changelog_reason": "A dated 1.6.0-pre streams baseline row. No published 1.5.5 cell changes.",
+      "by": "owner (Matthew Jackson), direct owner-signed 2026-10-31 (apprved)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-31",
+        "ruling": "Owner directly approved F after explanation: when Busbar issues its own short-lived session credential, remove the one provider POST /v1/realtime/client_secrets recorded in streams|mint|client-secrets. See SIGN-ga-session.md direct approval F."
+      },
+      "expires": {
+        "baseline": "1.6.0-pre",
+        "by": "2026-12-31"
+      },
+      "cells": "^streams\\|mint\\|client-secrets$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "streams|mint|client-secrets",
+            "pointer": "/steps/0/status",
+            "equals": 200
+          },
+          {
+            "cell": "streams|mint|client-secrets",
+            "pointer": "/upstream",
+            "equals": []
+          }
+        ]
+      },
+      "rationale": "Owner signed removal of the unnecessary provider credential request because Busbar issues its own short-lived credential. Only the exact recorded upstream array becomes empty. Client status, credential value and shape, expiry, response length, headers, effects and all other leaves retain their existing independent comparisons and acceptances.",
+      "values": [
+        {
+          "pointer": "/body/json/upstream",
+          "golden": [
+            {
+              "answered": 200,
+              "body": "{\"expires_after\":{\"anchor\":\"created_at\",\"seconds\":600},\"session\":{\"model\":\"m-cap\"}}",
+              "headers": [
+                [
+                  "authorization",
+                  "Bearer oracle-cred-streams-0002"
+                ],
+                [
+                  "content-type",
+                  "application/json"
+                ],
+                [
+                  "openai-safety-identifier",
+                  "<OWNER>"
+                ],
+                [
+                  "host",
+                  "127.0.0.1:<PORT>"
+                ],
+                [
+                  "content-length",
+                  "83"
+                ]
+              ],
+              "method": "POST",
+              "path": "/v1/realtime/client_secrets",
+              "proto": "h1",
+              "raw": "POST /v1/realtime/client_secrets HTTP/1.1\r\nauthorization: Bearer oracle-cred-streams-0002\r\ncontent-type: application/json\r\nopenai-safety-identifier: <OWNER>\r\nhost: 127.0.0.1:<PORT>\r\ncontent-length: 83\r\n\r\n{\"expires_after\":{\"anchor\":\"created_at\",\"seconds\":600},\"session\":{\"model\":\"m-cap\"}}",
+              "role": "fixed"
+            }
+          ],
+          "candidate": []
+        }
+      ]
+    },
+    {
+      "id": "GA-SESSION the pre-R10 mint asks the provider's GA client_secrets endpoint for a type:realtime session",
+      "kind": "improvement",
+      "changelog": null,
+      "changelog_reason": "A 1.6.0-pre dated-baseline row of the streams family, which no published 1.5.5 served; only the provider sees it, the caller's bytes are unchanged.",
+      "by": "owner (Matthew Jackson), owner-signed 2026-10-30 (~/Developer/tmp/cleanup/SIGN-ga-session.md, row 1)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-30",
+        "ruling": "OWNER SIGNED 2026-10-30, SIGN-ga-session.md row 1: streams|mint|client-secrets, /upstream/0/body, before {\"expires_after\":{\"anchor\":\"created_at\",\"seconds\":600},\"session\":{\"model\":\"m-cap\"}} (content-length 83), after the same with \"type\":\"realtime\" in session (content-length 101); measured on #1912, plane-streaming f536805c3a (pre-R10)."
+      },
+      "expires": {
+        "baseline": "1.6.0-pre",
+        "by": "2026-12-31"
+      },
+      "cells": "^streams\\|mint\\|client-secrets$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "cell": "streams|mint|client-secrets",
+        "pointer": "/steps/0/status",
+        "equals": 200
+      },
+      "rationale": "OWNER SIGNED 2026-10-30 (SIGN-ga-session.md row 1), judged against golden/1.6.0-pre (no 1.5.5 cell moves). The provider's GA endpoint reads a session discriminated by type:\"realtime\"; plane-streaming 60a4fe8 sends the GA shape. Only the provider sees it; the caller's bytes are unchanged. Exact values: the upstream request's body, its content-length (83 -> 101) and its raw bytes (the same request). Applies only while dist pins the pre-R10 streaming head (#1912); under R10 (#1957) the mint dials no provider and this entry never fires.",
+      "values": [
+        {
+          "pointer": "/body/json/upstream/0/body",
+          "golden": "{\"expires_after\":{\"anchor\":\"created_at\",\"seconds\":600},\"session\":{\"model\":\"m-cap\"}}",
+          "candidate": "{\"expires_after\":{\"anchor\":\"created_at\",\"seconds\":600},\"session\":{\"model\":\"m-cap\",\"type\":\"realtime\"}}"
+        },
+        {
+          "pointer": "/body/json/upstream/0/headers/4/1",
+          "golden": "83",
+          "candidate": "101"
+        },
+        {
+          "pointer": "/body/json/upstream/0/raw",
+          "golden": "POST /v1/realtime/client_secrets HTTP/1.1\r\nauthorization: Bearer oracle-cred-streams-0002\r\ncontent-type: application/json\r\nopenai-safety-identifier: <OWNER>\r\nhost: 127.0.0.1:<PORT>\r\ncontent-length: 83\r\n\r\n{\"expires_after\":{\"anchor\":\"created_at\",\"seconds\":600},\"session\":{\"model\":\"m-cap\"}}",
+          "candidate": "POST /v1/realtime/client_secrets HTTP/1.1\r\nauthorization: Bearer oracle-cred-streams-0002\r\ncontent-type: application/json\r\nopenai-safety-identifier: <OWNER>\r\nhost: 127.0.0.1:<PORT>\r\ncontent-length: 101\r\n\r\n{\"expires_after\":{\"anchor\":\"created_at\",\"seconds\":600},\"session\":{\"model\":\"m-cap\",\"type\":\"realtime\"}}"
+        }
+      ]
+    },
+    {
+      "id": "R10-SDP the caller's SDP offer is answered by busbar, not with the provider's relayed SDP answer",
+      "kind": "improvement",
+      "changelog": null,
+      "changelog_reason": "A 1.6.0-pre dated-baseline row of the streams family, which no published 1.5.5 served (family-baselines.tsv); no 1.5.5 client or operator sees it. The CHANGELOG's streaming-plane entry is the customer text.",
+      "by": "owner (Matthew Jackson), direct owner-signed 2026-10-31 (B yes)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-31",
+        "ruling": "OWNER SIGNED 2026-10-31, direct reply B yes to HANDOFF section 7 question B: the recorded streams|sdp|calls offer is refused with an explained, audited error when no media listener is configured. This supersedes the former 201/empty-body premise. See SIGN-ga-session.md owner-signed A/B addendum."
+      },
+      "expires": {
+        "baseline": "1.6.0-pre",
+        "by": "2026-12-31"
+      },
+      "cells": "^streams\\|sdp\\|calls$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "streams|sdp|calls",
+            "pointer": "/steps/0/status",
+            "equals": 404
+          },
+          {
+            "cell": "streams|sdp|calls",
+            "pointer": "/steps/0/body/json",
+            "equals": {
+              "error": {
+                "code": null,
+                "message": "this deployment serves no media for the offer: no listener is configured for its `webrtc` carrier (set `streams.media.listen`)",
+                "param": null,
+                "type": "not_found_error"
+              }
+            }
+          },
+          {
+            "cell": "streams|sdp|calls",
+            "pointer": "/steps/0/body/text",
+            "exists": false
+          },
+          {
+            "cell": "streams|sdp|calls",
+            "pointer": "/upstream",
+            "equals": []
+          }
+        ]
+      },
+      "rationale": "Owner directly signed B on 2026-10-31. This dated-baseline offer has no configured media listener; busbar refuses it before dialing upstream, with the exact explanation naming streams.media.listen. Exact current-head07140b23 evidence is retained in the SDP-only report SHA256258ede52745f733e8842548f7cc0698b8a3b53567ab5db9e27ab4e1f281801a8. Only the seven listed before/after values are accepted, including JSON/text absence and removal of the exact old upstream request. Empty or differently explained refusals, another status, an upstream request, header order and every unlisted leaf remain judged. The separate product regression asserts the operator audit; actual-head test proof remains required and this entry does not substitute for it.",
+      "values": [
+        {
+          "pointer": "/body/json/steps/0/body/json",
+          "golden_absent": true,
+          "candidate": {
+            "error": {
+              "code": null,
+              "message": "this deployment serves no media for the offer: no listener is configured for its `webrtc` carrier (set `streams.media.listen`)",
+              "param": null,
+              "type": "not_found_error"
+            }
+          }
+        },
+        {
+          "pointer": "/body/json/steps/0/body/text",
+          "golden": "v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=oracle-answer\r\nt=0 0\r\n",
+          "candidate_absent": true
+        },
+        {
+          "pointer": "/body/json/steps/0/headers/content-length",
+          "golden": "55",
+          "candidate": "200"
+        },
+        {
+          "pointer": "/body/json/steps/0/headers/content-type",
+          "golden": "application/sdp",
+          "candidate": "application/json"
+        },
+        {
+          "pointer": "/body/json/steps/0/status",
+          "golden": 201,
+          "candidate": 404
+        },
+        {
+          "pointer": "/body/json/steps/0/status_line",
+          "golden": "HTTP/1.1 201 Created",
+          "candidate": "HTTP/1.1 404 Not Found"
+        },
+        {
+          "pointer": "/body/json/upstream",
+          "golden": [
+            {
+              "answered": 201,
+              "body": "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=oracle-offer\r\nt=0 0\r\n",
+              "headers": [
+                [
+                  "authorization",
+                  "Bearer oracle-cred-streams-0006"
+                ],
+                [
+                  "content-type",
+                  "application/sdp"
+                ],
+                [
+                  "host",
+                  "127.0.0.1:<PORT>"
+                ],
+                [
+                  "content-length",
+                  "54"
+                ]
+              ],
+              "method": "POST",
+              "path": "/v1/realtime/calls",
+              "proto": "h1",
+              "raw": "POST /v1/realtime/calls HTTP/1.1\r\nauthorization: Bearer oracle-cred-streams-0006\r\ncontent-type: application/sdp\r\nhost: 127.0.0.1:<PORT>\r\ncontent-length: 54\r\n\r\nv=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=oracle-offer\r\nt=0 0\r\n",
+              "role": "fixed"
+            }
+          ],
+          "candidate": []
+        }
+      ]
+    },
+    {
+      "id": "R10-MINT-EXPIRY busbar mints its own ek_ ticket, expiring at the request time + 600 s",
+      "kind": "improvement",
+      "changelog": null,
+      "changelog_reason": "A 1.6.0-pre dated-baseline row of the streams family, which no published 1.5.5 served.",
+      "by": "owner (Matthew Jackson), owner-signed 2026-10-30 (~/Developer/tmp/cleanup/SIGN-ga-session.md, row 2)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-30",
+        "ruling": "OWNER SIGNED 2026-10-30, SIGN-ga-session.md row 2: streams|mint|client-secrets, /steps/0/body/json/expires_at_unix, before 1767225600 (the provider's fixed answer, relayed), after busbar's own ticket expiry = now + 600 s; measured on #1957 at dac4586105, plane-streaming 3071e3d8ff (R10)."
+      },
+      "expires": {
+        "baseline": "1.6.0-pre",
+        "by": "2026-12-31"
+      },
+      "cells": "^streams\\|mint\\|client-secrets$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "cell": "streams|mint|client-secrets",
+        "pointer": "/steps/0/status",
+        "equals": 200
+      },
+      "rationale": "OWNER SIGNED 2026-10-30 (SIGN-ga-session.md row 2), judged against golden/1.6.0-pre (no 1.5.5 cell moves). R10 (owner product row): busbar mints the ek_ ticket itself and dials no provider, so the caller's expires_at_unix is busbar's own ticket expiry, the request time + 600 s. Forgiven only as that relative instant: the recorded step 0's observed send time + 600 s, within 5 s; any other value, or no recorded clock, stays a divergence.",
+      "values": [
+        {
+          "pointer": "/body/json/steps/0/body/json/expires_at_unix",
+          "golden": 1767225600,
+          "candidate_request_time_plus": {
+            "step": 0,
+            "secs": 600,
+            "tolerance_secs": 5
+          }
+        }
+      ]
+    },
+    {
+      "id": "R10-MINT-VALUE busbar returns its own signed ek_ ticket instead of the provider key",
+      "kind": "improvement",
+      "changelog": null,
+      "changelog_reason": "A 1.6.0-pre dated-baseline streams row; no published 1.5.5 streams cell changes.",
+      "by": "owner (Matthew Jackson), direct owner-signed 2026-10-31 (A. yes)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-31",
+        "ruling": "OWNER SIGNED 2026-10-31, direct reply A. yes to HANDOFF section 7 question A: streams|mint|client-secrets /steps/0/body/json/value changes from ek_oracle_0001 to the busbar-minted ek_ ticket. See SIGN-ga-session.md owner-signed A/B addendum."
+      },
+      "expires": {
+        "baseline": "1.6.0-pre",
+        "by": "2026-12-31"
+      },
+      "cells": "^streams\\|mint\\|client-secrets$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "streams|mint|client-secrets",
+            "pointer": "/steps/0/status",
+            "equals": 200
+          },
+          {
+            "cell": "streams|mint|client-secrets",
+            "pointer": "/steps/0/body/json/expires_at_unix",
+            "exists": true
+          }
+        ]
+      },
+      "rationale": "Owner directly signed A on 2026-10-31. R10 terminates media in busbar and mints a ticket instead of relaying a provider key. This transform matches only an entire ek_-prefixed two-segment URL-safe base64 token with a 64-byte Ed25519 signature (86 unpadded characters). It rewrites that one string to ek_oracle_0001, the exact golden value; other strings, status, upstream records, headers and expiry remain compared. The known golden has that token only at /body/json/steps/0/body/json/value. Expiry has its separate request-time+600s acceptance.",
+      "transform": {
+        "candidate": [
+          [
+            "^ek_[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]{86}$",
+            "ek_oracle_0001"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "R10-MINT-LENGTH exact response length of the busbar-minted ticket",
+      "kind": "improvement",
+      "changelog": null,
+      "changelog_reason": "A 1.6.0-pre dated-baseline streams row; no published 1.5.5 streams cell changes.",
+      "by": "owner (Matthew Jackson), direct owner-signed 2026-10-31 (A. yes)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-31",
+        "ruling": "OWNER SIGNED 2026-10-31, direct reply A. yes: provider key to busbar-minted ticket. This entry names only its exact measured response Content-Length consequence, 55 to 359, on the same mint cell."
+      },
+      "expires": {
+        "baseline": "1.6.0-pre",
+        "by": "2026-12-31"
+      },
+      "cells": "^streams\\|mint\\|client-secrets$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "streams|mint|client-secrets",
+            "pointer": "/steps/0/status",
+            "equals": 200
+          },
+          {
+            "cell": "streams|mint|client-secrets",
+            "pointer": "/steps/0/body/json/expires_at_unix",
+            "exists": true
+          }
+        ]
+      },
+      "rationale": "Derived wire-length consequence of the owner-signed A ticket replacement, measured by the existing oracle at07140b23: the exact mint response Content-Length changes from55 to359. Separate from the ticket transform because the pinned judge does not combine transforms and values in one entry. No generic numeric/header transform; any other length and every other leaf stay judged.",
+      "values": [
+        {
+          "pointer": "/body/json/steps/0/headers/content-length",
+          "golden": "55",
+          "candidate": "359"
+        }
+      ]
     }
   ]
 }

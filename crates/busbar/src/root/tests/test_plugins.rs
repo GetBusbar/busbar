@@ -18,7 +18,6 @@ use busbar_plugin_loader::{
 use std::path::{Path, PathBuf};
 
 /// The separately built durable Store used by normal application boot fixtures.
-
 pub fn application_store_library() -> PathBuf {
     let path = PathBuf::from(
         std::env::var_os("BUSBAR_TEST_SQLITE_CDYLIB")

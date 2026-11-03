@@ -313,14 +313,12 @@ impl HoldCell {
     }
 
     /// Whether this cell still holds the admission opened by this grant for this principal.
-
     pub fn admitted_for(&self, token: &Grant<Admittance>, principal: &PrincipalId) -> bool {
         matches!(&*self.slot(), Slot::Admitted(hold)
             if token.bound_to(hold.call()) && hold.principal() == principal)
     }
 
     /// Prepare a host reservation atomically with checking this exact live admission.
-
     pub fn with_admitted_call<R, E>(
         &self,
         call: CallId,
@@ -397,7 +395,6 @@ impl HoldCell {
     }
 
     /// Prepare host registration under a live parent, then create its child's accrual.
-
     pub fn accrue_child_after<E>(
         &self,
         principal: &PrincipalId,

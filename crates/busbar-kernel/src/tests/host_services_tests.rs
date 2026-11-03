@@ -2317,6 +2317,44 @@ impl TicketPress for Press {
 }
 
 #[test]
+fn a_credential_consumer_prefix_has_one_instance_owner() {
+    let r = rig();
+    let facts = || InstanceFacts {
+        ticket_prefix: Some("delegated_".into()),
+        ..InstanceFacts::default()
+    };
+    r.s.admit("first-consumer", facts()).expect("first owner");
+    r.s.admit("first-consumer", facts())
+        .expect("same owner re-admission");
+    assert!(
+        r.s.admit("other-consumer", facts()).is_err(),
+        "two instances cannot redeem credentials from the same consumer namespace"
+    );
+    assert_eq!(
+        r.s.ticket_prefix_of("first-consumer").as_deref(),
+        Some("delegated_")
+    );
+    assert_eq!(r.s.ticket_prefix_of("other-consumer"), None);
+    assert!(
+        r.s.admit("first-consumer", InstanceFacts::default())
+            .is_err(),
+        "re-admission cannot release a namespace while its signed credentials may still exist"
+    );
+    assert_eq!(
+        r.s.ticket_prefix_of("first-consumer").as_deref(),
+        Some("delegated_")
+    );
+    r.s.admit(
+        "separate-consumer",
+        InstanceFacts {
+            ticket_prefix: Some("separate_".into()),
+            ..InstanceFacts::default()
+        },
+    )
+    .expect("an independent namespace is admitted");
+}
+
+#[test]
 fn a_ticket_is_minted_for_the_units_principal_under_the_declared_prefix() {
     let r = rig();
     r.s.admit(

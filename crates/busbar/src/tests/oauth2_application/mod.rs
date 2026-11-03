@@ -120,7 +120,6 @@ fn serve_boot_jwks(listener: std::net::TcpListener, app: Arc<App>) {
 }
 
 /// Build through the shipped root and its normal plugin loader. The required store
-
 fn application(oauth_as: Option<&OauthAsCfg>, prior: Option<&App>) -> Arc<App> {
     application_with_resource_auth(oauth_as, prior, false)
 }
