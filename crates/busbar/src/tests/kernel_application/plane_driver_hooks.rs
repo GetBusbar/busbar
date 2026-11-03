@@ -85,6 +85,7 @@ async fn a_routed_planes_section_attach_binds_to_its_units() {
     std::fs::write(&credential, b"pool-admission-unused-upstream-credential")
         .expect("write the normal file-backed upstream credential");
     let document = serde_json::json!({
+        "public_url": "https://gw.example",
         "providers": {
             "local": {"protocol": "jev", "base_url": "http://127.0.0.1:1",
                       "api_key": {"file": credential}}
@@ -129,6 +130,20 @@ async fn a_routed_planes_section_attach_binds_to_its_units() {
         &rules,
     )
     .expect("the actual products build the section hook chains");
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        limits.stage_boot();
+        crate::root::kernel::ROOT_CARD.keep_in_store(
+            app.governance
+                .as_ref()
+                .expect("the application has its actual configured Store")
+                .store_calls()
+                .expect("the actual Store exposes rate-history calls"),
+            busbar_kernel::door::op_id().counter(),
+        );
+        crate::root::kernel::ROOT_CARD
+            .boot_in_store(None)
+            .expect("the actual Store boots its rate history before activation");
+    }
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
