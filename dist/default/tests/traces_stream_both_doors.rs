@@ -104,6 +104,9 @@ fn a_closed_span_reaches_an_otlp_collector_through_either_door() {
     manifest.alias = DROPPED.into();
     manifest.former_names.clear();
     manifest.publisher = common::plugins::FIXTURE_PUBLISHER.into();
+    // This re-publication is operator-trusted third party; reserved BUSBAR codes
+    // belong to the original first-party package, whose linked copy keeps them.
+    manifest.declares.diagnostics.clear();
     common::plugins::state(&mut manifest, &lib);
     assert!(
         manifest.statement.is_some(),

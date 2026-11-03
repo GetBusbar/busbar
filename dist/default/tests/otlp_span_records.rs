@@ -114,6 +114,9 @@ fn real_producer_span_records_survive_both_otlp_doors() {
     manifest.alias = DROPPED.into();
     manifest.former_names.clear();
     manifest.publisher = common::plugins::FIXTURE_PUBLISHER.into();
+    // This re-publication is operator-trusted third party; reserved BUSBAR codes
+    // belong to the original first-party package, whose linked copy keeps them.
+    manifest.declares.diagnostics.clear();
     common::plugins::state(&mut manifest, &lib);
     assert!(
         manifest.statement.is_some(),
