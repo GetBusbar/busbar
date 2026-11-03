@@ -2936,6 +2936,15 @@ pub(super) mod session_door {
         assert_eq!(s.requests(), 1, "the local ticket is the one admission");
         let (status, _signal) = s.signal(&ticket).await;
         assert_eq!(status.as_u16(), 201, "the admitted ticket places its call");
+        // The local SDP answer precedes the browser's real SCTP channel opening.
+        // Observe the resulting provider request without consuming the original assertion's item.
+        tokio::time::timeout(ANSWER_BOUND, async {
+            while s.heard.is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the signal reaches its actual provider within the answer bound");
         assert!(
             s.heard.try_recv().is_ok(),
             "the signal reached its provider"
