@@ -4379,9 +4379,15 @@ mod tools_door {
         };
         let mut port_server = TlsToolServer::new().await;
         let mut heard = take_heard(&mut port_server);
-        let rig = port_server.rig(
+        let rig = port_server.rig_with_footing(
             instance,
             registration("metered", &port_server, ""),
+            crate::root::door_steps::tests::tool_door::Footing {
+                groups: Some(&groups),
+                plane_fees: Some(&fees),
+                fee_cents: Some(0),
+                ..port_server.footing()
+            },
             &|mut app| {
                 app.cost = Arc::new(cost());
                 app
