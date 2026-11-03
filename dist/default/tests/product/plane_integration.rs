@@ -1463,25 +1463,29 @@ fn plane_router(
         }
     }
     let offers = crate::root::serve::transport_offers(&transports, &[]);
-    let mounts = crate::root::serve::door_mounts(
-        served,
-        || crate::root::kernel::ROOT_CARD.pin(),
-        &data_chain,
-        &busbar_kernel::base_data_core_lines(&app),
-        &[],
-        &offers,
-    )
-    .expect("the actual root mounts the planes' own declared doors");
+    // Axum is the physical HTTP listener here. Let the production listener planner place
+    // every logical plane claim on that listener before sealing auth-point requirements:
+    // a gRPC framer's own empty auth record is not the HTTP listener's offered record.
+    let initial = crate::root::boot::configured_listener_needs(&cfg, &configured)
+        .expect("the actual configured root declares its physical listener assignments");
+    let framer_for = |scheme: &str| crate::root::connector::the().framer_for(scheme);
+    let plan = crate::root::serve::ListenerPlan::new(initial, offers.clone(), &framer_for);
+    let (routes, sessions, refusals, refuse_by_path) =
+        crate::root::serve::data_mounts_with_listeners(
+            served,
+            &app,
+            &plan,
+            "listen",
+            &data_chain,
+            &busbar_kernel::base_data_core_lines(&app),
+            &[],
+            &offers,
+        )
+        .expect("the actual root mounts the planes' own declared doors on the HTTP listener");
     let (router, _, handle) = busbar_kernel::build_split_routers_serving_doors(
-        app,
-        mounts.routes,
-        mounts.sessions,
-        mounts.refusals,
-        body_limit,
-        16,
-        false,
+        app, routes, sessions, refusals, body_limit, 16, false,
     );
-    if let Some(refuser) = mounts.refuse_by_path {
+    if let Some(refuser) = refuse_by_path {
         handle.bind_door_refuser(refuser);
     }
     live.set(handle);
