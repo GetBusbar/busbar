@@ -106,6 +106,7 @@ struct TicketEntry {
 }
 
 struct TicketSource {
+    facts: DoorFacts,
     store: Arc<dyn busbar_contract::records::RecordStore>,
     key: Arc<busbar_contract::records::VirtualKey>,
     money: Arc<PlaneMoney>,
@@ -186,6 +187,7 @@ impl TicketCustody {
         app: &busbar_kernel::state::App,
     ) -> Option<TicketSourceOwner> {
         let source = Arc::new(TicketSource {
+            facts: live.facts.clone(),
             store: app.governance.as_ref()?.store(),
             key: Arc::clone(key?),
             money: Arc::clone(&served.money),
@@ -362,6 +364,19 @@ impl TicketCustody {
             entries.tickets.remove(identity.id())
         };
         removed.map(|entry| entry.reservation)
+    }
+
+    pub(crate) fn source_report(
+        &self,
+        unit: busbar_contract::UnitKey,
+    ) -> Option<crate::root::linked::node::Reported> {
+        let source = self
+            .sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&unit)
+            .cloned()?;
+        report_of(&source.money, unit, &source.facts)
     }
 
     fn shutdown(&self) {
@@ -4832,6 +4847,7 @@ impl DataRoutes {
             SessionOpen::Admitted {
                 route,
                 destinations,
+                ..
             } => match units.open_hooks(&route, &ctx).await {
                 Err(reason) => {
                     self.post.stopped(unit, reason);
@@ -4847,12 +4863,14 @@ impl DataRoutes {
                     None | Some(Ok(())) => Some((route, destinations)),
                 },
             },
-            SessionOpen::Refused => None,
+            SessionOpen::Refused | SessionOpen::Settled(_) => None,
         };
         let status = match admitted {
             Some((route, destinations)) => {
                 let _ = verdict.send(Ok(()));
-                let _ended = units.session(&route, &ctx, &destinations).await;
+                if let Err(reason) = units.session(&route, &ctx, &destinations).await {
+                    self.post.stopped(unit, reason);
+                }
                 attach.answered
             }
             None => {
@@ -4869,7 +4887,7 @@ impl DataRoutes {
 
         self.post
             .reported(unit, report_of(&served.money, unit, &live.facts));
-        slot.finish(&self.post);
+        slot.finish_with(&self.post, &units);
         served.money.settle_end(unit, status);
     }
 
