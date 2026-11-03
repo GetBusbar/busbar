@@ -184,6 +184,9 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
         .expect("the actual linked OIDC Statement is valid")
         .name;
     let mut manifest = LinkedPlugin::auth_door_named(&oidc_name, &oidc_name, door).manifest;
+    // A dropped admission carries the real Statement in its signed manifest; the linked
+    // convenience constructor alone has no envelope Statement to copy into the archive.
+    manifest.statement = Some(hex::encode(&stated));
     // Admission metadata names the same explicitly configured normal publisher on both origins.
     manifest.publisher = PUBLISHER.into();
     let linked_plugin = LinkedPlugin::door(manifest.clone(), door);
