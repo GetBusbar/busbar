@@ -410,7 +410,15 @@ pub(crate) mod real {
                                 }
                                 yielded
                             },
-                            Some(Input::Audio(bytes)) => peer.emit(busbar_transport_webrtc::framing::MEDIA_BASE, &bytes, true, false, Instant::now()).unwrap(),
+                            Some(Input::Audio(bytes)) => {
+                                let yielded = peer.emit(busbar_transport_webrtc::framing::MEDIA_BASE, &bytes, true, false, Instant::now()).unwrap();
+                                // Like explicit messages, explicit real SRTP must cross the wire
+                                // while a test holds only autonomous peer work paused.
+                                while let Some((to, bytes)) = peer.poll_send() {
+                                    socket.send_to(&bytes, to).await.unwrap();
+                                }
+                                yielded
+                            },
                             Some(Input::Pause(ack)) => { paused = true; let _ = ack.send(()); continue; },
                             Some(Input::Resume) => { paused = false; continue; },
                             Some(Input::Raw(bytes)) => { socket.send_to(&bytes, target).await.unwrap(); continue; }

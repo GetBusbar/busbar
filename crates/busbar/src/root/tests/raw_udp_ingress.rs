@@ -289,6 +289,17 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
 
     let pair = Pair::with_audio().await;
     assert_eq!(pair.caller.read().await, Some(Vec::new()));
+    // Establish and drain a genuine caller-wire barrier before pairing it to the
+    // upstream. Hold only autonomous caller ICE/timers after that barrier: setup
+    // traffic is not part of the one SRTP frame whose readiness we measure below.
+    pair.pause().await;
+    pair.send(b"SRTP ingress window").await;
+    assert_eq!(
+        tokio::time::timeout(WAIT, pair.caller.read())
+            .await
+            .unwrap(),
+        Some(b"SRTP ingress window".to_vec())
+    );
     let mut entries = crate::root::connector::entries(
         crate::LINKED_TRANSPORT_DOORS,
         &TransportSettings::default(),
@@ -463,6 +474,7 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
         .await
         .expect("actual upstream ICE/DTLS/SCTP opens")
         .unwrap();
+    let dropped_before_media = pair.door.assocs.raw_busy_dropped();
     pair.input.send(Input::Audio(OPUS.to_vec())).await.unwrap();
     assert_eq!(
         tokio::time::timeout(WAIT, received.recv()).await.unwrap(),
@@ -494,7 +506,11 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
         received.try_recv().is_err(),
         "one accepted SRTP frame is forwarded once"
     );
-    assert_eq!(pair.door.assocs.raw_busy_dropped(), 0);
+    assert_eq!(
+        pair.door.assocs.raw_busy_dropped(),
+        dropped_before_media,
+        "the explicit SRTP frame incurs no receive-readiness drop in the paused-peer window"
+    );
     assert_eq!(
         heads.load(std::sync::atomic::Ordering::SeqCst),
         1,
