@@ -1936,11 +1936,11 @@ pub fn resolve(
             endpoint_resources,
             oauth_as,
             credentials: deploy.credentials.clone(),
-            plane_defs: deploy
-                .declared
-                .0
-                .iter()
-                .map(|(s, c)| (*s, c.clone_box()))
+            // Keep the raw sections already parsed and judged above as well as
+            // typed declarations. Existing typed declarations retain precedence.
+            plane_defs: raw_judged
+                .into_iter()
+                .chain(deploy.declared.0.iter().map(|(s, c)| (*s, c.clone_box())))
                 .collect(),
             plane_pools,
             tls: deploy.tls.clone(),
