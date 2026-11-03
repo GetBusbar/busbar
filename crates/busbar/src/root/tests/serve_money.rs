@@ -121,7 +121,6 @@ fn governed_full(
         use crate::root::loader::dispatch::{
             load_dropped, rendering_of_library, Bind, ConnTable, NoSink,
         };
-        let release = crate::root::test_plugins::key(0x5a);
         let late = super::LateServices::new();
         let dispatcher = crate::root::dispatch::boot(1, &late);
         crate::root::doors::install_dispatcher(dispatcher);
