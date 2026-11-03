@@ -365,8 +365,11 @@ fn actual_oidc() -> (
 fn a_third_party_signature_is_a_different_row() {
     let (path, door) = actual_oidc();
     let image = std::fs::read(path).expect("read the actual OIDC image");
-    let manifest = LinkedPlugin::first_party_door("auth", "oidc", "the-auth", door).manifest;
-    let module = manifest.name.clone();
+    let stated = crate::dispatch::rendering_of(door).expect("actual OIDC statement renders");
+    let module = busbar_contract::abi::mechanism::rendering::read(&stated)
+        .expect("actual OIDC statement reads")
+        .name;
+    let manifest = LinkedPlugin::first_party_door("auth", &module, "the-auth", door).manifest;
     let linked = PluginRegistry::empty()
         .link(vec![LinkedPlugin::door(manifest.clone(), door)])
         .expect("actual OIDC linked row");
