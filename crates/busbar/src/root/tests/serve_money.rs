@@ -1558,3 +1558,505 @@ async fn nested_anonymous_admission_matches_the_arrival_rule() {
         assert!(routes.frames_lock().is_empty());
     }
 }
+
+/// A real governor admission and matching admitted cell, kept separate from the custody state
+/// assertions below. These controls exercise host ownership; the retained session cohort proves
+/// the actual request's draft/hold/audit path.
+struct ReservedSource {
+    owner: super::TicketSourceOwner,
+    _table: busbar_kernel::inflight::InFlight,
+    _slot: Arc<busbar_kernel::inflight::UnitSlot>,
+    cost: Arc<CostModel>,
+    key: Arc<VirtualKey>,
+    group: String,
+    unit: busbar_contract::UnitKey,
+    now: u64,
+}
+
+fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
+    use busbar_contract::caps::{Hold, OriginKind, PrincipalId};
+    use busbar_kernel::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
+    use busbar_kernel::plane_driver::{FeeRefund, UnitMoney};
+    let limit = |metric, per| LimitCfg {
+        metric,
+        amount: 1,
+        per,
+        scope: None,
+        on_exhaust: None,
+        downgrade_to: None,
+        admission: None,
+        on_exhaustion: None,
+    };
+    let groups = BTreeMap::from([(
+        group.to_owned(),
+        GroupCfg {
+            enabled: true,
+            limits: vec![
+                limit(LimitMetric::Concurrent, None),
+                limit(LimitMetric::Requests, Some(LimitWindow::Total)),
+            ],
+            ..Default::default()
+        },
+    )]);
+    let cost = Arc::new(CostModel::resolve_parts(None, 0, &groups));
+    let now = busbar_kernel::store::now();
+    let (key, _) = g
+        .gov
+        .mint_signed(
+            NewKeySpec {
+                name: group.to_owned(),
+                group: Some(group.to_owned()),
+                ..Default::default()
+            },
+            4_000_000_000,
+            now,
+        )
+        .expect("the actual governor mints a source key");
+    let key = Arc::new(key);
+    let node = g.post.node();
+    let unit = node.mint();
+    let (kernel, _) = node.kernel_and_keys();
+    let call = kernel.next_call();
+    let principal = PrincipalId::new(key.id.as_str());
+    let table = busbar_kernel::inflight::InFlight::new(1);
+    let slot = table
+        .insert(busbar_kernel::inflight::Enter {
+            key: unit,
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            zero_hold_tick: false,
+            arrival: busbar_kernel::inflight::arrival_hold(
+                &kernel,
+                &crate::root::kernel::AdmissionDoor,
+                principal.clone(),
+                call,
+            ),
+            now: now * 1_000,
+        })
+        .expect("the actual source slot opens");
+    let admit = kernel.admit_token_for(call);
+    drop(
+        slot.cell()
+            .admit(Hold::open(&admit, principal), &admit)
+            .expect("the exact cell admits its call"),
+    );
+    let grant = Arc::new(
+        g.gov
+            .try_admit(&cost, &key, "", now)
+            .expect("one paid source admission"),
+    );
+    let live = g.served.planes[0].live.current();
+    g.money.open_admitted(
+        unit,
+        UnitMoney {
+            key: Arc::clone(&key),
+            cost: Arc::clone(&cost),
+            pool: String::new(),
+            lane: String::new(),
+            classes: Arc::clone(&live.facts.classes),
+            arrived: now,
+            mode: Default::default(),
+            fee: FeeRefund::PlaneFeeUnits(Arc::clone(&live.facts.fee_units)),
+            charge: grant.charge().clone(),
+        },
+        grant,
+    );
+    let owner = node
+        .ticket_custody
+        .register(unit, Some(&key), &g.served.planes[0], &live, &g.app)
+        .expect("the actual source is registered");
+    node.ticket_custody.bind_source(
+        &busbar_kernel::teller::UnitCtx {
+            call,
+            key: unit,
+            origin: OriginKind::Client,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+        },
+        &slot,
+    );
+    ReservedSource {
+        owner,
+        _table: table,
+        _slot: slot,
+        cost,
+        key,
+        group: group.to_owned(),
+        unit,
+        now,
+    }
+}
+
+fn mint_reserved_source(g: &Governed, source: &ReservedSource, at: u64) -> (String, u64) {
+    g.gov
+        .mint_ticket_bound(
+            &source.key.id,
+            "custody_test",
+            60,
+            None,
+            b"opaque",
+            at,
+            |identity| source.owner.custody.bind(&source.owner.source, identity),
+        )
+        .expect("the admitted source binds its sole ticket")
+}
+
+fn assert_source_request_retained(g: &Governed, source: &ReservedSource) {
+    assert_eq!(
+        g.gov
+            .usage_for(&source.cost, &source.key.id, source.now)
+            .unwrap()
+            .unwrap()
+            .requests,
+        1,
+        "custody neither charges another request nor refunds the mint"
+    );
+}
+
+#[tokio::test]
+async fn a_root_ticket_stays_pending_until_ack_and_concurrent_claims_move_one_real_reservation() {
+    let _one = PUBLISHING.lock().await;
+    let g = governed("root-ticket-pending", true);
+    let source = reserved_source(&g, "root-ticket-pending-cap");
+    let (credential, expiry) = mint_reserved_source(&g, &source, source.now);
+    let identity = g
+        .gov
+        .prepare_ticket_redemption("custody_test", &credential, source.now)
+        .unwrap();
+    assert!(
+        source.owner.custody.claim(&identity).is_none(),
+        "Pending cannot be claimed"
+    );
+    assert!(
+        g.gov
+            .store()
+            .plane_token_live(
+                busbar_kernel::governance::TICKET_RECORD_KIND,
+                identity.id(),
+                expiry,
+                source.now
+            )
+            .unwrap(),
+        "an early claim did not spend the Store token"
+    );
+    assert!(
+        g.gov
+            .mint_ticket_bound(
+                &source.key.id,
+                "custody_test",
+                60,
+                None,
+                b"second",
+                source.now,
+                |id| source.owner.custody.bind(&source.owner.source, id)
+            )
+            .is_err(),
+        "one actual mint source cannot reserve twice"
+    );
+    g.money.settle_end(source.unit, 200);
+    assert_eq!(
+        g.gov.concurrent_in_flight(&source.group),
+        1,
+        "actual reservation retains the settled mint's governor grant"
+    );
+    source.owner.custody.terminal(source.unit, true);
+    let second = g
+        .gov
+        .prepare_ticket_redemption("custody_test", &credential, source.now)
+        .unwrap();
+    let (a, b) = std::thread::scope(|scope| {
+        let a = scope.spawn(|| source.owner.custody.claim(&identity));
+        let b = scope.spawn(|| source.owner.custody.claim(&second));
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    assert_eq!(usize::from(a.is_some()) + usize::from(b.is_some()), 1);
+    drop((a, b));
+    assert_eq!(
+        g.gov.concurrent_in_flight(&source.group),
+        0,
+        "unused claim releases the actual grant once"
+    );
+    assert_source_request_retained(&g, &source);
+}
+
+#[tokio::test]
+async fn failed_mint_completion_burns_pending_custody_without_refunding_its_request() {
+    let _one = PUBLISHING.lock().await;
+    let g = governed("root-ticket-failed-seal", true);
+    let source = reserved_source(&g, "root-ticket-failed-seal-cap");
+    let (credential, _) = mint_reserved_source(&g, &source, source.now);
+    let identity = g
+        .gov
+        .prepare_ticket_redemption("custody_test", &credential, source.now)
+        .unwrap();
+    g.money.settle_end(source.unit, 200);
+    assert_eq!(g.gov.concurrent_in_flight(&source.group), 1);
+    source.owner.custody.terminal(source.unit, false);
+    source.owner.custody.terminal(source.unit, true);
+    assert!(
+        source.owner.custody.claim(&identity).is_none(),
+        "a later terminal callback cannot resurrect burned custody"
+    );
+    assert_eq!(g.gov.concurrent_in_flight(&source.group), 0);
+    assert!(
+        matches!(
+            super::claim_ticket_custody(&identity),
+            busbar_kernel::host_services::TicketClaimDisposition::Refused
+        ),
+        "an otherwise Store-live ticket cannot fall through without local custody"
+    );
+    assert_source_request_retained(&g, &source);
+}
+
+#[tokio::test]
+async fn source_unregister_and_shutdown_burn_owned_custody_outside_the_maps() {
+    let _one = PUBLISHING.lock().await;
+    let g = governed("root-ticket-source-exit", true);
+    let source = reserved_source(&g, "root-ticket-source-exit-cap");
+    let (credential, _) = mint_reserved_source(&g, &source, source.now);
+    let identity = g
+        .gov
+        .prepare_ticket_redemption("custody_test", &credential, source.now)
+        .unwrap();
+    g.money.settle_end(source.unit, 200);
+    let ReservedSource {
+        owner,
+        key,
+        group,
+        cost,
+        now,
+        _table,
+        _slot,
+        ..
+    } = source;
+    let custody = Arc::clone(&owner.custody);
+    let stale = Arc::clone(&owner.source);
+    drop(owner);
+    assert!(custody.claim(&identity).is_none());
+    assert_eq!(g.gov.concurrent_in_flight(&group), 0);
+    assert!(
+        g.gov
+            .mint_ticket_bound(&key.id, "custody_test", 60, None, b"late", now, |id| {
+                custody.bind(&stale, id)
+            })
+            .is_err(),
+        "a captured binder cannot outlive source unregister"
+    );
+    assert_eq!(
+        g.gov
+            .usage_for(&cost, &key.id, now)
+            .unwrap()
+            .unwrap()
+            .requests,
+        1
+    );
+
+    let source = reserved_source(&g, "root-ticket-shutdown-cap");
+    let (credential, _) = mint_reserved_source(&g, &source, source.now);
+    let identity = g
+        .gov
+        .prepare_ticket_redemption("custody_test", &credential, source.now)
+        .unwrap();
+    g.money.settle_end(source.unit, 200);
+    source.owner.custody.terminal(source.unit, true);
+    source.owner.custody.shutdown();
+    assert!(source.owner.custody.claim(&identity).is_none());
+    assert_eq!(g.gov.concurrent_in_flight(&source.group), 0);
+    assert_source_request_retained(&g, &source);
+}
+
+#[tokio::test]
+async fn root_custody_expiry_obeys_store_liveness_and_preserves_the_paid_request() {
+    let _one = PUBLISHING.lock().await;
+    let g = governed("root-ticket-expiry", true);
+    let source = reserved_source(&g, "root-ticket-live-cap");
+    let (credential, _) = mint_reserved_source(&g, &source, source.now);
+    g.money.settle_end(source.unit, 200);
+    source.owner.custody.terminal(source.unit, true);
+    source.owner.custody.sweep().await;
+    assert_eq!(
+        g.gov.concurrent_in_flight(&source.group),
+        1,
+        "a Store-live unused ticket retains its actual reservation"
+    );
+    let identity = g
+        .gov
+        .prepare_ticket_redemption("custody_test", &credential, source.now)
+        .unwrap();
+    drop(
+        source
+            .owner
+            .custody
+            .claim(&identity)
+            .expect("Store-live ticket survives sweep"),
+    );
+    assert_eq!(g.gov.concurrent_in_flight(&source.group), 0);
+    assert_source_request_retained(&g, &source);
+
+    let source = reserved_source(&g, "root-ticket-expired-cap");
+    let _expired = mint_reserved_source(&g, &source, source.now - 120);
+    g.money.settle_end(source.unit, 200);
+    source.owner.custody.terminal(source.unit, true);
+    source.owner.custody.sweep().await;
+    assert_eq!(
+        g.gov.concurrent_in_flight(&source.group),
+        0,
+        "actual Store expiry releases unused custody"
+    );
+    assert!(source
+        .owner
+        .custody
+        .entries
+        .lock()
+        .unwrap()
+        .tickets
+        .is_empty());
+    assert_source_request_retained(&g, &source);
+}
+
+#[tokio::test]
+async fn cancelling_an_actual_owned_session_retires_money_even_without_source_registration() {
+    use busbar_contract::caps::{Abort, Outcome, ReasonCode};
+    let _one = PUBLISHING.lock().await;
+    for unregister_source in [false, true] {
+        let mut g = governed("root-owned-session-cancel", true);
+        let routes = session_custody_routes(&mut g, false);
+        let mut request = session_custody_request(&g, "/open");
+        request.gov.key = Some(Arc::new(g.key.clone()));
+        let (door, arrival, _) = routes.arrived(0, 1, request);
+        let (_keep_caller_open, from) = tokio::sync::mpsc::channel(1);
+        let (to, _replies) = tokio::sync::mpsc::channel(1);
+        let caller = super::PipeCaller {
+            from: tokio::sync::Mutex::new(from),
+            to,
+        };
+        let custody = Arc::clone(&g.post.node().ticket_custody);
+        let attach = super::Attach {
+            answered: super::SWITCHED,
+            admitted: Some(Box::new(move |unit| {
+                if unregister_source {
+                    let source = {
+                        let mut sources = custody.sources.lock().unwrap();
+                        let key = *sources
+                            .keys()
+                            .find(|key| key.get() == unit)
+                            .expect("actual source registered");
+                        sources.remove(&key)
+                    };
+                    drop(source);
+                }
+                Ok(())
+            })),
+            ended: None,
+        };
+        let (verdict, said) = tokio::sync::oneshot::channel();
+        let mut running =
+            Box::pin(Arc::clone(&routes).session(door, caller, arrival, verdict, attach));
+        tokio::select! {
+            _ = &mut running => panic!("the live caller must retain its actual session"),
+            verdict = said => assert!(verdict.unwrap().is_ok()),
+        }
+        assert_eq!(
+            g.money.open_units(),
+            1,
+            "the actual governor admission registered money"
+        );
+        assert_eq!(g.post.open_units(), 1);
+        assert_eq!(g.requests(), 1);
+        drop(running);
+        assert_eq!(
+            g.money.open_units(),
+            0,
+            "Drop closes actual receiving money independently of the optional source map"
+        );
+        assert_eq!(g.post.open_units(), 0);
+        assert!(routes.frames_lock().is_empty());
+        assert_eq!(
+            g.post.node().sweep(g.post.node().arrived()),
+            0,
+            "the real Own terminal already retired its slot"
+        );
+        assert_eq!(
+            g.requests(),
+            1,
+            "cancellation never refunds the incurred request"
+        );
+        let book = g.book.lock().unwrap();
+        assert_eq!(
+            book.audit_records.len(),
+            1,
+            "one genuine terminal audit, with no sweep duplicate"
+        );
+        assert_eq!(
+            book.audit_records[0].outcome.unit_end,
+            Outcome::Aborted(Abort::Kernel {
+                reason: ReasonCode::ClientGone
+            })
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_root_reservation_rejects_a_different_full_key_and_an_exited_loaded_generation() {
+    let _one = PUBLISHING.lock().await;
+    let g = governed("root-ticket-provenance", true);
+    let source = reserved_source(&g, "root-ticket-wrong-key-cap");
+    assert!(g
+        .gov
+        .mint_ticket_bound(
+            &g.key.id,
+            "custody_test",
+            60,
+            None,
+            b"foreign-key",
+            source.now,
+            |identity| source.owner.custody.bind(&source.owner.source, identity)
+        )
+        .is_err());
+    assert!(source
+        .owner
+        .custody
+        .entries
+        .lock()
+        .unwrap()
+        .tickets
+        .is_empty());
+    g.money.settle_end(source.unit, 200);
+    assert_eq!(g.gov.concurrent_in_flight(&source.group), 0);
+    assert_source_request_retained(&g, &source);
+
+    let source = reserved_source(&g, "root-ticket-wrong-generation-cap");
+    let (credential, expiry) = mint_reserved_source(&g, &source, source.now);
+    let identity = g
+        .gov
+        .prepare_ticket_redemption("custody_test", &credential, source.now)
+        .unwrap();
+    g.money.settle_end(source.unit, 200);
+    source.owner.custody.terminal(source.unit, true);
+    {
+        let mut current = g.served.planes[0].live.live.write().unwrap();
+        Arc::get_mut(&mut current)
+            .expect("the idle actual generation has one owner")
+            .ticket_nonce = Arc::new(());
+    }
+    assert!(
+        source.owner.custody.claim(&identity).is_none(),
+        "old loaded generation refuses before durable spend"
+    );
+    assert!(g
+        .gov
+        .store()
+        .plane_token_live(
+            busbar_kernel::governance::TICKET_RECORD_KIND,
+            identity.id(),
+            expiry,
+            source.now
+        )
+        .unwrap());
+    source.owner.custody.shutdown();
+    assert_eq!(g.gov.concurrent_in_flight(&source.group), 0);
+    assert_source_request_retained(&g, &source);
+}
