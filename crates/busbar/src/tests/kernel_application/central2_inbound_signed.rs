@@ -384,9 +384,12 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
         "transport answer contains no credential"
     );
     let mut stripped = head.clone();
-    stripped
-        .fields
-        .retain(|(name, _)| !verified.strips.contains(&Strip::field(name)));
+    stripped.fields.retain(|(name, _)| {
+        !verified.strips.iter().any(|strip| {
+            strip.place == busbar_contract::auth_calls::StripPlace::Field
+                && strip.name.eq_ignore_ascii_case(name)
+        })
+    });
     let (flow, admitted) = inbound
         .hand_in(HandIn {
             owner: 71,
@@ -558,9 +561,12 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
             "{mutation}: original request remains recoverable"
         );
         let mut stripped = head.clone();
-        stripped
-            .fields
-            .retain(|(name, _)| !recovered.strips.contains(&Strip::field(name)));
+        stripped.fields.retain(|(name, _)| {
+            !recovered.strips.iter().any(|strip| {
+                strip.place == busbar_contract::auth_calls::StripPlace::Field
+                    && strip.name.eq_ignore_ascii_case(name)
+            })
+        });
         assert_eq!(
             inbound
                 .hand_in(HandIn {
@@ -637,9 +643,12 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
             "query stripping was never declared by this reader"
         );
         let mut stripped = head.clone();
-        stripped
-            .fields
-            .retain(|(name, _)| !verified.strips.contains(&Strip::field(name)));
+        stripped.fields.retain(|(name, _)| {
+            !verified.strips.iter().any(|strip| {
+                strip.place == busbar_contract::auth_calls::StripPlace::Field
+                    && strip.name.eq_ignore_ascii_case(name)
+            })
+        });
         assert_eq!(
             inbound
                 .hand_in(HandIn {
