@@ -81,7 +81,6 @@ fn app(model: &str, pools: &[&str], cap: Option<usize>) -> busbar_kernel::state:
         .collect();
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": { "local": {
-            "protocol": "openai", "base_url": "http://127.0.0.1:1",
             "api_key": { "file": credential },
         } },
         "models": { (model): { "provider": "local", "max_concurrent": cap } },
@@ -91,7 +90,11 @@ fn app(model: &str, pools: &[&str], cap: Option<usize>) -> busbar_kernel::state:
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let providers = busbar_kernel::config::providers::catalog_from_str(
+        "local:\n  protocol: openai\n  base_url: http://127.0.0.1:1\n",
+    )
+    .expect("the metrics fixture declares its actual provider protocol and endpoint");
+    let config = busbar_kernel::config::resolve(&deploy, &providers)
         .expect("the product deployment resolves");
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
