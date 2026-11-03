@@ -319,6 +319,7 @@ fn the_inventory_matches_what_secret_refs_actually_does() {
 
 #[test]
 fn unreferenced_identity_provider_token_is_enumerated_but_not_resolved_by_validate() {
+    crate::config::secret::install_normal_root_metadata();
     let yaml = r#"
 listen: "127.0.0.1:8080"
 providers: {}
@@ -371,7 +372,7 @@ auth:
   admin_auth: [OPERATOR]
 "#;
 
-    let op = "operator-token-metadata";
+    let op = crate::config::operator_provider();
     let yaml = yaml.replace("OPERATOR", op);
     let deploy: crate::config::DeployCfg =
         serde_yaml::from_str(&yaml).expect("the fixture DeployCfg yaml must parse");
@@ -429,6 +430,7 @@ auth:
 
 #[test]
 fn keyless_is_accepted_on_provider_api_keys_alone() {
+    crate::config::secret::install_normal_root_metadata();
     let yaml = r#"
 listen: "127.0.0.1:8080"
 public_url: "https://busbar.example.com"
@@ -460,7 +462,7 @@ auth:
   signing_key: { file: /run/secrets/signing.key }
 "#;
 
-    let yaml = yaml.replace("OPERATOR", "keyless-operator-metadata");
+    let yaml = yaml.replace("OPERATOR", crate::config::operator_provider());
     let deploy: crate::config::DeployCfg =
         serde_yaml::from_str(&yaml).expect("the fixture DeployCfg yaml must parse");
 

@@ -480,3 +480,8 @@ mod actual_product_resolver;
 pub(crate) fn actual_product_resolver() -> SecretResolver {
     actual_product_resolver::resolver()
 }
+
+#[cfg(test)]
+pub(crate) fn install_normal_root_metadata() {
+    super::tests::install_normal_root_metadata();
+}
