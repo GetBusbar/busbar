@@ -2827,7 +2827,12 @@ async fn cancelled_pending_adoption_and_commit_ignore_their_late_wakes() {
             before,
             "late readiness cannot emit a message or repeat a commit"
         );
-        assert_eq!(http.count(|call| matches!(call, ObservedCall::Finish)), 1);
+        assert_eq!(http.count(|call| matches!(call, ObservedCall::Detach)), usize::from(!adopting),
+            "only a committed transfer consumes the old HTTP framing");
+        assert_eq!(http.count(|call| matches!(call, ObservedCall::Finish)), usize::from(adopting),
+            "cancel before transfer finishes HTTP; terminal detach must not finish its consumed token again");
+        assert_eq!(ws.count(|call| matches!(call, ObservedCall::Finish)), usize::from(!adopting),
+            "after transfer the adopted WS framing owns exactly one finish");
         if adopting {
             assert!(
                 admitted.await.is_err(),
