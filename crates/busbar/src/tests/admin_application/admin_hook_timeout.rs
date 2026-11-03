@@ -343,7 +343,13 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
     crate::dist_root_install::install();
     let connector = crate::root::connector::installed()
         .expect("the normal root installs the actual transport connector");
-    let dispatcher = std::sync::Arc::new(Dispatcher::new(DispatchConfig::default()));
+    // The actual exporter reads snapshot.read through its dispatcher host table. A bare
+    // Dispatcher has no provider; lend the production kernel services to this real instance.
+    let dispatcher = std::sync::Arc::new(Dispatcher::with_services(
+        DispatchConfig::default(),
+        std::sync::Arc::new(busbar_kernel::host_services::KernelServices::new()),
+    ));
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     crate::root::connector::install_io(&dispatcher);
     let plugin = load_dropped::<Export>(
         &path,
