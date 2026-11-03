@@ -8,8 +8,7 @@ use busbar_contract::records::{ScopeRef, VirtualKey};
 #[test]
 fn an_unrelated_same_name_entry_keeps_its_primary_grant_boundary() {
     let catalog = serde_yaml::from_str("shared: { provider: catalog_provider }").unwrap();
-    // An explicitly supplied member is not the route synthesized from the catalog,
-    // even when both its name and the configured session model collide.
+
     let section = serde_yaml::from_str(
         "session: { model: shared }\nmodels: { shared: { provider: unrelated_provider } }",
     )
@@ -19,7 +18,7 @@ fn an_unrelated_same_name_entry_keeps_its_primary_grant_boundary() {
     assert_eq!(table["models"]["shared"]["provider"], "unrelated_provider");
     let pools = DoorPools::of(&table, busbar_contract::section::RESERVED_POOLS_KEY).unwrap();
     let mut facts = door_facts("neutral", &["primary", "catalog"], &[], &[], "op", vec![]);
-    // A refresh onto this unrelated route must also discard a prior catalog obligation.
+
     facts
         .secondary_scopes
         .insert("shared".into(), "catalog".into());

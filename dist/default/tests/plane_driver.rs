@@ -1498,6 +1498,24 @@ async fn session(
     session_on(&r.driver, far, caller, cases::arrival("/call", b""), key).await
 }
 
+struct SessionTerminal<F: FnOnce(busbar_contract::caps::Outcome) -> busbar_kernel::teller::Ended> {
+    finish: Option<F>,
+}
+
+impl<F: FnOnce(busbar_contract::caps::Outcome) -> busbar_kernel::teller::Ended> Drop
+    for SessionTerminal<F>
+{
+    fn drop(&mut self) {
+        if let Some(finish) = self.finish.take() {
+            let _ = finish(busbar_contract::caps::Outcome::Aborted(
+                busbar_contract::caps::Abort::Kernel {
+                    reason: busbar_contract::caps::ReasonCode::ClientGone,
+                },
+            ));
+        }
+    }
+}
+
 async fn session_on<F, C>(
     driver: &PlaneDriver,
     far: &F,
@@ -1521,7 +1539,7 @@ where
         AccrualMeter::new(),
     );
     let cell = common::cell(&kernel);
-    let run = Run {
+    let run = || Run {
         cell: &cell,
         parent: None,
         leases: &leases,
@@ -1534,11 +1552,34 @@ where
     let SessionOpen::Admitted {
         route,
         destinations,
-    } = open_unit(&kernel, &units, &ctx, run).await
+        own,
+    } = open_unit(&kernel, &units, &ctx, run()).await
     else {
         panic!("the session is admitted");
     };
-    units.session(&route, &ctx, &destinations).await
+    let mut terminal = SessionTerminal {
+        finish: own.map(|own| {
+            let kernel = &kernel;
+            let ctx = &ctx;
+            let run = &run;
+            move |outcome| own.finish(kernel, ctx, run(), outcome, Default::default())
+        }),
+    };
+    let result = units.session(&route, &ctx, &destinations).await;
+    if let Some(finish) = terminal.finish.take() {
+        let outcome = match result {
+            Ok(()) => busbar_contract::caps::Outcome::Completed,
+            Err(reason) => busbar_contract::caps::Outcome::Failed(
+                busbar_contract::caps::StepName::Route,
+                reason,
+            ),
+        };
+        assert!(matches!(
+            finish(outcome),
+            busbar_kernel::teller::Ended::Settled { .. }
+        ));
+    }
+    result
 }
 
 const SEALED: &str = "fixture-lane";
@@ -1748,9 +1789,7 @@ async fn a_dropped_session_cleans_up_exactly_once() {
         };
         assert_eq!(ended(), 1, "{way:?}: the dropped session's one cleanup");
         assert_eq!(r.driver.buried(), 2, "{way:?}: one ticket per side, buried");
-        // Sweeping polls the real worker's asynchronous CANCEL answers; a first poll may only
-        // enqueue them. Both tickets belong to one unit, whose terminal cancellation retires
-        // both bindings. Observe their retirement before checking the exactly-once counts.
+
         eventually("both session ticket cancellations settle", || {
             r.driver.sweep();
             r.driver.buried() == 0

@@ -14,8 +14,6 @@ const LANE: &str = "m-dated-read";
 const PROVIDER: &str = "dated-read";
 const TOKENS: u64 = 1_000;
 
-// These usage fixtures price token counts and declare the other classes in the actual pools
-// Statement explicitly free. The model/provider names remain the names their recorded rows use.
 pub(super) fn complete_usage_fixture(
     document: &mut serde_json::Value,
     directory: &std::path::Path,

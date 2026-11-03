@@ -43,7 +43,7 @@ impl PortAssociations {
         let Some(id) = self.lock().find(from, bytes) else {
             return RawIngress::Unrouted;
         };
-        // Future: offer bounded per-association buffering as an advanced option.
+
         match self.incremental_admission(id, Owed::Datagram(from, bytes.into()), now, send, true) {
             Ok(answered) => RawIngress::Answered(answered),
             Err(_) => {

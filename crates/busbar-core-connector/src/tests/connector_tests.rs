@@ -10,8 +10,6 @@ mod fanout_waker_tests;
 #[path = "pool_retirement_tests.rs"]
 mod pool_retirement_tests;
 
-// These four listener/target diagnostic tests inspect actual connector events on their own
-// thread. Keep their dispatchers serialized while tracing rebuilds its callsite interest cache.
 static DIAGNOSTICS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Clone)]
@@ -51,7 +49,6 @@ impl tracing::Subscriber for ConnectorDiagnostics {
         &self,
         _: &'static tracing::Metadata<'static>,
     ) -> tracing::subscriber::Interest {
-        // Keep diagnostic callsites available even when another test first visits one.
         tracing::subscriber::Interest::always()
     }
 

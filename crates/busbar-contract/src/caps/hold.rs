@@ -313,20 +313,14 @@ impl HoldCell {
     }
 
     /// Whether this cell still holds the admission opened by this grant for this principal.
-    /// This observes authority without changing the cell or creating a hold or accrual.
+
     pub fn admitted_for(&self, token: &Grant<Admittance>, principal: &PrincipalId) -> bool {
         matches!(&*self.slot(), Slot::Admitted(hold)
             if token.bound_to(hold.call()) && hold.principal() == principal)
     }
 
     /// Prepare a host reservation atomically with checking this exact live admission.
-    ///
-    /// `prepare` runs under the cell lock, so exit cannot take the admitted hold between
-    /// validation and reservation. It must be all-or-nothing, nonblocking host work, with
-    /// lock order Cell -> Money shard -> FeeAccount. It must not reenter a cell, acquire a
-    /// lifecycle map lock, call plugins or Store, await, refund governors, or destroy owners.
-    /// Return owned resources for cleanup after this method releases the cell lock.
-    /// Neither success nor failure creates a hold/accrual or changes canary counters.
+
     pub fn with_admitted_call<R, E>(
         &self,
         call: CallId,
@@ -403,11 +397,7 @@ impl HoldCell {
     }
 
     /// Prepare host registration under a live parent, then create its child's accrual.
-    ///
-    /// `prepare` runs under the cell lock after parent and principal validation. It must be
-    /// all-or-nothing host registration: no plugin calls, awaits, cell reentry, or destruction
-    /// of arbitrary owners. Its locks must follow the cell lock in the host's lock order.
-    /// Failure leaves the cell and its accrual count unchanged.
+
     pub fn accrue_child_after<E>(
         &self,
         principal: &PrincipalId,

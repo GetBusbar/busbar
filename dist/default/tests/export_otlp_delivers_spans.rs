@@ -340,8 +340,6 @@ fn attribute(span: &Span, key: &str) -> Option<String> {
         })
 }
 
-// ArrivalSpan owns the callsite metadata; SpanRecord adds thread and timing metadata.
-// Validate that exact typed envelope before comparing every request field to the 1.5.5 rows.
 fn entry_request_fields(span: &Span) -> Vec<(String, String)> {
     let mut envelope = std::collections::BTreeSet::new();
     let mut fields = Vec::new();

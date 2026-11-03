@@ -14,7 +14,6 @@ use busbar_kernel::plane_driver::{CallerEnd, SessionCaller};
 use super::tests::real::{Input, Pair, WAIT};
 use super::{lock, ClaimDoor};
 
-// Pause a host crossing while leaving the actual WebRTC output untouched.
 struct Parked {
     release: Option<std::sync::mpsc::Sender<()>>,
     thread: Option<std::thread::JoinHandle<bool>>,
@@ -69,8 +68,7 @@ async fn raw_output_credit_readiness_drops_before_acceptance_and_resumes_without
     assert_eq!(pair.caller.read().await, Some(Vec::new()));
     assert!(pair.pairing.published().await.failure.is_none());
     let memory = pair.pairing.memory_account();
-    // Retain genuine host storage, leaving less than the next pre-read output
-    // reservation. The actual WebRTC association and UDP path are established.
+
     let held = vec![0_u8; limit - memory.used() - 1024];
     let custody = pair
         .pairing
@@ -104,8 +102,6 @@ async fn raw_output_credit_readiness_drops_before_acceptance_and_resumes_without
     drop(held);
     drop(custody);
 
-    // The discarded malformed RTP is a receive-readiness negative, not an echo
-    // protocol. A fresh genuine SCTP message proves progress after retirement.
     pair.send(b"credit returned").await;
     assert_eq!(
         tokio::time::timeout(WAIT, pair.caller.read())
@@ -130,9 +126,7 @@ async fn busy_raw_ingress_drops_before_acceptance_and_other_real_associations_pr
     let b = Pair::on(door.clone(), &[]).await;
     assert_eq!(b.caller.read().await, Some(Vec::new()));
     assert_eq!(a.caller.read().await, Some(Vec::new()));
-    // Pause autonomous ICE/timer work only after the real channels exist. An
-    // explicit real message behind all prior peer sends is observed by the
-    // root before the exact injected-drop window begins.
+
     a.pause().await;
     b.pause().await;
     for pair in [&a, &b] {
@@ -154,8 +148,7 @@ async fn busy_raw_ingress_drops_before_acceptance_and_other_real_associations_pr
     let mut pending = Box::pin(a.caller.write(b"accepted once"));
     assert!(pending.as_mut().poll(&mut cx).is_pending());
     let before = door.assocs.raw_busy_dropped();
-    // Genuine malformed RTP inputs exercise the host's receive-readiness seam.
-    // WebRTC never promises arbitrary UDP echo or application delivery for them.
+
     for bytes in [
         b"\x80busy-one".as_slice(),
         b"\x80busy-two",
@@ -197,8 +190,7 @@ async fn busy_raw_ingress_drops_before_acceptance_and_other_real_associations_pr
     );
     assert!(a.pairing.published().await.failure.is_none());
     assert!(b.pairing.published().await.failure.is_none());
-    // Live ICE resumes outside the exact injected window and may itself
-    // encounter receive-not-ready. Its traffic is not one of our three inputs.
+
     a.send(b"after release").await;
     assert_eq!(
         tokio::time::timeout(WAIT, a.caller.read()).await.unwrap(),
@@ -228,7 +220,7 @@ async fn closing_a_busy_real_association_cancels_unaccepted_writes_and_retires_i
     assert_eq!(*a.framer.emitted.lock().unwrap(), vec![8]);
     assert!(lock(&door.legs).is_empty());
     assert!(door.assocs.is_empty());
-    // A new real peer negotiates fresh ICE credentials and owns a fresh path.
+
     let replacement = Pair::on(door.clone(), &[]).await;
     assert_ne!(*lock(&a.caller.leg.id), *lock(&replacement.caller.leg.id));
     replacement.send(b"replacement").await;
@@ -258,7 +250,7 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
     use tokio::net::UdpSocket;
 
     const OPUS: &[u8] = &[0xF8, 1, 2, 3, 4];
-    // Observe the actual upstream operation without changing product output.
+
     struct Upstream {
         inner: Arc<dyn FramerDoor>,
         emitted: std::sync::Mutex<Vec<(u64, usize)>>,
@@ -289,9 +281,7 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
 
     let pair = Pair::with_audio().await;
     assert_eq!(pair.caller.read().await, Some(Vec::new()));
-    // Finish a real application exchange while the peer can still process SCTP
-    // control packets and retransmit. The root's channel-open event alone does
-    // not say that the peer has finished that reciprocal protocol work.
+
     pair.send(b"SRTP ingress window").await;
     assert_eq!(
         tokio::time::timeout(WAIT, pair.caller.read())
@@ -299,9 +289,7 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
             .unwrap(),
         Some(b"SRTP ingress window".to_vec())
     );
-    // Only then pause autonomous caller ICE/timers, before pairing upstream.
-    // Capture the counter baseline after upstream readiness below; explicit SRTP
-    // still crosses the real wire while autonomous caller work remains paused.
+
     pair.pause().await;
     let mut entries = crate::root::connector::entries(
         crate::LINKED_TRANSPORT_DOORS,

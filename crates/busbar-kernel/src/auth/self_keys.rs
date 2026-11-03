@@ -134,8 +134,6 @@ impl DeterministicEd25519Keys {
     }
 }
 
-// The continuation after the real provisioner has committed or reused the subject's leaf.
-// The caller records now/exp before provisioning and passes those exact values here.
 async fn mint_provisioned_self_key(
     gov: Arc<GovState>,
     op: crate::governance::SelfMintOp,

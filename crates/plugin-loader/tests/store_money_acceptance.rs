@@ -6,44 +6,25 @@ use busbar_contract::records::{
     UsageLedger, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
 
-use busbar_plugin_loader::store_adapter::StoreAdapter;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-// #39 / STRICT2: these are four host paths through the actual SQLite product, not four
-// implementations or a customer's native Rust constructor. The descriptor path re-enters the
-// unchanged, image-held actual door through load_linked; SQLite's own tests own static-link parity.
 struct Subject {
     door: &'static str,
     store: Arc<dyn RecordStore>,
-    // Fields drop in declaration order: CLOSE the actual store before removing its database.
+
     _db: v3::SQLiteTempDb,
 }
 
 fn subjects() -> Vec<Subject> {
     [
-        (v3::Origin::Descriptor, false, "actual SQLite descriptor"),
-        (v3::Origin::Dropped, false, "actual SQLite dropped image"),
-        (
-            v3::Origin::Descriptor,
-            true,
-            "native adapter / actual descriptor",
-        ),
-        (
-            v3::Origin::Dropped,
-            true,
-            "native adapter / actual dropped image",
-        ),
+        (v3::Origin::Descriptor, "actual SQLite descriptor"),
+        (v3::Origin::Dropped, "actual SQLite dropped image"),
     ]
     .into_iter()
-    .map(|(origin, adapter, door)| {
+    .map(|(origin, door)| {
         let db = v3::SQLiteTempDb::new();
         let store: Arc<dyn RecordStore> = Arc::new(v3::open(origin, &db));
-        let store = if adapter {
-            StoreAdapter::native(store).store()
-        } else {
-            store
-        };
         Subject {
             door,
             store,
@@ -623,29 +604,6 @@ fn money_records_name_no_plugin_or_plane() {
     assert!(bad.is_empty(), "plugin-keyed money field(s): {bad:?}");
 }
 
-#[test]
-fn the_adapter_passes_money_through_to_the_loaded_store() {
-    let subject = subjects().remove(0);
-    let inner = subject.store.clone();
-    let a = StoreAdapter::native(inner.clone());
-    a.store()
-        .add_usage("k", DAY, &delta(2, 1, "m", &[(UNIT_OUTPUT, 9)]))
-        .expect("usage");
-    a.store()
-        .add_metering(&meter("k", DAY, "m", "p", 4, 2))
-        .expect("meter");
-    let got = inner.get_usage("k", DAY).expect("read");
-    assert_eq!(
-        (
-            got.requests,
-            got.billable_requests,
-            tier(&got, "m", UNIT_OUTPUT)
-        ),
-        (2, 1, 9)
-    );
-    assert_eq!(inner.list_metering(DAY).expect("list")[0].requests, 2);
-}
-
 mod v3 {
     use std::path::PathBuf;
     use std::sync::{Arc, OnceLock};
@@ -684,8 +642,6 @@ mod v3 {
     }
 
     struct ActualImage {
-        // This is load_dropped(path), not load_dropped_bytes: it holds the SAME path's dlopen
-        // image while the address helper closes only its additional reference to that image.
         _holder: Plugin<Store>,
         _dispatcher: Arc<Dispatcher>,
         path: PathBuf,
@@ -712,7 +668,7 @@ mod v3 {
             let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
             let holder = load_dropped::<Store>(&path, &stated, bind_to(&d))
                 .expect("the actual SQLite image is admitted as a Store");
-            // Requires the ordinary loader's worker-routed address inspection (ea13884d7bdb).
+
             let (descriptor, _) = door_addresses_of_library(&path)
                 .expect("inspect the held actual SQLite image")
                 .expect("the actual SQLite image exports its descriptor");
@@ -727,9 +683,6 @@ mod v3 {
         })
     }
 
-    // A concrete test input only: no copied table, callbacks, settings, or store implementation.
-    // IMAGE owns the validated same-path image for the process, so its immutable descriptor lives
-    // through every linked-descriptor instance and every use of this getter.
     extern "C" fn actual_descriptor() -> *const Door {
         IMAGE
             .get()
@@ -801,7 +754,7 @@ mod v3 {
     pub struct Bound {
         pub store: LoadedStore,
         rt: tokio::runtime::Runtime,
-        // Keep the same physical database through restart, and remove it only after CLOSE.
+
         db: SQLiteTempDb,
         origin: Origin,
     }
@@ -857,7 +810,7 @@ mod v3 {
                 db,
                 origin,
             } = self;
-            drop(store); // Actual LoadedStore::drop runs CLOSE before reopening the SAME file.
+            drop(store);
             let store = open(origin, &db);
             Bound {
                 store,

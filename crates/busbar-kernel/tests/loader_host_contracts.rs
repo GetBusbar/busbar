@@ -292,8 +292,6 @@ fn a_chained_kinds_writes_are_appended_to_their_chain_and_read_whole() {
     );
 }
 
-// The removed simulator accepted any offered digest from a fixed tuple. Actual
-// approvals are digest-bound; the production owner is deliberately exercised here.
 fn trust_host() -> Host {
     let h = Host::new();
     h.admit(

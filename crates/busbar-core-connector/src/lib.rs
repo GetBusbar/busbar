@@ -1285,8 +1285,7 @@ impl Connector {
                 None => over.remove(&(owner, need)),
             }
         };
-        // Final declaration custody can retire a child and invoke the carrier. Never do so
-        // while holding the connector's declaration map lock.
+
         drop(before);
     }
 
@@ -1319,8 +1318,7 @@ impl Connector {
         };
         let before = {
             let over = self.over.lock().expect("needs");
-            // An existing successor can only redeclare its own members, never select a
-            // different predecessor. Provenance is used once for a fresh generation.
+
             let source = over.get(&(owner, need)).or_else(|| {
                 predecessor
                     .filter(|previous| *previous != owner)
@@ -2585,7 +2583,7 @@ impl Connector {
     }
 
     /// A session's upstream offer mirrors metadata learned from its actual caller association.
-    /// Ordinary units have no pairing and can open immediately.
+
     pub async fn wait_session_opening(&self, unit: u64) -> Result<(), ConnError> {
         let pairing = self.pairs.lock().expect("pairs").get(&unit).cloned();
         match pairing {
@@ -2931,8 +2929,7 @@ impl Connector {
                 .get(program::member_of(desc.target))
                 .map(|declaration| declaration.member())
                 .ok_or(ConnError::Refused)?;
-            // An in-flight open owns the Member, not declaration custody. Replacement must
-            // retire a member even while its carrier spawn is blocked.
+
             drop(members);
             let lease = member.lease(&desc.body, expected)?;
             let mut held = Held::over(None, None, None).bounded(desc.timeout_ms);

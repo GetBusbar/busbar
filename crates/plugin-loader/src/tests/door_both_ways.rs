@@ -16,7 +16,6 @@ use crate::dispatch::{
 pub(crate) struct Loaded<K: Kind> {
     pub(crate) plugin: Plugin<K>,
 
-    // Retain the dispatcher until after the plugin has been dropped.
     _dispatcher: Arc<Dispatcher>,
 }
 

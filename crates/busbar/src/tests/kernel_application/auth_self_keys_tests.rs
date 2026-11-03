@@ -11,9 +11,6 @@ use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
 use busbar_contract::store_calls::StoreCall;
 
-// Passive observation of the actual opened Store. Every method forwards its exact arguments
-// and returned future unchanged. Only pointer-free counts of overlay write/transaction attempts
-// are retained; this neither implements Store behavior nor intercepts acknowledgements.
 struct ObservedStoreCalls {
     calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
     record_writes: std::sync::atomic::AtomicUsize,
@@ -322,8 +319,7 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
         .expect("the actual Store supplies governance")
         .clone();
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
-    // Principal DATA enters the real public post-identity mint API. This case exercises actual
-    // group transactions and Store persistence, not authentication of an external credential.
+
     let mut principal = busbar_kernel::auth::Principal::from_id("sam");
     principal.roles = vec!["eng".to_string()];
     let before = handle.load();
@@ -530,8 +526,7 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
         let overlay_before = overlay
             .read_bytes()
             .expect("read the actual overlay before refusal");
-        // Existing valid credential DATA is minted through the actual governance API. The group
-        // is already present under team-a, matching the original setup's successful issue.
+
         let old = if refresh {
             let now = busbar_kernel::store::now();
             Some(
@@ -1148,8 +1143,6 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                     None
                 }
             } else {
-                // The public login/refresh mint API takes verified principal DATA. The exchange arm
-                // above separately supplies that same subject and role through actual OIDC verification.
                 let mut principal = busbar_kernel::auth::Principal::from_id("oidc:subject");
                 principal.roles = vec!["eng".to_string()];
                 match tokio::time::timeout(

@@ -1,5 +1,5 @@
 //! Test-only observation of contract allocation counts and owned payload destruction.
-//! Installed by this crate's unit-test binary; never included in the contract API.
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;

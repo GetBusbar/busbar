@@ -26,7 +26,7 @@ pub(super) async fn run() {
     let late = super::super::LateServices::new();
     let dispatcher = crate::root::dispatch::boot(1, &late);
     crate::root::doors::install_dispatcher(dispatcher);
-    // Like main, publish the real declarations before configuration freezes the registry.
+
     crate::register_protocols();
     crate::register_planes();
     crate::register_diagnostics();

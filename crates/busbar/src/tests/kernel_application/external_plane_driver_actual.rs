@@ -6,8 +6,6 @@ use std::time::Duration;
 
 use crate::root::test_plugins as actual_plugins;
 
-// Only the real distribution mounts this suite. This is a component HookEnv proof;
-// it does not claim a cold application boot or route admission proof.
 fn actual_rewrite(
     on_error: &str,
 ) -> Vec<(Duration, Arc<dyn busbar_contract::hooks::RoutingPolicy>)> {
@@ -148,8 +146,7 @@ async fn actual_webrequest_supplies_a_rewrite_to_the_host_policy() {
     use busbar_contract::hooks::{RoutingRequest, TransformOutcome};
     let policies = actual_rewrite("weighted");
     assert_eq!(policies.len(), 1);
-    // The six raw plane-projection fault cases live beside the kernel's owning ABI tests.
-    // This control crosses the actual signed Webrequest product independently.
+
     let request = RoutingRequest {
         request_id: 1,
         pool: "test",

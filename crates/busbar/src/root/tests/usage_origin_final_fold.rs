@@ -253,7 +253,7 @@ fn final_origin_fold_overflow_falls_back_to_fresh_full_tamper_verification() {
         }
     }
     let tip = prior.unwrap();
-    // Select this entirely real, durably appended ancestry in the actual Store.
+
     let select = super::super::conditional::candidate(
         vec![Predicate {
             schema: HEAD_SCHEMA.into(),
@@ -272,8 +272,7 @@ fn final_origin_fold_overflow_falls_back_to_fresh_full_tamper_verification() {
     );
     assert!(sink.read_origin_for_final_fold(&event).unwrap().is_none());
     sink.verify_origin(&event).unwrap();
-    // Corrupt an unselected operation outside the bounded transcript. Fresh cold proof
-    // must still inspect it, rather than trusting the previously successful run.
+
     slots.corrupt(JOURNAL_SCHEMA, &part_key(node, unrelated.head.sequence, 0));
     assert!(sink.verify_origin(&event).is_err());
 }

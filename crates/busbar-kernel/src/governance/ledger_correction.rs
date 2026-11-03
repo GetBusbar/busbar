@@ -62,7 +62,6 @@ impl Drop for CorrectionRecoveryRun {
 
 impl PendingCorrection {
     fn receipt_retention_expired(&self) -> bool {
-        // The wall timestamp is durable evidence; only the original monotonic clock proves age.
         self.started.elapsed().as_secs() >= busbar_contract::abi::store::OP_ID_RETENTION_SECS
     }
 
@@ -270,7 +269,7 @@ impl GovState {
     }
 
     /// Remaining unknown positive exposure from selected correction owners only. No pending
-    /// candidate or aggregate Store read grants capacity; callers account for their staged take.
+
     pub(in crate::governance) fn quarantined_correction_negative_capacity(
         &self,
         bucket: &str,
@@ -397,7 +396,7 @@ impl GovState {
         if custody.is_terminal() {
             return Ok(());
         }
-        // Historical aggregates are evidence, not a replacement for fresh Store hydration.
+
         let pending = custody.restore(self, event)?;
         let mut corrections = self.corrections.lock().unwrap_or_else(|p| p.into_inner());
         if corrections.contains_key(&pending.request.key_id) {
@@ -907,7 +906,7 @@ impl GovState {
     }
 
     /// Stage an exact parent-owned handoff while the caller still owns the target shard.
-    /// Persistence and child publication happen after that shard lock is released.
+
     pub(in crate::governance) fn stage_correction_handoff(
         &self,
         bucket: &str,
@@ -962,7 +961,7 @@ impl GovState {
     }
 
     /// Transfer only common positive mutations out of the two conditional branches.
-    /// The caller holds the shard lock and installs immutable flight ownership before unlocking.
+
     pub(in crate::governance) fn take_correction_positives(
         cell: &mut BudgetCell,
         window: u64,
@@ -1062,7 +1061,9 @@ impl GovState {
                     .unwrap_or_else(|p| p.into_inner()) = Some(event.clone());
                 self.keep_recovery_event(&event)?;
             }
-            return Err(unresolved("historical correction is quarantined pending an audited verdict and fresh revalidation"));
+            return Err(unresolved(
+                "historical correction is quarantined pending an audited verdict and fresh revalidation",
+            ));
         }
         let receipt = *pending.receipt.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(decision) = receipt {
@@ -1227,8 +1228,6 @@ impl GovState {
                 .unwrap_or_else(|p| p.into_inner())
                 .clone();
             if let Some(event) = previous.as_ref() {
-                // Confirm an immutable candidate before allocating its successor. The mutex is
-                // released during I/O so a handoff cannot block a shard on this Store call.
                 self.keep_recovery_event(event)?;
             }
             let payload = recovery::Custody::capture(self, pending)?.encode()?;
@@ -1262,7 +1261,7 @@ impl GovState {
     }
 
     /// Select a definitive raw branch only after the operation outcome is established.
-    /// Common accruals, refunds and rolls have already updated both branches.
+
     fn settle_usage_correction(
         &self,
         pending: &PendingCorrection,
@@ -1765,7 +1764,7 @@ fn unique_metered_era(adj: &Adjustment<'_>, rows: &[MeteringRow]) -> RecordStore
             Some(None) => {
                 return Err(RecordStoreError(
                     "malformed versioned metering provenance".into(),
-                ))
+                ));
             }
             None => None,
         };

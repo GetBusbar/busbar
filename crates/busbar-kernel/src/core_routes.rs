@@ -64,8 +64,26 @@ impl CoreRouteTable {
     #[must_use]
     pub(crate) fn with_door_refusals(
         mut self,
-        refusals: Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
+        mut refusals: Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
     ) -> Self {
+        use busbar_contract::abi::transport::route::{PATH_EXACT, PATH_PATTERN};
+
+        refusals.sort_by_cached_key(|r| {
+            std::cmp::Reverse(
+                crate::guest::Route {
+                    methods: 0,
+                    path_form: if r.route.path.contains('{') {
+                        PATH_PATTERN
+                    } else {
+                        PATH_EXACT
+                    },
+                    path: r.route.path.clone(),
+                    fields: Vec::new(),
+                    rung: 0,
+                }
+                .path_precedence(),
+            )
+        });
         self.door_refusals = refusals;
         self
     }

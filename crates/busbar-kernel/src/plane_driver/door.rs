@@ -214,8 +214,7 @@ impl DoorSection {
             return Vec::new();
         }
         let sep = crate::governance::PLANE_LANE_SEP;
-        // As in the served door's pool view, a model map names the routed entries. Their
-        // direct-route lanes are the model names; scope kinds describe grants, not prices.
+
         if let Some(models) = self
             .value
             .get(RESERVED_MODELS_KEY)
@@ -549,8 +548,7 @@ fn build(
         Ok(f) => (f, true),
         Err(refusal) => {
             tracing::error!(plane = d.reg.key, "{refusal}");
-            // A refused candidate cannot replace the mount, audience or section of a
-            // successfully serving generation. The root keeps that same live door.
+
             if let Some(prior) = ctx.prior.and_then(|prior| prior.plane_slot(decl.key)) {
                 if prior.downcast_ref::<DoorSlot>().is_some_and(|prior| {
                     prior.opened
@@ -951,7 +949,7 @@ async fn admin_reply(
                 status => {
                     return AdminReply::Rejected(PlaneVerbError::Internal(format!(
                         "the plane answered `{verb} {path}` with status {status}"
-                    )))
+                    )));
                 }
             };
             if served.audit == busbar_contract::abi::plane::AUDIT_NONE {

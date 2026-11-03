@@ -84,8 +84,7 @@ async fn real_reader_custody_remains_charged_until_the_last_consumer_releases_it
 async fn an_unaccepted_write_waits_for_upstream_reader_credit_and_cancelled_bytes_never_cross() {
     let mut pair = Pair::with_limit(limit()).await;
     let memory = pair.pairing.memory_account();
-    // This is the host reservation seam for an upstream reader, independent of
-    // the peer protocol. No plugin yield is invented to manufacture pressure.
+
     let capacity = limit() - memory.used() - 1024;
     let bytes = vec![0_u8; capacity];
     let custody = pair

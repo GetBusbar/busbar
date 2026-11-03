@@ -208,14 +208,11 @@ async fn member_ca_is_scoped_to_members_and_separately_built_root_owners() {
     assert!(server.heard.try_recv().is_ok());
     while server.heard.try_recv().is_ok() {}
 
-    // The same endpoint and SPKI do not grant the sibling the successful member's TLS roots.
-    // Footing::own uses the production connector without pooling; pooled-policy isolation is
-    // exercised separately by the connector tests, rather than claimed by this fixture.
     refused_before_http(&first, &mut server, "other_read_file").await;
 
     let mut untrusted = server.section();
     untrusted["fs"]["allow_private"] = Value::Bool(true);
-    // This independently composed Root has its own production connector and owner.
+
     let other = root_rig("member-ca-isolation-other-owner", server.port, untrusted).unwrap();
     refused_before_http(&other, &mut server, "fs_read_file").await;
     served(&first).await;
@@ -343,9 +340,6 @@ async fn member_ca_is_not_inherited_by_another_declared_need_on_the_same_connect
     assert!(server.heard.try_recv().is_ok());
     while server.heard.try_recv().is_ok() {}
 
-    // This is an adversarial HOST declaration-boundary control, not a claim that the MCP product
-    // naturally opens a foreign Need. Copy its actual ReadNeed to a fresh declared slot so that
-    // transport, member, target, private reach and SPKI remain equal; omit only the member CA.
     declarations
         .declare(owner, foreign_need, spec, None, None)
         .expect("the copied actual carrier Need is explicitly declared");
@@ -388,8 +382,6 @@ async fn member_ca_is_not_inherited_by_another_declared_need_on_the_same_connect
         .close(owner, foreign)
         .expect("close the refused control");
 
-    // Keep the actual generation guard and owner alive throughout both exchanges. Do not forget
-    // the real owner to clean up a control Need: normal Rig retirement owns that lifecycle.
     served(&rig).await;
     assert_eq!(binding.owner(), owner);
     server.close().await;

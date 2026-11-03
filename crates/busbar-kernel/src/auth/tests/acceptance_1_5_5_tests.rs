@@ -129,8 +129,6 @@ fn auth_fault_path_diagnostic_identities_are_pinned() {
 
 #[test]
 fn admin_module_unresolved_diag_fires_and_falls_through_to_pass() {
-    // Defensive metadata continuation: ordinary boot separately refuses missing modules.
-    // No fake registry/application is needed to pin this diagnostic and the all-Pass fold.
     let (verdict, buf) = capture(|| {
         let judged = unresolved_admin_module("ghost-module");
         assert_eq!(judged.verdict, AuthVerdict::Pass);
@@ -182,8 +180,7 @@ const ADMIN_STALLED_TEXT: &str =
 #[test]
 fn a_saturated_data_plane_verifier_says_4005_in_1_5_5_words_and_denies() {
     use busbar_contract::auth_calls::Verified;
-    // Internal continuation: outcome DATA is interpreted by production functions; actual
-    // auth-product I/O is exercised by the root's OIDC controls.
+
     let (judged, said) = captured_on_paused_clock(async {
         data_verdict_of("door", Verified::Overloaded.into(), false).map(|judged| {
             chain_position_verdict("door", judged.verdict).unwrap_or(ChainVerdict::Denied)
@@ -229,7 +226,7 @@ fn a_saturated_data_plane_verifier_says_4005_in_1_5_5_words_and_denies() {
 #[test]
 fn a_faulted_data_plane_verify_says_4006_in_1_5_5_words_and_denies() {
     use busbar_contract::auth_calls::Verified;
-    // Internal fault/result continuation, preserving the exact production fail-closed fold.
+
     let (verdict, said) = captured_on_paused_clock(async {
         deny_unavailable_chain(data_verdict_of("door", Verified::Failed.into(), true).map(
             |judged| chain_position_verdict("door", judged.verdict).unwrap_or(ChainVerdict::Denied),
@@ -251,7 +248,7 @@ fn a_faulted_data_plane_verify_says_4006_in_1_5_5_words_and_denies() {
 #[test]
 fn a_saturated_admin_verifier_says_4008_in_1_5_5_words_and_denies() {
     use busbar_contract::auth_calls::Verified;
-    // Internal outcome and actual admission-budget continuations.
+
     let (verdict, said) = captured_on_paused_clock(async {
         let judged = admin_verdict_of(Verified::Overloaded.into(), false);
         chain_position_verdict("ext", judged.verdict).expect("overload is terminal")
@@ -295,7 +292,6 @@ fn a_stalled_or_faulted_admin_verify_says_4009_in_1_5_5_words_and_denies() {
     for timed_out in [true, false] {
         let (verdict, said) = captured_on_paused_clock(async {
             let judged = if timed_out {
-                // The timeout error comes from the actual Tokio timer, not a pending auth door.
                 let elapsed =
                     tokio::time::timeout(ADMIN_ADMISSION_WAIT, std::future::pending::<()>())
                         .await
@@ -366,8 +362,6 @@ fn admin_request_debug_and_outcome_diagnostics_redact_credentials() {
         Verified::Overloaded,
         Verified::Failed,
     ] {
-        // INTERNAL formatter/diagnostic continuation. Real operator requests have a
-        // separate root log control; DATA here also covers unavailable outcome branches.
         let headers = super::tests::admin_headers(Some(BEARER), Some(HEADER));
         let mut request = admin_head("GET", "/api/v1/admin/keys", &headers, 1);
         request.credential = Some(busbar_contract::redacted::Secret::new(

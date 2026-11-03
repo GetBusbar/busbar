@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A real retained usage operation, observed and resolved through the mounted operator surface.
-//! The only adversarial boundary loses one reply AFTER the actual Store committed it.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -122,8 +121,6 @@ async fn an_actual_retained_usage_operation_is_listed_and_resolved_through_the_a
     actual_retained_usage_resolution(false).await;
 }
 
-// Keep the observed real Store scan failure as an ordinary, unignored regression. This must
-// exercise the compatibility history API itself, independently of the production selection API.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn actual_store_compatibility_replay_preserves_the_resolved_verdict() {
     actual_retained_usage_resolution(true).await;
@@ -233,8 +230,6 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
         }
     }
 
-    // A new sender cannot infer receipt-age authority from recent wall time. Its real replay
-    // derives LandedUnknown; the fixture never inserts a recovery row or chooses an operation id.
     let restarted = Arc::new(
         busbar_kernel::governance::GovState::new_with_signer(boundary.clone(), None, None).unwrap(),
     );
@@ -379,9 +374,7 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
         inner.get_usage(&key.id, 0).unwrap().tokens_for(MODEL),
         Some(INPUT)
     );
-    // Read through the production streaming replay contract: it verifies the entire current
-    // selected ancestry against the actual Store and retains only its endpoints. Settlement
-    // preserves the verdict payload (including actor/evidence), rather than reconstructing it.
+
     let durable = if compatibility_history {
         sink.replay()
             .expect("actual Store compatibility replay must read the retained journal")

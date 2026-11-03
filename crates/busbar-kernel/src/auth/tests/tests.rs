@@ -475,8 +475,6 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
         "/totally/unknown/path",
     ];
     for path in paths {
-        // This is the fallback formatter continuation. Actual mounted-door routing is
-        // exercised by root product tests; no application or invented plane table is needed.
         let ingress = crate::plane_driver::dispatch::Ingress::Fallback(
             crate::ingress::protocols::residual_dialect_for_path(path),
         );
@@ -579,8 +577,7 @@ fn test_admin_scope_cap_ceilings_external_module() {
 fn an_unanswered_operator_does_not_open_a_verifier() {
     use crate::auth::{Operator, OperatorCredential};
     let digest = busbar_contract::redacted::sha256_hex(b"tok");
-    // Explicit constructor DATA for an unanswered provider, not a fabricated root registry.
-    // The root's actual operator/carrier controls separately exercise its real installed axis.
+
     let open = |digest| {
         Operator::open(
             "operator-provider",
@@ -619,8 +616,7 @@ pub(super) fn admin_headers(bearer: Option<&str>, header: Option<&str>) -> Heade
 #[test]
 fn operator_answer_continuation_preserves_identified_and_refusal_types() {
     use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
-    // The old producer returned Ready immediately from both verify/probe; its assertions
-    // classified answers, rather than proving a Pending await. Real Pending is tested at root.
+
     let outcome = |verified: Verified| {
         let answered = Judgement::answered(verified.into());
         let verdict = complete_chain(chain_position_verdict(
@@ -843,8 +839,7 @@ fn the_sync_admin_door_keeps_no_verdict_for_the_root_http_projection() {
                 admin_chain_outcome(verdict, answered.no_verdict),
                 |verdict| {
                     let identified = matches!(&verdict, ChainVerdict::Identified { .. });
-                    // Actual production filtering must ignore even supplied replay metadata for
-                    // an unidentified answer; no fake producer or application is constructed.
+
                     let replay = Some((
                         "provider".to_string(),
                         Box::new(Replay {
@@ -905,8 +900,7 @@ fn the_admin_head_hands_the_request_through_as_presented() {
 #[test]
 fn a_data_plane_door_overloaded_or_without_a_verdict_denies_the_chain() {
     use busbar_contract::auth_calls::Verified;
-    // Internal outcome→public chain-result continuation. An error is terminal before any
-    // later provider; actual OIDC identity/verification is qualified separately at the root.
+
     for verified in [Verified::Overloaded, Verified::Failed] {
         let judged = data_verdict_of("door", verified.clone().into(), false).map(|judged| {
             chain_position_verdict("door", judged.verdict).unwrap_or(ChainVerdict::Denied)
@@ -991,8 +985,7 @@ async fn data_verifier_outcome_projection_preserves_the_503_and_401_envelopes() 
             String::from_utf8(body.to_vec()).unwrap(),
         )
     }
-    // Internal outcome/identity→response continuation. Both production callers use these
-    // exact factories; actual HTTP delivery and genuine credentials have separate root controls.
+
     let no_grant = resolve_identity_from_bindings(
         &Default::default(),
         ChainVerdict::Identified {
@@ -1053,15 +1046,12 @@ async fn data_verifier_outcome_projection_preserves_the_503_and_401_envelopes() 
         at_capacity_503(),
         "a FAULTED door: 503 + Retry-After, refused (SIGN-auth-kind 2026-10-30)"
     );
-    // The two exchange NoVerdict status/header oracles are retained in
-    // exchange_verifier_outcome_projection_preserves_failed_and_faulted_503.
 }
 
 #[test]
 fn external_admin_answer_projection_keeps_identity_and_all_refusal_types() {
     use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
-    // INTERNAL outcome/projection DATA. Actual OIDC requests from both credential carriers
-    // separately establish the selected-candidate loan; this does not assert sync I/O readiness.
+
     let project = |verified: Verified| {
         let answered = admin_verdict_of(verified.into(), false);
         let verdict = complete_chain(chain_position_verdict("ext-door", answered.verdict));
@@ -1221,7 +1211,7 @@ async fn the_signed_ingress_claims_its_identitys_replay_key() {
 #[tokio::test]
 async fn a_replayed_verified_identity_inside_its_ttl_is_denied() {
     let gov = replay_gov();
-    // INTERNAL post-verification claim continuation; no fake verifier or chain.
+
     let run = |key: &str, gov: Option<std::sync::Arc<crate::governance::GovState>>| {
         let answered = chain_verdict_of(hook_answer(Some(key), Vec::new()));
         let verdict = complete_chain(chain_position_verdict("door", answered.verdict));
@@ -1257,8 +1247,6 @@ async fn a_replayed_verified_identity_inside_its_ttl_is_denied() {
 
 #[tokio::test]
 async fn a_replayed_verified_delivery_is_denied_before_dispatch() {
-    // INTERNAL post-verification admission over the actual conditional Store. The former
-    // NamingDoor/echo server only invented verification; real HTTP auth is exercised at root.
     let gov = replay_gov();
     let bindings = bindings_for("door", &[("hooks", binding(None, None, None))]);
     let run = || {
@@ -1294,8 +1282,7 @@ async fn a_replayed_verified_delivery_is_denied_before_dispatch() {
 #[test]
 fn named_credential_stripping_preserves_both_request_targets_and_other_headers() {
     use busbar_contract::auth_calls::Strip;
-    // INTERNAL request-mutation continuation. Actual webhook verification declares field
-    // strips; no real auth product is claimed to declare these query strips.
+
     let mut request = Request::builder()
         .uri("/echo?x=1&api_key=s3cret&y=a%20b&api%5Fkey=t")
         .header("authorization", "Bearer signed")
@@ -1461,7 +1448,7 @@ async fn an_admin_identity_refused_for_scope_leaves_its_replay_key_unclaimed() {
     use busbar_contract::authz::Scope;
     let gov = replay_gov();
     let now = busbar_kernel::store::now();
-    // INTERNAL verified-identity/scope/claim continuation over actual conditional Store.
+
     let project = || {
         let answered = chain_verdict_of(hook_answer(Some("signed/admin_r6"), Vec::new()));
         let verdict = complete_chain(chain_position_verdict("ext-door", answered.verdict));
@@ -1555,11 +1542,6 @@ async fn two_racing_identical_deliveries_admit_at_most_one() {
     );
 }
 
-// Ordinary root replacements for the synthetic door/GovCtx cohort live in
-// busbar/src/tests/kernel_application/auth_governance_routes.rs. The actual /stats
-// endpoint consumes GovCtx; session admission exposes its principal/key without
-// introducing a plane handler merely to echo request extensions.
-
 #[test]
 fn a_signed_verify_keeps_the_lines_its_auth_named_whatever_its_verdict() {
     use busbar_contract::auth_calls::VerifiedIdentity;
@@ -1605,8 +1587,6 @@ fn a_signed_verify_keeps_the_lines_its_auth_named_whatever_its_verdict() {
 
 #[test]
 fn declared_carrier_order_selects_only_its_own_header_lines() {
-    // INTERNAL carrier-selection continuation over metadata DATA, including an arbitrary
-    // first carrier. The actual root's separate statement test pins installed metadata.
     let carriers = ["x-other-key", "authorization"].map(HeaderName::from_static);
     let mut headers = HeaderMap::new();
     headers.insert("x-api-key", HeaderValue::from_static("from-x-api-key"));
@@ -1629,8 +1609,6 @@ fn declared_carrier_order_selects_only_its_own_header_lines() {
 
 #[test]
 fn the_gate_strips_the_styles_lines_and_the_operator_credentials() {
-    // Internal stripping continuation over explicit carrier DATA. The root's actual carrier
-    // tests separately prove what the installed default style/operator rows declare.
     let style = ["authorization", "x-api-key", "x-goog-api-key"].map(HeaderName::from_static);
     let operator = [X_ADMIN_TOKEN.to_string()];
     let consumed = consumed_from_carriers(&style, Some(&operator), false, false);
@@ -1656,8 +1634,7 @@ fn verbs_binding(yaml: &str) -> crate::config::RoleBindingCfg {
 #[test]
 fn a_role_granting_verbs_by_name_is_identified_with_its_allow_list() {
     use busbar_contract::authz::{Grants, Scope};
-    // Internal projection over explicit binding/principal/rung DATA. The real root named-verb
-    // gate separately exercises the actual registered core-admin table and real OIDC verifier.
+
     let operator = Operator::new("operator-provider");
     let rungs = std::collections::BTreeMap::from([
         ("post_config_apply", Scope::Full),
@@ -1712,8 +1689,7 @@ fn a_role_granting_verbs_by_name_is_identified_with_its_allow_list() {
 #[test]
 fn verbs_star_is_exactly_admin_scope_full() {
     use busbar_contract::authz::Scope;
-    // Internal projection over explicit binding/principal/rung DATA. The real root named-verb
-    // gate separately exercises the actual registered core-admin table and real OIDC verifier.
+
     let operator = Operator::new("operator-provider");
     let rungs = std::collections::BTreeMap::from([
         ("post_config_apply", Scope::Full),
@@ -1764,8 +1740,7 @@ fn verbs_star_is_exactly_admin_scope_full() {
 #[test]
 fn a_binding_without_verbs_is_judged_by_its_rung_alone() {
     use busbar_contract::authz::{Grants, Scope};
-    // Internal projection over explicit binding/principal/rung DATA. The real root named-verb
-    // gate separately exercises the actual registered core-admin table and real OIDC verifier.
+
     let operator = Operator::new("operator-provider");
     let rungs = std::collections::BTreeMap::from([
         ("post_config_apply", Scope::Full),
@@ -1800,8 +1775,7 @@ fn a_binding_without_verbs_is_judged_by_its_rung_alone() {
 #[test]
 fn the_providers_ceiling_caps_a_named_verb() {
     use busbar_contract::authz::{Grants, Scope};
-    // Internal projection over explicit binding/principal/rung DATA. The real root named-verb
-    // gate separately exercises the actual registered core-admin table and real OIDC verifier.
+
     let operator = Operator::new("operator-provider");
     let rungs = std::collections::BTreeMap::from([
         ("post_config_apply", Scope::Full),

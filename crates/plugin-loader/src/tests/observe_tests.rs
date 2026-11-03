@@ -447,8 +447,6 @@ fn a_reader_counts_only_its_own_tests_folds() {
     );
 }
 
-// These controls bind actual descriptors and test only the host envelope sink.
-// They neither open a product nor substitute its business protocol/settings.
 #[allow(unsafe_code)]
 fn actual_observer_door<K: crate::dispatch::Kind>(
     variable: &str,

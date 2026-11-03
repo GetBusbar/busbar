@@ -100,7 +100,6 @@ impl std::fmt::Debug for LoadedSecret {
 }
 
 struct Lending {
-    // settings-leak-lint: allow — NON-PROJECTION engine type: one resolve's settings bytes, lent to
     settings: Vec<u8>,
     held: Mutex<SecretValue<Vec<u8>>>,
 }
@@ -229,7 +228,7 @@ impl LoadedSecret {
                     "plugin '{}' open failed: its secret material is revealed only on a \
                      dispatcher the host lent its seal",
                     plugin.name()
-                ))
+                ));
             }
         };
         let mut f = open_frame(blob(settings, BLOB_JSON, 0));

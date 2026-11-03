@@ -403,8 +403,6 @@ fn op_enter<'a, B: StoreSlots>(
     ))
 }
 
-// Both OPEN's continuation and ordinary Store operations obey the same pending
-// ownership rule: an unarmed wait is a Fault and drops the parked context now.
 pub(super) fn pending_parked(cx: Op<'_>, wake_at_ns: u64) -> Result<Parked, Outcome> {
     if !cx.can_pend() || (wake_at_ns == 0 && !cx.made_a_service()) {
         drop(cx.into_parked());
@@ -1059,7 +1057,7 @@ slot!(
     }
 );
 /// A completed scan retained across the host's one buffer-size recall. No host buffer or
-/// pending Store context is kept: only the immutable selected rows and their read identity.
+
 struct RetainedRecordScan {
     ticket: Ticket,
     schema: String,

@@ -3590,7 +3590,7 @@ The loader checks in this order:
 - **Slots:**
   - the full 1.5.5 op set (as in the first draft);
   - plane records;
-  - the ten 1.6.0 ledger ops: `append_batch`, `reserve`, `slice_release`, `heads`, `session_put`, `session_remove`, `sessions_for`, `record_put`, `record_get`, `record_scan`, with the semantics in `store_adapter.rs` documented per slot (constant slice epoch, replay cache `REPLAY_TTL_SECS` surviving a restore, shipping ack);
+  - the ten 1.6.0 ledger ops: `append_batch`, `reserve`, `slice_release`, `heads`, `session_put`, `session_remove`, `sessions_for`, `record_put`, `record_get`, `record_scan`, with their typed Store ABI semantics (constant slice epoch, sealed replay retention surviving a restore, shipping ack);
   - batch slots `add_usage_batch`, `add_metering_batch`, `append_audit_batch`.
 - **An empty record put removes the row** (ARCHITECT 2026-10-21, store kind, record leg). A `record_put` whose value is empty REMOVES the `(schema, key)` row: `record_get` answers absent and `record_scan` never returns it. No new slot; the store ABI stays v3 and the layout is unchanged. The host writes every strike (a swept work handle, a dropped chain, a tombstone) as an empty put and reads empty as absent; journal parts are never empty. The store conformance script holds it for every backend.
 - **Writes.** Every additive or appending write carries `op_id` and is deduped, and uses the `write_behind` class.

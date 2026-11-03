@@ -139,7 +139,7 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
         if let Some(rotate) = rotate {
             rotate();
         }
-        // Only preservation is observed; this inert negative hook metadata never executes.
+
         app.hook_registry.insert(
             "security_gate".into(),
             serde_json::from_value(serde_json::json!({
@@ -187,8 +187,7 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
                     ..Default::default()
                 };
                 busbar_kernel::config::overlay::write(&overlay, &doc).unwrap();
-                // The normal writer stamps the supported version. Inject the newer document
-                // into its actual Store generation, retaining a valid container and digest.
+
                 use sha2::Digest as _;
                 let schema = "busbar.config.overlay.v1";
                 let raw = faults
@@ -1438,7 +1437,7 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
     );
     println!("{WITNESS}");
 }
-// Narrow faults around the actual configured Store. Every unaffected operation delegates.
+
 struct OverlayFaults {
     inner: Arc<dyn StoreCalls>,
     fail_reads: AtomicBool,

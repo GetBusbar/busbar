@@ -16,10 +16,6 @@ fn loaded(dropped: bool, d: &Dispatcher, far: Arc<Far>) -> Plugin<Export> {
     pending_boundary::load(dropped, binding)
 }
 
-// One adversarial lifecycle boundary around the actual Webhook image. Its synchronous
-// business REFRESH cannot itself produce Pending. Only explicitly armed test tickets take
-// two real host-connector probes before that unchanged business slot is called; delivery,
-// settings validation, credentials and all other business slots remain the actual product's.
 mod pending_boundary {
     use super::*;
     use busbar_contract::abi::host::conn::connector::{
@@ -56,14 +52,12 @@ mod pending_boundary {
         end: Box<RequestPiece>,
         reply: Box<ReplyPiece>,
         buffer: Box<[u8; 128]>,
-        // A probe's last transport close must precede releasing its creating authority.
+
         _binding: Arc<crate::dispatch::export_bindings::Generation>,
     }
     struct ControlEntry<'a>(&'a std::sync::atomic::AtomicBool);
     impl Root {
         fn enter_control(&self) -> ControlEntry<'_> {
-            // These one-off controls cancel between Pending reentries, never inside a
-            // still-running REFRESH callback. Ordinary product delivery/status may run.
             assert!(
                 !self.control_entry.swap(true, Ordering::SeqCst),
                 "the test must synchronize REFRESH/CANCEL control entries"
@@ -109,9 +103,6 @@ mod pending_boundary {
     }
 
     pub(super) fn load(dropped: bool, binding: Bind) -> Plugin<Export> {
-        // Both origins supply the actual product descriptor and code. The staged image is
-        // held for this test process, exactly as the existing linked-image helper holds its
-        // image. The wrapper is applied only after the real descriptor validates.
         static IMAGE: OnceLock<(
             libloading::Library,
             crate::stage::Staged,
@@ -225,7 +216,7 @@ mod pending_boundary {
                         }),
                 };
                 match answer {
-                    Poll::Pending => return Poll::Pending, // retry this exact handle and live boxed read loan
+                    Poll::Pending => return Poll::Pending,
                     Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
                     Poll::Ready(Ok(())) => self.issued = conn.issued(),
                 }
@@ -243,8 +234,6 @@ mod pending_boundary {
         }
         fn close(&mut self) {
             if let Some(stream) = self.stream.take() {
-                // Close is ticketless, so it cannot replay a completed service handle.
-                // The production host routes it through this stream's creating authority.
                 let _ = self.host.connector(Ticket::NONE).close(stream);
             }
         }
@@ -742,8 +731,7 @@ fn pending_export_batch_keeps_its_target_and_credentials_after_same_instance_ref
             "auth_header":{"name":"x-generation","value":"credential-B"},"delivery_timeout_secs":600});
         let sink =
             Arc::new(ExportInstance::open(plugin, d.clone(), old.to_string().as_bytes()).unwrap());
-        // The root authority remains alive for member authentication. Give the retiring batch
-        // its own accepted generation so its final ticket still exercises reentrant cleanup.
+
         assert_eq!(refresh(sink.plugin(), &old, 2), Outcome::Ready);
         let first = d.inline_ticket().unwrap();
         let mut old_batch = batch(b"{\"n\":1}\n{\"n\":2}\n", 1);

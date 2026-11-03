@@ -774,8 +774,7 @@ async fn incremental_scan_uses_the_shared_capacity_and_rescreens_evicted_pieces(
 
 #[tokio::test]
 async fn incremental_scan_rescreens_when_pinned_tenants_occupy_the_capacity() {
-    const CASE: &str =
-        "hooks::gate::gate_tests::incremental_scan_rescreens_when_pinned_tenants_occupy_the_capacity";
+    const CASE: &str = "hooks::gate::gate_tests::incremental_scan_rescreens_when_pinned_tenants_occupy_the_capacity";
     if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
         let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
             .args(["--exact", CASE, "--nocapture"])
@@ -818,8 +817,7 @@ async fn incremental_scan_rescreens_when_pinned_tenants_occupy_the_capacity() {
 
 #[tokio::test]
 async fn incremental_scan_expires_each_piece_without_extending_it_on_a_hit() {
-    const CASE: &str =
-        "hooks::gate::gate_tests::incremental_scan_expires_each_piece_without_extending_it_on_a_hit";
+    const CASE: &str = "hooks::gate::gate_tests::incremental_scan_expires_each_piece_without_extending_it_on_a_hit";
     if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
         let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
             .args(["--exact", CASE, "--nocapture"])

@@ -47,7 +47,7 @@ pub(crate) async fn exchange(
         crate::auth::dpop::SenderConstraint::Unconstrained => candidate,
         crate::auth::dpop::SenderConstraint::Proven(token) => Some(token),
         crate::auth::dpop::SenderConstraint::Refused => {
-            return refusal(ExchangeError::Unauthorized)
+            return refusal(ExchangeError::Unauthorized);
         }
     };
     let (judged, _, claim) = AuthMiddleware::judge_chain_on_request_path_naming(
@@ -113,8 +113,6 @@ fn exchange_verdict_result(
     }
 }
 
-// The post-verification admission continuation. A rejected policy/provider/governance decision
-// must return before the verified identity's replay claim can be consumed.
 async fn admit_exchange_mint<'a>(
     verdict: &'a super::ChainVerdict,
     bindings: &crate::config::RoleBindings,

@@ -183,8 +183,7 @@ fn route_metadata_returns_owned_routes_after_row_retirement() {
                 auth: RouteAuth::Key,
             }]
         );
-        // A copied String must not alias the static descriptor's path even while its image is
-        // retained. Row retirement above and independent storage are separate ownership controls.
+
         let door = metadata_boundary::door();
         // SAFETY: this test constructed a static, nonempty, validated route list above.
         let route = unsafe {

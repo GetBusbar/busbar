@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 use super::{checked_reference_result, reference_module_row, secret_module_row};
 
-// Inert admitted-row metadata for the actual host classifier: no door or registry.
 fn secret_metadata() -> busbar_contract::plugin_rows::Row {
     use busbar_contract::plugin_rows::{NeedLevel, Row, Trust};
     Row {
@@ -56,7 +55,6 @@ fn secrets_block_rejects_non_secret_kind() {
     );
 }
 
-// Only typed host-policy inputs; no App, plane declaration, registry, or secret axis.
 fn host_reference_input(reference: crate::config::SecretRef) -> crate::config::RootCfg {
     let deploy: crate::config::DeployCfg = serde_json::from_value(serde_json::json!({
         "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},

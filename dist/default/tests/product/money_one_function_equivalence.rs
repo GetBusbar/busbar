@@ -253,8 +253,7 @@ impl Case {
         row("THE ONE FUNCTION  [micro]", &a.one_micros);
         for (label, expected_entry, got) in &a.micros {
             row(label, got);
-            // A current card has no history identity; a dated read names its actual opening
-            // entry. Pin both provenances while comparing every pricing/refusal field.
+
             match (got, &a.one_micros) {
                 (
                     Err(MoneyError::LaneUnpriced { card_seq, lane }),

@@ -650,7 +650,7 @@ fn window_noun(period: &str, ctx: &str, todos: &mut Vec<String>) -> (&'static st
                      spends at the same rate per unit time: a `{other}` amount left unchanged on a \
                      {APPROX_WINDOW} window would be {divisor}x the budget you wrote, in force from \
                      the first boot. Check the rescaled number"
-            )
+                )
             } else if months.is_some() {
                 format!(
                     "The AMOUNT was carried over UNCHANGED, so the cap now spends over a \

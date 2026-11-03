@@ -14,8 +14,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 fn watchdog_faulting_instance() -> (HookInstance, Arc<AtomicUsize>) {
-    // A real slow serving crossing breaches the host watchdog. An SDK-caught panic merely
-    // returns FAULT and does not, by itself, meet the dispatcher's quarantine policy.
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
         budgets: Budgets {
             call: Duration::from_millis(10),
@@ -65,7 +63,7 @@ fn make_trial_due(instance: &HookInstance) {
     let State::Quarantined { trial_at, .. } = &mut *state else {
         panic!("only a quarantined hook can become due for its next trial");
     };
-    // Advance only eligibility; never replace the window whose growth the test observes.
+
     *trial_at = Instant::now();
 }
 
@@ -98,9 +96,7 @@ async fn repeated_first_serving_faults_keep_growing_the_recovery_window_to_its_c
         let before = plugin.inner.crossings.load(Ordering::SeqCst);
         let request = frame(2);
         let lent = Arc::new(request.try_lend().expect("the fresh request can be lent"));
-        // HookCalls::decide deliberately watches its caller budget. Compose the same real
-        // serving crossing with the dispatcher's default watch instead, leaving the caller's
-        // observation budget long enough to receive the watchdog's FAULT. No synthetic fault.
+
         let mut call = Ticketed::mint(&instance.inner.dispatcher, 0).unwrap();
         call.submit(
             &*plugin,
@@ -126,8 +122,7 @@ async fn repeated_first_serving_faults_keep_growing_the_recovery_window_to_its_c
             before + 1,
             "one actual DECIDE crossing entered before the watchdog fault"
         );
-        // This is the same transition invoked by HookCalls' FAULT arm. The orphaned crossing
-        // retains its Arc loan until retirement; never call complete() on its unfinished frame.
+
         instance.inner.faulted(&plugin);
         assert!(instance.quarantined());
         assert_eq!(
@@ -149,8 +144,7 @@ async fn repeated_first_serving_faults_keep_growing_the_recovery_window_to_its_c
 #[tokio::test]
 async fn administrative_ready_preserves_backoff_and_a_serving_governance_rejection_resets_it() {
     let (instance, binds) = checkpoint_instance(Way::Linked, "valid");
-    // Retire the fixture's first instance through its existing helper, then claim an ordinary
-    // trial. The explicit prior eight-second window is setup; later windows are observed faults.
+
     regenerate(&instance);
     *instance.inner.lock() = State::Trialing;
     let recovered = instance

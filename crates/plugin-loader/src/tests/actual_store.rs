@@ -62,8 +62,6 @@ pub(crate) fn mint() -> OpId {
 }
 
 pub(crate) fn settings() -> Vec<u8> {
-    // Each sibling includes this ordinary helper independently. Reserve the directory
-    // atomically, so their local counters cannot accidentally share a database.
     let dir = loop {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

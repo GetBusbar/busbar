@@ -176,7 +176,7 @@ async fn filtered_credential_flush_uses_actual_admin_and_data_caches() {
     let target_token = common::credentials::token_for("cache-target", &["admins"], AUDIENCE);
     let omitted_token =
         common::credentials::token_for("cache-omitted", &["admins"], "api://omitted-cache");
-    // Seed the real, independently opened admin instances, not a supplied refresh answer.
+
     for (name, token) in [
         ("test-scope-module", &target_token),
         ("omitted", &omitted_token),
@@ -235,8 +235,7 @@ async fn filtered_credential_flush_uses_actual_admin_and_data_caches() {
         403,
         "a read-only caller cannot flush any cache"
     );
-    // The viewer's genuine authentication adds one admin cache entry. Its forbidden
-    // mutation leaves both original target entries present: two admin + one data.
+
     let answer = flush(
         "admintok".into(),
         serde_json::json!({"module":"test-scope-module"}),

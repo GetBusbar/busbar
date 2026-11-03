@@ -213,7 +213,9 @@ impl std::fmt::Debug for LoginMethods {
 }
 
 fn login_module_refusal(name: &str, module: &str, reason: String) -> String {
-    format!("identity-providers.{name} (module '{module}') could not be loaded as a `kind: auth` login plugin: {reason}")
+    format!(
+        "identity-providers.{name} (module '{module}') could not be loaded as a `kind: auth` login plugin: {reason}"
+    )
 }
 
 fn missing_login_axis(name: &str, module: &str) -> String {
@@ -327,7 +329,7 @@ impl LoginMethods {
                     return Err(format!(
                         "identity-providers.{name} sets browser_login but its plugin serves \
                          no login; a hosted login button requires a login-capable auth plugin"
-                    ))
+                    ));
                 }
             };
 

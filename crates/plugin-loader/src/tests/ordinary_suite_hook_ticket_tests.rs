@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The suite's pending-hook control using the actual first-party Ranking image.
-//! Only its scheduling boundary is delayed; the resumed answer is Ranking's.
 
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::{
@@ -140,8 +139,7 @@ fn red_a_gate_that_waits_is_resumed_on_its_ticket_never_faulted_ticketless() {
         frame.out.verbs, VERB_ABSTAIN,
         "actual Ranking abstains on an empty candidate set"
     );
-    // The dispatcher counts both ABI crossings: the first Pending entry and
-    // the resumed entry. Only the latter reaches the actual product decision.
+
     assert_eq!(p.inner.crossings.load(Ordering::SeqCst) - before.0, 2);
     assert_eq!(PENDING_ENTRIES.load(Ordering::SeqCst), 1);
     assert_eq!(PRODUCT_DECISIONS.load(Ordering::SeqCst), 1);

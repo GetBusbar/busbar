@@ -22,8 +22,6 @@ use super::{lock, CallerLeg, ClaimDoor, Joining, Opened};
 
 type Callback = Arc<dyn Fn() + Send + Sync>;
 
-// Observe retirement of an actual loaded product. Every input and output crosses
-// the WebRTC door unchanged; the host-side callback checks its lock boundary.
 pub(crate) struct OpeningFramer {
     inner: Arc<dyn FramerDoor>,
     fault: AtomicU8,
@@ -90,15 +88,14 @@ impl FramerDoor for OpeningFramer {
             if crossed.outcome == busbar_contract::abi::mechanism::call::Outcome::Failed {
                 self.self_retired.store(true, Ordering::SeqCst);
             }
-            // Bounded malformed ABI replies for irreducible host cleanup negatives.
-            // The product owns the actual resource in every case.
+
             match self.fault.swap(0, Ordering::SeqCst) {
                 1 => out.yielded.pieces_len = 0,
                 2 => {
                     return Crossed {
                         outcome: busbar_contract::abi::mechanism::call::Outcome::Refused,
                         error: None,
-                    }
+                    };
                 }
                 3 => panic!("host cleanup probe after actual WebRTC preparation"),
                 4 => out.datagram.terms.local_user = out.datagram.terms.remote_user,
@@ -370,8 +367,6 @@ async fn a_duplicate_local_user_refuses_only_the_second_real_opening() {
         .to_owned();
     only_joining(first).admit_into(1, &connector).unwrap();
 
-    // Deliberately collide one host-visible credential span. The second actual
-    // product still supplies all framing, SDP, terms and resource custody.
     let second_framer = OpeningFramer::new();
     second_framer.fault.store(4, Ordering::SeqCst);
     let offered = String::from_utf8(offer()).unwrap();

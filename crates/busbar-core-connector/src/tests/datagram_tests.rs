@@ -460,7 +460,7 @@ impl FramerDoor for Scripted {
                 return Crossed {
                     outcome: Outcome::Refused,
                     error: None,
-                }
+                };
             }
         }
         ok
@@ -1254,14 +1254,9 @@ fn a_session_opening_waits_for_real_caller_metadata_and_wakes_on_publication() {
         assert!(pairing.opening().is_empty(), "no channel is invented");
         let pieces = vec![got(7, b"label: actual-events\r\n", true)];
         if publication {
-            pairing.publish(
-                super::Leg::Caller,
-                crate::framer::Yielded {
-                    pieces,
-                    ..Default::default()
-                },
-                Instant::now(),
-            );
+            let mut yielded = crate::framer::Yielded::default();
+            yielded.pieces = pieces;
+            pairing.publish(super::Leg::Caller, yielded, Instant::now());
         } else {
             pairing.sort(super::Leg::Caller, pieces, Instant::now());
         }
@@ -1274,7 +1269,7 @@ fn a_session_opening_waits_for_real_caller_metadata_and_wakes_on_publication() {
             pairing.opening(),
             [("channel".to_owned(), b"actual-events".to_vec())]
         );
-        // Metadata published before the first poll is retained, without requiring another wake.
+
         assert_eq!(
             Box::pin(pairing.wait_opening()).as_mut().poll(&mut cx),
             Poll::Ready(Ok(()))
@@ -2651,4 +2646,32 @@ fn datagram_finish_lends_the_current_lane_and_retires_once() {
             "the final route fits the lent output buffers"
         );
     }
+}
+
+#[test]
+fn a_split_mixed_opening_waits_for_its_channel_before_mirroring_either_line() {
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+    let pair = super::Pairing::new(Arc::new(Sink::default()), p("127.0.0.1:3478"));
+    let mut ready = Box::pin(pair.wait_opening());
+    let mut cx = Context::from_waker(Waker::noop());
+    pair.sort(
+        super::Leg::Caller,
+        vec![got(9, b"kind: audio\r\nopening-pending: 1\r\n", true)],
+        Instant::now(),
+    );
+    assert!(ready.as_mut().poll(&mut cx).is_pending());
+    pair.sort(
+        super::Leg::Caller,
+        vec![got(1, b"label: events\r\nopening-pending: 0\r\n", true)],
+        Instant::now(),
+    );
+    assert_eq!(ready.as_mut().poll(&mut cx), Poll::Ready(Ok(())));
+    assert_eq!(
+        pair.opening(),
+        vec![
+            ("media".to_owned(), b"audio".to_vec()),
+            ("channel".to_owned(), b"events".to_vec())
+        ]
+    );
 }

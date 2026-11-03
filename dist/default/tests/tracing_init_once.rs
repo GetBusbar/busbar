@@ -109,8 +109,7 @@ fn boot_until(dir: &Path, done: impl Fn(&str) -> bool) -> (String, Option<i32>) 
 #[test]
 fn a_refusal_after_logging_is_up_reports_no_second_init() {
     let dir = fixture_dir("boot-130");
-    // The Store anchor opens before logging now. Keep it valid and refuse a real
-    // listener bind later in boot, while this socket still owns the exact address.
+
     let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = occupied.local_addr().unwrap().to_string();
     std::fs::write(dir.join("providers.yaml"), "{}\n").unwrap();

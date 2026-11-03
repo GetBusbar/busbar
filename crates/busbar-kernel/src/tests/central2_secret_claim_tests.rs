@@ -3,8 +3,6 @@
 
 #[test]
 fn secrets_block_rejects_alias_and_canonical_for_one_module() {
-    // The real registry supplies the canonical key to this production policy owner.
-    // These are inert operator spelling/canonical metadata, not executable rows.
     let mut claimed_by = std::collections::BTreeMap::new();
     let canonical = "acme-secret-vault";
     let mut refusal = None;

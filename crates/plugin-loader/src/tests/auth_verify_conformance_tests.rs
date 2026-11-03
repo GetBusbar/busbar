@@ -4,12 +4,6 @@
 use super::both_ways::{dropped_third_party, row};
 use crate::{LinkedPlugin, PluginRegistry};
 
-// The former scripted auth-verify fixture's real verdict/origin properties live in
-// kernel_application/auth_verify_both_origins.rs. Its short-reply ownership properties
-// live in ordinary_auth_short.rs over the actual SDK. Keep this distinct registry
-// publisher-origin control against the qualified OIDC image here.
-
-// The real OIDC image is held while its immutable SDK descriptor is lent to the registry.
 fn actual_oidc() -> (
     std::path::PathBuf,
     busbar_contract::abi::mechanism::door::DoorFn,

@@ -166,7 +166,6 @@ impl TokenSigner {
         })
     }
 
-    #[cfg(any(test, feature = "test-support"))]
     pub fn mint_for_audience(
         &self,
         sub: &str,

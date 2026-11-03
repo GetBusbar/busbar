@@ -90,7 +90,7 @@ fn a_duplicate_key_is_refused_by_the_writer() {
     assert_eq!(built.as_slice(), encode(distinct).as_slice());
 }
 
-/// THE REFERENCE-CAPABLE FIELDS a Statement states under `reference_fields` (lead ruling item 7a):
+/// THE REFERENCE-CAPABLE FIELDS a Statement states under `reference_fields`:
 #[test]
 fn reference_fields_read_from_the_statement_extensions() {
     use super::{reference_fields, EXT_DECLARES, EXT_REFERENCE_FIELDS};

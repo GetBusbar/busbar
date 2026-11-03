@@ -20,8 +20,7 @@ fn owned(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<String> {
 
 const HOOK_TAIL_FROZEN: usize = std::mem::size_of::<Tail>();
 
-pub const NO_TAIL: &str =
-    "a hook Statement states no hook tail: a hook states its class and grants (abi::sdk::hook::tail)";
+pub const NO_TAIL: &str = "a hook Statement states no hook tail: a hook states its class and grants (abi::sdk::hook::tail)";
 
 pub const SIGNALS_REFUSED: &str = "the hook tail states requested_signals: the signals a hook is \
      lent are the operator's `hooks:` configuration, never its tail; a hook states none";
@@ -93,7 +92,7 @@ fn read(st: &Statement) -> Result<HookContext, String> {
             _ => {
                 return Err(format!(
                     "the hook route {path} names an unsupported auth bar"
-                ))
+                ));
             }
         };
         declared_routes.push(Route { path, method, auth });

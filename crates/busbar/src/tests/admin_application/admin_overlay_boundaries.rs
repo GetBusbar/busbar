@@ -1200,8 +1200,6 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
 
-    // The application remains on SQLite; the staged candidate names the actual linked Store
-    // whose Statement declares this credential slot.
     let candidate_module = busbar_kernel::config::migrated_store_module();
     let build = busbar_kernel::preflight::root_rows()
         .registry_build

@@ -709,8 +709,7 @@ fn plane_rig() -> (crate::dispatch::plane_calls::PlaneInstance, *const State) {
             max_inflight_cap: 2,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
-            // This boundary control crosses no destination but the real MCP
-            // descriptor still declares HTTP and stdio needs.
+
             conns: ConnTable::Probe,
         },
     )
@@ -1005,7 +1004,6 @@ fn oversized_optional_blobs_are_not_sliced_and_active_inspection_fails_closed() 
     );
 }
 
-// No business service is part of these inspection custody assertions.
 struct InspectionOnlyHost;
 impl busbar_contract::services::HostServices for InspectionOnlyHost {
     fn now(&self) -> busbar_contract::services::Reading {

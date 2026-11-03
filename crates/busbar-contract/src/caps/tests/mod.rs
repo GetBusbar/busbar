@@ -74,7 +74,6 @@ fn rejected_admitted_preparation_drops_its_capture_after_unlocking() {
     struct Capture<'a>(&'a HoldCell, &'a std::cell::Cell<bool>);
     impl Drop for Capture<'_> {
         fn drop(&mut self) {
-            // Reenter only from cleanup, which must run after the cell guard is released.
             assert_eq!(self.0.state(), HoldCellState::Arrival);
             self.1.set(true);
         }

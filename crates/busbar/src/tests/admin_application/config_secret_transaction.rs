@@ -255,7 +255,7 @@ fn spawn_liveness_probe() -> (
     };
     (stop, worst, probe)
 }
-// One causal delay on the actual file reference; every result/error is exactly delegated.
+
 struct DelayedActualResolver {
     inner: Arc<dyn busbar_contract::secret::SecretResolve>,
     path: std::path::PathBuf,

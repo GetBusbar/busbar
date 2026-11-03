@@ -109,9 +109,6 @@ impl StoreCalls for MixedScan {
             let upper = prefix == &part_key(self.node, 302, 0)[..16]
                 && !self.first_upper.swap(true, Ordering::SeqCst);
             if upper {
-                // Do not even create the backend future before the append is
-                // confirmed. Registration plus a second Acquire check closes
-                // the publication/waker-registration race without a thread.
                 std::future::poll_fn(|cx| {
                     if self.appended.load(Ordering::Acquire) {
                         return std::task::Poll::Ready(());
@@ -197,7 +194,10 @@ fn genuine_saturated_mixed_prefix_proof(sealed_retry: bool) {
         .filter(|record| record.node_seq >= 256)
         .map(|record| record.encode().chunks(PART_BYTES).count())
         .sum();
-    assert!(upper_parts >= 256, "the actual upper sequence prefix must saturate its page before the traversal can reach exact prefixes 301 and 302");
+    assert!(
+        upper_parts >= 256,
+        "the actual upper sequence prefix must saturate its page before the traversal can reach exact prefixes 301 and 302"
+    );
     for record in &sealed.records {
         let bytes = record.encode();
         let chunks: Vec<_> = bytes.chunks(PART_BYTES).collect();
@@ -270,8 +270,6 @@ fn genuine_saturated_mixed_prefix_proof(sealed_retry: bool) {
         node_probes: AtomicUsize::new(0),
     };
     let result = if sealed_retry {
-        // These original observations include both sides of the mixed append. The
-        // complete retry must retain them; it cannot reset selection observations.
         let seals = [RecordSeal::of(&sealed.records[299]), RecordSeal::of(&last)];
         verify_stored_chain_with_seals(&view, node, &seals)
     } else {
@@ -279,8 +277,16 @@ fn genuine_saturated_mixed_prefix_proof(sealed_retry: bool) {
     };
     assert!(view.lower_snapshot.load(Ordering::SeqCst));
     assert!(view.upper_seen.load(Ordering::SeqCst));
-    assert_eq!(*view.stages.lock().unwrap(), ["lower_snapshot_captured", "atomic_append_applied", "upper_backend_started", "upper_snapshot_observed"],
-        "actual read and atomic Store completion order must establish the two distinct snapshot epochs");
+    assert_eq!(
+        *view.stages.lock().unwrap(),
+        [
+            "lower_snapshot_captured",
+            "atomic_append_applied",
+            "upper_backend_started",
+            "upper_snapshot_observed"
+        ],
+        "actual read and atomic Store completion order must establish the two distinct snapshot epochs"
+    );
     assert_eq!(
         view.node_probes.load(Ordering::SeqCst),
         if sealed_retry { 3 } else { 2 },

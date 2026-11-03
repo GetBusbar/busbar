@@ -705,23 +705,17 @@ fn a_configured_open_web_target_keeps_its_class_and_is_refused_a_private_address
 
 /// The odd spellings of the SSRF guard bypass (HIGH, a plugin argument guard's hosts reach
 const ODD_SPELLINGS: [(&str, &str); 6] = [
-
     (
         "\u{ff4c}\u{ff4f}\u{ff43}\u{ff41}\u{ff4c}\u{ff48}\u{ff4f}\u{ff53}\u{ff54}",
         "localhost",
     ),
-
     ("\u{2460}\u{2461}\u{2466}.0.0.1", "127.0.0.1"),
-
     (
         "\u{2460}\u{2465}\u{2468}.\u{2461}\u{2464}\u{2463}.\u{2460}\u{2465}\u{2468}.\u{2461}\u{2464}\u{2463}",
         "169.254.169.254",
     ),
-
     ("LOCALHOST\u{3002}", "localhost"),
-
     ("\u{ff10}\u{ff58}\u{ff17}\u{ff46}\u{ff0e}\u{ff11}", "0x7f.1"),
-
     (
         "\u{ff10}\u{ff11}\u{ff17}\u{ff17}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff11}",
         "017700000001",

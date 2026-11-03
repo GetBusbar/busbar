@@ -2966,6 +2966,46 @@ mod signed_token {
     }
 
     #[test]
+    fn production_audience_mint_preserves_binding_and_refuses_wrong_unscoped_expired_and_revoked_use(
+    ) {
+        let g = gov();
+        let audience = "https://gateway.example/v1/realtime";
+        let (binding, token) = g
+            .mint_signed_for_audience(
+                spec("scoped", None, Some(vec!["fast"])),
+                2_000,
+                1_000,
+                audience,
+            )
+            .expect("production scoped mint");
+        let token = token.expose(&crate::seal::lend());
+        let actual = g
+            .verify_token(token, 1_001, Some(audience))
+            .expect("correct audience");
+        assert_eq!(actual.id, binding.id);
+        assert_eq!(actual.generation_hash, binding.generation_hash);
+        assert_eq!(actual.allowed_scopes, binding.allowed_scopes);
+        assert!(g.verify_token(token, 1_001, None).is_none());
+        assert!(g
+            .verify_token(token, 1_001, Some("https://other.example/v1/realtime"))
+            .is_none());
+        assert!(g.verify_token(token, 2_000, Some(audience)).is_none());
+        g.revoke(&binding.id, "test revocation")
+            .expect("revoke real binding");
+        assert!(g.verify_token(token, 1_001, Some(audience)).is_none());
+
+        let (_, plain) = g
+            .mint_signed(spec("plain", None, None), 2_000, 1_000)
+            .expect("ordinary mint");
+        let plain = plain.expose(&crate::seal::lend());
+        assert!(g.verify_token(plain, 1_001, None).is_some());
+        assert!(g.verify_token(plain, 1_001, Some(audience)).is_none());
+        assert!(g
+            .mint_signed_for_audience(spec("empty", None, None), 2_000, 1_000, " ")
+            .is_err());
+    }
+
+    #[test]
     fn audience_bound_token_is_confined_to_its_plane_through_govstate() {
         use crate::governance::signing::TokenVerifier;
 

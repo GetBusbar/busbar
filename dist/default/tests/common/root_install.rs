@@ -19,7 +19,7 @@ static CREDENTIAL_HANDLE: std::sync::OnceLock<crate::root::credentials::LateHand
     std::sync::OnceLock::new();
 
 /// Complete the production credential-source lifecycle for an isolated application fixture.
-/// The caller retains the strong AppHandle for every credential read it exercises.
+
 pub fn bind_credentials_once(handle: std::sync::Arc<busbar_kernel::state::AppHandle>) {
     install();
     let late = CREDENTIAL_HANDLE

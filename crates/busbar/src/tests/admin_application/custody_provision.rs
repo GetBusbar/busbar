@@ -250,8 +250,7 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
         false,
     )
     .expect("the actual product builds the provision deployment");
-    // Keep the key-write fault on the record facade; bind rate history through the same actual
-    // Store's typed calls without replacing that fault facade with an unfaulted typed one.
+
     limits.stage_boot();
     crate::root::kernel::ROOT_CARD.keep_in_store(boot_calls, 101);
     crate::root::kernel::ROOT_CARD
@@ -507,8 +506,6 @@ async fn auto_provision_stops_at_the_group_ceiling() {
         rotate();
     }
 
-    // The original literal test:ceiling-audit actor is now the genuine OIDC subject
-    // oidc:test:ceiling-audit; provider, role and exact audit predicates stay explicit.
     const ACTOR: &str = "oidc:test:ceiling-audit";
     static ACCEPTED: std::sync::OnceLock<
         std::sync::Mutex<Option<tokio::sync::oneshot::Sender<audit_ring::AuditEntry>>>,

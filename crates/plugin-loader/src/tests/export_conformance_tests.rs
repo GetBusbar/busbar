@@ -633,8 +633,7 @@ fn actual_file_streams_match_its_product_statement() {
 }
 
 /// The loader compares ingested envelopes. Rendering the resulting exposition
-/// belongs to the actual composition root; physical file observations are tested
-/// beside the production kernel disk lane.
+
 #[test]
 fn the_rendered_exposition_equivalence_is_owed_at_the_composition_root() {}
 

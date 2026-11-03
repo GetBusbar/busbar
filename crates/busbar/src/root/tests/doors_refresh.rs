@@ -124,8 +124,7 @@ async fn an_apply_refreshes_a_live_transport_and_its_next_dial_spawns() {
         let settled = io.settle(side.ticket());
         (called.outcome, output.conn, settled)
     };
-    // Listing an absent test is only a portable short-lived child program, never a test pass.
-    // Five genuine exits hold each member permanently, avoiding a short-backoff timing race.
+
     for delay in [Some(120), Some(220), Some(420), Some(820), None] {
         for key in [159, 160] {
             let (outcome, connection, (native, failure)) = dial(&mut side, key);
@@ -221,8 +220,7 @@ async fn an_apply_refreshes_a_live_transport_and_its_next_dial_spawns() {
         );
         assert!(native.is_none());
     }
-    // An apply retires a removed/redeclared member by its own supervision key. Ordinary
-    // settings refresh must leave other members' crash histories alone.
+
     let retiring: Arc<dyn FramerDoor> = door.clone();
     Carried::retire_key(&retiring, &io, 159);
     let (outcome, connection, (native, failure)) = dial(&mut side, 159);
@@ -285,8 +283,6 @@ async fn real_stdio_refresh_keeps_settings(test_name: &'static str) {
     use busbar_core_connector::hostio::{Admission, HostIo};
     use busbar_core_connector::spawn_env::HeldEnv;
 
-    // Refresh is process-wide by the actual plugin's Statement name. Isolate the process so
-    // applying a tiny bound here cannot change another test's live stdio connection.
     const CHILD: &str = "BUSBAR_ROOT_REAL_STDIO_REFRESH_CHILD";
     if std::env::var_os(CHILD).is_none() {
         struct OwnedChild(Option<std::process::Child>);
@@ -333,7 +329,7 @@ async fn real_stdio_refresh_keeps_settings(test_name: &'static str) {
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
                 None => {
-                    drop(child); // Kill and reap before reporting an unconditional timeout failure.
+                    drop(child);
                     panic!("real stdio refresh child exceeded its 30-second bound");
                 }
             }
@@ -441,8 +437,6 @@ async fn real_stdio_refresh_keeps_settings(test_name: &'static str) {
     );
 
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        // WriteReady accepts a frame into the carrier's queue. Drive its production Flush
-        // before expecting the child to have received and echoed those accepted lines.
         let mut flush = blank_in::<ConnIn>();
         flush.conn = connection;
         let mut flushed = blank_out::<OutHead>();

@@ -1253,8 +1253,7 @@ pub(crate) fn operations(
         for (status, description) in doc.errors {
             by_status.insert(status.into(), json!({ "description": description }));
         }
-        // Match the ordinary handler paths: declared client errors are projected from
-        // the same typed conditions the handlers report, rather than handwritten text.
+
         let rel = path
             .strip_prefix(crate::v1::contract::ADMIN_PREFIX)
             .unwrap_or(&path);

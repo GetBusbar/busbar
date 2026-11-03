@@ -141,8 +141,7 @@ fn plugin(dispatcher: &Dispatcher) -> (Plugin<Plane>, Arc<Control>) {
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            // The actual MCP descriptor declares HTTP and stdio needs. These
-            // host-boundary controls use no destination, so bind its probe table.
+
             conns: ConnTable::Probe,
         },
     )

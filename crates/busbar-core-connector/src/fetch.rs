@@ -143,7 +143,7 @@ async fn read_whole(held: &Held<'_>, url: &str, cap: usize) -> Result<Vec<u8>, O
             Err(_) => {
                 return Err(Some(format!(
                     "read body {url}: connection failed mid-download"
-                )))
+                )));
             }
         };
         match piece.kind {

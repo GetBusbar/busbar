@@ -31,8 +31,6 @@ fn actual_mcp_function_macro_and_loaded_rows_preserve_the_same_door_and_statemen
         rendering_of_loaded(restated).unwrap()
     );
 
-    // Plane descriptors are bound through the production plane loader; the generic
-    // registry's link method intentionally excludes planes.
     use crate::dispatch::kinds::plane::Plane;
     use crate::dispatch::{load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink};
     use std::sync::Arc;

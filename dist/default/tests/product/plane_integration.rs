@@ -58,7 +58,10 @@ fn door_section_yaml(host: &str) -> String {
 }
 
 fn agents_yaml(peer: &crate::root::door_steps::tests::tool_door::TlsToolServer) -> String {
-    format!("agents:\n  planner: {{ url: \"https://127.0.0.1:{}/rpc\", pin: {{ mechanism: cert_spki, key: \"{}\" }} }}\n", peer.port, peer.pin)
+    format!(
+        "agents:\n  planner: {{ url: \"https://127.0.0.1:{}/rpc\", pin: {{ mechanism: cert_spki, key: \"{}\" }} }}\n",
+        peer.port, peer.pin
+    )
 }
 
 fn resolved(sections: &str) -> RootCfg {
@@ -710,8 +713,7 @@ mod metrics_scrape {
             return;
         }
         linked::install();
-        // main initializes the real recorder from export.metrics.buffer_seconds before
-        // serving; this isolated fixture builds the app directly and must do that startup step.
+
         busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
         assert!(
             busbar_kernel::snapshot::recorder_installed(),
@@ -1296,8 +1298,6 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     handle.abort();
 }
 
-// A protected resource rejects a plain data-plane token by design. A sibling path still
-// needs the ordinary data-plane credential, so retain both actual signed credentials.
 fn plane_bearers(app: &busbar_kernel::state::App, sections: &str, name: &str) -> (String, String) {
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     let now = busbar_kernel::store::now();
@@ -1463,9 +1463,7 @@ fn plane_router(
             )
         })
         .collect();
-    // This in-process HTTP fixture mounts all configured plane claims, including A2A's
-    // gRPC line. Read both framing layers' real Statements rather than borrowing the
-    // executable's narrower default transport inventory or inventing offered auth bits.
+
     let mut transports = crate::LINKED.transports.to_vec();
     for row in [
         crate::root::linked::linked_transport!(busbar_transport_http::door::door),
@@ -1479,9 +1477,7 @@ fn plane_router(
         }
     }
     let offers = crate::root::serve::transport_offers(&transports, &[]);
-    // Axum is the physical HTTP listener here. Let the production listener planner place
-    // every logical plane claim on that listener before sealing auth-point requirements:
-    // a gRPC framer's own empty auth record is not the HTTP listener's offered record.
+
     let initial = crate::root::boot::configured_listener_needs(&cfg, &configured)
         .expect("the actual configured root declares its physical listener assignments");
     let framer_for = |scheme: &str| crate::root::connector::the().framer_for(scheme);

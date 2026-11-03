@@ -134,8 +134,7 @@ impl super::super::recovery::RecoverySink for RecoveryJournal {
         event: &super::super::recovery::RecoveryEvent,
     ) -> Result<(), super::super::recovery::RecoveryError> {
         use super::super::recovery::RecoveryError;
-        // Validate every selected predecessor chain before using a stored parent
-        // as authority for a correction child. Merely finding a row is not proof.
+
         self.replay_selections()?;
         let events = self.0.lock().unwrap();
         let genesis = events

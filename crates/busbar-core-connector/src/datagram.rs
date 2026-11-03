@@ -2454,6 +2454,7 @@ pub struct Bridge {
     upstream: Vec<(u64, String)>,
     /// The caller's channels' labels, in the order it opened them.
     channels: Vec<String>,
+    opening_pending: bool,
     stopped: bool,
     custody: Vec<Custody>,
 }
@@ -2539,6 +2540,15 @@ impl Bridge {
         let mut session = Vec::new();
         let mut across = Vec::new();
         for g in pieces {
+            if leg == Leg::Caller && g.fields {
+                if let Ok(fields) = std::str::from_utf8(&g.bytes) {
+                    for (name, value) in fields.lines().filter_map(|line| line.split_once(':')) {
+                        if name.trim() == "opening-pending" {
+                            self.opening_pending = value.trim() != "0";
+                        }
+                    }
+                }
+            }
             let known = self.lines(leg).iter().any(|(s, _)| *s == g.stream);
             if g.fields && !known {
                 match stream_head(&g.bytes) {
@@ -2628,7 +2638,10 @@ pub struct Pairing {
     /// The caller leg's port address: the upstream leg binds a port of its own on the same host
     local: SocketAddr,
     memory: Arc<Memory>,
+    /// Metadata and attachment progress for opening and the publication actor.
     published: tokio::sync::Notify,
+    /// Actual publication quiescence or terminal failure.
+    publication_completed: tokio::sync::Notify,
 }
 
 struct PairState {
@@ -2678,6 +2691,7 @@ impl Pairing {
             local,
             memory: Memory::new(limit),
             published: tokio::sync::Notify::new(),
+            publication_completed: tokio::sync::Notify::new(),
         });
         pair.memory.observe(Arc::downgrade(&pair));
         pair
@@ -2719,7 +2733,9 @@ impl Pairing {
                 if state.closed {
                     return Err(busbar_contract::conn::ConnError::Closed);
                 }
-                if !state.bridge.caller.is_empty() || !state.bridge.channels.is_empty() {
+                if !state.bridge.opening_pending
+                    && (!state.bridge.caller.is_empty() || !state.bridge.channels.is_empty())
+                {
                     return Ok(());
                 }
             }
@@ -2785,6 +2801,7 @@ impl Pairing {
         self.memory.close();
         self.retire_metadata_if_closed();
         self.published.notify_waiters();
+        self.publication_completed.notify_waiters();
         for leg in legs.into_iter().flatten() {
             leg.close();
         }

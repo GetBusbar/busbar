@@ -171,7 +171,7 @@ impl GovState {
     }
 
     /// Select missing child Intents only after their exact parent checkpoint is
-    /// confirmed. This also reconstructs the crash cut between parent and child.
+
     pub(super) fn drive_recovery_children(&self, parent: &RecoveryEvent) -> RecordStoreResult<()> {
         self.select_recovery_children(parent, false)
     }
@@ -435,8 +435,7 @@ impl GovState {
         unsent_dated.subtract(&custody.chunk_dated);
         let mut unsent = SegmentedUsage::of(&unsent_plain, &unsent_dated)?;
         let mut absorbed = SegmentedUsage::of(&custody.absorbed_plain, &custody.absorbed_dated)?;
-        // Refunds first net against never-sent positive segments. Only the
-        // remainder can depend on the chunk whose backend outcome is unknown.
+
         let netted = absorbed.take_negatives(Some(&unsent.positive()));
         unsent.merge(&netted);
         let (unsent_plain, unsent_dated) = unsent.deltas();
@@ -569,7 +568,7 @@ impl GovState {
             _ => {
                 return Err(RecoveryError::Invalid(
                     "incorrect raw resolution kind".into(),
-                ))
+                ));
             }
         };
         if let Some(previous) = previous_verdict {
@@ -619,7 +618,7 @@ pub(super) struct DurableUsageFlight {
 
 impl GovState {
     /// Retire dependent negatives into a selected unresolved owner before any
-    /// independent positive work is sent. The owner remains off the request path.
+
     pub(super) fn capture_usage_recovery(
         &self,
         bucket: &str,
@@ -628,9 +627,6 @@ impl GovState {
         mut dated: ExactUsageDelta,
         settled: &ForeignSettledSnapshot,
     ) -> RecordStoreResult<DurableUsageFlight> {
-        // Read correction and raw exposure from one stable selected snapshot.
-        // This is CPU-only under the caller's shard lock; a changed snapshot is
-        // retried with the ordinary pending delta still in the cell.
         let epoch = self.recovery_selection_epoch();
         let (correction_plain, correction_dated) =
             self.quarantined_correction_negative_capacity(bucket, window)?;
@@ -649,13 +645,11 @@ impl GovState {
         let mut allocated = before;
         allocated.subtract(&remaining)?;
         let mut capacity = SegmentedUsage::of(&correction_plain, &correction_dated)?;
-        // The helper reports SELECTED exposure; this capture's staged negative
-        // is not selected yet and must be deducted exactly once.
+
         capacity.merge(&allocated);
         let selection_changed = epoch != self.recovery_selection_epoch();
         let mut owners = Vec::new();
-        // A selected parent can own an exact child template before child Intent.
-        // Those positive segments gate negatives without guessing Store rows.
+
         for event in observations {
             let links: Links = decode(&event.payload)?;
             for child in links.handoffs {
@@ -696,8 +690,7 @@ impl GovState {
             capacity.merge(&own_capacity);
             owners.push((event, custody, own_capacity));
         }
-        // Exactly one immutable checkpoint is staged per capture. Any remaining
-        // negative segments keep their ordinary pending ownership for next tick.
+
         if prerequisite.is_none() && !selection_changed {
             for (event, mut custody, own_capacity) in owners {
                 let mut after = remaining.clone();
@@ -729,8 +722,7 @@ impl GovState {
                 break;
             }
         }
-        // A concurrent selection can only defer this capture's remaining
-        // negatives to the next tick; it cannot spend a stale capacity twice.
+
         let changed = selection_changed || epoch != self.recovery_selection_epoch();
         let deferred = remaining.take_negatives(if changed { None } else { Some(&capacity) });
         let (deferred_plain, deferred_dated) = deferred.deltas();
@@ -754,9 +746,6 @@ impl GovState {
             if !advanced {
                 self.keep_recovery_event(parent)?;
             } else {
-                // Another real driver may already have confirmed this exact
-                // candidate and advanced the owner. Never rewind its head: prove
-                // CURRENT ownership plus exact selected ancestry before sending.
                 self.confirm_owned_recovery_checkpoint(parent)?;
             }
         }
@@ -854,7 +843,7 @@ impl GovState {
 
 impl GovState {
     /// Resume this parent's raw descendants only. Correction Intents retain
-    /// their own CostModel validation and are never sent by the raw driver.
+
     pub(super) fn resume_recovery_children(&self, parent: &RecoveryEvent) -> RecordStoreResult<()> {
         let mut queue = std::collections::VecDeque::from([(parent.clone(), true)]);
         let mut seen = std::collections::BTreeSet::new();
@@ -958,7 +947,7 @@ impl RecoveryEvent {
     }
 
     /// Pure matching only: the caller must prove this exact parent checkpoint is
-    /// in its current selected predecessor chain before using the authorization.
+
     pub fn authorizes_child(&self, child_genesis: &RecoveryEvent) -> Result<(), RecoveryError> {
         let invalid = |reason: &str| RecoveryError::Invalid(reason.into());
         child_genesis.follows(None)?;
@@ -1034,7 +1023,7 @@ impl GovState {
         match event.state {
             RecoveryState::Settled => return Ok(Vec::new()),
             RecoveryState::Applied if landed => {
-                return Ok(vec![event.checkpoint(event.state, event.payload.clone())?])
+                return Ok(vec![event.checkpoint(event.state, event.payload.clone())?]);
             }
             RecoveryState::VerdictLanded | RecoveryState::VerdictNotLanded => {
                 if (event.state == RecoveryState::VerdictLanded) != landed {
@@ -1048,7 +1037,7 @@ impl GovState {
             _ => {
                 return Err(RecoveryError::Conflict(
                     "foreign raw state does not accept this verdict".into(),
-                ))
+                ));
             }
         }
         let mut transitions = Vec::new();
@@ -1118,7 +1107,7 @@ impl RecoveryChild {
 }
 impl GovState {
     /// Called only by the cold flusher before any shard lock. Failed proof leaves
-    /// exposure unknown while independent positive work can still continue.
+
     pub(super) fn capture_foreign_settled_snapshot(&self) -> ForeignSettledSnapshot {
         let mut snapshot = ForeignSettledSnapshot::default();
         if !self.recovery_enabled() {
@@ -1175,8 +1164,7 @@ impl GovState {
         if origin.operation_id != parent.operation_id {
             return Err(invalid("settled child belongs to another parent"));
         }
-        // C checks a revision-zero argument against the exact actual genesis,
-        // then its older selected parent checkpoint and full sealed template.
+
         self.verify_external_recovery_origin(&descriptor.intent_with_origin(origin)?)
     }
 }

@@ -190,9 +190,10 @@ fn fetch_pins_are_rewritten_through_the_release_lookup_and_unserved_plugins_gain
         "the old pin is rewritten without its sha256, and the unserved plugin is pinned:\n{}",
         out.yaml
     );
-    assert!(out.changes.iter().any(|c| c
-        .starts_with("plugins.fetch: 'Acme/busbar-stub@v1.0.0' -> 'Acme/busbar-stub@v1.6.0'")
-        && c.contains("its sha256 pinned the old build, so it was removed")));
+    assert!(out.changes.iter().any(|c| {
+        c.starts_with("plugins.fetch: 'Acme/busbar-stub@v1.0.0' -> 'Acme/busbar-stub@v1.6.0'")
+            && c.contains("its sha256 pinned the old build, so it was removed")
+    }));
     assert!(out
         .changes
         .iter()
@@ -534,10 +535,12 @@ fn a_private_host_is_added_exactly_with_a_line_naming_what_it_resolved_to() {
     );
     assert_eq!(
         changes,
-        ["advanced.allow_destinations: added '10.0.0.5' for the plugin 'busbar-witness': resolved \
+        [
+            "advanced.allow_destinations: added '10.0.0.5' for the plugin 'busbar-witness': resolved \
           at migrate time to 10.0.0.5 (an address literal), every answer private or loopback and \
           none cloud metadata (1.6.0 refuses a private or loopback destination unless it is \
-          allowed; only this host is allowed, not every private address)"]
+          allowed; only this host is allowed, not every private address)"
+        ]
     );
 
     let (list, _, _) = decide(&Witness::new(Plane::Migrates), "http://[fd00::5]:8000");
@@ -561,11 +564,13 @@ fn a_private_host_is_added_exactly_with_a_line_naming_what_it_resolved_to() {
     assert!(todos.is_empty(), "{todos:?}");
     assert_eq!(
         changes,
-        ["advanced.allow_destinations: added 'ollama.internal' for the plugin 'busbar-witness': \
+        [
+            "advanced.allow_destinations: added 'ollama.internal' for the plugin 'busbar-witness': \
           resolved at migrate time to 10.1.2.3, fd00::7 (this machine's DNS; where busbar runs it \
           may answer differently), every answer private or loopback and none cloud metadata \
           (1.6.0 refuses a private or loopback destination unless it is allowed; only this host \
-          is allowed, not every private address)"]
+          is allowed, not every private address)"
+        ]
     );
 }
 
@@ -621,9 +626,11 @@ fn a_host_that_cannot_be_decided_is_left_to_the_operator_with_a_todo() {
     assert!(list.is_null() && changes.is_empty());
     assert_eq!(
         todos,
-        ["advanced.allow_destinations: 'gone.internal', which the plugin 'busbar-witness' dials, \
+        [
+            "advanced.allow_destinations: 'gone.internal', which the plugin 'busbar-witness' dials, \
           did not resolve at migrate time (no such name), so it was not added; if it is a private \
-          or loopback host where busbar runs, add it to advanced.allow_destinations by hand"]
+          or loopback host where busbar runs, add it to advanced.allow_destinations by hand"
+        ]
     );
 
     let host = Witness::new(Plane::Migrates).answers("split.example", &["10.0.0.9", "8.8.8.8"]);

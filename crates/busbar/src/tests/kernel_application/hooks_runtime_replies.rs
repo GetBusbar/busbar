@@ -66,8 +66,6 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         manifest.version = facts.version;
         manifest.statement = Some(hex::encode(statement));
         if kind == "hook" {
-            // These are the actual webrequest product's declared content needs,
-            // signed alongside its exact door rendering, not a synthetic hook tail.
             manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
             manifest.needs.user = busbar_contract::plugin_rows::NeedLevel::Ro;
             hook_module = Some(facts.name);
@@ -89,8 +87,7 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
     let credential = directory.join("upstream-credential");
     std::fs::write(&credential, b"pool-admission-unused-upstream-credential")
         .expect("write the normal file-backed upstream credential");
-    // Pool-only instances are separate from the all-pools instances: configuration
-    // intentionally deduplicates an identical attachment inherited by a pool.
+
     let document = serde_json::json!({
         "providers": {
             "local": {"protocol": "anthropic", "base_url": "http://127.0.0.1:1",
@@ -223,7 +220,6 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
     let budget = std::time::Duration::from_secs(5);
     let ResolvedPolicy::Policy { policy, .. } = &app.pool_gates("read")[0].1;
 
-    // dlopen_decide_order_and_abstain: actual host normalization still drops unknown idx9.
     response.lock().unwrap().0 = serde_json::json!({"order": [9,1,0]});
     assert_eq!(
         policy
@@ -242,7 +238,6 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         RoutingDecision::Abstain
     );
 
-    // dlopen_decide_reject_status_is_clamped: preserve all eight sent/status cells.
     for (sent, want) in [
         (400, 400),
         (451, 451),
@@ -266,7 +261,7 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
             other => panic!("expected Reject for sent {sent}, got {other:?}"),
         }
     }
-    // dlopen_decide_restrict_and_fail_closed: narrowing wins over order; empty stays Restrict.
+
     response.lock().unwrap().0 =
         serde_json::json!({"order":[1,0], "restrict":{"tags_any":["baa"]}});
     match policy
@@ -289,7 +284,7 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         ),
         other => panic!("malformed restrict must stay Restrict, got {other:?}"),
     }
-    // dlopen_decide_raw_reply_is_fail_closed: exact malformed reject/unknown/false cases.
+
     response.lock().unwrap().0 = serde_json::json!({"reject":{"status":"451"}});
     match policy
         .decide(&request("x"), &candidates[..1], &context, budget)
@@ -318,7 +313,7 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
             want
         );
     }
-    // Both original deadline tests retain their independent Err + less-than-one-second oracles.
+
     for which in [
         "dlopen_decide_deadline_cuts_off_a_slow_gate",
         "dlopen_slow_gate_hits_the_deadline",
@@ -348,7 +343,7 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
     }
     response.lock().unwrap().1 = 0;
     response.lock().unwrap().0 = serde_json::json!({"order":[0]});
-    // Actual no-grant transport receives no messages and cannot screen withheld content.
+
     let ResolvedPolicy::Policy {
         policy: plain,
         send_prompt,
@@ -372,7 +367,6 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         .get("messages")
         .is_none());
 
-    // The resolved fallback graph carries actual live products, not synthetic policy objects.
     use busbar_kernel::config::PolicyOnError;
     let ResolvedPolicy::Policy {
         on_error,
@@ -426,7 +420,6 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
     assert_eq!(on_error_chain[0].policy.name(), "cheapest");
     assert_eq!(*on_error, PolicyOnError::Weighted);
 
-    // Re-resolving identical admitted row+instance+settings reuses the actual product transport.
     let pool = busbar_kernel::config::PoolCfg {
         gates: vec!["read".into()],
         ..Default::default()
@@ -437,8 +430,10 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         busbar_kernel::hooks::resolve_pool_gates(&pool, &app.hook_registry, &app.hook_env, 0);
     let ResolvedPolicy::Policy { policy: first, .. } = &first[0].1;
     let ResolvedPolicy::Policy { policy: second, .. } = &second[0].1;
-    assert!(Arc::ptr_eq(first,second),
-        "a second resolution of the same hook+settings+registry must reuse the published load, not open a second image");
+    assert!(
+        Arc::ptr_eq(first, second),
+        "a second resolution of the same hook+settings+registry must reuse the published load, not open a second image"
+    );
     let mut changed = app.hook_registry.clone();
     changed
         .get_mut("read")
@@ -452,7 +447,6 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         "a change of settings must resolve a NEW transport, never reuse the old one"
     );
 
-    // The normal root has already published the product before the control-plane push.
     assert!(
         matches!(
             busbar_kernel::hooks::transport_publication_for_test(
@@ -485,7 +479,10 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
             Err(error) => panic!("the plugin must ack the pushed version exactly: {error}"),
         }
     }
-    assert!(acknowledged,"push_configure hit its shipped 5s deadline 4 times in a row ({last}); that is a wedged plugin or a hang, not scheduling delay");
+    assert!(
+        acknowledged,
+        "push_configure hit its shipped 5s deadline 4 times in a row ({last}); that is a wedged plugin or a hang, not scheduling delay"
+    );
     let before = policy.status(budget).await.expect("status").settings;
     let invalid = serde_json::json!({"url":""}).as_object().unwrap().clone();
     assert!(
@@ -501,7 +498,7 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         before,
         "a rejected actual product push must not commit new settings"
     );
-    // Secret indirection is never eligible for publication; plain settings are.
+
     let mut with_secret = app.hook_registry["read"].clone();
     with_secret.settings.insert(
         "licenseKey".into(),
@@ -522,7 +519,6 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         "a hook with no secret indirection is eligible"
     );
 
-    // Actual policy identities and returned deadlines replace BudgetAxis call bookkeeping.
     let mut budget_hooks = app.hook_registry.clone();
     budget_hooks.get_mut("read").unwrap().timeout_ms = 41;
     let first = busbar_kernel::hooks::resolve_pool_gates(&pool, &budget_hooks, &app.hook_env, 0);
@@ -572,7 +568,6 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         ]
     );
 
-    // A real policy has the configured instance name and documented default deadline.
     let mut named = app.hook_registry["read"].clone();
     named.timeout_ms = busbar_kernel::config::DEFAULT_POLICY_TIMEOUT_MS;
     let definitions = std::collections::HashMap::from([("h".into(), named)]);
@@ -605,7 +600,7 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
     assert!(
         busbar_kernel::hooks::resolve_pool_gates(&named_pool, &definitions, &empty, 0).is_empty()
     );
-    // Both actual global and pool wrappers preserve all four failed-call dispositions.
+
     use busbar_contract::hooks::TransformOutcome;
     for (on_error, call_failed, expect_refusal) in [
         ("weighted", true, false),
@@ -643,20 +638,28 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
             .expect("pool rw gate");
         for (which, policy) in [("global", &global.1), ("pool", &pool.1)] {
             let outcome = policy.transform(&request("hello"), budget).await;
-            match (&outcome,expect_refusal,call_failed) {
-                (TransformOutcome::Reject {status,message},true,_)=>{
-                    assert_eq!(*status,busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
-                        "{which}: a failed load-bearing hook refuses with the shared status");
-                    assert_eq!(message,busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
-                        "{which}: and the shared, content-free message");
+            match (&outcome, expect_refusal, call_failed) {
+                (TransformOutcome::Reject { status, message }, true, _) => {
+                    assert_eq!(
+                        *status,
+                        busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+                        "{which}: a failed load-bearing hook refuses with the shared status"
+                    );
+                    assert_eq!(
+                        message,
+                        busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
+                        "{which}: and the shared, content-free message"
+                    );
                 }
-                (TransformOutcome::Failed {..},false,true)=>{},
-                (TransformOutcome::Rewrite(_),false,false)=>{},
-                (other,_,_)=>panic!("{which}: on_error={on_error} call_failed={call_failed} expect_refusal={expect_refusal} got {other:?}"),
+                (TransformOutcome::Failed { .. }, false, true) => {}
+                (TransformOutcome::Rewrite(_), false, false) => {}
+                (other, _, _) => panic!(
+                    "{which}: on_error={on_error} call_failed={call_failed} expect_refusal={expect_refusal} got {other:?}"
+                ),
             }
         }
     }
-    // Native ranking construction belongs to the distribution's actual linked product axis.
+
     for (strategy, name) in [
         (busbar_kernel::config::PoolPolicy::Cheapest, "cheapest"),
         (busbar_kernel::config::PoolPolicy::Fastest, "fastest"),

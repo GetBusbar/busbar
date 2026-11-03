@@ -1480,8 +1480,7 @@ unsafe fn session_piece(
     };
     let count = |c: Sessions| me.sessions[c as usize].fetch_add(1, Ordering::SeqCst);
     let piece = bytes(i.bytes);
-    // The driver's first caller crossing opens the session before any caller frame arrives.
-    // Keep later empty caller frames observable; only this initial empty opening has no echo.
+
     if initial && i.from == FROM_CALLER && i.flags == 0 && piece.is_empty() {
         return say(out, Outcome::Ready);
     }

@@ -507,7 +507,7 @@ impl RecordStore for RewrapStore {
             .plane_token_live(_kind, _token, _expires_at, _now)
     }
 }
-// Narrow faults around the actual configured Store. Every unaffected operation delegates.
+
 struct RewrapOverlayFaults {
     inner: Arc<dyn StoreCalls>,
     fail_writes: AtomicBool,

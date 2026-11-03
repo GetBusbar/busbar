@@ -553,7 +553,6 @@ pub struct AuthInstance {
     carriers: Mutex<Vec<String>>,
     metadata_valid: AtomicBool,
 
-    // settings-leak-lint: allow — NON-PROJECTION engine type: the settings bytes this instance was
     settings: Vec<u8>,
 
     secrets: KeptSecrets,
@@ -910,7 +909,7 @@ impl AuthCalls for AuthInstance {
                 return Err(format!(
                     "auth instance `{}`: a refresh is already in flight",
                     self.label
-                ))
+                ));
             }
         };
         let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;

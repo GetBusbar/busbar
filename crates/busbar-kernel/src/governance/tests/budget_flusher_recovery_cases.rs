@@ -219,7 +219,7 @@ async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reac
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
     let flusher =
         crate::governance::spawn_budget_flusher(gov.clone(), shutdown_rx, Some(handle.clone()));
-    // No await precedes this swap: a cost cached by the spawning function would be stale.
+
     let mut next = (*app).clone();
     next.cost = Arc::new(current_cost);
     next.config_version += 1;
@@ -255,6 +255,9 @@ async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reac
         "fresh conditional revalidation uses the swapped current day-window cost model"
     );
     let month_window = crate::governance::budget_window(crate::governance::WINDOW_MONTH, now);
-    assert_eq!(input(store.as_ref(), "group:g@month", month_window), 100,
-        "the previous model's raw month-window debt is recorded, not corrected under stale configuration");
+    assert_eq!(
+        input(store.as_ref(), "group:g@month", month_window),
+        100,
+        "the previous model's raw month-window debt is recorded, not corrected under stale configuration"
+    );
 }

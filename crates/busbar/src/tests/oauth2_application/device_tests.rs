@@ -252,7 +252,7 @@ async fn advertised_device_flow_requires_confirmation_mints_and_revokes() {
         .await
         .unwrap();
     assert!(response.status().is_client_error());
-    // A successful refresh proves the refused revocation did not mutate the grant.
+
     let mut kept = credentials(&subject, &subject.key);
     kept.extend([
         ("grant_type", "refresh_token".into()),

@@ -129,7 +129,7 @@ pub(crate) fn is_verified_check(d: &[u8], keys: &Keys) -> bool {
             MESSAGE_INTEGRITY => {
                 return value.len() == MI_LEN
                     && username_ok
-                    && integrity_ok(d, at, value, &keys.local)
+                    && integrity_ok(d, at, value, &keys.local);
             }
             _ => {}
         }

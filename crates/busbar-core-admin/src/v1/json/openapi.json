@@ -1157,6 +1157,14 @@
               "null"
             ]
           },
+          "audience": {
+            "default": null,
+            "description": "Optional exact resource audience for this bearer; omitted preserves ordinary key tokens.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "expires_at": {
             "default": null,
             "description": "Token expiry as an absolute Unix-seconds timestamp. Mutually exclusive with `expires_in`.",

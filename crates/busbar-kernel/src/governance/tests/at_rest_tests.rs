@@ -183,7 +183,6 @@ fn mint(g: &GovState) -> (String, String) {
     try_mint(g).unwrap()
 }
 
-// The actual Store validates claim expiry against its own wall clock.
 fn now() -> u64 {
     crate::store::now()
 }
@@ -322,9 +321,6 @@ fn a_row_under_neither_key_does_not_authenticate() {
     assert!(!read(&signing_gov(store, 7), &public_id).1);
 }
 
-// A pre-1.6.0 row starts life as plaintext. The actual Store correctly refuses
-// replacing an already-live credential through ordinary PUT, so seed the legacy
-// envelope as the first credential insert into a separate opened Store.
 fn legacy_store() -> (
     Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     String,

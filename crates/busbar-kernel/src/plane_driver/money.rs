@@ -106,8 +106,7 @@ pub struct ParentMoney {
 }
 
 /// One actual admission reserved for a later child. Its financial participation is linear:
-/// dropping it releases the reservation; adopting it transfers that same participation.
-/// The composition root separately binds its capsule and original admission proof.
+
 pub struct ReservationMoney {
     money: Arc<UnitMoney>,
     grant: Arc<AdmitGrant>,
@@ -423,7 +422,7 @@ impl PlaneMoney {
     }
 
     /// Capture a live, governor-backed parent for an already authenticated matching key.
-    /// The composition root also verifies its session's principal and route authority.
+
     pub fn parent_money(
         &self,
         parent: UnitKey,
@@ -450,7 +449,7 @@ impl PlaneMoney {
     }
 
     /// Reserve real admission custody while the original unit remains live. The reservation
-    /// may later become one child after that original unit has settled and left this book.
+
     pub fn reserve_admission(
         &self,
         parent: UnitKey,
@@ -475,7 +474,7 @@ impl PlaneMoney {
             fee: FeeParticipation {
                 account,
                 owner: false,
-                // Expiry incurs nothing and preserves the original unit's refund decision.
+
                 refundable: true,
             },
             book: self.book.clone(),
@@ -511,7 +510,7 @@ impl PlaneMoney {
     }
 
     /// Consume a real reserved admission once, without another governor admission. Errors
-    /// return the unchanged reservation. The root must first verify its capsule and bound proof.
+
     pub fn adopt_reserved(
         &self,
         reservation: ReservationMoney,
@@ -542,7 +541,7 @@ impl PlaneMoney {
         money.classes = classes;
         money.fee = fee;
         let ReservationMoney { grant, mut fee, .. } = reservation;
-        // From this point it is an actual child, whose unterminated drop retains the fee.
+
         fee.refundable = false;
         let open = Open::new(Arc::new(money), Some(grant), fee);
         all.insert(child, open);
@@ -576,7 +575,7 @@ impl PlaneMoney {
     }
 
     /// Verify a unit's own governor admission at the teller's terminal authority check.
-    /// Finished is expected there; billed, abandoned, or shared-child registrations do not qualify.
+
     pub fn validate_admitted(
         &self,
         unit: UnitKey,
@@ -597,8 +596,7 @@ impl PlaneMoney {
     }
 
     /// A registered child keeps its real admission after the parent closes. The driver marks
-    /// it finished before the teller's terminal authority check, so finished is permitted here.
-    /// The actual unsettled registration must still exist; a token alone cannot satisfy this.
+
     pub fn validate_child(
         &self,
         parent: &ParentMoney,
@@ -623,7 +621,7 @@ impl PlaneMoney {
     }
 
     /// Register ordinary child usage under the actual parent's admission and rate era.
-    /// Parent and child registration are checked under ordered shard locks.
+
     pub fn open_child(
         &self,
         parent: &ParentMoney,
@@ -927,7 +925,7 @@ impl MoneySeam for PlaneMoney {
                     bills,
                 );
             }
-            // Fee participation and the actual grant always close outside the shard lock.
+
             drop(open);
         }
         self.post.post(ctx, ended);

@@ -178,7 +178,7 @@ async fn put(
                     section.singular()
                 )),
                 Cond::MalformedBody,
-            )
+            );
         }
     };
     apply(
@@ -209,7 +209,7 @@ async fn patch_settings(
             return err_json_cond(
                 &AdminError::Validation(format!("malformed settings body: {e}")),
                 Cond::MalformedBody,
-            )
+            );
         }
     };
     apply(
@@ -229,7 +229,6 @@ async fn patch_settings(
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct NamedSettingsReq {
-    // settings-leak-lint: allow — INBOUND request body (`Deserialize` only). This is the operator
     pub(crate) settings: serde_json::Map<String, serde_json::Value>,
 }
 

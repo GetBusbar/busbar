@@ -188,8 +188,6 @@ pub(crate) struct AuditRestored {
     pub(crate) chain_breaks: Vec<ChainBreak>,
 }
 
-// Keep the exact persisted identity beside its bounded ring entry. Parsed suffixes are
-// lossy, so comparing their displayed fields could hide distinct tampered rows.
 #[derive(PartialEq, Eq)]
 struct AuditIdentity {
     scope: String,
@@ -254,8 +252,7 @@ impl PlaneAuditLog {
         #[cfg(any(test, feature = "test-support"))]
         let observed = entry.recorded_here.then(|| entry.clone());
         let mut q = self.ring.lock().unwrap_or_else(|e| e.into_inner());
-        // Only restore is idempotent. Live admission and its accepted-entry hook
-        // retain their existing behavior; a restore never replaces live provenance.
+
         if restoring && q.iter().any(|kept| kept.identity == identity) {
             return;
         }

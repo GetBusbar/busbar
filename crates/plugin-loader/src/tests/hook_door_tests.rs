@@ -732,9 +732,6 @@ mod sdk_refresh {
 
 const BUDGET: Duration = Duration::from_secs(5);
 
-// These tests retain the actual Ranking lifecycle/state through each loader origin.
-// Only the named operation is adversarial: SERVE uses the real SDK loan writer;
-// DECIDE observes the ABI view and forwards the exact operation from that image.
 #[path = "../../tests/fixtures/hook_metadata_boundary.rs"]
 mod metadata_boundary;
 
@@ -747,7 +744,6 @@ mod actual_boundary {
     use std::ffi::c_void;
     use std::sync::{Mutex, OnceLock};
 
-    // Use the full SDK trampoline: Entry::enter alone does not stamp the ABI out head.
     struct LoanCapture;
     impl busbar_contract::abi::sdk::capture::CaptureHome for LoanCapture {
         fn with<R>(f: impl FnOnce(&mut busbar_contract::abi::sdk::capture::CaptureSlot) -> R) -> R {
@@ -1100,8 +1096,7 @@ async fn hook_routes_serve_leased_responses_through_both_doors_and_refused_stubs
             calls.serve(serve_request(), BUDGET).await.unwrap().body,
             response.body
         );
-        // Ranking's default SERVE is not a refusing product stub. Exercise the original
-        // routed-REFUSED host facet explicitly at the same retained-image SDK boundary.
+
         let mut unsupported = serve_request();
         unsupported.query = "unsupported".into();
         let error = calls.serve(unsupported, BUDGET).await.unwrap_err();

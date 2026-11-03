@@ -83,8 +83,7 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
     crate::dist_root_install::install();
     let connector = crate::root::connector::installed()
         .expect("the normal root installs the actual transport connector");
-    // The actual exporter serves its scrape by reading the snapshot host service.
-    // The route's grant and the dispatcher must both carry the normal service path.
+
     let dispatcher = std::sync::Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
         std::sync::Arc::new(busbar_kernel::host_services::KernelServices::new()),
@@ -133,7 +132,7 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
             source_instance: "serve-http-metrics".into(),
             dispatch_available: true,
             kind: busbar_kernel::plugin_routes::RouteKind::Export,
-            // Match production's first-party scrape grant for this qualified actual image.
+
             scrape: public_routes.contains(&route.path),
             persistent: false,
             route,
@@ -1430,17 +1429,11 @@ pub(super) mod session_door {
     }
     impl Drop for RtcTasks {
         fn drop(&mut self) {
-            let tasks: Vec<_> = self
-                .0
-                .get_mut()
-                .expect("the peer tasks")
-                .drain(..)
-                .collect();
+            let tasks = std::mem::take(self.0.get_mut().expect("the peer tasks"));
             for task in &tasks {
                 task.abort();
             }
-            // Join cancelled fixture workers while this test's runtime is alive.
-            // Runtime shutdown also owns any reaper that has not yet been polled.
+
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
                 runtime.spawn(async move {
                     for task in tasks {
@@ -1458,8 +1451,6 @@ pub(super) mod session_door {
         }
     }
 
-    // The external provider receives the product's two-part HTTP form. Parse only
-    // this fixture envelope; SDP validation and crypto remain in the real framer.
     fn provider_offer(request: &str) -> Vec<u8> {
         let (head, body) = request
             .split_once("\r\n\r\n")
@@ -1583,7 +1574,10 @@ pub(super) mod session_door {
                                 "DIAL {}",
                                 request.lines().next().unwrap_or_default()
                             ));
-                            let response = format!("HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: {}\r\n\r\n", ws_accept(&key));
+                            let response = format!(
+                                "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: {}\r\n\r\n",
+                                ws_accept(&key)
+                            );
                             if socket.write_all(response.as_bytes()).await.is_err() {
                                 return;
                             }
@@ -1678,7 +1672,6 @@ pub(super) mod session_door {
                     if armed.load(std::sync::atomic::Ordering::SeqCst) {
                         axum::Json(reply).into_response()
                     } else {
-                        // The actual webrequest hook defines 204 as no opinion.
                         StatusCode::NO_CONTENT.into_response()
                     }
                 }
@@ -1713,13 +1706,18 @@ pub(super) mod session_door {
         .expect("a hook document")
     }
 
+    struct MediaPeer {
+        ready: bool,
+        received: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    }
+
     pub(in crate::root::serve) struct SessionDoor {
         _handle: Arc<busbar_kernel::state::AppHandle>,
         framer: crate::root::listener::framed::DataFramer,
         connector: Arc<busbar_core_connector::Connector>,
         media: MediaStop,
         peers: Arc<RtcTasks>,
-        media_messages: tokio::sync::Mutex<Vec<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>>>,
+        media_messages: tokio::sync::Mutex<Vec<MediaPeer>>,
         router: axum::Router,
         heard: tokio::sync::mpsc::UnboundedReceiver<String>,
         gov: Arc<GovState>,
@@ -1864,8 +1862,7 @@ pub(super) mod session_door {
         busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
         let budget = opts.budget;
         let _ = crate::root::inbound::install(crate::root::doors::dispatcher());
-        // Datagram admission pairs its unit on the normal process connector.
-        // The plane's provider dial must consume that same pairing.
+
         let connector = Arc::clone(
             crate::root::connector::installed()
                 .expect("normal root bootstrap installs the session connector"),
@@ -1914,8 +1911,7 @@ pub(super) mod session_door {
         if let Some(amount) = budget {
             limits.push(busbar_kernel::config::groups::LimitCfg {
                 metric: busbar_kernel::config::groups::LimitMetric::Budget,
-                // A spent-key cell uses a valid one-unit cap, consumed below by a
-                // separate admitted caller before the tested key reaches the door.
+
                 amount: amount.max(1),
                 per: Some(busbar_kernel::config::groups::LimitWindow::Total),
                 scope: None,
@@ -2111,8 +2107,7 @@ pub(super) mod session_door {
         }
         let live = Arc::clone(&served.planes[0].live);
         served.post = Some(Arc::clone(&post));
-        // Run the same workers as Served::spawn_ticks, retaining their handles
-        // so a fixture never leaves a driver alive after its session owner.
+
         for plane in &served.planes {
             let driver = Arc::clone(&plane.driver);
             peers.keep(tokio::spawn(async move { driver.ticks().await }));
@@ -2181,8 +2176,6 @@ pub(super) mod session_door {
             .hooks
             .iter()
             .map(|(name, hook)| {
-                // The public named-hook grammar carries scope and phase in each definition.
-                // Runtime-only legacy attachment fields are not configuration keys.
                 (
                     *name,
                     serde_json::json!({
@@ -2220,7 +2213,6 @@ pub(super) mod session_door {
         let mut config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the session deployment resolves");
         if budget.is_some() {
-            // Admission and dated spend must consult the same configured plane fee.
             config.plane_fees.insert(
                 plane_name.clone(),
                 busbar_kernel_ledger::cost::PlaneFees {
@@ -2282,7 +2274,7 @@ pub(super) mod session_door {
                 gov.try_admit(&cost, &warm, &pool, busbar_kernel::store::now())
                     .expect("the prior caller is admitted before opening its session"),
             );
-            // This plane counts its opened session, not a per-request fee.
+
             gov.record_usage(
                 &cost,
                 &warm,
@@ -2305,9 +2297,7 @@ pub(super) mod session_door {
 
         let upgrades = crate::root::serve::upgrade_carriers(crate::LINKED.transports, &[]);
         let mut offers = crate::root::serve::transport_offers(crate::LINKED.transports, &[]);
-        // Every route in this fixture is placed on the one actual HTTP listener.
-        // Production ListenerPlan::lists likewise takes offered auth points from
-        // that physical bind, rather than the logical SDP/media carrier.
+
         let physical_scheme = crate::root::listener::framed::DATA_SCHEME;
         let physical = connector
             .framer_for(physical_scheme)
@@ -2350,7 +2340,7 @@ pub(super) mod session_door {
                 *points = physical_points;
             }
         }
-        // The real transport judges the same configured chain as the application.
+
         let data_chain: Vec<_> = data_chain_names
             .iter()
             .map(|name| (name.clone(), app.auth.position_points(name)))
@@ -2539,7 +2529,10 @@ pub(super) mod session_door {
                 let mut socket = tokio::net::TcpStream::connect(address)
                     .await
                     .expect("the signal connection");
-                let request = format!("POST {SIGNAL} HTTP/1.1\r\nhost: {address}\r\nauthorization: Bearer {token}\r\ncontent-type: application/sdp\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", offer.len());
+                let request = format!(
+                    "POST {SIGNAL} HTTP/1.1\r\nhost: {address}\r\nauthorization: Bearer {token}\r\ncontent-type: application/sdp\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    offer.len()
+                );
                 socket
                     .write_all(request.as_bytes())
                     .await
@@ -2580,16 +2573,22 @@ pub(super) mod session_door {
                 peer.answer(&body);
                 let (task, received) = peer.run(self.media.0.subscribe(), None);
                 self.peers.keep(task);
-                self.media_messages.lock().await.push(received);
+                self.media_messages.lock().await.push(MediaPeer {
+                    ready: false,
+                    received,
+                });
             }
             (status, head)
         }
 
         async fn wait_media_ready(&self) {
             let mut all = self.media_messages.lock().await;
-            let received = all
+            let MediaPeer { ready, received } = all
                 .last_mut()
                 .expect("an actual browser media peer is retained");
+            if *ready {
+                return;
+            }
             tokio::time::timeout(ANSWER_BOUND, async {
                 while let Some(bytes) = received.recv().await {
                     if serde_json::from_slice::<serde_json::Value>(&bytes)
@@ -2610,6 +2609,7 @@ pub(super) mod session_door {
             })
             .await
             .expect("actual ICE, DTLS, SCTP and provider media establish");
+            *ready = true;
         }
 
         async fn finish_media(&self) {
@@ -2736,6 +2736,16 @@ pub(super) mod session_door {
 
         let ticket = s.local_ticket().await;
         assert_eq!(s.requests(), 1, "local issuance is the one admission");
+        let issuance = s.audit_records();
+        assert_eq!(
+            issuance.len(),
+            1,
+            "issuance sealed before its ticket is usable"
+        );
+        assert_eq!(
+            issuance[0].usage.fee_count, 0,
+            "local issuance reports no session fee"
+        );
         let (status, _response) = s.signal(&ticket).await;
         assert_eq!(status.as_u16(), 201, "the actual ticket opens its SDP call");
 
@@ -2770,7 +2780,73 @@ pub(super) mod session_door {
         );
         assert_eq!(s.money.open_units(), 0, "its money facts closed");
         assert_eq!(s.post.open_units(), 0, "its node facts closed");
-        assert_eq!(s.lines(), 1, "its one record carries its counts");
+        let records = s.audit_records();
+        assert_eq!(
+            records.len(),
+            issuance.len() + 1,
+            "one new media terminal receipt"
+        );
+        assert!(
+            records[0] == issuance[0],
+            "the issuance receipt is unchanged"
+        );
+        let (mint, media) = (&records[0], &records[1]);
+        assert_ne!(
+            mint.what.unit_key, media.what.unit_key,
+            "distinct physical units"
+        );
+        assert_eq!(media.seq, mint.seq + 1, "contiguous phase receipts");
+        assert!(
+            media.prev_hash == mint.hash,
+            "the media receipt follows issuance"
+        );
+        assert!(
+            mint.what.op_class == media.what.op_class,
+            "one session operation class"
+        );
+        assert!(
+            mint.what.destination == media.what.destination,
+            "one verified route"
+        );
+        for record in &records {
+            assert!(
+                record.subject == busbar_kernel_audit::Subject::PrincipalId(s.key.id.clone()),
+                "both phases belong to the presenting key"
+            );
+            assert!(
+                record.what.parent.is_none(),
+                "each phase is an external request"
+            );
+            assert!(
+                record.outcome.unit_end.is_completed(),
+                "both phases completed"
+            );
+            assert!(
+                record
+                    .what
+                    .destination
+                    .as_deref()
+                    .is_some_and(|lane| lane.ends_with("m-cap")),
+                "both receipts retain the locked model"
+            );
+            assert!(
+                record.usage.lines.is_empty(),
+                "this session reported no usage quantities"
+            );
+        }
+        assert_eq!(
+            media.usage.fee_count, 1,
+            "the actual session reports its fee once"
+        );
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.usage.fee_count)
+                .sum::<u32>(),
+            1,
+            "one fee across both phase receipts"
+        );
+        assert!(busbar_kernel_audit::AuditChain::verify_chain(&records).is_ok());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2934,8 +3010,20 @@ pub(super) mod session_door {
         .expect("the build links the session door");
         let ticket = s.local_ticket().await;
         assert_eq!(s.requests(), 1, "the local ticket is the one admission");
+        let answer_bound = tokio::time::Instant::now() + ANSWER_BOUND;
         let (status, _signal) = s.signal(&ticket).await;
         assert_eq!(status.as_u16(), 201, "the admitted ticket places its call");
+        tokio::time::timeout_at(answer_bound, s.wait_media_ready())
+            .await
+            .expect("the actual caller and provider establish within the original answer bound");
+
+        tokio::time::timeout_at(answer_bound, async {
+            while s.heard.is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the signal reaches its actual provider within the answer bound");
         assert!(
             s.heard.try_recv().is_ok(),
             "the signal reached its provider"
@@ -3662,6 +3750,8 @@ pub(super) mod session_door {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
         );
+
+        s.wait_media_ready().await;
         let posted = next_report(&mut s.heard)
             .await
             .expect("the offer reached the provider");

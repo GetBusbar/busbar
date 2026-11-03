@@ -92,8 +92,6 @@ fn fenced_mutation(
     mut initial_fence: Option<Predicate>,
 ) -> Result<(), String> {
     loop {
-        // Consume an already-read exact fence only once. A conflict always re-reads the
-        // current lease; renewal never turns this into a stale-predicate retry loop.
         let current = match initial_fence.take() {
             Some(predicate) => Some(predicate),
             None => lease.predicate(calls)?,
@@ -126,7 +124,7 @@ pub(super) fn put_record(
     let parts = parts_of(record)?;
     let first_fence = lease.predicate(calls)?;
     let fenced = first_fence.is_some();
-    // Preflight before cleanup. Oversized conditional frames retain the original split path.
+
     let atomic_parts = audit.as_ref().and_then(|advance| {
         let mutations: Vec<_> = parts
             .iter()
@@ -276,8 +274,7 @@ pub(super) fn prepare_audit_group(
             });
         }
     }
-    // Preflight uses the captured exact fence. Same-holder renewal preserves its fixed row size;
-    // actual cleanup/publication still obtain fresh exact predicates.
+
     let fence = planning_fence.clone();
     let mut final_request = advance.request(&parts, fence.clone())?;
     final_request.predicates.push(node_predicate.clone());
@@ -345,7 +342,6 @@ impl AuditGroup {
         Ok(true)
     }
     pub(super) fn commit(&self, calls: &dyn StoreCalls, lease: &HeldLease) -> Result<(), String> {
-        // An exact committed group is proved before ANY destructive cleanup, including reoffer.
         if !lease.fence_matches(calls, &self.planning_fence)? {
             return Err("audit group planning custody changed".into());
         }
@@ -407,7 +403,6 @@ impl AuditGroup {
                     {
                         return Err("audit group checkpoint or immutable sample changed".into());
                     }
-                    // A normal same-holder renewal retries ONLY final publication, not cleanup.
                 }
             }
         }
@@ -415,16 +410,14 @@ impl AuditGroup {
 }
 
 /// Recovery records have immutable addresses and bytes. Unlike an arbitrary mutation, a retry
-/// with a fresh transaction identity is safe even after conditional receipt retention expires:
-/// absent predicates prevent any existing part from being replaced.
+
 fn put_immutable_record(
     calls: &dyn StoreCalls,
     lease: &HeldLease,
     record: &Record,
 ) -> Result<(), String> {
     let (request, fences, parts) = immutable_request(calls, lease, record)?;
-    // One call only: an unknown journal transition is not an unknown usage outcome. The next
-    // lane attempt uses a new conditional id and the same immutable record under a current fence.
+
     let decision = wait_for(calls.record_transaction(&request));
     confirm_immutable_record(calls, lease, &fences, record, &parts)
         .map_err(|why| format!("recovery journal record is not confirmed ({decision:?}): {why}"))
@@ -457,8 +450,7 @@ fn immutable_request(
         });
     }
     let request = super::conditional::candidate(predicates, mutations);
-    // This validates the actual extension frame, including part keys and both predicate and
-    // mutation envelopes, against the existing 16 MiB ABI bound before the Store sees it.
+
     drop(request.encode_held().map_err(|why| {
         format!("recovery transaction cannot be encoded within the ABI byte bound: {why}")
     })?);
@@ -532,8 +524,7 @@ fn valid_journal_page(prefix: &[u8], page: &JournalPage, limit: u32) -> Result<(
     {
         return Err("invalid Store journal page".into());
     }
-    // Check fatal part-envelope errors even in a sibling whose read budget was refused.
-    // No successful answer may be discarded/re-read into apparently valid data.
+
     if page.iter().any(|(_, value)| {
         value
             .as_slice()
@@ -556,8 +547,7 @@ fn journal_page_window(
         .map(|prefix| calls.record_scan(JOURNAL_SCHEMA, prefix, JOURNAL_PAGE_ROWS))
         .collect();
     let mut answers: Vec<_> = (0..pending.len()).map(|_| None).collect();
-    // Poll existing owned Store futures together; no tasks, threads, timers or borrowed ABI
-    // buffers survive a call. Every future is complete before any answer is visited.
+
     wait_for(std::future::poll_fn(|cx| {
         for (index, future) in pending.iter_mut().enumerate() {
             if answers[index].is_none() {
@@ -584,9 +574,7 @@ fn visit_journal_pages(
     mut visit: impl FnMut(JournalPage) -> Result<(), String>,
 ) -> Result<(), String> {
     use busbar_contract::store_calls::StoreFailure;
-    // One complete answer avoids radix descent for ordinary journals while retaining the
-    // same 4096-row ownership bound. A saturated answer is an arbitrary sorted subset;
-    // discard it before starting the unchanged exhaustive traversal, never infer siblings.
+
     match wait_for(calls.record_scan(JOURNAL_SCHEMA, &prefix, JOURNAL_PROBE_ROWS)) {
         Ok(page) => {
             valid_journal_page(&prefix, &page, JOURNAL_PROBE_ROWS)?;
@@ -625,24 +613,20 @@ fn visit_journal_pages(
                 }
                 let answers = journal_page_window(calls, &prefixes);
                 let mut overloaded = false;
-                // Inspect the ENTIRE untouched window before falling back. Failed/Fault,
-                // named Refused, conflicting opids or malformed successful pages are fatal.
+
                 for (prefix, answer) in prefixes.iter().zip(&answers) {
                     match answer {
                         Ok(page) => valid_journal_page(prefix, page, JOURNAL_PAGE_ROWS)?,
                         Err(StoreFailure::Overloaded) if !serial => overloaded = true,
                         Err(why) => {
-                            return Err(format!("the Store journal page is unreadable: {why}"))
+                            return Err(format!("the Store journal page is unreadable: {why}"));
                         }
                     }
                 }
                 if overloaded {
                     serial = true;
                 }
-                // A depth-first stack preserves exactly the old lexicographic consumption.
-                // At most sixteen pages/futures TOTAL belong to this traversal, independent of
-                // prefix depth. Empty pages and saturated parent pages release slots now;
-                // nonempty later siblings remain behind every child of an earlier parent.
+
                 for (prefix, answer) in prefixes.into_iter().zip(answers).rev() {
                     match answer {
                         Err(StoreFailure::Overloaded) => work.push(JournalReadWork::Prefix(prefix)),
@@ -670,7 +654,7 @@ fn visit_journal_pages(
 }
 
 /// Fold bounded Store pages in key order. Neither a node's journal nor its historical bodies
-/// accumulate here: one record is assembled beside at most sixteen 256-row pages/futures.
+
 pub(super) fn fold_stored_records(
     calls: &dyn StoreCalls,
     node: u64,
@@ -680,7 +664,6 @@ pub(super) fn fold_stored_records(
     fold_stored_records_observed(calls, node, prefix, &mut false, visit)
 }
 
-// Preserve ordinary torn-tail omission while keeping its provenance for retry eligibility.
 fn fold_stored_records_observed(
     calls: &dyn StoreCalls,
     node: u64,
@@ -859,9 +842,8 @@ impl RecordSeal {
 }
 
 /// The same sealed hash/sequence authority as the ordinary journal reader, folded without a
-/// history Vec. Quarantine bridge lookup rescans only on an actual gap, retaining no bridge log.
+
 pub(super) fn verify_stored_chain(calls: &dyn StoreCalls, node: u64) -> Result<(), String> {
-    // Cold multi-owner proofs deliberately do not acquire a fresh retry budget per owner.
     verify_stored_chain_once(calls, node, &[], None).map_err(ChainProofFailure::reason)
 }
 
@@ -877,7 +859,7 @@ struct GapWitness {
 
 enum ChainProofFailure {
     Fatal(String),
-    SequenceGap(GapWitness),
+    SequenceGap(Box<GapWitness>),
 }
 impl ChainProofFailure {
     fn reason(self) -> String {
@@ -896,7 +878,6 @@ impl From<String> for ChainProofFailure {
 }
 
 fn extend_chain_digest(digest: [u8; 32], point: ChainPoint) -> [u8; 32] {
-    // Fixed-width, domain-separated canonical transcript; no historical bodies are retained.
     let mut bytes = [0u8; 160];
     let mut used = 0;
     for field in [
@@ -914,7 +895,7 @@ fn extend_chain_digest(digest: [u8; 32], point: ChainPoint) -> [u8; 32] {
 }
 
 /// The sole retry belongs to this entire sealed-node proof. Original requested seals remain
-/// immutable; OriginRead still checks its captured HEADs and fences after this returns.
+
 pub(super) fn verify_stored_chain_with_seals(
     calls: &dyn StoreCalls,
     node: u64,
@@ -924,7 +905,7 @@ pub(super) fn verify_stored_chain_with_seals(
         Ok(()) => Ok(()),
         Err(ChainProofFailure::Fatal(reason)) => Err(reason),
         Err(ChainProofFailure::SequenceGap(witness)) => {
-            verify_stored_chain_once(calls, node, seals, Some(witness))
+            verify_stored_chain_once(calls, node, seals, Some(*witness))
                 .map_err(ChainProofFailure::reason)
         }
     }
@@ -989,8 +970,7 @@ fn verify_stored_chain_once(
             if let Some(before) = previous {
                 let follows = current.previous == before.hash
                     && before.sequence.checked_add(1) == Some(current.sequence);
-                // The original missing interval must now be filled by actual consecutive sealed
-                // records. A newly observed quarantine note cannot substitute for gap fill.
+
                 if retry.is_some_and(|witness| {
                     before.sequence >= witness.before.sequence
                         && before.sequence < witness.after.sequence
@@ -999,8 +979,6 @@ fn verify_stored_chain_once(
                     return Err("retry did not fill the original sequence gap".into());
                 }
                 if !follows && !bridge_covers(calls, before, current, &mut bridge_omitted)? {
-                    // Only a positive sequence gap between canonical validated records is eligible.
-                    // Same-sequence/hash corruption and another mixed gap are never retried.
                     if retry.is_some()
                         || gap.is_some()
                         || before
@@ -1064,15 +1042,13 @@ fn verify_stored_chain_once(
         ));
     }
     if let Some(mut witness) = gap {
-        // Incomplete/malformed partials in this fold or its quarantine authority may not heal
-        // into retryable absence, even if a later scan happens to return complete bytes.
         if omitted || bridge_omitted {
             return Err(ChainProofFailure::Fatal(
                 "a torn journal record cannot authorize a gap retry".into(),
             ));
         }
         witness.tail = previous.expect("a gap has validated boundary records");
-        return Err(ChainProofFailure::SequenceGap(witness));
+        return Err(ChainProofFailure::SequenceGap(Box::new(witness)));
     }
     if retry.is_some() && (omitted || bridge_omitted) {
         return Err(ChainProofFailure::Fatal(
@@ -1522,8 +1498,7 @@ impl JournalLane {
                 *length as u64 <= busbar_contract::abi::mechanism::check::HARD_MAX_BYTES
             })
             .ok_or_else(|| "recovery candidate exceeds the ABI byte bound".to_string())?;
-        // Sequence and digest bytes have fixed width: this exact-length stand-in measures the
-        // complete frame before allocating any journal sequence or retaining a candidate.
+
         let measure = Record::new(node, 0, vec![0; length]);
         immutable_request(self.lane.calls.as_ref(), &self.lane.lease, &measure).map(|_| ())
     }

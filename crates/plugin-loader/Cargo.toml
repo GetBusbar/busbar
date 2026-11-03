@@ -69,11 +69,15 @@ name = "hook_metadata_boundary"
 path = "tests/fixtures/hook_metadata_boundary.rs"
 crate-type = ["cdylib"]
 
+[[example]]
+name = "neutral_frame_door"
+path = "tests/fixtures/neutral_frame_door.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
 ring = { workspace = true }
 arc-swap = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
-busbar-kernel-seams = { path = "../busbar-kernel-seams" }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 libloading = { workspace = true }

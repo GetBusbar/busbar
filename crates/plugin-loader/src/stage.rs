@@ -69,7 +69,7 @@ fn ensure_staging_parent(temp_base: &std::path::Path) -> Result<PathBuf, String>
             return Err(format!(
                 "cannot create plugin staging parent {}: {e}",
                 parent.display()
-            ))
+            ));
         }
     }
     let _meta = parent_is_trusted(&parent)?;

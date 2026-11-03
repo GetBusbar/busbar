@@ -185,8 +185,12 @@ impl OverlayStore {
         match super::overlay::classify_bytes(bytes) {
             super::overlay::OverlayReadState::Absent => Ok(None),
             super::overlay::OverlayReadState::Loaded(doc) => Ok(Some(*doc)),
-            super::overlay::OverlayReadState::Unreadable => Err("config overlay in Store is unreadable; use --safe-mode to quarantine it".into()),
-            super::overlay::OverlayReadState::VersionTooNew(v) => Err(format!("config overlay version {v} is newer than this binary; use --safe-mode to quarantine it")),
+            super::overlay::OverlayReadState::Unreadable => Err(
+                "config overlay in Store is unreadable; use --safe-mode to quarantine it".into(),
+            ),
+            super::overlay::OverlayReadState::VersionTooNew(v) => Err(format!(
+                "config overlay version {v} is newer than this binary; use --safe-mode to quarantine it"
+            )),
         }
     }
 
@@ -285,7 +289,7 @@ impl OverlayStore {
                 _ => {
                     return Err(
                         "refusing to overwrite unreadable or newer config overlay in Store".into(),
-                    )
+                    );
                 }
             };
             edit(&mut doc);

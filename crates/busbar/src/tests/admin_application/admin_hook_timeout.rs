@@ -169,8 +169,7 @@ async fn timeout_only_admin_put_refreshes_the_actual_policy_atomically() {
         app.hook_env.registry.resolve("test-hook").is_some(),
         "the actual signed hook is admitted and resolves through its alias"
     );
-    // The original retained-export oracle now uses the actual Prometheus door,
-    // hosted through the existing production snapshot adapter, never a fake SERVE.
+
     app.plugin_routes = metrics_routes();
     let (data, admin, handle) =
         busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
@@ -255,8 +254,6 @@ async fn timeout_only_admin_put_refreshes_the_actual_policy_atomically() {
     );
     assert_eq!(old.hook_registry["receiver"].timeout_ms, 11);
 
-    // A genuine webrequest open refusal replaces the former Axis::refuse switch.
-    // Neither its changed timeout nor its invalid settings may reach the live App.
     definition["timeout_ms"] = 47.into();
     definition["settings"]["url"] = "".into();
     let refused = client
@@ -343,8 +340,7 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
     crate::dist_root_install::install();
     let connector = crate::root::connector::installed()
         .expect("the normal root installs the actual transport connector");
-    // The actual exporter reads snapshot.read through its dispatcher host table. A bare
-    // Dispatcher has no provider; lend the production kernel services to this real instance.
+
     let dispatcher = std::sync::Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
         std::sync::Arc::new(busbar_kernel::host_services::KernelServices::new()),

@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 use crate::root::test_plugins as plugins;
 use crate::test_common as common;
 
-// ROOT_CARD has process lifetime. Each ordinary test owns one cold root and one Store lineage.
 fn in_isolated_root() -> bool {
     const CHILD: &str = "BUSBAR_AUTH_GOVERNANCE_ROOT_CHILD";
     if std::env::var_os(CHILD).is_some() {
@@ -221,8 +220,6 @@ async fn keys_chain_preserves_carriers_disable_revoke_and_metering_controls() {
     }
     let app = Arc::new(app);
 
-    // Retains disabled/unknown, vendor-carrier, revoked-token, active-governance,
-    // and keys-chain-positive oracles formerly behind the synthetic admitting door.
     let gov = app.governance.as_ref().expect("actual Store governance");
     assert!(gov.admin_token_hash().is_some());
     let (enabled_id, enabled) = mint(gov, "enabled");
@@ -259,8 +256,7 @@ async fn keys_chain_preserves_carriers_disable_revoke_and_metering_controls() {
             .id,
         enabled_id
     );
-    // Positive metering control uses the key returned by actual session admission and the
-    // production configured cost model, rather than a handler inserted only for this test.
+
     drop(
         gov.try_admit(
             &app.cost,
@@ -369,8 +365,6 @@ async fn open_chain_with_operator_is_anonymous_keyless_and_unmetered() {
     }
     let app = Arc::new(app);
 
-    // The actual /stats endpoint requires Extension<GovCtx>; success proves that the
-    // open chain inserts it. Session admission exposes the anonymous keyless context.
     let gov = app.governance.as_ref().expect("actual Store governance");
     assert!(gov.admin_token_hash().is_some());
     let (key_id, secret) = mint(gov, "ignored-in-open-chain");
@@ -473,8 +467,6 @@ async fn open_chain_without_operator_still_inserts_default_context() {
     }
     let app = Arc::new(app);
 
-    // The actual /stats endpoint requires Extension<GovCtx>; success proves that the
-    // open chain inserts it. Session admission exposes the anonymous keyless context.
     let gov = app.governance.as_ref().expect("actual Store governance");
     assert!(gov.admin_token_hash().is_none());
     let (key_id, secret) = mint(gov, "ignored-in-open-chain");
@@ -588,8 +580,6 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
     }
     let app = Arc::new(app);
 
-    // Real OIDC replaces the old synthetic group token. A stored signed key remains
-    // irrelevant to this configured chain, whether the operator is configured or absent.
     let gov = app.governance.as_ref().expect("actual Store governance");
     assert!(gov.admin_token_hash().is_some());
     let (persisted_id, persisted) = mint(gov, "persisted-keys-do-not-override-chain");
@@ -708,8 +698,6 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
     }
     let app = Arc::new(app);
 
-    // Real OIDC replaces the old synthetic group token. A stored signed key remains
-    // irrelevant to this configured chain, whether the operator is configured or absent.
     let gov = app.governance.as_ref().expect("actual Store governance");
     assert!(gov.admin_token_hash().is_none());
     let (persisted_id, persisted) = mint(gov, "persisted-keys-do-not-override-chain");

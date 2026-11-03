@@ -51,8 +51,6 @@ fn a_door_root_row_links_with_the_key_layers_and_session_its_statement_states() 
 
 #[test]
 fn a_door_whose_own_claim_is_not_its_statement_name_is_refused_at_boot() {
-    // The actual name/claim fault is tested at doors::identity_tests::actual_tcp_name_fault_is_refused.
-    // This separate root control checks composition's propagation of a refused key callback.
     const REFUSED: &str = "identity-reader-refused-the-linked-key";
     fn refused_key() -> &'static str {
         panic!("a linked transport door is refused: {REFUSED}");

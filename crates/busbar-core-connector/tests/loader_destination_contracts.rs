@@ -17,7 +17,7 @@ use busbar_kernel::host_services::KernelServices as Host;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 const UNTICKETED: &str = "a service that may pend is callable only inside a ticketed op";
-// Only the external resolver is controlled; all policy and host answers are production.
+
 struct Names;
 impl Resolve for Names {
     fn resolve(&self, host: &str, done: Resolved) {

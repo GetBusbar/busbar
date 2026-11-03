@@ -72,8 +72,6 @@ async fn pool_rw_gate_resolves_as_rewrite_not_decision() {
         );
         manifest.statement = Some(hex::encode(statement));
         if kind == "hook" {
-            // These are the actual webrequest product's declared content needs,
-            // signed alongside its exact door rendering, not a synthetic hook tail.
             manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
             manifest.needs.user = busbar_contract::plugin_rows::NeedLevel::Ro;
             hook_module = Some(facts.name);
@@ -171,9 +169,6 @@ async fn pool_rw_gate_resolves_as_rewrite_not_decision() {
     assert_eq!(app.pool_gates("decision").len(), 1);
     assert!(app.pool_rewrites("decision").is_empty());
 
-    // Original dlopen_decide_reject_from_opt_in_prompt and
-    // dlopen_transform_rewrite_and_reject oracles, now through the actual
-    // webrequest door and a real HTTP endpoint supplying only response data.
     use busbar_contract::hooks::{
         Candidate, PromptProjection, RoutingContext, RoutingDecision, RoutingRequest,
         TransformOutcome,
@@ -251,7 +246,7 @@ async fn pool_rw_gate_resolves_as_rewrite_not_decision() {
         4,
         "all four calls crossed actual HTTP"
     );
-    // Replace fixture-only test_notifies_total with observed real HTTP dispatches.
+
     let notify_count = || {
         received
             .lock()
@@ -276,8 +271,6 @@ async fn pool_rw_gate_resolves_as_rewrite_not_decision() {
         other => panic!("seam unusable after notify: expected Rewrite, got {other:?}"),
     }
 
-    // The product reports actual target state and its published schema; fake
-    // test_decides_total instrumentation is deliberately not a product contract.
     let status = policy.status(budget).await.expect("status");
     assert_eq!(
         status.metrics.expect("metrics"),

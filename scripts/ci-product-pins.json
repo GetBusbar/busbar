@@ -194,7 +194,7 @@
     {
       "repo": "busbar-transport-webrtc",
       "url": "https://github.com/GetBusbar/busbar-transport-webrtc",
-      "commit": "024592123f510f6f3a2cf4710410c6eeb9e3c7fd",
+      "commit": "203d85e65e0a8dabd8192dc14b41c97334300748",
       "package": "busbar-transport-webrtc-plugin",
       "kind": "transport",
       "alias": "webrtc",

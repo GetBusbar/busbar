@@ -24,8 +24,6 @@ mod issuer;
 mod mount_tests;
 mod registration_tests;
 
-// The authorization server and its resource verifier use one explicitly trusted loopback
-// identity. Clients still perform certificate and hostname verification.
 fn tls_identity() -> (Arc<rustls::ServerConfig>, &'static str) {
     static IDENTITY: std::sync::LazyLock<(Arc<rustls::ServerConfig>, String)> =
         std::sync::LazyLock::new(|| {
@@ -80,8 +78,6 @@ async fn serve_tls(listener: tokio::net::TcpListener, router: axum::Router) {
     }
 }
 
-// READY warms the real verifier's JWKS before application construction returns. Its actual
-// authorization-server router therefore runs on an owned, independent runtime during boot.
 fn serve_boot_jwks(listener: std::net::TcpListener, app: Arc<App>) {
     struct Server {
         stop: Option<tokio::sync::oneshot::Sender<()>>,
@@ -116,7 +112,7 @@ fn serve_boot_jwks(listener: std::net::TcpListener, app: Arc<App>) {
         stop: Some(stop),
         thread: Some(thread),
     };
-    // Cancelling the owning test runtime shuts down and joins its boot JWKS server.
+
     tokio::spawn(async move {
         let _server = server;
         std::future::pending::<()>().await;
@@ -124,7 +120,7 @@ fn serve_boot_jwks(listener: std::net::TcpListener, app: Arc<App>) {
 }
 
 /// Build through the shipped root and its normal plugin loader. The required store
-/// artifact is a freshly built product, never a fixture implementation of Store.
+
 fn application(oauth_as: Option<&OauthAsCfg>, prior: Option<&App>) -> Arc<App> {
     application_with_resource_auth(oauth_as, prior, false)
 }
@@ -225,8 +221,7 @@ fn build_application(
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    // First build the actual authorization server without its own resource-verifier chain.
-    // The final generation carries its real signing state and the same Store across boot.
+
     let authorization_server = resource_auth.then(|| {
         let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
             .expect("the authorization-server bootstrap deployment parses");
@@ -293,8 +288,7 @@ fn build_application(
             ),
         }
     });
-    // Completing a hosted credential login provisions a subject leaf through the
-    // normal config transaction. Anchor its writable overlay in the same actual Store.
+
     let (opened_store, overlay) = if hosted_credentials {
         let opened = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugins)
             .expect("the actual hosted-login Store anchors its config authority");

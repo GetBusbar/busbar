@@ -305,8 +305,7 @@ async fn actual_inbound_generation_keeps_only_original_request_authority() {
         old_app.upgrade().is_none(),
         "unit exit releases the last old application reference"
     );
-    // Admission snapshots the product listener's body policy; publishing a replacement
-    // cannot impose a different bound on bytes already admitted, including zero.
+
     for (owner, limit) in [(9, 0), (10, 7)] {
         let mut policy = listener(Arc::clone(&replacement));
         policy.body_limit = limit;

@@ -79,8 +79,7 @@ fn build_with_hook_makes_a_plane_attach_live() {
             .expect("write the operator credential");
         let settings = crate::root::test_plugins::application_store_settings(&directory);
         let mut document = serde_json::json!({"tools": {"fs": {"url":"https://tools.internal/fs","pin":{"mechanism":"cert_spki","key":"sha256/BASE="},"hooks":["screen"]}}});
-        // A parsed deployment must define every attached hook. Exercise a missing live
-        // definition through the real delete API after this valid deployment has booted.
+
         document["hooks"] = serde_json::json!({"screen": {
             "kind": "gate", "module": hook_module,
             "settings": {"url": "http://127.0.0.1:1/hook"},

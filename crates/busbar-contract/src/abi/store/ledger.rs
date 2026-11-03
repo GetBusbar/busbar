@@ -28,10 +28,8 @@ abi_struct! {
     /// `record_get`'s `in` (kinds.rs:363): read one record into `value`; absent is ABSENT, never
     /// FAILED. A `value` buffer of `MAX_RECORD_BYTES` always fits.
     ///
-    /// The sealed new-verb replay slots are kernel-held records read here. The semantics the store
-    /// keeps for them (store_adapter.rs module doc, "The sealed replay cache"): a restore does NOT
-    /// clear them, and a slot answers for `REPLAY_TTL_SECS` (store_adapter.rs:173) after it was
-    /// written.
+    /// Sealed replay records survive restore and remain valid for the kernel's idempotency
+    /// retention window after they are written.
     #[repr(C)]
     #[derive(Debug, Clone, Copy)]
     pub struct RecordGetIn {

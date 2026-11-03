@@ -12,9 +12,6 @@ fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
     std::time::Duration::from_millis(ms)
 }
 
-// The reuse key is DATA: a handle is reusable only for the same module, resolved
-// settings and effective budget. HTTP route declarations add their own equality
-// check after this predicate; gate resolution uses the unresolved definition.
 fn same_call_inputs(
     opened_module: &str,
     opened_settings: &serde_json::Map<String, serde_json::Value>,

@@ -142,7 +142,7 @@ fn governed_full(
         let late = super::LateServices::new();
         let dispatcher = crate::root::dispatch::boot(1, &late);
         crate::root::doors::install_dispatcher(dispatcher);
-        // Match main: publish the actual plane declarations before config parsing reads them.
+
         crate::register_protocols();
         crate::register_planes();
         crate::register_diagnostics();
@@ -360,8 +360,7 @@ fn governed_full(
         serde_yaml::from_str("m: {}\npools: {p: {members: [m]}}").expect("yaml"),
     );
     config.groups = groups;
-    // Publish the same prices that this fixture asks its governance reads to use.
-    // Once the real rate history is active it, rather than the detached CostModel, prices units.
+
     if budget.is_some() {
         config.plane_fees.insert(
             TEST_PLANE.to_string(),
@@ -433,8 +432,6 @@ fn governed_full(
     .expect("the door plane composes");
     served.post = Some(Arc::clone(&post));
     if pools_arrival {
-        // This arrival-rule boundary deliberately presents the existing fixture as the pools
-        // section. Set that classification while it is unique, before any router can retain it.
         Arc::get_mut(&mut served.planes[0].live)
             .expect("the composed fixture has not been published")
             .served_facts
@@ -519,14 +516,28 @@ async fn a_keyed_unit_is_admitted_and_its_money_settles_at_its_end() {
 }
 
 #[tokio::test]
-async fn an_unknown_route_is_admitted_then_refused_and_settles() {
+async fn an_unknown_route_is_refused_before_admission_and_opens_no_hold() {
     let _one = PUBLISHING.lock().await;
     let g = governed("serve-money-unknown", true);
     let (status, body) = g.post("/call/direct:nowhere", true).await;
 
     assert_eq!((status, body.as_str()), (404, "refused:404:no_destination"));
-    assert_eq!(g.requests(), 1, "charged before its route was refused");
+    assert_eq!(
+        g.requests(),
+        0,
+        "no destination can acquire a paid admission"
+    );
     assert_eq!(g.money.open_units(), 0, "its money facts closed at its end");
+    assert_eq!(g.post.open_units(), 0, "no node hold remains");
+    let book = g.book.lock().expect("unpoisoned");
+    assert_eq!(book.audit_records.len(), 1, "the refusal is sealed once");
+    assert!(matches!(
+        book.audit_records[0].outcome.unit_end,
+        busbar_contract::caps::Outcome::Refused(
+            _,
+            busbar_contract::caps::ReasonCode::NoDestination
+        )
+    ));
 }
 
 #[tokio::test]
@@ -1560,8 +1571,7 @@ async fn nested_anonymous_admission_matches_the_arrival_rule() {
 }
 
 /// A real governor admission and matching admitted cell, kept separate from the custody state
-/// assertions below. These controls exercise host ownership; the retained session cohort proves
-/// the actual request's draft/hold/audit path.
+
 struct ReservedSource {
     owner: super::TicketSourceOwner,
     money: Arc<PlaneMoney>,
@@ -1613,8 +1623,7 @@ fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
             now,
         )
         .expect("the actual governor mints a source key");
-    // Match the host's authenticated principal: a real Store may normalize persisted key
-    // metadata, so the mint's write input is not the source's resolved binding.
+
     let key = g
         .gov
         .lookup_by_sub(&key.id)
@@ -1717,9 +1726,6 @@ fn mint_reserved_source(g: &Governed, source: &ReservedSource, at: u64) -> (Stri
         .expect("the admitted source binds its sole ticket")
 }
 
-// Probe the real public admission path using a separate key in the same capped group.
-// The dependency's gauge introspection is cfg(test)-private to its own crate. A second probe
-// while the first is held also detects a double release that would leave the gauge negative.
 fn assert_concurrent_custody(g: &Governed, group: &str, held: bool, now: u64) {
     use busbar_kernel::config::groups::{GroupCfg, LimitCfg, LimitMetric};
     let groups = BTreeMap::from([(

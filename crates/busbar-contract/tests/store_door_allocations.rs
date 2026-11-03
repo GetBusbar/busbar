@@ -1051,7 +1051,7 @@ fn a_short_record_scan_replays_its_completed_snapshot_when_the_store_grows() {
         )
         .unwrap();
         let reference = scan_reference(&short);
-        // Destroy the original buffers: the retained reply must own rows, never host pointers.
+
         drop(small_bytes);
         drop(small_items);
         put_snapshot(instance, b"k99", &[7; 330]);
@@ -1089,7 +1089,7 @@ fn a_short_record_scan_replays_its_completed_snapshot_when_the_store_grows() {
             call(ops().record_scan, instance, &input, &mut scan_output()),
             Outcome::Refused
         );
-        // A genuinely new read sees the new Store state after the retained snapshot is released.
+
         input.head.extensions = Blob::ABSENT;
         bytes.resize(32 * 1024, 0);
         items.resize(64, zeroed());
@@ -1186,7 +1186,7 @@ fn a_short_record_scan_reference_rejects_other_reads_and_expires_when_abandoned(
     );
     input.head.extensions = borrowed_octets(&reference);
     assert_eq!(SNAPSHOT_SCAN_CALLS.with(Cell::get), 1);
-    // Completed SHORT answers are not pending operations: abandonment releases the owned reply.
+
     assert_eq!(release(instance, short.head.lease), Outcome::Ready);
     assert_eq!(release(instance, short.head.lease), Outcome::Refused);
     assert_eq!(

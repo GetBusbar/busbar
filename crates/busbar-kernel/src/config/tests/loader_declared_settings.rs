@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Declaration policy from the retired loader runner, at its production owner.
-//! The resolver is a scoped input boundary; these cases do not claim plugin resolution.
+
 use super::*;
 
 fn settings(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {

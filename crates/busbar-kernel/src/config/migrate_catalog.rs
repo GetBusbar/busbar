@@ -72,8 +72,6 @@ pub fn migrate_catalog(raw: &str, shown: &str) -> Result<Option<CatalogMigration
         return Ok(None);
     };
 
-    // Migration preserves the legacy reader's behavior. An open options map in the current
-    // plane grammar does not make a formerly ignored catalog key meaningful in the old input.
     let descriptor =
         crate::plane_driver::door::provider_keys(crate::plane_driver::registry::plane_decls());
     let mut changes = Vec::new();

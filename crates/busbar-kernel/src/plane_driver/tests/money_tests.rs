@@ -1710,7 +1710,7 @@ fn reserved_admission_becomes_priced_media_after_the_original_mint_has_settled()
         "a live-parent token cannot revive the closed mint"
     );
     drop(parent);
-    // The child deliberately has different class indices. Fee and media resolve by its names.
+
     let classes = Arc::from(vec![
         busbar_contract::plane::PER_REQUEST.to_string(),
         "input".into(),

@@ -246,9 +246,7 @@ extern "C" fn refusing_probe_refresh(
     let mut forwarded = *input_ref;
     if input_ref.settings.len == b"park-refresh".len() {
         REFRESH_GATE.park();
-        // This is the wrapper's synchronization marker, not MCP configuration.
-        // The actual product receives the same valid empty settings as the
-        // adjacent unparked probe, so only its ownership lifetime differs.
+
         forwarded.settings = Blob {
             ptr: b"{}".as_ptr(),
             len: 2,

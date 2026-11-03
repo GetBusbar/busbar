@@ -120,7 +120,10 @@ fn checkpoint_final_fold_binds_transient_resealed_ancestor_pointer_after_restora
         .unwrap()
         .expect("transient pointer still names a valid selected event predecessor");
     replace_record(&slots, &original);
-    assert!(read.finish().is_err(), "a shared transcript must bind the full seal read while materializing the requested ancestor");
+    assert!(
+        read.finish().is_err(),
+        "a shared transcript must bind the full seal read while materializing the requested ancestor"
+    );
     sink.confirm_owned_checkpoint(&ancestor).unwrap();
 }
 

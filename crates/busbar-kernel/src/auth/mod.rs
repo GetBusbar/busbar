@@ -1728,7 +1728,7 @@ fn probe_admin_verdict(
         std::task::Poll::Ready(judged) => judged,
 
         std::task::Poll::Pending => {
-            return (AdminDoor::Unavailable(VerifierUnavailable::NoVerdict), None)
+            return (AdminDoor::Unavailable(VerifierUnavailable::NoVerdict), None);
         }
     };
     admin_probe_projection(admin_chain_outcome(verdict, no_verdict), |verdict| {
@@ -2058,8 +2058,7 @@ async fn claimed_ticket_verdict(
                 .prepare_ticket_redemption_async(prefix, token, now)
                 .await
                 .ok_or(())?;
-            // Preparation validates current key standing and Store liveness before custody moves.
-            // Only this future owns the reservation; the offloaded Store operation owns identity.
+
             let reservation = match rules.claim_ticket_admission(&identity) {
                 TicketClaimDisposition::Ordinary => None,
                 TicketClaimDisposition::Reserved(reservation) => {
@@ -2073,7 +2072,6 @@ async fn claimed_ticket_verdict(
             let (key, record) = if reservation.is_some() {
                 gov.redeem_verified_ticket_async(identity, now).await
             } else {
-                // Explicit ordinary policy retains the existing nonreservation admission path.
                 drop(identity);
                 gov.admit_ticket_async(prefix, token, now).await
             }
@@ -2426,7 +2424,7 @@ pub(crate) async fn auth_middleware(
                         &adm.resource_metadata,
                         audience::MISMATCH_DESCRIPTION,
                         None,
-                    ))
+                    ));
                 }
                 audience::Binding::Opaque => {
                     return Err(challenge::refuse(
@@ -2434,7 +2432,7 @@ pub(crate) async fn auth_middleware(
                         &adm.resource_metadata,
                         audience::OPAQUE_DESCRIPTION,
                         None,
-                    ))
+                    ));
                 }
             }
         }
@@ -2486,7 +2484,7 @@ pub(crate) async fn auth_middleware(
                 admission.as_ref(),
                 client_token.is_some(),
                 || unauthorized_with_completion_taps(&app, &path, door.as_ref()),
-            ))
+            ));
         }
     }
 

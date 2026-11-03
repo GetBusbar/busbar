@@ -95,10 +95,14 @@ impl Route {
             .collect()
     }
 
+    /// The path ranking shared by guest selection and the route's admission metadata.
+    pub(crate) fn path_precedence(&self) -> (u32, u32) {
+        self.selector()
+            .map_or((0, 0), |s| crate::registry::precedence(&s))
+    }
+
     fn key(&self) -> ((u32, u32), bool, u32) {
-        let path = self
-            .selector()
-            .map_or((0, 0), |s| crate::registry::precedence(&s));
+        let path = self.path_precedence();
         let preds = self.predicate_selectors();
         let score = preds.iter().map(|s| crate::registry::precedence(s).0).sum();
         (path, !preds.is_empty(), score)

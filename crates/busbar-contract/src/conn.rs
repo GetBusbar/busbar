@@ -407,11 +407,7 @@ pub trait DeclaredConns: Conns {
     }
 
     /// Declare member programs for a successor of the same loaded instance's CURRENT published
-    /// connection generation. Only host lifecycle composition supplies this provenance; it
-    /// transfers no connection, authentication, reach or trust authority. Lifecycle composition
-    /// serializes declarations of a freshly minted successor; this is not a concurrent reassignment
-    /// API for an existing owner. Implementations that
-    /// do not retain program declarations keep their ordinary declaration behavior.
+
     fn declare_member_programs_from(
         &self,
         predecessor: InstanceId,

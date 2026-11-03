@@ -708,8 +708,6 @@ fn snapshot_arrival_spans_require_alignment_before_copying() {
         .expect("a valid aligned arrival span is copied");
     assert_eq!(copied.claims[0].arrival_span, "request_arrived");
 
-    // Offset within live backing storage, but never form or dereference an AbiStr at this address.
-    // This runs only with the loader's alignment refusal in place, never against the old raw read.
     let misaligned = spans.as_ptr().cast::<u8>().wrapping_add(1).cast::<AbiStr>();
     assert!(!misaligned.is_aligned());
     snapshot.arrival_spans = misaligned;

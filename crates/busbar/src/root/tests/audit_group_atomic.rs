@@ -249,7 +249,10 @@ fn reconstructed_group_reoffer_rejects_corrupt_parts_or_samples_without_cleanup(
             Ok(Some(group)) => group.commit(&slots, &lease).is_err(),
             Ok(None) => false,
         };
-        assert!(failed, "a divergent already-applied member cannot be acknowledged or fall back to destructive cleanup");
+        assert!(
+            failed,
+            "a divergent already-applied member cannot be acknowledged or fall back to destructive cleanup"
+        );
         assert_eq!(attempts.load(Ordering::SeqCst), 0);
     }
 }
@@ -318,7 +321,7 @@ fn group_bounds_and_mixed_records_fall_back_before_any_cleanup() {
     let bounded = prepare_audit_group(&slots, &lease, &offered).unwrap();
     if let Some(group) = bounded {
         assert!(group.len() <= 16);
-    } // Bounded prefix selection is also legitimate.
+    }
     let mut mixed: Vec<_> = records[..2].iter().map(raw).collect();
     mixed.insert(1, Record::new(node, 999, b"ordinary record".to_vec()));
     assert!(prepare_audit_group(&slots, &lease, &mixed)
@@ -361,8 +364,10 @@ fn group_bounds_and_mixed_records_fall_back_before_any_cleanup() {
         .iter()
         .map(|record| record.body.len())
         .sum();
-    assert!((raw_bytes as u64) < busbar_contract::abi::mechanism::check::HARD_MAX_BYTES,
-        "raw bodies fit; only the actual all-parts conditional envelope exceeds the ABI frame bound");
+    assert!(
+        (raw_bytes as u64) < busbar_contract::abi::mechanism::check::HARD_MAX_BYTES,
+        "raw bodies fit; only the actual all-parts conditional envelope exceeds the ABI frame bound"
+    );
     assert!(
         prepare_audit_group(&slots, &lease, &encoded_bound_records)
             .unwrap()
@@ -702,7 +707,10 @@ fn reconstructed_group_reoffer_validates_retained_history_before_the_offered_pre
             None
         });
         let prefix = [raw(&records[2]), raw(&records[3])];
-        assert!(prepare_audit_group(&slots, &lease, &prefix).is_err(), "matching current tip and relevant group samples cannot excuse malformed earlier retained history");
+        assert!(
+            prepare_audit_group(&slots, &lease, &prefix).is_err(),
+            "matching current tip and relevant group samples cannot excuse malformed earlier retained history"
+        );
         assert_eq!(attempts.load(Ordering::SeqCst), 0);
     }
 }

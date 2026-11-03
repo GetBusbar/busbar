@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The former suite's wake/deadline controls, through the production dispatcher.
-//! Only TICK's hostile scheduling answer is substituted; MCP owns the real
-//! descriptor, lifecycle, and instance. No fold formatter or runner is involved.
 
 use crate::dispatch::kinds::plane::{open_door, Plane};
 use crate::dispatch::{
@@ -97,8 +95,7 @@ fn bound(d: &Dispatcher, door: busbar_contract::abi::mechanism::door::DoorFn) ->
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
-            // This is a component probe over empty MCP settings; no server
-            // registrations are served. MCP declares HTTP and stdio needs.
+
             conns: ConnTable::Probe,
         },
     )
@@ -139,7 +136,7 @@ fn a_wait_that_is_woken_passes() {
         .wait(Duration::from_secs(15))
         .expect("a real wake resumes the op");
     assert_eq!(done.outcome, Outcome::Ready);
-    // Crossings counts every raw entry, including the one RESUME below.
+
     assert_eq!(p.inner.crossings.load(Ordering::SeqCst) - before.0, 2);
     assert_eq!(p.inner.resumes.load(Ordering::SeqCst) - before.1, 1);
     assert_eq!(d.stats().deadline_without_wake, 0);
@@ -176,8 +173,7 @@ extern "C" fn open_after_wake(
     out: *mut std::ffi::c_void,
 ) -> RawOutcome {
     use busbar_contract::abi::plane::PlaneOpenOut;
-    // The generation snapshot belongs to the real MCP instance until retirement, not to
-    // OPEN's answer lease. Keep only that actual pointer across the artificial scheduling gap.
+
     static SNAPSHOTS: std::sync::Mutex<std::collections::BTreeMap<usize, usize>> =
         std::sync::Mutex::new(std::collections::BTreeMap::new());
     // SAFETY: this is the plane OPEN slot, receiving complete initialized frames.
@@ -188,8 +184,7 @@ extern "C" fn open_after_wake(
                 (*out.cast::<PlaneOpenOut>()).open.head.outcome = RawOutcome::of(Outcome::Pending);
                 return RawOutcome::of(Outcome::Pending);
             }
-            // PENDING OPEN must already own a genuine instance so the host can retain,
-            // resume, or close it. Construct it once through the actual product's SDK.
+
             let ops = crate::actual_mcp::door()
                 .ops()
                 .cast::<Ops>()
@@ -220,8 +215,7 @@ extern "C" fn open_after_wake(
             !instance.is_null(),
             "RESUME retains the genuine half-open instance"
         );
-        // The host clears output frames before each entry. Re-publish the actual first
-        // generation only now; do not run OPEN a second time or invent a product instance.
+
         let answered = &mut *out.cast::<PlaneOpenOut>();
         answered.open.instance = instance;
         answered.snapshot = SNAPSHOTS
@@ -317,7 +311,7 @@ fn red_a_pending_open_is_resumed_by_the_kernels_open_never_one_raw_crossing() {
         p.is_open(),
         "the genuine MCP OPEN committed its actual instance"
     );
-    // Crossings counts every raw entry, including the one RESUME below.
+
     assert_eq!(p.inner.crossings.load(Ordering::SeqCst) - before.0, 2);
     assert_eq!(p.inner.resumes.load(Ordering::SeqCst) - before.1, 1);
 }

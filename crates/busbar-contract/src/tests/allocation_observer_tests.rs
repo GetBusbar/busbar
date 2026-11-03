@@ -304,6 +304,8 @@ fn growing_a_registered_vec_observes_its_actual_old_allocation() {
         assert_eq!(record.read_error, Some(std::io::ErrorKind::Unsupported));
         assert!(!record.wiped, "unsupported OS reads cannot prove a wipe");
         assert!(!record.complete_read);
-        eprintln!("Vec growth and old allocation free checked; memory proof requires Linux /proc/self/mem");
+        eprintln!(
+            "Vec growth and old allocation free checked; memory proof requires Linux /proc/self/mem"
+        );
     }
 }

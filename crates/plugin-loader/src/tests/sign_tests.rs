@@ -288,15 +288,15 @@ fn first_party_version_floats_free_of_the_binary_version() {
     let m = sign(&release, m, artifact);
     let pol = policy(Some(&release), &[], false, false);
     assert!(
-            matches!(
-                evaluate(artifact, &m, &pol),
-                Ok(Verdict::Trusted {
-                    first_party: true,
-                    ..
-                })
-            ),
-            "a verified first-party plugin with no per-name floor loads regardless of the binary version"
-        );
+        matches!(
+            evaluate(artifact, &m, &pol),
+            Ok(Verdict::Trusted {
+                first_party: true,
+                ..
+            })
+        ),
+        "a verified first-party plugin with no per-name floor loads regardless of the binary version"
+    );
 
     let mut floored = policy(Some(&release), &[], true, true);
     floored
@@ -939,9 +939,9 @@ fn validate_structure_consults_the_host_identity_parameter_not_a_hardcoded_const
 
     let err = validate_structure(&m, artifact, &abi, HOST_IDENTITY).unwrap_err();
     assert!(
-            err.contains("busbar-ui"),
-            "the same manifest validated by a busbar-identity caller must still be rejected, got: {err}"
-        );
+        err.contains("busbar-ui"),
+        "the same manifest validated by a busbar-identity caller must still be rejected, got: {err}"
+    );
 }
 
 #[test]

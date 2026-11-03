@@ -1176,7 +1176,7 @@ async fn callback_panics_preserve_one_coherent_published_price_generation() {
     server.abort();
     println!("{WITNESS}");
 }
-// Pure observation of the actual published rate-card history.
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct LivePrice {
     fee: i64,
@@ -1222,7 +1222,7 @@ impl Pause {
         .await
     }
 }
-// Delegates the exact configured Store, with only explicitly selected causal faults.
+
 struct PriceStoreFaults {
     inner: Arc<dyn StoreCalls>,
     overlay: bool,

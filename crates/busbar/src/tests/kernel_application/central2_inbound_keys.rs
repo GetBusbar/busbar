@@ -147,8 +147,7 @@ async fn actual_inbound_keys_preserve_resolution_revocation_rotation_and_carrier
         .expect("the real store supplies governance");
 
     let inbound = Arc::clone(crate::root::inbound::host());
-    // A typed listener declaration exercises the actual public host API over the
-    // normally built application; no auth verifier or Store result is fabricated.
+
     inbound
         .install(
             7,

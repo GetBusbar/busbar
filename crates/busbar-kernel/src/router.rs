@@ -152,9 +152,6 @@ pub(crate) async fn reshape_body_limit_413(
     }
 
     let render = || {
-        // The registered legacy admin verbs retain their frozen v1 envelope.
-        // This closure runs only for the actual plain-text body-cap marker;
-        // authentication failures, JSON errors and upstream responses pass through.
         if crate::admin::seam::admin_verb_is_legacy(method.as_str(), &path) {
             return crate::admin::gate::err_json(&crate::admin::gate::ApiError::NotFound);
         }

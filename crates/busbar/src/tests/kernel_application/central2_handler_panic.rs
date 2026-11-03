@@ -134,7 +134,7 @@ async fn a_panicking_handler_fails_only_its_own_request() {
     use axum::response::IntoResponse as _;
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
     use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteSpec};
-    // Fault only the specific request handler; the actual application and serving stack remain normal.
+
     let routes = vec![
         PlaneRouteSpec {
             path: "/v1/chat/completions".into(),
@@ -167,8 +167,7 @@ async fn a_panicking_handler_fails_only_its_own_request() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    // Deliberately fault request dispatch inside the real administrative panic boundary.
-    // Application construction, auth configuration and refusal rendering remain production-owned.
+
     let admin = admin
         .layer(axum::middleware::from_fn(
             |req: axum::extract::Request, next: axum::middleware::Next| async move {
@@ -259,8 +258,7 @@ async fn a_panicking_handler_fails_only_its_own_request() {
             "{logged}"
         );
     }
-    // The same normally built application's method fallback asks the physical door,
-    // preserves every refusal field, and uses its own envelope when no door renders.
+
     let response = client
         .get(format!("http://{addr}/door/x?q=1"))
         .send()

@@ -198,8 +198,7 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
             )
             .expect("the actual Store opens its overlay"),
         );
-        // Model the historical unpriced card through the actual Store-backed rate holder;
-        // the normal boot configuration remains valid and receives its ordinary validation.
+
         let historical = busbar_kernel::config::card::CardFields {
             rate_card: Some(card.clone()),
             ..Default::default()
@@ -871,8 +870,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
         let mut document = serde_json::json!({});
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
-        // These positive named-map surfaces are served only for configured planes.
-        // Use the same actual plane definitions as the file-backed fixture below.
+
         document["tools"] = serde_json::json!({"base-tools": {
             "url": "https://tools.internal/fs",
             "pin": {"mechanism": "cert_spki", "key": "sha256/BASE="}
@@ -3454,8 +3452,7 @@ async fn named_map_app_opts(
     .expect("the disk baseline retains the actual signed Store configuration");
     std::fs::write(&config_path, serde_yaml::to_string(&disk).unwrap())
         .expect("write the actual Store selection");
-    // The reset witness intentionally leaves corp-ad referenced only in the disk baseline;
-    // the initial live generation has the operator entry until the test creates corp-ad.
+
     let mut live = disk;
     live["auth"] = serde_yaml::from_str("chain: []\nadmin_auth: [admin-tokens]\n").unwrap();
     let deploy =
@@ -3909,9 +3906,6 @@ existing instances of the same module still apply live";
         "`/metrics` is not mounted, exactly as the response just said"
     );
 
-    // This instance is still newly added, so a settings-only edit cannot clear its pending
-    // membership. The existing-instance live-settings control is retained in the actual kernel's
-    // `export_restart_metadata_compares_boot_membership_module_and_effective_projection` test.
     let r = admin(client.patch(format!("http://{addr}/api/v1/admin/export/reqlog/settings")))
         .body(
             serde_json::json!({"settings": {"path": dir.join("req2.jsonl").to_string_lossy()}})
@@ -4164,8 +4158,7 @@ fn try_publish_door(
     crate::distribution::admin_cross_plane::ensure_seam();
     let owner = busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
         .unwrap_or_else(|| panic!("a test-linked plane owns `{section}:`"));
-    // These are serving instances, so their advertised conditional-record protocol needs
-    // the actual Store-backed host services used by the composition root.
+
     let store = crate::root::real_store::store();
     let gov = gov_with_signer(store.clone(), None);
     assert!(gov.attach_store_calls(store.clone()));
@@ -4239,8 +4232,7 @@ fn try_publish_door(
     ));
     let settings = serde_yaml::from_str(settings)
         .expect("the exact opened section also supplies the normal host admission");
-    // The real trust verbs read admitted counterparties. Keep normal driver custody until the
-    // generation's requests finish, rather than opening a raw unadmitted plugin and dropping it.
+
     let admission = Arc::new(busbar_kernel::plane_driver::PlaneDriver::new(
         calls.clone(),
         busbar_kernel::plane_driver::DriverConfig {
@@ -4279,8 +4271,6 @@ fn publish_door(
 }
 
 fn assert_passthrough_is_refused_before_publication() {
-    // This original registration formerly reached connect's 400 guard. The product now rejects
-    // credential forwarding while OPEN reads the section, before any route can be published.
     let error = match try_publish_door(
         "tools",
         r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "cert_spki", "key": "sha256/l5WGzHWyALvI/qjcwI1ctxb3Jp8+8Ztd0NTYTcL0Q4s="}, "upstream_credentials": "passthrough", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
@@ -4342,8 +4332,7 @@ async fn a_door_admin_route_is_served_only_by_the_generation_lent_its_table() {
     let (unlent_dir, _unlent_overlay, unlent, unlent_handle) =
         named_map_app("door-table-unlent", false).await;
     let client = reqwest::Client::new();
-    // A read observes this exact published generation without starting an unrelated
-    // operator refresh that requires a fully composed connector and trust writer.
+
     let changes = |addr: std::net::SocketAddr| {
         client
             .get(format!(
@@ -4721,8 +4710,7 @@ async fn drive_named_map_errors() {
             let mut document = serde_json::json!({});
             document["providers"] = serde_json::json!({});
             document["models"] = serde_json::json!({});
-            // These positive named-map surfaces are served only for configured planes.
-            // Use the same actual plane definitions as the file-backed fixture below.
+
             document["tools"] = serde_json::json!({"base-tools": {
                 "url": "https://tools.internal/fs",
                 "pin": {"mechanism": "cert_spki", "key": "sha256/BASE="}

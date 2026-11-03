@@ -1254,8 +1254,13 @@ fn evaluate_against_with_evidence(
 ) -> Result<(Verdict, Option<u64>), Rejected> {
     let digest = sha256_hex(bytes);
     if let Some(why) = policy.revoked.get(&digest) {
-        return Err(Rejected::new(RejectKind::Revoked,
-            format!("plugin '{}' version {} (library sha256 {digest}) is REVOKED: {why}; no trust opt-in admits it", manifest.name, manifest.version)));
+        return Err(Rejected::new(
+            RejectKind::Revoked,
+            format!(
+                "plugin '{}' version {} (library sha256 {digest}) is REVOKED: {why}; no trust opt-in admits it",
+                manifest.name, manifest.version
+            ),
+        ));
     }
     let roots = if policy.first_party_keys.is_empty() {
         std::borrow::Cow::Owned(
@@ -1306,8 +1311,18 @@ fn evaluate_against_with_evidence(
             crate::release_trust::PLUGIN_TARGET,
         ) {
             if let Some(kind) = hard_seal_refusal(&refusal) {
-                return Err(Rejected { trusted_keys, ..Rejected::new(kind,
-                    format!("plugin '{}' version {}: first-party release seal refused ({}): {refusal}. No plugins.trust opt-in admits it.", manifest.name, manifest.version, refusal.code())) });
+                return Err(Rejected {
+                    trusted_keys,
+                    ..Rejected::new(
+                        kind,
+                        format!(
+                            "plugin '{}' version {}: first-party release seal refused ({}): {refusal}. No plugins.trust opt-in admits it.",
+                            manifest.name,
+                            manifest.version,
+                            refusal.code()
+                        ),
+                    )
+                });
             }
         }
     }
@@ -1356,7 +1371,9 @@ fn evaluate_against_with_evidence(
     } else if manifest.publisher == FIRST_PARTY_PUBLISHER {
         if roots.is_empty() {
             Err(Untrusted::Unsigned {
-                reason: format!("manifest claims first-party publisher '{FIRST_PARTY_PUBLISHER}' but this build embeds no busbar release key, so it cannot be verified"),
+                reason: format!(
+                    "manifest claims first-party publisher '{FIRST_PARTY_PUBLISHER}' but this build embeds no busbar release key, so it cannot be verified"
+                ),
                 tampered: false,
             })
         } else {
@@ -1375,8 +1392,18 @@ fn evaluate_against_with_evidence(
                     refusal,
                     trusted_keys,
                 }) if hard_seal_refusal(&refusal).is_some() => {
-                    return Err(Rejected { trusted_keys, ..Rejected::new(hard_seal_refusal(&refusal).expect("matched"),
-                        format!("plugin '{}' version {}: first-party release seal refused ({}): {refusal}. No plugins.trust opt-in admits it.", manifest.name, manifest.version, refusal.code())) });
+                    return Err(Rejected {
+                        trusted_keys,
+                        ..Rejected::new(
+                            hard_seal_refusal(&refusal).expect("matched"),
+                            format!(
+                                "plugin '{}' version {}: first-party release seal refused ({}): {refusal}. No plugins.trust opt-in admits it.",
+                                manifest.name,
+                                manifest.version,
+                                refusal.code()
+                            ),
+                        )
+                    });
                 }
                 Err(unverified) => {
                     trusted_keys = unverified.trusted_keys().to_vec();

@@ -33,7 +33,6 @@ fn decide(p: &Plugin<Hook>, messages: u64) -> String {
     )
 }
 
-// STATUS returns a validated leased blob; copy it before releasing its owner.
 #[allow(unsafe_code)]
 fn status(p: &Plugin<Hook>) -> String {
     use busbar_contract::abi::mechanism::call::{Outcome, BLOB_JSON};
@@ -49,7 +48,7 @@ fn status(p: &Plugin<Hook>) -> String {
     assert!(!s.out.status.ptr.is_null());
     // SAFETY: the dispatcher validated this READY blob, and its lease remains live here.
     let bytes = unsafe { std::slice::from_raw_parts(s.out.status.ptr, s.out.status.len) }.to_vec();
-    // Ranking uses the SDK default: the exact 1.5.5 unsupported-status envelope is {}.
+
     assert_eq!(bytes, b"{}");
     let released = both::release(p, called.lease);
     assert_eq!(released.outcome, Outcome::Ready);
@@ -66,7 +65,6 @@ fn ranking_path() -> std::path::PathBuf {
         .expect("the qualified actual Ranking image")
 }
 
-// The retained product image supplies the typed ABI entry and validated descriptor.
 #[allow(unsafe_code)]
 extern "C" fn ranking_door() -> &'static busbar_contract::abi::mechanism::door::Door {
     use busbar_contract::abi::sdk::door::RawDoorFn;
@@ -89,7 +87,6 @@ extern "C" fn ranking_door() -> &'static busbar_contract::abi::mechanism::door::
     unsafe { &*door }
 }
 
-// This test initializes plain wire structs; their zero-valid fields are documented below.
 #[allow(unsafe_code)]
 fn ranking_decide(p: &Plugin<Hook>, with_costs: bool) -> String {
     use busbar_contract::abi::hook::{
@@ -129,7 +126,7 @@ fn ranking_decide(p: &Plugin<Hook>, with_costs: bool) -> String {
         &order[..d.out.order_written],
         if with_costs { &[1, 0][..] } else { &[][..] }
     );
-    // Every scalar result and every written buffer byte participates in the transcript.
+
     format!(
         "{} result={:?} order={:?} reject={:?} tags={:?}",
         line("decide", &called),
@@ -166,7 +163,6 @@ fn ranking_script(p: &Plugin<Hook>) -> Vec<String> {
 
 #[test]
 fn a_linked_and_a_dropped_in_hook_decide_identically() {
-    // Both origins execute the same retained real product descriptor and image.
     let linked = ranking_script(&both::linked::<Hook>(ranking_door).plugin);
     let dropped = both::dropped_from::<Hook>(ranking_door, &ranking_path());
     same(&linked, &ranking_script(&dropped.plugin));

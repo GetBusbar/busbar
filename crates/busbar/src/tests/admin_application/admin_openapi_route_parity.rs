@@ -106,8 +106,6 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         }
         let section = declaration.config_section;
         let value = match section {
-            // A genuine present section can contain only the kernel-owned attach list;
-            // it need not invent a remote tool/agent registration for a route census.
             "tools" | "agents" => serde_json::json!({"hooks": []}),
             "decisions" => serde_json::json!({"models": {}, "hooks": []}),
             "streams" => serde_json::json!({"context_window_tokens": 32768}),
@@ -148,8 +146,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
             .expect("the actual Store exposes typed calls"),
     )
     .expect("the actual Store supports conditional configuration records");
-    // Share the one real Store and its established journal, not its mutation
-    // limiter. Each normally built App admits at most four mutation probes.
+
     let compose = |established: Option<&busbar_kernel::state::App>| {
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the actual admin deployment resolves");
@@ -170,9 +167,6 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         )
         .expect("the real root composes the configured Store and admin application");
         if let Some(established) = established {
-            // These are the actual hydrated owners bound to the first NodeBook.
-            // Reopening that node's journal for every route is unnecessary and
-            // can wait on its existing ownership; all batches already share DB.
             app.governance = established.governance.clone();
             app.cost = established.cost.clone();
             app.amendments = established.amendments.clone();
@@ -223,7 +217,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     )
     .trim_ascii();
     const JSON_ROUTER: &str = include_str!("../../../../busbar-core-admin/src/v1/json/mod.rs");
-    // Read the same literal route mounts used by the production JSON transport.
+
     let literal = literal_admin_routes(JSON_ROUTER);
     let literal_get_paths: Vec<&str> = literal
         .iter()
@@ -403,7 +397,10 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         skipped, expected_skipped,
         "only documented operations in the closed kernel-loop table may be skipped"
     );
-    assert_eq!(probed, expected_probed, "every published operation outside the closed kernel-loop table must be probed exactly once");
+    assert_eq!(
+        probed, expected_probed,
+        "every published operation outside the closed kernel-loop table must be probed exactly once"
+    );
     assert_eq!(
         probed.len() + skipped.len(),
         documented_operations.len(),

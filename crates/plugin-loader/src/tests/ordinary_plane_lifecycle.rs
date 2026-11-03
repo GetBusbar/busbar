@@ -59,7 +59,7 @@ fn repeated_plane_loads_reuse_owned_static_words_after_the_image_is_released() {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
     };
-    // The dropped case runs before actual_mcp::door retains any linked descriptor image.
+
     for (index, make) in [dropped as fn() -> Plugin<Plane>, linked]
         .into_iter()
         .enumerate()
@@ -88,7 +88,7 @@ fn repeated_plane_loads_reuse_owned_static_words_after_the_image_is_released() {
                 "the first actual dropped image was released"
             );
         }
-        // Read every original word after actual unload and BEFORE a reload can remap it.
+
         assert_eq!(a.section, owned_section);
         assert_eq!(
             a.op_classes

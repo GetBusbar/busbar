@@ -46,7 +46,9 @@ pub fn resolve_backend_with_env(
         _ => {}
     }
     if env_override.is_some() || matches!(&cfg.overlay, Some(OverlayCfg::Backend(_))) {
-        tracing::warn!("legacy config overlay file selector is deprecated and does not select a file; runtime config persists exclusively in the configured Store");
+        tracing::warn!(
+            "legacy config overlay file selector is deprecated and does not select a file; runtime config persists exclusively in the configured Store"
+        );
     }
     Ok(OverlayResolution {
         locked: false,

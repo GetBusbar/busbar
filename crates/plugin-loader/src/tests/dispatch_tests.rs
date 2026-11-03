@@ -3470,8 +3470,6 @@ mod tracing_context {
         let dispatcher = Arc::clone(&d);
         let closed = Arc::clone(&worker_closes);
         capture.0.lock().unwrap().on_close = Some(Arc::new(move || {
-            // A span close can synchronously export through this dispatcher. Taking the same
-            // worker's lock here must succeed, including when its queued op was just retired.
             let ticket = dispatcher.mint(0).unwrap();
             dispatcher.recycle(ticket);
             if std::thread::current().id() != caller_thread {
@@ -3524,8 +3522,6 @@ mod tracing_context {
         });
         until("the healthy op pends", || d.is_pending(ticket));
 
-        // HANG/UNHANG use a process-wide marker in the existing fixture. A unique marker and
-        // a release guard keep this control independent of other dispatch tests and panics.
         let marker = format!(
             "trace-orphan-{}-{}",
             std::process::id(),

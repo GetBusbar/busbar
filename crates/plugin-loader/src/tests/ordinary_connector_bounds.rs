@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The old HTTPS stand-in's host-bound timing matrix at the existing raw connection boundary.
-//! This proves the actual host's separation of dial/request bounds, not a real TLS handshake.
 
 use super::*;
 use crate::dispatch::{Adopter, Bind, ConnTable, NoSink};

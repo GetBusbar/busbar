@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Ordinary dispatcher loan controls. The only operation replacements below are
-//! the original hostile ABI answers; all descriptors and live instances are MCP.
 
 use crate::dispatch::kinds::plane::{open_door, Plane};
 use crate::dispatch::lifecycle::blob;
@@ -31,8 +30,7 @@ fn bound(door: DoorFn, d: &Dispatcher, label: &str) -> Plugin<Plane> {
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
-            // This is a raw ABI loan-lifetime probe, not a serving host. MCP declares
-            // HTTP/stdio needs; no network operation is invoked by the hostile SERVE slot.
+
             conns: ConnTable::Probe,
         },
     )

@@ -183,8 +183,7 @@ async fn a_deadline_cancels_the_owned_pending_verification_and_leaves_the_reacto
         signed_reader_step(result, false),
         SignedReaderStep::Final(None)
     ));
-    // The signed caller records Final(None) as Judging::Nothing, i.e. Denied,
-    // then answers STOP before releasing the owned verifier at scope exit.
+
     assert_eq!(
         inbound_answer(Some(Fixed::Denied), UnitRef { id: 1, mac: 2 }, false, &[]).flow,
         FLOW_STOP
@@ -451,8 +450,7 @@ fn expired_positions_stop_before_the_provider_point_is_queried() {
     assert!(position_deadline_expired(Some(past)));
     assert!(!position_deadline_expired(Some(future)));
     assert!(!position_deadline_expired(None));
-    // This decision is consumed before the production walker reads inbound_points
-    // or creates its verifying future. Settled/answered positions leave even earlier.
+
     assert_eq!(
         position_work(Some(Fixed::Denied), None),
         PositionWork::Finished

@@ -620,10 +620,11 @@ impl Pairing {
         self.lock().publications.outcome.clone()
     }
 
-    /// Await actual publication quiescence, or explicit terminal failure. Channel ownership
+    /// Await actual publication quiescence, or explicit terminal failure. Intermediate metadata
+
     pub async fn published(&self) -> PublicationOutcome {
         loop {
-            let changed = self.published.notified();
+            let changed = self.publication_completed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
             {
@@ -686,6 +687,7 @@ impl Pairing {
                         self.cancelled(&job);
                     }
                     self.published.notify_waiters();
+                    self.publication_completed.notify_waiters();
                     return;
                 }
 
@@ -712,6 +714,7 @@ impl Pairing {
                         state.publications.running = false;
                         drop(state);
                         self.published.notify_waiters();
+                        self.publication_completed.notify_waiters();
                         return;
                     }
                 };

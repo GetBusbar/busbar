@@ -141,8 +141,6 @@ impl RecoverySink for Journal {
         self.inner.verify_origin(event)
     }
     fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
-        // The real Store selects and verifies custody; this wrapper only loses
-        // the reply after durable success and observes the selected test events.
         self.inner.persist(event)?;
         let mut selected = self.selected.lock().unwrap();
         if !selected.contains(event) {
@@ -375,9 +373,7 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
     )]);
     let key = virtual_key("vk_live_cost_verdict", Some("g"));
     store.put_key(&key).unwrap();
-    // The real boot's opening card can begin within this wall-clock second.
-    // Keep the corrected unit's millisecond arrival, rather than truncating it
-    // to an instant before that card existed.
+
     let card_epoch_ms = busbar_kernel::store::now_ms();
     let now = card_epoch_ms / 1_000;
     let first = GovState::new(store.clone(), None).unwrap();
@@ -421,8 +417,7 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
     let day_bucket = "group:g@day";
     let day_window =
         busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_DAY, now);
-    // Build both raw and dated day-window debt through the actual usage path,
-    // rather than reproduce the kernel's private era encoding in this root test.
+
     let foreign_key = virtual_key("vk_foreign_day_usage", Some("g"));
     store.put_key(&foreign_key).unwrap();
     let foreign = GovState::new(store.clone(), None).unwrap();
@@ -483,7 +478,7 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
         shutdown_rx,
         Some(handle.clone()),
     );
-    // No await precedes this swap: a cost cached by the spawning function would be stale.
+
     let mut next = (*app).clone();
     next.cost = Arc::new(current_cost);
     next.config_version += 1;
@@ -520,7 +515,10 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
     );
     let month_window =
         busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_MONTH, now);
-    assert_eq!(input(store.as_ref(), "group:g@month", month_window), 100,
-        "the previous model's raw month-window debt is recorded, not corrected under stale configuration");
+    assert_eq!(
+        input(store.as_ref(), "group:g@month", month_window),
+        100,
+        "the previous model's raw month-window debt is recorded, not corrected under stale configuration"
+    );
     println!("actual recovery flusher completed");
 }

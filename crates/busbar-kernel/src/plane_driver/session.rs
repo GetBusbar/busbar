@@ -5,7 +5,9 @@ use std::future::Future;
 use std::pin::pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use busbar_contract::abi::plane::{FROM_CALLER, FROM_KERNEL, PIECE_LAST};
+use busbar_contract::abi::plane::{
+    FROM_CALLER, FROM_KERNEL, PIECE_LAST, ROUTE_LOCAL, ROUTE_SCOPE_LOCAL,
+};
 use busbar_contract::caps::{Pass, ReasonCode, Route, VerifiedDestination};
 use tokio::sync::{mpsc, watch, Notify};
 
@@ -173,7 +175,10 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         ctx: &UnitCtx,
         sealed: &[VerifiedDestination],
     ) -> Result<(), ReasonCode> {
-        self.session_priced(token, ctx, sealed, true).await
+        let local = self.lock().decoded.as_ref().is_some_and(|decoded| {
+            decoded.route == ROUTE_LOCAL || decoded.route == ROUTE_SCOPE_LOCAL
+        });
+        self.session_priced(token, ctx, sealed, !local).await
     }
 
     pub(crate) async fn session_priced(

@@ -22,9 +22,6 @@ impl PluginHttpDispatch for Answer {
     }
 }
 
-// These tests supply boundary topology and handlers explicitly. Keep the actual plugin rows
-// available to auth/store/secret consumers, while using ListenerPlan's neutral projection
-// seam rather than rediscovering a different topology from the loader's concrete registry.
 #[derive(Debug)]
 struct ListenerRows(Arc<dyn busbar_contract::plugin_rows::PluginRows>);
 impl busbar_contract::plugin_rows::PluginRows for ListenerRows {
@@ -452,7 +449,7 @@ fn identical_plane_paths_on_distinct_listeners_are_sealed_independently() {
         )
         .unwrap();
     let mut candidate = projection_boundary_app(topology, Vec::new(), 1);
-    // The two boundary claims belong to configured sections of this generation.
+
     Arc::get_mut(&mut candidate).unwrap().plane_sections =
         Some(["left-resource", "right-resource"].into_iter().collect());
     Arc::get_mut(&mut candidate).unwrap().planes =
@@ -649,8 +646,7 @@ async fn physical_routers_share_publication_but_keep_handlers_and_refusals_separ
             )
         })
     };
-    // Readiness is a genuine product condition, independent of these synthetic routes.
-    // Reuse the actual decisions door's minimal valid OPEN, as the lane-less health tests do.
+
     fn healthy_app(generation: u64) -> Arc<busbar_kernel::state::App> {
         use busbar_kernel::plane_driver::door::DoorSection;
         use busbar_kernel::plane_driver::registry::BuildCtx;
@@ -760,8 +756,6 @@ async fn physical_routers_share_publication_but_keep_handlers_and_refusals_separ
     }
 }
 
-// Independent production metadata companion: unlike the projection-only boundary fixtures,
-// this case admits the actual exporter image and asks the concrete registry for its Need.
 #[test]
 fn actual_nonempty_export_descriptor_supplies_the_candidate_listener_need() {
     use crate::root::test_plugins as fixtures;
@@ -801,8 +795,7 @@ fn actual_nonempty_export_descriptor_supplies_the_candidate_listener_need() {
     let plan = plan(topology.clone());
     let mut candidate = projection_boundary_app(topology, Vec::new(), 2);
     let candidate_mut = Arc::get_mut(&mut candidate).unwrap();
-    // A real concrete registry selects the production metadata path. Export candidates
-    // come from the admitted boot registry rather than the synthetic projection.
+
     candidate_mut.hook_env.registry = Arc::new(crate::root::loader::PluginRegistry::empty());
     candidate_mut.export_defs = serde_json::from_value(serde_json::json!({
         "actual-metrics": {"module": stated.name.clone(), "settings": {"buffer_seconds": 60}}

@@ -450,7 +450,7 @@ pub fn verify_release(
         _ => {
             return Err(SealRefusal::NoRole {
                 role: PLUGINS_ROLE.to_string(),
-            })
+            });
         }
     };
 

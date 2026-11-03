@@ -8,8 +8,6 @@ pub(crate) fn install_test_seam() {
     INSTALLED.call_once(crate::install::<crate::NoConnections>);
 }
 
-// Private owner-unit storage. This is the supplied real product store loaded
-// through its normal ABI, not a Store implementation manufactured by a kit.
 pub(crate) fn store_calls() -> Arc<dyn busbar_contract::store_calls::StoreCalls> {
     loaded_store()
 }

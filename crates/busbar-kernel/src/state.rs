@@ -566,8 +566,6 @@ pub(crate) fn awaiting_restart_added(installed: &[String], previous: &[String]) 
         .collect()
 }
 
-// The snapshot's ownership-bearing identity is moved together without consulting a root,
-// subscribing the journal, or constructing any runtime capability.
 struct SnapshotFields {
     root_rules: Arc<dyn crate::appbuild::RootRules>,
     amendments: Arc<crate::audit::amend::NodeAmendments>,
@@ -793,8 +791,6 @@ impl App {
     }
 }
 
-// Fold settled refresh answers without short-circuiting: all selected admin modules,
-// followed by the data chain, must be attempted even after a refusal.
 fn credential_flush_results(
     results: impl IntoIterator<Item = Result<u64, String>>,
 ) -> Result<u64, String> {
@@ -1062,21 +1058,22 @@ impl AppHandle {
         published: &mut bool,
     ) -> Result<(), String> {
         #[cfg(debug_assertions)]
-        let _swap_guard =
-            {
-                struct Guard<'a>(&'a std::sync::atomic::AtomicBool);
-                impl Drop for Guard<'_> {
-                    fn drop(&mut self) {
-                        self.0.store(false, std::sync::atomic::Ordering::Release);
-                    }
+        let _swap_guard = {
+            struct Guard<'a>(&'a std::sync::atomic::AtomicBool);
+            impl Drop for Guard<'_> {
+                fn drop(&mut self) {
+                    self.0.store(false, std::sync::atomic::Ordering::Release);
                 }
-                assert!(
-                !self.swapping.swap(true, std::sync::atomic::Ordering::AcqRel),
+            }
+            assert!(
+                !self
+                    .swapping
+                    .swap(true, std::sync::atomic::Ordering::AcqRel),
                 "AppHandle::swap ran concurrently with another swap on the same handle — every \
                  mutation must funnel through the serialized persist-then-swap path"
             );
-                Guard(&self.swapping)
-            };
+            Guard(&self.swapping)
+        };
 
         let prior = self.load();
         for decl in crate::plane_driver::registry::plane_decls() {

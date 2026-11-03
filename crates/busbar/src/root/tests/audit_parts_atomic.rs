@@ -207,7 +207,7 @@ fn authority_lost_after_actual_cleanup_cannot_publish_any_audit_part_or_head() {
             None
         });
         let result = put_record(&slots, &lease, &raw(&record));
-        // Drop the callback's actual-Store clone before asserting or unwinding.
+
         slots.on_transaction(|_| None);
         assert!(result.is_err());
         assert!(cleaned.load(Ordering::SeqCst));

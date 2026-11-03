@@ -21,8 +21,6 @@ enum ScanMode {
     Failed,
 }
 
-// A read-boundary view over the actual opened Store. It changes scheduling or
-// injects a named negative read result; all successful rows come from the Store.
 struct ScanView {
     inner: Arc<dyn StoreCalls>,
     mode: ScanMode,
@@ -106,8 +104,7 @@ impl StoreCalls for ScanView {
                 self.overloaded.fetch_add(1, Ordering::SeqCst);
                 return Err(StoreFailure::Overloaded);
             }
-            // Yield exactly once, using the caller's executor and waker; no timer
-            // or local thread can make serial reads appear concurrent.
+
             let mut yielded = false;
             std::future::poll_fn(|cx| {
                 if yielded {
@@ -134,13 +131,13 @@ impl StoreCalls for ScanView {
             if window && selector == Some(1) {
                 match self.mode {
                     ScanMode::FaultAndBudget => {
-                        return Err(StoreFailure::Fault("explicit page fault".into()))
+                        return Err(StoreFailure::Fault("explicit page fault".into()));
                     }
                     ScanMode::Refused => {
-                        return Err(StoreFailure::Refused("explicit non-budget refusal".into()))
+                        return Err(StoreFailure::Refused("explicit non-budget refusal".into()));
                     }
                     ScanMode::Failed => {
-                        return Err(StoreFailure::Failed("explicit page failure".into()))
+                        return Err(StoreFailure::Failed("explicit page failure".into()));
                     }
                     _ => {}
                 }
@@ -220,8 +217,6 @@ fn populated() -> (RecordSlots, Vec<JournalRecord>) {
     let slots = RecordSlots::new();
     let mut sealed = Sealed::new();
     for index in 0..300 {
-        // Genuine sealed audit payloads saturate the new 4096-row probe as well as
-        // the old 256-row descendants; no fabricated journal filler is inserted.
         let mut inputs = crate::root::durability::audit::tests::inputs(sealed.audit.next_seq());
         inputs.wall = START + index;
         inputs.what.destination = Some("x".repeat(8_192));
@@ -339,13 +334,13 @@ fn faults_malformed_pages_and_nonbudget_refusals_cannot_hide_behind_budget_fallb
         }
         assert_eq!(view.active.load(Ordering::SeqCst), 0);
     }
-    // Begin at the saturated prefix immediately above record sequences 0..255,
-    // so one bounded page window contains both the transient invalid successful
-    // answer for record 1 and an overloaded answer for record 2.
+
     let view = ScanView::new(&slots, ScanMode::TransientCountAndBudget);
     let prefix = part_key(NODE, 1, 0)[..15].to_vec();
-    assert!(fold_stored_records(&view, NODE, prefix, |_| Ok(())).is_err(),
-        "retrying an overloaded peer must not replace and hide the successful page's invalid part count");
+    assert!(
+        fold_stored_records(&view, NODE, prefix, |_| Ok(())).is_err(),
+        "retrying an overloaded peer must not replace and hide the successful page's invalid part count"
+    );
     assert!(view.overloaded.load(Ordering::SeqCst) > 0);
     assert_eq!(view.starts_for(&part_key(NODE, 1, 0)[..16]), 1);
 }

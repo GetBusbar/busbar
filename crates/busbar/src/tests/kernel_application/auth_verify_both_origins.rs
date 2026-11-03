@@ -70,7 +70,7 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-both-origins");
     let archive = plugins::signed(&publisher_key, manifest, &library);
-    // Normal cold bootstrap resolves the Store from its signed archive fetch pin.
+
     let archive_sha256 = busbar_contract::redacted::sha256_hex(&archive);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -151,7 +151,7 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
         rotate();
     }
     let app = Arc::new(app);
-    // The cold root retained above owns the real HTTPS connector and its destination policy.
+
     let connector =
         crate::root::connector::the().clone() as Arc<dyn busbar_contract::conn::DeclaredConns>;
     let dispatcher = crate::root::dispatch::dispatcher();
@@ -161,8 +161,7 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
     let stated = busbar_plugin_loader::dispatch::rendering_of_library(&path)
         .expect("read actual OIDC")
         .expect("OIDC statement");
-    // OIDC is an actual dev dependency, intentionally absent from the default product's
-    // linked registry. Admit its real production door directly for this both-origins proof.
+
     let door = busbar_auth_oidc::door::door;
     let linked_statement = busbar_plugin_loader::dispatch::rendering_of(door)
         .expect("the real linked OIDC door renders its Statement");
@@ -171,16 +170,17 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
         stated,
         "the same pinned real OIDC product must render byte-identical Statements through both origins: dropped_path={} dropped_image_sha256={}",
         path.display(),
-        busbar_contract::redacted::sha256_hex(&std::fs::read(&path).expect("read actual dropped OIDC image for mismatch provenance")),
+        busbar_contract::redacted::sha256_hex(
+            &std::fs::read(&path).expect("read actual dropped OIDC image for mismatch provenance")
+        ),
     );
     let oidc_name = busbar_contract::abi::mechanism::rendering::read(&linked_statement)
         .expect("the actual linked OIDC Statement is valid")
         .name;
     let mut manifest = LinkedPlugin::auth_door_named(&oidc_name, &oidc_name, door).manifest;
-    // A dropped admission carries the real Statement in its signed manifest; the linked
-    // convenience constructor alone has no envelope Statement to copy into the archive.
+
     manifest.statement = Some(hex::encode(&stated));
-    // Admission metadata names the same explicitly configured normal publisher on both origins.
+
     manifest.publisher = PUBLISHER.into();
     let linked_plugin = LinkedPlugin::door(manifest.clone(), door);
     let linked = PluginRegistry::empty()
@@ -193,8 +193,7 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
         plugins::signed(&publisher_key, manifest.clone(), &library),
     )
     .expect("stage signed actual OIDC");
-    // This direct registry admission control uses the same narrow publisher allowlist as the
-    // cold root above. It is not a claim that direct scan runs the root's full boot trust flow.
+
     let policy = busbar_plugin_loader::sign::TrustPolicy {
         binary_version: "1.6.0".into(),
         publishers: std::iter::once((PUBLISHER.into(), publisher_key.verifying_key())).collect(),
@@ -248,7 +247,7 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
         let Verified::Identity(identity) = warm.verified else {
             panic!("the real signed JWT must identify: {warm:?}");
         };
-        // The real OIDC product namespaces its stable subject before crossing the auth ABI.
+
         assert_eq!(identity.subject, "oidc:alice");
         assert_eq!(identity.groups, ["reader", "writer"]);
         let mut transcript = Vec::new();
@@ -281,7 +280,7 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
             transcript[0].1, transcript[2].1,
             "a genuinely different credential policy cannot compare as the same verdict"
         );
-        // Change the verifier's configured audience while keeping the exact signed token.
+
         let other_auth = rows
             .open(&manifest.name, "the-auth-other-policy", &other_settings)
             .expect("the real OIDC verifier opens with the other audience policy");
@@ -296,8 +295,6 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
             "changing the verifier policy for the same token must change its full verdict"
         );
 
-        // The real 300-group JWT exceeds the host's initial identity group storage. Keep
-        // the original sync/submitted/submitted/sync sequence through each actual origin.
         let wide_transcript = vec![
             auth.verify_now(&request(Some(&wide)))
                 .expect("the warmed verifier answers the first wide JWT on the spot"),

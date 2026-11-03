@@ -830,7 +830,6 @@ version = "1.5.0"
 dependencies = [
  "arc-swap",
  "busbar-contract",
- "busbar-kernel-seams",
  "ed25519-dalek",
  "flate2",
  "futures",
@@ -938,7 +937,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-webrtc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-webrtc?rev=024592123f510f6f3a2cf4710410c6eeb9e3c7fd#024592123f510f6f3a2cf4710410c6eeb9e3c7fd"
+source = "git+https://github.com/GetBusbar/busbar-transport-webrtc?rev=203d85e65e0a8dabd8192dc14b41c97334300748#203d85e65e0a8dabd8192dc14b41c97334300748"
 dependencies = [
  "aes",
  "busbar-contract",

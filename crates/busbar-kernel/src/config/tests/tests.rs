@@ -670,8 +670,7 @@ fn test_interpolate_env_simple() {
 
 #[test]
 fn test_interpolate_env_multiple() {
-    let input =
-            "${BUSBAR_T_MULTI_PROTO}://${BUSBAR_T_MULTI_USER}@${BUSBAR_T_MULTI_HOST}:${BUSBAR_T_MULTI_PORT}/";
+    let input = "${BUSBAR_T_MULTI_PROTO}://${BUSBAR_T_MULTI_USER}@${BUSBAR_T_MULTI_HOST}:${BUSBAR_T_MULTI_PORT}/";
     std::env::set_var("BUSBAR_T_MULTI_PROTO", "https");
     std::env::set_var("BUSBAR_T_MULTI_USER", "admin");
     std::env::set_var("BUSBAR_T_MULTI_HOST", "localhost");
@@ -764,8 +763,7 @@ fn test_env_injection_cannot_widen_auth_chain() {
         "BUSBAR_T_CHAIN_INJECT",
         "ldaps://corp\"\n    - smuggled-module",
     );
-    let yaml =
-        "auth:\n  chain:\n    - ad:\n        settings:\n          server: \"${BUSBAR_T_CHAIN_INJECT}\"";
+    let yaml = "auth:\n  chain:\n    - ad:\n        settings:\n          server: \"${BUSBAR_T_CHAIN_INJECT}\"";
     let result = interpolate_env(yaml);
     std::env::remove_var("BUSBAR_T_CHAIN_INJECT");
     assert!(
@@ -1583,8 +1581,6 @@ fn test_limits_resolved_default_matches_from_sections_defaults() {
     assert_eq!(a.default_policy_timeout_ms, b.default_policy_timeout_ms);
     assert_eq!(a.key_gauge_limit, b.key_gauge_limit);
 }
-
-// Limit overrides including the real Prometheus recorder are exercised in central2_config_export.
 
 #[test]
 fn test_request_body_size_couples_ingress_and_translate() {
@@ -2626,8 +2622,6 @@ fn omitted_phase_is_exactly_the_four_core_stages() {
     assert!(!cfg.fires_at_stage(HookStage::Routing));
 }
 
-// Real linked export lowering cases live in the distribution central2_config_export tests.
-
 #[test]
 fn failover_pools_are_absent_by_default() {
     let deploy = base_deploy();
@@ -2854,7 +2848,9 @@ fn an_unowned_catalog_is_deferred_only_while_no_provider_is_deployed() {
     deploy.providers.insert("p".into(), provider_deploy("K"));
     let errors = resolve(&deploy, &defs).expect_err("deployment restores whole-catalog validation");
     assert!(
-        errors.iter().any(|e| e.contains("providers.q: unknown field `request_capability`")),
+        errors
+            .iter()
+            .any(|e| e.contains("providers.q: unknown field `request_capability`")),
         "even an unreferenced catalog row is judged before a provider becomes effective: {errors:?}"
     );
 }
@@ -2910,8 +2906,6 @@ fn an_on_exhausted_naming_both_a_fallback_and_a_queue_is_refused() {
     );
 }
 
-// These owner tests need the same packaging metadata the normal root hands in,
-// rather than the deliberately empty metadata of the uncomposed core binary.
 pub(crate) fn install_normal_root_metadata() {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {

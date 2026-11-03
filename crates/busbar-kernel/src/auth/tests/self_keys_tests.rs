@@ -230,8 +230,6 @@ struct RefreshOverlapStore {
     >,
 }
 
-// Causal scheduling at the actual key-write boundary. The single owned pause is bounded;
-// every other operation, including optional capabilities, delegates unchanged to the real Store.
 impl crate::governance::RecordStore for RefreshOverlapStore {
     fn put_key(
         &self,
@@ -543,8 +541,7 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
             )
             .unwrap(),
         );
-        // Internal post-provisioning concurrency: actual subject claims, the actual Store,
-        // and a bounded pause before its write. Root public mint/group wiring is separate.
+
         let mint_now = busbar_kernel::store::now();
         let original = issued(
             mint_provisioned_self_key(
@@ -646,7 +643,10 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
                 .await
                 .expect("the other actual mint completes after release"),
         };
-        assert!(contended, "the overlapping caller must reach the subject's contended wait while refresh is parked");
+        assert!(
+            contended,
+            "the overlapping caller must reach the subject's contended wait while refresh is parked"
+        );
         assert!(
             other_completed_while_parked,
             "another subject progresses while this refresh is parked"
@@ -1053,8 +1053,7 @@ fn sub_sanitization_refused() {
 #[tokio::test]
 async fn resolve_then_issue_via_real_seam() {
     let gov = gov();
-    // Internal post-provisioning mint continuation over the actual Store. Actual group
-    // transaction/provisioning is outside this continuation; no no-op provisioner stands in here.
+
     let mint_now = busbar_kernel::store::now();
     let rb = bindings("test-idp-double", "eng", Some("team"));
     let v = identified("test-idp-double", principal("sam", &["eng"]));
@@ -1086,8 +1085,7 @@ async fn resolve_then_issue_via_real_seam() {
 #[tokio::test]
 async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
     let gov = gov();
-    // Internal post-provisioning mint continuation over the actual Store. Actual group
-    // transaction/provisioning is outside this continuation; no no-op provisioner stands in here.
+
     let mint_now = busbar_kernel::store::now();
     let rb = bindings("test-idp-double", "eng", Some("team"));
     let v = identified(
@@ -1128,8 +1126,7 @@ fn row(gov: &GovState, id: &str) -> crate::governance::VirtualKey {
 #[tokio::test]
 async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
     let gov = gov();
-    // Internal post-provisioning mint continuation over the actual Store. Actual group
-    // transaction/provisioning is outside this continuation; no no-op provisioner stands in here.
+
     let mint_now = busbar_kernel::store::now();
 
     gov.hold_self_mint_state();
@@ -1204,8 +1201,7 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
 #[tokio::test]
 async fn a_login_after_an_admin_disable_mints_as_1_5_5_minted() {
     let gov = gov();
-    // Internal post-provisioning mint continuation over the actual Store. Actual group
-    // transaction/provisioning is outside this continuation; no no-op provisioner stands in here.
+
     let mint_now = busbar_kernel::store::now();
     let alice = principal("oidc:alice", &["eng"]);
     let ttl = Duration::from_secs(3600);
@@ -1254,8 +1250,7 @@ async fn a_login_after_an_admin_disable_mints_as_1_5_5_minted() {
 #[tokio::test]
 async fn a_second_provider_asserting_the_same_subject_is_handed_its_key_as_1_5_5_did() {
     let gov = gov();
-    // Internal post-provisioning mint continuation over the actual Store. Actual group
-    // transaction/provisioning is outside this continuation; no no-op provisioner stands in here.
+
     let mint_now = busbar_kernel::store::now();
     let alice = principal("oidc:alice", &["eng"]);
     let ttl = Duration::from_secs(3600);
@@ -1291,8 +1286,7 @@ async fn a_second_provider_asserting_the_same_subject_is_handed_its_key_as_1_5_5
 #[tokio::test]
 async fn a_self_serve_key_carries_empty_labels_as_1_5_5_wrote_it() {
     let gov = gov();
-    // Internal post-provisioning mint continuation over the actual Store. Actual group
-    // transaction/provisioning is outside this continuation; no no-op provisioner stands in here.
+
     let mint_now = busbar_kernel::store::now();
     let alice = principal("oidc:alice", &["eng"]);
     let ttl = Duration::from_secs(3600);
@@ -1348,8 +1342,7 @@ async fn a_self_serve_key_carries_empty_labels_as_1_5_5_wrote_it() {
 #[tokio::test]
 async fn a_second_provider_asserting_the_same_subject_is_refused() {
     let gov = gov();
-    // Internal post-provisioning mint continuation over the actual Store. Actual group
-    // transaction/provisioning is outside this continuation; no no-op provisioner stands in here.
+
     let mint_now = busbar_kernel::store::now();
 
     gov.hold_self_mint_state();
@@ -1432,8 +1425,7 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
 #[tokio::test]
 async fn a_legacy_self_serve_binding_adopts_the_first_provider_that_logs_in() {
     let gov = gov();
-    // Internal post-provisioning mint continuation over the actual Store. Actual group
-    // transaction/provisioning is outside this continuation; no no-op provisioner stands in here.
+
     let mint_now = busbar_kernel::store::now();
 
     gov.hold_self_mint_state();

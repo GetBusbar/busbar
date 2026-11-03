@@ -127,7 +127,7 @@ fn credentials_cross_as_secret_blobs_and_read_back() {
             revoke_reason: None,
             revision: 0,
         },
-        // RecordStore carries the versioned secret envelope, including across the ABI.
+
         secret: "v1:plain:s3cret".into(),
     };
     s.put_credential(&secret).expect("put");
