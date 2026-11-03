@@ -3098,7 +3098,9 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
         fn drop(&mut self) {
             self.stop.store(true, std::sync::atomic::Ordering::Release);
             let _ = self.release.send(());
-            if let Some(worker) = self.worker.take() { let _ = worker.join(); }
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
         }
     }
     let _publishing = crate::root::PUBLISHING.lock().await;
@@ -3149,7 +3151,9 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
             let mut released = false;
             loop {
                 let socket = loop {
-                    if peer_stop.load(std::sync::atomic::Ordering::Acquire) { return; }
+                    if peer_stop.load(std::sync::atomic::Ordering::Acquire) {
+                        return;
+                    }
                     match listener.accept() {
                         Ok((socket, _)) => break socket,
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -3194,7 +3198,11 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
                 let _ = socket.flush();
             }
         });
-        let mut peer = JwksPeer { stop, release: release.clone(), worker: Some(worker) };
+        let mut peer = JwksPeer {
+            stop,
+            release: release.clone(),
+            worker: Some(worker),
+        };
         let now = busbar_kernel::store::now();
         let header = b64.encode(
             serde_json::to_vec(
@@ -3545,7 +3553,10 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
         // The product opens independent inbound and login verifier instances. Keep this real
         // issuer available to both until the decoder and application body have completed.
         peer.stop.store(true, std::sync::atomic::Ordering::Release);
-        peer.worker.take().unwrap().join()
+        peer.worker
+            .take()
+            .unwrap()
+            .join()
             .expect("the owned real TLS peer completes all actual verifier requests");
     }
 }
