@@ -279,7 +279,12 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
         let (target_name, target_version, library, manifest) = if anchor_target {
             (module.clone(), module_version.clone(), library, manifest)
         } else {
-            let target_path = crate::root::test_plugins::application_store_library();
+            // The application anchor is SQLite. This nonanchor is an actual different Store
+            // product, admitted for rollback inventory without opening a second backend.
+            let target_path = std::path::PathBuf::from(
+                std::env::var_os("BUSBAR_TEST_MYSQL_CDYLIB")
+                    .expect("the nonanchor rollback requires the actual built MySQL Store"),
+            );
             let target_statement =
                 busbar_plugin_loader::dispatch::rendering_of_library(&target_path)
                     .expect("the actual nonanchor Store Statement reads")
