@@ -897,6 +897,62 @@ fn rows(door: DoorFn, example: &str, way: Way) -> HookRows {
     }
 }
 
+fn ranking_path() -> std::path::PathBuf {
+    std::env::var_os("BUSBAR_TEST_RANKING_CDYLIB")
+        .map(std::path::PathBuf::from)
+        .expect("the qualified actual Ranking image")
+}
+
+extern "C" fn ranking_door() -> &'static busbar_contract::abi::mechanism::door::Door {
+    use busbar_contract::abi::sdk::door::RawDoorFn;
+    static IMAGE: std::sync::OnceLock<(libloading::Library, RawDoorFn)> =
+        std::sync::OnceLock::new();
+    let image = IMAGE.get_or_init(|| {
+        let library =
+            crate::dlopen_on_worker(ranking_path().as_os_str()).expect("actual Ranking loads");
+        // SAFETY: the typed export belongs to the retained qualified product image.
+        let entry = unsafe {
+            *library
+                .get::<RawDoorFn>(busbar_contract::abi::mechanism::DOOR_SYMBOL)
+                .expect("actual Ranking door")
+        };
+        (library, entry)
+    });
+    let door = crate::dispatch::load::enter_door(image.1);
+    crate::dispatch::load::validate_door::<crate::dispatch::kinds::hook::Hook>(door)
+        .expect("actual Ranking Hook validates");
+    // SAFETY: validation checked the immutable descriptor and IMAGE retains its mapping.
+    unsafe { &*door }
+}
+
+fn ranking_name() -> String {
+    let stated = rendering_of(ranking_door).expect("actual Ranking renders");
+    busbar_contract::abi::mechanism::rendering::read(&stated)
+        .expect("actual Ranking statement")
+        .name
+}
+
+fn ranking_rows(way: Way) -> HookRows {
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    match way {
+        Way::Linked => {
+            HookRows::new(&[ranking_door], None, dispatcher).expect("actual descriptor linked row")
+        }
+        Way::Dropped => {
+            let row = Candidate::from_rendering(
+                rendering_of(ranking_door).unwrap(),
+                None,
+                Origin::Dropped {
+                    file: "actual-ranking.tar.gz".into(),
+                    bytes: Arc::new(std::fs::read(ranking_path()).expect("actual Ranking bytes")),
+                },
+            )
+            .expect("actual Ranking candidate");
+            HookRows::of(vec![row], dispatcher)
+        }
+    }
+}
+
 fn decided(messages: usize, a: &Answered<busbar_contract::abi::hook::DecideOut>) -> String {
     match a {
         Answered::Answer {
@@ -1053,12 +1109,12 @@ async fn a_panicking_hook_is_broken_through_the_axis_never_a_verdict() {
 
 #[test]
 fn a_linked_row_is_linked_and_first_party_and_a_dropped_in_unsigned_row_is_neither() {
-    let door = hook_door_plugin::conforming::door;
-    let linked = rows(door, "hook_door", Way::Linked);
-    assert!(linked.linked(NAME) && linked.first_party(NAME));
+    let name = ranking_name();
+    let linked = ranking_rows(Way::Linked);
+    assert!(linked.linked(&name) && linked.first_party(&name));
     assert!(!linked.linked("nobody") && !linked.first_party("nobody"));
-    let dropped = rows(door, "hook_door", Way::Dropped);
-    assert!(!dropped.linked(NAME) && !dropped.first_party(NAME));
+    let dropped = ranking_rows(Way::Dropped);
+    assert!(!dropped.linked(&name) && !dropped.first_party(&name));
 }
 
 #[test]
@@ -1336,44 +1392,39 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the
 #[test]
 fn a_1_5_5_hook_name_opens_the_1_6_0_hook_both_ways() {
     const OLD: &str = "busbar-webrequest";
-    let door = hook_door_plugin::conforming::door;
-    let settings = json!({"reject_over_messages": 3});
+    let name = ranking_name();
+    let settings = json!({"policy": "fastest"});
     let opens = |rows: &HookRows| rows.open(OLD, "hooks.wr", &settings, BUDGET).is_ok();
     let dispatcher = || Arc::new(Dispatcher::new(DispatchConfig::default()));
-
-    let former_of = |w: &str| {
-        if w == NAME {
-            vec![OLD.to_string()]
-        } else {
-            Vec::new()
-        }
-    };
-    let linked = HookRows::new(&[door], None, dispatcher())
-        .expect("the linked row")
-        .with_former_names(former_of)
-        .expect("no other plugin claims the name");
+    let linked = HookRows::new(&[ranking_door], None, dispatcher())
+        .expect("actual linked row")
+        .with_former_names(|word| {
+            if word == name {
+                vec![OLD.to_owned()]
+            } else {
+                Vec::new()
+            }
+        })
+        .unwrap();
     assert!(opens(&linked), "linked: '{OLD}' opens the hook");
     assert!(linked.linked(OLD) && linked.first_party(OLD));
-    let bare = HookRows::new(&[door], None, dispatcher()).expect("the linked row");
+    let bare = HookRows::new(&[ranking_door], None, dispatcher()).unwrap();
     assert!(!opens(&bare), "RED: a linked row without its former name");
-
-    let path = crate::both_ways::example_cdylib("hook_door");
-    let lib = std::fs::read(path).expect("the example cdylib reads");
+    let lib = std::fs::read(ranking_path()).expect("actual Ranking bytes");
     let abi = crate::supported_abi("hook")[0];
-    let stated = hex::encode(rendering_of(door).expect("the door renders its Statement"));
+    let stated = hex::encode(rendering_of(ranking_door).unwrap());
     let manifest = |former: &[&str]| {
-        let mut m =
-            crate::both_ways::statement("hook", "busbar-hook-webrequest", "webrequest", abi);
-        m.statement = Some(stated.clone());
-        m.former_names = former.iter().map(|s| s.to_string()).collect();
-        m
+        let mut manifest = crate::both_ways::statement("hook", &name, &name, abi);
+        manifest.statement = Some(stated.clone());
+        manifest.former_names = former.iter().map(|word| (*word).to_owned()).collect();
+        manifest
     };
     let registry = crate::both_ways::dropped("former-hook", manifest(&[OLD]), &lib);
     assert!(registry.answers(OLD, "hook"), "preflight resolves '{OLD}'");
-    let dropped = HookRows::new(&[], Some(&registry), dispatcher()).expect("the dropped row");
+    let dropped = HookRows::new(&[], Some(&registry), dispatcher()).unwrap();
     assert!(opens(&dropped), "dropped in: '{OLD}' opens the hook");
     let registry = crate::both_ways::dropped("bare-hook", manifest(&[]), &lib);
-    let bare = HookRows::new(&[], Some(&registry), dispatcher()).expect("the dropped row");
+    let bare = HookRows::new(&[], Some(&registry), dispatcher()).unwrap();
     assert!(
         !opens(&bare),
         "RED: a dropped-in hook without its former name"
@@ -1693,12 +1744,12 @@ async fn red_a_hook_that_declared_no_orders_is_refused_when_it_orders() {
 #[tokio::test]
 async fn an_unrepresentable_call_budget_is_broken_without_poisoning_either_hook_door() {
     for way in [Way::Linked, Way::Dropped] {
-        let axis = rows(hook_door_plugin::conforming::door, "hook_door", way);
+        let axis = ranking_rows(way);
         let calls = axis
             .open(
-                NAME,
+                &ranking_name(),
                 "hooks.gate",
-                &json!({"reject_over_messages": 3}),
+                &json!({"policy":"fastest"}),
                 BUDGET,
             )
             .unwrap();
