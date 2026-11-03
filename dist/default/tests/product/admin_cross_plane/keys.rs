@@ -871,6 +871,16 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
         let mut document = serde_json::json!({});
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
+        // These positive named-map surfaces are served only for configured planes.
+        // Use the same actual plane definitions as the file-backed fixture below.
+        document["tools"] = serde_json::json!({"base-tools": {
+            "url": "https://tools.internal/fs",
+            "pin": {"mechanism": "cert_spki", "key": "sha256/BASE="}
+        }});
+        document["agents"] = serde_json::json!({"base-agent": {
+            "url": "https://agents.example/planner",
+            "pin": {"mechanism": "unpinned"}
+        }});
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
         document["plugins"] =
             super::plugins::config_document(&super::plugins::trusted_config(&directory));
@@ -883,6 +893,10 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
             .expect("the actual admin deployment parses");
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the actual admin deployment resolves");
+        assert!(
+            cfg.plane_sections.contains("tools") && cfg.plane_sections.contains("agents"),
+            "the actual parser configures both positive named-map planes"
+        );
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -4668,6 +4682,16 @@ async fn drive_named_map_errors() {
             let mut document = serde_json::json!({});
             document["providers"] = serde_json::json!({});
             document["models"] = serde_json::json!({});
+            // These positive named-map surfaces are served only for configured planes.
+            // Use the same actual plane definitions as the file-backed fixture below.
+            document["tools"] = serde_json::json!({"base-tools": {
+                "url": "https://tools.internal/fs",
+                "pin": {"mechanism": "cert_spki", "key": "sha256/BASE="}
+            }});
+            document["agents"] = serde_json::json!({"base-agent": {
+                "url": "https://agents.example/planner",
+                "pin": {"mechanism": "unpinned"}
+            }});
             document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
             document["plugins"] =
                 super::plugins::config_document(&super::plugins::trusted_config(&directory));
@@ -4680,6 +4704,10 @@ async fn drive_named_map_errors() {
                 .expect("the actual admin deployment parses");
             let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
                 .expect("the actual admin deployment resolves");
+            assert!(
+                cfg.plane_sections.contains("tools") && cfg.plane_sections.contains("agents"),
+                "the actual parser configures both positive named-map planes"
+            );
             let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
                 as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
             let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
