@@ -995,7 +995,10 @@ impl Joining {
 
 #[cfg(test)]
 #[path = "tests/serve_datagram.rs"]
-pub(crate) mod tests;
+mod tests;
+
+#[cfg(test)]
+pub(crate) use tests::peer;
 
 #[cfg(test)]
 #[path = "tests/datagram_opening_retirement.rs"]

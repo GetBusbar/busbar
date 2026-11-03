@@ -1419,7 +1419,7 @@ pub(super) mod session_door {
 
     type FarScript = Arc<dyn Fn(usize) -> Far + Send + Sync>;
 
-    use crate::root::serve::serve_datagram::tests::peer::Peer as RtcPeer;
+    use crate::root::serve::serve_datagram::peer::Peer as RtcPeer;
 
     #[derive(Default)]
     struct RtcTasks(std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>);
