@@ -119,7 +119,7 @@ fn a_card_edit_mid_window_prices_every_budget_read_and_the_gate_at_the_card_in_f
         ..Default::default()
     };
     store.put_key(&key).unwrap();
-    let gov = GovState::new(store.clone(), None).unwrap();
+    let gov = GovState::new_with_signer(store.clone(), None, None).unwrap();
     let now = busbar_kernel::store::now();
 
     let before = cost(20.0, 1_300);
@@ -247,7 +247,7 @@ fn a_clean_restart_after_a_card_edit_keeps_identical_money_and_headroom() {
     };
 
     let before = cost(20.0, 1_000_000);
-    let gov = GovState::new(store.clone(), None).unwrap();
+    let gov = GovState::new_with_signer(store.clone(), None, None).unwrap();
     gov.try_admit(&before, &key, "", now).expect("admits");
     gov.record_usage(&before, &key, "", "m", &input(300_000), now);
     edit_card(holder, history_card(10.0));
@@ -259,7 +259,7 @@ fn a_clean_restart_after_a_card_edit_keeps_identical_money_and_headroom() {
     gov.flush_budgets();
     drop(gov);
 
-    let gov = GovState::new(store.clone(), None).unwrap();
+    let gov = GovState::new_with_signer(store.clone(), None, None).unwrap();
     let cold = reads(&gov, &after);
     assert_eq!((cold.0, cold.1), (seen.0, seen.1), "read from the store");
     gov.hydrate_budgets(&after, now).expect("hydrate");
@@ -315,7 +315,7 @@ fn a_durable_row_prices_as_the_cell_hydrated_from_it_after_a_card_edit() {
         *history = Arc::new(next);
     }
 
-    let gov = GovState::new(store.clone(), None).unwrap();
+    let gov = GovState::new_with_signer(store.clone(), None, None).unwrap();
     let reads = |gov: &GovState| {
         let key_read = gov
             .usage_for(&current, &key.id, now)
@@ -381,7 +381,7 @@ fn a_fee_refund_returns_the_fee_of_the_era_its_request_was_charged_in() {
         ..Default::default()
     };
     store.put_key(&key).unwrap();
-    let gov = GovState::new(store.clone(), None).unwrap();
+    let gov = GovState::new_with_signer(store.clone(), None, None).unwrap();
     let now = busbar_kernel::store::now();
 
     let before = fee_cost(5);
@@ -417,7 +417,7 @@ fn a_fee_refund_returns_the_fee_of_the_era_its_request_was_charged_in() {
 
     gov.flush_budgets();
     drop(gov);
-    let gov = GovState::new(store.clone(), None).unwrap();
+    let gov = GovState::new_with_signer(store.clone(), None, None).unwrap();
     assert_eq!(spend(&gov), 10, "read from the store after restart");
     gov.hydrate_budgets(&after, now).expect("hydrate");
     assert_eq!(spend(&gov), 10, "read from the hydrated cell");
@@ -451,7 +451,7 @@ fn a_plane_fee_edit_prices_each_admission_at_the_plane_fee_in_force() {
         ..Default::default()
     };
     store.put_key(&key).unwrap();
-    let gov = GovState::new(store.clone(), None).unwrap();
+    let gov = GovState::new_with_signer(store.clone(), None, None).unwrap();
     let now = busbar_kernel::store::now();
     let pool = format!("tp{PLANE_LANE_SEP}probe");
 
@@ -537,7 +537,7 @@ fn a_correction_lands_in_its_units_own_window_and_card_entry() {
 
     let store: Arc<dyn RecordStore> = real_store::store();
     let key = team_key(store.as_ref(), "vk_own_epoch");
-    let gov = GovState::new(store.clone(), None).unwrap();
+    let gov = GovState::new_with_signer(store.clone(), None, None).unwrap();
     let today = busbar_kernel::store::now();
     let yesterday = today - 86_400;
 
@@ -632,7 +632,7 @@ fn a_correction_whose_window_no_longer_holds_its_segment_is_refused_and_moves_no
 
     let store: Arc<dyn RecordStore> = real_store::store();
     let key = team_key(store.as_ref(), "vk_gone_epoch");
-    let gov = GovState::new(store.clone(), None).unwrap();
+    let gov = GovState::new_with_signer(store.clone(), None, None).unwrap();
     let today = busbar_kernel::store::now();
     let yesterday = today - 86_400;
     let card = cost(20.0, 1_000_000);
