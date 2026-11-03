@@ -335,14 +335,14 @@ async fn get_group_usage_reads_the_store_off_the_async_worker() {
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
-    super::admin_usage_history::complete_usage_fixture(
+    let provider_defs = super::admin_usage_history::complete_usage_fixture(
         &mut document,
         &directory,
         &[("m", "usage-store-fixture")],
     );
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the product deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let config = busbar_kernel::config::resolve(&deploy, &provider_defs)
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -514,14 +514,14 @@ async fn usage_read_store_failure_logs_the_real_error() {
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
-    super::admin_usage_history::complete_usage_fixture(
+    let provider_defs = super::admin_usage_history::complete_usage_fixture(
         &mut document,
         &directory,
         &[("m", "usage-store-fixture")],
     );
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the product deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let config = busbar_kernel::config::resolve(&deploy, &provider_defs)
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
