@@ -14,14 +14,13 @@ mod common;
 mod plugins;
 
 fn request(token: Option<&str>) -> VerifyRequest {
-    VerifyRequest {
-        credential: token.map(|token| Secret::new(token.as_bytes().to_vec())),
-        method: "GET".into(),
-        authority: "node.example".into(),
-        path: "/admin/v1/keys".into(),
-        timestamp: busbar_kernel::store::now(),
-        ..Default::default()
-    }
+    let mut request = VerifyRequest::default();
+    request.credential = token.map(|token| Secret::new(token.as_bytes().to_vec()));
+    request.method = "GET".into();
+    request.authority = "node.example".into();
+    request.path = "/admin/v1/keys".into();
+    request.timestamp = busbar_kernel::store::now();
+    request
 }
 
 async fn answered(auth: &dyn AuthCalls, token: Option<&str>) -> VerifyAnswer {
@@ -173,7 +172,7 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
         .auths
         .iter()
         .find(|(_, _, door)| {
-            busbar_plugin_loader::dispatch::rendering_of(**door)
+            busbar_plugin_loader::dispatch::rendering_of(*door)
                 .ok()
                 .as_deref()
                 == Some(stated.as_slice())
