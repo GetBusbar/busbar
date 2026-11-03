@@ -191,6 +191,229 @@ pub(super) fn put_record(
     Ok(())
 }
 
+const AUDIT_GROUP_RECORDS: usize = 16;
+
+pub(super) struct AuditGroup {
+    advance: super::audit_heads::GroupAdvance,
+    records: Vec<Record>,
+    parts: Vec<Mutation>,
+    cleanup: Vec<Mutation>,
+    planning_fence: Predicate,
+    node_predicate: Predicate,
+}
+
+pub(super) fn prepare_audit_group(
+    calls: &dyn StoreCalls,
+    lease: &HeldLease,
+    offered: &[Record],
+) -> Result<Option<AuditGroup>, String> {
+    if offered.len() < 2 {
+        return Ok(None);
+    }
+    let Some(planning_fence) = lease.predicate(calls)? else {
+        return Ok(None);
+    };
+    let Some(node_predicate) = lease.node_predicate(calls, offered[0].node)? else {
+        return Ok(None);
+    };
+    let mut count = 0usize;
+    let mut bytes = 0usize;
+    let mut previous: Option<JournalRecord> = None;
+    for record in offered.iter().take(AUDIT_GROUP_RECORDS) {
+        bytes = match bytes.checked_add(record.body.len()) {
+            Some(bytes)
+                if bytes as u64 <= busbar_contract::abi::mechanism::check::HARD_MAX_BYTES =>
+            {
+                bytes
+            }
+            _ => break,
+        };
+        let Ok(decoded) = JournalRecord::decode(&record.body) else {
+            break;
+        };
+        if decoded.class != RecordClass::Transaction
+            || decoded.identity() != record.identity()
+            || decoded.encode() != record.body
+            || decoded.digest_of_body() != decoded.body_hash
+            || decoded.digest_of_chain() != decoded.hash
+            || previous.as_ref().is_some_and(|old| {
+                old.node != decoded.node
+                    || old.node_seq.checked_add(1) != Some(decoded.node_seq)
+                    || old.hash != decoded.prev_hash
+            })
+            || busbar_kernel_audit::journal::head_from_journal_body(&decoded.body)?.is_none()
+        {
+            break;
+        }
+        previous = Some(decoded);
+        count += 1;
+    }
+    if count < 2 {
+        return Ok(None);
+    }
+    let Some(advance) = super::audit_heads::prepare_group(calls, &offered[..count])? else {
+        return Ok(None);
+    };
+    let records = offered[..advance.len()].to_vec();
+    let mut parts = Vec::new();
+    let mut cleanup = Vec::new();
+    for record in &records {
+        cleanup.push(Mutation::DeleteRange {
+            schema: JOURNAL_SCHEMA.into(),
+            prefix: part_key(record.node, record.node_seq, 0)[..16].to_vec(),
+            exact_key_length: 18,
+        });
+        for (index, value) in parts_of(record)?.into_iter().enumerate() {
+            parts.push(Mutation::Put {
+                schema: JOURNAL_SCHEMA.into(),
+                key: part_key(
+                    record.node,
+                    record.node_seq,
+                    u16::try_from(index).map_err(|_| "too many grouped parts")?,
+                )
+                .to_vec(),
+                value: value.as_slice().to_vec(),
+            });
+        }
+    }
+    // Preflight uses the captured exact fence. Same-holder renewal preserves its fixed row size;
+    // actual cleanup/publication still obtain fresh exact predicates.
+    let fence = planning_fence.clone();
+    let mut final_request = advance.request(&parts, fence.clone())?;
+    final_request.predicates.push(node_predicate.clone());
+    let cleanup_request = super::conditional::candidate(
+        vec![advance.predecessor(), fence, node_predicate.clone()],
+        cleanup.clone(),
+    );
+    if final_request.encode_held().is_err() || cleanup_request.encode_held().is_err() {
+        if advance.recorded() {
+            return Err("recorded audit group exceeds its bounded proof frame".into());
+        }
+        return Ok(None);
+    }
+    if advance.recorded()
+        && (!advance.initial_matches(&advance.raw_head(calls)?)
+            || !lease.fence_matches(calls, &planning_fence)?)
+    {
+        return Err("audit group checkpoint or custody changed during planning".into());
+    }
+    Ok(Some(AuditGroup {
+        advance,
+        records,
+        parts,
+        cleanup,
+        planning_fence,
+        node_predicate,
+    }))
+}
+
+impl AuditGroup {
+    pub(super) fn len(&self) -> usize {
+        self.records.len()
+    }
+    fn node_matches(&self, calls: &dyn StoreCalls) -> Result<bool, String> {
+        let raw = wait_for(calls.record_get(&self.node_predicate.schema, &self.node_predicate.key))
+            .map_err(|why| why.to_string())?;
+        Ok(raw
+            .as_ref()
+            .map(|raw| Expected::Bytes(raw.as_slice().to_vec()))
+            == Some(self.node_predicate.expected.clone()))
+    }
+    fn confirmed(&self, calls: &dyn StoreCalls, lease: &HeldLease) -> Result<bool, String> {
+        if !self.node_matches(calls)? {
+            return Err("audit group node registry changed".into());
+        }
+        let before = lease
+            .predicate(calls)?
+            .ok_or("audit group no longer holds a lease")?;
+        let final_raw = self.advance.final_raw()?;
+        if self.advance.raw_head(calls)? != Some(final_raw.clone()) {
+            return Ok(false);
+        }
+        for record in &self.records {
+            confirm_record_bytes(calls, record)?;
+        }
+        if !self.advance.samples_match(calls, true)? {
+            return Err("committed audit group is missing an immutable sample".into());
+        }
+        if self.advance.raw_head(calls)? != Some(final_raw)
+            || !lease.fence_matches(calls, &before)?
+            || !self.node_matches(calls)?
+        {
+            return Err("audit group ownership or checkpoint changed during readback".into());
+        }
+        Ok(true)
+    }
+    pub(super) fn commit(&self, calls: &dyn StoreCalls, lease: &HeldLease) -> Result<(), String> {
+        // An exact committed group is proved before ANY destructive cleanup, including reoffer.
+        if !lease.fence_matches(calls, &self.planning_fence)? {
+            return Err("audit group planning custody changed".into());
+        }
+        let raw = self.advance.raw_head(calls)?;
+        if raw == Some(self.advance.final_raw()?) {
+            return if self.confirmed(calls, lease)? {
+                Ok(())
+            } else {
+                Err("audit group committed checkpoint changed during readback".into())
+            };
+        }
+        if self.advance.recorded() {
+            return Err("recorded audit group no longer matches its checkpoint".into());
+        }
+        if !self.advance.initial_matches(&raw) {
+            return Err("audit group checkpoint predecessor changed before cleanup".into());
+        }
+        loop {
+            let fence = lease
+                .predicate(calls)?
+                .ok_or("audit group no longer holds a lease")?;
+            let request = super::conditional::candidate(
+                vec![
+                    self.advance.predecessor(),
+                    fence,
+                    self.node_predicate.clone(),
+                ],
+                self.cleanup.clone(),
+            );
+            match super::conditional::decide(calls, &request)? {
+                Decision::Applied => break,
+                Decision::ConditionConflict => {
+                    if !self.node_matches(calls)? {
+                        return Err("audit group node registry changed during cleanup".into());
+                    }
+                    if !self.advance.initial_matches(&self.advance.raw_head(calls)?) {
+                        if self.confirmed(calls, lease)? {
+                            return Ok(());
+                        }
+                        return Err("audit group checkpoint changed during cleanup".into());
+                    }
+                }
+            }
+        }
+        loop {
+            let fence = lease
+                .predicate(calls)?
+                .ok_or("audit group no longer holds a lease")?;
+            let mut request = self.advance.request(&self.parts, fence)?;
+            request.predicates.push(self.node_predicate.clone());
+            match super::conditional::decide(calls, &request)? {
+                Decision::Applied => return Ok(()),
+                Decision::ConditionConflict => {
+                    if self.confirmed(calls, lease)? {
+                        return Ok(());
+                    }
+                    if !self.advance.initial_matches(&self.advance.raw_head(calls)?)
+                        || !self.advance.samples_match(calls, false)?
+                    {
+                        return Err("audit group checkpoint or immutable sample changed".into());
+                    }
+                    // A normal same-holder renewal retries ONLY final publication, not cleanup.
+                }
+            }
+        }
+    }
+}
+
 /// Recovery records have immutable addresses and bytes. Unlike an arbitrary mutation, a retry
 /// with a fresh transaction identity is safe even after conditional receipt retention expires:
 /// absent predicates prevent any existing part from being replaced.
@@ -291,12 +514,178 @@ pub fn read_chain(calls: &dyn StoreCalls, node: u64) -> Result<Vec<Record>, Stri
     Ok(records)
 }
 
+type JournalPage = Vec<(Vec<u8>, RecordBytes)>;
+const JOURNAL_PAGE_ROWS: u32 = 256;
+const JOURNAL_PREFETCH: usize = 16;
+const JOURNAL_PROBE_ROWS: u32 = JOURNAL_PAGE_ROWS * JOURNAL_PREFETCH as u32;
+enum JournalReadWork {
+    Prefix(Vec<u8>),
+    Page(JournalPage),
+}
+
+fn valid_journal_page(prefix: &[u8], page: &JournalPage, limit: u32) -> Result<(), String> {
+    if page.len() > limit as usize
+        || page
+            .iter()
+            .any(|(key, _)| key.len() != 18 || !key.starts_with(prefix))
+        || page.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+    {
+        return Err("invalid Store journal page".into());
+    }
+    // Check fatal part-envelope errors even in a sibling whose read budget was refused.
+    // No successful answer may be discarded/re-read into apparently valid data.
+    if page.iter().any(|(_, value)| {
+        value
+            .as_slice()
+            .get(..2)
+            .and_then(|bytes| <[u8; 2]>::try_from(bytes).ok())
+            .map(u16::from_be_bytes)
+            .is_none_or(|count| count == 0)
+    }) {
+        return Err("invalid journal part count".into());
+    }
+    Ok(())
+}
+
+fn journal_page_window(
+    calls: &dyn StoreCalls,
+    prefixes: &[Vec<u8>],
+) -> Vec<Result<JournalPage, busbar_contract::store_calls::StoreFailure>> {
+    let mut pending: Vec<_> = prefixes
+        .iter()
+        .map(|prefix| calls.record_scan(JOURNAL_SCHEMA, prefix, JOURNAL_PAGE_ROWS))
+        .collect();
+    let mut answers: Vec<_> = (0..pending.len()).map(|_| None).collect();
+    // Poll existing owned Store futures together; no tasks, threads, timers or borrowed ABI
+    // buffers survive a call. Every future is complete before any answer is visited.
+    wait_for(std::future::poll_fn(|cx| {
+        for (index, future) in pending.iter_mut().enumerate() {
+            if answers[index].is_none() {
+                if let Poll::Ready(answer) = future.as_mut().poll(cx) {
+                    answers[index] = Some(answer);
+                }
+            }
+        }
+        if answers.iter().all(Option::is_some) {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }));
+    answers
+        .into_iter()
+        .map(|answer| answer.expect("every page future completed"))
+        .collect()
+}
+
+fn visit_journal_pages(
+    calls: &dyn StoreCalls,
+    prefix: Vec<u8>,
+    mut visit: impl FnMut(JournalPage) -> Result<(), String>,
+) -> Result<(), String> {
+    use busbar_contract::store_calls::StoreFailure;
+    // One complete answer avoids radix descent for ordinary journals while retaining the
+    // same 4096-row ownership bound. A saturated answer is an arbitrary sorted subset;
+    // discard it before starting the unchanged exhaustive traversal, never infer siblings.
+    match wait_for(calls.record_scan(JOURNAL_SCHEMA, &prefix, JOURNAL_PROBE_ROWS)) {
+        Ok(page) => {
+            valid_journal_page(&prefix, &page, JOURNAL_PROBE_ROWS)?;
+            if page.len() < JOURNAL_PROBE_ROWS as usize {
+                return visit(page);
+            }
+        }
+        Err(StoreFailure::Overloaded) => {}
+        Err(why) => return Err(format!("the Store journal page is unreadable: {why}")),
+    }
+    let mut work = vec![JournalReadWork::Prefix(prefix)];
+    let mut ready_pages = 0usize;
+    let mut serial = false;
+    while let Some(next) = work.pop() {
+        match next {
+            JournalReadWork::Page(page) => {
+                ready_pages = ready_pages
+                    .checked_sub(1)
+                    .ok_or("invalid journal page budget")?;
+                visit(page)?;
+            }
+            JournalReadWork::Prefix(prefix) => {
+                let available = JOURNAL_PREFETCH
+                    .checked_sub(ready_pages)
+                    .filter(|n| *n > 0)
+                    .ok_or("journal page budget exhausted before ordered consumption")?;
+                let limit = if serial { 1 } else { available };
+                let mut prefixes = vec![prefix];
+                while prefixes.len() < limit {
+                    if !matches!(work.last(), Some(JournalReadWork::Prefix(_))) {
+                        break;
+                    }
+                    if let Some(JournalReadWork::Prefix(prefix)) = work.pop() {
+                        prefixes.push(prefix);
+                    }
+                }
+                let answers = journal_page_window(calls, &prefixes);
+                let mut overloaded = false;
+                // Inspect the ENTIRE untouched window before falling back. Failed/Fault,
+                // named Refused, conflicting opids or malformed successful pages are fatal.
+                for (prefix, answer) in prefixes.iter().zip(&answers) {
+                    match answer {
+                        Ok(page) => valid_journal_page(prefix, page, JOURNAL_PAGE_ROWS)?,
+                        Err(StoreFailure::Overloaded) if !serial => overloaded = true,
+                        Err(why) => {
+                            return Err(format!("the Store journal page is unreadable: {why}"))
+                        }
+                    }
+                }
+                if overloaded {
+                    serial = true;
+                }
+                // A depth-first stack preserves exactly the old lexicographic consumption.
+                // At most sixteen pages/futures TOTAL belong to this traversal, independent of
+                // prefix depth. Empty pages and saturated parent pages release slots now;
+                // nonempty later siblings remain behind every child of an earlier parent.
+                for (prefix, answer) in prefixes.into_iter().zip(answers).rev() {
+                    match answer {
+                        Err(StoreFailure::Overloaded) => work.push(JournalReadWork::Prefix(prefix)),
+                        Err(_) => unreachable!("all fatal page answers were rejected"),
+                        Ok(page) if page.is_empty() => {}
+                        Ok(page)
+                            if page.len() == JOURNAL_PAGE_ROWS as usize && prefix.len() < 17 =>
+                        {
+                            for byte in (0..=u8::MAX).rev() {
+                                let mut child = prefix.clone();
+                                child.push(byte);
+                                work.push(JournalReadWork::Prefix(child));
+                            }
+                        }
+                        Ok(page) => {
+                            ready_pages += 1;
+                            work.push(JournalReadWork::Page(page));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Fold bounded Store pages in key order. Neither a node's journal nor its historical bodies
-/// accumulate here: at most one record's bounded parts are assembled beside one 256-row page.
-fn fold_stored_records(
+/// accumulate here: one record is assembled beside at most sixteen 256-row pages/futures.
+pub(super) fn fold_stored_records(
     calls: &dyn StoreCalls,
     node: u64,
     prefix: Vec<u8>,
+    visit: impl FnMut(Record) -> Result<(), String>,
+) -> Result<(), String> {
+    fold_stored_records_observed(calls, node, prefix, &mut false, visit)
+}
+
+// Preserve ordinary torn-tail omission while keeping its provenance for retry eligibility.
+fn fold_stored_records_observed(
+    calls: &dyn StoreCalls,
+    node: u64,
+    prefix: Vec<u8>,
+    omitted: &mut bool,
     mut visit: impl FnMut(Record) -> Result<(), String>,
 ) -> Result<(), String> {
     struct Partial {
@@ -309,39 +698,21 @@ fn fold_stored_records(
     fn finish(
         node: u64,
         pending: &mut Option<Partial>,
+        omitted: &mut bool,
         visit: &mut impl FnMut(Record) -> Result<(), String>,
     ) -> Result<(), String> {
         if let Some(record) = pending.take() {
             if record.valid && record.next == record.count {
                 visit(Record::new(node, record.sequence, record.bytes))?;
+            } else {
+                *omitted = true;
             }
         }
         Ok(())
     }
-    const PAGE: u32 = 256;
-    let mut prefixes = vec![prefix];
     let mut previous_key: Option<Vec<u8>> = None;
     let mut pending: Option<Partial> = None;
-    while let Some(prefix) = prefixes.pop() {
-        let page = wait_for(calls.record_scan(JOURNAL_SCHEMA, &prefix, PAGE))
-            .map_err(|why| format!("the Store journal page is unreadable: {why}"))?;
-        if page.len() > PAGE as usize
-            || page
-                .iter()
-                .any(|(key, _)| key.len() != 18 || !key.starts_with(&prefix))
-            || page.windows(2).any(|pair| pair[0].0 >= pair[1].0)
-        {
-            return Err("invalid Store journal page".into());
-        }
-        // With one selector byte left, 256 distinct exact-length keys exhaust the namespace.
-        if page.len() == PAGE as usize && prefix.len() < 17 {
-            for byte in (0..=u8::MAX).rev() {
-                let mut child = prefix.clone();
-                child.push(byte);
-                prefixes.push(child);
-            }
-            continue;
-        }
+    visit_journal_pages(calls, prefix, |page| {
         for (key, value) in page {
             if previous_key
                 .as_ref()
@@ -370,7 +741,7 @@ fn fold_stored_records(
                 .as_ref()
                 .is_some_and(|record| record.sequence != sequence)
             {
-                finish(node, &mut pending, &mut visit)?;
+                finish(node, &mut pending, omitted, &mut visit)?;
             }
             let record = pending.get_or_insert_with(|| Partial {
                 sequence,
@@ -391,8 +762,9 @@ fn fold_stored_records(
             }
             record.next = part + 1;
         }
-    }
-    finish(node, &mut pending, &mut visit)
+        Ok(())
+    })?;
+    finish(node, &mut pending, omitted, &mut visit)
 }
 
 fn checked_record(record: Record) -> Result<JournalRecord, String> {
@@ -422,7 +794,7 @@ pub(super) fn read_record_exact(
     found.ok_or_else(|| "selected recovery journal record is missing or incomplete".into())
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ChainPoint {
     node: u64,
     sequence: u64,
@@ -434,12 +806,14 @@ fn bridge_covers(
     calls: &dyn StoreCalls,
     previous: ChainPoint,
     current: ChainPoint,
+    omitted: &mut bool,
 ) -> Result<bool, String> {
     let mut covered = false;
-    fold_stored_records(
+    fold_stored_records_observed(
         calls,
         current.node,
         current.node.to_be_bytes().to_vec(),
+        omitted,
         |record| {
             let record = checked_record(record)?;
             let bridge = (record.class == RecordClass::ChainBreak)
@@ -487,59 +861,223 @@ impl RecordSeal {
 /// The same sealed hash/sequence authority as the ordinary journal reader, folded without a
 /// history Vec. Quarantine bridge lookup rescans only on an actual gap, retaining no bridge log.
 pub(super) fn verify_stored_chain(calls: &dyn StoreCalls, node: u64) -> Result<(), String> {
-    verify_stored_chain_with_seals(calls, node, &[])
+    // Cold multi-owner proofs deliberately do not acquire a fresh retry budget per owner.
+    verify_stored_chain_once(calls, node, &[], None).map_err(ChainProofFailure::reason)
 }
 
-/// Verify the entire node exactly as before, and bind every requested, sorted record seal to
-/// that fresh fold. The caller bounds the transcript; no historical payloads are retained.
+#[derive(Clone, Copy)]
+struct GapWitness {
+    node: u64,
+    prefix_digest: [u8; 32],
+    prefix_count: u64,
+    before: ChainPoint,
+    after: ChainPoint,
+    tail: ChainPoint,
+}
+
+enum ChainProofFailure {
+    Fatal(String),
+    SequenceGap(GapWitness),
+}
+impl ChainProofFailure {
+    fn reason(self) -> String {
+        match self {
+            Self::Fatal(reason) => reason,
+            Self::SequenceGap(_) => {
+                "the streamed Store journal has a broken hash link or sequence".into()
+            }
+        }
+    }
+}
+impl From<String> for ChainProofFailure {
+    fn from(reason: String) -> Self {
+        Self::Fatal(reason)
+    }
+}
+
+fn extend_chain_digest(digest: [u8; 32], point: ChainPoint) -> [u8; 32] {
+    // Fixed-width, domain-separated canonical transcript; no historical bodies are retained.
+    let mut bytes = [0u8; 160];
+    let mut used = 0;
+    for field in [
+        b"busbar/journal/verified-prefix/v1\0".as_slice(),
+        &digest,
+        &point.node.to_be_bytes(),
+        &point.sequence.to_be_bytes(),
+        &point.hash,
+        &point.previous,
+    ] {
+        bytes[used..used + field.len()].copy_from_slice(field);
+        used += field.len();
+    }
+    busbar_kernel_wal::body_digest(&bytes[..used])
+}
+
+/// The sole retry belongs to this entire sealed-node proof. Original requested seals remain
+/// immutable; OriginRead still checks its captured HEADs and fences after this returns.
 pub(super) fn verify_stored_chain_with_seals(
     calls: &dyn StoreCalls,
     node: u64,
     seals: &[RecordSeal],
 ) -> Result<(), String> {
+    match verify_stored_chain_once(calls, node, seals, None) {
+        Ok(()) => Ok(()),
+        Err(ChainProofFailure::Fatal(reason)) => Err(reason),
+        Err(ChainProofFailure::SequenceGap(witness)) => {
+            verify_stored_chain_once(calls, node, seals, Some(witness))
+                .map_err(ChainProofFailure::reason)
+        }
+    }
+}
+
+fn verify_stored_chain_once(
+    calls: &dyn StoreCalls,
+    node: u64,
+    seals: &[RecordSeal],
+    retry: Option<GapWitness>,
+) -> Result<(), ChainProofFailure> {
     if seals.iter().any(|seal| seal.node != node)
         || seals
             .windows(2)
             .any(|pair| pair[0].sequence >= pair[1].sequence)
     {
-        return Err("invalid same-read journal seal transcript".into());
+        return Err(ChainProofFailure::Fatal(
+            "invalid same-read journal seal transcript".into(),
+        ));
     }
     let mut matched = 0;
     let mut previous: Option<ChainPoint> = None;
-    fold_stored_records(calls, node, node.to_be_bytes().to_vec(), |record| {
-        let record = checked_record(record)?;
-        let current = ChainPoint {
-            node: record.node,
-            sequence: record.node_seq,
-            hash: record.hash,
-            previous: record.prev_hash,
-        };
-        drop(record);
-        if let Some(previous) = previous {
-            let follows = current.previous == previous.hash
-                && current.sequence == previous.sequence.saturating_add(1);
-            if !follows && !bridge_covers(calls, previous, current)? {
-                return Err("the streamed Store journal has a broken hash link or sequence".into());
+    let mut digest = [0; 32];
+    let mut count = 0u64;
+    let mut gap = None;
+    let mut omitted = false;
+    let mut bridge_omitted = false;
+    let mut prefix_matched = retry.is_none();
+    let mut after_matched = retry.is_none();
+    let mut tail_matched = retry.is_none();
+    fold_stored_records_observed(
+        calls,
+        node,
+        node.to_be_bytes().to_vec(),
+        &mut omitted,
+        |record| {
+            let record = checked_record(record)?;
+            let current = ChainPoint {
+                node: record.node,
+                sequence: record.node_seq,
+                hash: record.hash,
+                previous: record.prev_hash,
+            };
+            drop(record);
+            if let Some(witness) = retry {
+                if witness.node != node {
+                    return Err("retry node differs".into());
+                }
+                if current.sequence == witness.after.sequence {
+                    if current != witness.after {
+                        return Err("retry gap boundary changed".into());
+                    }
+                    after_matched = true;
+                }
+                if current.sequence == witness.tail.sequence {
+                    if current != witness.tail {
+                        return Err("retry observed tail changed".into());
+                    }
+                    tail_matched = true;
+                }
             }
-        }
-        if let Some(seal) = seals.get(matched) {
-            if seal.sequence < current.sequence {
-                return Err("a same-read recovery record is missing from its verified node".into());
+            if let Some(before) = previous {
+                let follows = current.previous == before.hash
+                    && before.sequence.checked_add(1) == Some(current.sequence);
+                // The original missing interval must now be filled by actual consecutive sealed
+                // records. A newly observed quarantine note cannot substitute for gap fill.
+                if retry.is_some_and(|witness| {
+                    before.sequence >= witness.before.sequence
+                        && before.sequence < witness.after.sequence
+                }) && !follows
+                {
+                    return Err("retry did not fill the original sequence gap".into());
+                }
+                if !follows && !bridge_covers(calls, before, current, &mut bridge_omitted)? {
+                    // Only a positive sequence gap between canonical validated records is eligible.
+                    // Same-sequence/hash corruption and another mixed gap are never retried.
+                    if retry.is_some()
+                        || gap.is_some()
+                        || before
+                            .sequence
+                            .checked_add(1)
+                            .is_none_or(|next| current.sequence <= next)
+                    {
+                        return Err(
+                            "the streamed Store journal has a broken hash link or sequence".into(),
+                        );
+                    }
+                    gap = Some(GapWitness {
+                        node,
+                        prefix_digest: digest,
+                        prefix_count: count,
+                        before,
+                        after: current,
+                        tail: current,
+                    });
+                }
             }
-            if seal.sequence == current.sequence {
-                if seal.hash != current.hash {
+            if let Some(seal) = seals.get(matched) {
+                if seal.sequence < current.sequence {
                     return Err(
-                        "a same-read recovery record changed before node verification".into(),
+                        "a same-read recovery record is missing from its verified node".into(),
                     );
                 }
-                matched += 1;
+                if seal.sequence == current.sequence {
+                    if seal.hash != current.hash {
+                        return Err(
+                            "a same-read recovery record changed before node verification".into(),
+                        );
+                    }
+                    matched += 1;
+                }
             }
-        }
-        previous = Some(current);
-        Ok(())
-    })?;
+            digest = extend_chain_digest(digest, current);
+            count = count
+                .checked_add(1)
+                .ok_or("journal prefix count overflow")?;
+            if let Some(witness) = retry {
+                if count == witness.prefix_count {
+                    if digest != witness.prefix_digest || current != witness.before {
+                        return Err("retry verified prefix changed".into());
+                    }
+                    prefix_matched = true;
+                }
+            }
+            previous = Some(current);
+            Ok(())
+        },
+    )?;
     if matched != seals.len() {
-        return Err("a same-read recovery record is missing from its verified node".into());
+        return Err(ChainProofFailure::Fatal(
+            "a same-read recovery record is missing from its verified node".into(),
+        ));
+    }
+    if !prefix_matched || !after_matched || !tail_matched {
+        return Err(ChainProofFailure::Fatal(
+            "retry is missing its original prefix, boundary or tail".into(),
+        ));
+    }
+    if let Some(mut witness) = gap {
+        // Incomplete/malformed partials in this fold or its quarantine authority may not heal
+        // into retryable absence, even if a later scan happens to return complete bytes.
+        if omitted || bridge_omitted {
+            return Err(ChainProofFailure::Fatal(
+                "a torn journal record cannot authorize a gap retry".into(),
+            ));
+        }
+        witness.tail = previous.expect("a gap has validated boundary records");
+        return Err(ChainProofFailure::SequenceGap(witness));
+    }
+    if retry.is_some() && (omitted || bridge_omitted) {
+        return Err(ChainProofFailure::Fatal(
+            "a gap retry encountered a torn journal record".into(),
+        ));
     }
     Ok(())
 }
@@ -765,26 +1303,63 @@ impl Lane {
     fn run(self: Arc<Self>) {
         let mut pause = RETRY_FIRST;
         loop {
-            let next = {
+            let offered = {
                 let mut state = self.lock();
                 while state.queue.is_empty() && !state.stopped {
                     state = self.work.wait(state).unwrap_or_else(|p| p.into_inner());
                 }
-                match state.queue.front() {
-                    Some(_) if state.stopped && state.refusal.is_some() => return,
-                    Some(front) => front.clone(),
-                    None => return,
+                if state.queue.is_empty() || state.stopped && state.refusal.is_some() {
+                    return;
                 }
+                let mut bytes = 0usize;
+                let mut offered = Vec::new();
+                for record in state.queue.iter().take(AUDIT_GROUP_RECORDS) {
+                    let Some(next) = bytes.checked_add(record.body.len()) else {
+                        break;
+                    };
+                    if !offered.is_empty()
+                        && next as u64 > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES
+                    {
+                        break;
+                    }
+                    bytes = next;
+                    offered.push(record.clone());
+                }
+                offered
             };
-            match put_record(self.calls.as_ref(), &self.lease, &next) {
-                Ok(()) => {
+            let next = &offered[0];
+            let attempted = prepare_audit_group(self.calls.as_ref(), &self.lease, &offered);
+            let result = match attempted {
+                Ok(Some(group)) => group
+                    .commit(self.calls.as_ref(), &self.lease)
+                    .map(|()| group.len()),
+                Ok(None) => put_record(self.calls.as_ref(), &self.lease, next).map(|()| 1),
+                Err(why) => Err(why),
+            };
+            match result {
+                Ok(count) => {
                     pause = RETRY_FIRST;
                     let mut state = self.lock();
-                    if state.queue.front().map(Record::identity) == Some(next.identity()) {
-                        state.queue.pop_front();
+                    if !state
+                        .queue
+                        .iter()
+                        .take(count)
+                        .map(Record::identity)
+                        .eq(offered[..count].iter().map(Record::identity))
+                    {
+                        state.refusal =
+                            Some("committed audit group no longer matches the queue prefix".into());
+                        state.stopped = true;
+                        state.refusals = state.refusals.saturating_add(1);
+                        self.set_full(&state);
+                        self.moved.notify_all();
+                        return;
                     }
-                    let mark = state.acked.entry(next.node).or_insert(0);
-                    *mark = (*mark).max(next.node_seq);
+                    for record in &offered[..count] {
+                        state.queue.pop_front();
+                        let mark = state.acked.entry(record.node).or_insert(0);
+                        *mark = (*mark).max(record.node_seq);
+                    }
                     state.refusal = None;
                     self.set_full(&state);
                     self.moved.notify_all();
@@ -1324,9 +1899,10 @@ mod recovery_record_tests {
             observed.fetch_add(1, Ordering::Relaxed);
         });
         verify_stored_chain(slots.calls().as_ref(), taken.id).unwrap();
-        assert!(
-            scans.load(Ordering::Relaxed) > 1,
-            "more than one bounded page must be consumed"
+        assert_eq!(
+            scans.load(Ordering::Relaxed),
+            1,
+            "the complete bounded probe verifies this original small journal in one scan"
         );
         let expected = &sealed[149];
         assert_eq!(

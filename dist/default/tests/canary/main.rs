@@ -198,9 +198,10 @@ fn self_test_the_shim_records_a_planted_crossing() {
         passthrough: Canary::new("self-test-unused-5", Expect::Leaks),
     });
     let hits = canary::search(&c, &sinks);
+    let (signing_secret_sink, signing_secret_plugin) = abi::signing_secret_crossing();
     assert!(
         hits.iter()
-            .any(|h| h.sink == "abi:host->plugin:op:open.secrets[0]"),
+            .any(|h| h.sink == signing_secret_sink && h.at == signing_secret_plugin),
         "the shim records the planted secret crossing into `open`: {hits:?}"
     );
 }

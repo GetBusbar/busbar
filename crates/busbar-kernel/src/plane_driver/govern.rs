@@ -11,6 +11,13 @@ use crate::slice::GroupLeaseSlip;
 use crate::teller::{Door, Governed, UnitCtx, Units};
 
 impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C> {
+    fn take_reserved_request_lineage(
+        &self,
+        ctx: &UnitCtx,
+    ) -> Option<super::ReservedRequestLineage> {
+        self.steps.take_reserved_request_lineage(ctx)
+    }
+
     fn govern<'a>(
         &'a self,
         ctx: &'a UnitCtx,

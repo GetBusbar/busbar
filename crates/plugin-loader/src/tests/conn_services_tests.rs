@@ -955,6 +955,7 @@ struct Scripted {
     opened: Mutex<Vec<Opened>>,
     /// The address set each open was stated within, in open order.
     within: Mutex<Vec<Vec<std::net::IpAddr>>>,
+    opened_units: Mutex<Vec<u64>>,
     writes: Mutex<Vec<Vec<u8>>>,
     script: Mutex<VecDeque<(Piece, Vec<u8>)>>,
     /// Every upgrade call: the stream, the name offered and the trust reference.
@@ -1139,6 +1140,7 @@ impl Conns for Scripted {
             desc.body.to_vec(),
         ));
         self.within.lock().unwrap().push(desc.within.to_vec());
+        self.opened_units.lock().unwrap().push(desc.unit);
         if let Some(e) = self.refuse {
             return Err(e);
         }
@@ -3199,8 +3201,16 @@ fn the_auth_request_signs_the_authority_the_socket_dials() {
             None,
         ),
     ] {
-        let asked = super::auth_request(&binding, &head, target, b"", None, &[])
-            .expect("a non-passthrough binding asks");
+        let asked = super::auth_request(
+            &binding,
+            crate::dispatch::services::serving_unit(),
+            &head,
+            target,
+            b"",
+            None,
+            &[],
+        )
+        .expect("a non-passthrough binding asks");
         assert_eq!(asked.authority, authority, "{target}");
         assert_eq!(asked.path, path, "{target}");
         assert_eq!(asked.query.as_deref(), query, "{target}");
@@ -3245,6 +3255,7 @@ fn the_auth_request_signs_the_lines_the_open_completes_the_head_with() {
     );
     let asked = super::auth_request(
         &binding,
+        crate::dispatch::services::serving_unit(),
         &head,
         "https://svc.example/x",
         b"{}",
@@ -3628,3 +3639,113 @@ mod refresh_driver_generation {
 
 #[path = "ordinary_connector_bounds.rs"]
 mod ordinary_connector_bounds;
+
+#[test]
+fn framed_opens_keep_the_serving_unit_through_sync_and_pending_auth() {
+    struct UnitAuth {
+        pending: bool,
+        units: Mutex<Vec<u64>>,
+    }
+    impl OutboundAuth for UnitAuth {
+        fn open_outbound(&self, _: &str, _: &[u8], _: &serde_json::Value) -> Result<u64, String> {
+            Ok(1)
+        }
+        fn fields_now(&self, _: u64, request: &FieldsRequest) -> Option<Fields> {
+            self.units.lock().unwrap().push(request.unit);
+            (!self.pending).then(|| Fields::Ready(Vec::new()))
+        }
+        fn fields(&self, _: u64, request: FieldsRequest, _: u64) -> Box<dyn Fielding> {
+            self.units.lock().unwrap().push(request.unit);
+            Box::new(UnitFields(false))
+        }
+    }
+    struct UnitFields(bool);
+    impl std::future::Future for UnitFields {
+        type Output = Fields;
+        fn poll(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Fields> {
+            if !self.0 {
+                self.0 = true;
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            } else {
+                std::task::Poll::Ready(Fields::Ready(Vec::new()))
+            }
+        }
+    }
+    impl Fielding for UnitFields {
+        fn settled(&mut self) -> Option<Fields> {
+            None
+        }
+    }
+    for pending in [false, true] {
+        let auth = Arc::new(UnitAuth {
+            pending,
+            units: Mutex::new(Vec::new()),
+        });
+        let table = Arc::new(Scripted {
+            framed: true,
+            auth: Some(auth.clone()),
+            ..Scripted::default()
+        });
+        let dispatcher =
+            crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+        let p = bound_over_by(&table, dispatcher.adopter());
+        for (index, unit) in [71, 93].into_iter().enumerate() {
+            let seq = index as u32 * 10;
+            let stream = {
+                let _serving = crate::dispatch::services::serving(Some(unit));
+                whole_request(&p, seq)
+            };
+            if pending {
+                table
+                    .script
+                    .lock()
+                    .unwrap()
+                    .push_back((piece(PieceKind::Fields, Some(200), None, 0), Vec::new()));
+                let mut buf = [0u8; 64];
+                let ticket = dispatcher.inline_ticket().expect("mint a live read ticket");
+                let read = |buf: &mut [u8]| {
+                    let mut piece = ReplyPiece::default();
+                    let mut head = head_of::<ReplyIn>(service::READ_REPLY, seq + 3);
+                    head.handle.ticket = ticket.ticket();
+                    let input = ReplyIn {
+                        head,
+                        stream,
+                        buf: buf.as_mut_ptr(),
+                        len: buf.len(),
+                        piece: std::ptr::from_mut(&mut piece),
+                    };
+                    (call(&p, CONN_SLOTS.read_reply, &input), piece)
+                };
+                let _serving = crate::dispatch::services::serving(Some(999));
+                let (out, _) = read(&mut buf);
+                assert_eq!(
+                    out.outcome,
+                    RawOutcome::of(Outcome::Pending),
+                    "first read for unit {unit}, index {index}: {}",
+                    error_text(&out)
+                );
+                assert_eq!(table.opened_units.lock().unwrap().len(), index);
+                let (out, got) = read(&mut buf);
+                assert!(
+                    ready(&out),
+                    "second read for unit {unit}, index {index}: {}",
+                    error_text(&out)
+                );
+                assert_eq!(got.kind, REPLY_HEAD);
+            }
+        }
+        assert_eq!(*table.opened_units.lock().unwrap(), [71, 93]);
+        assert_eq!(
+            *auth.units.lock().unwrap(),
+            if pending {
+                vec![71, 71, 93, 93]
+            } else {
+                vec![71, 93]
+            }
+        );
+    }
+}

@@ -60,8 +60,23 @@ fn drop_in(dir: &Path, lib: &[u8]) {
 }
 
 fn drop_in_as(dir: &Path, lib: &[u8], name: &str) {
-    let bytes = common::plugins::pack_stated("transport", name, lib, "acme");
+    let mut manifest =
+        common::plugins::manifest("transport", name, common::plugins::FIXTURE_PUBLISHER);
+    common::plugins::state(&mut manifest, lib);
+    let bytes = common::plugins::signed(&common::plugins::key(0x5a), manifest, lib);
     std::fs::write(dir.join("plugins").join(format!("{name}.tar.gz")), bytes).unwrap();
+    pin_plugins(dir);
+}
+
+fn pin_plugins(dir: &Path) {
+    let path = dir.join("config.yaml");
+    let mut config: serde_yaml::Value =
+        serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    config["plugins"] = serde_yaml::to_value(common::plugins::trusted_config_document(
+        &dir.join("plugins"),
+    ))
+    .unwrap();
+    std::fs::write(path, serde_yaml::to_string(&config).unwrap()).unwrap();
 }
 
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
@@ -82,11 +97,7 @@ advanced:
 admin_require_mtls: false
 auth:
   chain: []
-plugins:
-  enabled: true
-  dir: '{plugins}'
-  trust:
-    allow_unsigned: true
+plugins: {plugins}
 providers:
   mock:
     api_key: {{ env: MOCK_KEY }}
@@ -94,7 +105,7 @@ models:
   test-model:
     provider: mock
 "#,
-            plugins = dir.join("plugins").display()
+            plugins = common::plugins::trusted_config_document(&dir.join("plugins"))
         ),
     )
     .unwrap();
@@ -195,6 +206,18 @@ fn refused(dir: &Path) -> Output {
     }
 }
 
+fn assert_duplicate_transport(out: &Output, key: &str) {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "stderr:\n{stderr}");
+    let expected = format!(
+        "busbar: the connector did not build: transports `{key}` and `{key}` both claim the scheme `{key}`"
+    );
+    assert!(
+        stderr.lines().any(|line| line == expected),
+        "the actual transport Statements must collide on their exact scheme; stderr:\n{stderr}"
+    );
+}
+
 fn exchange(port: u16) -> Option<Vec<u8>> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream
@@ -279,12 +302,7 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
 
         drop_in(&dir, &lib);
         let out = refused(&dir);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(2), "stderr:\n{stderr}");
-        assert!(
-            stderr.contains(&format!("DuplicateKey {{ kind: Transport, key: {key:?} }}")),
-            "stderr:\n{stderr}"
-        );
+        assert_duplicate_transport(&out, key);
     } else {
         let (served, _, _) = serve_once(&dir, data_port, WORKERS);
         assert_eq!(served, pinned(), "no layer waits on the unlinked key");
@@ -324,12 +342,11 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
             "the neutral framer, declared first, is never the address carrier"
         );
         std::fs::remove_file(dir.join("plugins").join("a-neutral-framer.tar.gz")).unwrap();
+        pin_plugins(&dir);
 
         drop_in_as(&dir, &lib, "dropped-wire-again");
         let out = refused(&dir);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(2), "stderr:\n{stderr}");
-        assert!(stderr.contains(&format!("{key:?}")), "stderr:\n{stderr}");
+        assert_duplicate_transport(&out, key);
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

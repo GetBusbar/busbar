@@ -602,6 +602,7 @@ impl Pairing {
             (session, owners, schedule, state.caller.clone())
         };
         drop(retired);
+        self.published.notify_waiters();
         if schedule {
             self.schedule_publication(caller);
         }

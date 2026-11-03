@@ -2013,6 +2013,7 @@ fn verified_caller_credential(
     }
 }
 
+#[cfg(test)]
 async fn ticket_verdict(
     signed: bool,
     keys_in_chain: bool,
@@ -2021,23 +2022,84 @@ async fn ticket_verdict(
     gov: Option<&std::sync::Arc<crate::governance::GovState>>,
     now: u64,
 ) -> Result<Option<(ChainVerdict, Vec<u8>)>, ()> {
+    claimed_ticket_verdict(
+        signed,
+        keys_in_chain,
+        prefix,
+        token,
+        gov,
+        now,
+        &crate::appbuild::AcceptAll,
+    )
+    .await
+    .map(|admitted| admitted.map(|(verdict, record, _)| (verdict, record)))
+}
+
+type ClaimedTicketVerdict = (
+    ChainVerdict,
+    Vec<u8>,
+    Option<crate::host_services::HostTicketAdmission>,
+);
+
+async fn claimed_ticket_verdict(
+    signed: bool,
+    keys_in_chain: bool,
+    prefix: Option<&str>,
+    token: Option<&str>,
+    gov: Option<&std::sync::Arc<crate::governance::GovState>>,
+    now: u64,
+    rules: &dyn crate::appbuild::RootRules,
+) -> Result<Option<ClaimedTicketVerdict>, ()> {
+    use crate::host_services::{HostTicketAdmission, TicketClaimDisposition};
     match (!signed, prefix, token) {
         (true, Some(prefix), Some(token)) if keys_in_chain && token.starts_with(prefix) => {
-            let admitted = match gov {
-                Some(gov) => gov.admit_ticket_async(prefix, token, now).await,
+            let gov = gov.ok_or(())?;
+            let identity = gov
+                .prepare_ticket_redemption_async(prefix, token, now)
+                .await
+                .ok_or(())?;
+            // Preparation validates current key standing and Store liveness before custody moves.
+            // Only this future owns the reservation; the offloaded Store operation owns identity.
+            let reservation = match rules.claim_ticket_admission(&identity) {
+                TicketClaimDisposition::Ordinary => None,
+                TicketClaimDisposition::Reserved(reservation) => {
+                    if !reservation.matches(&identity) {
+                        return Err(());
+                    }
+                    Some(reservation)
+                }
+                TicketClaimDisposition::Refused => return Err(()),
+            };
+            let (key, record) = if reservation.is_some() {
+                gov.redeem_verified_ticket_async(identity, now).await
+            } else {
+                // Explicit ordinary policy retains the existing nonreservation admission path.
+                drop(identity);
+                gov.admit_ticket_async(prefix, token, now).await
+            }
+            .ok_or(())?;
+            let admission = match reservation {
+                Some(reservation) => {
+                    let spent = crate::plane_driver::SpentTicketReservation::after_redemption(
+                        reservation,
+                        &key,
+                    )
+                    .map_err(|returned| {
+                        drop(returned);
+                    })?;
+                    Some(HostTicketAdmission::new(spent))
+                }
                 None => None,
             };
-            match admitted {
-                Some((key, record)) => Ok(Some((
-                    ChainVerdict::Identified {
-                        module: crate::config::KEYS_MODULE.to_string(),
-                        principal: principal_from_vkey(&key),
-                        resolved: Some(key),
-                    },
-                    record,
-                ))),
-                None => Err(()),
-            }
+            Ok(Some((
+                ChainVerdict::Identified {
+                    module: crate::config::KEYS_MODULE.to_string(),
+                    principal: principal_from_vkey(&key),
+                    resolved: Some(key),
+                },
+                record,
+                admission,
+            )))
         }
         _ => Ok(None),
     }
@@ -2330,18 +2392,20 @@ pub(crate) async fn auth_middleware(
         }
     };
 
-    let ticketed = match ticket_verdict(
+    let ticketed = match claimed_ticket_verdict(
         signed.is_some(),
         app.auth.keys_in_chain,
         core_routes.door_ticket(&path, req.method()),
         client_token.as_deref(),
         app.governance.as_ref(),
         busbar_kernel::store::now(),
+        app.root_rules.as_ref(),
     )
     .await
     {
-        Ok(Some((verdict, record))) => {
+        Ok(Some((verdict, record, admission))) => {
             consumed.ticket = Some(record);
+            consumed.host_ticket_admission = admission;
             Some(verdict)
         }
         Ok(None) => None,

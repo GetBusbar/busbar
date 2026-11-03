@@ -112,7 +112,7 @@ fn paused_at(
     let signer = TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID);
     let gov = Arc::new(
         GovState::new_with_signer(
-            Arc::new(RuleCarryingOnly(memory, Some(Arc::clone(&pause)))),
+            Arc::new(RuleCarryingOnly(memory, Some(Arc::clone(&pause)), None)),
             None,
             Some(signer),
         )

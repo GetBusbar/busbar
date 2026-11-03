@@ -1230,6 +1230,114 @@ fn closes(s: &Sink) -> u32 {
     s.closed.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+#[test]
+fn a_session_opening_waits_for_real_caller_metadata_and_wakes_on_publication() {
+    use std::future::Future;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
+
+    struct Count(AtomicUsize);
+    impl Wake for Count {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    for publication in [false, true] {
+        let connector = book();
+        let pairing = super::Pairing::new(Arc::new(Sink::default()), p("127.0.0.1:3478"));
+        connector.pair(7, Arc::clone(&pairing)).unwrap();
+        let count = Arc::new(Count(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&count));
+        let mut cx = Context::from_waker(&waker);
+        let mut ready = Box::pin(connector.wait_session_opening(7));
+        assert!(ready.as_mut().poll(&mut cx).is_pending());
+        assert!(pairing.opening().is_empty(), "no channel is invented");
+        let pieces = vec![got(7, b"label: actual-events\r\n", true)];
+        if publication {
+            pairing.publish(
+                super::Leg::Caller,
+                crate::framer::Yielded {
+                    pieces,
+                    ..Default::default()
+                },
+                Instant::now(),
+            );
+        } else {
+            pairing.sort(super::Leg::Caller, pieces, Instant::now());
+        }
+        assert!(
+            count.0.load(Ordering::SeqCst) > 0,
+            "metadata wakes the pending opener"
+        );
+        assert_eq!(ready.as_mut().poll(&mut cx), Poll::Ready(Ok(())));
+        assert_eq!(
+            pairing.opening(),
+            [("channel".to_owned(), b"actual-events".to_vec())]
+        );
+        // Metadata published before the first poll is retained, without requiring another wake.
+        assert_eq!(
+            Box::pin(pairing.wait_opening()).as_mut().poll(&mut cx),
+            Poll::Ready(Ok(()))
+        );
+        drop(ready);
+        connector.unpair(7);
+        let closing = super::Pairing::new(Arc::new(Sink::default()), p("127.0.0.1:3478"));
+        connector.pair(7, closing).unwrap();
+        count.0.store(0, Ordering::SeqCst);
+        let mut waiting = Box::pin(connector.wait_session_opening(7));
+        assert!(waiting.as_mut().poll(&mut cx).is_pending());
+        connector.unpair(7);
+        assert!(count.0.load(Ordering::SeqCst) > 0, "close wakes the opener");
+        assert_eq!(
+            waiting.as_mut().poll(&mut cx),
+            Poll::Ready(Err(busbar_contract::conn::ConnError::Closed))
+        );
+    }
+}
+
+#[test]
+fn a_session_opening_close_wakes_waiters_and_ordinary_units_do_not_wait() {
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+    let connector = book();
+    let mut cx = Context::from_waker(Waker::noop());
+    assert_eq!(
+        Box::pin(connector.wait_session_opening(8))
+            .as_mut()
+            .poll(&mut cx),
+        Poll::Ready(Ok(()))
+    );
+    let pairing = super::Pairing::new(Arc::new(Sink::default()), p("127.0.0.1:3478"));
+    connector.pair(7, Arc::clone(&pairing)).unwrap();
+    let mut ready = Box::pin(connector.wait_session_opening(7));
+    assert!(ready.as_mut().poll(&mut cx).is_pending());
+    connector.unpair(7);
+    assert_eq!(
+        ready.as_mut().poll(&mut cx),
+        Poll::Ready(Err(busbar_contract::conn::ConnError::Closed))
+    );
+    pairing.sort(
+        super::Leg::Caller,
+        vec![got(8, b"kind: audio\r\n", true)],
+        Instant::now(),
+    );
+    assert_eq!(
+        Box::pin(pairing.wait_opening()).as_mut().poll(&mut cx),
+        Poll::Ready(Err(busbar_contract::conn::ConnError::Closed)),
+        "closed wins over late metadata"
+    );
+    let media = super::Pairing::new(Arc::new(Sink::default()), p("127.0.0.1:3478"));
+    media.sort(
+        super::Leg::Caller,
+        vec![got(9, b"kind: audio\r\n", true)],
+        Instant::now(),
+    );
+    assert_eq!(
+        Box::pin(media.wait_opening()).as_mut().poll(&mut cx),
+        Poll::Ready(Ok(()))
+    );
+}
+
 /// A connector serving the scripted dialling framer under `dg` and the identity framer under
 fn book() -> crate::Connector {
     book_begin(VecDeque::new())

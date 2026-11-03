@@ -4,15 +4,16 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
+use crate::host_services::VerifiedTicketIdentity;
 use busbar_contract::abi::plane::{units_bill, UnitCount};
-use busbar_contract::caps::ReasonCode;
-use busbar_contract::records::VirtualKey;
+use busbar_contract::caps::{Admittance, CallId, Grant, PrincipalId, ReasonCode};
+use busbar_contract::records::{RecordStore, VirtualKey};
 use busbar_contract::UnitKey;
 
 use super::cancel::{CancelBill, Checkpoint, MoneySeam};
 use crate::config::groups::ExhaustionMode;
 use crate::cost::CostModel;
-use crate::governance::GovState;
+use crate::governance::{AdmitGrant, GovState};
 use crate::teller::{Ended, UnitCtx};
 
 const NANOS_PER_MICRO: u128 = 1_000;
@@ -94,7 +95,232 @@ impl FeeRefund {
     }
 }
 
+/// Host-held provenance of a live admission. It cannot be constructed from a billing key.
+#[derive(Clone)]
+pub struct ParentMoney {
+    parent: UnitKey,
+    identity: Arc<()>,
+    money: Arc<UnitMoney>,
+    grant: Arc<AdmitGrant>,
+    account: Arc<FeeAccount>,
+}
+
+/// One actual admission reserved for a later child. Its financial participation is linear:
+/// dropping it releases the reservation; adopting it transfers that same participation.
+/// The composition root separately binds its capsule and original admission proof.
+pub struct ReservationMoney {
+    money: Arc<UnitMoney>,
+    grant: Arc<AdmitGrant>,
+    fee: FeeParticipation,
+    book: Arc<()>,
+}
+
+/// Linear host reservation bound to a verified ticket and actual source provenance.
+pub struct TicketReservation {
+    money: ReservationMoney,
+    id: String,
+    expires_at: u64,
+    key: Arc<VirtualKey>,
+    store: Arc<dyn RecordStore>,
+    source_call: CallId,
+    source_unit: UnitKey,
+    node_nonce: Arc<()>,
+    instance_nonce: Arc<()>,
+}
+
+/// Durable redemption has succeeded. Only kernel authentication can mint this wrapper.
+pub struct SpentTicketReservation(TicketReservation);
+
+pub struct ReturnedTicketReservation {
+    reason: ReasonCode,
+    reservation: Box<TicketReservation>,
+}
+
+impl ReturnedTicketReservation {
+    pub fn into_parts(self) -> (ReasonCode, TicketReservation) {
+        (self.reason, *self.reservation)
+    }
+}
+
+/// Proof of an already committed reserved admission, usable by one terminal posting.
+pub struct ReservedRequestLineage {
+    call: CallId,
+    unit: UnitKey,
+    principal: PrincipalId,
+}
+
+impl ReservedRequestLineage {
+    pub fn consume(self, ctx: &UnitCtx, principal: &PrincipalId) -> Result<(), ReasonCode> {
+        if self.call == ctx.call && self.unit == ctx.key && &self.principal == principal {
+            Ok(())
+        } else {
+            Err(ReasonCode::Unpriced)
+        }
+    }
+}
+
+impl TicketReservation {
+    pub fn matches(&self, identity: &VerifiedTicketIdentity) -> bool {
+        self.id == identity.id()
+            && self.expires_at == identity.expires_at()
+            && self.key.as_ref() == identity.principal().as_ref()
+            && Arc::ptr_eq(&self.store, identity.store())
+    }
+}
+
+impl SpentTicketReservation {
+    pub(crate) fn after_redemption(
+        reservation: TicketReservation,
+        principal: &VirtualKey,
+    ) -> Result<Self, ReturnedTicketReservation> {
+        if reservation.key.as_ref() != principal {
+            return Err(ReturnedTicketReservation {
+                reason: ReasonCode::Unpriced,
+                reservation: Box::new(reservation),
+            });
+        }
+        Ok(Self(reservation))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn adopt(
+        self,
+        money: &PlaneMoney,
+        ctx: &UnitCtx,
+        admit: &Grant<Admittance>,
+        principal: &PrincipalId,
+        expected_key: &VirtualKey,
+        lane: String,
+        classes: Arc<[String]>,
+        fee: FeeRefund,
+        node_nonce: &Arc<()>,
+        instance_nonce: &Arc<()>,
+        store: &Arc<dyn RecordStore>,
+    ) -> Result<ReservedRequestLineage, ReturnedTicketReservation> {
+        let reservation = self.0;
+        if !admit.bound_to(ctx.call)
+            || reservation.source_call == CallId::UNBOUND
+            || reservation.source_unit == ctx.key
+            || reservation.source_call == ctx.call
+            || principal != &PrincipalId::new(expected_key.id.clone())
+            || reservation.key.as_ref() != expected_key
+            || !Arc::ptr_eq(&reservation.node_nonce, node_nonce)
+            || !Arc::ptr_eq(&reservation.instance_nonce, instance_nonce)
+            || !Arc::ptr_eq(&reservation.store, store)
+            || !Arc::ptr_eq(&reservation.money.book, &money.book)
+        {
+            return Err(ReturnedTicketReservation {
+                reason: ReasonCode::Unpriced,
+                reservation: Box::new(reservation),
+            });
+        }
+        let TicketReservation {
+            money: reserved,
+            id,
+            expires_at,
+            key,
+            store,
+            source_call,
+            source_unit,
+            node_nonce,
+            instance_nonce,
+        } = reservation;
+        match money.adopt_reserved(reserved, ctx.key, lane, classes, fee, expected_key) {
+            Ok(()) => Ok(ReservedRequestLineage {
+                call: ctx.call,
+                unit: ctx.key,
+                principal: principal.clone(),
+            }),
+            Err(returned) => {
+                let (reason, reserved) = returned.into_parts();
+                Err(ReturnedTicketReservation {
+                    reason,
+                    reservation: Box::new(TicketReservation {
+                        money: reserved,
+                        id,
+                        expires_at,
+                        key,
+                        store,
+                        source_call,
+                        source_unit,
+                        node_nonce,
+                        instance_nonce,
+                    }),
+                })
+            }
+        }
+    }
+}
+
+/// An unsuccessful adoption returns the unchanged financial reservation for retry or cleanup.
+pub struct ReturnedReservation {
+    reason: ReasonCode,
+    reservation: ReservationMoney,
+}
+
+impl ReturnedReservation {
+    pub fn into_parts(self) -> (ReasonCode, ReservationMoney) {
+        (self.reason, self.reservation)
+    }
+}
+
+struct FeeState {
+    children: usize,
+    parent_refund: Option<bool>,
+    child_incurred: bool,
+}
+
+struct FeeAccount {
+    gov: Arc<GovState>,
+    money: Arc<UnitMoney>,
+    state: Mutex<FeeState>,
+}
+
+struct FeeParticipation {
+    account: Arc<FeeAccount>,
+    owner: bool,
+    refundable: bool,
+}
+
+impl Drop for FeeParticipation {
+    fn drop(&mut self) {
+        let refund = {
+            let mut state = locked(&self.account.state);
+            if self.owner {
+                state.parent_refund = Some(self.refundable);
+            } else {
+                state.children -= 1;
+                state.child_incurred |= !self.refundable;
+            }
+            state.children == 0 && state.parent_refund == Some(true) && !state.child_incurred
+        };
+        if refund {
+            let m = &self.account.money;
+            self.account.gov.refund_charge(&m.charge);
+            if let FeeRefund::PlaneFeeUnits(fees) = &m.fee {
+                for unit in fees
+                    .iter()
+                    .filter_map(|c| m.classes.get(*c as usize))
+                    .filter(|u| u.as_str() != busbar_contract::plane::PER_REQUEST)
+                {
+                    self.account.gov.refund_fee_unit_in_era(
+                        &m.cost,
+                        &m.key,
+                        &m.pool,
+                        m.arrived,
+                        unit,
+                        Some(m.charge.raw_era()),
+                    );
+                }
+            }
+        }
+    }
+}
+
 struct Open {
+    identity: Arc<()>,
+    grant: Option<Arc<AdmitGrant>>,
+    fee: FeeParticipation,
     money: Arc<UnitMoney>,
     last: Vec<UnitCount>,
     ledgered: bool,
@@ -109,11 +335,30 @@ struct Open {
     laned: bool,
 }
 
+impl Open {
+    fn new(money: Arc<UnitMoney>, grant: Option<Arc<AdmitGrant>>, fee: FeeParticipation) -> Self {
+        Self {
+            identity: Arc::new(()),
+            grant,
+            fee,
+            money,
+            last: Vec::new(),
+            ledgered: false,
+            abandoned: false,
+            finished: false,
+            session: false,
+            provider: None,
+            laned: false,
+        }
+    }
+}
+
 const SHARDS: usize = 16;
 
 type Shard = HashMap<UnitKey, Open>;
 
 pub struct PlaneMoney {
+    book: Arc<()>,
     gov: Arc<GovState>,
     post: Arc<dyn EndPost>,
 
@@ -124,6 +369,7 @@ impl PlaneMoney {
     #[must_use]
     pub fn new(gov: Arc<GovState>, post: Arc<dyn EndPost>) -> Self {
         PlaneMoney {
+            book: Arc::new(()),
             gov,
             post,
             units: std::array::from_fn(|_| Mutex::new(HashMap::new())),
@@ -140,19 +386,311 @@ impl PlaneMoney {
     }
 
     pub fn open(&self, key: UnitKey, money: UnitMoney) {
-        self.shard(key).insert(
-            key,
-            Open {
-                money: Arc::new(money),
-                last: Vec::new(),
-                ledgered: false,
-                abandoned: false,
-                finished: false,
-                session: false,
-                provider: None,
-                laned: false,
+        self.open_with_grant(key, money, None);
+    }
+
+    /// Register the actual governor admission, retaining its concurrency custody.
+    pub fn open_admitted(&self, key: UnitKey, mut money: UnitMoney, grant: Arc<AdmitGrant>) {
+        money.charge = grant.charge().clone();
+        self.open_with_grant(key, money, Some(grant));
+    }
+
+    fn open_with_grant(&self, key: UnitKey, money: UnitMoney, grant: Option<Arc<AdmitGrant>>) {
+        let money = Arc::new(money);
+        let account = Arc::new(FeeAccount {
+            gov: self.gov.clone(),
+            money: money.clone(),
+            state: Mutex::new(FeeState {
+                children: 0,
+                parent_refund: None,
+                child_incurred: false,
+            }),
+        });
+        let open = Open::new(
+            money,
+            grant,
+            FeeParticipation {
+                account,
+                owner: true,
+                refundable: false,
             },
         );
+        let replaced = {
+            let mut all = self.shard(key);
+            all.insert(key, open)
+        };
+        drop(replaced);
+    }
+
+    /// Capture a live, governor-backed parent for an already authenticated matching key.
+    /// The composition root also verifies its session's principal and route authority.
+    pub fn parent_money(
+        &self,
+        parent: UnitKey,
+        expected_key: &VirtualKey,
+    ) -> Result<ParentMoney, ReasonCode> {
+        let all = self.shard(parent);
+        let open = all.get(&parent).ok_or(ReasonCode::Unpriced)?;
+        if open.finished
+            || open.ledgered
+            || open.abandoned
+            || !open.fee.owner
+            || open.money.key.as_ref() != expected_key
+        {
+            return Err(ReasonCode::Unpriced);
+        }
+        let grant = open.grant.as_ref().ok_or(ReasonCode::Unpriced)?;
+        Ok(ParentMoney {
+            parent,
+            identity: open.identity.clone(),
+            money: open.money.clone(),
+            grant: grant.clone(),
+            account: open.fee.account.clone(),
+        })
+    }
+
+    /// Reserve real admission custody while the original unit remains live. The reservation
+    /// may later become one child after that original unit has settled and left this book.
+    pub fn reserve_admission(
+        &self,
+        parent: UnitKey,
+        expected_key: &VirtualKey,
+    ) -> Result<ReservationMoney, ReasonCode> {
+        let all = self.shard(parent);
+        let open = all.get(&parent).ok_or(ReasonCode::Unpriced)?;
+        if open.finished
+            || open.ledgered
+            || open.abandoned
+            || !open.fee.owner
+            || open.money.key.as_ref() != expected_key
+        {
+            return Err(ReasonCode::Unpriced);
+        }
+        let grant = open.grant.as_ref().ok_or(ReasonCode::Unpriced)?;
+        let account = open.fee.account.clone();
+        locked(&account.state).children += 1;
+        Ok(ReservationMoney {
+            money: open.money.clone(),
+            grant: grant.clone(),
+            fee: FeeParticipation {
+                account,
+                owner: false,
+                // Expiry incurs nothing and preserves the original unit's refund decision.
+                refundable: true,
+            },
+            book: self.book.clone(),
+        })
+    }
+
+    /// Must run inside the source cell's `with_admitted_call` transaction and once latch.
+    #[allow(clippy::too_many_arguments)]
+    pub fn reserve_ticket_admission(
+        &self,
+        parent: UnitKey,
+        source_call: CallId,
+        expected_key: &VirtualKey,
+        identity: &VerifiedTicketIdentity,
+        node_nonce: Arc<()>,
+        instance_nonce: Arc<()>,
+    ) -> Result<TicketReservation, ReasonCode> {
+        if source_call == CallId::UNBOUND || identity.principal().as_ref() != expected_key {
+            return Err(ReasonCode::Unpriced);
+        }
+        let reserved = self.reserve_admission(parent, expected_key)?;
+        Ok(TicketReservation {
+            money: reserved,
+            id: identity.id().to_owned(),
+            expires_at: identity.expires_at(),
+            key: identity.principal().clone(),
+            store: identity.store().clone(),
+            source_call,
+            source_unit: parent,
+            node_nonce,
+            instance_nonce,
+        })
+    }
+
+    /// Consume a real reserved admission once, without another governor admission. Errors
+    /// return the unchanged reservation. The root must first verify its capsule and bound proof.
+    pub fn adopt_reserved(
+        &self,
+        reservation: ReservationMoney,
+        child: UnitKey,
+        lane: String,
+        classes: Arc<[String]>,
+        fee: FeeRefund,
+        expected_key: &VirtualKey,
+    ) -> Result<(), ReturnedReservation> {
+        if !Arc::ptr_eq(&self.book, &reservation.book)
+            || reservation.money.key.as_ref() != expected_key
+        {
+            return Err(ReturnedReservation {
+                reason: ReasonCode::Unpriced,
+                reservation,
+            });
+        }
+        let mut all = self.shard(child);
+        if all.contains_key(&child) {
+            drop(all);
+            return Err(ReturnedReservation {
+                reason: ReasonCode::Unpriced,
+                reservation,
+            });
+        }
+        let mut money = reservation.money.as_ref().clone();
+        money.lane = lane;
+        money.classes = classes;
+        money.fee = fee;
+        let ReservationMoney { grant, mut fee, .. } = reservation;
+        // From this point it is an actual child, whose unterminated drop retains the fee.
+        fee.refundable = false;
+        let open = Open::new(Arc::new(money), Some(grant), fee);
+        all.insert(child, open);
+        drop(all);
+        Ok(())
+    }
+
+    /// Revalidate the captured parent's actual live admission and complete billing identity.
+    pub fn validate_parent(
+        &self,
+        parent: &ParentMoney,
+        expected_key: &VirtualKey,
+    ) -> Result<(), ReasonCode> {
+        let all = self.shard(parent.parent);
+        let open = all.get(&parent.parent).ok_or(ReasonCode::Unpriced)?;
+        if open.finished
+            || open.ledgered
+            || open.abandoned
+            || !open.fee.owner
+            || open.money.key.as_ref() != expected_key
+            || !Arc::ptr_eq(&open.identity, &parent.identity)
+            || !Arc::ptr_eq(&open.fee.account, &parent.account)
+            || !open
+                .grant
+                .as_ref()
+                .is_some_and(|g| Arc::ptr_eq(g, &parent.grant))
+        {
+            return Err(ReasonCode::Unpriced);
+        }
+        Ok(())
+    }
+
+    /// Verify a unit's own governor admission at the teller's terminal authority check.
+    /// Finished is expected there; billed, abandoned, or shared-child registrations do not qualify.
+    pub fn validate_admitted(
+        &self,
+        unit: UnitKey,
+        expected_key: &VirtualKey,
+        grant: &Arc<AdmitGrant>,
+    ) -> Result<(), ReasonCode> {
+        let all = self.shard(unit);
+        let open = all.get(&unit).ok_or(ReasonCode::Unpriced)?;
+        if open.ledgered
+            || open.abandoned
+            || !open.fee.owner
+            || open.money.key.as_ref() != expected_key
+            || !open.grant.as_ref().is_some_and(|g| Arc::ptr_eq(g, grant))
+        {
+            return Err(ReasonCode::Unpriced);
+        }
+        Ok(())
+    }
+
+    /// A registered child keeps its real admission after the parent closes. The driver marks
+    /// it finished before the teller's terminal authority check, so finished is permitted here.
+    /// The actual unsettled registration must still exist; a token alone cannot satisfy this.
+    pub fn validate_child(
+        &self,
+        parent: &ParentMoney,
+        child: UnitKey,
+        expected_key: &VirtualKey,
+    ) -> Result<(), ReasonCode> {
+        let all = self.shard(child);
+        let open = all.get(&child).ok_or(ReasonCode::Unpriced)?;
+        if open.ledgered
+            || open.abandoned
+            || open.fee.owner
+            || open.money.key.as_ref() != expected_key
+            || !Arc::ptr_eq(&open.fee.account, &parent.account)
+            || !open
+                .grant
+                .as_ref()
+                .is_some_and(|g| Arc::ptr_eq(g, &parent.grant))
+        {
+            return Err(ReasonCode::Unpriced);
+        }
+        Ok(())
+    }
+
+    /// Register ordinary child usage under the actual parent's admission and rate era.
+    /// Parent and child registration are checked under ordered shard locks.
+    pub fn open_child(
+        &self,
+        parent: &ParentMoney,
+        child: UnitKey,
+        lane: String,
+        classes: Arc<[String]>,
+        fee: FeeRefund,
+    ) -> Result<(), ReasonCode> {
+        if parent.parent == child {
+            return Err(ReasonCode::Unpriced);
+        }
+        let make_child = |open: &Open| -> Result<Open, ReasonCode> {
+            if !Arc::ptr_eq(&open.identity, &parent.identity)
+                || open.finished
+                || open.ledgered
+                || open.abandoned
+                || !open.fee.owner
+                || !open
+                    .grant
+                    .as_ref()
+                    .is_some_and(|g| Arc::ptr_eq(g, &parent.grant))
+            {
+                return Err(ReasonCode::Unpriced);
+            }
+            let mut money = parent.money.as_ref().clone();
+            money.lane = lane;
+            money.classes = classes;
+            money.fee = fee;
+            let account = open.fee.account.clone();
+            locked(&account.state).children += 1;
+            Ok(Open::new(
+                Arc::new(money),
+                Some(parent.grant.clone()),
+                FeeParticipation {
+                    account,
+                    owner: false,
+                    refundable: false,
+                },
+            ))
+        };
+        let parent_shard = (parent.parent.get() % SHARDS as u64) as usize;
+        let child_shard = (child.get() % SHARDS as u64) as usize;
+        if parent_shard == child_shard {
+            let mut all = self.shard(child);
+            if all.contains_key(&child) {
+                return Err(ReasonCode::Unpriced);
+            }
+            let open = make_child(all.get(&parent.parent).ok_or(ReasonCode::Unpriced)?)?;
+            all.insert(child, open);
+        } else {
+            let (mut first, mut second) = if parent_shard < child_shard {
+                (self.shard(parent.parent), self.shard(child))
+            } else {
+                (self.shard(child), self.shard(parent.parent))
+            };
+            let (parents, children) = if parent_shard < child_shard {
+                (&mut first, &mut second)
+            } else {
+                (&mut second, &mut first)
+            };
+            if children.contains_key(&child) {
+                return Err(ReasonCode::Unpriced);
+            }
+            let open = make_child(parents.get(&parent.parent).ok_or(ReasonCode::Unpriced)?)?;
+            children.insert(child, open);
+        }
+        Ok(())
     }
 
     pub fn settle_end(&self, key: UnitKey, caller_status: u32) {
@@ -167,7 +705,11 @@ impl PlaneMoney {
 
     pub fn settle_end_as(&self, key: UnitKey, end: UnitEnd) {
         let UnitEnd { caller_status, .. } = end;
-        let Some(open) = self.shard(key).remove(&key) else {
+        let removed = {
+            let mut all = self.shard(key);
+            all.remove(&key)
+        };
+        let Some(mut open) = removed else {
             return;
         };
         let m = &open.money;
@@ -177,29 +719,7 @@ impl PlaneMoney {
                 delivered
             });
         }
-        if m.fee.refunds(caller_status, &open.last) {
-            match &m.fee {
-                FeeRefund::CallerStatus => self.gov.refund_charge(&m.charge),
-
-                FeeRefund::PlaneFeeUnits(fees) => {
-                    self.gov.refund_charge(&m.charge);
-                    for unit in fees
-                        .iter()
-                        .filter_map(|c| m.classes.get(*c as usize))
-                        .filter(|u| u.as_str() != busbar_contract::plane::PER_REQUEST)
-                    {
-                        self.gov.refund_fee_unit_in_era(
-                            &m.cost,
-                            &m.key,
-                            &m.pool,
-                            m.arrived,
-                            unit,
-                            Some(m.charge.raw_era()),
-                        );
-                    }
-                }
-            }
-        }
+        open.fee.refundable = m.fee.refunds(caller_status, &open.last);
     }
 
     #[must_use]
@@ -359,40 +879,37 @@ impl MoneySeam for PlaneMoney {
     }
 
     fn cancelled(&self, ctx: &UnitCtx, bill: &CancelBill) {
-        let (money, provider) = {
+        let (money, provider, removed) = {
             let mut all = self.shard(ctx.key);
             let Some(open) = all.get_mut(&ctx.key) else {
                 return;
             };
-
             if open.ledgered || open.session {
                 return;
             }
             open.ledgered = true;
-            let money = (open.money.clone(), open.provider.clone());
-            if open.abandoned {
-                all.remove(&ctx.key);
-            }
-            money
+            let money = open.money.clone();
+            let provider = open.provider.clone();
+            let removed = if open.abandoned {
+                all.remove(&ctx.key)
+            } else {
+                None
+            };
+            (money, provider, removed)
         };
-
         self.bill(&money, provider.as_deref(), &bill.billed, bills);
+        drop(removed);
     }
 
     fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
-        let owed = {
+        let removed = {
             let mut all = self.shard(ctx.key);
             match all.get_mut(&ctx.key) {
                 Some(open) if !open.ledgered && open.finished => {
-                    let open = all.remove(&ctx.key);
-                    open.map(|o| {
-                        let counts = reported(&o.last);
-                        (o.money, o.provider, counts)
-                    })
+                    all.remove(&ctx.key).map(|open| (open, true))
                 }
                 Some(open) if open.ledgered || open.last.is_empty() => {
-                    all.remove(&ctx.key);
-                    None
+                    all.remove(&ctx.key).map(|open| (open, false))
                 }
                 Some(open) => {
                     open.abandoned = true;
@@ -401,8 +918,17 @@ impl MoneySeam for PlaneMoney {
                 None => None,
             }
         };
-        if let Some((money, provider, counts)) = owed {
-            self.bill(&money, provider.as_deref(), &counts, bills);
+        if let Some((open, owed)) = removed {
+            if owed {
+                self.bill(
+                    &open.money,
+                    open.provider.as_deref(),
+                    &reported(&open.last),
+                    bills,
+                );
+            }
+            // Fee participation and the actual grant always close outside the shard lock.
+            drop(open);
         }
         self.post.post(ctx, ended);
     }
@@ -424,7 +950,7 @@ impl MoneySeam for PlaneMoney {
     }
 
     fn session_ended(&self, ctx: &UnitCtx) {
-        let owed = {
+        let (money, provider, counts, removed) = {
             let mut all = self.shard(ctx.key);
             let Some(open) = all.get_mut(&ctx.key) else {
                 return;
@@ -433,18 +959,18 @@ impl MoneySeam for PlaneMoney {
                 return;
             }
             open.ledgered = true;
-            let owed = (
-                open.money.clone(),
-                open.provider.clone(),
-                reported(&open.last),
-            );
-            if open.abandoned {
-                all.remove(&ctx.key);
-            }
-            owed
+            let money = open.money.clone();
+            let provider = open.provider.clone();
+            let counts = reported(&open.last);
+            let removed = if open.abandoned {
+                all.remove(&ctx.key)
+            } else {
+                None
+            };
+            (money, provider, counts, removed)
         };
-        let (money, provider, counts) = owed;
         self.bill(&money, provider.as_deref(), &counts, bills);
+        drop(removed);
     }
 
     fn served(&self, ctx: &UnitCtx, member: &str, provider: &str) {
@@ -473,7 +999,7 @@ impl MoneySeam for PlaneMoney {
     }
 }
 
-fn locked(shard: &Mutex<Shard>) -> std::sync::MutexGuard<'_, Shard> {
+fn locked<T>(shard: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     shard
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

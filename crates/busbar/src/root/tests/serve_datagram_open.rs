@@ -430,6 +430,7 @@ fn arrival(
         gov: Default::default(),
         credential: None,
         ticket: None,
+        host_ticket_admission: None,
         app: g.app.clone(),
         scheme: 0,
         consumed_fields: Vec::new(),

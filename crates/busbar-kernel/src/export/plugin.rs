@@ -596,14 +596,17 @@ fn project_routes(
             }
             None => continue,
         };
-        // Record only a wholly withheld, opened public surface. Mixed or empty
-        // declarations cannot excuse an otherwise missing SERVE route.
+        // Persistent public routes are projected separately, before this policy
+        // withholds the remaining public surface. Require at least one such
+        // withheld route; persistent-only, empty or private surfaces stay strict.
         let wholly_withheld = opened.is_some()
             && !p.scrape
-            && !routes.is_empty()
-            && routes.iter().all(|route| {
-                public_routes.contains(&route.path) && !persistent_routes.contains(&route.path)
-            });
+            && routes
+                .iter()
+                .all(|route| public_routes.contains(&route.path))
+            && routes
+                .iter()
+                .any(|route| !persistent_routes.contains(&route.path));
         for route in routes {
             if persistent_routes.contains(&route.path) {
                 continue;

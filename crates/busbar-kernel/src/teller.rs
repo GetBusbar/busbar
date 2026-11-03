@@ -139,6 +139,14 @@ pub use crate::settlement::{
 };
 
 pub trait Units: UnitEnds {
+    /// Consume host custody once, only at the actual hold's terminal posting.
+    fn take_reserved_request_lineage(
+        &self,
+        _ctx: &UnitCtx,
+    ) -> Option<crate::plane_driver::ReservedRequestLineage> {
+        None
+    }
+
     fn govern<'a>(
         &'a self,
         ctx: &'a UnitCtx,
@@ -645,19 +653,74 @@ fn screened(seal: &KernelSeal, call: CallId, refusal: Refusal) -> Refusal {
 /// How a session opener left the door.
 #[derive(Debug)]
 pub enum SessionOpen {
-    /// The door passed. A session admits at [`Admission::ZeroHold`], so nothing was swapped into
-    /// the cell and there is nothing to settle. The caller opens its live carrier next: every turn
-    /// leg of the session is a route walk under this ONE admission, with this Route pass, inside
-    /// the destination set Verify sealed at the open (K6).
+    /// The door passed. Own admission stays installed until its returned terminal token is
+    /// finished; ZeroHold admission has no terminal token. Every carrier turn uses this route
+    /// pass and the destination set Verify sealed at the open (K6).
     Admitted {
         /// The session's Route pass, for its turn legs.
         route: Pass<Route>,
         /// The destination set sealed at the open.
         destinations: Vec<VerifiedDestination>,
+        /// Actual Own custody retained until the session's terminal posting.
+        own: Option<SessionOwn>,
     },
+    /// Own installation failed and its actual terminal posting must be handled by the host.
+    Settled(Ended),
     /// The door refused before any charge. The plane's own refusal was audited and encoded; nothing
     /// was charged and nothing settled.
     Refused,
+}
+
+/// Sole terminal authority for a session's actual installed Own hold.
+#[must_use = "the owning session must finish its actual hold on every exit"]
+pub struct SessionOwn {
+    lineage: Option<crate::plane_driver::ReservedRequestLineage>,
+    call: CallId,
+    unit: UnitKey,
+}
+
+impl std::fmt::Debug for SessionOwn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionOwn").finish_non_exhaustive()
+    }
+}
+
+impl SessionOwn {
+    /// Finish with the final actual usage evidence, including on cancellation.
+    pub fn finish(
+        self,
+        kernel: &Kernel,
+        ctx: &UnitCtx,
+        run: Run<'_>,
+        outcome: Outcome,
+        evidence: Evidence,
+    ) -> Ended {
+        if ctx.call != self.call || ctx.key != self.unit {
+            let seal = &kernel.seal;
+            let taken = run.cell.take(&Grant::<Exit>::mint_bound(seal, self.call));
+            run.leases.release_all(run.gauge);
+            return match taken {
+                None => Ended::AlreadySettled,
+                Some(hold) => {
+                    drop_arrival(hold);
+                    run.canary.settled();
+                    Ended::Settled {
+                        end: UnitEnd::seal(
+                            &Grant::<Exit>::mint_bound(seal, self.call),
+                            Outcome::Failed(StepName::Admit, ReasonCode::Replayed),
+                            Err(DurabilityLost::observed(
+                                &Grant::<DurableWrite>::mint_bound(seal, self.call),
+                                StepName::Admit,
+                            )),
+                        ),
+                        requests: 0,
+                        fee: 0,
+                    }
+                }
+            };
+        }
+        exit_evidence(kernel, ctx, run, outcome, true, evidence, self.lineage)
+    }
 }
 
 pub async fn open_unit<U: Units + ?Sized>(
@@ -666,10 +729,31 @@ pub async fn open_unit<U: Units + ?Sized>(
     ctx: &UnitCtx,
     run: Run<'_>,
 ) -> SessionOpen {
+    open_unit_with_screen(kernel, units, ctx, run, None).await
+}
+
+/// Open through the actual route's pre-admission screen, before any Own hold is admitted.
+pub async fn open_unit_screened<U: Units + ?Sized, R: RouteAwait + Sync>(
+    kernel: &Kernel,
+    units: &U,
+    ctx: &UnitCtx,
+    run: Run<'_>,
+    route: &R,
+) -> SessionOpen {
+    open_unit_with_screen(kernel, units, ctx, run, Some(route)).await
+}
+
+async fn open_unit_with_screen<U: Units + ?Sized>(
+    kernel: &Kernel,
+    units: &U,
+    ctx: &UnitCtx,
+    run: Run<'_>,
+    screens: Option<&(dyn RouteAwait + Sync)>,
+) -> SessionOpen {
     let seal = &kernel.seal;
     let bound_ctx = bound(kernel, ctx);
     let ctx = &bound_ctx;
-    match open_to_door(seal, units, ctx, &run, None).await {
+    match open_to_door(seal, units, ctx, &run, screens).await {
         Err(refusal) => {
             let outcome =
                 Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
@@ -677,12 +761,51 @@ pub async fn open_unit<U: Units + ?Sized>(
             SessionOpen::Refused
         }
 
-        Ok((_admission, destinations)) => {
+        Ok((admission, destinations)) => {
+            let own = match admission {
+                Admission::Own(hold) => {
+                    run.canary.draft_accepted();
+                    run.canary.hold_opened();
+                    match run
+                        .cell
+                        .admit(hold, &Grant::<Admittance>::mint_bound(seal, ctx.call))
+                    {
+                        Ok(arrival) => drop_arrival(arrival),
+                        Err(rejected) => {
+                            let reason = if rejected.error == CellError::CallMismatch {
+                                ReasonCode::Replayed
+                            } else {
+                                ReasonCode::InFlight
+                            };
+                            drop_arrival(rejected.hold);
+                            let outcome = Outcome::Failed(StepName::Admit, reason);
+                            sealed_end(seal, units, run.taps, ctx, &outcome, None);
+                            return SessionOpen::Settled(exit(
+                                kernel, units, ctx, run, outcome, false,
+                            ));
+                        }
+                    }
+                    Some(SessionOwn {
+                        lineage: units.take_reserved_request_lineage(ctx),
+                        call: ctx.call,
+                        unit: ctx.key,
+                    })
+                }
+                Admission::ZeroHold => None,
+                Admission::Accrual(accrual) => {
+                    drop(accrual);
+                    let refusal = Refusal::new(ReasonCode::InFlight);
+                    let outcome = Outcome::Failed(StepName::Admit, ReasonCode::InFlight);
+                    sealed_end(seal, units, run.taps, ctx, &outcome, Some(&refusal));
+                    return SessionOpen::Refused;
+                }
+            };
             let outcome = Outcome::Completed;
             sealed_end(seal, units, run.taps, ctx, &outcome, None);
             SessionOpen::Admitted {
                 route: Pass::<Route>::mint_bound(seal, ctx.call),
                 destinations,
+                own,
             }
         }
     }
@@ -924,18 +1047,60 @@ pub fn exit<U: Units + ?Sized>(
     outcome: Outcome,
     reached_admitted: bool,
 ) -> Ended {
-    let seal = &kernel.seal;
-
     let bound_ctx = bound(kernel, ctx);
-    let ctx = &bound_ctx;
+    let evidence = units.evidence(&bound_ctx);
+    let lineage = units.take_reserved_request_lineage(&bound_ctx);
+    exit_evidence(
+        kernel,
+        &bound_ctx,
+        run,
+        outcome,
+        reached_admitted,
+        evidence,
+        lineage,
+    )
+}
+
+fn exit_evidence(
+    kernel: &Kernel,
+    ctx: &UnitCtx,
+    run: Run<'_>,
+    outcome: Outcome,
+    reached_admitted: bool,
+    evidence: Evidence,
+    lineage: Option<crate::plane_driver::ReservedRequestLineage>,
+) -> Ended {
+    let seal = &kernel.seal;
     let taken = run.cell.take(&Grant::<Exit>::mint_bound(seal, ctx.call));
     run.leases.release_all(run.gauge);
     match taken {
         None => Ended::AlreadySettled,
         Some(hold) => {
-            let evidence = units.evidence(ctx);
             let Written { amount, flags, fee } = settle_written(&outcome, &evidence);
-            let drawn = requests_drawn(ctx.origin, evidence.upstream_candidate);
+            let drawn = match crate::settlement::requests_drawn_with_lineage(
+                ctx,
+                hold.principal(),
+                evidence.upstream_candidate,
+                lineage,
+            ) {
+                Ok(drawn) => drawn,
+                Err(reason) => {
+                    drop_arrival(hold);
+                    run.canary.settled();
+                    return Ended::Settled {
+                        end: UnitEnd::seal(
+                            &Grant::<Exit>::mint_bound(seal, ctx.call),
+                            Outcome::Failed(StepName::Admit, reason),
+                            Err(DurabilityLost::observed(
+                                &Grant::<DurableWrite>::mint_bound(seal, ctx.call),
+                                StepName::Admit,
+                            )),
+                        ),
+                        requests: 0,
+                        fee: 0,
+                    };
+                }
+            };
             let requests = requests_settled(reached_admitted, drawn);
             let class = evidence.class.unwrap_or(KERNEL_ACCRUAL_CLASS);
             let lines = vec![UsageLine {

@@ -129,6 +129,8 @@ pub struct Node {
     usage_token: busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
 
     dispatch: Arc<dyn crate::root::transports::PlaneDispatch>,
+
+    pub(crate) ticket_custody: Arc<crate::root::serve::TicketCustody>,
 }
 
 impl std::fmt::Debug for Node {
@@ -172,6 +174,7 @@ impl Node {
             mono: AtomicU64::new(0),
 
             dispatch: Arc::new(crate::root::transports::DrivenOnce::new()),
+            ticket_custody: crate::root::serve::TicketCustody::new(),
         }
     }
 
@@ -255,29 +258,44 @@ impl Node {
         seal: Option<impl Into<Sealing>>,
         lines: Vec<RecordLine>,
     ) {
-        let Some(book) = self.book.get() else {
+        let Some(seal) = seal.map(Into::<Sealing>::into) else {
             return;
         };
+        let key = seal.seal.key;
+        let completed =
+            matches!(&ended, Ended::Settled { end, .. } if end.outcome().is_completed());
+        let receipt = self.seal_end_ack(principal, arrived, card, ended, seal, lines);
+        self.ticket_custody
+            .terminal(key, completed && receipt.is_some());
+    }
+
+    fn seal_end_ack(
+        &self,
+        principal: &PrincipalId,
+        arrived: Arrived,
+        card: Option<&crate::root::kernel::PinnedHistory>,
+        ended: busbar_kernel::teller::Ended,
+        seal: Sealing,
+        lines: Vec<RecordLine>,
+    ) -> Option<busbar_kernel_audit::AuditRecord> {
+        let book = self.book.get()?;
         let busbar_kernel::teller::Ended::Settled { end, .. } = ended else {
-            return;
+            return None;
         };
         let outcome = end.outcome();
-        if end.into_posted().is_err() {
-            return;
-        }
-        if let Some(seal) = seal.map(Into::<Sealing>::into) {
-            seal.seal(
-                book,
-                &self.durability_token,
-                principal,
-                arrived,
-                card,
-                outcome,
-                lines,
-                0,
-                None,
-            );
-        }
+        end.into_posted().ok()?;
+        seal.seal(
+            book,
+            &self.durability_token,
+            principal,
+            arrived,
+            card,
+            outcome,
+            lines,
+            0,
+            None,
+        )
+        .ok()
     }
 
     pub fn sweep(&self, now: Arrived) -> usize {
@@ -439,6 +457,7 @@ impl Node {
             admin_listener: false,
             kernel_verb_only: false,
         };
+        self.ticket_custody.bind_source(&ctx, &slot);
         let ended = busbar_kernel::teller::run_unit_async(
             &self.kernel,
             units,
@@ -484,7 +503,7 @@ impl Node {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn open_borrowed<'n, U: Units>(
+    pub async fn open_borrowed<'n, U: Units + RouteAwait>(
         &'n self,
         key: UnitKey,
         arrived: Arrived,
@@ -536,7 +555,8 @@ impl Node {
             admin_listener: false,
             kernel_verb_only: false,
         };
-        let opened = busbar_kernel::teller::open_unit(
+        self.ticket_custody.bind_source(&ctx, &slot);
+        let opened = busbar_kernel::teller::open_unit_screened(
             &self.kernel,
             units,
             &ctx,
@@ -549,20 +569,62 @@ impl Node {
                 meter: &meter,
                 taps: Some(post),
             },
+            units,
         )
         .await;
 
-        if let busbar_kernel::teller::SessionOpen::Admitted { destinations, .. } = &opened {
-            post.routed(key, destinations);
-        }
-
+        let (opened, own) = match opened {
+            busbar_kernel::teller::SessionOpen::Admitted {
+                route,
+                destinations,
+                own,
+            } => {
+                post.routed(key, &destinations);
+                (
+                    busbar_kernel::teller::SessionOpen::Admitted {
+                        route,
+                        destinations,
+                        own: None,
+                    },
+                    own,
+                )
+            }
+            busbar_kernel::teller::SessionOpen::Settled(ended) => {
+                if let Some(open) = post.take(key) {
+                    self.seal_session(key, open, Some(ended));
+                }
+                (busbar_kernel::teller::SessionOpen::Refused, None)
+            }
+            busbar_kernel::teller::SessionOpen::Refused => {
+                (busbar_kernel::teller::SessionOpen::Refused, None)
+            }
+        };
         if let Some(op_class) = post.door_class(key) {
             occupied.op_class = op_class;
         }
-        Some((opened, ctx, SessionSlot { occupied, key }))
+        let session = SessionSlot {
+            occupied,
+            key,
+            ctx: ctx.clone(),
+            meter,
+            own,
+            money: None,
+        };
+        Some((opened, ctx, session))
     }
 
-    fn seal_session(&self, key: UnitKey, open: OpenUnit) {
+    fn seal_session(&self, key: UnitKey, mut open: OpenUnit, ended: Option<Ended>) {
+        if let Some(ended) = ended {
+            let Ended::Settled { end, .. } = ended else {
+                self.ticket_custody.terminal(key, false);
+                return;
+            };
+            open.sealing.said = Some(end.outcome());
+            if end.into_posted().is_err() {
+                self.ticket_custody.terminal(key, false);
+                return;
+            }
+        }
         let Some(book) = self.book.get() else {
             return;
         };
@@ -583,7 +645,7 @@ impl Node {
         let (lines, fee_count) = report
             .as_ref()
             .map_or((Vec::new(), 0), |r| (report_lines(r), r.fee_count));
-        seal.seal(
+        let acknowledged = seal.seal(
             book,
             &self.durability_token,
             &principal,
@@ -594,6 +656,8 @@ impl Node {
             fee_count,
             report.as_ref().map(|r| r.lane.as_str()),
         );
+        self.ticket_custody
+            .terminal(key, outcome.is_completed() && acknowledged.is_ok());
     }
 
     #[must_use]
@@ -750,6 +814,7 @@ impl Node {
         let late = late?;
         Some(LateAccrual {
             book: Arc::clone(book),
+            custody: Arc::clone(&self.ticket_custody),
             history,
 
             durability_token: self.kernel.durability_token(),
@@ -795,6 +860,7 @@ impl Report {
 }
 
 struct LateAccrual {
+    custody: Arc<crate::root::serve::TicketCustody>,
     book: Arc<Mutex<crate::root::durability::Durability>>,
 
     history: crate::root::kernel::PinnedHistory,
@@ -822,6 +888,7 @@ impl LateAccrual {
 
     fn post(self) {
         let LateAccrual {
+            custody,
             book,
             history,
             durability_token,
@@ -840,7 +907,8 @@ impl LateAccrual {
         let (Some(seal), Some(outcome)) = (seal, outcome) else {
             return;
         };
-        match report {
+        let key = seal.seal.key;
+        let acknowledged = match report {
             Some(report) => seal.seal(
                 &book,
                 &durability_token,
@@ -864,8 +932,12 @@ impl LateAccrual {
                 0,
                 None,
             ),
-            None => {}
-        }
+            None => {
+                custody.terminal(key, false);
+                return;
+            }
+        };
+        custody.terminal(key, posted && completed && acknowledged.is_ok());
     }
 }
 
@@ -956,6 +1028,13 @@ struct Lost {
 pub struct SessionSlot<'n> {
     occupied: Occupied<'n>,
     key: UnitKey,
+    ctx: UnitCtx,
+    meter: Arc<AccrualMeter>,
+    own: Option<busbar_kernel::teller::SessionOwn>,
+    money: Option<(
+        std::sync::Weak<busbar_kernel::plane_driver::PlaneMoney>,
+        crate::root::door_steps::DoorFacts,
+    )>,
 }
 
 impl std::fmt::Debug for SessionSlot<'_> {
@@ -967,11 +1046,101 @@ impl std::fmt::Debug for SessionSlot<'_> {
 }
 
 impl SessionSlot<'_> {
+    pub(crate) fn with_money(
+        mut self,
+        money: &Arc<busbar_kernel::plane_driver::PlaneMoney>,
+        facts: &crate::root::door_steps::DoorFacts,
+    ) -> Self {
+        self.money = Some((Arc::downgrade(money), facts.clone()));
+        self
+    }
+
+    fn money_report(&self) -> Option<crate::root::linked::node::Reported> {
+        let (money, facts) = self.money.as_ref()?;
+        let money = money.upgrade()?;
+        crate::root::serve::report_of(money.as_ref(), self.key, facts)
+    }
+
     pub fn finish(mut self, post: &NodeEndPost) {
-        if let Some(open) = post.take(self.key) {
-            self.occupied.node.seal_session(self.key, open);
+        self.finish_inner(post, None, Evidence::default());
+    }
+
+    pub fn finish_with<U: Units>(mut self, post: &NodeEndPost, units: &U) {
+        let evidence = units.evidence(&self.ctx);
+        self.finish_inner(post, None, evidence);
+    }
+
+    fn finish_inner(
+        &mut self,
+        post: &NodeEndPost,
+        override_outcome: Option<Outcome>,
+        evidence: Evidence,
+    ) {
+        let node = self.occupied.node;
+        let mut open = post.take(self.key);
+        if let Some(open) = open.as_mut() {
+            if open.sealing.report.is_none() {
+                open.sealing.report = self.money_report().map(Report::of);
+            }
+        }
+        let outcome = override_outcome
+            .or_else(|| open.as_ref().and_then(|o| o.sealing.said))
+            .unwrap_or(Outcome::Aborted(busbar_contract::caps::Abort::Kernel {
+                reason: busbar_contract::caps::ReasonCode::ClientGone,
+            }));
+        let ended = self.own.take().map(|own| {
+            own.finish(
+                &node.kernel,
+                &self.ctx,
+                busbar_kernel::teller::Run {
+                    cell: self.occupied.slot.cell(),
+                    parent: None,
+                    leases: self.occupied.slot.leases(),
+                    gauge: &node.gauge,
+                    canary: &node.canary,
+                    meter: &self.meter,
+                    taps: None,
+                },
+                outcome,
+                evidence,
+            )
+        });
+        if let Some(open) = open {
+            node.seal_session(self.key, open, ended);
+        } else {
+            node.ticket_custody.terminal(self.key, false);
         }
         self.occupied.reached_end = true;
+    }
+}
+
+impl Drop for SessionSlot<'_> {
+    fn drop(&mut self) {
+        if self.own.is_some() {
+            if let Some(post) = self.occupied.post {
+                let evidence = self
+                    .money_report()
+                    .map(|(_, fee_units, _)| Evidence {
+                        fee_units,
+                        ..Evidence::default()
+                    })
+                    .unwrap_or_default();
+                self.finish_inner(
+                    post,
+                    Some(Outcome::Aborted(busbar_contract::caps::Abort::Kernel {
+                        reason: busbar_contract::caps::ReasonCode::ClientGone,
+                    })),
+                    evidence,
+                );
+                if let Some(money) = self.money.as_ref().and_then(|(money, _)| money.upgrade()) {
+                    busbar_kernel::plane_driver::MoneySeam::abandoned(
+                        &*money,
+                        &self.ctx,
+                        Ended::AlreadySettled,
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -1197,6 +1366,10 @@ impl NodeEndPost {
         if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.said = Some(outcome);
         }
+    }
+
+    pub(crate) fn completed(&self, key: UnitKey) {
+        self.ended_as(key, Outcome::Completed);
     }
 
     pub fn stopped(&self, key: UnitKey, reason: busbar_contract::caps::ReasonCode) {
@@ -1434,7 +1607,7 @@ impl Sealing {
         lines: Vec<RecordLine>,
         fee_count: u32,
         served: Option<&str>,
-    ) {
+    ) -> Result<busbar_kernel_audit::AuditRecord, busbar_contract::caps::DurabilityLost> {
         let Sealing { seal, ran } = self;
         let refused = matches!(outcome, Outcome::Refused(..));
 
@@ -1487,7 +1660,7 @@ impl Sealing {
             let journalled = book.journal.next_seq() > before;
             (sealed, journalled)
         };
-        if let Err(lost) = sealed {
+        if let Err(lost) = &sealed {
             if journalled {
                 tracing::warn!(
                     step = lost.step().as_str(),
@@ -1504,6 +1677,7 @@ impl Sealing {
                 );
             }
         }
+        sealed
     }
 }
 

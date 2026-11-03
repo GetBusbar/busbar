@@ -171,6 +171,7 @@ fn a_tickets_lifetime_is_held_under_the_ceiling_and_its_keys_expiry() {
 struct RuleCarryingOnly(
     Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     Option<Arc<offload_tests::PausedStore>>,
+    Option<&'static str>,
 );
 
 mod rule_carrying_only {
@@ -257,6 +258,11 @@ mod rule_carrying_only {
             self.0.list_audit_tail(limit)
         }
         fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+            if self.2 == Some("upsert") {
+                return Err(busbar_contract::records::RecordStoreError(
+                    "injected upsert failure".into(),
+                ));
+            }
             self.0.upsert_plane_record(record)
         }
         fn get_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
@@ -296,6 +302,11 @@ mod rule_carrying_only {
             expires_at: u64,
             now: u64,
         ) -> RecordStoreResult<bool> {
+            if self.2 == Some("redeem") {
+                return Err(busbar_contract::records::RecordStoreError(
+                    "injected redeem failure".into(),
+                ));
+            }
             self.0.redeem_plane_token(kind, token, expires_at, now)
         }
         fn plane_token_live(
@@ -327,7 +338,7 @@ fn a_lapsed_tickets_record_goes_through_the_rule_carrying_purge_on_the_next_mint
     let memory = crate::real_store::store();
     let signer = TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID);
     let g = GovState::new_with_signer(
-        Arc::new(RuleCarryingOnly(Arc::clone(&memory), None)),
+        Arc::new(RuleCarryingOnly(Arc::clone(&memory), None, None)),
         None,
         Some(signer),
     )
@@ -444,3 +455,125 @@ fn ticket_preflight_and_first_admission_include_the_store_deadline_second() {
 
 #[path = "ticket_offload_tests.rs"]
 mod offload_tests;
+
+#[test]
+fn host_binding_precedes_publication_and_failed_binding_removes_the_record() {
+    let now = crate::store::now();
+    let g = gov();
+    let (id, _) = key(&g, now + 86_400);
+    let mut bound_id = String::new();
+    let result = g.mint_ticket_bound(&id, PREFIX, 600, None, b"opaque", now, |identity| {
+        assert_eq!(identity.principal().id, id);
+        assert_eq!(identity.expires_at(), now + 600);
+        assert!(Arc::ptr_eq(identity.store(), &g.store()));
+        assert_eq!(
+            g.store()
+                .get_plane_record(super::TICKET_RECORD_KIND, identity.id())
+                .unwrap(),
+            Some(b"opaque".to_vec())
+        );
+        bound_id = identity.id().to_owned();
+        Err(TicketRefusal::NotKept)
+    });
+    assert_eq!(result, Err(TicketRefusal::NotKept));
+    assert!(!bound_id.is_empty());
+    assert!(g
+        .store()
+        .get_plane_record(super::TICKET_RECORD_KIND, &bound_id)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn store_failure_never_calls_host_binding_and_failed_spend_returns_no_record() {
+    let now = crate::store::now();
+    for fault in ["upsert", "redeem"] {
+        let memory = crate::real_store::store();
+        let signer = TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID);
+        let g = GovState::new_with_signer(
+            Arc::new(RuleCarryingOnly(memory, None, Some(fault))),
+            None,
+            Some(signer),
+        )
+        .unwrap();
+        let (id, _) = key(&g, now + 86_400);
+        let mut bound = false;
+        let minted = g.mint_ticket_bound(&id, PREFIX, 600, None, b"opaque", now, |_| {
+            bound = true;
+            Ok(())
+        });
+        if fault == "upsert" {
+            assert_eq!(minted, Err(TicketRefusal::NotKept));
+            assert!(!bound);
+        } else {
+            let (ticket, _) = minted.unwrap();
+            assert!(bound);
+            let identity = g.prepare_ticket_redemption(PREFIX, &ticket, now).unwrap();
+            assert!(g.redeem_verified_ticket(identity, now).is_none());
+        }
+    }
+}
+
+#[test]
+fn prepared_identity_is_store_bound_revalidated_and_spent_once() {
+    let now = crate::store::now();
+    let g = gov();
+    let (id, _) = key(&g, now + 86_400);
+    let (ticket, _) = g
+        .mint_ticket(&id, PREFIX, 600, None, b"opaque", now)
+        .unwrap();
+    let identity = g.prepare_ticket_redemption(PREFIX, &ticket, now).unwrap();
+    let other = gov();
+    assert!(other.redeem_verified_ticket(identity, now).is_none());
+    let identity = g.prepare_ticket_redemption(PREFIX, &ticket, now).unwrap();
+    let simultaneous = g.prepare_ticket_redemption(PREFIX, &ticket, now).unwrap();
+    let barrier = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        let left = scope.spawn(|| {
+            barrier.wait();
+            g.redeem_verified_ticket(identity, now)
+        });
+        let right = scope.spawn(|| {
+            barrier.wait();
+            g.redeem_verified_ticket(simultaneous, now)
+        });
+        let winners: Vec<_> = [left.join().unwrap(), right.join().unwrap()]
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(winners.len(), 1);
+        assert_eq!(winners[0].1, b"opaque");
+    });
+
+    let (ticket, _) = g
+        .mint_ticket(&id, PREFIX, 600, None, b"rotated", now)
+        .unwrap();
+    let identity = g.prepare_ticket_redemption(PREFIX, &ticket, now).unwrap();
+    g.rotate_key(&id, now + 86_400).unwrap().unwrap();
+    assert!(g.redeem_verified_ticket(identity, now).is_none());
+    assert!(g.prepare_ticket_redemption(PREFIX, &ticket, now).is_none());
+}
+
+#[test]
+fn prepared_identity_rejects_expired_or_tampered_credentials_and_redacts_debug() {
+    let now = crate::store::now();
+    let g = gov();
+    let (id, _) = key(&g, now + 86_400);
+    let (expired, _) = g
+        .mint_ticket(&id, PREFIX, 10, None, b"expired", now - 11)
+        .unwrap();
+    assert!(g.prepare_ticket_redemption(PREFIX, &expired, now).is_none());
+    let (ticket, _) = g
+        .mint_ticket(&id, PREFIX, 600, None, b"opaque", now)
+        .unwrap();
+    let identity = g.prepare_ticket_redemption(PREFIX, &ticket, now).unwrap();
+    let debug = format!("{identity:?}");
+    assert!(!debug.contains(&ticket));
+    assert!(!debug.contains(identity.id()));
+    assert!(!debug.contains(&identity.principal().generation_hash));
+    let mut tampered = ticket;
+    tampered.push('x');
+    assert!(g
+        .prepare_ticket_redemption(PREFIX, &tampered, now)
+        .is_none());
+}

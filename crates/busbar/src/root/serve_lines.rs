@@ -318,6 +318,7 @@ where
                     .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec())),
 
                 ticket: None,
+                host_ticket_admission: None,
                 app: app.load(),
 
                 scheme: busbar_contract::abi::host::service::SCHEME_PLAIN,

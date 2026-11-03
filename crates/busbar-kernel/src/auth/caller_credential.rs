@@ -17,6 +17,8 @@ pub struct ConsumedCredentials {
     /// The record of the TICKET the gate spent admitting the caller (row 132); `None` when a key
     /// (or nothing) admitted it. Handed to the unit once, for `ticket.take`.
     pub ticket: Option<Vec<u8>>,
+    /// Host custody is shared across context clones and removable exactly once.
+    pub host_ticket_admission: Option<crate::host_services::HostTicketAdmission>,
 }
 
 impl ConsumedCredentials {

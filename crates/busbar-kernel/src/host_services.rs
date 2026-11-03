@@ -439,7 +439,96 @@ pub struct InstanceFacts {
     pub ticket_prefix: Option<String>,
 }
 
+/// Verified, in-process ticket identity. Its credential remains host-private and zeroised.
+/// This value is deliberately not clonable; durable redemption still enforces single use.
+pub struct VerifiedTicketIdentity {
+    pub(crate) id: String,
+    pub(crate) principal: Arc<busbar_contract::records::VirtualKey>,
+    pub(crate) expires_at: u64,
+    pub(crate) store: Arc<dyn RecordStore>,
+    pub(crate) prefix: String,
+    pub(crate) credential: zeroize::Zeroizing<String>,
+}
+
+impl VerifiedTicketIdentity {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn principal(&self) -> &Arc<busbar_contract::records::VirtualKey> {
+        &self.principal
+    }
+    pub fn expires_at(&self) -> u64 {
+        self.expires_at
+    }
+    pub fn store(&self) -> &Arc<dyn RecordStore> {
+        &self.store
+    }
+    pub fn prefix(&self) -> &str {
+        &self.prefix
+    }
+}
+
+impl std::fmt::Debug for VerifiedTicketIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VerifiedTicketIdentity")
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Host policy classifies an authenticated ticket before its durable single-use spend.
+/// Only a real reservation grants reservation-backed financial authority.
+pub enum TicketClaimDisposition {
+    Ordinary,
+    Reserved(crate::plane_driver::TicketReservation),
+    Refused,
+}
+
+/// Shared request contexts carry one removable, durably spent reservation.
+/// Cloning this holder shares custody; it never clones the reservation itself.
+#[derive(Clone)]
+pub struct HostTicketAdmission(Arc<Mutex<Option<crate::plane_driver::SpentTicketReservation>>>);
+
+impl HostTicketAdmission {
+    pub(crate) fn new(spent: crate::plane_driver::SpentTicketReservation) -> Self {
+        Self(Arc::new(Mutex::new(Some(spent))))
+    }
+
+    pub fn take(&self) -> Option<crate::plane_driver::SpentTicketReservation> {
+        // A poisoned holder fails closed. In either case no financial destructor runs
+        // while the mutex is held: the removed token is returned to the caller.
+        let mut held = self.0.lock().ok()?;
+        held.take()
+    }
+}
+
+impl std::fmt::Debug for HostTicketAdmission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostTicketAdmission")
+            .finish_non_exhaustive()
+    }
+}
+
 pub trait TicketPress: Send + Sync {
+    /// Mint with the host's exact admitted unit and caller identity. Reservation-aware presses
+    /// override this method and bind custody before returning the credential.
+    // Keep the admitted unit, caller and full principal explicit at this authority boundary.
+    // These host bindings extend the existing mint inputs without changing its request schema.
+    #[allow(clippy::too_many_arguments)]
+    fn mint_for_unit(
+        &self,
+        unit: u64,
+        caller: &Caller,
+        principal: &Arc<busbar_contract::records::VirtualKey>,
+        prefix: &str,
+        ttl_secs: u64,
+        record: &[u8],
+        now: u64,
+    ) -> Result<(String, u64), &'static str> {
+        let _ = (unit, caller);
+        self.mint(&principal.id, prefix, ttl_secs, record, now)
+    }
+
     fn mint(
         &self,
         key_id: &str,
@@ -2104,10 +2193,10 @@ impl HostServices for KernelServices {
         ttl_secs: u64,
         record: &[u8],
     ) -> Stored {
-        let Some(key) = unit
-            .and_then(|u| self.units.get(u))
-            .and_then(|r| r.principal.clone())
-        else {
+        let Some(unit) = unit else {
+            return Stored::refused(TICKET_NO_PRINCIPAL);
+        };
+        let Some(key) = self.units.get(unit).and_then(|r| r.principal.clone()) else {
             return Stored::refused(TICKET_NO_PRINCIPAL);
         };
         let Some(prefix) = self.facts(caller).and_then(|f| f.ticket_prefix.clone()) else {
@@ -2117,7 +2206,7 @@ impl HostServices for KernelServices {
             return Stored::refused(TICKET_NO_PRESS);
         };
         let now = (self.wall_ms)() / 1000;
-        match press.mint(&key.id, &prefix, ttl_secs, record, now) {
+        match press.mint_for_unit(unit, caller, &key, &prefix, ttl_secs, record, now) {
             Ok((ticket, expires_at)) => Stored {
                 bytes: ticket.into_bytes(),
                 spans: Vec::new(),

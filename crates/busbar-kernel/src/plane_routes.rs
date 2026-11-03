@@ -162,6 +162,8 @@ pub struct PlaneReqCtx {
 
     pub ticket: Option<Vec<u8>>,
 
+    pub host_ticket_admission: Option<crate::host_services::HostTicketAdmission>,
+
     pub consumed_fields: Vec<(String, String)>,
 
     pub engine: Arc<dyn Any + Send + Sync>,

@@ -85,14 +85,13 @@ impl Drop for Reap {
     }
 }
 
-fn request(port: u16, body: &str) -> Option<u16> {
+fn request(port: u16, path: &str, body: &str) -> Option<u16> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream
         .set_read_timeout(Some(Duration::from_secs(20)))
         .ok()?;
-    // The named pool creates the real arrival parent; bare OpenAI ingress has none.
     let req = format!(
-        "POST /span-pool/v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\ncontent-type: application/json\r\n\
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\ncontent-type: application/json\r\n\
          content-length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
@@ -171,7 +170,8 @@ fn real_producer_span_records_survive_both_otlp_doors() {
     let log_path = dir.join("out.log");
     let read_log = || std::fs::read_to_string(&log_path).unwrap_or_default();
 
-    let body = r#"{"model":"test-model","max_tokens":1,"seed":17,"frequency_penalty":0.5,"messages":[{"role":"user","content":"hi"}]}"#;
+    let openai_body = r#"{"model":"test-model","max_tokens":1,"seed":17,"frequency_penalty":0.5,"messages":[{"role":"user","content":"hi"}]}"#;
+    let gemini_body = r#"{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":1,"seed":17,"frequencyPenalty":0.5}}"#;
 
     let log = std::fs::File::create(&log_path).unwrap();
     let mut child = Reap(
@@ -181,27 +181,6 @@ fn real_producer_span_records_survive_both_otlp_doors() {
             .spawn()
             .expect("spawn busbar"),
     );
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let mut served = 0;
-    while served < 3 {
-        if let Some(status) = child.0.try_wait().expect("try_wait") {
-            panic!("busbar exited ({status}) before serving:\n{}", read_log());
-        }
-        assert!(Instant::now() < deadline, "no data door:\n{}", read_log());
-        match request(data_port, body) {
-            Some(status) => {
-                assert_eq!(
-                    status,
-                    200,
-                    "the request must reach the cross-dialect writer:\n{}",
-                    read_log()
-                );
-                served += 1;
-            }
-            None => std::thread::sleep(Duration::from_millis(100)),
-        }
-    }
-
     let forwards = |path| {
         common::otlp::spans(&common::otlp::requests(&seen, Some(path)))
             .into_iter()
@@ -211,58 +190,118 @@ fn real_producer_span_records_survive_both_otlp_doors() {
     let parents = |path| {
         common::otlp::spans(&common::otlp::requests(&seen, Some(path)))
             .into_iter()
-            .filter(|span| span.name == "named")
+            .filter(|span| span.name == "gemini_ingress")
             .collect::<Vec<_>>()
     };
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while forwards(LINKED_PATH).len() < served
-        || forwards(DROPPED_PATH).len() < served
-        || parents(LINKED_PATH).len() < served
-        || parents(DROPPED_PATH).len() < served
-    {
-        assert!(
-            Instant::now() < deadline,
-            "forward spans and their named arrival parents did not reach both collectors:\n{}",
-            read_log()
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let linked = forwards(LINKED_PATH);
-    let dropped = forwards(DROPPED_PATH);
-    let linked_parents = parents(LINKED_PATH);
-    let dropped_parents = parents(DROPPED_PATH);
-    for span in &linked {
-        assert_full_record(span);
-        let parent = linked_parents
-            .iter()
-            .find(|parent| {
-                parent.span_id == span.parent_span_id && parent.trace_id == span.trace_id
-            })
-            .expect("the forward's parent must be the real named-pool arrival on its trace");
+    let names = |path| {
+        common::otlp::spans(&common::otlp::requests(&seen, Some(path)))
+            .into_iter()
+            .map(|span| (span.name, span.parent_span_id.len()))
+            .collect::<Vec<_>>()
+    };
+    let mut verified = std::collections::BTreeSet::new();
+    let mut served = 0;
+    // Preserve the original real OpenAI-to-Anthropic event control. Its forward is
+    // a root span under the 1.5.5 entry facts. Gemini adds a real arrival parent.
+    for (path, body, has_parent) in [
+        ("/v1/chat/completions", openai_body, false),
+        (
+            "/v1beta/models/span-pool:generateContent",
+            gemini_body,
+            true,
+        ),
+    ] {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        for _ in 0..3 {
+            loop {
+                if let Some(status) = child.0.try_wait().expect("try_wait") {
+                    panic!("busbar exited ({status}) before serving:\n{}", read_log());
+                }
+                assert!(Instant::now() < deadline, "no data door:\n{}", read_log());
+                if let Some(status) = request(data_port, path, body) {
+                    assert_eq!(
+                        status,
+                        200,
+                        "the request must reach the cross-dialect writer:\n{}",
+                        read_log()
+                    );
+                    served += 1;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while forwards(LINKED_PATH).len() < served
+            || forwards(DROPPED_PATH).len() < served
+            || (has_parent && (parents(LINKED_PATH).len() < 3 || parents(DROPPED_PATH).len() < 3))
+        {
+            assert!(
+                Instant::now() < deadline,
+                "producer records for {path} did not reach both collectors: linked {:?}, dropped {:?}\n{}",
+                names(LINKED_PATH), names(DROPPED_PATH), read_log()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let linked: Vec<_> = forwards(LINKED_PATH)
+            .into_iter()
+            .filter(|span| !verified.contains(&span.span_id))
+            .collect();
         assert_eq!(
-            attribute(&parent.attributes, "pool"),
-            Some(
-                &opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
-                    "span-pool".into()
-                )
-            )
+            linked.len(),
+            3,
+            "each ingress phase must produce three new forward records"
         );
-        let dropped_parent = dropped_parents
-            .iter()
-            .find(|peer| peer.span_id == parent.span_id)
-            .expect("the dropped door must preserve the same named arrival parent identity");
-        assert_eq!(
-            parent, dropped_parent,
-            "both doors must preserve the full named arrival parent"
-        );
-        let peer = dropped
-            .iter()
-            .find(|peer| peer.span_id == span.span_id)
-            .expect("the dropped door must receive the same producer span identity");
-        assert_eq!(
-            span, peer,
-            "both doors must preserve the full producer record"
-        );
+        let dropped = forwards(DROPPED_PATH);
+        let linked_parents = parents(LINKED_PATH);
+        let dropped_parents = parents(DROPPED_PATH);
+        for span in &linked {
+            if has_parent {
+                assert_full_record(span);
+                let parent = linked_parents
+                    .iter()
+                    .find(|parent| {
+                        parent.span_id == span.parent_span_id && parent.trace_id == span.trace_id
+                    })
+                    .expect("the forward's parent must be the real Gemini arrival on its trace");
+                assert_eq!(
+                    attribute(&parent.attributes, "code.module.name"),
+                    Some(
+                        &opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                            "busbar_kernel::observability::arrival".into()
+                        )
+                    )
+                );
+                let dropped_parent = dropped_parents
+                    .iter()
+                    .find(|peer| peer.span_id == parent.span_id)
+                    .expect(
+                        "the dropped door must preserve the same Gemini arrival parent identity",
+                    );
+                assert_eq!(
+                    parent, dropped_parent,
+                    "both doors must preserve the full Gemini arrival parent"
+                );
+            } else {
+                assert!(
+                    span.parent_span_id.is_empty(),
+                    "bare OpenAI ingress opens no arrival parent: {span:?}"
+                );
+                assert_record_fields_and_events(span);
+            }
+            let peer = dropped
+                .iter()
+                .find(|peer| peer.span_id == span.span_id)
+                .expect("the dropped door must receive the same producer span identity");
+            assert_eq!(
+                span, peer,
+                "both doors must preserve the full producer record"
+            );
+            assert!(
+                verified.insert(span.span_id.clone()),
+                "each producer identity is checked once"
+            );
+        }
     }
     drop(child);
     let _ = std::fs::remove_dir_all(&dir);
@@ -304,11 +343,15 @@ fn attribute<'a>(
 }
 
 fn assert_full_record(span: &opentelemetry_proto::tonic::trace::v1::Span) {
+    assert_eq!(span.parent_span_id.len(), 8);
+    assert_record_fields_and_events(span);
+}
+
+fn assert_record_fields_and_events(span: &opentelemetry_proto::tonic::trace::v1::Span) {
     use opentelemetry_proto::tonic::common::v1::any_value::Value;
     assert_eq!((span.trace_id.len(), span.span_id.len()), (16, 8));
     assert!(span.trace_id.iter().any(|byte| *byte != 0));
     assert!(span.span_id.iter().any(|byte| *byte != 0));
-    assert_eq!(span.parent_span_id.len(), 8);
     assert_eq!(span.kind, 1);
     assert!(span.start_time_unix_nano > 0);
     assert!(span.end_time_unix_nano >= span.start_time_unix_nano);

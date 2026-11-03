@@ -460,3 +460,443 @@ fn a_lane_releases_its_host_lease_only_after_the_pending_writer_drains_and_retir
     );
     successor.lease.unwrap().release(calls.as_ref()).unwrap();
 }
+
+// Probe controls use rows from the existing Store double; only read-boundary selection or a named
+// refusal is injected. They inspect traversal directly, without inventing sealed chain data.
+use busbar_contract::abi::store::OpId;
+use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
+use busbar_contract::store_calls::{StoreCall, StoreFailure};
+
+#[derive(Clone, Copy)]
+enum ProbeMode {
+    Healthy,
+    HighSubset,
+    Malformed,
+    Overloaded,
+}
+struct ProbeView {
+    inner: Arc<dyn StoreCalls>,
+    mode: ProbeMode,
+    starts: Mutex<Vec<(Vec<u8>, u32)>>,
+    epoch_stores: Vec<Arc<dyn StoreCalls>>,
+}
+impl ProbeView {
+    fn new(slots: &RecordSlots, mode: ProbeMode) -> Self {
+        Self {
+            inner: slots.calls(),
+            mode,
+            starts: Mutex::new(Vec::new()),
+            epoch_stores: Vec::new(),
+        }
+    }
+}
+impl StoreCalls for ProbeView {
+    fn add_usage_batch<'a>(
+        &'a self,
+        op: OpId,
+        cells: &'a [(&'a str, u64, UsageDelta)],
+    ) -> StoreCall<'a, ()> {
+        self.inner.add_usage_batch(op, cells)
+    }
+    fn add_metering_batch<'a>(
+        &'a self,
+        op: OpId,
+        deltas: &'a [MeteringDelta],
+    ) -> StoreCall<'a, ()> {
+        self.inner.add_metering_batch(op, deltas)
+    }
+    fn record_put<'a>(
+        &'a self,
+        schema: &'a str,
+        key: &'a [u8],
+        value: &'a RecordBytes,
+    ) -> StoreCall<'a, ()> {
+        self.inner.record_put(schema, key, value)
+    }
+    fn record_get<'a>(
+        &'a self,
+        schema: &'a str,
+        key: &'a [u8],
+    ) -> StoreCall<'a, Option<RecordBytes>> {
+        self.inner.record_get(schema, key)
+    }
+    fn record_scan<'a>(
+        &'a self,
+        schema: &'a str,
+        prefix: &'a [u8],
+        limit: u32,
+    ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
+        Box::pin(async move {
+            let index = {
+                let mut starts = self.starts.lock().unwrap();
+                let index = starts.len();
+                starts.push((prefix.to_vec(), limit));
+                index
+            };
+            if !self.epoch_stores.is_empty() {
+                assert_eq!(prefix.len(), 8);
+                assert_eq!(limit, JOURNAL_PROBE_ROWS);
+                return self.epoch_stores[index.min(self.epoch_stores.len() - 1)]
+                    .record_scan(schema, prefix, limit)
+                    .await;
+            }
+            if limit == JOURNAL_PROBE_ROWS {
+                match self.mode {
+                    ProbeMode::Overloaded => return Err(StoreFailure::Overloaded),
+                    ProbeMode::HighSubset => {
+                        let mut rows = self.inner.record_scan(schema, prefix, limit + 1).await?;
+                        assert_eq!(rows.len(), limit as usize + 1);
+                        rows.remove(0);
+                        return Ok(rows);
+                    }
+                    ProbeMode::Malformed => {
+                        let mut rows = self.inner.record_scan(schema, prefix, limit).await?;
+                        assert_eq!(rows.len(), limit as usize);
+                        rows[0].1 = RecordBytes::new(vec![0, 0]).unwrap();
+                        return Ok(rows);
+                    }
+                    ProbeMode::Healthy => {}
+                }
+            }
+            self.inner.record_scan(schema, prefix, limit).await
+        })
+    }
+    fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
+        self.inner.upsert_plane_record(record)
+    }
+    fn get_plane_record<'a>(
+        &'a self,
+        kind: &'a str,
+        id: &'a str,
+    ) -> StoreCall<'a, Option<Vec<u8>>> {
+        self.inner.get_plane_record(kind, id)
+    }
+    fn append_plane_record<'a>(
+        &'a self,
+        op: OpId,
+        record: PlaneRecordRef<'a>,
+    ) -> StoreCall<'a, ()> {
+        self.inner.append_plane_record(op, record)
+    }
+    fn list_plane_records<'a>(
+        &'a self,
+        kind: &'a str,
+        selector: &'a PlaneSelector<'a>,
+    ) -> StoreCall<'a, Vec<Vec<u8>>> {
+        self.inner.list_plane_records(kind, selector)
+    }
+    fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
+        self.inner.delete_plane_record(kind, id)
+    }
+    fn redeem_plane_token<'a>(
+        &'a self,
+        kind: &'a str,
+        token: &'a str,
+        expires_at: u64,
+        now: u64,
+    ) -> StoreCall<'a, bool> {
+        self.inner.redeem_plane_token(kind, token, expires_at, now)
+    }
+    fn plane_token_live<'a>(
+        &'a self,
+        kind: &'a str,
+        token: &'a str,
+        expires_at: u64,
+        now: u64,
+    ) -> StoreCall<'a, bool> {
+        self.inner.plane_token_live(kind, token, expires_at, now)
+    }
+}
+
+fn probe_rows(count: u64) -> RecordSlots {
+    let slots = RecordSlots::new();
+    for sequence in 1..=count {
+        slots.put_row(JOURNAL_SCHEMA, &part_key(9, sequence, 0), &[0, 1, 42]);
+    }
+    slots
+}
+
+#[test]
+fn complete_probe_consumes_one_unsaturated_answer_without_descending() {
+    let slots = probe_rows(10);
+    let view = ProbeView::new(&slots, ProbeMode::Healthy);
+    let prefix = 9u64.to_be_bytes().to_vec();
+    let mut keys = Vec::new();
+    visit_journal_pages(&view, prefix.clone(), |page| {
+        keys.extend(page.into_iter().map(|(key, _)| key));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        keys,
+        (1..=10)
+            .map(|sequence| part_key(9, sequence, 0).to_vec())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(*view.starts.lock().unwrap(), vec![(prefix, 4096)]);
+}
+
+#[test]
+fn exactly_saturated_probe_descends_through_every_nested_saturated_prefix() {
+    let slots = probe_rows(4096);
+    let view = ProbeView::new(&slots, ProbeMode::Healthy);
+    let mut keys = Vec::new();
+    visit_journal_pages(&view, 9u64.to_be_bytes().to_vec(), |page| {
+        keys.extend(page.into_iter().map(|(key, _)| key));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        keys,
+        (1..=4096)
+            .map(|sequence| part_key(9, sequence, 0).to_vec())
+            .collect::<Vec<_>>()
+    );
+    let starts = view.starts.lock().unwrap();
+    assert_eq!(starts[0].1, 4096);
+    assert!(
+        starts
+            .iter()
+            .any(|(prefix, limit)| prefix.len() == 16 && *limit == 256),
+        "a saturated deeper prefix must reach the exact record prefixes"
+    );
+}
+
+#[test]
+fn saturated_high_key_subset_cannot_hide_a_corrupt_unreturned_child() {
+    let slots = probe_rows(4097);
+    slots.put_row(JOURNAL_SCHEMA, &part_key(9, 1, 0), &[0, 0]);
+    let view = ProbeView::new(&slots, ProbeMode::HighSubset);
+    let result = visit_journal_pages(&view, 9u64.to_be_bytes().to_vec(), |_| Ok(()));
+    assert!(result.unwrap_err().contains("invalid journal part count"));
+    let starts = view.starts.lock().unwrap();
+    assert_eq!(starts[0].1, 4096);
+    assert!(
+        starts.len() > 1,
+        "valid saturated high-key parent must be discarded before children expose corruption"
+    );
+}
+
+#[test]
+fn malformed_saturated_probe_fails_before_any_descent() {
+    let slots = probe_rows(4096);
+    let view = ProbeView::new(&slots, ProbeMode::Malformed);
+    let mut visited = false;
+    let result = visit_journal_pages(&view, 9u64.to_be_bytes().to_vec(), |_| {
+        visited = true;
+        Ok(())
+    });
+    assert!(result.unwrap_err().contains("invalid journal part count"));
+    assert!(!visited);
+    assert_eq!(view.starts.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn overloaded_probe_preserves_the_exhaustive_small_page_fallback() {
+    let slots = probe_rows(512);
+    let view = ProbeView::new(&slots, ProbeMode::Overloaded);
+    let mut keys = Vec::new();
+    visit_journal_pages(&view, 9u64.to_be_bytes().to_vec(), |page| {
+        keys.extend(page.into_iter().map(|(key, _)| key));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        keys,
+        (1..=512)
+            .map(|sequence| part_key(9, sequence, 0).to_vec())
+            .collect::<Vec<_>>()
+    );
+    let starts = view.starts.lock().unwrap();
+    assert_eq!(starts[0].1, 4096);
+    assert!(starts[1..].iter().all(|(_, limit)| *limit == 256));
+    assert!(starts.iter().any(|(prefix, _)| prefix.len() == 16));
+}
+
+fn proof_records(changed: Option<usize>) -> Vec<JournalRecord> {
+    let mut journal = busbar_kernel_wal::Journal::memory_buffered_to(
+        9,
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        || 1,
+    );
+    let entries: Vec<_> = (0..6)
+        .map(|index| {
+            busbar_kernel_wal::Entry::new(
+                RecordClass::Transaction,
+                vec![if changed == Some(index) {
+                    99
+                } else {
+                    index as u8
+                }],
+            )
+        })
+        .collect();
+    let token = busbar_kernel::teller::Kernel::new().durability_token();
+    journal
+        .append(&token, busbar_contract::caps::StepName::Meter, &entries)
+        .unwrap()
+        .sealed
+}
+
+fn proof_store(records: &[JournalRecord], omit: &[u64]) -> RecordSlots {
+    let slots = RecordSlots::new();
+    for record in records
+        .iter()
+        .filter(|record| !omit.contains(&record.node_seq))
+    {
+        let raw = Record::new(record.node, record.node_seq, record.encode());
+        for (part, value) in parts_of(&raw).unwrap().into_iter().enumerate() {
+            slots.put_row(
+                JOURNAL_SCHEMA,
+                &part_key(record.node, record.node_seq, part as u16),
+                value.as_slice(),
+            );
+        }
+    }
+    slots
+}
+
+fn proof_epochs(stores: &[&RecordSlots]) -> ProbeView {
+    let mut view = ProbeView::new(stores[0], ProbeMode::Healthy);
+    view.epoch_stores = stores.iter().map(|store| store.calls()).collect();
+    view
+}
+
+#[test]
+fn sealed_proof_retries_one_gap_and_retains_original_requested_seals() {
+    let records = proof_records(None);
+    let complete = proof_store(&records, &[]);
+    let mixed = proof_store(&records, &[3]);
+    let view = proof_epochs(&[&mixed, &mixed, &complete]);
+    let seals = [RecordSeal::of(&records[0]), RecordSeal::of(&records[5])];
+    verify_stored_chain_with_seals(&view, 9, &seals).unwrap();
+    assert_eq!(
+        view.starts.lock().unwrap().len(),
+        3,
+        "one mixed fold, its quarantine-authority scan, and one complete fresh proof"
+    );
+}
+
+#[test]
+fn cold_proof_does_not_acquire_a_gap_retry_budget() {
+    let records = proof_records(None);
+    let complete = proof_store(&records, &[]);
+    let mixed = proof_store(&records, &[3]);
+    let view = proof_epochs(&[&mixed, &mixed, &complete]);
+    assert!(verify_stored_chain(&view, 9).is_err());
+    assert_eq!(
+        view.starts.lock().unwrap().len(),
+        2,
+        "cold proof ends after its original fold and bridge-authority scan"
+    );
+}
+
+#[test]
+fn torn_or_malformed_gap_observations_cannot_heal_on_reread() {
+    let records = proof_records(None);
+    let complete = proof_store(&records, &[]);
+    for count in [0u16, 2] {
+        let broken = proof_store(&records, &[]);
+        let mut value = count.to_be_bytes().to_vec();
+        value.extend_from_slice(&records[2].encode());
+        broken.put_row(JOURNAL_SCHEMA, &part_key(9, 3, 0), &value);
+        let view = proof_epochs(&[&broken, &complete]);
+        assert!(verify_stored_chain_with_seals(&view, 9, &[]).is_err());
+        assert!(
+            view.starts.lock().unwrap().len() <= 2,
+            "a fatal part envelope or torn omitted record must not start a fresh proof"
+        );
+    }
+}
+
+#[test]
+fn canonical_consecutive_hash_mismatch_is_fatal_without_retry() {
+    let records = proof_records(None);
+    let changed = proof_records(Some(0));
+    let mut mismatched = records.clone();
+    mismatched[0] = changed[0].clone();
+    let broken = proof_store(&mismatched, &[]);
+    let complete = proof_store(&records, &[]);
+    let view = proof_epochs(&[&broken, &complete]);
+    assert!(verify_stored_chain_with_seals(&view, 9, &[]).is_err());
+    assert_eq!(
+        view.starts.lock().unwrap().len(),
+        2,
+        "consecutive canonical records with a hash mismatch permit only bridge lookup"
+    );
+}
+
+#[test]
+fn fresh_proof_cannot_change_or_omit_original_gap_boundaries_prefix_or_tail() {
+    let records = proof_records(None);
+    let mixed = proof_store(&records, &[3]);
+    for index in [0usize, 1, 3, 5] {
+        let changed = proof_records(Some(index));
+        let replacement = proof_store(&changed, &[]);
+        let view = proof_epochs(&[&mixed, &mixed, &replacement]);
+        assert!(
+            verify_stored_chain_with_seals(&view, 9, &[]).is_err(),
+            "changed original prefix/boundary/tail at index {index} must fail"
+        );
+        assert_eq!(view.starts.lock().unwrap().len(), 3);
+    }
+    for omitted in [vec![4], vec![6]] {
+        let replacement = proof_store(&records, &omitted);
+        let view = proof_epochs(&[&mixed, &mixed, &replacement]);
+        assert!(
+            verify_stored_chain_with_seals(&view, 9, &[]).is_err(),
+            "missing original boundary/tail must fail"
+        );
+    }
+}
+
+#[test]
+fn a_second_mixed_gap_exhausts_the_whole_proof_budget() {
+    let records = proof_records(None);
+    let first = proof_store(&records, &[3]);
+    let second = proof_store(&records, &[5]);
+    let complete = proof_store(&records, &[]);
+    let view = proof_epochs(&[&first, &first, &second, &second, &complete]);
+    assert!(verify_stored_chain_with_seals(&view, 9, &[]).is_err());
+    assert_eq!(
+        view.starts.lock().unwrap().len(),
+        4,
+        "the fresh proof's gap may inspect quarantine authority but never restart again"
+    );
+}
+
+#[test]
+fn missing_or_changed_requested_seals_never_authorize_retry() {
+    let records = proof_records(None);
+    let complete = proof_store(&records, &[]);
+    let mixed = proof_store(&records, &[3]);
+    let view = proof_epochs(&[&mixed, &mixed, &complete]);
+    assert!(verify_stored_chain_with_seals(&view, 9, &[RecordSeal::of(&records[2])]).is_err());
+    assert_eq!(view.starts.lock().unwrap().len(), 2);
+    let view = proof_epochs(&[&complete]);
+    let mut seal = RecordSeal::of(&records[0]);
+    seal.hash[0] ^= 1;
+    assert!(verify_stored_chain_with_seals(&view, 9, &[seal]).is_err());
+    assert_eq!(view.starts.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn late_torn_or_truncated_suffix_cannot_heal_an_already_observed_gap() {
+    let records = proof_records(None);
+    let complete = proof_store(&records, &[]);
+    for torn in [true, false] {
+        let broken = proof_store(&records, &[3]);
+        let mut value = (if torn { 2u16 } else { 1u16 }).to_be_bytes().to_vec();
+        let encoded = records[5].encode();
+        value.extend_from_slice(if torn {
+            &encoded
+        } else {
+            &encoded[..encoded.len() - 1]
+        });
+        broken.put_row(JOURNAL_SCHEMA, &part_key(9, 6, 0), &value);
+        let view = proof_epochs(&[&broken, &complete, &complete]);
+        assert!(verify_stored_chain_with_seals(&view, 9, &[]).is_err());
+        assert_eq!(view.starts.lock().unwrap().len(), 2,
+            "after observing the gap, the original held page's torn or truncated suffix remains fatal; only bridge lookup may rescan");
+    }
+}

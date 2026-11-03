@@ -1304,6 +1304,7 @@ enum Conn {
 }
 
 struct Authing {
+    unit: u64,
     fielding: Box<dyn busbar_contract::auth_calls::Fielding>,
     need: NeedId,
     target: String,
@@ -1549,6 +1550,7 @@ extern "C" fn write_request(
                             true
                         }
                     });
+                    let unit = super::services::serving_unit();
                     let at = (target.as_str(), within.as_slice(), member.as_str());
 
                     let bound = if waived {
@@ -1565,12 +1567,15 @@ extern "C" fn write_request(
                         None => Some(b.handle),
                     });
                     let conn = match bound {
-                        None => open_with(table, id, need, at, &h, body, &[], None),
+                        None => {
+                            open_with(table, id, need, unit.unwrap_or(0), at, &h, body, &[], None)
+                        }
                         Some(_) if handle.is_none() => {
                             Conn::Failed(ConnError::CredentialUnavailable)
                         }
                         Some(binding) => match auth_request(
                             &binding,
+                            unit,
                             &h,
                             &target,
                             &body,
@@ -1587,6 +1592,7 @@ extern "C" fn write_request(
                                             table,
                                             id,
                                             need,
+                                            unit.unwrap_or(0),
                                             at,
                                             &h,
                                             body,
@@ -1597,6 +1603,7 @@ extern "C" fn write_request(
                                     Some(Fields::Refused) => Conn::Failed(ConnError::AuthRefused),
                                     Some(Fields::Failed) => Conn::Failed(ConnError::AuthFailed),
                                     None => Conn::Authing(Box::new(Authing {
+                                        unit: unit.unwrap_or(0),
                                         fielding: binding.auth.fields(handle, request, 0),
                                         need,
                                         target,
@@ -1630,6 +1637,7 @@ fn open_with(
     table: &Arc<dyn DeclaredConns>,
     id: InstanceId,
     need: NeedId,
+    unit: u64,
     (target, within, member): (&str, &[IpAddr], &str),
     h: &Head,
     body: Vec<u8>,
@@ -1681,7 +1689,7 @@ fn open_with(
         head_target: &h.target,
         within,
         member,
-        unit: 0,
+        unit,
     };
     table
         .open_request(
@@ -1717,8 +1725,10 @@ fn completing(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn auth_request(
     binding: &busbar_contract::conn::ConnAuth,
+    unit: Option<u64>,
     h: &Head,
     target: &str,
     body: &[u8],
@@ -1727,7 +1737,7 @@ fn auth_request(
 ) -> Option<FieldsRequest> {
     use busbar_contract::abi::auth::{AuthPoint, STYLE_NEEDS_HEADERS};
     let caller_credential = if binding.passthrough {
-        let unit = super::services::serving_unit()?;
+        let unit = unit?;
         Some(
             binding
                 .lender
@@ -1761,7 +1771,7 @@ fn auth_request(
     };
     Some(FieldsRequest {
         point,
-        unit: super::services::serving_unit().unwrap_or(0),
+        unit: unit.unwrap_or(0),
         body: (point == AuthPoint::HeadBody).then(|| body.to_vec()),
         method: h.method.clone(),
         authority: authority.to_string(),
@@ -1900,6 +1910,7 @@ fn reply(
                 table,
                 id,
                 a.need,
+                a.unit,
                 (&a.target, &a.within, &a.member),
                 &a.head,
                 std::mem::take(&mut a.body),

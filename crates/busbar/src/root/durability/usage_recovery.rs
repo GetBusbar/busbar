@@ -493,7 +493,7 @@ fn selected_checkpoint_inner(
     let at = found.ok_or_else(|| invalid(missing))?;
     // Materialize only this one payload, after the selected lineage has verified.
     let record = read_record_exact(calls, at.node, at.sequence).map_err(invalid)?;
-    if let Some(facts) = facts.as_deref_mut() {
+    if let Some(facts) = facts {
         if !facts.capture(&record)? {
             return Ok(None);
         }
@@ -749,6 +749,80 @@ impl OriginRead {
     }
 }
 
+struct CheckpointRead {
+    origin: OriginRead,
+    lane: JournalLane,
+    node: u64,
+    fences: Vec<Predicate>,
+    operation: [u8; 16],
+    initial_head: Vec<u8>,
+}
+impl CheckpointRead {
+    fn finish(self) -> Result<(), RecoveryError> {
+        self.origin.finish()?;
+        let current = head(self.lane.calls().as_ref(), &self.operation)?;
+        if !current.as_ref().is_some_and(|(tip, current_raw)| {
+            tip.node == self.node && current_raw == &self.initial_head
+        }) {
+            return Err(RecoveryError::Conflict(
+                "recovery ownership or selection changed during checkpoint confirmation".into(),
+            ));
+        }
+        if !self
+            .lane
+            .recovery_fence_matches(self.node, &self.fences)
+            .map_err(unavailable)?
+        {
+            return Err(unavailable(
+                "the local node fence changed during checkpoint verification",
+            ));
+        }
+        Ok(())
+    }
+}
+
+struct PersistPrefix {
+    lane: JournalLane,
+    node: u64,
+    fences: Vec<Predicate>,
+    current: Option<(Head, Vec<u8>)>,
+    operation: [u8; 16],
+    digest: [u8; 32],
+    run: Option<RecoverySelection>,
+}
+impl PersistPrefix {
+    fn recheck(&self) -> Result<(), RecoveryError> {
+        if head(self.lane.calls().as_ref(), &self.operation)?.map(|(_, raw)| raw)
+            != self.current.as_ref().map(|(_, raw)| raw.clone())
+        {
+            return Err(RecoveryError::Conflict(
+                "recovery selection changed during persistence preparation".into(),
+            ));
+        }
+        if !self
+            .lane
+            .recovery_fence_matches(self.node, &self.fences)
+            .map_err(unavailable)?
+        {
+            return Err(unavailable(
+                "the node fence changed during persistence preparation",
+            ));
+        }
+        Ok(())
+    }
+}
+struct PersistPrefixRead {
+    prefix: PersistPrefix,
+    origin: OriginRead,
+}
+impl PersistPrefixRead {
+    fn finish(self) -> Result<PersistPrefix, RecoveryError> {
+        self.origin.finish()?;
+        self.prefix.recheck()?;
+        Ok(self.prefix)
+    }
+}
+
 struct StoreRecovery {
     book: Arc<Mutex<Durability>>,
     token: Grant<DurableWrite>,
@@ -890,10 +964,21 @@ impl StoreRecovery {
         &self,
         event: &RecoveryEvent,
     ) -> Result<Option<OriginRead>, RecoveryError> {
+        let (_, node) = self.inputs()?;
+        self.read_origin_with_facts(event, OriginFacts::new(node))
+    }
+
+    fn read_origin_with_facts(
+        &self,
+        event: &RecoveryEvent,
+        mut facts: OriginFacts,
+    ) -> Result<Option<OriginRead>, RecoveryError> {
         let (lane, node) = self.inputs()?;
         let fences = lane.recovery_predicates(node).map_err(unavailable)?;
+        if facts.node != node {
+            return Ok(None);
+        }
         let calls = lane.calls();
-        let mut facts = OriginFacts::new(node);
         let child = head(calls.as_ref(), &event.operation_id)?;
         let initial = match &child {
             Some((tip, _)) => {
@@ -1012,6 +1097,62 @@ impl StoreRecovery {
     }
 
     fn verify_checkpoint_at(
+        &self,
+        event: &RecoveryEvent,
+        require_owned: bool,
+    ) -> Result<(), RecoveryError> {
+        match self.read_checkpoint_for_final_fold(event, require_owned)? {
+            Some(read) => read.finish(),
+            None => self.verify_checkpoint_cold_at(event, require_owned),
+        }
+    }
+
+    fn read_checkpoint_for_final_fold(
+        &self,
+        event: &RecoveryEvent,
+        require_owned: bool,
+    ) -> Result<Option<CheckpointRead>, RecoveryError> {
+        let (lane, node) = self.inputs()?;
+        let fences = lane.recovery_predicates(node).map_err(unavailable)?;
+        let calls = lane.calls();
+        let (tip, raw) = head(calls.as_ref(), &event.operation_id)?
+            .ok_or_else(|| invalid("recovery checkpoint has no selected operation"))?;
+        if require_owned && tip.node != node {
+            return Err(RecoveryError::Conflict(
+                "recovery checkpoint belongs to another node's selected operation".into(),
+            ));
+        }
+        let mut facts = OriginFacts::new(node);
+        let Some(actual) = selected_checkpoint_inner(
+            calls.as_ref(),
+            &event.operation_id,
+            &tip,
+            event.fingerprint()?,
+            "recovery checkpoint is not in the current selected ancestry",
+            Some(&mut facts),
+        )?
+        else {
+            return Ok(None);
+        };
+        if &actual != event {
+            return Err(invalid(
+                "selected checkpoint differs from its exact event identity",
+            ));
+        }
+        let Some(origin) = self.read_origin_with_facts(&actual, facts)? else {
+            return Ok(None);
+        };
+        Ok(Some(CheckpointRead {
+            origin,
+            lane,
+            node,
+            fences,
+            operation: event.operation_id,
+            initial_head: raw,
+        }))
+    }
+
+    fn verify_checkpoint_cold_at(
         &self,
         event: &RecoveryEvent,
         require_owned: bool,
@@ -1316,19 +1457,117 @@ impl StoreRecovery {
         )))
     }
 
-    fn persist_at(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
-        let _driving = self.drive(event.operation_id)?;
+    fn persist_prefix_inputs(&self, event: &RecoveryEvent) -> Result<PersistPrefix, RecoveryError> {
         let (lane, node) = self.inputs()?;
-        let calls = lane.calls();
-        let initial_fences = lane.recovery_predicates(node).map_err(unavailable)?;
-        let current = head(calls.as_ref(), &event.operation_id)?;
-        let digest = event.fingerprint()?;
+        let fences = lane.recovery_predicates(node).map_err(unavailable)?;
+        let current = head(lane.calls().as_ref(), &event.operation_id)?;
         if current.as_ref().is_some_and(|(head, _)| head.node != node) {
             return Err(RecoveryError::Conflict(
                 "this recovery operation belongs to another node".into(),
             ));
         }
+        Ok(PersistPrefix {
+            lane,
+            node,
+            fences,
+            current,
+            operation: event.operation_id,
+            digest: event.fingerprint()?,
+            run: None,
+        })
+    }
+
+    fn read_persist_prefix_for_final_fold(
+        &self,
+        event: &RecoveryEvent,
+    ) -> Result<Option<PersistPrefixRead>, RecoveryError> {
+        let mut prefix = self.persist_prefix_inputs(event)?;
+        let Some(mut origin) = self.read_origin_with_facts(event, OriginFacts::new(prefix.node))?
+        else {
+            return Ok(None);
+        };
+        if origin.child != prefix.current.as_ref().map(|(_, raw)| raw.clone()) {
+            return Err(RecoveryError::Conflict(
+                "recovery selection changed before origin preparation".into(),
+            ));
+        }
+        if let Some((tip, _)) = &prefix.current {
+            let Some(run) = stream_selection_inner(
+                prefix.lane.calls().as_ref(),
+                &event.operation_id,
+                tip,
+                prefix.node,
+                Some(&mut origin.facts),
+                |_, _| Ok(()),
+            )?
+            else {
+                return Ok(None);
+            };
+            prefix.run = Some(run);
+        }
+        // Pure transition checks cannot escape as an accepted result before the complete fold.
+        if prefix
+            .current
+            .as_ref()
+            .is_some_and(|(tip, _)| tip.event_digest == prefix.digest)
+        {
+            if prefix.run.as_ref().is_none_or(|run| &run.selected != event) {
+                return Err(invalid("recovery event digest collision"));
+            }
+        } else {
+            event
+                .follows(prefix.run.as_ref().map(|run| &run.selected))
+                .map_err(|_| {
+                    RecoveryError::Conflict(
+                        "recovery selection has advanced or names another predecessor".into(),
+                    )
+                })?;
+        }
+        Ok(Some(PersistPrefixRead { prefix, origin }))
+    }
+
+    fn persist_prefix_cold_at(
+        &self,
+        event: &RecoveryEvent,
+    ) -> Result<PersistPrefix, RecoveryError> {
+        // A fresh old-style preflight only: never recurse into persist or retain tentative facts.
+        let mut prefix = self.persist_prefix_inputs(event)?;
         self.verify_origin_at(event)?;
+        prefix.run = prefix
+            .current
+            .as_ref()
+            .map(|(tip, _)| {
+                selection(
+                    prefix.lane.calls().as_ref(),
+                    &event.operation_id,
+                    tip,
+                    prefix.node,
+                )
+            })
+            .transpose()?;
+        prefix.recheck()?;
+        Ok(prefix)
+    }
+
+    fn persist_prefix_at(&self, event: &RecoveryEvent) -> Result<PersistPrefix, RecoveryError> {
+        match self.read_persist_prefix_for_final_fold(event)? {
+            Some(read) => read.finish(),
+            None => self.persist_prefix_cold_at(event),
+        }
+    }
+
+    fn persist_at(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        let _driving = self.drive(event.operation_id)?;
+        let PersistPrefix {
+            lane,
+            node,
+            fences: initial_fences,
+            current,
+            digest,
+            run,
+            ..
+        } = self.persist_prefix_at(event)?;
+        let calls = lane.calls();
         if let Some((current_head, _)) = &current {
             if current_head.node != node {
                 return Err(RecoveryError::Conflict(
@@ -1336,8 +1575,10 @@ impl StoreRecovery {
                 ));
             }
             if current_head.event_digest == digest {
-                let run = selection(calls.as_ref(), &event.operation_id, current_head, node)?;
-                if &run.selected != event {
+                let selected = run
+                    .as_ref()
+                    .ok_or_else(|| invalid("selected recovery summary is missing"))?;
+                if &selected.selected != event {
                     return Err(invalid("recovery event digest collision"));
                 }
                 if head(calls.as_ref(), &event.operation_id)?
@@ -1365,10 +1606,6 @@ impl StoreRecovery {
                 return Ok(());
             }
         }
-        let previous = current.as_ref().map(|(head, _)| head);
-        let run = previous
-            .map(|head| selection(calls.as_ref(), &event.operation_id, head, node))
-            .transpose()?;
         event
             .follows(run.as_ref().map(|summary| &summary.selected))
             .map_err(|_| {
@@ -1376,6 +1613,7 @@ impl StoreRecovery {
                     "recovery selection has advanced or names another predecessor".into(),
                 )
             })?;
+        let previous = current.as_ref().map(|(head, _)| head);
         let predecessor = current.as_ref().map(|(_, raw)| raw.clone());
         let saved = {
             let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());

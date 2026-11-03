@@ -5,6 +5,193 @@
 
 use crate::caps::*;
 
+#[cfg(feature = "test-seal")]
+#[test]
+fn admitted_preparation_requires_exact_live_authority_and_never_accrues() {
+    let seal = KernelSeal::acquire_for_kernel();
+    let call = CallId::seal(&seal, 61);
+    let admit = Grant::<Admittance>::mint_bound(&seal, call);
+    let principal = PrincipalId::new("reservation-source");
+    let cell = HoldCell::new(Hold::open(&admit, principal.clone()));
+    let not_called = || -> Result<(), &'static str> { panic!("invalid source prepared") };
+    assert_eq!(
+        cell.with_admitted_call(call, &principal, not_called),
+        Err(AdmittedPrepareError::NotAdmitted)
+    );
+    let arrival = cell
+        .admit(Hold::open(&admit, principal.clone()), &admit)
+        .unwrap();
+    for invalid in [CallId::UNBOUND, CallId::seal(&seal, 62)] {
+        assert_eq!(
+            cell.with_admitted_call(invalid, &principal, not_called),
+            Err(AdmittedPrepareError::CallMismatch)
+        );
+    }
+    assert_eq!(
+        cell.with_admitted_call(call, &PrincipalId::new("stranger"), not_called),
+        Err(AdmittedPrepareError::PrincipalMismatch)
+    );
+    assert_eq!(
+        cell.with_admitted_call(call, &principal, || Err::<(), _>("reserve refused")),
+        Err(AdmittedPrepareError::Prepare("reserve refused"))
+    );
+    assert_eq!(cell.state(), HoldCellState::Admitted);
+    assert_eq!(cell.accruals(), 0);
+    let prepared = cell
+        .with_admitted_call(call, &principal, || Ok::<_, &'static str>(Box::new(73)))
+        .unwrap();
+    assert_eq!(*prepared, 73);
+    assert_eq!(cell.state(), HoldCellState::Admitted);
+    assert_eq!(cell.accruals(), 0);
+    let admitted = cell.take(&Grant::<Exit>::mint_bound(&seal, call)).unwrap();
+    assert_eq!(
+        cell.with_admitted_call(call, &principal, not_called),
+        Err(AdmittedPrepareError::Exited)
+    );
+    assert_eq!(cell.accruals(), 0);
+    drop((arrival, admitted));
+
+    let unbound = Grant::<Admittance>::mint(&seal);
+    let cell = HoldCell::new(Hold::open(&unbound, principal.clone()));
+    let arrival = cell
+        .admit(Hold::open(&unbound, principal.clone()), &unbound)
+        .unwrap();
+    assert_eq!(
+        cell.with_admitted_call(CallId::UNBOUND, &principal, not_called),
+        Err(AdmittedPrepareError::CallMismatch)
+    );
+    assert_eq!(
+        cell.with_admitted_call(call, &principal, not_called),
+        Err(AdmittedPrepareError::CallMismatch)
+    );
+    let admitted = cell.take(&Grant::<Exit>::mint(&seal)).unwrap();
+    drop((arrival, admitted));
+}
+
+#[cfg(feature = "test-seal")]
+#[test]
+fn rejected_admitted_preparation_drops_its_capture_after_unlocking() {
+    struct Capture<'a>(&'a HoldCell, &'a std::cell::Cell<bool>);
+    impl Drop for Capture<'_> {
+        fn drop(&mut self) {
+            // Reenter only from cleanup, which must run after the cell guard is released.
+            assert_eq!(self.0.state(), HoldCellState::Arrival);
+            self.1.set(true);
+        }
+    }
+    let seal = KernelSeal::acquire_for_kernel();
+    let call = CallId::seal(&seal, 63);
+    let admit = Grant::<Admittance>::mint_bound(&seal, call);
+    let principal = PrincipalId::new("reservation-source");
+    let cell = HoldCell::new(Hold::open(&admit, principal.clone()));
+    let dropped = std::cell::Cell::new(false);
+    let capture = Capture(&cell, &dropped);
+    assert_eq!(
+        cell.with_admitted_call(call, &principal, move || {
+            drop(capture);
+            panic!("arrival must not prepare");
+            #[allow(unreachable_code)]
+            Ok::<(), ()>(())
+        }),
+        Err(AdmittedPrepareError::NotAdmitted)
+    );
+    assert!(dropped.get());
+    let arrival = cell.take(&Grant::<Exit>::mint(&seal)).unwrap();
+    drop(arrival);
+}
+
+#[cfg(feature = "test-seal")]
+#[test]
+fn child_preparation_cannot_leave_an_accrual_on_failure_or_an_invalid_parent() {
+    let seal = KernelSeal::acquire_for_kernel();
+    let call = CallId::seal(&seal, 51);
+    let admit = Grant::<Admittance>::mint_bound(&seal, call);
+    let principal = PrincipalId::new("parent");
+    let cell = HoldCell::new(Hold::open(&admit, principal.clone()));
+    let not_called = || -> Result<(), &'static str> { panic!("invalid parent prepared") };
+    assert_eq!(
+        cell.accrue_child_after(&principal, &admit, not_called)
+            .unwrap_err(),
+        AccrualPrepareError::Parent(AccrualRefused::ParentNotAdmitted)
+    );
+    let arrival = cell
+        .admit(Hold::open(&admit, principal.clone()), &admit)
+        .unwrap();
+    assert_eq!(
+        cell.accrue_child_after(&PrincipalId::new("other"), &admit, not_called)
+            .unwrap_err(),
+        AccrualPrepareError::Parent(AccrualRefused::PrincipalMismatch)
+    );
+    assert_eq!(
+        cell.accrue_child_after(&principal, &admit, || Err("registration refused"))
+            .unwrap_err(),
+        AccrualPrepareError::Prepare("registration refused")
+    );
+    assert_eq!(cell.state(), HoldCellState::Admitted);
+    assert_eq!(cell.accruals(), 0);
+    let calls = std::cell::Cell::new(0);
+    let child = Grant::<Admittance>::mint_bound(&seal, CallId::seal(&seal, 52));
+    let accrual = cell
+        .accrue_child_after(&principal, &child, || {
+            calls.set(calls.get() + 1);
+            Ok::<(), &'static str>(())
+        })
+        .unwrap();
+    assert_eq!(calls.get(), 1);
+    assert_eq!(cell.accruals(), 1);
+    let admitted = cell.take(&Grant::<Exit>::mint_bound(&seal, call)).unwrap();
+    assert_eq!(
+        cell.accrue_child_after(&principal, &child, not_called)
+            .unwrap_err(),
+        AccrualPrepareError::Parent(AccrualRefused::ParentExited)
+    );
+    assert_eq!(cell.accruals(), 1);
+    let posted = Posted::settle_late(
+        accrual,
+        &Grant::<WriteMoney>::mint_bound(&seal, child.call()),
+    );
+    drop((arrival, admitted, posted));
+}
+
+#[cfg(feature = "test-seal")]
+#[test]
+fn admitted_cell_authority_requires_its_call_principal_and_live_admission() {
+    let seal = KernelSeal::acquire_for_kernel();
+    let call = CallId::seal(&seal, 41);
+    let admit = Grant::<Admittance>::mint_bound(&seal, call);
+    let other = Grant::<Admittance>::mint_bound(&seal, CallId::seal(&seal, 42));
+    let principal = PrincipalId::new("caller");
+    let stranger = PrincipalId::new("stranger");
+    let cell = HoldCell::new(Hold::open(&admit, principal.clone()));
+    assert!(!cell.admitted_for(&admit, &principal));
+    assert_eq!(cell.state(), HoldCellState::Arrival);
+    let arrival = cell
+        .admit(Hold::open(&admit, principal.clone()), &admit)
+        .unwrap();
+    assert!(cell.admitted_for(&admit, &principal));
+    assert!(!cell.admitted_for(&other, &principal));
+    assert!(!cell.admitted_for(&admit, &stranger));
+    assert_eq!(cell.state(), HoldCellState::Admitted);
+    assert_eq!(cell.accruals(), 0);
+    let exit = Grant::<Exit>::mint_bound(&seal, call);
+    let admitted = cell.take(&exit).unwrap();
+    assert!(!cell.admitted_for(&admit, &principal));
+    assert_eq!(cell.state(), HoldCellState::Taken);
+    drop((arrival, admitted));
+
+    let unbound = Grant::<Admittance>::mint(&seal);
+    let cell = HoldCell::new(Hold::open(&unbound, principal.clone()));
+    let arrival = cell
+        .admit(Hold::open(&unbound, principal.clone()), &unbound)
+        .unwrap();
+    assert!(!cell.admitted_for(&unbound, &principal));
+    assert!(!cell.admitted_for(&admit, &principal));
+    assert_eq!(cell.state(), HoldCellState::Admitted);
+    assert_eq!(cell.accruals(), 0);
+    let admitted = cell.take(&exit).unwrap();
+    drop((arrival, admitted));
+}
+
 /// The lint rule data. It is a proof, not surface: no plugin, unit or kernel path names it, so it
 mod lint {
     include!("../fixtures/lint_rules.rs");

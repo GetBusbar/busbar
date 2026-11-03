@@ -3390,31 +3390,47 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
             })
             .unwrap();
         let calls = observed.calls.lock().unwrap().clone();
-        let terminal = calls
+        let original = calls
             .iter()
             .enumerate()
             .filter_map(|(index, call)| match call {
                 ObservedCall::Emit {
-                    status, end: true, ..
-                } => Some((index, *status)),
+                    status: 200,
+                    end: true,
+                    ..
+                } if first_body.is_empty() => Some(index),
+                ObservedCall::Emit {
+                    status: 0,
+                    end: false,
+                    len,
+                } if !first_body.is_empty() && *len == first_body.len() => Some(index),
                 _ => None,
             })
             .collect::<Vec<_>>();
         assert_eq!(
-            terminal.len(),
+            original.len(),
             1,
-            "exactly one original terminal Emit owns the first answer"
+            "exactly one original head or payload Emit owns the first answer"
         );
-        let (terminal_index, terminal_status) = terminal[0];
-        assert_eq!(
-            terminal_status,
-            if first_body.is_empty() { 200 } else { 0 },
-            "the original terminal operation retains the actual answer head or final body"
-        );
+        let original_index = original[0];
+        if !first_body.is_empty() {
+            assert_eq!(
+                observed.count(|call| matches!(
+                    call,
+                    ObservedCall::Emit {
+                        status: 200,
+                        end: false,
+                        ..
+                    }
+                )),
+                1,
+                "the nonempty answer retains its separate original HTTP 200 head"
+            );
+        }
         assert!(
-            matches!(calls.get(terminal_index + 1),
+            matches!(calls.get(original_index + 1),
             Some(ObservedCall::EmitResult { ticket, .. }) if *ticket == pending_ticket),
-            "the original terminal Emit and pending crossing retain the same concrete ticket"
+            "the original Emit and pending crossing retain the same concrete ticket"
         );
         let pending_index = calls
             .iter()
@@ -3428,25 +3444,41 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
                 )
             })
             .unwrap();
+        assert!(original_index < pending_index);
+        // Tickets are reusable. Prove this is still the selected operation: no later fresh
+        // head, payload or terminal Emit may intervene before this Pending crossing.
+        for call in &calls[original_index + 1..pending_index] {
+            let same_operation = match call {
+                ObservedCall::Emit {
+                    status: 0,
+                    end: false,
+                    len: 0,
+                } => true,
+                ObservedCall::EmitResult {
+                    outcome: Outcome::Ready,
+                    ticket,
+                    ..
+                } => *ticket == pending_ticket,
+                _ => false,
+            };
+            assert!(
+                same_operation,
+                "only same-ticket READY results and neutral recalls precede Pending"
+            );
+        }
         assert_eq!(
             pending_status, 0,
             "a body Emit or MORE recall carries no new answer status"
         );
-        if pending_index == terminal_index + 1 {
+        if pending_index == original_index + 1 {
             assert!(
                 !first_body.is_empty(),
                 "the empty answer parks on its head's drain recall"
             );
             assert!(
-                matches!(
-                    calls.get(pending_index - 1),
-                    Some(ObservedCall::Emit {
-                        status: 0,
-                        end: true,
-                        ..
-                    })
-                ),
-                "the nonempty answer may park on its original final body operation"
+                matches!(calls.get(pending_index - 1),
+                Some(ObservedCall::Emit { status: 0, end: false, len }) if *len == first_body.len()),
+                "the nonempty answer may park on its original payload operation before terminal ACK"
             );
         } else {
             // cross_ticketed clears status/bytes/end on a MORE recall while keeping the

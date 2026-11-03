@@ -1498,8 +1498,12 @@ impl Instance {
         let mut frame = (self.cancel_frame)();
         frame.name_unit(unit.unwrap_or(0));
         let (input, out, out_size) = frame.prepare(ticket, class as u8);
+        let dispatch = tracing::dispatcher::get_default(Clone::clone);
+        let span = tracing::Span::current();
         let crossed = self.watched(slot::CANCEL, || {
             crate::ffi_thread::on_plugin_thread(|| {
+                let _dispatch = tracing::dispatcher::set_default(&dispatch);
+                let _span = span.enter();
                 let _framing = super::framing_context::enter(framing.clone());
                 // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
                 let mut crossed = unsafe { self.cross(slot::CANCEL, input, out, out_size) };
