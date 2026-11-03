@@ -29,7 +29,12 @@ fn render_metrics() -> String {
     let statement = rendering_of_library(&path)
         .expect("the actual exporter statement reads")
         .expect("the actual exporter carries its statement");
+    #[cfg(distribution_root)]
+    crate::dist_root_install::install();
+    let connector = crate::root::connector::installed()
+        .expect("the normal root installs the actual transport connector");
     let dispatcher = std::sync::Arc::new(Dispatcher::new(DispatchConfig::default()));
+    crate::root::connector::install_io(&dispatcher);
     let plugin = load_dropped::<Export>(
         &path,
         &statement,
@@ -38,7 +43,8 @@ fn render_metrics() -> String {
             max_inflight_cap: 64,
             sink: std::sync::Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: ConnTable::NoNeeds,
+            conns: ConnTable::Host(std::sync::Arc::clone(connector)
+                as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
         },
     )
     .expect("the actual exporter loads through its memory ABI");
@@ -67,7 +73,12 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
     let statement = rendering_of_library(&path)
         .expect("the actual exporter statement reads")
         .expect("the actual exporter carries its statement");
+    #[cfg(distribution_root)]
+    crate::dist_root_install::install();
+    let connector = crate::root::connector::installed()
+        .expect("the normal root installs the actual transport connector");
     let dispatcher = std::sync::Arc::new(Dispatcher::new(DispatchConfig::default()));
+    crate::root::connector::install_io(&dispatcher);
     let plugin = load_dropped::<Export>(
         &path,
         &statement,
@@ -76,7 +87,8 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
             max_inflight_cap: 64,
             sink: std::sync::Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: ConnTable::NoNeeds,
+            conns: ConnTable::Host(std::sync::Arc::clone(connector)
+                as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
         },
     )
     .expect("the actual HTTP exporter loads through its memory ABI");
@@ -791,6 +803,8 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         )]),
         &busbar_kernel::config_validate::MetadataPosture::default(),
     );
+    #[cfg(distribution_root)]
+    crate::dist_root_install::install();
     let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
         Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     let auths = OutboundAuths::new(
@@ -1695,6 +1709,8 @@ pub(super) mod session_door {
         };
         let catalog: std::collections::HashMap<String, busbar_contract::config::ModelCfg> =
             serde_yaml::from_str(&models_yaml).expect("the models catalog");
+        #[cfg(distribution_root)]
+        crate::dist_root_install::install();
         let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
             Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
         let auths = OutboundAuths::new(
@@ -5639,6 +5655,8 @@ async fn serve_configured(
         )]),
         &busbar_kernel::config_validate::MetadataPosture::default(),
     );
+    #[cfg(distribution_root)]
+    crate::dist_root_install::install();
     let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
         Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     let auths = OutboundAuths::new(
