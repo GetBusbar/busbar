@@ -219,7 +219,10 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     if let Some(rotate) = rotate {
         rotate();
     }
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::boot::hydrate_all(&app)
+        .expect("the actual audit Store hydrates before mutations");
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -286,8 +289,8 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     );
 
     {
-        let config_path = dir.join("config.yaml");
-        let providers_path = dir.join("providers.yaml");
+        let config_path = dir.join("config.json");
+        let providers_path = dir.join("providers.json");
         let mut loaded = busbar_kernel::load_config_from_disk_with_store(
             &config_path,
             Some(&providers_path),
@@ -299,7 +302,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
         .expect("disk reload");
         assert_eq!(
             loaded.deploy.per_request_fee, 0,
-            "base config.yaml has no fee (the override lives only in the overlay)"
+            "base config.json has no fee (the override lives only in the overlay)"
         );
         if let Some(doc) = loaded.overlay_doc.as_ref() {
             busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
