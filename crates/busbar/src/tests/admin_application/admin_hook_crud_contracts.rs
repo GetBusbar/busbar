@@ -123,6 +123,9 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] =
+        serde_json::to_value(crate::root::test_plugins::trusted_config(&directory))
+            .expect("the exact signed plugin deployment serializes");
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -167,7 +170,11 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
         app.hook_env.registry.resolve("test-hook").is_some(),
         "the actual signed hook is admitted and resolves through its alias"
     );
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::admin::seam::record_boot(&app);
+    busbar_kernel::boot::hydrate_all(&app)
+        .expect("the actual root hydrates audit storage before admin mutations");
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -444,6 +451,9 @@ async fn test_admin_v1_audit_records_mutations() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] =
+        serde_json::to_value(crate::root::test_plugins::trusted_config(&directory))
+            .expect("the exact signed plugin deployment serializes");
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -488,7 +498,11 @@ async fn test_admin_v1_audit_records_mutations() {
         app.hook_env.registry.resolve("test-hook").is_some(),
         "the actual signed hook is admitted and resolves through its alias"
     );
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::admin::seam::record_boot(&app);
+    busbar_kernel::boot::hydrate_all(&app)
+        .expect("the actual root hydrates audit storage before admin mutations");
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -681,6 +695,9 @@ async fn test_admin_v1_delete_hook_takes_effect_live() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] =
+        serde_json::to_value(crate::root::test_plugins::trusted_config(&directory))
+            .expect("the exact signed plugin deployment serializes");
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -725,7 +742,11 @@ async fn test_admin_v1_delete_hook_takes_effect_live() {
         app.hook_env.registry.resolve("test-hook").is_some(),
         "the actual signed hook is admitted and resolves through its alias"
     );
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::admin::seam::record_boot(&app);
+    busbar_kernel::boot::hydrate_all(&app)
+        .expect("the actual root hydrates audit storage before admin mutations");
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -899,6 +920,9 @@ async fn test_admin_v1_base_hook_is_read_only_via_api() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] =
+        serde_json::to_value(crate::root::test_plugins::trusted_config(&directory))
+            .expect("the exact signed plugin deployment serializes");
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -948,7 +972,11 @@ async fn test_admin_v1_base_hook_is_read_only_via_api() {
         app.hook_env.registry.resolve("test-hook").is_some(),
         "the actual signed hook is admitted and resolves through its alias"
     );
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::admin::seam::record_boot(&app);
+    busbar_kernel::boot::hydrate_all(&app)
+        .expect("the actual root hydrates audit storage before admin mutations");
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1122,6 +1150,9 @@ async fn base_hook_delete_conflict_outranks_a_stale_if_match() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] =
+        serde_json::to_value(crate::root::test_plugins::trusted_config(&directory))
+            .expect("the exact signed plugin deployment serializes");
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -1171,7 +1202,11 @@ async fn base_hook_delete_conflict_outranks_a_stale_if_match() {
         app.hook_env.registry.resolve("test-hook").is_some(),
         "the actual signed hook is admitted and resolves through its alias"
     );
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::admin::seam::record_boot(&app);
+    busbar_kernel::boot::hydrate_all(&app)
+        .expect("the actual root hydrates audit storage before admin mutations");
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1313,6 +1348,9 @@ async fn limit_zero_does_not_produce_a_self_referential_cursor() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] =
+        serde_json::to_value(crate::root::test_plugins::trusted_config(&directory))
+            .expect("the exact signed plugin deployment serializes");
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -1357,7 +1395,11 @@ async fn limit_zero_does_not_produce_a_self_referential_cursor() {
         app.hook_env.registry.resolve("test-hook").is_some(),
         "the actual signed hook is admitted and resolves through its alias"
     );
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::admin::seam::record_boot(&app);
+    busbar_kernel::boot::hydrate_all(&app)
+        .expect("the actual root hydrates audit storage before admin mutations");
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1560,6 +1602,9 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] =
+        serde_json::to_value(crate::root::test_plugins::trusted_config(&directory))
+            .expect("the exact signed plugin deployment serializes");
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -1604,7 +1649,11 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
         app.hook_env.registry.resolve("test-hook").is_some(),
         "the actual signed hook is admitted and resolves through its alias"
     );
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::admin::seam::record_boot(&app);
+    busbar_kernel::boot::hydrate_all(&app)
+        .expect("the actual root hydrates audit storage before admin mutations");
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

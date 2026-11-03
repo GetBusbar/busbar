@@ -124,9 +124,16 @@ async fn test_admin_v1_config_versions_rollback_and_diff() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] =
+        serde_json::to_value(crate::root::test_plugins::trusted_config(&directory))
+            .expect("the exact signed plugin deployment serializes");
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
+    let config_path = directory.join("config.json");
+    let providers_path = directory.join("providers.json");
+    std::fs::write(&config_path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+    std::fs::write(&providers_path, b"{}").unwrap();
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
@@ -150,7 +157,7 @@ async fn test_admin_v1_config_versions_rollback_and_diff() {
         Some(overlay.clone()),
         HashSet::new(),
         HashSet::new(),
-        (None, None),
+        (Some(config_path), Some(providers_path)),
         None,
         &rules,
         Some(anchor),
@@ -168,7 +175,11 @@ async fn test_admin_v1_config_versions_rollback_and_diff() {
         app.hook_env.registry.resolve("test-hook").is_some(),
         "the actual signed hook is admitted and resolves through its alias"
     );
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::admin::seam::record_boot(&app);
+    busbar_kernel::boot::hydrate_all(&app)
+        .expect("the actual root hydrates audit storage before admin mutations");
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -379,9 +390,16 @@ async fn test_admin_v1_config_plane_golden_path() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] =
+        serde_json::to_value(crate::root::test_plugins::trusted_config(&directory))
+            .expect("the exact signed plugin deployment serializes");
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
+    let config_path = directory.join("config.json");
+    let providers_path = directory.join("providers.json");
+    std::fs::write(&config_path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+    std::fs::write(&providers_path, b"{}").unwrap();
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
@@ -405,7 +423,7 @@ async fn test_admin_v1_config_plane_golden_path() {
         Some(overlay.clone()),
         HashSet::new(),
         HashSet::new(),
-        (None, None),
+        (Some(config_path), Some(providers_path)),
         None,
         &rules,
         Some(anchor),
@@ -424,6 +442,7 @@ async fn test_admin_v1_config_plane_golden_path() {
         "the actual signed hook is admitted and resolves through its alias"
     );
     let app = Arc::new(app);
+    busbar_kernel::admin::seam::record_boot(&app);
     busbar_kernel::boot::hydrate_all(&app)
         .expect("the actual root hydrates the audit stream before admin mutations");
     let router = busbar_kernel::build_router(app);
@@ -638,9 +657,16 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] =
+        serde_json::to_value(crate::root::test_plugins::trusted_config(&directory))
+            .expect("the exact signed plugin deployment serializes");
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
+    let config_path = directory.join("config.json");
+    let providers_path = directory.join("providers.json");
+    std::fs::write(&config_path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+    std::fs::write(&providers_path, b"{}").unwrap();
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
@@ -664,7 +690,7 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
         Some(overlay.clone()),
         HashSet::new(),
         HashSet::new(),
-        (None, None),
+        (Some(config_path), Some(providers_path)),
         None,
         &rules,
         Some(anchor),
@@ -682,7 +708,11 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
         app.hook_env.registry.resolve("test-hook").is_some(),
         "the actual signed hook is admitted and resolves through its alias"
     );
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::admin::seam::record_boot(&app);
+    busbar_kernel::boot::hydrate_all(&app)
+        .expect("the actual root hydrates audit storage before admin mutations");
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -714,7 +744,7 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
         .post(format!("http://{addr}/api/v1/admin/config/apply"))
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"config": {"providers": {}, "models": {}, "store": {"module": module, "settings": settings}}}).to_string())
+        .body(serde_json::json!({"config": {"providers": {}, "models": {}, "store": {"module": module, "settings": settings}, "plugins": crate::root::test_plugins::trusted_config(&directory)}}).to_string())
         .send()
         .await
         .unwrap();
