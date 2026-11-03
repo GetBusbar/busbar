@@ -249,6 +249,12 @@ async fn read_host_http_response(
                         return Ok((status.expect("the HTTP head precedes its body"), body));
                     }
                 }
+                PieceKind::HookReply | PieceKind::Completion => {
+                    panic!(
+                        "the HTTP carrier delivered a non-HTTP response piece: {:?}",
+                        piece.kind
+                    );
+                }
             }
         }
     })
