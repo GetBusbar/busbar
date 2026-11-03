@@ -84,6 +84,10 @@ extern "C" fn close(
 }
 fn finish(d: Dispatcher, p: Plugin<Plane>) {
     let host = p.inner.ctx().handle;
+    // Raw Plugin handles do not own a drop-time lifecycle close. Exercise the
+    // real CLOSE explicitly before waiting for the wrapper's completion marker.
+    crate::dispatch::lifecycle::close(&p);
+    assert!(!p.is_open(), "the actual CLOSE ends the opened instance");
     drop(p);
     drop(d);
     let end = Instant::now() + Duration::from_secs(5);

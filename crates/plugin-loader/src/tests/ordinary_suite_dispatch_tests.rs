@@ -139,7 +139,8 @@ fn a_wait_that_is_woken_passes() {
         .wait(Duration::from_secs(15))
         .expect("a real wake resumes the op");
     assert_eq!(done.outcome, Outcome::Ready);
-    assert_eq!(p.inner.crossings.load(Ordering::SeqCst) - before.0, 1);
+    // Crossings counts every raw entry, including the one RESUME below.
+    assert_eq!(p.inner.crossings.load(Ordering::SeqCst) - before.0, 2);
     assert_eq!(p.inner.resumes.load(Ordering::SeqCst) - before.1, 1);
     assert_eq!(d.stats().deadline_without_wake, 0);
 }
@@ -273,12 +274,18 @@ fn red_a_pending_open_is_resumed_by_the_kernels_open_never_one_raw_crossing() {
         )
         .wait(Duration::from_secs(15))
         .expect("OPEN resumes on its actual wake");
-    assert_eq!(done.outcome, Outcome::Ready);
+    assert_eq!(
+        done.outcome,
+        Outcome::Ready,
+        "actual OPEN error: {:?}",
+        done.error
+    );
     assert!(
         p.is_open(),
         "the genuine MCP OPEN committed its actual instance"
     );
-    assert_eq!(p.inner.crossings.load(Ordering::SeqCst) - before.0, 1);
+    // Crossings counts every raw entry, including the one RESUME below.
+    assert_eq!(p.inner.crossings.load(Ordering::SeqCst) - before.0, 2);
     assert_eq!(p.inner.resumes.load(Ordering::SeqCst) - before.1, 1);
 }
 
