@@ -77,7 +77,7 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let directory = plugins::scratch("test_admin_v1_register_hook_takes_effect_live-actual-store");
@@ -106,7 +106,7 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
     let mut hook_manifest = plugins::manifest(
         "hook",
         &hook_module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     hook_manifest.alias = "test-hook".to_string();
     hook_manifest.statement = Some(hex::encode(hook_statement));
@@ -139,11 +139,7 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
         .expect("the actual Store opens the configuration authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
@@ -407,7 +403,7 @@ async fn test_admin_v1_audit_records_mutations() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let directory = plugins::scratch("test_admin_v1_audit_records_mutations-actual-store");
@@ -436,7 +432,7 @@ async fn test_admin_v1_audit_records_mutations() {
     let mut hook_manifest = plugins::manifest(
         "hook",
         &hook_module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     hook_manifest.alias = "test-hook".to_string();
     hook_manifest.statement = Some(hex::encode(hook_statement));
@@ -469,11 +465,7 @@ async fn test_admin_v1_audit_records_mutations() {
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
         .expect("the actual Store opens the configuration authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
@@ -653,7 +645,7 @@ async fn test_admin_v1_delete_hook_takes_effect_live() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let directory = plugins::scratch("test_admin_v1_delete_hook_takes_effect_live-actual-store");
@@ -682,7 +674,7 @@ async fn test_admin_v1_delete_hook_takes_effect_live() {
     let mut hook_manifest = plugins::manifest(
         "hook",
         &hook_module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     hook_manifest.alias = "test-hook".to_string();
     hook_manifest.statement = Some(hex::encode(hook_statement));
@@ -715,11 +707,7 @@ async fn test_admin_v1_delete_hook_takes_effect_live() {
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
         .expect("the actual Store opens the configuration authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
@@ -880,7 +868,7 @@ async fn test_admin_v1_base_hook_is_read_only_via_api() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let directory = plugins::scratch("test_admin_v1_base_hook_is_read_only_via_api-actual-store");
@@ -909,7 +897,7 @@ async fn test_admin_v1_base_hook_is_read_only_via_api() {
     let mut hook_manifest = plugins::manifest(
         "hook",
         &hook_module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     hook_manifest.alias = "test-hook".to_string();
     hook_manifest.statement = Some(hex::encode(hook_statement));
@@ -947,11 +935,7 @@ async fn test_admin_v1_base_hook_is_read_only_via_api() {
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
         .expect("the actual Store opens the configuration authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
@@ -1111,7 +1095,7 @@ async fn base_hook_delete_conflict_outranks_a_stale_if_match() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let directory =
@@ -1141,7 +1125,7 @@ async fn base_hook_delete_conflict_outranks_a_stale_if_match() {
     let mut hook_manifest = plugins::manifest(
         "hook",
         &hook_module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     hook_manifest.alias = "test-hook".to_string();
     hook_manifest.statement = Some(hex::encode(hook_statement));
@@ -1179,11 +1163,7 @@ async fn base_hook_delete_conflict_outranks_a_stale_if_match() {
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
         .expect("the actual Store opens the configuration authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
@@ -1311,7 +1291,7 @@ async fn limit_zero_does_not_produce_a_self_referential_cursor() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let directory =
@@ -1341,7 +1321,7 @@ async fn limit_zero_does_not_produce_a_self_referential_cursor() {
     let mut hook_manifest = plugins::manifest(
         "hook",
         &hook_module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     hook_manifest.alias = "test-hook".to_string();
     hook_manifest.statement = Some(hex::encode(hook_statement));
@@ -1374,11 +1354,7 @@ async fn limit_zero_does_not_produce_a_self_referential_cursor() {
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
         .expect("the actual Store opens the configuration authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
@@ -1567,7 +1543,7 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let directory =
@@ -1597,7 +1573,7 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
     let mut hook_manifest = plugins::manifest(
         "hook",
         &hook_module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     hook_manifest.alias = "test-hook".to_string();
     hook_manifest.statement = Some(hex::encode(hook_statement));
@@ -1630,11 +1606,7 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
         .expect("the actual Store opens the configuration authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
