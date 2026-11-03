@@ -452,9 +452,9 @@ pub struct DoorSlot {
     pub section: DoorSection,
     /// Its claims (mounted by their literal prefix) and its audience.
     pub facing: busbar_contract::plane_calls::DoorFacing,
-    /// Whether the door's open for this generation answered: `false` when it refused, its refusal
-    /// logged and `facing` the empty default. `/healthz` on a deployment with no model lanes reads
-    /// it ([`opened`]).
+    /// Whether this serving slot's facing answered. A refused candidate retains its prior
+    /// successful slot; without one, this is `false` and `facing` is the empty default.
+    /// `/healthz` on a deployment with no model lanes reads it ([`opened`]).
     pub opened: bool,
 }
 
@@ -524,6 +524,20 @@ fn build(
         Ok(f) => (f, true),
         Err(refusal) => {
             tracing::error!(plane = d.reg.key, "{refusal}");
+            // A refused candidate cannot replace the mount, audience or section of a
+            // successfully serving generation. The root keeps that same live door.
+            if let Some(prior) = ctx.prior.and_then(|prior| prior.plane_slot(decl.key)) {
+                if prior.downcast_ref::<DoorSlot>().is_some_and(|prior| {
+                    prior.opened
+                        && prior.section.section == d.reg.section
+                        && prior
+                            .section
+                            .door
+                            .is_some_and(|door| door.reg.key == decl.key)
+                }) {
+                    return Some(std::sync::Arc::clone(prior));
+                }
+            }
             (busbar_contract::plane_calls::DoorFacing::default(), false)
         }
     };
