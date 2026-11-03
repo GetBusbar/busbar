@@ -17,6 +17,55 @@ use busbar_plugin_loader::{
 };
 use std::path::{Path, PathBuf};
 
+/// Publisher explicitly configured by normal distribution fixtures.
+pub const FIXTURE_PUBLISHER: &str = "distribution-fixture";
+
+/// Trust the exact staged fixture archives through ordinary configured-publisher admission.
+pub fn trusted_config(directory: &Path) -> busbar_kernel::config::PluginsCfg {
+    trusted_config_with_key(directory, &crate::dist_root_install::release_key())
+}
+
+pub fn trusted_config_with_key(
+    directory: &Path,
+    signing_key: &SigningKey,
+) -> busbar_kernel::config::PluginsCfg {
+    let mut archives: Vec<_> = std::fs::read_dir(directory)
+        .expect("the fixture plugin directory exists")
+        .map(|entry| entry.expect("the fixture directory entry reads").path())
+        .filter(|path| path.is_file() && path.to_string_lossy().ends_with(".tar.gz"))
+        .collect();
+    archives.sort();
+    let fetch: Vec<serde_json::Value> = archives
+        .iter()
+        .map(|path| {
+            let name = path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .expect("fixture archive name is UTF-8");
+            serde_json::json!({
+                "url": format!("https://distribution-fixtures.example/{name}"),
+                "sha256": sha256(&std::fs::read(path).expect("the exact fixture archive reads"))
+            })
+        })
+        .collect();
+    let mut config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        fetch: serde_json::from_value(serde_json::Value::Array(fetch))
+            .expect("fixture archive pins"),
+        ..Default::default()
+    };
+    config
+        .trust
+        .publishers
+        .push(busbar_kernel::config::PluginPublisher {
+            name: FIXTURE_PUBLISHER.into(),
+            public_key: hex::encode(signing_key.verifying_key().as_bytes()),
+        });
+    config
+}
+
 pub fn manifest(kind: &str, name: &str, publisher: &str) -> Manifest {
     Manifest {
         name: name.into(),
