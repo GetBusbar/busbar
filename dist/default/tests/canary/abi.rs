@@ -75,6 +75,22 @@ fn doors() -> &'static Doors {
     })
 }
 
+/// The named planted secret's exact loan position comes from the product's Statement.
+pub fn signing_secret_crossing() -> (String, String) {
+    let webhook = &doors().webhook_signature;
+    let facts = busbar_plugin_loader::dispatch::kinds::auth::stated_facts(webhook.1)
+        .expect("the actual webhook Statement states its secret references");
+    let index = facts
+        .secret_refs
+        .iter()
+        .position(|path| path == "signing-secret")
+        .expect("the actual webhook declares its signing secret");
+    (
+        format!("abi:host->plugin:op:open.secrets[{index}]"),
+        format!("{} (linked)", webhook.0),
+    )
+}
+
 fn registry() -> Arc<PluginRegistry> {
     let d = doors();
     let rows = [&d.webhook_signature, &d.header, &d.oidc]
