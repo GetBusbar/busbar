@@ -238,6 +238,12 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
         b'A'
     };
     let broken = String::from_utf8(broken).unwrap();
+    let groups: Vec<_> = (0..300).map(|i| format!("group-{i}")).collect();
+    let group_refs: Vec<_> = groups.iter().map(String::as_str).collect();
+    let wide = common::credentials::token_for("alice", &group_refs, audience);
+    let other_settings = serde_json::Value::Object(common::credentials::settings(
+        "api://different-verifier-policy",
+    ));
     let mut transcripts = Vec::new();
     for registry in [linked, dropped] {
         let rows =
@@ -282,7 +288,47 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
             transcript[0].1, transcript[2].1,
             "a genuinely different credential policy cannot compare as the same verdict"
         );
-        transcripts.push((auth.name().to_string(), auth.facts(), transcript));
+        // Change the verifier's configured audience while keeping the exact signed token.
+        let other_auth = rows
+            .open(&manifest.name, "the-auth-other-policy", &other_settings)
+            .expect("the real OIDC verifier opens with the other audience policy");
+        let other_answer = answered(&*other_auth, Some(&valid)).await;
+        assert!(
+            matches!(other_answer.verified, Verified::Reject),
+            "the same valid JWT must reject under another verifier's audience policy"
+        );
+        let other_transcript = (other_auth.verify_now(&request(Some(&valid))), other_answer);
+        assert_ne!(
+            transcript[0], other_transcript,
+            "changing the verifier policy for the same token must change its full verdict"
+        );
+
+        // The real 300-group JWT exceeds the host's initial identity group storage. Keep
+        // the original sync/submitted/submitted/sync sequence through each actual origin.
+        let wide_transcript = vec![
+            auth.verify_now(&request(Some(&wide)))
+                .expect("the warmed verifier answers the first wide JWT on the spot"),
+            answered(&*auth, Some(&wide)).await,
+            answered(&*auth, Some(&wide)).await,
+            auth.verify_now(&request(Some(&wide)))
+                .expect("the warmed verifier answers the fourth wide JWT on the spot"),
+        ];
+        for answer in &wide_transcript {
+            let Verified::Identity(identity) = &answer.verified else {
+                panic!("every real wide JWT judgment must identify: {answer:?}");
+            };
+            assert_eq!(identity.subject, "oidc:alice");
+            assert_eq!(identity.groups.len(), 300);
+            assert_eq!(identity.groups[299], "group-299");
+            assert_eq!(identity.groups, groups);
+        }
+        transcripts.push((
+            auth.name().to_string(),
+            auth.facts(),
+            transcript,
+            other_transcript,
+            wide_transcript,
+        ));
     }
     assert_eq!(
         transcripts[0], transcripts[1],
