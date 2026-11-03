@@ -682,6 +682,23 @@ impl busbar_contract::services::HostServices for Provider {
         busbar_contract::services::Ran::Now(result)
     }
 }
+// Raw loaded Plugin values do not own an automatic CLOSE lifecycle. Keep the
+// actual image live until its explicit CLOSE has released the boundary state.
+fn close_actual(plugin: &crate::dispatch::Plugin<Plane>, host: u64) {
+    use crate::dispatch::{in_head, out_head, Frame};
+    use busbar_contract::abi::mechanism::lifecycle::slot;
+    let mut frame = Frame::new(in_head(), out_head());
+    assert_eq!(
+        plugin.call(slot::CLOSE, &mut frame).outcome,
+        Outcome::Ready,
+        "the actual MCP instance closes after its tickets and answer leases retire"
+    );
+    assert!(
+        !states().lock().unwrap().contains_key(&host),
+        "actual CLOSE released the retained service snapshot and boundary state"
+    );
+}
+
 #[track_caller]
 fn until(mut predicate: impl FnMut() -> bool) {
     let end = Instant::now() + Duration::from_secs(5);
@@ -768,9 +785,10 @@ fn automatic_driver_checks_ack_before_releasing_its_answer_lease() {
         }
         assert_eq!(provider.calls.load(SeqCst), 1);
         dispatcher.recycle(driver);
+        assert!(dispatcher.retirement_barrier(driver, Duration::from_secs(5)));
+        close_actual(&plugin, host);
         drop(plugin);
         drop(dispatcher);
-        until(|| !states().lock().unwrap().contains_key(&host));
     }
 }
 
@@ -844,9 +862,10 @@ fn canceling_an_actual_pending_crossing_cannot_ack_its_drivers_result() {
     assert_eq!(provider.calls.load(SeqCst), 1);
     dispatcher.recycle(session);
     dispatcher.recycle(driver);
+    assert!(dispatcher.retirement_barrier(driver, Duration::from_secs(5)));
+    close_actual(&plugin, host);
     drop(plugin);
     drop(dispatcher);
-    until(|| !states().lock().unwrap().contains_key(&host));
 }
 
 #[test]
@@ -1013,9 +1032,10 @@ fn a_pending_driver_delivers_ids_resumes_and_retires_late_service_custody() {
     assert_eq!(plugin.inner.driven.answers(), 5);
     assert!(plugin.inner.driven.drain().is_empty());
     dispatcher.recycle(barrier);
+    assert!(dispatcher.retirement_barrier(barrier, Duration::from_secs(5)));
+    close_actual(&plugin, host);
     drop(plugin);
     drop(dispatcher);
-    until(|| !states().lock().unwrap().contains_key(&host));
 }
 
 #[test]
@@ -1073,7 +1093,7 @@ fn project_attributes_the_actual_host_service_call_to_its_unit() {
             ("the-instance".into(), None, "door:project-scope".into())
         ]
     );
+    close_actual(&plugin, host);
     drop(plugin);
     drop(dispatcher);
-    until(|| !states().lock().unwrap().contains_key(&host));
 }
