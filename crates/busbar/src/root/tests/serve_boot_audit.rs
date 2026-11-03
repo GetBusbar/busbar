@@ -22,10 +22,6 @@ pub(super) async fn run() {
         "the build must carry the node's actual root unit"
     );
     let signing_key = crate::root::loader::sign::SigningKey::from_bytes(&[0x5a; 32]);
-    std::env::set_var(
-        "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-        hex::encode(signing_key.verifying_key().as_bytes()),
-    );
     let initial = busbar_kernel::config::deploy_from_yaml_str(
         "providers: {}\nmodels: {}\nadvanced:\n  allow_destinations: [127.0.0.1]\n",
     )
@@ -98,7 +94,7 @@ pub(super) async fn run() {
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let directory = crate::root::test_plugins::scratch("boot-audit-real-plane");
@@ -122,11 +118,7 @@ pub(super) async fn run() {
     .expect("the actual boot deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual boot deployment resolves");
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config_with_key(&directory, &signing_key);
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
         Arc::new(crate::root::door_steps::Rules::default());
     for step in crate::ROOT_UNITS.iter().filter_map(|unit| unit.on_config) {

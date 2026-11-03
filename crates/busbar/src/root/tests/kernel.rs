@@ -515,10 +515,6 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
         }
     }
     let release = crate::root::test_plugins::key(0x5a);
-    std::env::set_var(
-        "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-        hex::encode(release.verifying_key().as_bytes()),
-    );
     let library_path = std::path::PathBuf::from(
         std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
             .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -532,7 +528,7 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -572,11 +568,10 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
         judge,
         &[],
     );
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config_with_key(
+        &directory,
+        &crate::root::test_plugins::key(0x5a),
+    );
     let slots = crate::root::store_double::RecordSlots::new();
     let boot = busbar_kernel::config::card::CardFields {
         per_request_fee: BOOT_FEE,

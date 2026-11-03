@@ -63,14 +63,10 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
         let mut manifest = crate::root::test_plugins::manifest(
             "store",
             &module,
-            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
-        std::env::set_var(
-            "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-            hex::encode(release.verifying_key().as_bytes()),
-        );
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
             busbar_kernel::door::op_id().counter()
@@ -103,11 +99,10 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
         };
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            crate::root::test_plugins::trusted_config_with_key(
+                &directory,
+                &crate::root::test_plugins::key(0x5a),
+            ),
             None,
             Default::default(),
             Default::default(),
@@ -194,14 +189,10 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
             let mut manifest = crate::root::test_plugins::manifest(
                 "store",
                 &module,
-                crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+                crate::root::test_plugins::FIXTURE_PUBLISHER,
             );
             manifest.statement = Some(hex::encode(statement));
             let release = crate::root::test_plugins::key(0x5a);
-            std::env::set_var(
-                "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-                hex::encode(release.verifying_key().as_bytes()),
-            );
             let directory = crate::root::test_plugins::scratch(&format!(
                 "door-steps-{}",
                 busbar_kernel::door::op_id().counter()
@@ -236,11 +227,10 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
             };
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
                 cfg,
-                busbar_kernel::config::PluginsCfg {
-                    enabled: true,
-                    dir: directory.to_string_lossy().into_owned(),
-                    ..Default::default()
-                },
+                crate::root::test_plugins::trusted_config_with_key(
+                    &directory,
+                    &crate::root::test_plugins::key(0x5a),
+                ),
                 None,
                 Default::default(),
                 Default::default(),
@@ -324,14 +314,10 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
         let mut manifest = crate::root::test_plugins::manifest(
             "store",
             &module,
-            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
-        std::env::set_var(
-            "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-            hex::encode(release.verifying_key().as_bytes()),
-        );
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
             busbar_kernel::door::op_id().counter()
@@ -364,11 +350,10 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
         };
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            crate::root::test_plugins::trusted_config_with_key(
+                &directory,
+                &crate::root::test_plugins::key(0x5a),
+            ),
             None,
             Default::default(),
             Default::default(),
@@ -886,14 +871,10 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
                 let mut manifest = crate::root::test_plugins::manifest(
                     "store",
                     &module,
-                    crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+                    crate::root::test_plugins::FIXTURE_PUBLISHER,
                 );
                 manifest.statement = Some(hex::encode(statement));
                 let release = crate::root::test_plugins::key(0x5a);
-                std::env::set_var(
-                    "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-                    hex::encode(release.verifying_key().as_bytes()),
-                );
                 let directory = crate::root::test_plugins::scratch(&format!(
                     "door-steps-{}",
                     busbar_kernel::door::op_id().counter()
@@ -929,11 +910,10 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
                 let (app, rotate, limits) =
                     busbar_kernel::appbuild::build_app_from_config_with_store(
                         cfg,
-                        busbar_kernel::config::PluginsCfg {
-                            enabled: true,
-                            dir: directory.to_string_lossy().into_owned(),
-                            ..Default::default()
-                        },
+                        crate::root::test_plugins::trusted_config_with_key(
+                            &directory,
+                            &crate::root::test_plugins::key(0x5a),
+                        ),
                         None,
                         Default::default(),
                         Default::default(),
@@ -1056,14 +1036,10 @@ fn downgrade_book(
         let mut manifest = crate::root::test_plugins::manifest(
             "store",
             &module,
-            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
-        std::env::set_var(
-            "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-            hex::encode(release.verifying_key().as_bytes()),
-        );
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
             busbar_kernel::door::op_id().counter()
@@ -1096,11 +1072,10 @@ fn downgrade_book(
         };
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            crate::root::test_plugins::trusted_config_with_key(
+                &directory,
+                &crate::root::test_plugins::key(0x5a),
+            ),
             None,
             Default::default(),
             Default::default(),
@@ -3337,14 +3312,10 @@ pub(crate) mod tool_door {
                 let mut manifest = crate::root::test_plugins::manifest(
                     "store",
                     &module,
-                    crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+                    crate::root::test_plugins::FIXTURE_PUBLISHER,
                 );
                 manifest.statement = Some(hex::encode(statement));
                 let release = crate::root::test_plugins::key(0x5a);
-                std::env::set_var(
-                    "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-                    hex::encode(release.verifying_key().as_bytes()),
-                );
                 let directory = crate::root::test_plugins::scratch(&format!(
                     "door-steps-{}",
                     busbar_kernel::door::op_id().counter()
@@ -3380,11 +3351,10 @@ pub(crate) mod tool_door {
                 let (app, rotate, limits) =
                     busbar_kernel::appbuild::build_app_from_config_with_store(
                         cfg,
-                        busbar_kernel::config::PluginsCfg {
-                            enabled: true,
-                            dir: directory.to_string_lossy().into_owned(),
-                            ..Default::default()
-                        },
+                        crate::root::test_plugins::trusted_config_with_key(
+                            &directory,
+                            &crate::root::test_plugins::key(0x5a),
+                        ),
                         None,
                         Default::default(),
                         Default::default(),
@@ -9284,14 +9254,10 @@ fn the_configured_error_body_cap_reaches_both_egress_constructors() {
             let mut manifest = crate::root::test_plugins::manifest(
                 "store",
                 &module,
-                crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+                crate::root::test_plugins::FIXTURE_PUBLISHER,
             );
             manifest.statement = Some(hex::encode(statement));
             let release = crate::root::test_plugins::key(0x5a);
-            std::env::set_var(
-                "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-                hex::encode(release.verifying_key().as_bytes()),
-            );
             let directory = crate::root::test_plugins::scratch(&format!(
                 "door-steps-{}",
                 busbar_kernel::door::op_id().counter()
@@ -9326,11 +9292,10 @@ fn the_configured_error_body_cap_reaches_both_egress_constructors() {
             };
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
                 cfg,
-                busbar_kernel::config::PluginsCfg {
-                    enabled: true,
-                    dir: directory.to_string_lossy().into_owned(),
-                    ..Default::default()
-                },
+                crate::root::test_plugins::trusted_config_with_key(
+                    &directory,
+                    &crate::root::test_plugins::key(0x5a),
+                ),
                 None,
                 Default::default(),
                 Default::default(),
@@ -9517,14 +9482,10 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
                 let mut manifest = crate::root::test_plugins::manifest(
                     "store",
                     &module,
-                    crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+                    crate::root::test_plugins::FIXTURE_PUBLISHER,
                 );
                 manifest.statement = Some(hex::encode(statement));
                 let release = crate::root::test_plugins::key(0x5a);
-                std::env::set_var(
-                    "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-                    hex::encode(release.verifying_key().as_bytes()),
-                );
                 let directory = crate::root::test_plugins::scratch(&format!(
                     "door-steps-{}",
                     busbar_kernel::door::op_id().counter()
@@ -9560,11 +9521,10 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
                 let (app, rotate, limits) =
                     busbar_kernel::appbuild::build_app_from_config_with_store(
                         cfg,
-                        busbar_kernel::config::PluginsCfg {
-                            enabled: true,
-                            dir: directory.to_string_lossy().into_owned(),
-                            ..Default::default()
-                        },
+                        crate::root::test_plugins::trusted_config_with_key(
+                            &directory,
+                            &crate::root::test_plugins::key(0x5a),
+                        ),
                         None,
                         Default::default(),
                         Default::default(),
@@ -9899,14 +9859,10 @@ fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
         let mut manifest = crate::root::test_plugins::manifest(
             "store",
             &module,
-            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
-        std::env::set_var(
-            "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-            hex::encode(release.verifying_key().as_bytes()),
-        );
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
             busbar_kernel::door::op_id().counter()
@@ -9939,11 +9895,10 @@ fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
         };
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            crate::root::test_plugins::trusted_config_with_key(
+                &directory,
+                &crate::root::test_plugins::key(0x5a),
+            ),
             None,
             Default::default(),
             Default::default(),
@@ -10051,14 +10006,10 @@ fn asking_whether_a_name_is_configured_allocates_nothing() {
         let mut manifest = crate::root::test_plugins::manifest(
             "store",
             &module,
-            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
-        std::env::set_var(
-            "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-            hex::encode(release.verifying_key().as_bytes()),
-        );
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
             busbar_kernel::door::op_id().counter()
@@ -10091,11 +10042,10 @@ fn asking_whether_a_name_is_configured_allocates_nothing() {
         };
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            crate::root::test_plugins::trusted_config_with_key(
+                &directory,
+                &crate::root::test_plugins::key(0x5a),
+            ),
             None,
             Default::default(),
             Default::default(),

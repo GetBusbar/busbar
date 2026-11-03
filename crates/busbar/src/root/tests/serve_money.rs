@@ -122,10 +122,6 @@ fn governed_full(
             load_dropped, rendering_of_library, Bind, ConnTable, NoSink,
         };
         let release = crate::root::test_plugins::key(0x5a);
-        std::env::set_var(
-            "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-            hex::encode(release.verifying_key().as_bytes()),
-        );
         let initial = busbar_kernel::config::deploy_from_yaml_str(
             "providers: {}\nmodels: {}\nadvanced:\n  allow_destinations: [127.0.0.1]\n",
         )
@@ -222,7 +218,7 @@ fn governed_full(
         let mut manifest = crate::root::test_plugins::manifest(
             kind,
             &facts.name,
-            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
         if kind == "hook" {
@@ -343,11 +339,10 @@ fn governed_full(
     config.groups = groups;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
+        crate::root::test_plugins::trusted_config_with_key(
+            &directory,
+            &crate::root::test_plugins::key(0x5a),
+        ),
         None,
         Default::default(),
         Default::default(),
