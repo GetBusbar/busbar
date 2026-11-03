@@ -1738,8 +1738,8 @@ pub(super) mod session_door {
                 let fees: busbar_kernel::config::PlaneFeesMap = [(
                     plane_name.clone(),
                     busbar_kernel_ledger::cost::PlaneFees {
-                        per_request: 1,
-                        per_session: 0,
+                        per_request: 0,
+                        per_session: 1,
                     },
                 )]
                 .into_iter()
@@ -1964,8 +1964,8 @@ pub(super) mod session_door {
             config.plane_fees.insert(
                 plane_name.clone(),
                 busbar_kernel_ledger::cost::PlaneFees {
-                    per_request: 1,
-                    per_session: 0,
+                    per_request: 0,
+                    per_session: 1,
                 },
             );
         }
@@ -2014,7 +2014,16 @@ pub(super) mod session_door {
             let pool = crate::root::door_steps::plane_lane(&plane_name, "m-cap");
             drop(
                 gov.try_admit(&cost, &warm, &pool, busbar_kernel::store::now())
-                    .expect("the prior caller consumes the configured one-unit cap"),
+                    .expect("the prior caller is admitted before opening its session"),
+            );
+            // This plane counts its opened session, not a per-request fee.
+            gov.record_usage(
+                &cost,
+                &warm,
+                &pool,
+                &busbar_kernel_ledger::cost::plane_fee_lane(&plane_name),
+                &BTreeMap::from([(busbar_kernel_ledger::cost::PER_SESSION.to_owned(), 1)]),
+                busbar_kernel::store::now(),
             );
             assert!(
                 gov.try_admit(&cost, &warm, &pool, busbar_kernel::store::now())
