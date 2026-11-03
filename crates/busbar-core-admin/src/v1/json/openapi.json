@@ -1962,6 +1962,56 @@
         ],
         "type": "object"
       },
+      "ItemView": {
+        "description": "A safe observation of custody. The raw payload and operator evidence stay in the Store.",
+        "properties": {
+          "body_fingerprint": {
+            "type": "string"
+          },
+          "can_resolve": {
+            "type": "boolean"
+          },
+          "first_sent_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/KindView"
+          },
+          "operation_id": {
+            "type": "string"
+          },
+          "owner_node": {
+            "description": "The foreign sender's node as exact lower-case hex; omitted for this node's own work.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "recovery_version": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/components/schemas/StateView"
+          }
+        },
+        "required": [
+          "operation_id",
+          "body_fingerprint",
+          "recovery_version",
+          "kind",
+          "state",
+          "first_sent_at_ms",
+          "can_resolve"
+        ],
+        "type": "object"
+      },
       "KeyMeteringView": {
         "description": "`GET /keys/{id}/usage`: the key's all-time attribution counters (a 1.5.0 key bucket accrues in\nthe `total` window; limits live on the bound group's own windows) plus the fraction of the\ntightest `requests`/`tokens` limit across the group chain remaining (`null` = no such limit).",
         "properties": {
@@ -2165,6 +2215,14 @@
           "state"
         ],
         "type": "object"
+      },
+      "KindView": {
+        "enum": [
+          "usage",
+          "metering",
+          "correction"
+        ],
+        "type": "string"
       },
       "LedgerChainHead": {
         "description": "One node's journal head, as a checkpoint sealed it.",
@@ -2693,6 +2751,49 @@
         "required": [
           "metric",
           "amount"
+        ],
+        "type": "object"
+      },
+      "ListRequest": {
+        "additionalProperties": false,
+        "description": "The bounded observation request. The cursor belongs only to this surface.",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint",
+            "maximum": 1000,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ListView": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ItemView"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
         ],
         "type": "object"
       },
@@ -3899,6 +4000,53 @@
         ],
         "type": "object"
       },
+      "ResolveRequest": {
+        "additionalProperties": false,
+        "description": "The immutable operation and recovery version inspected by the operator.",
+        "properties": {
+          "backend_quiesced": {
+            "description": "Explicitly attest that every outstanding backend mutation for this operation settled.",
+            "type": "boolean"
+          },
+          "body_fingerprint": {
+            "description": "The retained operation body's SHA-256 fingerprint as 64 lower-case hex characters.",
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "operation_id": {
+            "description": "The original operation id as 32 lower-case hexadecimal characters.",
+            "pattern": "^[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "reason": {
+            "description": "The evidence behind the explicit verdict; retained in the durable audit record.",
+            "type": "string"
+          },
+          "recovery_version": {
+            "description": "The current recovery version; a stale observation is refused.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sender_quiesced": {
+            "description": "Explicitly attest that every sender for this operation is retired or disarmed.",
+            "type": "boolean"
+          },
+          "verdict": {
+            "$ref": "#/components/schemas/Verdict"
+          }
+        },
+        "required": [
+          "operation_id",
+          "body_fingerprint",
+          "recovery_version",
+          "verdict",
+          "reason",
+          "sender_quiesced",
+          "backend_quiesced"
+        ],
+        "type": "object"
+      },
       "RestartReq": {
         "additionalProperties": false,
         "description": "The `POST /api/v1/admin/restart` body. Absent is the same as `{}`.",
@@ -4060,6 +4208,18 @@
           "message"
         ],
         "type": "object"
+      },
+      "StateView": {
+        "enum": [
+          "intent",
+          "applied",
+          "condition_conflict",
+          "landed_unknown",
+          "verdict_landed",
+          "verdict_not_landed",
+          "settled"
+        ],
+        "type": "string"
       },
       "StoreRestoreReq": {
         "description": "`POST /store-restore`: the backup to restore. There is no default and no empty one.",
@@ -4344,6 +4504,14 @@
           "end"
         ],
         "type": "object"
+      },
+      "Verdict": {
+        "description": "An explicit operator observation of whether the retained operation landed.",
+        "enum": [
+          "landed",
+          "not_landed"
+        ],
+        "type": "string"
       },
       "VerifySince": {
         "description": "The checkpoint `verify` measured against.",
@@ -11195,6 +11363,174 @@
         ],
         "summary": "Whether the one ledger prices whole",
         "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/ledger/recovery/list": {
+      "post": {
+        "description": "An observation-only POST requiring full scope and the ordinary CRUD budget. The opaque cursor belongs to this list; default limit 200, maximum 1000. Rows contain immutable operation identities and recovery versions, never raw bodies or mutable dollar balances. Listing does not grant resolution authority; can_resolve describes only this node's current authority.",
+        "operationId": "PostLedgerRecoveryList",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListView"
+                }
+              }
+            },
+            "description": "A bounded page of retained operations and an opaque continuation cursor"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: malformed body, unknown fields, invalid limit or a malformed or foreign cursor"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`unavailable`: the recovery Store or owned task is unavailable. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Inspect retained raw ledger operations requiring recovery",
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/ledger/recovery/resolve": {
+      "post": {
+        "description": "Requires full scope, the original operation id and immutable body fingerprint, the inspected recovery version and nonempty evidence (at most 1024 bytes). The instance-bound recovery facade checks current authority and confirms a durable, attributed verdict before reposting or releasing dependent negative work. An expired receipt never proves not-landed. The same verdict, version, actor and reason replays its durable outcome; a conflicting retry is refused. The Store operation survives cancellation of the HTTP waiter. No raw payload, credential or mutable dollar balance is returned.",
+        "operationId": "PostLedgerRecoveryResolve",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemView"
+                }
+              }
+            },
+            "description": "The retained operation after the durable verdict was confirmed"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: malformed body, unknown fields, noncanonical operation id or fingerprint, missing verdict or invalid evidence"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`conflict`: stale recovery version, mismatched operation fingerprint, conflicting verdict or absent resolution authority"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`unavailable`: the durable verdict could not be confirmed, or the owned task is unavailable; retry the same request. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Record an explicit landed or not-landed verdict for an exact retained operation",
+        "x-busbar-required-scope": "full",
         "x-busbar-since": "1.6.0"
       }
     },
