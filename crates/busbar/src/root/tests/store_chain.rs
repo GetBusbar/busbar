@@ -460,3 +460,241 @@ fn a_lane_releases_its_host_lease_only_after_the_pending_writer_drains_and_retir
     );
     successor.lease.unwrap().release(calls.as_ref()).unwrap();
 }
+
+// Probe controls use actual Store rows; only the read-boundary response selection or named
+// refusal is injected. They inspect traversal directly, without inventing sealed chain data.
+use busbar_contract::abi::store::OpId;
+use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
+use busbar_contract::store_calls::{StoreCall, StoreFailure};
+
+#[derive(Clone, Copy)]
+enum ProbeMode {
+    Healthy,
+    HighSubset,
+    Malformed,
+    Overloaded,
+}
+struct ProbeView {
+    inner: Arc<dyn StoreCalls>,
+    mode: ProbeMode,
+    starts: Mutex<Vec<(Vec<u8>, u32)>>,
+}
+impl ProbeView {
+    fn new(slots: &RecordSlots, mode: ProbeMode) -> Self {
+        Self {
+            inner: slots.calls(),
+            mode,
+            starts: Mutex::new(Vec::new()),
+        }
+    }
+}
+impl StoreCalls for ProbeView {
+    fn add_usage_batch<'a>(
+        &'a self,
+        op: OpId,
+        cells: &'a [(&'a str, u64, UsageDelta)],
+    ) -> StoreCall<'a, ()> {
+        self.inner.add_usage_batch(op, cells)
+    }
+    fn add_metering_batch<'a>(
+        &'a self,
+        op: OpId,
+        deltas: &'a [MeteringDelta],
+    ) -> StoreCall<'a, ()> {
+        self.inner.add_metering_batch(op, deltas)
+    }
+    fn record_put<'a>(
+        &'a self,
+        schema: &'a str,
+        key: &'a [u8],
+        value: &'a RecordBytes,
+    ) -> StoreCall<'a, ()> {
+        self.inner.record_put(schema, key, value)
+    }
+    fn record_get<'a>(
+        &'a self,
+        schema: &'a str,
+        key: &'a [u8],
+    ) -> StoreCall<'a, Option<RecordBytes>> {
+        self.inner.record_get(schema, key)
+    }
+    fn record_scan<'a>(
+        &'a self,
+        schema: &'a str,
+        prefix: &'a [u8],
+        limit: u32,
+    ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
+        Box::pin(async move {
+            self.starts.lock().unwrap().push((prefix.to_vec(), limit));
+            if limit == JOURNAL_PROBE_ROWS {
+                match self.mode {
+                    ProbeMode::Overloaded => return Err(StoreFailure::Overloaded),
+                    ProbeMode::HighSubset => {
+                        let mut rows = self.inner.record_scan(schema, prefix, limit + 1).await?;
+                        assert_eq!(rows.len(), limit as usize + 1);
+                        rows.remove(0);
+                        return Ok(rows);
+                    }
+                    ProbeMode::Malformed => {
+                        let mut rows = self.inner.record_scan(schema, prefix, limit).await?;
+                        assert_eq!(rows.len(), limit as usize);
+                        rows[0].1 = RecordBytes::new(vec![0, 0]).unwrap();
+                        return Ok(rows);
+                    }
+                    ProbeMode::Healthy => {}
+                }
+            }
+            self.inner.record_scan(schema, prefix, limit).await
+        })
+    }
+    fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
+        self.inner.upsert_plane_record(record)
+    }
+    fn get_plane_record<'a>(
+        &'a self,
+        kind: &'a str,
+        id: &'a str,
+    ) -> StoreCall<'a, Option<Vec<u8>>> {
+        self.inner.get_plane_record(kind, id)
+    }
+    fn append_plane_record<'a>(
+        &'a self,
+        op: OpId,
+        record: PlaneRecordRef<'a>,
+    ) -> StoreCall<'a, ()> {
+        self.inner.append_plane_record(op, record)
+    }
+    fn list_plane_records<'a>(
+        &'a self,
+        kind: &'a str,
+        selector: &'a PlaneSelector<'a>,
+    ) -> StoreCall<'a, Vec<Vec<u8>>> {
+        self.inner.list_plane_records(kind, selector)
+    }
+    fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
+        self.inner.delete_plane_record(kind, id)
+    }
+    fn redeem_plane_token<'a>(
+        &'a self,
+        kind: &'a str,
+        token: &'a str,
+        expires_at: u64,
+        now: u64,
+    ) -> StoreCall<'a, bool> {
+        self.inner.redeem_plane_token(kind, token, expires_at, now)
+    }
+    fn plane_token_live<'a>(
+        &'a self,
+        kind: &'a str,
+        token: &'a str,
+        expires_at: u64,
+        now: u64,
+    ) -> StoreCall<'a, bool> {
+        self.inner.plane_token_live(kind, token, expires_at, now)
+    }
+}
+
+fn probe_rows(count: u64) -> RecordSlots {
+    let slots = RecordSlots::new();
+    for sequence in 1..=count {
+        slots.put_row(JOURNAL_SCHEMA, &part_key(9, sequence, 0), &[0, 1, 42]);
+    }
+    slots
+}
+
+#[test]
+fn complete_probe_consumes_one_unsaturated_answer_without_descending() {
+    let slots = probe_rows(10);
+    let view = ProbeView::new(&slots, ProbeMode::Healthy);
+    let prefix = 9u64.to_be_bytes().to_vec();
+    let mut keys = Vec::new();
+    visit_journal_pages(&view, prefix.clone(), |page| {
+        keys.extend(page.into_iter().map(|(key, _)| key));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        keys,
+        (1..=10)
+            .map(|sequence| part_key(9, sequence, 0).to_vec())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(*view.starts.lock().unwrap(), vec![(prefix, 4096)]);
+}
+
+#[test]
+fn exactly_saturated_probe_descends_through_every_nested_saturated_prefix() {
+    let slots = probe_rows(4096);
+    let view = ProbeView::new(&slots, ProbeMode::Healthy);
+    let mut keys = Vec::new();
+    visit_journal_pages(&view, 9u64.to_be_bytes().to_vec(), |page| {
+        keys.extend(page.into_iter().map(|(key, _)| key));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        keys,
+        (1..=4096)
+            .map(|sequence| part_key(9, sequence, 0).to_vec())
+            .collect::<Vec<_>>()
+    );
+    let starts = view.starts.lock().unwrap();
+    assert_eq!(starts[0].1, 4096);
+    assert!(
+        starts
+            .iter()
+            .any(|(prefix, limit)| prefix.len() == 16 && *limit == 256),
+        "a saturated deeper prefix must reach the exact record prefixes"
+    );
+}
+
+#[test]
+fn saturated_high_key_subset_cannot_hide_a_corrupt_unreturned_child() {
+    let slots = probe_rows(4097);
+    slots.put_row(JOURNAL_SCHEMA, &part_key(9, 1, 0), &[0, 0]);
+    let view = ProbeView::new(&slots, ProbeMode::HighSubset);
+    let result = visit_journal_pages(&view, 9u64.to_be_bytes().to_vec(), |_| Ok(()));
+    assert!(result.unwrap_err().contains("invalid journal part count"));
+    let starts = view.starts.lock().unwrap();
+    assert_eq!(starts[0].1, 4096);
+    assert!(
+        starts.len() > 1,
+        "valid saturated high-key parent must be discarded before children expose corruption"
+    );
+}
+
+#[test]
+fn malformed_saturated_probe_fails_before_any_descent() {
+    let slots = probe_rows(4096);
+    let view = ProbeView::new(&slots, ProbeMode::Malformed);
+    let mut visited = false;
+    let result = visit_journal_pages(&view, 9u64.to_be_bytes().to_vec(), |_| {
+        visited = true;
+        Ok(())
+    });
+    assert!(result.unwrap_err().contains("invalid journal part count"));
+    assert!(!visited);
+    assert_eq!(view.starts.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn overloaded_probe_preserves_the_exhaustive_small_page_fallback() {
+    let slots = probe_rows(300);
+    let view = ProbeView::new(&slots, ProbeMode::Overloaded);
+    let mut keys = Vec::new();
+    visit_journal_pages(&view, 9u64.to_be_bytes().to_vec(), |page| {
+        keys.extend(page.into_iter().map(|(key, _)| key));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        keys,
+        (1..=300)
+            .map(|sequence| part_key(9, sequence, 0).to_vec())
+            .collect::<Vec<_>>()
+    );
+    let starts = view.starts.lock().unwrap();
+    assert_eq!(starts[0].1, 4096);
+    assert!(starts[1..].iter().all(|(_, limit)| *limit == 256));
+    assert!(starts.iter().any(|(prefix, _)| prefix.len() == 16));
+}
