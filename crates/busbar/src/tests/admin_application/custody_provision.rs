@@ -231,6 +231,8 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
         .calls
         .clone()
         .expect("the actual Store exposes typed boot calls");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::new(boot_calls.clone())
+        .expect("the actual Store provides the provision commit's durable overlay");
     let refusing = busbar_contract::store_calls::OpenedStore {
         records: Arc::new(RefusesKeyWrites(opened.records)),
         calls: None,
@@ -238,7 +240,7 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
-        None,
+        Some(overlay),
         Default::default(),
         Default::default(),
         (None, None),
