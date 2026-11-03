@@ -299,8 +299,13 @@ fn build_application(
         let opened = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugins)
             .expect("the actual hosted-login Store anchors its config authority");
         let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-            opened.calls.as_ref().cloned().expect("the actual Store exposes typed calls"),
-        ).expect("the actual hosted-login Store supports a writable config overlay");
+            opened
+                .calls
+                .as_ref()
+                .cloned()
+                .expect("the actual Store exposes typed calls"),
+        )
+        .expect("the actual hosted-login Store supports a writable config overlay");
         (Some(opened), Some(Arc::new(overlay)))
     } else {
         (opened_store, None)
