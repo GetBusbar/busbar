@@ -1037,7 +1037,7 @@ fn downgrade_book(
         );
         let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-            "providers": {"downgrade-upstream": {}},
+            "providers": {"downgrade-upstream": {"api_key": "none"}},
             "models": {
                 "big": {"provider": "downgrade-upstream"},
                 "small": {"provider": "downgrade-upstream"},
