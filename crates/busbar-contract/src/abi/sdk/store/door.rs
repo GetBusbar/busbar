@@ -1058,23 +1058,125 @@ slot!(
         }
     }
 );
-slot!(
-    /// `record_scan` (slot 28): entries into the host's records; `limit` 0 is nothing.
-    RecordScan(RecordScanIn, HostListOut) |s, i, o, cx| {
-        let schema = match text_of(i.field(|i| &i.schema)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match step!(o, s.store.record_scan(cx, schema, i.field(|i| &i.prefix).bytes(), i.limit)) {
-            Ok(rows) => {
-                let rows = &rows[..rows.len().min(i.limit as usize)];
-                let runs = rows.iter().map(|(k, v)| [k.as_slice(), v.as_slice()]);
-                let host = i.field(|i| &i.out);
-                list_into(o, host.items(), host.field(|h| &h.bytes).ptr(), runs, |_, [k, v]| {
-                    RecordEntry { key: span_blob(k), value: span_blob(v) }
-                })
+/// A completed scan retained across the host's one buffer-size recall. No host buffer or
+/// pending Store context is kept: only the immutable selected rows and their read identity.
+struct RetainedRecordScan {
+    ticket: Ticket,
+    schema: String,
+    prefix: Vec<u8>,
+    limit: u32,
+    rows: super::Scanned,
+}
+
+fn write_record_scan(
+    rows: &super::Scanned,
+    input: Lent<'_, RecordScanIn>,
+    out: &mut HostListOut,
+) -> Outcome {
+    let host = input.field(|i| &i.out);
+    list_into(
+        out,
+        host.items(),
+        host.field(|h| &h.bytes).ptr(),
+        rows.iter()
+            .map(|(key, value)| [key.as_slice(), value.as_slice()]),
+        |_, [key, value]| RecordEntry {
+            key: span_blob(key),
+            value: span_blob(value),
+        },
+    )
+}
+
+/// `record_scan` (slot 28): entries into the host's buffers. A SHORT answer owns its completed
+/// snapshot until release, so a growing Store cannot change the result during the one recall.
+#[derive(Debug)]
+pub struct RecordScan<B>(PhantomData<B>);
+impl<B: StoreSlots> SafeSlot for RecordScan<B> {
+    type In = RecordScanIn;
+    type Out = HostListOut;
+    type State = Held<Served<B>>;
+
+    fn call(
+        instance: Instance<'_, Held<Served<B>>>,
+        input: Lent<'_, RecordScanIn>,
+        mut out: Out<'_, HostListOut>,
+    ) -> Outcome {
+        use crate::abi::sdk::auth_door::short_reply;
+
+        let Some(held) = instance.get() else {
+            return Outcome::Fault;
+        };
+        let schema = match text_of(input.field(|i| &i.schema)) {
+            Ok(schema) => schema,
+            Err(why) => {
+                let door = Door::of(held, instance.ticket());
+                let answer = refused(&door, out.raw(), why);
+                door.keep_reply();
+                return answer;
             }
-            Err(e) => failed(s, o, e),
+        };
+        match short_reply::decode(input.field(|i| &i.head.extensions).bytes()) {
+            Ok(Some(lease)) => {
+                let Some(kept) = held.leases().shared::<RetainedRecordScan>(lease) else {
+                    return out.fail(Refusal::refused("record scan recall is no longer held"));
+                };
+                if kept.ticket != instance.ticket()
+                    || kept.schema != schema
+                    || kept.prefix != input.field(|i| &i.prefix).bytes()
+                    || kept.limit != input.limit
+                {
+                    return out.fail(Refusal::refused("record scan recall names another read"));
+                }
+                return write_record_scan(&kept.rows, input, out.raw());
+            }
+            Err(why) => return out.fail(Refusal::refused(why)),
+            Ok(None) => {}
         }
+        let Some(mut cx) = op_enter(&instance, held) else {
+            return Outcome::Fault;
+        };
+        let door = Door::of(held, instance.ticket());
+        let answer = match door.store.record_scan(
+            &mut cx,
+            schema,
+            input.field(|i| &i.prefix).bytes(),
+            input.limit,
+        ) {
+            Step::Pending { wake_at_ns } => {
+                out.raw().head.wake_at_ns = wake_at_ns;
+                Outcome::Pending
+            }
+            Step::Ready(Err(why)) => failed(&door, out.raw(), why),
+            Step::Ready(Ok(mut rows)) => {
+                rows.truncate(input.limit as usize);
+                let answer = write_record_scan(&rows, input, out.raw());
+                if answer == Outcome::Failed {
+                    out.keep(
+                        held.leases(),
+                        std::sync::Arc::new(RetainedRecordScan {
+                            ticket: instance.ticket(),
+                            schema: schema.to_owned(),
+                            prefix: input.field(|i| &i.prefix).bytes().to_vec(),
+                            limit: input.limit,
+                            rows,
+                        }),
+                    );
+                    let lease = out.get().head.lease;
+                    out.lease(
+                        |o| &o.head.extensions,
+                        held.leases(),
+                        short_reply::encode(lease),
+                        BLOB_OCTETS,
+                    );
+                }
+                answer
+            }
+        };
+        let answer = op_finish(&instance, cx, answer, &mut out.raw().head);
+        door.keep_reply();
+        answer
     }
-);
+}
 
 slot!(
     /// `add_usage_batch` (slot 29): one `op_id`, the cells in order, atomically.
