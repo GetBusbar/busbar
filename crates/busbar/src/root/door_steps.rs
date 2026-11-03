@@ -490,6 +490,26 @@ pub struct DoorFacts {
     pub stream_ceiling_secs: u64,
 }
 
+impl DoorFacts {
+    pub(super) fn scope_candidate_granted(
+        &self,
+        pools: &DoorPools,
+        key: Option<&VirtualKey>,
+        class: u8,
+        explicit: bool,
+        entry: &str,
+    ) -> bool {
+        // Only a host-proven catalog selection defers its secondary grant to APPROVE.
+        (class == ROUTE_SCOPE_LOCAL && explicit && self.secondary_scopes.contains_key(entry))
+            || pools.granted(
+                self.scope_kind.as_deref(),
+                key,
+                ROUTE_DIRECT,
+                Some(entry.as_bytes()),
+            )
+    }
+}
+
 /// What one unit carries between its steps.
 #[derive(Default)]
 struct DoorUnit {
@@ -906,17 +926,13 @@ impl DriverSteps for DoorSteps<'_> {
                 .iter()
                 .filter(|entry| candidates.as_ref().is_none_or(|c| c.contains(entry)))
                 .filter(|entry| {
-                    // An explicit host-sealed catalog selection is checked in APPROVE,
-                    // before admission. Its name is not a primary-scope entry.
-                    (class == ROUTE_SCOPE_LOCAL
-                        && candidates.as_ref().is_some_and(|c| c.contains(entry))
-                        && self.facts.secondary_scopes.contains_key(entry.as_str()))
-                        || self.pools.granted(
-                            self.facts.scope_kind.as_deref(),
-                            self.key.as_deref(),
-                            ROUTE_DIRECT,
-                            Some(entry.as_bytes()),
-                        )
+                    self.facts.scope_candidate_granted(
+                        self.pools,
+                        self.key.as_deref(),
+                        class,
+                        candidates.as_ref().is_some_and(|c| c.contains(entry)),
+                        entry,
+                    )
                 })
                 .cloned()
                 .collect();

@@ -639,7 +639,7 @@ impl DoorApply {
             generation,
         )?;
         let binding = self.plugin.connection_binding();
-        let table = routes_of(
+        let (table, catalog_entry) = routes_of(
             section,
             self.reach.as_ref().and_then(|r| r.catalog.as_ref()),
         );
@@ -650,7 +650,7 @@ impl DoorApply {
             &mut facts,
             &self.scope_kinds,
             &pools,
-            self.reach.as_ref().and_then(|r| r.catalog.as_ref()),
+            catalog_entry.as_deref(),
         );
         let mut fetches = None;
         let egress = match &self.reach {
@@ -1701,6 +1701,13 @@ pub fn catalog_routes(
     section: &serde_yaml::Value,
     catalog: &std::collections::HashMap<String, busbar_contract::config::ModelCfg>,
 ) -> serde_yaml::Value {
+    fold_catalog_routes(section, catalog).0
+}
+
+fn fold_catalog_routes(
+    section: &serde_yaml::Value,
+    catalog: &std::collections::HashMap<String, busbar_contract::config::ModelCfg>,
+) -> (serde_yaml::Value, Option<String>) {
     use serde_yaml::{Mapping, Value};
     let mut routes = section.clone();
     let named = section
@@ -1708,14 +1715,14 @@ pub fn catalog_routes(
         .and_then(|s| s.get(MODEL_KEY))
         .and_then(Value::as_str);
     let (Some(map), Some(model)) = (routes.as_mapping_mut(), named) else {
-        return routes;
+        return (routes, None);
     };
     let models_key = Value::from(busbar_contract::section::RESERVED_MODELS_KEY);
     let Some(entry) = catalog
         .get(model)
         .filter(|_| !map.contains_key(&models_key))
     else {
-        return routes;
+        return (routes, None);
     };
     let mut folded = Mapping::new();
     folded.insert("provider".into(), entry.provider.clone().into());
@@ -1728,25 +1735,32 @@ pub fn catalog_routes(
     let mut models = Mapping::new();
     models.insert(model.into(), Value::Mapping(folded));
     map.insert(models_key, Value::Mapping(models));
-    routes
+    (routes, Some(model.to_string()))
 }
 
 fn routes_of(
     section: &serde_yaml::Value,
     catalog: Option<&std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
-) -> serde_yaml::Value {
-    catalog.map_or_else(|| section.clone(), |c| catalog_routes(section, c))
+) -> (serde_yaml::Value, Option<String>) {
+    catalog.map_or_else(
+        || (section.clone(), None),
+        |c| fold_catalog_routes(section, c),
+    )
 }
 
-/// Catalog membership and a matching declared secondary kind are both host facts.
+/// A route synthesized from the catalog and a matching declared secondary kind are host facts.
 /// Neither an ARRIVE candidate nor a trust counterparty can create this obligation.
 fn seal_secondary_scopes(
     facts: &mut DoorFacts,
     scope_kinds: &[&str],
     pools: &DoorPools,
-    catalog: Option<&std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
+    catalog_entry: Option<&str>,
 ) {
     facts.secondary_scopes.clear();
+    let Some(entry) = catalog_entry.filter(|entry| pools.entries().iter().any(|e| e == entry))
+    else {
+        return;
+    };
     let catalog_scope = busbar_kernel::plane_driver::registry::plane_decl_for_config_section(
         busbar_contract::section::RESERVED_POOLS_KEY,
     )
@@ -1755,16 +1769,9 @@ fn seal_secondary_scopes(
     else {
         return;
     };
-    let Some(catalog) = catalog else {
-        return;
-    };
-    facts.secondary_scopes.extend(
-        pools
-            .entries()
-            .iter()
-            .filter(|entry| catalog.contains_key(entry.as_str()))
-            .map(|entry| (entry.clone(), kind.to_string())),
-    );
+    facts
+        .secondary_scopes
+        .insert(entry.to_string(), kind.to_string());
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1834,15 +1841,10 @@ fn seal_live(
     }
 
     let binding = plugin.connection_binding();
-    let table = routes_of(section, egress.and_then(|e| e.reach.catalog));
+    let (table, catalog_entry) = routes_of(section, egress.and_then(|e| e.reach.catalog));
     let pools =
         DoorPools::of(&table, served_facts.section).map_err(|e| format!("{instance}: {e}"))?;
-    seal_secondary_scopes(
-        &mut facts,
-        scope_kinds,
-        &pools,
-        egress.and_then(|e| e.reach.catalog),
-    );
+    seal_secondary_scopes(&mut facts, scope_kinds, &pools, catalog_entry.as_deref());
     let egress = match egress {
         Some(egress) => {
             let routes = crate::root::door_steps::member_routes(
@@ -5648,3 +5650,7 @@ mod member_tls_negative_tests;
 #[cfg(test)]
 #[path = "tests/journal_live_retry.rs"]
 mod journal_live_retry_tests;
+
+#[cfg(test)]
+#[path = "tests/catalog_scope_provenance.rs"]
+mod catalog_scope_provenance_tests;
