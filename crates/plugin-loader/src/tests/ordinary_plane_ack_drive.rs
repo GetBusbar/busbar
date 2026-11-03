@@ -55,6 +55,7 @@ struct State {
     leases: HashMap<u64, Box<[u8]>>,
     next_lease: u64,
     resumes: usize,
+    confirmed: Vec<Handle>,
     notify: bool,
 }
 static STATES: OnceLock<Mutex<HashMap<u64, State>>> = OnceLock::new();
@@ -115,6 +116,7 @@ extern "C" fn open(
                 leases: HashMap::new(),
                 next_lease: u64::MAX,
                 resumes: 0,
+                confirmed: Vec::new(),
                 notify: true,
             },
         );
@@ -152,13 +154,13 @@ extern "C" fn drive(
         if input.drive.head.flags & busbar_contract::abi::mechanism::call::FLAG_RESUME != 0 {
             state.resumes += 1;
         }
-        if state
+        let Ok(confirmed) = state
             .retirement
             .begin(input.drive.head.host, input.drive.driver, ext)
-            .is_err()
-        {
+        else {
             return RawOutcome::of(Outcome::Fault);
-        }
+        };
+        state.confirmed.extend(confirmed);
         let mut service_pending = false;
         if !state.completed {
             let handle = CompletionHandle {
@@ -918,38 +920,38 @@ fn a_pending_driver_delivers_ids_resumes_and_retires_late_service_custody() {
             .answered_after(2, Duration::from_secs(5)),
         Some(Outcome::Ready)
     );
-    let release_deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let all = states().lock().unwrap();
-        let state = all
-            .get(&host)
-            .expect("the actual pending driver is still open");
-        if state.releases == 3 {
-            break;
-        }
-        assert!(
-            Instant::now() < release_deadline,
-            "the completed DRIVE answer lease was not released: releases={}, leases={}, resumes={}, answers={}",
-            state.releases,
-            state.leases.len(),
-            state.resumes,
-            plugin.inner.driven.answers(),
-        );
-        drop(all);
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert_eq!(plugin.inner.driven.drain(), vec![5]);
-    assert_eq!(dispatcher.services().held.held(driver), 0);
-    assert_eq!(dispatcher.services().held(), 0);
-    states().lock().unwrap().get_mut(&host).unwrap().completed = false;
-    crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
+    // Accepting the third DRIVE's ACK autonomously wakes a fourth crossing to
+    // deliver the host's confirmation nonce. Observe that exact crossing before
+    // beginning another service cycle; the third lease can be released too
+    // quickly for a polling assertion to observe its intermediate count.
     until(|| {
         plugin.inner.driven.answers() == 4
             && states()
                 .lock()
                 .unwrap()
                 .get(&host)
-                .is_some_and(|s| s.releases == 4)
+                .is_some_and(|s| s.releases == 4 && !s.retirement.queued())
+    });
+    assert_eq!(
+        states().lock().unwrap().get(&host).unwrap().confirmed,
+        vec![Handle {
+            domain: Domain::Host,
+            seq: 0
+        }],
+        "the SDK only returns the consumed handle after validating the host confirmation nonce"
+    );
+    assert_eq!(plugin.inner.driven.drain(), vec![5]);
+    assert_eq!(dispatcher.services().held.held(driver), 0);
+    assert_eq!(dispatcher.services().held(), 0);
+    states().lock().unwrap().get_mut(&host).unwrap().completed = false;
+    crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
+    until(|| {
+        plugin.inner.driven.answers() == 5
+            && states()
+                .lock()
+                .unwrap()
+                .get(&host)
+                .is_some_and(|s| s.releases == 5)
     });
     assert_eq!(provider.calls.load(SeqCst), 2);
     assert!(plugin.inner.driven.drain().is_empty());
@@ -1008,7 +1010,7 @@ fn a_pending_driver_delivers_ids_resumes_and_retires_late_service_custody() {
             .outcome,
         Outcome::Ready
     );
-    assert_eq!(plugin.inner.driven.answers(), 4);
+    assert_eq!(plugin.inner.driven.answers(), 5);
     assert!(plugin.inner.driven.drain().is_empty());
     dispatcher.recycle(barrier);
     drop(plugin);
