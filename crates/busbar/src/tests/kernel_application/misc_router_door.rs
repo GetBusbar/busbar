@@ -67,8 +67,8 @@ fn data_router(doors: Vec<PlaneRouteSpec>) -> Router {
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": {"file": operator_token},
     });
-    let deploy = kernel::config::deploy_from_deserializer(document)
-    .expect("the product deployment parses");
+    let deploy =
+        kernel::config::deploy_from_deserializer(document).expect("the product deployment parses");
     let config = kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
