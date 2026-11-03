@@ -70,6 +70,12 @@ impl RecordSlots {
         self.inner.clone()
     }
 
+    /// Land a transaction through the actual Store from an injected reply-boundary probe.
+    pub(crate) fn apply_transaction(&self, request: &Request) -> Decision {
+        completed(self.inner.record_transaction(request))
+            .expect("the actual Store answers the injected transaction")
+    }
+
     pub(crate) fn on_transaction(
         &self,
         probe: impl Fn(&Request) -> Option<StoreFailure> + Send + Sync + 'static,

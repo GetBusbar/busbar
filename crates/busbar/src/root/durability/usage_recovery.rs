@@ -1290,10 +1290,8 @@ impl StoreRecovery {
                     ));
                 }
                 if lane
-                    .recovery_predicates(node)
+                    .recovery_fence_matches(node, &predicates[..predicates.len() - 1])
                     .map_err(unavailable)?
-                    .as_slice()
-                    == &predicates[..predicates.len() - 1]
                 {
                     self.state
                         .lock()
@@ -1530,6 +1528,83 @@ mod tests {
             usage_recovery_sink(&restarted).replay().unwrap(),
             vec![sent, dead]
         );
+    }
+
+    #[test]
+    fn a_selected_recovery_head_survives_same_holder_renewal_after_a_lost_reply() {
+        use super::super::store_identity::{
+            lease_row, set_lease_expiry, LEASE_REFRESH_TICKS, NODE_SCHEMA,
+        };
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // The real Store lands the exact fenced head CAS. Only its reply is lost; the
+        // current holder's lease then renews before readback confirms that selected head.
+        for change in 0..3 {
+            let slots = RecordSlots::new();
+            let host = format!("selected-head-renewal-{change}");
+            let book = opened(&slots, &host);
+            set_lease_expiry(slots.calls().as_ref(), &host, 1);
+            let lane = book.lock().unwrap().lane().unwrap().clone();
+            let sink = usage_recovery_sink(&book);
+            let sent = intent();
+            let probe_slots = slots.clone();
+            let probe_host = host.clone();
+            let applied = Arc::new(AtomicBool::new(false));
+            let observed = Arc::clone(&applied);
+            slots.on_transaction(move |request| {
+                if !request
+                    .mutations
+                    .iter()
+                    .any(|m| m.address().0 == HEAD_SCHEMA)
+                    || observed.swap(true, Ordering::AcqRel)
+                {
+                    return None;
+                }
+                assert_eq!(probe_slots.apply_transaction(request), Decision::Applied);
+                let calls = probe_slots.calls();
+                let (holder, expires) = lease_row(calls.as_ref(), &probe_host).unwrap();
+                match change {
+                    0 => {
+                        for _ in 0..LEASE_REFRESH_TICKS {
+                            lane.refresh_held_lease();
+                        }
+                        let renewed = lease_row(calls.as_ref(), &probe_host).unwrap();
+                        assert_eq!(renewed.0, holder);
+                        assert_ne!(
+                            renewed.1, expires,
+                            "the actual lease refresh changed its bytes"
+                        );
+                    }
+                    1 => set_lease_expiry(calls.as_ref(), &probe_host, 0),
+                    _ => {
+                        let mut replacement = holder;
+                        replacement[0] ^= 1;
+                        let value = [replacement.as_slice(), &expires.to_be_bytes()].concat();
+                        let key = [b"lease:".as_slice(), probe_host.as_bytes()].concat();
+                        probe_slots.put_row(NODE_SCHEMA, &key, &value);
+                    }
+                }
+                Some(busbar_contract::store_calls::StoreFailure::Failed(
+                    "the real head CAS landed but its reply was lost".into(),
+                ))
+            });
+            let result = sink.persist(&sent);
+            // The fault probe owns a Store/lane handle; release it before fixture teardown.
+            slots.on_transaction(|_| None);
+            assert!(applied.load(Ordering::Acquire), "the actual head CAS ran");
+            if change == 0 {
+                result.expect("normal renewal preserves the selected head's read custody");
+                sink.persist(&sent)
+                    .expect("reconfirmation selects no second event");
+                assert_eq!(sink.replay().unwrap(), vec![sent]);
+                assert_eq!(slots.rows_under(HEAD_SCHEMA), 1);
+            } else {
+                assert!(
+                    result.is_err(),
+                    "release or replacement revokes confirmation"
+                );
+            }
+        }
     }
 
     #[test]
