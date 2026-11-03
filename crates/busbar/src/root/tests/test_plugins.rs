@@ -17,6 +17,24 @@ use busbar_plugin_loader::{
 };
 use std::path::{Path, PathBuf};
 
+/// The separately built durable Store used by normal application boot fixtures.
+/// Governance unit fixtures keep their independent memory Store input.
+pub fn application_store_library() -> PathBuf {
+    let path = PathBuf::from(
+        std::env::var_os("BUSBAR_TEST_SQLITE_CDYLIB")
+            .expect("BUSBAR_TEST_SQLITE_CDYLIB names the actual application Store image"),
+    );
+    assert!(
+        path.is_absolute() && path.is_file(),
+        "the actual application Store image exists"
+    );
+    path
+}
+
+pub fn application_store_settings(directory: &Path) -> serde_json::Value {
+    serde_json::json!({ "db_path": directory.join("application.sqlite") })
+}
+
 /// Publisher explicitly configured by normal distribution fixtures.
 pub const FIXTURE_PUBLISHER: &str = "distribution-fixture";
 
