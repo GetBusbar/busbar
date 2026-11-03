@@ -77,7 +77,9 @@ fn actual_mcp_health_calls(
         .iter()
         .map(|class| busbar_contract::ids::OpClassId::new(class))
         .collect();
-    let calls: Arc<dyn PlaneCalls> = Arc::new(PlaneInstance::new(plugin, dispatcher, 0));
+    let calls = Arc::new(PlaneInstance::new(plugin, dispatcher, 0));
+    let refusal_statuses = calls.refusal_statuses();
+    let calls: Arc<dyn PlaneCalls> = calls;
     let node = Arc::new(crate::root::plane_node::Node::new());
     let post = Arc::new(crate::root::plane_node::NodeEndPost::new(node));
     let money = Arc::new(kernel::plane_driver::PlaneMoney::new(
@@ -101,7 +103,7 @@ fn actual_mcp_health_calls(
                 caps: kernel::plane_driver::BufferCaps::default(),
                 op_classes,
                 status_of: kernel::plane_driver::refusal_status,
-                refusal_statuses: calls.refusal_statuses(),
+                refusal_statuses,
                 caller_refs: money.caller_refs(),
             },
             money,
