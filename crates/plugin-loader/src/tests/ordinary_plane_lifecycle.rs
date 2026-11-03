@@ -3,7 +3,8 @@
 //! Ordinary lifecycle ownership on the actual MCP image, both loading paths.
 use crate::dispatch::kinds::plane::{open_door, refresh_door, retire_door, Plane};
 use crate::dispatch::{
-    load_dropped, load_linked, rendering_of, Adopter, Bind, ConnTable, LinkedRow, NoSink, Plugin,
+    load_dropped, load_linked, rendering_of_library, Adopter, Bind, ConnTable, LinkedRow, NoSink,
+    Plugin,
 };
 use std::sync::Arc;
 fn binding() -> Bind {
@@ -21,18 +22,61 @@ fn linked() -> Plugin<Plane> {
 fn dropped() -> Plugin<Plane> {
     load_dropped::<Plane>(
         &crate::actual_mcp::cdylib(),
-        &rendering_of(crate::actual_mcp::door).unwrap(),
+        &rendering_of_library(&crate::actual_mcp::cdylib())
+            .unwrap()
+            .expect("actual product exports its statement"),
         binding(),
     )
     .unwrap()
 }
 #[test]
 fn repeated_plane_loads_reuse_owned_static_words_after_the_image_is_released() {
-    for make in [linked as fn() -> Plugin<Plane>, dropped] {
+    const CHILD: &str = "BUSBAR_ACTUAL_DROPPED_WORDS_CHILD";
+    const WITNESS: &str = "actual-dropped-word-ownership-complete";
+    if std::env::var_os(CHILD).is_none() {
+        let output=std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "ordinary_plane_lifecycle::repeated_plane_loads_reuse_owned_static_words_after_the_image_is_released", "--nocapture", "--test-threads=1"])
+            .env(CHILD,"1").output().expect("isolated actual image-release control");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(WITNESS),
+            "isolated exact test really ran"
+        );
+        return;
+    }
+    let reaped = || {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while crate::dispatch::load::live_reapers() != 0 {
+            assert!(
+                std::time::Instant::now() < end,
+                "actual library unload did not return"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    };
+    // The dropped case runs before actual_mcp::door retains any linked descriptor image.
+    for (index, make) in [dropped as fn() -> Plugin<Plane>, linked]
+        .into_iter()
+        .enumerate()
+    {
         let first = make();
         let a = first.served();
         let declared = first.declared();
+        reaped();
+        let before = crate::dispatch::load::UNLOADS.load(std::sync::atomic::Ordering::SeqCst);
         drop(first);
+        reaped();
+        if index == 0 {
+            assert!(
+                crate::dispatch::load::UNLOADS.load(std::sync::atomic::Ordering::SeqCst) > before,
+                "the first actual dropped image was released"
+            );
+        }
         let second = make();
         let b = second.served();
         assert_eq!(a.section, b.section);
@@ -48,12 +92,23 @@ fn repeated_plane_loads_reuse_owned_static_words_after_the_image_is_released() {
             declared.record_kinds[0],
             second.declared().record_kinds[0]
         ));
+        reaped();
+        let before = crate::dispatch::load::UNLOADS.load(std::sync::atomic::Ordering::SeqCst);
         drop(second);
+        reaped();
+        if index == 0 {
+            assert!(
+                crate::dispatch::load::UNLOADS.load(std::sync::atomic::Ordering::SeqCst) > before,
+                "the second actual dropped image was released"
+            );
+        }
         assert_eq!(a.section, "tools");
         assert!(!a.op_classes.is_empty());
         assert_eq!(declared.record_kinds.len(), 4);
     }
+    println!("{WITNESS}");
 }
+
 #[test]
 fn the_hosts_snapshot_copy_survives_the_actual_plugins_next_refresh() {
     for p in [linked(), dropped()] {
