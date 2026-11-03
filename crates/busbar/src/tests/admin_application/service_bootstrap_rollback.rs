@@ -118,7 +118,7 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
     }
     document["plugins"] = serde_json::json!({
         "enabled":true, "dir":directory,
-        "trust":app.plugins_cfg.trust,
+        "trust":super::admin_application_service_plugin_integration::trust_document(&app.plugins_cfg),
         "min_versions":{(target_name.clone()):base_floor}, "fetch":fetch
     });
     let config_path = directory.join("config.yaml");
@@ -326,7 +326,7 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
         }
         document["plugins"] = serde_json::json!({
             "enabled":true, "dir":directory,
-            "trust":app.plugins_cfg.trust,
+            "trust":super::admin_application_service_plugin_integration::trust_document(&app.plugins_cfg),
             "min_versions":{(target_name.clone()):base_floor}, "fetch":fetch
         });
         let config_path = directory.join("config.yaml");
@@ -492,7 +492,7 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
     }
     document["plugins"] = serde_json::json!({
         "enabled":true, "dir":directory,
-        "trust":app.plugins_cfg.trust,
+        "trust":super::admin_application_service_plugin_integration::trust_document(&app.plugins_cfg),
         "min_versions":{(target_name.clone()):base_floor}, "fetch":fetch
     });
     let config_path = directory.join("config.yaml");
@@ -691,7 +691,7 @@ async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_sto
     std::fs::write(directory.join("target.tar.gz"), &target).unwrap();
     document["plugins"] = serde_json::json!({
         "enabled":true, "dir":directory,
-        "trust":app.plugins_cfg.trust,
+        "trust":super::admin_application_service_plugin_integration::trust_document(&app.plugins_cfg),
         "min_versions":{(target_name.clone()):base_floor},
         "fetch":[{"url":"https://plugins.example/target.tar.gz", "sha256":busbar_contract::redacted::sha256_hex(&target)}]
     });

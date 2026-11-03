@@ -12,6 +12,31 @@ use std::sync::{
 #[path = "../../root/tests/test_plugins.rs"]
 mod plugins;
 
+pub(super) fn trust_document(config: &PluginsCfg) -> serde_json::Value {
+    let publishers: Vec<_> = config.trust.publishers.iter().map(|publisher| {
+        serde_json::json!({"name": publisher.name, "public_key": publisher.public_key})
+    }).collect();
+    serde_json::json!({
+        "publishers": publishers,
+        "allow_unsigned": config.trust.allow_unsigned,
+        "allow_third_party": config.trust.allow_third_party,
+    })
+}
+
+fn fixture_config_document(directory: &Path) -> serde_json::Value {
+    let config = crate::root::test_plugins::trusted_config(directory);
+    let fetch: Vec<_> = config
+        .fetch_targets()
+        .expect("fixture archive URLs resolve")
+        .iter()
+        .map(|target| serde_json::json!({"url": target.url, "sha256": target.sha256}))
+        .collect();
+    serde_json::json!({
+        "enabled": true, "dir": directory,
+        "trust": trust_document(&config), "fetch": fetch,
+    })
+}
+
 struct InventoryReads {
     actual: &'static dyn PluginAdmission,
     scans: AtomicUsize,
@@ -1745,8 +1770,7 @@ async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor(
     .expect("the genuine scan owns the production gate");
     let validator_client = client.clone();
     let mut candidate = document;
-    candidate["plugins"] =
-        serde_json::to_value(crate::root::test_plugins::trusted_config(&directory)).unwrap();
+    candidate["plugins"] = fixture_config_document(&directory);
     let validator = tokio::spawn(async move {
         validator_client
             .post(format!("http://{addr}/api/v1/admin/config/validate"))
@@ -2042,8 +2066,7 @@ async fn rollback_reads_the_target_and_merges_pins() {
         public_key: hex::encode(publisher_key.verifying_key().to_bytes()),
     };
     app.plugins_cfg.trust.publishers.push(publisher);
-    document["plugins"] =
-        serde_json::json!({"enabled":true, "dir":directory, "trust":app.plugins_cfg.trust});
+    document["plugins"] = serde_json::json!({"enabled":true, "dir":directory, "trust":trust_document(&app.plugins_cfg)});
     let config_path = directory.join("config.yaml");
     let providers_path = directory.join("providers.yaml");
     std::fs::write(&config_path, serde_yaml::to_string(&document).unwrap()).unwrap();
