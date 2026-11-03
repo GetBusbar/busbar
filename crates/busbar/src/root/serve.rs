@@ -74,9 +74,469 @@ pub fn compose(
     }
 }
 
+// Host-service custody shares the existing bounded work policy. Entries contain no credential.
+// The plane's requested lifetime and deployment/key ceilings remain Store-governed.
+const TICKET_CUSTODY_CAP: usize = busbar_kernel::host_records::QUEUE_CAP;
+const TICKET_SWEEP_BATCH: usize = busbar_kernel::host_records::BATCH_CAP;
+
+static TICKET_NODES: std::sync::LazyLock<Mutex<Vec<std::sync::Weak<TicketCustody>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
+pub(crate) struct TicketCustody {
+    pub(crate) nonce: Arc<()>,
+    closed: std::sync::atomic::AtomicBool,
+    sources: Mutex<std::collections::HashMap<busbar_contract::UnitKey, Arc<TicketSource>>>,
+    entries: Mutex<TicketEntries>,
+}
+
+#[derive(Default)]
+struct TicketEntries {
+    tickets: BTreeMap<String, TicketEntry>,
+    cursor: Option<String>,
+    version: u64,
+}
+
+struct TicketEntry {
+    reservation: busbar_kernel::plane_driver::TicketReservation,
+    source: Arc<TicketSource>,
+    ready: bool,
+    version: u64,
+    store: Arc<dyn busbar_contract::records::RecordStore>,
+    expires_at: u64,
+}
+
+struct TicketSource {
+    store: Arc<dyn busbar_contract::records::RecordStore>,
+    key: Arc<busbar_contract::records::VirtualKey>,
+    money: Arc<PlaneMoney>,
+    instance: String,
+    instance_nonce: Arc<()>,
+    live: std::sync::Weak<DoorApply>,
+    unit: busbar_contract::UnitKey,
+    actual: Mutex<
+        Option<(
+            busbar_contract::caps::CallId,
+            std::sync::Weak<busbar_kernel::inflight::UnitSlot>,
+        )>,
+    >,
+    reserved: std::sync::atomic::AtomicBool,
+    active: std::sync::atomic::AtomicBool,
+}
+
+pub(crate) struct TicketSourceOwner {
+    custody: Arc<TicketCustody>,
+    source: Arc<TicketSource>,
+}
+
+impl Drop for TicketSourceOwner {
+    fn drop(&mut self) {
+        self.source
+            .active
+            .store(false, std::sync::atomic::Ordering::Release);
+        // Unregister first; a binder that already owns the source still must pass its actual cell.
+        let removed = self
+            .custody
+            .sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.source.unit);
+        drop(removed);
+        let pending = {
+            let mut entries = self
+                .custody
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let ids: Vec<_> = entries
+                .tickets
+                .iter()
+                .filter(|(_, e)| !e.ready && Arc::ptr_eq(&e.source, &self.source))
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.into_iter()
+                .filter_map(|id| entries.tickets.remove(&id))
+                .collect::<Vec<_>>()
+        };
+        drop(pending);
+    }
+}
+
+impl TicketCustody {
+    pub(crate) fn new() -> Arc<Self> {
+        let custody = Arc::new(Self {
+            nonce: Arc::new(()),
+            closed: std::sync::atomic::AtomicBool::new(false),
+            sources: Mutex::new(std::collections::HashMap::new()),
+            entries: Mutex::new(TicketEntries::default()),
+        });
+        let mut nodes = TICKET_NODES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        nodes.retain(|n| n.strong_count() > 0);
+        nodes.push(Arc::downgrade(&custody));
+        custody
+    }
+
+    fn register(
+        self: &Arc<Self>,
+        unit: busbar_contract::UnitKey,
+        key: Option<&Arc<busbar_contract::records::VirtualKey>>,
+        served: &ServedPlane,
+        live: &DoorLive,
+        app: &busbar_kernel::state::App,
+    ) -> Option<TicketSourceOwner> {
+        let source = Arc::new(TicketSource {
+            store: app.governance.as_ref()?.store(),
+            key: Arc::clone(key?),
+            money: Arc::clone(&served.money),
+            instance: served.instance.clone(),
+            instance_nonce: Arc::clone(&live.ticket_nonce),
+            live: Arc::downgrade(&served.live),
+            unit,
+            actual: Mutex::new(None),
+            reserved: std::sync::atomic::AtomicBool::new(false),
+            active: std::sync::atomic::AtomicBool::new(true),
+        });
+        let mut sources = self
+            .sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if sources.len() >= TICKET_CUSTODY_CAP || sources.contains_key(&unit) {
+            return None;
+        }
+        sources.insert(unit, Arc::clone(&source));
+        Some(TicketSourceOwner {
+            custody: Arc::clone(self),
+            source,
+        })
+    }
+
+    pub(crate) fn bind_source(
+        &self,
+        ctx: &busbar_kernel::teller::UnitCtx,
+        slot: &Arc<busbar_kernel::inflight::UnitSlot>,
+    ) {
+        let source = self
+            .sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&ctx.key)
+            .cloned();
+        if let Some(source) = source {
+            *source
+                .actual
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some((ctx.call, Arc::downgrade(slot)));
+        }
+    }
+
+    fn bind(
+        &self,
+        source: &Arc<TicketSource>,
+        identity: &busbar_kernel::host_services::VerifiedTicketIdentity,
+    ) -> Result<(), busbar_kernel::governance::TicketRefusal> {
+        use busbar_kernel::governance::TicketRefusal;
+        if !Arc::ptr_eq(&source.store, identity.store()) {
+            return Err(TicketRefusal::NotKept);
+        }
+        let (call, slot) = source
+            .actual
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or(TicketRefusal::NotKept)?;
+        let slot = slot.upgrade().ok_or(TicketRefusal::NotKept)?;
+        let principal = PrincipalId::new(source.key.id.as_str());
+        let reservation = slot
+            .cell()
+            .with_admitted_call(call, &principal, || {
+                // The failed unpublished attempt is conservatively terminal for this mint source.
+                source
+                    .reserved
+                    .compare_exchange(
+                        false,
+                        true,
+                        std::sync::atomic::Ordering::AcqRel,
+                        std::sync::atomic::Ordering::Acquire,
+                    )
+                    .map_err(|_| ReasonCode::Replayed)?;
+                source.money.reserve_ticket_admission(
+                    source.unit,
+                    call,
+                    &source.key,
+                    identity,
+                    Arc::clone(&self.nonce),
+                    Arc::clone(&source.instance_nonce),
+                )
+            })
+            .map_err(|_| TicketRefusal::NotKept)?;
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !source.active.load(std::sync::atomic::Ordering::Acquire)
+            || self.closed.load(std::sync::atomic::Ordering::Acquire)
+            || entries.tickets.len() >= TICKET_CUSTODY_CAP
+            || entries.tickets.contains_key(identity.id())
+        {
+            drop(entries);
+            drop(reservation);
+            return Err(TicketRefusal::NotKept);
+        }
+        entries.version = entries
+            .version
+            .checked_add(1)
+            .ok_or(TicketRefusal::NotKept)?;
+        let version = entries.version;
+        entries.tickets.insert(
+            identity.id().to_owned(),
+            TicketEntry {
+                reservation,
+                source: Arc::clone(source),
+                ready: false,
+                version,
+                store: Arc::clone(identity.store()),
+                expires_at: identity.expires_at(),
+            },
+        );
+        Ok(())
+    }
+
+    pub(crate) fn terminal(&self, key: busbar_contract::UnitKey, acknowledged_completed: bool) {
+        let removed = {
+            let mut entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let ids: Vec<_> = entries
+                .tickets
+                .iter()
+                .filter(|(_, e)| e.source.unit == key && !e.ready)
+                .map(|(id, _)| id.clone())
+                .collect();
+            let mut removed = Vec::new();
+            for id in ids {
+                if acknowledged_completed {
+                    if let Some(entry) = entries.tickets.get_mut(&id) {
+                        entry.ready = true;
+                    }
+                } else if let Some(entry) = entries.tickets.remove(&id) {
+                    removed.push(entry);
+                }
+            }
+            removed
+        };
+        drop(removed);
+    }
+
+    fn claim(
+        &self,
+        identity: &busbar_kernel::host_services::VerifiedTicketIdentity,
+    ) -> Option<busbar_kernel::plane_driver::TicketReservation> {
+        let (source, version) = {
+            let entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let entry = entries.tickets.get(identity.id())?;
+            if !entry.ready || !entry.reservation.matches(identity) {
+                return None;
+            }
+            (Arc::clone(&entry.source), entry.version)
+        };
+        // Resolve current host generation outside custody lock. Adoption rechecks the identity.
+        let live = source.live.upgrade()?.current();
+        if !Arc::ptr_eq(&live.ticket_nonce, &source.instance_nonce) {
+            return None;
+        }
+        let removed = {
+            let mut entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let entry = entries.tickets.get(identity.id())?;
+            if !entry.ready || entry.version != version || !entry.reservation.matches(identity) {
+                return None;
+            }
+            entries.tickets.remove(identity.id())
+        };
+        removed.map(|entry| entry.reservation)
+    }
+
+    fn shutdown(&self) {
+        let entries = {
+            let mut entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.closed
+                .store(true, std::sync::atomic::Ordering::Release);
+            std::mem::take(&mut entries.tickets)
+        };
+        drop(entries);
+    }
+
+    pub(crate) async fn sweep(&self) {
+        // Snapshot identity only. A cancelled blocking Store check never owns financial custody.
+        let snapshots = {
+            let mut entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            use std::ops::Bound::{Excluded, Unbounded};
+            let cursor = entries.cursor.clone();
+            let after = cursor
+                .as_ref()
+                .map_or(Unbounded, |id| Excluded(id.as_str()));
+            let mut chosen: Vec<_> = entries
+                .tickets
+                .range::<str, _>((after, Unbounded))
+                .take(TICKET_SWEEP_BATCH)
+                .map(|(id, e)| (id.clone(), e.version, e.expires_at, Arc::clone(&e.store)))
+                .collect();
+            if let Some(cursor) = cursor.as_ref() {
+                let remaining = TICKET_SWEEP_BATCH - chosen.len();
+                chosen.extend(
+                    entries
+                        .tickets
+                        .range::<str, _>((Unbounded, std::ops::Bound::Included(cursor.as_str())))
+                        .take(remaining)
+                        .map(|(id, e)| (id.clone(), e.version, e.expires_at, Arc::clone(&e.store))),
+                );
+            }
+            entries.cursor = chosen.last().map(|(id, ..)| id.clone());
+            chosen
+        };
+        if snapshots.is_empty() {
+            return;
+        }
+        let Ok(dead) = tokio::task::spawn_blocking(move || {
+            snapshots
+                .into_iter()
+                .filter_map(|(id, version, exp, store)| {
+                    // An uncertain Store result fails closed and burns this bounded local authority.
+                    (!store
+                        .plane_token_live(
+                            busbar_kernel::governance::TICKET_RECORD_KIND,
+                            &id,
+                            exp,
+                            busbar_kernel::store::now(),
+                        )
+                        .unwrap_or(false))
+                    .then_some((id, version))
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        else {
+            return;
+        };
+        let removed = {
+            let mut entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            dead.into_iter()
+                .filter_map(|(id, version)| {
+                    if entries
+                        .tickets
+                        .get(&id)
+                        .is_some_and(|e| e.version == version)
+                    {
+                        entries.tickets.remove(&id)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        drop(removed);
+    }
+}
+
+fn ticket_nodes() -> Vec<Arc<TicketCustody>> {
+    TICKET_NODES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .filter_map(std::sync::Weak::upgrade)
+        .collect()
+}
+
+pub(crate) fn claim_ticket_custody(
+    identity: &busbar_kernel::host_services::VerifiedTicketIdentity,
+) -> busbar_kernel::host_services::TicketClaimDisposition {
+    use busbar_kernel::host_services::TicketClaimDisposition;
+    // This composition's issued plane tickets require a local actual reservation. Unknown/missing
+    // custody is refused, including process restarts; the prefix grants no financial authority.
+    for node in ticket_nodes() {
+        if let Some(reservation) = node.claim(identity) {
+            return TicketClaimDisposition::Reserved(reservation);
+        }
+    }
+    TicketClaimDisposition::Refused
+}
+
 pub struct LiveTickets(pub std::sync::Weak<busbar_kernel::state::AppHandle>);
 
 impl busbar_kernel::host_services::TicketPress for LiveTickets {
+    fn mint_for_unit(
+        &self,
+        unit: u64,
+        caller: &Caller,
+        principal: &Arc<busbar_contract::records::VirtualKey>,
+        prefix: &str,
+        ttl_secs: u64,
+        record: &[u8],
+        now: u64,
+    ) -> Result<(String, u64), &'static str> {
+        use busbar_kernel::governance::TicketRefusal;
+        if ttl_secs == 0 || now.checked_add(ttl_secs).is_none() {
+            return Err(TicketRefusal::NoLifetime.reason());
+        }
+        let app = self
+            .0
+            .upgrade()
+            .ok_or(TicketRefusal::NoSigner.reason())?
+            .load();
+        let gov = app
+            .governance
+            .as_deref()
+            .ok_or(TicketRefusal::NoSigner.reason())?;
+        let mut found = None;
+        for node in ticket_nodes() {
+            let source = node
+                .sources
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .values()
+                .find(|s| {
+                    s.unit.get() == unit
+                        && s.instance == caller.instance.as_ref()
+                        && s.key.as_ref() == principal.as_ref()
+                })
+                .cloned();
+            if let Some(source) = source {
+                if found.is_some() {
+                    return Err(TicketRefusal::NotKept.reason());
+                }
+                found = Some((node, source));
+            }
+        }
+        let (node, source) = found.ok_or(TicketRefusal::NotKept.reason())?;
+        gov.mint_ticket_bound(
+            &principal.id,
+            prefix,
+            ttl_secs,
+            app.mint_policy.block_max_ttl_secs,
+            record,
+            now,
+            |identity| node.bind(&source, identity),
+        )
+        .map_err(TicketRefusal::reason)
+    }
+
     fn mint(
         &self,
         key_id: &str,
@@ -502,6 +962,7 @@ fn bound_conns(
 }
 
 pub struct DoorLive {
+    pub(crate) ticket_nonce: Arc<()>,
     pub section: serde_yaml::Value,
 
     pub generation: u64,
@@ -699,6 +1160,7 @@ impl DoorApply {
             );
         }
         Ok(DoorLive {
+            ticket_nonce: Arc::new(()),
             section: section.clone(),
             generation,
             pools,
@@ -970,10 +1432,32 @@ impl LeaseTick {
         let mut at = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
         at.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let this = Arc::new(self);
+        let shutdown = busbar_kernel::detached::worker_shutdown();
+        // One owned sweep future at a time. Store liveness never stalls the journal cadence.
+        let mut sweep: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> =
+            None;
         loop {
-            at.tick().await;
-            let tick = Arc::clone(&this);
-            let _refreshed = tokio::task::spawn_blocking(move || tick.tick()).await;
+            tokio::select! {
+                biased;
+                () = busbar_kernel::detached::shutdown_fired(shutdown.clone()) => {
+                    this.node.ticket_custody.shutdown();
+                    return;
+                }
+                _ = at.tick() => {
+                    let tick = Arc::clone(&this);
+                    let _refreshed = tokio::task::spawn_blocking(move || tick.tick()).await;
+                    if sweep.is_none() {
+                        let custody = Arc::clone(&this.node.ticket_custody);
+                        sweep = Some(Box::pin(async move { custody.sweep().await }));
+                    }
+                }
+                () = async {
+                    match sweep.as_mut() {
+                        Some(sweep) => sweep.await,
+                        None => std::future::pending().await,
+                    }
+                } => { sweep = None; }
+            }
         }
     }
 }
@@ -1891,6 +2375,7 @@ fn seal_live(
         None => (None, None),
     };
     Ok(DoorLive {
+        ticket_nonce: Arc::new(()),
         section: section.clone(),
         generation,
         pools,
@@ -2291,6 +2776,8 @@ pub struct DoorRequest {
     pub credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
 
     pub ticket: Option<Vec<u8>>,
+
+    pub host_ticket_admission: Option<busbar_kernel::host_services::HostTicketAdmission>,
 
     pub app: Arc<busbar_kernel::state::App>,
 
@@ -4186,6 +4673,7 @@ impl DoorRequest {
             gov: ctx.gov.unwrap_or_default(),
             credential: ctx.caller_credential,
             ticket: ctx.ticket,
+            host_ticket_admission: ctx.host_ticket_admission,
             app,
             scheme: ctx.scheme,
             consumed_fields: ctx.consumed_fields,
@@ -4291,6 +4779,9 @@ impl DataRoutes {
             routes: &self,
             unit: unit.get(),
         };
+        let _ticket_source =
+            node.ticket_custody
+                .register(unit, door.key.as_ref(), served, &live, &door.app);
         let steps = DoorSteps::new(
             &live.facts,
             &live.pools,
@@ -4307,6 +4798,11 @@ impl DataRoutes {
                 credential: door.credential.clone(),
                 ticket: door.ticket,
             },
+        )
+        .with_ticket_admission(
+            door.host_ticket_admission,
+            Arc::clone(&node.ticket_custody.nonce),
+            Arc::clone(&live.ticket_nonce),
         );
         let far = DoorFar {
             egress: live.egress.as_deref(),
@@ -4459,6 +4955,7 @@ impl DataRoutes {
             gov,
             credential,
             ticket,
+            host_ticket_admission,
             app,
             scheme: _,
             consumed_fields: _,
@@ -4498,6 +4995,7 @@ impl DataRoutes {
             open,
             credential,
             ticket,
+            host_ticket_admission,
         };
         (door, arrival, body)
     }
@@ -4526,6 +5024,7 @@ impl DataRoutes {
             open,
             credential,
             ticket,
+            host_ticket_admission,
             ..
         } = door;
 
@@ -4565,7 +5064,7 @@ impl DataRoutes {
                 self.drive(
                     plane,
                     app,
-                    (principal, key, credential, ticket),
+                    (principal, key, credential, ticket, host_ticket_admission),
                     open,
                     &caller,
                     arrival,
@@ -4586,7 +5085,7 @@ impl DataRoutes {
             self.drive(
                 plane,
                 app,
-                (principal, key, credential, ticket),
+                (principal, key, credential, ticket, host_ticket_admission),
                 open,
                 &caller,
                 arrival,
@@ -4678,7 +5177,7 @@ impl DataRoutes {
                 .drive(
                     plane,
                     app,
-                    (principal, key, None, None),
+                    (principal, key, None, None, None),
                     open,
                     &caller,
                     arrival,
@@ -4707,7 +5206,7 @@ impl DataRoutes {
         &self,
         plane: usize,
         app: Arc<busbar_kernel::state::App>,
-        (principal, key, credential, ticket): UnitCaller,
+        (principal, key, credential, ticket, host_ticket_admission): UnitCaller,
         open: bool,
         caller: &C,
         arrival: Arrival,
@@ -4731,6 +5230,9 @@ impl DataRoutes {
             routes: self,
             unit: unit.get(),
         };
+        let _ticket_source = node
+            .ticket_custody
+            .register(unit, key.as_ref(), served, &live, &app);
         let mut steps = DoorSteps::new(
             &live.facts,
             &live.pools,
@@ -4747,6 +5249,11 @@ impl DataRoutes {
                 credential: credential.clone(),
                 ticket,
             },
+        )
+        .with_ticket_admission(
+            host_ticket_admission,
+            Arc::clone(&node.ticket_custody.nonce),
+            Arc::clone(&live.ticket_nonce),
         );
         if let Some(n) = &nesting {
             steps = steps.under(n.parent.cell());
@@ -5195,6 +5702,7 @@ struct SessionDoor {
     credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
 
     ticket: Option<Vec<u8>>,
+    host_ticket_admission: Option<busbar_kernel::host_services::HostTicketAdmission>,
 }
 
 struct ClosingCaller<C> {
@@ -5523,6 +6031,7 @@ type UnitCaller = (
     Option<Arc<busbar_contract::records::VirtualKey>>,
     Option<busbar_contract::redacted::Secret<Vec<u8>>>,
     Option<Vec<u8>>,
+    Option<busbar_kernel::host_services::HostTicketAdmission>,
 );
 
 fn closed_before_body(

@@ -129,6 +129,8 @@ pub struct Node {
     usage_token: busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
 
     dispatch: Arc<dyn crate::root::transports::PlaneDispatch>,
+
+    pub(crate) ticket_custody: Arc<crate::root::serve::TicketCustody>,
 }
 
 impl std::fmt::Debug for Node {
@@ -172,6 +174,7 @@ impl Node {
             mono: AtomicU64::new(0),
 
             dispatch: Arc::new(crate::root::transports::DrivenOnce::new()),
+            ticket_custody: crate::root::serve::TicketCustody::new(),
         }
     }
 
@@ -255,29 +258,44 @@ impl Node {
         seal: Option<impl Into<Sealing>>,
         lines: Vec<RecordLine>,
     ) {
-        let Some(book) = self.book.get() else {
+        let Some(seal) = seal.map(Into::<Sealing>::into) else {
             return;
         };
+        let key = seal.seal.key;
+        let completed =
+            matches!(&ended, Ended::Settled { end, .. } if end.outcome().is_completed());
+        let receipt = self.seal_end_ack(principal, arrived, card, ended, seal, lines);
+        self.ticket_custody
+            .terminal(key, completed && receipt.is_some());
+    }
+
+    fn seal_end_ack(
+        &self,
+        principal: &PrincipalId,
+        arrived: Arrived,
+        card: Option<&crate::root::kernel::PinnedHistory>,
+        ended: busbar_kernel::teller::Ended,
+        seal: Sealing,
+        lines: Vec<RecordLine>,
+    ) -> Option<busbar_kernel_audit::AuditRecord> {
+        let book = self.book.get()?;
         let busbar_kernel::teller::Ended::Settled { end, .. } = ended else {
-            return;
+            return None;
         };
         let outcome = end.outcome();
-        if end.into_posted().is_err() {
-            return;
-        }
-        if let Some(seal) = seal.map(Into::<Sealing>::into) {
-            seal.seal(
-                book,
-                &self.durability_token,
-                principal,
-                arrived,
-                card,
-                outcome,
-                lines,
-                0,
-                None,
-            );
-        }
+        end.into_posted().ok()?;
+        seal.seal(
+            book,
+            &self.durability_token,
+            principal,
+            arrived,
+            card,
+            outcome,
+            lines,
+            0,
+            None,
+        )
+        .ok()
     }
 
     pub fn sweep(&self, now: Arrived) -> usize {
@@ -439,6 +457,7 @@ impl Node {
             admin_listener: false,
             kernel_verb_only: false,
         };
+        self.ticket_custody.bind_source(&ctx, &slot);
         let ended = busbar_kernel::teller::run_unit_async(
             &self.kernel,
             units,
@@ -536,6 +555,7 @@ impl Node {
             admin_listener: false,
             kernel_verb_only: false,
         };
+        self.ticket_custody.bind_source(&ctx, &slot);
         let opened = busbar_kernel::teller::open_unit(
             &self.kernel,
             units,
@@ -583,7 +603,7 @@ impl Node {
         let (lines, fee_count) = report
             .as_ref()
             .map_or((Vec::new(), 0), |r| (report_lines(r), r.fee_count));
-        seal.seal(
+        let acknowledged = seal.seal(
             book,
             &self.durability_token,
             &principal,
@@ -594,6 +614,8 @@ impl Node {
             fee_count,
             report.as_ref().map(|r| r.lane.as_str()),
         );
+        self.ticket_custody
+            .terminal(key, outcome.is_completed() && acknowledged.is_ok());
     }
 
     #[must_use]
@@ -750,6 +772,7 @@ impl Node {
         let late = late?;
         Some(LateAccrual {
             book: Arc::clone(book),
+            custody: Arc::clone(&self.ticket_custody),
             history,
 
             durability_token: self.kernel.durability_token(),
@@ -795,6 +818,7 @@ impl Report {
 }
 
 struct LateAccrual {
+    custody: Arc<crate::root::serve::TicketCustody>,
     book: Arc<Mutex<crate::root::durability::Durability>>,
 
     history: crate::root::kernel::PinnedHistory,
@@ -822,6 +846,7 @@ impl LateAccrual {
 
     fn post(self) {
         let LateAccrual {
+            custody,
             book,
             history,
             durability_token,
@@ -840,7 +865,8 @@ impl LateAccrual {
         let (Some(seal), Some(outcome)) = (seal, outcome) else {
             return;
         };
-        match report {
+        let key = seal.seal.key;
+        let acknowledged = match report {
             Some(report) => seal.seal(
                 &book,
                 &durability_token,
@@ -864,8 +890,12 @@ impl LateAccrual {
                 0,
                 None,
             ),
-            None => {}
-        }
+            None => {
+                custody.terminal(key, false);
+                return;
+            }
+        };
+        custody.terminal(key, posted && completed && acknowledged.is_ok());
     }
 }
 
@@ -1434,7 +1464,7 @@ impl Sealing {
         lines: Vec<RecordLine>,
         fee_count: u32,
         served: Option<&str>,
-    ) {
+    ) -> Result<busbar_kernel_audit::AuditRecord, busbar_contract::caps::DurabilityLost> {
         let Sealing { seal, ran } = self;
         let refused = matches!(outcome, Outcome::Refused(..));
 
@@ -1487,7 +1517,7 @@ impl Sealing {
             let journalled = book.journal.next_seq() > before;
             (sealed, journalled)
         };
-        if let Err(lost) = sealed {
+        if let Err(lost) = &sealed {
             if journalled {
                 tracing::warn!(
                     step = lost.step().as_str(),
@@ -1504,6 +1534,7 @@ impl Sealing {
                 );
             }
         }
+        sealed
     }
 }
 

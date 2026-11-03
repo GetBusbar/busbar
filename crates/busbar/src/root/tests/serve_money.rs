@@ -1093,6 +1093,7 @@ fn session_custody_request(g: &Governed, target: &str) -> super::DoorRequest {
         gov: Default::default(),
         credential: None,
         ticket: None,
+        host_ticket_admission: None,
         app: Arc::clone(&g.app),
         scheme: 0,
         consumed_fields: Vec::new(),

@@ -577,6 +577,10 @@ pub struct DoorSteps<'s> {
 
     ticket: Option<Vec<u8>>,
 
+    host_ticket_admission: Option<busbar_kernel::host_services::HostTicketAdmission>,
+    ticket_node: Option<Arc<()>>,
+    ticket_instance: Option<Arc<()>>,
+    ticket_lineage: Mutex<Option<busbar_kernel::plane_driver::ReservedRequestLineage>>,
     parent: Option<&'s busbar_contract::caps::HoldCell>,
     parent_admission: Option<&'s ParentAdmission<'s>>,
     unit: Mutex<DoorUnit>,
@@ -645,10 +649,26 @@ impl<'s> DoorSteps<'s> {
             depth: caller.depth,
             credential: caller.credential,
             ticket: caller.ticket,
+            host_ticket_admission: None,
+            ticket_node: None,
+            ticket_instance: None,
+            ticket_lineage: Mutex::new(None),
             parent: None,
             parent_admission: None,
             unit: Mutex::new(DoorUnit::default()),
         }
+    }
+
+    pub(crate) fn with_ticket_admission(
+        mut self,
+        ticket: Option<busbar_kernel::host_services::HostTicketAdmission>,
+        node: Arc<()>,
+        instance: Arc<()>,
+    ) -> Self {
+        self.host_ticket_admission = ticket;
+        self.ticket_node = Some(node);
+        self.ticket_instance = Some(instance);
+        self
     }
 
     #[must_use]
@@ -666,8 +686,13 @@ impl<'s> DoorSteps<'s> {
         if !admit.bound_to(ctx.call) || !cell.admitted_for(admit, &self.principal) {
             return Err(Refusal::new(ReasonCode::Replayed));
         }
-        let key = self.key.as_ref().ok_or_else(|| Refusal::new(ReasonCode::Unauthenticated))?;
-        let money = self.money.ok_or_else(|| Refusal::new(ReasonCode::Unpriced))?;
+        let key = self
+            .key
+            .as_ref()
+            .ok_or_else(|| Refusal::new(ReasonCode::Unauthenticated))?;
+        let money = self
+            .money
+            .ok_or_else(|| Refusal::new(ReasonCode::Unpriced))?;
         {
             let unit = self.lock();
             if !unit.charged || unit.charged_unit != Some(ctx.key) || unit.grant.is_none() {
@@ -1122,19 +1147,102 @@ impl DriverSteps for DoorSteps<'_> {
             return Err(Refusal::new(ReasonCode::NoDestination));
         }
 
+        if let Some(holder) = &self.host_ticket_admission {
+            // Some(empty) is a consumed capability and must never retry ordinary admission.
+            let spent = holder
+                .take()
+                .ok_or_else(|| Refusal::new(ReasonCode::Replayed))?;
+            let money = self
+                .money
+                .ok_or_else(|| Refusal::new(ReasonCode::Unpriced))?;
+            let key = self
+                .key
+                .as_ref()
+                .ok_or_else(|| Refusal::new(ReasonCode::Unauthenticated))?;
+            let gov = self
+                .app
+                .governance
+                .as_ref()
+                .ok_or_else(|| Refusal::new(ReasonCode::Unpriced))?;
+            let node = self
+                .ticket_node
+                .as_ref()
+                .ok_or_else(|| Refusal::new(ReasonCode::Unpriced))?;
+            let instance = self
+                .ticket_instance
+                .as_ref()
+                .ok_or_else(|| Refusal::new(ReasonCode::Unpriced))?;
+            let lane = self
+                .lock()
+                .routed
+                .as_ref()
+                .and_then(|(_, members)| members.first())
+                .map(|member| plane_lane(&self.facts.plane, member))
+                .unwrap_or_default();
+            match spent.adopt(
+                money,
+                ctx,
+                admit,
+                principal,
+                key,
+                lane,
+                Arc::clone(&self.facts.classes),
+                FeeRefund::PlaneFeeUnits(Arc::clone(&self.facts.fee_units)),
+                node,
+                instance,
+                &gov.store(),
+            ) {
+                Ok(lineage) => {
+                    {
+                        let mut unit = self.lock();
+                        unit.charged = true;
+                        unit.charged_unit = Some(ctx.key);
+                    }
+                    *self
+                        .ticket_lineage
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(lineage);
+                    return Ok(busbar_kernel::door::admitted_at_zero(
+                        admit,
+                        principal.clone(),
+                    ));
+                }
+                Err(returned) => {
+                    let (reason, reservation) = returned.into_parts();
+                    drop(reservation);
+                    return Err(Refusal::new(reason));
+                }
+            }
+        }
         if let (Some(parent), Some(key)) = (self.parent_admission, self.key.as_ref()) {
             if !admit.bound_to(ctx.call) {
                 return Err(Refusal::new(ReasonCode::Replayed));
             }
-            if !self.money.is_some_and(|money| std::ptr::eq(money, parent.money)) {
+            if !self
+                .money
+                .is_some_and(|money| std::ptr::eq(money, parent.money))
+            {
                 return Err(Refusal::new(ReasonCode::Unpriced));
             }
-            parent.money.validate_parent(&parent.token, key).map_err(Refusal::new)?;
-            let lane = self.lock().routed.as_ref().and_then(|(_, members)| members.first())
-                .map(|member| plane_lane(&self.facts.plane, member)).unwrap_or_default();
+            parent
+                .money
+                .validate_parent(&parent.token, key)
+                .map_err(Refusal::new)?;
+            let lane = self
+                .lock()
+                .routed
+                .as_ref()
+                .and_then(|(_, members)| members.first())
+                .map(|member| plane_lane(&self.facts.plane, member))
+                .unwrap_or_default();
             let prepared = parent.cell.accrue_child_after(principal, admit, || {
-                parent.money.open_child(&parent.token, ctx.key, lane, Arc::clone(&self.facts.classes),
-                    FeeRefund::PlaneFeeUnits(Arc::clone(&self.facts.fee_units)))
+                parent.money.open_child(
+                    &parent.token,
+                    ctx.key,
+                    lane,
+                    Arc::clone(&self.facts.classes),
+                    FeeRefund::PlaneFeeUnits(Arc::clone(&self.facts.fee_units)),
+                )
             });
             match prepared {
                 Ok(accrual) => {
@@ -1177,11 +1285,31 @@ impl DriverSteps for DoorSteps<'_> {
         ))
     }
 
-    fn at_parent_exit(&self, ctx: &UnitCtx, _accrual: &busbar_contract::caps::HoldAccrual) -> Result<(), Refusal> {
+    fn take_reserved_request_lineage(
+        &self,
+        _ctx: &UnitCtx,
+    ) -> Option<busbar_kernel::plane_driver::ReservedRequestLineage> {
+        self.ticket_lineage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+
+    fn at_parent_exit(
+        &self,
+        ctx: &UnitCtx,
+        _accrual: &busbar_contract::caps::HoldAccrual,
+    ) -> Result<(), Refusal> {
         if let (Some(parent), Some(key)) = (self.parent_admission, self.key.as_ref()) {
-            return parent.money.validate_child(&parent.token, ctx.key, key).map_err(Refusal::new);
+            return parent
+                .money
+                .validate_child(&parent.token, ctx.key, key)
+                .map_err(Refusal::new);
         }
-        let key = self.key.as_ref().ok_or_else(|| Refusal::new(ReasonCode::Unauthenticated))?;
+        let key = self
+            .key
+            .as_ref()
+            .ok_or_else(|| Refusal::new(ReasonCode::Unauthenticated))?;
         let actual_grant = self.lock().grant.clone();
         if let (Some(money), Some(grant)) = (self.money, actual_grant.as_ref()) {
             if money.validate_admitted(ctx.key, key, grant).is_ok() {
@@ -1793,6 +1921,13 @@ pub fn unloaded_plane_refusal(
 }
 
 impl busbar_kernel::appbuild::RootRules for Rules {
+    fn claim_ticket_admission(
+        &self,
+        identity: &busbar_kernel::host_services::VerifiedTicketIdentity,
+    ) -> busbar_kernel::host_services::TicketClaimDisposition {
+        crate::root::serve::claim_ticket_custody(identity)
+    }
+
     fn check_built(&self, app: &App) -> Result<(), String> {
         match self.listeners.get() {
             Some(listeners) => listeners.check(app),
