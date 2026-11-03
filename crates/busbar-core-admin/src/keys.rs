@@ -72,10 +72,29 @@ pub(crate) struct CreateKeyReq {
     /// Token expiry as an absolute Unix-seconds timestamp. Mutually exclusive with `expires_in`.
     #[serde(default)]
     expires_at: Option<u64>,
+    /// Optional exact resource audience for this bearer; omitted preserves ordinary key tokens.
+    #[serde(default)]
+    audience: Option<String>,
     /// When true, ALSO issue an AWS-style access-key-id + secret access key (the MinIO/S3-compatible
     /// model) so a Bedrock-SDK client can authenticate via inbound SigV4. Both are returned ONCE.
     #[serde(default)]
     issue_aws_credential: bool,
+}
+
+impl CreateKeyReq {
+    fn validate_audience(&self) -> Result<(), &'static str> {
+        if self
+            .audience
+            .as_ref()
+            .is_some_and(|audience| audience.trim().is_empty())
+        {
+            return Err("audience must be a nonempty string");
+        }
+        if self.audience.is_some() && self.issue_aws_credential {
+            return Err("audience cannot be combined with issue_aws_credential");
+        }
+        Ok(())
+    }
 }
 
 use busbar_kernel::governance::mint_policy::{MintRequest, DEFAULT_KEY_TTL_SECS};
@@ -589,6 +608,14 @@ async fn create_key_owned(
         }
     };
 
+    if let Err(message) = req.validate_audience() {
+        return key_err(
+            who,
+            &AdminError::Validation(message.into()),
+            Cond::MalformedBody,
+        );
+    }
+
     if req.name.len() > MAX_KEY_NAME_LEN {
         return key_err(
             who,
@@ -736,6 +763,7 @@ async fn create_key_owned(
         binding_mode: Some(requested_binding_mode.to_string()),
     };
 
+    let audience = req.audience;
     let issued = req
         .issue_aws_credential
         .then(|| app.auth.issued_credential());
@@ -831,8 +859,11 @@ async fn create_key_owned(
                     gov.mint_signed_with_credential(spec, exp, now, kind, shape)
                         .map(|m| MintOutcome::Aws(Box::new(m)))
                 } else {
-                    gov.mint_signed(spec, exp, now)
-                        .map(|m| MintOutcome::TokenOnly(Box::new(m)))
+                    match audience.as_deref() {
+                        Some(audience) => gov.mint_signed_for_audience(spec, exp, now, audience),
+                        None => gov.mint_signed(spec, exp, now),
+                    }
+                    .map(|m| MintOutcome::TokenOnly(Box::new(m)))
                 }
             })();
             let minted = match minted {

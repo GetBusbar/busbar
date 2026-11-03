@@ -307,6 +307,30 @@ impl GovState {
         exp: u64,
         now: u64,
     ) -> Result<(VirtualKey, Secret<String>), MintError> {
+        self.mint_signed_scoped(spec, exp, now, None)
+    }
+
+    /// Mint the same governed key with a token attenuated to one exact resource audience.
+    pub fn mint_signed_for_audience(
+        &self,
+        spec: NewKeySpec,
+        exp: u64,
+        now: u64,
+        audience: &str,
+    ) -> Result<(VirtualKey, Secret<String>), MintError> {
+        if audience.trim().is_empty() {
+            return Err(RecordStoreError("audience must be a nonempty string".into()).into());
+        }
+        self.mint_signed_scoped(spec, exp, now, Some(audience))
+    }
+
+    fn mint_signed_scoped(
+        &self,
+        spec: NewKeySpec,
+        exp: u64,
+        now: u64,
+        audience: Option<&str>,
+    ) -> Result<(VirtualKey, Secret<String>), MintError> {
         let Some(material) = self.signing_material() else {
             return Err(RecordStoreError(
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
@@ -319,7 +343,16 @@ impl GovState {
             key_id: binding.id.clone(),
             reconcile,
         })?;
-        let token = material.signer.mint(&binding.id, exp, Some(&generation));
+        let token = match audience {
+            Some(audience) => material.signer.mint_for_audience(
+                &binding.id,
+                exp,
+                Some(&generation),
+                audience,
+                None,
+            ),
+            None => material.signer.mint(&binding.id, exp, Some(&generation)),
+        };
         Ok((binding, token.into()))
     }
 

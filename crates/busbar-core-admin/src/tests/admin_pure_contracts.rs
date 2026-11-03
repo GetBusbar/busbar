@@ -63,3 +63,26 @@ fn key_replay_names_match_the_actual_http_controls() {
         format!("rotate:{}:{id}:12:stuck-rotate", id.len())
     );
 }
+
+#[test]
+fn audience_key_mint_validates_explicit_scope_without_changing_default_requests() {
+    for body in [
+        serde_json::json!({"name": "plain"}),
+        serde_json::json!({"name": "scoped", "audience": "https://gateway.example/v1/realtime"}),
+    ] {
+        let req: super::CreateKeyReq = serde_json::from_value(body).unwrap();
+        assert!(req.validate_audience().is_ok());
+    }
+    for body in [
+        serde_json::json!({"name": "empty", "audience": ""}),
+        serde_json::json!({"name": "blank", "audience": "  "}),
+        serde_json::json!({"name": "unsupported", "audience": "https://gateway.example/v1/realtime", "issue_aws_credential": true}),
+    ] {
+        let req: super::CreateKeyReq = serde_json::from_value(body).unwrap();
+        assert!(req.validate_audience().is_err());
+    }
+    assert!(serde_json::from_value::<super::CreateKeyReq>(
+        serde_json::json!({"name": "wrong-type", "audience": 7})
+    )
+    .is_err());
+}
