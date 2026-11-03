@@ -1974,7 +1974,7 @@ fn reserved_ticket_adoption_checks_receiving_authority_and_binding() {
             expires_at: NOW + 60,
             store: store.clone(),
             prefix: "test".into(),
-            credential: "redacted".into(),
+            credential: String::from("redacted").into(),
         };
         drop(reserve_parent(&r));
         let node = Arc::new(());
@@ -2094,7 +2094,7 @@ fn reserved_ticket_holder_clones_share_one_financial_token() {
         expires_at: NOW + 60,
         store: crate::real_store::store(),
         prefix: "test".into(),
-        credential: "redacted".into(),
+        credential: String::from("redacted").into(),
     };
     drop(reserve_parent(&r));
     let reservation = r
