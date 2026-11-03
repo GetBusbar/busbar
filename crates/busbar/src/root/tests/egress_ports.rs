@@ -230,6 +230,18 @@ fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
         false,
     )
     .expect("the product builds the timeout sealing application");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the serving application has its configured governance Store")
+            .store_calls()
+            .expect("the configured Store exposes actual rate-history calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the actual configured Store boots its rate history");
     limits.keep().expect("the serving limits commit");
     if let Some(rotate) = rotate {
         rotate();
