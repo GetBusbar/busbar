@@ -4855,8 +4855,9 @@ impl DataRoutes {
         let status = match admitted {
             Some((route, destinations)) => {
                 let _ = verdict.send(Ok(()));
-                if let Err(reason) = units.session(&route, &ctx, &destinations).await {
-                    self.post.stopped(unit, reason);
+                match units.session(&route, &ctx, &destinations).await {
+                    Ok(()) => self.post.completed(unit),
+                    Err(reason) => self.post.stopped(unit, reason),
                 }
                 attach.answered
             }

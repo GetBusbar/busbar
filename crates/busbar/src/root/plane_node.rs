@@ -1368,6 +1368,10 @@ impl NodeEndPost {
         }
     }
 
+    pub(crate) fn completed(&self, key: UnitKey) {
+        self.ended_as(key, Outcome::Completed);
+    }
+
     pub fn stopped(&self, key: UnitKey, reason: busbar_contract::caps::ReasonCode) {
         if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.said = Some(Outcome::Refused(
