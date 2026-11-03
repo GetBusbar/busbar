@@ -123,9 +123,13 @@ fn checkpoint(calls: &dyn StoreCalls, node: u64) -> Result<Option<(Checkpoint, V
     Ok(Some((checkpoint, raw.as_slice().to_vec())))
 }
 
-fn samples(calls: &dyn StoreCalls, node: u64) -> Result<Vec<Head>, String> {
+fn visit_samples(
+    calls: &dyn StoreCalls,
+    node: u64,
+    mut visit: impl FnMut(Head) -> Result<(), String>,
+) -> Result<(), String> {
     let mut pending = vec![sample_prefix(node)];
-    let mut rows = Vec::new();
+    let mut previous: Option<Vec<u8>> = None;
     while let Some(prefix) = pending.pop() {
         let page = wait_for(calls.record_scan(SCHEMA, &prefix, PAGE)).map_err(|e| e.to_string())?;
         if page.len() > PAGE as usize
@@ -137,7 +141,19 @@ fn samples(calls: &dyn StoreCalls, node: u64) -> Result<Vec<Head>, String> {
             return Err("invalid persisted audit sample page".into());
         }
         if page.len() < PAGE as usize {
-            rows.extend(page);
+            for (key, raw) in page {
+                if previous.as_ref().is_some_and(|old| old >= &key) {
+                    return Err("audit samples repeat or reorder".into());
+                }
+                let head: Head = serde_json::from_slice(raw.as_slice())
+                    .map_err(|_| "an audit sample cannot be decoded")?;
+                head.validate()?;
+                if sample_key(node, head.seq) != key {
+                    return Err("an audit sample disagrees with its key".into());
+                }
+                previous = Some(key);
+                visit(head)?;
+            }
         } else {
             if prefix.len() >= 17 {
                 return Err("oversized persisted audit sample page".into());
@@ -149,18 +165,16 @@ fn samples(calls: &dyn StoreCalls, node: u64) -> Result<Vec<Head>, String> {
             }
         }
     }
-    rows.sort_by(|a, b| a.0.cmp(&b.0));
-    rows.into_iter()
-        .map(|(key, raw)| {
-            let head: Head = serde_json::from_slice(raw.as_slice())
-                .map_err(|_| "an audit sample cannot be decoded")?;
-            head.validate()?;
-            if sample_key(node, head.seq) != key {
-                return Err("an audit sample disagrees with its key".into());
-            }
-            Ok(head)
-        })
-        .collect()
+    Ok(())
+}
+
+fn samples(calls: &dyn StoreCalls, node: u64) -> Result<Vec<Head>, String> {
+    let mut rows = Vec::new();
+    visit_samples(calls, node, |head| {
+        rows.push(head);
+        Ok(())
+    })?;
+    Ok(rows)
 }
 
 pub(super) fn load(calls: &dyn StoreCalls, node: u64) -> Result<Option<HeadHistory>, String> {
@@ -539,6 +553,279 @@ impl Advance {
                 }
             }
         }
+    }
+}
+
+// One bounded queue prefix, never a retained history or a new persisted protocol.
+pub(super) struct GroupAdvance {
+    node: u64,
+    previous: Option<Vec<u8>>,
+    next: Checkpoint,
+    samples: Vec<(Head, Option<Vec<u8>>)>,
+    count: usize,
+    recorded: bool,
+}
+
+fn reduced(
+    head: &Head,
+    last: Option<(u64, u64)>,
+    count: u64,
+) -> Result<(Checkpoint, bool), String> {
+    let sample = last.is_none_or(|old| head.wall.saturating_sub(old.1) >= HEAD_SAMPLE_SECONDS);
+    Ok((
+        Checkpoint {
+            version: 1,
+            tip: head.clone(),
+            last_sample_seq: if sample { head.seq } else { last.unwrap().0 },
+            last_sample_wall: if sample { head.wall } else { last.unwrap().1 },
+            samples: count
+                .checked_add(u64::from(sample))
+                .ok_or("audit sample count exhausted")?,
+        },
+        sample,
+    ))
+}
+
+pub(super) fn prepare_group(
+    calls: &dyn StoreCalls,
+    records: &[Record],
+) -> Result<Option<GroupAdvance>, String> {
+    let Some(first) = records.first() else {
+        return Ok(None);
+    };
+    let mut heads = Vec::with_capacity(records.len());
+    for record in records {
+        let decoded =
+            JournalRecord::decode(&record.body).map_err(|_| "invalid grouped journal record")?;
+        if decoded.class != busbar_kernel_wal::RecordClass::Transaction {
+            return Ok(None);
+        }
+        let Some(audit) = busbar_kernel_audit::journal::head_from_journal_body(&decoded.body)?
+        else {
+            return Ok(None);
+        };
+        if decoded.node != first.node
+            || record.node != first.node
+            || decoded.node_seq != record.node_seq
+            || audit.node != first.node
+        {
+            return Err("grouped audit/journal identities disagree".into());
+        }
+        let head = Head::from(audit.head);
+        head.validate()?;
+        if let Some((old, _)) = heads.last() {
+            let old: &Head = old;
+            if old.seq.checked_add(1) != Some(head.seq) || old.hash != audit.prev_hash {
+                return Err("grouped audit heads have a broken link".into());
+            }
+        }
+        heads.push((head, audit.prev_hash));
+    }
+    let current = checkpoint(calls, first.node)?;
+    // Rare reconstructed reoffer: prove only the exact prefix ending at the stored tip.
+    if let Some((stored, raw)) = &current {
+        if let Some(index) = heads.iter().position(|(head, _)| head == &stored.tip) {
+            let count = index + 1;
+            let relevant = &heads[..count];
+            let mut total = 0u64;
+            let mut before = 0u64;
+            let mut predecessor: Option<Head> = None;
+            let mut last: Option<Head> = None;
+            let mut retained = Vec::new();
+            visit_samples(calls, first.node, |head| {
+                if last.is_none() && head.seq != 1 {
+                    return Err("retained audit samples have no genesis".into());
+                }
+                if last.as_ref().is_some_and(|previous| {
+                    head.wall.saturating_sub(previous.wall) < HEAD_SAMPLE_SECONDS
+                }) {
+                    return Err("retained audit samples have invalid wall spacing".into());
+                }
+                total = total.checked_add(1).ok_or("audit sample count exhausted")?;
+                if head.seq > stored.tip.seq {
+                    return Err("audit sample is beyond its checkpoint".into());
+                }
+                if head.seq < relevant[0].0.seq {
+                    before += 1;
+                    predecessor = Some(head.clone());
+                } else {
+                    if !relevant.iter().any(|(expected, _)| expected == &head) {
+                        return Err("retained sample differs from the grouped journal".into());
+                    }
+                    if retained.len() == relevant.len() {
+                        return Err("too many grouped retained samples".into());
+                    }
+                    retained.push(head.clone());
+                }
+                last = Some(head);
+                Ok(())
+            })?;
+            if total != stored.samples
+                || last.as_ref().is_none_or(|head| {
+                    head.seq != stored.last_sample_seq || head.wall != stored.last_sample_wall
+                })
+            {
+                return Err("grouped checkpoint is missing its immutable samples".into());
+            }
+            if relevant[0].0.seq == 1 {
+                if predecessor.is_some() || before != 0 || !relevant[0].1.is_empty() {
+                    return Err("invalid grouped audit genesis".into());
+                }
+            } else if predecessor.is_none() {
+                return Err("grouped replay has no retained predecessor sample".into());
+            }
+            let mut previous_sample = predecessor.as_ref().map(|head| (head.seq, head.wall));
+            let mut sample_count = before;
+            let mut expected_samples = Vec::new();
+            let mut final_checkpoint = None;
+            for (head, _) in relevant {
+                let (next, sample) = reduced(head, previous_sample, sample_count)?;
+                if sample {
+                    expected_samples.push(head.clone());
+                }
+                previous_sample = Some((next.last_sample_seq, next.last_sample_wall));
+                sample_count = next.samples;
+                final_checkpoint = Some(next);
+            }
+            if expected_samples != retained || final_checkpoint.as_ref() != Some(stored) {
+                return Err("grouped replay sample history differs from its checkpoint".into());
+            }
+            return Ok(Some(GroupAdvance {
+                node: first.node,
+                previous: Some(raw.clone()),
+                next: stored.clone(),
+                samples: expected_samples
+                    .into_iter()
+                    .map(|head| {
+                        let bytes = encode(&head);
+                        bytes.map(|bytes| (head, Some(bytes)))
+                    })
+                    .collect::<Result<_, _>>()?,
+                count,
+                recorded: true,
+            }));
+        }
+    }
+    let (previous, mut last, mut count) = match current {
+        Some((old, raw)) => {
+            if old.tip.seq.checked_add(1) != Some(heads[0].0.seq) || old.tip.hash != heads[0].1 {
+                return Err("audit group checkpoint predecessor changed".into());
+            }
+            (
+                Some(raw),
+                Some((old.last_sample_seq, old.last_sample_wall)),
+                old.samples,
+            )
+        }
+        None if heads[0].0.seq == 1 && heads[0].1.is_empty() => {
+            if !wait_for(calls.record_scan(SCHEMA, &sample_prefix(first.node), 1))
+                .map_err(|why| why.to_string())?
+                .is_empty()
+            {
+                return Err("audit group backfill has not completed".into());
+            }
+            (None, None, 0)
+        }
+        None => return Err("audit group has no genesis checkpoint".into()),
+    };
+    let mut wanted = Vec::new();
+    let mut final_checkpoint = None;
+    for (head, _) in heads {
+        let (next, sample) = reduced(&head, last, count)?;
+        if sample {
+            let raw = wait_for(calls.record_get(SCHEMA, &sample_key(first.node, head.seq)))
+                .map_err(|why| why.to_string())?
+                .map(|v| v.as_slice().to_vec());
+            if raw
+                .as_ref()
+                .is_some_and(|raw| encode(&head).as_ref() != Ok(raw))
+            {
+                return Err("an immutable grouped sample already differs".into());
+            }
+            wanted.push((head, raw));
+        }
+        last = Some((next.last_sample_seq, next.last_sample_wall));
+        count = next.samples;
+        final_checkpoint = Some(next);
+    }
+    Ok(Some(GroupAdvance {
+        node: first.node,
+        previous,
+        next: final_checkpoint.unwrap(),
+        samples: wanted,
+        count: records.len(),
+        recorded: false,
+    }))
+}
+
+impl GroupAdvance {
+    pub(super) fn len(&self) -> usize {
+        self.count
+    }
+    pub(super) fn recorded(&self) -> bool {
+        self.recorded
+    }
+    pub(super) fn predecessor(&self) -> Predicate {
+        Predicate {
+            schema: SCHEMA.into(),
+            key: tip_key(self.node),
+            expected: self
+                .previous
+                .clone()
+                .map_or(Expected::Absent, Expected::Bytes),
+        }
+    }
+    pub(super) fn raw_head(&self, calls: &dyn StoreCalls) -> Result<Option<Vec<u8>>, String> {
+        Ok(checkpoint(calls, self.node)?.map(|(_, raw)| raw))
+    }
+    pub(super) fn final_raw(&self) -> Result<Vec<u8>, String> {
+        encode(&self.next)
+    }
+    pub(super) fn initial_matches(&self, raw: &Option<Vec<u8>>) -> bool {
+        raw == &self.previous
+    }
+    pub(super) fn samples_match(
+        &self,
+        calls: &dyn StoreCalls,
+        committed: bool,
+    ) -> Result<bool, String> {
+        for (head, old) in &self.samples {
+            let raw = wait_for(calls.record_get(SCHEMA, &sample_key(self.node, head.seq)))
+                .map_err(|why| why.to_string())?
+                .map(|v| v.as_slice().to_vec());
+            let expected = if committed {
+                Some(encode(head)?)
+            } else {
+                old.clone()
+            };
+            if raw != expected {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+    pub(super) fn request(&self, parts: &[Mutation], fence: Predicate) -> Result<Request, String> {
+        let mut predicates = vec![self.predecessor(), fence];
+        let mut mutations = parts.to_vec();
+        mutations.push(Mutation::Put {
+            schema: SCHEMA.into(),
+            key: tip_key(self.node),
+            value: self.final_raw()?,
+        });
+        for (head, old) in &self.samples {
+            let key = sample_key(self.node, head.seq);
+            predicates.push(Predicate {
+                schema: SCHEMA.into(),
+                key: key.clone(),
+                expected: old.clone().map_or(Expected::Absent, Expected::Bytes),
+            });
+            mutations.push(Mutation::Put {
+                schema: SCHEMA.into(),
+                key,
+                value: encode(head)?,
+            });
+        }
+        Ok(super::conditional::candidate(predicates, mutations))
     }
 }
 

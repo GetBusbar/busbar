@@ -508,6 +508,47 @@ impl HeldLease {
         self.lost.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    pub(super) fn node_predicate(
+        &self,
+        calls: &dyn StoreCalls,
+        node: u64,
+    ) -> Result<Option<Predicate>, String> {
+        let Some(held) = self.lock().clone() else {
+            return Ok(None);
+        };
+        let key = host_key(&held.host);
+        let actual =
+            wait_for(calls.record_get(NODE_SCHEMA, &key)).map_err(|why| why.to_string())?;
+        if actual.as_ref().and_then(id_of) != Some(node) {
+            return Ok(None);
+        }
+        Ok(Some(Predicate {
+            schema: NODE_SCHEMA.into(),
+            key,
+            expected: Expected::Bytes(node.to_be_bytes().to_vec()),
+        }))
+    }
+
+    /// Read-only same-holder fence bracket; transaction predicates remain byte-exact.
+    pub(super) fn fence_matches(
+        &self,
+        calls: &dyn StoreCalls,
+        before: &Predicate,
+    ) -> Result<bool, String> {
+        let Some(after) = self.predicate(calls)? else {
+            return Ok(false);
+        };
+        let held = self.lock();
+        let Some(held) = held.as_ref() else {
+            return Ok(false);
+        };
+        Ok(same_recovery_fence(
+            std::slice::from_ref(before),
+            std::slice::from_ref(&after),
+            Some(held),
+        ))
+    }
+
     pub(super) fn predicate(&self, calls: &dyn StoreCalls) -> Result<Option<Predicate>, String> {
         if self.lost() {
             return Err("this node no longer owns its journal identity".into());

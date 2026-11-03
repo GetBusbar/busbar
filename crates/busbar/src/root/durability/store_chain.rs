@@ -191,6 +191,229 @@ pub(super) fn put_record(
     Ok(())
 }
 
+const AUDIT_GROUP_RECORDS: usize = 16;
+
+pub(super) struct AuditGroup {
+    advance: super::audit_heads::GroupAdvance,
+    records: Vec<Record>,
+    parts: Vec<Mutation>,
+    cleanup: Vec<Mutation>,
+    planning_fence: Predicate,
+    node_predicate: Predicate,
+}
+
+pub(super) fn prepare_audit_group(
+    calls: &dyn StoreCalls,
+    lease: &HeldLease,
+    offered: &[Record],
+) -> Result<Option<AuditGroup>, String> {
+    if offered.len() < 2 {
+        return Ok(None);
+    }
+    let Some(planning_fence) = lease.predicate(calls)? else {
+        return Ok(None);
+    };
+    let Some(node_predicate) = lease.node_predicate(calls, offered[0].node)? else {
+        return Ok(None);
+    };
+    let mut count = 0usize;
+    let mut bytes = 0usize;
+    let mut previous: Option<JournalRecord> = None;
+    for record in offered.iter().take(AUDIT_GROUP_RECORDS) {
+        bytes = match bytes.checked_add(record.body.len()) {
+            Some(bytes)
+                if bytes as u64 <= busbar_contract::abi::mechanism::check::HARD_MAX_BYTES =>
+            {
+                bytes
+            }
+            _ => break,
+        };
+        let Ok(decoded) = JournalRecord::decode(&record.body) else {
+            break;
+        };
+        if decoded.class != RecordClass::Transaction
+            || decoded.identity() != record.identity()
+            || decoded.encode() != record.body
+            || decoded.digest_of_body() != decoded.body_hash
+            || decoded.digest_of_chain() != decoded.hash
+            || previous.as_ref().is_some_and(|old| {
+                old.node != decoded.node
+                    || old.node_seq.checked_add(1) != Some(decoded.node_seq)
+                    || old.hash != decoded.prev_hash
+            })
+            || busbar_kernel_audit::journal::head_from_journal_body(&decoded.body)?.is_none()
+        {
+            break;
+        }
+        previous = Some(decoded);
+        count += 1;
+    }
+    if count < 2 {
+        return Ok(None);
+    }
+    let Some(advance) = super::audit_heads::prepare_group(calls, &offered[..count])? else {
+        return Ok(None);
+    };
+    let records = offered[..advance.len()].to_vec();
+    let mut parts = Vec::new();
+    let mut cleanup = Vec::new();
+    for record in &records {
+        cleanup.push(Mutation::DeleteRange {
+            schema: JOURNAL_SCHEMA.into(),
+            prefix: part_key(record.node, record.node_seq, 0)[..16].to_vec(),
+            exact_key_length: 18,
+        });
+        for (index, value) in parts_of(record)?.into_iter().enumerate() {
+            parts.push(Mutation::Put {
+                schema: JOURNAL_SCHEMA.into(),
+                key: part_key(
+                    record.node,
+                    record.node_seq,
+                    u16::try_from(index).map_err(|_| "too many grouped parts")?,
+                )
+                .to_vec(),
+                value: value.as_slice().to_vec(),
+            });
+        }
+    }
+    // Preflight uses the captured exact fence. Same-holder renewal preserves its fixed row size;
+    // actual cleanup/publication still obtain fresh exact predicates.
+    let fence = planning_fence.clone();
+    let mut final_request = advance.request(&parts, fence.clone())?;
+    final_request.predicates.push(node_predicate.clone());
+    let cleanup_request = super::conditional::candidate(
+        vec![advance.predecessor(), fence, node_predicate.clone()],
+        cleanup.clone(),
+    );
+    if final_request.encode_held().is_err() || cleanup_request.encode_held().is_err() {
+        if advance.recorded() {
+            return Err("recorded audit group exceeds its bounded proof frame".into());
+        }
+        return Ok(None);
+    }
+    if advance.recorded()
+        && (!advance.initial_matches(&advance.raw_head(calls)?)
+            || !lease.fence_matches(calls, &planning_fence)?)
+    {
+        return Err("audit group checkpoint or custody changed during planning".into());
+    }
+    Ok(Some(AuditGroup {
+        advance,
+        records,
+        parts,
+        cleanup,
+        planning_fence,
+        node_predicate,
+    }))
+}
+
+impl AuditGroup {
+    pub(super) fn len(&self) -> usize {
+        self.records.len()
+    }
+    fn node_matches(&self, calls: &dyn StoreCalls) -> Result<bool, String> {
+        let raw = wait_for(calls.record_get(&self.node_predicate.schema, &self.node_predicate.key))
+            .map_err(|why| why.to_string())?;
+        Ok(raw
+            .as_ref()
+            .map(|raw| Expected::Bytes(raw.as_slice().to_vec()))
+            == Some(self.node_predicate.expected.clone()))
+    }
+    fn confirmed(&self, calls: &dyn StoreCalls, lease: &HeldLease) -> Result<bool, String> {
+        if !self.node_matches(calls)? {
+            return Err("audit group node registry changed".into());
+        }
+        let before = lease
+            .predicate(calls)?
+            .ok_or("audit group no longer holds a lease")?;
+        let final_raw = self.advance.final_raw()?;
+        if self.advance.raw_head(calls)? != Some(final_raw.clone()) {
+            return Ok(false);
+        }
+        for record in &self.records {
+            confirm_record_bytes(calls, record)?;
+        }
+        if !self.advance.samples_match(calls, true)? {
+            return Err("committed audit group is missing an immutable sample".into());
+        }
+        if self.advance.raw_head(calls)? != Some(final_raw)
+            || !lease.fence_matches(calls, &before)?
+            || !self.node_matches(calls)?
+        {
+            return Err("audit group ownership or checkpoint changed during readback".into());
+        }
+        Ok(true)
+    }
+    pub(super) fn commit(&self, calls: &dyn StoreCalls, lease: &HeldLease) -> Result<(), String> {
+        // An exact committed group is proved before ANY destructive cleanup, including reoffer.
+        if !lease.fence_matches(calls, &self.planning_fence)? {
+            return Err("audit group planning custody changed".into());
+        }
+        let raw = self.advance.raw_head(calls)?;
+        if raw == Some(self.advance.final_raw()?) {
+            return if self.confirmed(calls, lease)? {
+                Ok(())
+            } else {
+                Err("audit group committed checkpoint changed during readback".into())
+            };
+        }
+        if self.advance.recorded() {
+            return Err("recorded audit group no longer matches its checkpoint".into());
+        }
+        if !self.advance.initial_matches(&raw) {
+            return Err("audit group checkpoint predecessor changed before cleanup".into());
+        }
+        loop {
+            let fence = lease
+                .predicate(calls)?
+                .ok_or("audit group no longer holds a lease")?;
+            let request = super::conditional::candidate(
+                vec![
+                    self.advance.predecessor(),
+                    fence,
+                    self.node_predicate.clone(),
+                ],
+                self.cleanup.clone(),
+            );
+            match super::conditional::decide(calls, &request)? {
+                Decision::Applied => break,
+                Decision::ConditionConflict => {
+                    if !self.node_matches(calls)? {
+                        return Err("audit group node registry changed during cleanup".into());
+                    }
+                    if !self.advance.initial_matches(&self.advance.raw_head(calls)?) {
+                        if self.confirmed(calls, lease)? {
+                            return Ok(());
+                        }
+                        return Err("audit group checkpoint changed during cleanup".into());
+                    }
+                }
+            }
+        }
+        loop {
+            let fence = lease
+                .predicate(calls)?
+                .ok_or("audit group no longer holds a lease")?;
+            let mut request = self.advance.request(&self.parts, fence)?;
+            request.predicates.push(self.node_predicate.clone());
+            match super::conditional::decide(calls, &request)? {
+                Decision::Applied => return Ok(()),
+                Decision::ConditionConflict => {
+                    if self.confirmed(calls, lease)? {
+                        return Ok(());
+                    }
+                    if !self.advance.initial_matches(&self.advance.raw_head(calls)?)
+                        || !self.advance.samples_match(calls, false)?
+                    {
+                        return Err("audit group checkpoint or immutable sample changed".into());
+                    }
+                    // A normal same-holder renewal retries ONLY final publication, not cleanup.
+                }
+            }
+        }
+    }
+}
+
 /// Recovery records have immutable addresses and bytes. Unlike an arbitrary mutation, a retry
 /// with a fresh transaction identity is safe even after conditional receipt retention expires:
 /// absent predicates prevent any existing part from being replaced.
@@ -765,26 +988,62 @@ impl Lane {
     fn run(self: Arc<Self>) {
         let mut pause = RETRY_FIRST;
         loop {
-            let next = {
+            let offered = {
                 let mut state = self.lock();
                 while state.queue.is_empty() && !state.stopped {
                     state = self.work.wait(state).unwrap_or_else(|p| p.into_inner());
                 }
-                match state.queue.front() {
-                    Some(_) if state.stopped && state.refusal.is_some() => return,
-                    Some(front) => front.clone(),
-                    None => return,
+                if state.queue.is_empty() || state.stopped && state.refusal.is_some() {
+                    return;
                 }
+                let mut bytes = 0usize;
+                let mut offered = Vec::new();
+                for record in state.queue.iter().take(AUDIT_GROUP_RECORDS) {
+                    let Some(next) = bytes.checked_add(record.body.len()) else {
+                        break;
+                    };
+                    if !offered.is_empty()
+                        && next as u64 > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES
+                    {
+                        break;
+                    }
+                    bytes = next;
+                    offered.push(record.clone());
+                }
+                offered
             };
-            match put_record(self.calls.as_ref(), &self.lease, &next) {
-                Ok(()) => {
+            let next = &offered[0];
+            let attempted = prepare_audit_group(self.calls.as_ref(), &self.lease, &offered);
+            let result = match attempted {
+                Ok(Some(group)) => group
+                    .commit(self.calls.as_ref(), &self.lease)
+                    .map(|()| group.len()),
+                Ok(None) => put_record(self.calls.as_ref(), &self.lease, next).map(|()| 1),
+                Err(why) => Err(why),
+            };
+            match result {
+                Ok(count) => {
                     pause = RETRY_FIRST;
                     let mut state = self.lock();
-                    if state.queue.front().map(Record::identity) == Some(next.identity()) {
-                        state.queue.pop_front();
+                    if !state
+                        .queue
+                        .iter()
+                        .take(count)
+                        .map(Record::identity)
+                        .eq(offered[..count].iter().map(Record::identity))
+                    {
+                        state.refusal =
+                            Some("committed audit group no longer matches the queue prefix".into());
+                        state.refusals = state.refusals.saturating_add(1);
+                        self.set_full(&state);
+                        self.moved.notify_all();
+                        return;
                     }
-                    let mark = state.acked.entry(next.node).or_insert(0);
-                    *mark = (*mark).max(next.node_seq);
+                    for record in &offered[..count] {
+                        state.queue.pop_front();
+                        let mark = state.acked.entry(record.node).or_insert(0);
+                        *mark = (*mark).max(record.node_seq);
+                    }
                     state.refusal = None;
                     self.set_full(&state);
                     self.moved.notify_all();

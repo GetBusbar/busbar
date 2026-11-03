@@ -523,3 +523,9 @@ fn historical_usage_class_absent_from_current_registry_keeps_its_signed_head() {
 
 #[path = "audit_parts_atomic.rs"]
 mod parts_atomic_tests;
+
+#[path = "audit_group_atomic.rs"]
+mod group_atomic_tests;
+
+#[path = "audit_group_lane.rs"]
+mod group_lane_tests;
