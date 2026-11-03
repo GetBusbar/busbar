@@ -136,7 +136,7 @@
     {
       "repo": "busbar-store-sqlite",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-store-sqlite",
-      "commit": "dceb1c77726b0831cbf364996e5829f8d23ba007",
+      "commit": "aec7d834f862713ff1ce21595008a9ea08bff512",
       "package": "busbar-store-sqlite-plugin",
       "kind": "store",
       "alias": "sqlite",
