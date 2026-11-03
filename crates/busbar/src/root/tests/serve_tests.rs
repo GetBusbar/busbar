@@ -1529,7 +1529,7 @@ pub(super) mod session_door {
 
     pub(in crate::root::serve) struct SessionDoor {
         _handle: Arc<busbar_kernel::state::AppHandle>,
-        framer: crate::root::listener_framed::DataFramer,
+        framer: crate::root::listener::framed::DataFramer,
         router: axum::Router,
         heard: tokio::sync::mpsc::UnboundedReceiver<String>,
         gov: Arc<GovState>,
@@ -1681,10 +1681,7 @@ pub(super) mod session_door {
         let _ = crate::root::inbound::install(crate::root::doors::dispatcher());
         let connector = connector();
         let services = composed_services();
-        let dispatcher = Arc::new(Dispatcher::with_services(
-            DispatchConfig::default(),
-            services.clone(),
-        ));
+        let dispatcher = Arc::new(crate::root::dispatch::build(1, &services));
         let plane = session_door(
             instance,
             &dispatcher,
@@ -2055,7 +2052,7 @@ pub(super) mod session_door {
                 &handle,
             ))));
         crate::root::inbound::publish(&app).expect("the actual session claims publish");
-        let framer = crate::root::listener_framed::data_framer(Arc::new(move |scheme| {
+        let framer = crate::root::listener::framed::data_framer(Arc::new(move |scheme| {
             connector.framer_for(scheme)
         }))
         .expect("the actual HTTP and WebSocket framers are linked");
@@ -2078,19 +2075,17 @@ pub(super) mod session_door {
     async fn serve_listener(
         listener: tokio::net::TcpListener,
         router: axum::Router,
-        framer: crate::root::listener_framed::DataFramer,
+        framer: crate::root::listener::framed::DataFramer,
     ) {
-        let (_stop, stopped) = tokio::sync::watch::channel(false);
-        while let Ok((stream, _)) = listener.accept().await {
-            tokio::spawn(crate::root::listener_framed::serve(
-                stream,
-                framer.clone(),
-                router.clone(),
-                false,
-                std::time::Duration::from_secs(10),
-                stopped.clone(),
-            ));
-        }
+        let _ = crate::root::listener::serve_admitted_framed(
+            crate::root::listener::SocketAdmits::new(listener),
+            router,
+            None,
+            std::future::pending::<()>(),
+            None,
+            Some(framer),
+        )
+        .await;
     }
 
     impl SessionDoor {
