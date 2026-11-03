@@ -197,6 +197,21 @@ pub enum AccrualPrepareError<E> {
     Prepare(E),
 }
 
+/// Why host preparation under an exact live admission failed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AdmittedPrepareError<E> {
+    /// The cell has not passed the door; preparation was not called.
+    NotAdmitted,
+    /// The cell has already exited; preparation was not called.
+    Exited,
+    /// The call is unbound or differs from the admitted call; preparation was not called.
+    CallMismatch,
+    /// The principal differs from the admitted principal; preparation was not called.
+    PrincipalMismatch,
+    /// Host preparation failed without changing the cell or creating an accrual.
+    Prepare(E),
+}
+
 impl std::fmt::Display for AccrualRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -302,6 +317,36 @@ impl HoldCell {
     pub fn admitted_for(&self, token: &Grant<Admittance>, principal: &PrincipalId) -> bool {
         matches!(&*self.slot(), Slot::Admitted(hold)
             if token.bound_to(hold.call()) && hold.principal() == principal)
+    }
+
+    /// Prepare a host reservation atomically with checking this exact live admission.
+    ///
+    /// `prepare` runs under the cell lock, so exit cannot take the admitted hold between
+    /// validation and reservation. It must be all-or-nothing, nonblocking host work, with
+    /// lock order Cell -> Money shard -> FeeAccount. It must not reenter a cell, acquire a
+    /// lifecycle map lock, call plugins or Store, await, refund governors, or destroy owners.
+    /// Return owned resources for cleanup after this method releases the cell lock.
+    /// Neither success nor failure creates a hold/accrual or changes canary counters.
+    pub fn with_admitted_call<R, E>(
+        &self,
+        call: CallId,
+        principal: &PrincipalId,
+        prepare: impl FnOnce() -> Result<R, E>,
+    ) -> Result<R, AdmittedPrepareError<E>> {
+        let slot = self.slot();
+        match &*slot {
+            Slot::Arrival(_) => Err(AdmittedPrepareError::NotAdmitted),
+            Slot::Taken => Err(AdmittedPrepareError::Exited),
+            Slot::Admitted(hold) => {
+                if call == CallId::UNBOUND || hold.call() != call {
+                    return Err(AdmittedPrepareError::CallMismatch);
+                }
+                if hold.principal() != principal {
+                    return Err(AdmittedPrepareError::PrincipalMismatch);
+                }
+                prepare().map_err(AdmittedPrepareError::Prepare)
+            }
+        }
     }
 
     /// The one transition: swap the arrival hold for the admitted one, and hand the arrival hold
