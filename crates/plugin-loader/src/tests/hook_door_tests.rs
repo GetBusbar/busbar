@@ -751,7 +751,8 @@ mod actual_boundary {
     static RELEASE: [OnceLock<Op>; 2] = [OnceLock::new(), OnceLock::new()];
     static DECIDE: [OnceLock<Op>; 2] = [OnceLock::new(), OnceLock::new()];
     static LOANS: Mutex<BTreeMap<usize, Arc<Leases>>> = Mutex::new(BTreeMap::new());
-    static SESSIONS: Mutex<BTreeMap<(usize, u64), Option<Vec<u8>>>> = Mutex::new(BTreeMap::new());
+    type ObservedSessions = BTreeMap<(usize, u64), Option<Vec<u8>>>;
+    static SESSIONS: Mutex<ObservedSessions> = Mutex::new(BTreeMap::new());
     std::thread_local! { static CURRENT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
     fn change(ops: &mut [Op], way: usize, serve: bool) {
