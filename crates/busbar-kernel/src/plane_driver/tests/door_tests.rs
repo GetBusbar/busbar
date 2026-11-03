@@ -140,8 +140,8 @@ fn a_model_serving_doors_ledger_lanes_are_its_actual_model_names() {
         assert_eq!(
             lanes,
             [
-                "third-party-models|first-model",
-                "third-party-models|second-model",
+                "third-party-models\u{1f}first-model",
+                "third-party-models\u{1f}second-model",
             ],
             "model prices use direct-route names, independently of the grant scope kinds"
         );
@@ -156,7 +156,7 @@ fn a_model_map_owns_the_routed_entries_even_when_empty() {
         ("{}", Vec::<&str>::new()),
         (
             "{ actual-model: { provider: upstream } }",
-            vec!["third-party-models|actual-model"],
+            vec!["third-party-models\u{1f}actual-model"],
         ),
     ] {
         let section = DoorSection::new(
@@ -193,8 +193,8 @@ fn named_doors_keep_their_explicit_scoped_registration_lanes() {
     assert_eq!(
         lanes,
         [
-            "third-party-members|member:first",
-            "third-party-members|member:second",
+            "third-party-members\u{1f}member:first",
+            "third-party-members\u{1f}member:second",
         ],
     );
 }
