@@ -188,7 +188,7 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
     // cold root above. It is not a claim that direct scan runs the root's full boot trust flow.
     let policy = busbar_plugin_loader::sign::TrustPolicy {
         binary_version: "1.6.0".into(),
-        publishers: vec![(PUBLISHER.into(), publisher_key.verifying_key())],
+        publishers: std::iter::once((PUBLISHER.into(), publisher_key.verifying_key())).collect(),
         allow_unsigned: false,
         allow_third_party: false,
         ..Default::default()
