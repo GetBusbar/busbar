@@ -1410,13 +1410,29 @@ fn plane_router(
             )
         })
         .collect();
+    // This in-process HTTP fixture mounts all configured plane claims, including A2A's
+    // gRPC line. Read both framing layers' real Statements rather than borrowing the
+    // executable's narrower default transport inventory or inventing offered auth bits.
+    let mut transports = crate::LINKED.transports.to_vec();
+    for row in [
+        crate::root::linked::linked_transport!(busbar_transport_http::door::door),
+        crate::root::linked::linked_transport!(busbar_transport_grpc::door),
+    ] {
+        if !transports
+            .iter()
+            .any(|present| (present.key)() == (row.key)())
+        {
+            transports.push(row);
+        }
+    }
+    let offers = crate::root::serve::transport_offers(&transports, &[]);
     let mounts = crate::root::serve::door_mounts(
         served,
         || crate::root::kernel::ROOT_CARD.pin(),
         &data_chain,
         &busbar_kernel::base_data_core_lines(&app),
         &[],
-        &crate::root::serve::transport_offers(crate::LINKED.transports, &[]),
+        &offers,
     )
     .expect("the actual root mounts the planes' own declared doors");
     let (router, _, handle) = busbar_kernel::build_split_routers_serving_doors(
