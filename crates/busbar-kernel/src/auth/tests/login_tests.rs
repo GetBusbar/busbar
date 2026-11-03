@@ -78,6 +78,7 @@ fn idp_with_secret(env: &str) -> crate::config::AuthCfg {
 
 #[test]
 fn browser_login_secret_required_for_redirect_absent_for_credential() {
+    use busbar_contract::auth::LoginKind;
     assert!(validate_browser_login_secret(LoginKind::Redirect, true).is_ok());
     assert!(
         validate_browser_login_secret(LoginKind::Redirect, false).is_err(),
