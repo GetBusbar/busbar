@@ -9,10 +9,7 @@ mod plugins;
 #[tokio::test]
 async fn a_door_route_installed_at_construction_is_answered_ahead_of_the_fallback() {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -30,10 +27,8 @@ async fn a_door_route_installed_at_construction_is_answered_ahead_of_the_fallbac
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"

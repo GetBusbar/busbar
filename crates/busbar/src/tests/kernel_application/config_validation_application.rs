@@ -45,8 +45,7 @@ fn make_root_cfg(
         plane_fees: Default::default(),
         store: Some(config::StoreCfg {
             module: {
-                let path = std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                    .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store");
+                let path = crate::root::test_plugins::application_store_library();
                 let statement = busbar_plugin_loader::dispatch::rendering_of_library(
                     std::path::Path::new(&path),
                 )

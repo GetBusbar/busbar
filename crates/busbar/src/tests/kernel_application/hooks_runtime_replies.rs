@@ -43,12 +43,17 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
     let mut store_module = None;
     let mut hook_module = None;
     for (kind, variable) in [
-        ("store", "BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN"),
+        ("store", "BUSBAR_TEST_SQLITE_CDYLIB"),
         ("hook", "BUSBAR_TEST_WEBREQUEST_CDYLIB"),
     ] {
-        let path = PathBuf::from(std::env::var_os(variable).unwrap_or_else(|| {
+        let path =
+            if kind == "store" {
+                crate::root::test_plugins::application_store_library()
+            } else {
+                PathBuf::from(std::env::var_os(variable).unwrap_or_else(|| {
             panic!("{variable} must name the actual built product cdylib; this test never skips")
-        }));
+        }))
+            };
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
             .expect("the actual product statement reads")
             .expect("the actual product exports its statement");
@@ -75,10 +80,8 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         std::fs::write(directory.join(format!("{kind}-product.tar.gz")), archive)
             .expect("stage the signed actual product archive");
     }
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
