@@ -480,7 +480,15 @@ async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
     let dropped_before_media = pair.door.assocs.raw_busy_dropped();
     pair.input.send(Input::Audio(OPUS.to_vec())).await.unwrap();
     assert_eq!(
-        tokio::time::timeout(WAIT, received.recv()).await.unwrap(),
+        tokio::time::timeout(WAIT, received.recv())
+            .await
+            .unwrap_or_else(|_| panic!(
+                "actual paced SRTP did not reach the upstream: drops {} -> {}, publication {:?}, upstream emits {:?}",
+                dropped_before_media,
+                pair.door.assocs.raw_busy_dropped(),
+                pair.pairing.publication_outcome(),
+                observed.emitted.lock().unwrap()
+            )),
         Some(OPUS.to_vec())
     );
     let outcome = pair.pairing.published().await;
