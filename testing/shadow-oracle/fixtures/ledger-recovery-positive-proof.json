@@ -1,0 +1,37 @@
+{
+  "fixture": "actual-retained-usage-admin-route-v1",
+  "cell": "admin.ops|PostLedgerRecoveryResolve|ok",
+  "status": "evidence-ready; native execution and explicit ROOT mapping approval required",
+  "test": "root::units_admin::ledger_recovery_actual::an_actual_retained_usage_operation_is_listed_and_resolved_through_the_admin_route",
+  "source": "crates/busbar/src/root/units_admin/tests/ledger_recovery_actual.rs",
+  "requires": {
+    "features": [
+      "root-admin"
+    ],
+    "actual_store_library_env": "BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN",
+    "actual_store_settings_env": "BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS",
+    "store_isolation": "fresh actual Store instance; persistent settings must use an isolated path",
+    "proof_output_env": "BUSBAR_LEDGER_RECOVERY_PROOF_PATH"
+  },
+  "construction": [
+    "The normal product app builder owns the actual LoadedStore records and ABI calls.",
+    "The real root boot book attaches its Store-backed recovery sink.",
+    "A narrow transport boundary delegates a genuine usage commit and loses only its completed reply.",
+    "The original GovState sender is retired with unique ownership; no background sender remains.",
+    "A fresh GovState replays the actual durable journal. Production receipt-age policy derives LandedUnknown without a forged clock, event, operation id, fingerprint, or reserved row.",
+    "The mounted production admin route lists the retained operation. Its returned id, fingerprint, and version form the resolution request.",
+    "The Landed attestation is supported by the captured actual backend acknowledgement, one actual committed operation, observed input quantity seven, and zero outstanding original usage calls."
+  ],
+  "required_observations": [
+    "unauthenticated list and resolve HTTP 401; configured actual operator bearer requests authenticated by the production admin chain",
+    "list HTTP 200 with landed_unknown and can_resolve true",
+    "listed identity equals the actual captured commit operation and persisted immutable fingerprint",
+    "stale observed version HTTP 409",
+    "resolve HTTP 200 with same immutable identity, settled state, and can_resolve false",
+    "identical repeated resolution HTTP 200 without a second backend mutation",
+    "actual backend input remains seven after resolution and replay",
+    "durable verdict preserves the HTTP actor and generated evidence reason plus both quiescence attestations"
+  ],
+  "admin_posture": "The normal product builder resolves a file-backed configured operator token. Production live_admin_door authenticates the bearer credential; the durable verdict must attribute the configured operator principal. Unauthenticated list and resolve each return HTTP 401.",
+  "oracle_mapping_rule": "This descriptor is not an Oracle PASS. Keep the cell needs_fixture until the exact current-source test runs successfully, its generated proof is retained with binary/Store/source hashes, and ROOT explicitly approves the actual-route evidence mapping. Never fabricate a golden or substitute static ids/evidence."
+}
