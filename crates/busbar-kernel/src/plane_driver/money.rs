@@ -244,18 +244,20 @@ impl PlaneMoney {
                 child_incurred: false,
             }),
         });
-        self.shard(key).insert(
-            key,
-            Open::new(
-                money,
-                grant,
-                FeeParticipation {
-                    account,
-                    owner: true,
-                    refundable: false,
-                },
-            ),
+        let open = Open::new(
+            money,
+            grant,
+            FeeParticipation {
+                account,
+                owner: true,
+                refundable: false,
+            },
         );
+        let replaced = {
+            let mut all = self.shard(key);
+            all.insert(key, open)
+        };
+        drop(replaced);
     }
 
     /// Capture a live, governor-backed parent for an already authenticated matching key.
@@ -310,8 +312,9 @@ impl PlaneMoney {
         Ok(())
     }
 
-    /// A registered child keeps its real admission after the parent closes. A token alone
-    /// cannot satisfy this check: the matching live child registration must still exist.
+    /// A registered child keeps its real admission after the parent closes. The driver marks
+    /// it finished before the teller's terminal authority check, so finished is permitted here.
+    /// The actual unsettled registration must still exist; a token alone cannot satisfy this.
     pub fn validate_child(
         &self,
         parent: &ParentMoney,
@@ -320,8 +323,7 @@ impl PlaneMoney {
     ) -> Result<(), ReasonCode> {
         let all = self.shard(child);
         let open = all.get(&child).ok_or(ReasonCode::Unpriced)?;
-        if open.finished
-            || open.ledgered
+        if open.ledgered
             || open.abandoned
             || open.fee.owner
             || open.money.key.as_ref() != expected_key
@@ -419,7 +421,11 @@ impl PlaneMoney {
 
     pub fn settle_end_as(&self, key: UnitKey, end: UnitEnd) {
         let UnitEnd { caller_status, .. } = end;
-        let Some(mut open) = self.shard(key).remove(&key) else {
+        let removed = {
+            let mut all = self.shard(key);
+            all.remove(&key)
+        };
+        let Some(mut open) = removed else {
             return;
         };
         let m = &open.money;
@@ -589,40 +595,37 @@ impl MoneySeam for PlaneMoney {
     }
 
     fn cancelled(&self, ctx: &UnitCtx, bill: &CancelBill) {
-        let (money, provider) = {
+        let (money, provider, removed) = {
             let mut all = self.shard(ctx.key);
             let Some(open) = all.get_mut(&ctx.key) else {
                 return;
             };
-
             if open.ledgered || open.session {
                 return;
             }
             open.ledgered = true;
-            let money = (open.money.clone(), open.provider.clone());
-            if open.abandoned {
-                all.remove(&ctx.key);
-            }
-            money
+            let money = open.money.clone();
+            let provider = open.provider.clone();
+            let removed = if open.abandoned {
+                all.remove(&ctx.key)
+            } else {
+                None
+            };
+            (money, provider, removed)
         };
-
         self.bill(&money, provider.as_deref(), &bill.billed, bills);
+        drop(removed);
     }
 
     fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
-        let owed = {
+        let removed = {
             let mut all = self.shard(ctx.key);
             match all.get_mut(&ctx.key) {
                 Some(open) if !open.ledgered && open.finished => {
-                    let open = all.remove(&ctx.key);
-                    open.map(|o| {
-                        let counts = reported(&o.last);
-                        (o.money, o.provider, counts)
-                    })
+                    all.remove(&ctx.key).map(|open| (open, true))
                 }
                 Some(open) if open.ledgered || open.last.is_empty() => {
-                    all.remove(&ctx.key);
-                    None
+                    all.remove(&ctx.key).map(|open| (open, false))
                 }
                 Some(open) => {
                     open.abandoned = true;
@@ -631,8 +634,17 @@ impl MoneySeam for PlaneMoney {
                 None => None,
             }
         };
-        if let Some((money, provider, counts)) = owed {
-            self.bill(&money, provider.as_deref(), &counts, bills);
+        if let Some((open, owed)) = removed {
+            if owed {
+                self.bill(
+                    &open.money,
+                    open.provider.as_deref(),
+                    &reported(&open.last),
+                    bills,
+                );
+            }
+            // Fee participation and the actual grant always close outside the shard lock.
+            drop(open);
         }
         self.post.post(ctx, ended);
     }
@@ -654,7 +666,7 @@ impl MoneySeam for PlaneMoney {
     }
 
     fn session_ended(&self, ctx: &UnitCtx) {
-        let owed = {
+        let (money, provider, counts, removed) = {
             let mut all = self.shard(ctx.key);
             let Some(open) = all.get_mut(&ctx.key) else {
                 return;
@@ -663,18 +675,18 @@ impl MoneySeam for PlaneMoney {
                 return;
             }
             open.ledgered = true;
-            let owed = (
-                open.money.clone(),
-                open.provider.clone(),
-                reported(&open.last),
-            );
-            if open.abandoned {
-                all.remove(&ctx.key);
-            }
-            owed
+            let money = open.money.clone();
+            let provider = open.provider.clone();
+            let counts = reported(&open.last);
+            let removed = if open.abandoned {
+                all.remove(&ctx.key)
+            } else {
+                None
+            };
+            (money, provider, counts, removed)
         };
-        let (money, provider, counts) = owed;
         self.bill(&money, provider.as_deref(), &counts, bills);
+        drop(removed);
     }
 
     fn served(&self, ctx: &UnitCtx, member: &str, provider: &str) {

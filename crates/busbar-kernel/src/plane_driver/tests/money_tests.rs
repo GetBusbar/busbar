@@ -1539,10 +1539,11 @@ fn child_exit_authority_requires_a_real_matching_live_child_even_after_parent_cl
         Ok(())
     );
     r.money.finished(&ctx(2));
-    assert!(r
-        .money
-        .validate_child(&parent, UnitKey::new(2), &r.key)
-        .is_err());
+    assert_eq!(
+        r.money.validate_child(&parent, UnitKey::new(2), &r.key),
+        Ok(()),
+        "driver finished precedes teller terminal: retain the real child's exit authority"
+    );
     r.money.settle_end(UnitKey::new(2), 200);
     assert!(r
         .money
