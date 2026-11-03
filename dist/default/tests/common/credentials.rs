@@ -161,7 +161,7 @@ pub fn install_auth_plugin(plugins_dir: &Path, module: &str, alias: &str, first_
             )
         });
     let publisher = if first_party {
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER
+        super::plugins::FIXTURE_PUBLISHER
     } else {
         "third-party"
     };
