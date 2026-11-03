@@ -583,6 +583,13 @@ fn a_dropped_framers_sealed_opening_keeps_its_exact_wire_bytes_through_tls() {
 /// THE REQUEST/RESPONSE FRAMER the head tests drive: of the libraries beside this test binary, the
 fn composing_door() -> std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> {
     use busbar_contract::abi::transport::ROLE_FRAMER;
+    if let Some(path) = std::env::var_os("BUSBAR_TEST_HTTP_CDYLIB") {
+        let (door, stated) = open_stated(std::path::Path::new(&path))
+            .expect("BUSBAR_TEST_HTTP_CDYLIB opens the qualified HTTP transport");
+        assert_eq!(door.facts().role, ROLE_FRAMER);
+        assert!(!stated.sessions.contains(&door.facts().claims[0]));
+        return door;
+    }
     libraries_beside_the_test()
         .into_iter()
         .filter_map(|p| open_stated(&p))
