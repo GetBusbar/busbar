@@ -1882,7 +1882,13 @@ async fn a_final_body_emit_remains_alive_through_graceful_drain() {
     .unwrap();
     let (mut client, server) = tokio::io::duplex(1);
     let (stop, stopped) = tokio::sync::watch::channel(false);
-    let router = Router::new().route("/hello", axum::routing::get(|| async { "hi" }));
+    // An unknown-length response puts its final HTTP chunk on the wire. The peer can
+    // drain the payload while retaining pressure on that distinct terminal Emit.
+    let router = Router::new().route("/hello", axum::routing::get(|| async {
+        axum::response::Response::new(axum::body::Body::from_stream(
+            futures::stream::once(async { Ok::<_, std::convert::Infallible>(Bytes::from_static(b"hi")) }),
+        ))
+    }));
     let mut served = tokio::spawn(super::serve(
         server,
         framer,
@@ -1902,6 +1908,12 @@ async fn a_final_body_emit_remains_alive_through_graceful_drain() {
             assert_eq!(client.read(&mut byte).await.unwrap(), 1);
             got.push(byte[0]);
             assert!(got.len() < 16 * 1024, "bounded response head");
+        }
+        while !got.ends_with(b"\r\n2\r\nhi\r\n") {
+            let mut byte = [0; 1];
+            assert_eq!(client.read(&mut byte).await.unwrap(), 1);
+            got.push(byte[0]);
+            assert!(got.len() < 16 * 1024, "bounded payload chunk");
         }
         while observed.count(|call| {
             matches!(
@@ -1936,8 +1948,8 @@ async fn a_final_body_emit_remains_alive_through_graceful_drain() {
         .unwrap();
     let got = String::from_utf8(got).unwrap();
     assert!(got.starts_with("HTTP/1.1 200 OK\r\n"), "{got:?}");
-    assert!(got.contains("content-length: 2\r\n"), "{got:?}");
-    assert!(got.ends_with("\r\n\r\nhi"), "{got:?}");
+    assert!(got.contains("transfer-encoding: chunked\r\n"), "{got:?}");
+    assert!(got.ends_with("\r\n\r\n2\r\nhi\r\n0\r\n\r\n"), "{got:?}");
     assert_eq!(
         observed.count(|call| matches!(call, ObservedCall::Emit { status: 200, .. })),
         1
