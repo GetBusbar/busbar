@@ -33,7 +33,7 @@ fn missing_auth_plugin_is_loud_boot_failure() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let archive = plugins::signed(
@@ -42,11 +42,7 @@ fn missing_auth_plugin_is_loud_boot_failure() {
         &std::fs::read(artifact).expect("the actual Store library reads"),
     );
     std::fs::write(dir.join("store.tar.gz"), archive).expect("stage the unrelated actual Store");
-    let plugins = PluginsCfg {
-        enabled: true,
-        dir: dir.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config(&dir);
     let cfg = chain_with("test-idp-double", serde_json::Map::new());
 
     let err = busbar_kernel::plugins_preflight(

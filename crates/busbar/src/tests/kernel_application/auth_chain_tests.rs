@@ -37,11 +37,7 @@ fn test_chain_identifies_with_module_and_principal() {
         "auth-ordinary-chain-test_chain_identifies_with_module_and_principal",
     );
     common::credentials::install_auth_plugin(&directory, &module, "test-groups-module", true);
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config(&directory);
     let registry = busbar_kernel::plugins_preflight(
         None,
         None,
@@ -94,11 +90,7 @@ fn test_nonempty_chain_fails_closed_on_all_pass() {
         "auth-ordinary-chain-test_nonempty_chain_fails_closed_on_all_pass",
     );
     common::credentials::install_auth_plugin(&directory, &module, "test-groups-module", true);
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config(&directory);
     let registry = busbar_kernel::plugins_preflight(
         None,
         None,
@@ -166,11 +158,7 @@ fn test_keys_in_chain_sets_flag_not_module() {
     let directory =
         common::plugins::scratch("auth-ordinary-chain-test_keys_in_chain_sets_flag_not_module");
     common::credentials::install_auth_plugin(&directory, &module, "test-groups-module", true);
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config(&directory);
     let registry = busbar_kernel::plugins_preflight(
         None,
         None,
@@ -230,11 +218,7 @@ fn test_auth_middleware_debug_redacts_tokens() {
     let directory =
         common::plugins::scratch("auth-ordinary-chain-test_auth_middleware_debug_redacts_tokens");
     common::credentials::install_auth_plugin(&directory, &module, "test-groups-module", true);
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config(&directory);
     let registry = busbar_kernel::plugins_preflight(
         None,
         None,
@@ -285,11 +269,7 @@ fn a_keys_only_chain_is_not_an_open_front_door() {
     let directory =
         common::plugins::scratch("auth-ordinary-chain-a_keys_only_chain_is_not_an_open_front_door");
     common::credentials::install_auth_plugin(&directory, &module, "test-groups-module", true);
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config(&directory);
     let registry = busbar_kernel::plugins_preflight(
         None,
         None,
@@ -348,11 +328,7 @@ fn a_verified_oidc_role_is_bound_under_the_provider_name() {
         "auth-ordinary-chain-a_verified_oidc_role_is_bound_under_the_provider_name",
     );
     common::credentials::install_auth_plugin(&directory, &module, "idp", true);
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config(&directory);
     let registry = busbar_kernel::plugins_preflight(
         None,
         None,
@@ -415,11 +391,7 @@ fn a_slow_auth_door_does_not_park_the_reactor() {
         .name;
     let directory = common::plugins::scratch("auth-real-pending-jwks");
     common::credentials::install_auth_plugin(&directory, &module, "slow-idp", true);
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config(&directory);
     let registry = busbar_kernel::plugins_preflight(
         None,
         None,

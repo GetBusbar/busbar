@@ -242,7 +242,7 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -288,11 +288,7 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
         .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
@@ -450,7 +446,7 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
         let mut manifest = plugins::manifest(
             "store",
             &module,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -500,11 +496,7 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
         .expect("the product deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the product deployment resolves");
-        let plugin_config = busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        };
+        let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
             .expect("the actual Store bootstraps its config authority");
         let overlay = busbar_kernel::config::overlay::OverlayStore::new(
@@ -624,7 +616,7 @@ async fn existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persi
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -674,11 +666,7 @@ async fn existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persi
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
         .expect("the actual Store bootstraps its config authority");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -778,7 +766,7 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
         let mut manifest = plugins::manifest(
             "store",
             &module,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -824,11 +812,7 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
         .expect("the product deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the product deployment resolves");
-        let plugin_config = busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        };
+        let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let mut anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
             .expect("the actual Store bootstraps its config authority");
         let observed = Arc::new(ObservedStoreCalls {
@@ -1010,7 +994,7 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
             let mut manifest = plugins::manifest(
                 "store",
                 &module,
-                busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+                crate::root::test_plugins::FIXTURE_PUBLISHER,
             );
             manifest.statement = Some(hex::encode(statement));
             let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -1058,11 +1042,7 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
             .expect("the product deployment parses");
             let config = busbar_kernel::config::resolve(&deploy, &Default::default())
                 .expect("the product deployment resolves");
-            let plugin_config = busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            };
+            let plugin_config = crate::root::test_plugins::trusted_config(&directory);
             let mut anchor =
                 busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
                     .expect("the actual Store bootstraps its config authority");

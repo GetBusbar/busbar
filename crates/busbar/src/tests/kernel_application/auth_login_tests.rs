@@ -16,11 +16,8 @@ fn stage_plugin(directory: &std::path::Path, kind: &str, variable: &str) -> Stri
     let module = busbar_contract::abi::mechanism::rendering::read(&statement)
         .expect("the actual product statement is valid")
         .name;
-    let mut manifest = plugins::manifest(
-        kind,
-        &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-    );
+    let mut manifest =
+        plugins::manifest(kind, &module, crate::root::test_plugins::FIXTURE_PUBLISHER);
     manifest.statement = Some(hex::encode(statement));
     let archive = plugins::signed(
         &crate::dist_root_install::release_key(),
@@ -109,11 +106,7 @@ async fn inbound_provider_retains_the_actual_opened_instance() {
         "advanced": { "allow_destinations": ["127.0.0.1"] }
     }))
     .expect("the actual deployment parses");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let build = |cold| {
