@@ -171,6 +171,8 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["plugins"] = serde_json::to_value(super::plugins::trusted_config(&directory))
+            .expect("the candidate keeps its actual signed Store configuration");
         document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -295,6 +297,8 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["plugins"] = serde_json::to_value(super::plugins::trusted_config(&directory))
+            .expect("the candidate keeps its actual signed Store configuration");
         document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -437,6 +441,8 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["plugins"] = serde_json::to_value(super::plugins::trusted_config(&directory))
+            .expect("the candidate keeps its actual signed Store configuration");
         document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -629,6 +635,8 @@ async fn drive_key_cap_and_delegation_errors() {
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["plugins"] = serde_json::to_value(super::plugins::trusted_config(&directory))
+            .expect("the candidate keeps its actual signed Store configuration");
         document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -848,6 +856,8 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["plugins"] = serde_json::to_value(super::plugins::trusted_config(&directory))
+            .expect("the candidate keeps its actual signed Store configuration");
         document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -1090,6 +1100,9 @@ async fn serve_keys_fixture(
                 document["providers"] = serde_json::json!({});
                 document["models"] = serde_json::json!({});
                 document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+                document["plugins"] =
+                    serde_json::to_value(super::plugins::trusted_config(&directory))
+                        .expect("the candidate keeps its actual signed Store configuration");
                 document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
                 document["identity-providers"] = serde_json::json!({"admin-tokens": {
                     "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -1172,6 +1185,9 @@ async fn serve_keys_fixture(
                 document["providers"] = serde_json::json!({});
                 document["models"] = serde_json::json!({});
                 document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+                document["plugins"] =
+                    serde_json::to_value(super::plugins::trusted_config(&directory))
+                        .expect("the candidate keeps its actual signed Store configuration");
                 document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
                 document["identity-providers"] = serde_json::json!({"admin-tokens": {
                     "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -1248,6 +1264,8 @@ async fn serve_keys_fixture(
             document["providers"] = serde_json::json!({});
             document["models"] = serde_json::json!({});
             document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+            document["plugins"] = serde_json::to_value(super::plugins::trusted_config(&directory))
+                .expect("the candidate keeps its actual signed Store configuration");
             document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
             document["identity-providers"] = serde_json::json!({"admin-tokens": {
                 "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -1797,6 +1815,8 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["plugins"] = serde_json::to_value(super::plugins::trusted_config(&directory))
+            .expect("the candidate keeps its actual signed Store configuration");
         document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -2653,6 +2673,8 @@ async fn drive_plugin_reload_errors() {
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["plugins"] = serde_json::to_value(super::plugins::trusted_config(&directory))
+            .expect("the candidate keeps its actual signed Store configuration");
         document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -2767,6 +2789,8 @@ async fn drive_plugin_rollback_errors() {
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["plugins"] = serde_json::to_value(super::plugins::trusted_config(&directory))
+            .expect("the candidate keeps its actual signed Store configuration");
         document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -2956,6 +2980,8 @@ async fn drive_plugin_inspect_errors() {
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["plugins"] = serde_json::to_value(super::plugins::trusted_config(&directory))
+            .expect("the candidate keeps its actual signed Store configuration");
         document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
@@ -3374,6 +3400,8 @@ async fn named_map_app_opts(
     disk["store"] =
         serde_yaml::to_value(serde_json::json!({"module": facts.name, "settings": settings}))
             .unwrap();
+    disk["plugins"] = serde_yaml::to_value(super::plugins::trusted_config(&plugin_dir))
+        .expect("the disk baseline retains the actual signed Store configuration");
     std::fs::write(&config_path, serde_yaml::to_string(&disk).unwrap())
         .expect("write the actual Store selection");
     // The reset witness intentionally leaves corp-ad referenced only in the disk baseline;
@@ -4541,6 +4569,8 @@ async fn drive_named_map_errors() {
             document["providers"] = serde_json::json!({});
             document["models"] = serde_json::json!({});
             document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+            document["plugins"] = serde_json::to_value(super::plugins::trusted_config(&directory))
+                .expect("the candidate keeps its actual signed Store configuration");
             document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
             document["identity-providers"] = serde_json::json!({"admin-tokens": {
                 "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
