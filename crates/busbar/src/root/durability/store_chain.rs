@@ -517,13 +517,14 @@ pub fn read_chain(calls: &dyn StoreCalls, node: u64) -> Result<Vec<Record>, Stri
 type JournalPage = Vec<(Vec<u8>, RecordBytes)>;
 const JOURNAL_PAGE_ROWS: u32 = 256;
 const JOURNAL_PREFETCH: usize = 16;
+const JOURNAL_PROBE_ROWS: u32 = JOURNAL_PAGE_ROWS * JOURNAL_PREFETCH as u32;
 enum JournalReadWork {
     Prefix(Vec<u8>),
     Page(JournalPage),
 }
 
-fn valid_journal_page(prefix: &[u8], page: &JournalPage) -> Result<(), String> {
-    if page.len() > JOURNAL_PAGE_ROWS as usize
+fn valid_journal_page(prefix: &[u8], page: &JournalPage, limit: u32) -> Result<(), String> {
+    if page.len() > limit as usize
         || page
             .iter()
             .any(|(key, _)| key.len() != 18 || !key.starts_with(prefix))
@@ -583,6 +584,19 @@ fn visit_journal_pages(
     mut visit: impl FnMut(JournalPage) -> Result<(), String>,
 ) -> Result<(), String> {
     use busbar_contract::store_calls::StoreFailure;
+    // One complete answer avoids radix descent for ordinary journals while retaining the
+    // same 4096-row ownership bound. A saturated answer is an arbitrary sorted subset;
+    // discard it before starting the unchanged exhaustive traversal, never infer siblings.
+    match wait_for(calls.record_scan(JOURNAL_SCHEMA, &prefix, JOURNAL_PROBE_ROWS)) {
+        Ok(page) => {
+            valid_journal_page(&prefix, &page, JOURNAL_PROBE_ROWS)?;
+            if page.len() < JOURNAL_PROBE_ROWS as usize {
+                return visit(page);
+            }
+        }
+        Err(StoreFailure::Overloaded) => {}
+        Err(why) => return Err(format!("the Store journal page is unreadable: {why}")),
+    }
     let mut work = vec![JournalReadWork::Prefix(prefix)];
     let mut ready_pages = 0usize;
     let mut serial = false;
@@ -615,7 +629,7 @@ fn visit_journal_pages(
                 // named Refused, conflicting opids or malformed successful pages are fatal.
                 for (prefix, answer) in prefixes.iter().zip(&answers) {
                     match answer {
-                        Ok(page) => valid_journal_page(prefix, page)?,
+                        Ok(page) => valid_journal_page(prefix, page, JOURNAL_PAGE_ROWS)?,
                         Err(StoreFailure::Overloaded) if !serial => overloaded = true,
                         Err(why) => {
                             return Err(format!("the Store journal page is unreadable: {why}"))
