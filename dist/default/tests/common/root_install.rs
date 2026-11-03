@@ -22,10 +22,18 @@ static CREDENTIAL_HANDLE: std::sync::OnceLock<crate::root::credentials::LateHand
 /// The caller retains the strong AppHandle for every credential read it exercises.
 pub fn bind_credentials_once(handle: std::sync::Arc<busbar_kernel::state::AppHandle>) {
     install();
-    let late = CREDENTIAL_HANDLE.get().expect("the real credential source is installed");
-    assert!(!late.is_set(), "the isolated fixture binds its live credential source once");
+    let late = CREDENTIAL_HANDLE
+        .get()
+        .expect("the real credential source is installed");
+    assert!(
+        !late.is_set(),
+        "the isolated fixture binds its live credential source once"
+    );
     late.set(handle);
-    assert!(late.is_set(), "the fixture retains its actual live AppHandle");
+    assert!(
+        late.is_set(),
+        "the fixture retains its actual live AppHandle"
+    );
 }
 
 pub fn install() {
@@ -51,7 +59,10 @@ pub fn install() {
             .expect("the loopback IdP deployment resolves");
         let judge = crate::root::connector::dest_judge(&cfg);
         let (credentials, handle) = crate::root::credentials::AppCredentials::late();
-        assert!(CREDENTIAL_HANDLE.set(handle).is_ok(), "the real credential source initializes once");
+        assert!(
+            CREDENTIAL_HANDLE.set(handle).is_ok(),
+            "the real credential source initializes once"
+        );
         crate::root::serve::compose(judge.clone(), &late, credentials);
         crate::root::connector::boot(
             crate::LINKED_TRANSPORT_DOORS,
