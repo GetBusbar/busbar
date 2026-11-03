@@ -596,9 +596,11 @@ fn raw_relay_and_lifecycle(
         Outcome::Refused
     );
 
+    // VALIDATE receives the dealt verb envelope; OPEN receives the section itself.
+    let section = serde_json::to_vec(&serde_json::json!({"vendor": entry})).unwrap();
     let mut opened: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(blank_in(), blank_out());
     opened.input.open.generation = 1;
-    opened.input.open.settings = blob(&settings, BLOB_JSON);
+    opened.input.open.settings = blob(&section, BLOB_JSON);
     opened.input.public_url = abi(b"https://gw.example");
     let (answer, snapshot) = plane.open(&mut opened);
     assert_eq!(answer.outcome, Outcome::Ready, "{:?}", answer.error);
@@ -803,9 +805,9 @@ fn raw_relay_and_lifecycle(
                 && released.error.as_deref() == Some(b"release: no such lease"))
     );
 
+    // REFRESH receives the section itself, just as the production composition hands it.
     let settings =
-        serde_json::to_vec(&serde_json::json!({"agents": {"vendor": entry, "other": entry}}))
-            .unwrap();
+        serde_json::to_vec(&serde_json::json!({"vendor": entry, "other": entry})).unwrap();
     let mut refresh: Frame<life::RefreshIn, PlaneRefreshOut> = Frame::new(blank_in(), blank_out());
     refresh.input.generation = 2;
     refresh.input.settings = blob(&settings, BLOB_JSON);
