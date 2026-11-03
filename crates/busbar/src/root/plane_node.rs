@@ -503,7 +503,7 @@ impl Node {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn open_borrowed<'n, U: Units>(
+    pub async fn open_borrowed<'n, U: Units + RouteAwait>(
         &'n self,
         key: UnitKey,
         arrived: Arrived,
@@ -556,7 +556,7 @@ impl Node {
             kernel_verb_only: false,
         };
         self.ticket_custody.bind_source(&ctx, &slot);
-        let opened = busbar_kernel::teller::open_unit(
+        let opened = busbar_kernel::teller::open_unit_screened(
             &self.kernel,
             units,
             &ctx,
@@ -569,6 +569,7 @@ impl Node {
                 meter: &meter,
                 taps: Some(post),
             },
+            units,
         )
         .await;
 

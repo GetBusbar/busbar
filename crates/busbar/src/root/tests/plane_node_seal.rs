@@ -243,6 +243,21 @@ async fn a_borrowed_unit_seals_its_verified_destination() {
 
 struct RefusedAtApprove;
 
+impl RouteAwait for RefusedAtApprove {
+    fn route_leg<'a>(
+        &'a self,
+        token: &'a Pass<Route>,
+        ctx: &'a UnitCtx,
+        destinations: &'a [VerifiedDestination],
+    ) -> RouteLeg<'a> {
+        ToDestination.route_leg(token, ctx, destinations)
+    }
+
+    fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
+        ToDestination.abandoned(ctx, ended);
+    }
+}
+
 impl busbar_kernel::teller::DoorSeats for RefusedAtApprove {
     fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         ToDestination.arrival(token, ctx)
@@ -337,7 +352,7 @@ impl busbar_kernel::teller::UnitEnds for RefusedAtApprove {
     }
 }
 
-async fn open_and_finish<U: Units>(
+async fn open_and_finish<U: Units + RouteAwait>(
     node: &Arc<Node>,
     post: &NodeEndPost,
     units: &U,
