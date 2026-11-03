@@ -1280,84 +1280,137 @@ fn decided(messages: usize, a: &Answered<busbar_contract::abi::hook::DecideOut>)
     }
 }
 
-async fn script(rows: &HookRows, module: &str) -> Vec<String> {
-    let probed = |settings: serde_json::Value| rows.probe(module, "gate", &settings);
-    let mut lines = vec![
-        format!(
-            "probe bad: {:?}",
-            probed(json!({"reject_over_messages": "three"}))
-        ),
-        format!(
-            "probe good: {:?}",
-            probed(json!({"reject_over_messages": 3}))
-        ),
-        format!(
-            "probe nobody: {:?}",
-            rows.probe("nobody", "gate", &json!({}))
-        ),
-    ];
-    let calls = rows
-        .open(
-            module,
-            "hooks.gate",
-            &json!({"reject_over_messages": 3}),
-            BUDGET,
-        )
-        .expect("the hook opens through the axis");
-    lines.push(format!("name: {}", calls.name()));
-    for messages in [2, 5] {
-        lines.push(decided(
-            messages,
-            &calls.decide(frame(messages), BUDGET).await,
-        ));
-    }
-    lines.push(format!("status: {:?}", calls.status(BUDGET).await));
-    lines.push(format!(
-        "configure: {:?}",
-        calls.configure("gate", "{}", 2, BUDGET).await
-    ));
-    lines
-}
-
 #[tokio::test]
 async fn a_linked_and_a_dropped_in_hook_open_through_the_axis_and_decide_identically() {
-    let door = hook_door_plugin::conforming::door;
-    let linked_rows = rows(door, "hook_door", Way::Linked);
-    let linked = script(&linked_rows, NAME).await;
-    let dropped_rows = rows(door, "hook_door", Way::Dropped);
-    let dropped = script(&dropped_rows, NAME).await;
-    assert_eq!(linked, dropped, "the same table, whichever door");
-
-    let facts = HookFacts {
-        name: NAME.to_string(),
-        class: CLASS_GATE,
-        prompt: PROMPT_NO,
-        user: USER_NO,
-        infallible: false,
-        words: Vec::new(),
-    };
-    assert!(
-        linked[0].contains(&format!("{facts:?}")) && linked[0].contains("must be a number"),
-        "{}",
-        linked[0]
+    async fn script(axis: HookRows, name: &str) -> Vec<String> {
+        let facts = HookFacts {
+            name: name.to_owned(),
+            class: CLASS_GATE,
+            prompt: PROMPT_NO,
+            user: USER_NO,
+            infallible: false,
+            words: busbar_contract::abi::mechanism::rendering::read(
+                &rendering_of(ranking_door).expect("actual Ranking renders"),
+            )
+            .expect("actual Ranking declaration")
+            .mark_words
+            .into_iter()
+            .filter_map(|(class, word)| {
+                (class == busbar_contract::abi::mechanism::door::MARK_WORD_HOOK).then_some(word)
+            })
+            .collect(),
+        };
+        let bad = axis.probe(name, "gate", &json!({"policy": 17})).unwrap();
+        assert_eq!(bad.0, Some(facts.clone()));
+        assert!(
+            bad.1.iter().any(|e| e.contains("policy must be a string")),
+            "{bad:?}"
+        );
+        let good = axis
+            .probe(name, "gate", &json!({"policy": "cheapest"}))
+            .unwrap();
+        assert_eq!(good, (Some(facts), Vec::new()));
+        assert_eq!(axis.probe("nobody", "gate", &json!({})), None);
+        assert!(axis
+            .open(name, "bad", &json!({"policy": "unknown"}), BUDGET)
+            .is_err());
+        let missing = axis
+            .open("nobody", "missing", &json!({}), BUDGET)
+            .err()
+            .unwrap();
+        assert!(missing.contains("nobody"), "{missing}");
+        let calls = axis
+            .open(name, "hooks.gate", &json!({"policy": "cheapest"}), BUDGET)
+            .unwrap();
+        assert_eq!(calls.name(), name);
+        let mut lines = vec![format!("bad: {bad:?}"), format!("good: {good:?}"), missing];
+        for with_costs in [false, true] {
+            let candidates = [9.0, 2.0]
+                .into_iter()
+                .enumerate()
+                .map(|(idx, cost)| busbar_contract::hooks::Candidate {
+                    idx,
+                    model: "model",
+                    provider: "provider",
+                    weight: 1,
+                    context_max: None,
+                    tier: None,
+                    cost_per_mtok: with_costs.then_some(cost),
+                    tags: &[],
+                    latency_ms: None,
+                    available_concurrency: 1,
+                    budget_remaining: None,
+                    rate_headroom: None,
+                    signals: SignalBag::new(),
+                })
+                .collect::<Vec<_>>();
+            let ctx = RoutingContext {
+                pool: "p",
+                budget_remaining: None,
+                budget: &[],
+            };
+            let frame = DecideFrame::first(DecideView::build(&request(2), &candidates, &ctx));
+            let answer = calls.decide(Arc::clone(&frame), BUDGET).await;
+            let Answered::Answer {
+                outcome,
+                out,
+                error,
+                frame,
+            } = answer
+            else {
+                panic!("the actual Ranking crossing answers: {answer:?}");
+            };
+            assert_eq!(
+                outcome,
+                busbar_contract::abi::mechanism::call::Outcome::Ready
+            );
+            assert!(error.is_none(), "{error:?}");
+            assert_eq!(out.verbs, if with_costs { 1 } else { 2 });
+            let order = frame.order(out.order_written);
+            assert_eq!(order, if with_costs { vec![1, 0] } else { vec![] });
+            assert_eq!(out.reject_message_written, 0);
+            assert_eq!(out.restrict_tags_written, 0);
+            lines.push(format!(
+                "result={:?} order={order:?} reject={:?} tags={:?}",
+                (
+                    out.verbs,
+                    out.reject_status,
+                    out._reserved,
+                    out.reject_message_written,
+                    out.reject_message_needed,
+                    out.restrict_tags_written,
+                    out.restrict_tags_needed,
+                    out.order_written,
+                    out.order_needed
+                ),
+                frame.reject_message(out.reject_message_written),
+                frame.restrict_tags(out.restrict_tags_written)
+            ));
+        }
+        let status = calls
+            .status(BUDGET)
+            .await
+            .expect("the actual SDK returns its status envelope");
+        assert_eq!(status, b"{}");
+        lines.push(format!("status: {status:?}"));
+        assert!(calls
+            .configure("gate", r#"{"policy":"unknown"}"#, 1, BUDGET)
+            .await
+            .is_err());
+        let configured = calls
+            .configure("gate", r#"{"policy":"fastest"}"#, 2, BUDGET)
+            .await;
+        assert!(configured.is_ok(), "{configured:?}");
+        lines.push(format!("configure: {configured:?}"));
+        lines
+    }
+    let name = ranking_name();
+    let linked = script(ranking_rows(Way::Linked), &name).await;
+    let dropped = script(ranking_rows(Way::Dropped), &name).await;
+    assert_eq!(
+        linked, dropped,
+        "actual Ranking lifecycle and complete results match across origins"
     );
-    assert!(linked[1].ends_with("[]))"), "{}", linked[1]);
-    assert_eq!(linked[2], "probe nobody: None");
-    assert_eq!(linked[3], format!("name: {NAME}"));
-    assert!(
-        linked[4].contains("Ready") && linked[4].contains("verbs=0x2 "),
-        "{}",
-        linked[4]
-    );
-    assert!(
-        linked[5].contains("Ready")
-            && linked[5].contains("verbs=0x14 ")
-            && linked[5].contains(&format!("reject_status={REJECT_STATUS}")),
-        "{}",
-        linked[5]
-    );
-    assert_eq!(linked[6], "status: None", "the fixture refuses `status`");
-    assert!(linked[7].starts_with("configure: Err("), "{}", linked[7]);
 }
 
 #[tokio::test]
