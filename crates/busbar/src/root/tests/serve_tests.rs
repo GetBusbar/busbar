@@ -2062,7 +2062,52 @@ pub(super) mod session_door {
         let app = std::sync::Arc::new(app);
 
         let upgrades = crate::root::serve::upgrade_carriers(crate::LINKED.transports, &[]);
-        let offers = crate::root::serve::transport_offers(crate::LINKED.transports, &[]);
+        let mut offers = crate::root::serve::transport_offers(crate::LINKED.transports, &[]);
+        // Every route in this fixture is placed on the one actual HTTP listener.
+        // Production ListenerPlan::lists likewise takes offered auth points from
+        // that physical bind, rather than the logical SDP/media carrier.
+        let physical_scheme = crate::root::listener::framed::DATA_SCHEME;
+        let physical = connector
+            .framer_for(physical_scheme)
+            .expect("the actual HTTP framer");
+        let physical_facts = physical.facts();
+        assert_eq!(
+            physical_facts.role,
+            busbar_contract::abi::transport::ROLE_FRAMER
+        );
+        assert!(!physical_facts.datagram && physical.accepts());
+        assert!(physical_facts.claims.contains(&physical_scheme));
+        let physical_row = crate::LINKED
+            .transports
+            .iter()
+            .find(|row| (row.key)() == physical_facts.name)
+            .expect("the loaded physical framer has its actual linked Statement");
+        assert_eq!((physical_row.claims)(), physical_facts.claims);
+        let physical_points = (physical_row.offered)();
+        let mut physical_carriers = std::collections::BTreeSet::new();
+        for plane in &served.planes {
+            for claim in plane
+                .snapshot
+                .claims
+                .iter()
+                .filter(|claim| crate::root::serve::routed(claim))
+            {
+                assert!(
+                    claim.carrier == physical_scheme
+                        || claim.carrier == "ws"
+                        || claim.carrier == "webrtc",
+                    "this fixture places only HTTP requests and their session upgrades"
+                );
+                assert!(claim.verb == "GET" || claim.verb == "POST");
+                assert!(offers.iter().any(|(scheme, _)| *scheme == claim.carrier));
+                physical_carriers.insert(claim.carrier.clone());
+            }
+        }
+        for (scheme, points) in &mut offers {
+            if physical_carriers.contains(*scheme) {
+                *points = physical_points;
+            }
+        }
         // The real transport judges the same configured chain as the application.
         let data_chain: Vec<_> = data_chain_names
             .iter()
