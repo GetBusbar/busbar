@@ -686,6 +686,18 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
         &rules,
     )
     .expect("the product builds the admin trust deployment");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the actual deployment configured governance")
+            .store_calls()
+            .expect("the actual configured Store exposes its rate-history slots"),
+        121,
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the actual configured Store boots its rate history");
     limits.keep().unwrap();
     if let Some(rotate) = rotate {
         rotate();

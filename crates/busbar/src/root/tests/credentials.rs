@@ -86,6 +86,18 @@ fn the_credential_read_follows_the_app_swap() {
             &rules,
         )
         .expect("the production root builds the credential generation");
+        limits.stage_boot();
+        crate::root::kernel::ROOT_CARD.keep_in_store(
+            app.governance
+                .as_ref()
+                .expect("the actual deployment configured governance")
+                .store_calls()
+                .expect("the actual configured Store exposes its rate-history slots"),
+            123,
+        );
+        crate::root::kernel::ROOT_CARD
+            .boot_in_store(None)
+            .expect("the actual configured Store boots its rate history");
         limits.keep().unwrap();
         if let Some(rotate) = rotate {
             rotate();
@@ -130,6 +142,18 @@ fn the_credential_read_follows_the_app_swap() {
             &rules,
         )
         .expect("the production root builds the credential generation");
+        limits.stage_boot();
+        crate::root::kernel::ROOT_CARD.keep_in_store(
+            app.governance
+                .as_ref()
+                .expect("the actual deployment configured governance")
+                .store_calls()
+                .expect("the actual configured Store exposes its rate-history slots"),
+            123,
+        );
+        crate::root::kernel::ROOT_CARD
+            .boot_in_store(None)
+            .expect("the actual configured Store boots its rate history");
         limits.keep().unwrap();
         if let Some(rotate) = rotate {
             rotate();
@@ -225,6 +249,18 @@ fn a_late_source_refuses_until_its_handle_is_set() {
             &rules,
         )
         .expect("the production root builds the credential generation");
+        limits.stage_boot();
+        crate::root::kernel::ROOT_CARD.keep_in_store(
+            app.governance
+                .as_ref()
+                .expect("the actual deployment configured governance")
+                .store_calls()
+                .expect("the actual configured Store exposes its rate-history slots"),
+            123,
+        );
+        crate::root::kernel::ROOT_CARD
+            .boot_in_store(None)
+            .expect("the actual configured Store boots its rate history");
         limits.keep().unwrap();
         if let Some(rotate) = rotate {
             rotate();
