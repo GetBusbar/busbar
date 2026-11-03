@@ -380,6 +380,24 @@ impl TicketCustody {
         report_of(&source.money.upgrade()?, unit, &source.facts)
     }
 
+    pub(crate) fn abandon_source_money(&self, ctx: &busbar_kernel::teller::UnitCtx) {
+        let source = self
+            .sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&ctx.key)
+            .cloned();
+        if let Some(money) = source.and_then(|source| source.money.upgrade()) {
+            // The real Own hold and its one audit have already completed. Reuse existing
+            // abandoned financial cleanup; the post sees no remaining open audit facts.
+            busbar_kernel::plane_driver::MoneySeam::abandoned(
+                &*money,
+                ctx,
+                busbar_kernel::teller::Ended::AlreadySettled,
+            );
+        }
+    }
+
     fn shutdown(&self) {
         let entries = {
             let mut entries = self

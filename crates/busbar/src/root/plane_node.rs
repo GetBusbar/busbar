@@ -1114,6 +1114,10 @@ impl Drop for SessionSlot<'_> {
                     })),
                     evidence,
                 );
+                self.occupied
+                    .node
+                    .ticket_custody
+                    .abandon_source_money(&self.ctx);
             }
         }
     }
