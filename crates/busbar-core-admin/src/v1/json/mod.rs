@@ -446,3 +446,6 @@ pub use busbar_kernel::api::set_response_schema;
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+#[cfg(feature = "test-support")]
+pub use handlers::credential_flush_response_for_test;

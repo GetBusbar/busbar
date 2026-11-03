@@ -68,6 +68,7 @@ root-admin = ["dep:tower"]
 test-harness = []
 
 [dev-dependencies]
+busbar-core-admin = { path = "../busbar-core-admin", default-features = false, features = ["test-support"] }
 ring = { workspace = true }
 # External fixtures used by this source when the distribution runs its unit tests.
 

@@ -4458,6 +4458,11 @@ fn empty_chain_refusal(operator: impl std::fmt::Display) -> AdminError {
 #[path = "tests/patch_tests.rs"]
 mod patch_tests;
 
-#[cfg(test)]
-#[path = "../tests/credential_flush_response.rs"]
-mod credential_flush_response_tests;
+#[cfg(feature = "test-support")]
+pub fn credential_flush_response_for_test(
+    result: Result<u64, String>,
+    module: Option<&str>,
+    actor: &str,
+) -> Response {
+    credential_flush_response(result, module, actor)
+}
