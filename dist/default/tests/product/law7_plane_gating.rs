@@ -163,6 +163,9 @@ fn boot_hooks_run(sections: &[&'static str]) -> (usize, usize) {
         &rules,
     )
     .expect("the actual product builds the door deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, "configured-store")
+        .expect("the actual configured Store binds boot rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -326,6 +329,9 @@ fn only_a_configured_plane_builds_its_slot() {
             &rules,
         )
         .expect("the actual product builds the door deployment");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, "configured-store")
+            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
