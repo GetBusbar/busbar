@@ -879,3 +879,24 @@ fn missing_or_changed_requested_seals_never_authorize_retry() {
     assert!(verify_stored_chain_with_seals(&view, 9, &[seal]).is_err());
     assert_eq!(view.starts.lock().unwrap().len(), 1);
 }
+
+#[test]
+fn late_torn_or_truncated_suffix_cannot_heal_an_already_observed_gap() {
+    let records = proof_records(None);
+    let complete = proof_store(&records, &[]);
+    for torn in [true, false] {
+        let broken = proof_store(&records, &[3]);
+        let mut value = (if torn { 2u16 } else { 1u16 }).to_be_bytes().to_vec();
+        let encoded = records[5].encode();
+        value.extend_from_slice(if torn {
+            &encoded
+        } else {
+            &encoded[..encoded.len() - 1]
+        });
+        broken.put_row(JOURNAL_SCHEMA, &part_key(9, 6, 0), &value);
+        let view = proof_epochs(&[&broken, &complete, &complete]);
+        assert!(verify_stored_chain_with_seals(&view, 9, &[]).is_err());
+        assert_eq!(view.starts.lock().unwrap().len(), 2,
+            "after observing the gap, the original held page's torn or truncated suffix remains fatal; only bridge lookup may rescan");
+    }
+}
