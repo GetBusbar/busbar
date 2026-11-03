@@ -282,6 +282,7 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
     }
     built.governance = Some(gov);
     let app = std::sync::Arc::new(built);
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&app);
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
     let mounted = mounted_over(
@@ -774,6 +775,7 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
         rotate();
     }
     let app = std::sync::Arc::new(built);
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&app);
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
     let mounted = mounted_over(
@@ -994,6 +996,7 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
         rotate();
     }
     let app = std::sync::Arc::new(built);
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&app);
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
     let mounted = mount(
@@ -1125,6 +1128,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
         rotate();
     }
     let app = std::sync::Arc::new(built);
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&app);
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
     let mounted = mounted_over(bare, 1 << 20, a_door_that_identifies_the_operator(), |_| {});
@@ -1363,6 +1367,7 @@ fn a_q71_node_trusting(
         rotate();
     }
     let app = std::sync::Arc::new(built);
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&app);
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
     let kept = Arc::new(std::sync::Mutex::new(Vec::new()));

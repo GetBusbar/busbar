@@ -1085,6 +1085,7 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
         rotate();
     }
     let _app = std::sync::Arc::new(built);
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&_app);
     let linked = |entry: &busbar_kernel::audit_ring::AuditEntry| {
         let ring =
             busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(0, usize::MAX, None, None);
