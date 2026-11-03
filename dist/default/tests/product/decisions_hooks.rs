@@ -121,7 +121,11 @@ fn required_artifact(variable: &str) -> PathBuf {
 }
 
 fn stage(directory: &Path, file: &str, variable: &str, kind: &str) -> (String, String) {
-    let path = required_artifact(variable);
+    let path = if kind == "store" {
+        plugins::application_store_library()
+    } else {
+        required_artifact(variable)
+    };
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
         .expect("the actual product statement reads")
         .expect("the actual product exports its statement");
@@ -224,7 +228,7 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
     let (store, store_pin) = stage(
         &directory,
         "store.tar.gz",
-        "BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN",
+        "BUSBAR_TEST_SQLITE_CDYLIB",
         "store",
     );
     let (webrequest, _) = stage(
@@ -237,10 +241,7 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
     let provider_key = directory.join("provider.key");
     std::fs::write(&signing_key, hex::encode([9u8; 32])).unwrap();
     std::fs::write(&provider_key, "sk-decisions-hooks").unwrap();
-    let store_settings: Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("actual Store settings JSON");
+    let store_settings = plugins::application_store_settings(&directory);
     assert!(store_settings.is_object());
     let mut document = json!({
         "store":{"module":store,"settings":store_settings},
