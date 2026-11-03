@@ -362,3 +362,6 @@ fn prefetched_full_chain_verification_still_checks_the_last_sealed_record() {
         "a previously valid scan cannot hide later tail corruption"
     );
 }
+
+#[path = "store_scan_race.rs"]
+mod mixed_snapshot_tests;
