@@ -315,7 +315,7 @@
     {
       "repo": "busbar-plane-streaming",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-plane-streaming",
-      "commit": "cc08dc0fdc9570bb9304affdaad456c1e7bd4243",
+      "commit": "d25d2f13954c131550b5dcef3576340d4c350895",
       "package": "busbar-plane-streaming-plugin",
       "kind": "plane",
       "alias": "streaming",
