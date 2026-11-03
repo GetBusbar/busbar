@@ -73,17 +73,13 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
     let module = busbar_contract::abi::mechanism::rendering::read(&statement)
         .expect("the Store statement is valid")
         .name;
-    let mut manifest = plugins::manifest(
-        "store",
-        &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-    );
+    let mut manifest = plugins::manifest("store", &module, "third-party");
     manifest.statement = Some(hex::encode(statement));
     let directory = plugins::scratch(
         "a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel-actual-store",
     );
     let archive = plugins::signed(
-        &crate::dist_root_install::release_key(),
+        &plugins::key(0x33),
         manifest,
         &std::fs::read(store_library).expect("the actual Store artifact reads"),
     );
@@ -118,11 +114,18 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let plugin_config = busbar_kernel::config::PluginsCfg {
+    let mut plugin_config = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
         ..Default::default()
     };
+    plugin_config
+        .trust
+        .publishers
+        .push(busbar_kernel::config::PluginPublisher {
+            name: "third-party".into(),
+            public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+        });
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
         .expect("the actual Store opens the configuration authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
