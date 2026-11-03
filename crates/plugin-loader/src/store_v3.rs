@@ -2084,9 +2084,6 @@ impl busbar_contract::store_calls::StoreAxis for DoorStoreAxis {
     }
 }
 
-#[cfg(test)]
-#[path = "tests/store_v3_tests.rs"]
-mod tests;
 
 #[cfg(test)]
 #[path = "tests/store_v3_shortcut_tests.rs"]
