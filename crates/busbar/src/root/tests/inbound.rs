@@ -79,11 +79,13 @@ fn app(
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
+    let listener_config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the same actual deployment resolves for listener topology");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(
-        config.clone(),
+        config,
         plugin_config,
         None,
         Default::default(),
@@ -102,7 +104,7 @@ fn app(
     if let Some(rotate) = rotate {
         rotate();
     }
-    (Arc::new(app), config, book)
+    (Arc::new(app), listener_config, book)
 }
 
 fn actual_listener_with_routers(

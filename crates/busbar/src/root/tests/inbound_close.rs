@@ -8,10 +8,13 @@ use std::time::Duration;
 
 use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
 use crate::root::loader::hook_door::HookRows;
+use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::sdk::door::{AbiIn, AbiOut};
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
+use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
+use busbar_kernel::guest::{Claimant, Line, LineAuth, Route};
 
 const NAME: &str = "inbound-retirement-hook";
 const WAIT: Duration = Duration::from_secs(5);
@@ -91,8 +94,13 @@ mod fixture {
     }
 }
 
+fn plain_app() -> Arc<busbar_kernel::state::App> {
+    let (app, _listener_config, _book) = super::app(false);
+    app
+}
+
 fn hooked_app() -> Arc<busbar_kernel::state::App> {
-    let mut app = (*app()).clone();
+    let mut app = (*plain_app()).clone();
     let directory = crate::root::test_plugins::scratch(&format!(
         "inbound-close-secret-{}",
         busbar_kernel::door::op_id().counter(),
@@ -134,8 +142,22 @@ fn hooked_app() -> Arc<busbar_kernel::state::App> {
 }
 
 fn listener(app: Arc<busbar_kernel::state::App>) -> kin::Listener {
-    let mut open = line(NATIVE, METHOD_POST);
-    open.auth = LineAuth::None;
+    // This line is a table-retirement boundary; no application request is served.
+    // Keep its metadata local instead of borrowing the actual LLM fixture's claims.
+    let open = Line {
+        route: Route {
+            methods: METHOD_POST,
+            path_form: PATH_EXACT,
+            path: "/api/v1/things".into(),
+            fields: Vec::new(),
+            rung: 0,
+        },
+        claimant: Claimant::Plane("plane".into()),
+        dialect: 0,
+        auth: LineAuth::None,
+        upgrade: None,
+        offered: AuthPoints(POINT_PEER | POINT_HEAD | POINT_HEAD_BODY),
+    };
     let guests = GuestList::seal(vec![open]).unwrap();
     let ids = guests
         .lines()
@@ -171,10 +193,10 @@ fn retiring_or_replacing_a_generation_closes_its_real_hook_outside_the_table_loc
         );
         inbound.install(OWNER, 1, listener(hooked_app())).unwrap();
         if !replace {
-            inbound.install(OWNER, 2, listener(app())).unwrap();
+            inbound.install(OWNER, 2, listener(plain_app())).unwrap();
         }
         let generation = if replace { 1 } else { 3 };
-        let next = listener(app());
+        let next = listener(plain_app());
         let expected = next.specs();
         let release = Release;
         {
