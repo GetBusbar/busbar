@@ -120,20 +120,26 @@ async fn final_ticket_record_wait_keeps_the_reactor_live_and_resolves_the_actual
     let now = crate::store::now();
     let (gov, id, ticket, release, entered) =
         crate::governance::GovState::paused_ticket_for_test("get", now);
-    let mut admitted = Box::pin(ticket_verdict(
-        false,
-        true,
-        Some("tk_"),
-        Some(&ticket),
-        Some(&gov),
-        now,
-    ));
+    let auth_gov = Arc::clone(&gov);
+    let auth_ticket = ticket.clone();
+    // Drive every auth await while the test observes the later Store-record wait.
+    let mut admitted = tokio::spawn(async move {
+        ticket_verdict(
+            false,
+            true,
+            Some("tk_"),
+            Some(&auth_ticket),
+            Some(&auth_gov),
+            now,
+        )
+        .await
+    });
     assert!(futures::poll!(&mut admitted).is_pending());
     entered.await.unwrap();
     assert!(release.is_busy());
     tokio::spawn(async {}).await.unwrap();
     release.release();
-    let (verdict, record) = admitted.await.unwrap().unwrap();
+    let (verdict, record) = admitted.await.unwrap().unwrap().unwrap();
     assert_eq!(record, b"record");
     assert!(matches!(verdict, ChainVerdict::Identified { principal, .. } if principal.id == id));
     assert!(gov.admit_ticket("tk_", &ticket, now).is_none());
