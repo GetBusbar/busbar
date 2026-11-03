@@ -829,10 +829,18 @@ fn the_release_feature_set_excludes_test_harness() {
             .collect();
         assert!(!builds.is_empty(), "{script} names its release build");
         for b in builds {
-            assert!(
-                b.contains("--manifest-path dist/default/Cargo.toml --bin busbar"),
-                "{script} builds the default distribution: {b}"
-            );
+            if b.contains("--bin busbar-audit-verify") {
+                assert!(
+                    b.contains("--package busbar-kernel-audit")
+                        && b.contains("--target-dir target/audit-verifier"),
+                    "{script} builds the standalone verifier independently: {b}"
+                );
+            } else {
+                assert!(
+                    b.contains("--manifest-path dist/default/Cargo.toml --bin busbar"),
+                    "{script} builds the default distribution: {b}"
+                );
+            }
             assert!(
                 !b.contains("--features") && !b.contains("--all-features"),
                 "{script}'s release build must take busbar's default features: {b}"

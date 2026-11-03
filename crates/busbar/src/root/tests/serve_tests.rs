@@ -2057,12 +2057,19 @@ pub(super) mod session_door {
         let doors = [(instance.to_string(), Arc::new(plane))];
         let media_binds = crate::root::serve::datagram_binds(&doors, &sections)
             .expect("the real deployment's datagram binds");
-        assert!(
-            media_binds
-                .iter()
-                .any(|bind| bind.transport == "webrtc" && bind.listen.ip().is_loopback()),
-            "the actual media declaration binds a loopback WebRTC claim door"
-        );
+        if opts.no_media {
+            assert!(
+                media_binds.is_empty(),
+                "no media declaration binds no claim door"
+            );
+        } else {
+            assert!(
+                media_binds
+                    .iter()
+                    .any(|bind| bind.transport == "webrtc" && bind.listen.ip().is_loopback()),
+                "the actual media declaration binds a loopback WebRTC claim door"
+            );
+        }
         let mut served = match compose_planes(
             &doors,
             &dispatcher,
@@ -3726,6 +3733,8 @@ pub(super) mod session_door {
         )
         .await
         .expect("the build links the session door");
+        busbar_kernel::boot::hydrate_all(&s.app)
+            .expect("the actual boot registers the durable audit stream before serving units");
         let before = session_open_refusals(&s);
         let (_browser, offer) = RtcPeer::offer(
             s.connector
@@ -3747,6 +3756,8 @@ pub(super) mod session_door {
         let mut s = session_with("serve-door-session-no-lines", Opts::default())
             .await
             .expect("the build links the session door");
+        busbar_kernel::boot::hydrate_all(&s.app)
+            .expect("the actual boot registers the durable audit stream before serving units");
         let before = session_open_refusals(&s);
         let (status, content_type, body) = post_offer(
             &s,
@@ -12432,10 +12443,28 @@ async fn a_key_row_whose_expires_at_is_in_the_past_is_refused_on_the_data_plane(
         refused, 401,
         "the keys chain is a real gate on this app: a bad token is refused"
     );
+    let mut expired_answer: serde_json::Value =
+        serde_json::from_slice(&expired_body).expect("the expired-key JSON refusal");
+    let mut refused_answer: serde_json::Value =
+        serde_json::from_slice(&refused_body).expect("the bad-credential JSON refusal");
+    let expired_id = expired_answer["request_id"]
+        .as_str()
+        .expect("the expired-key request identifier")
+        .to_owned();
+    let refused_id = refused_answer["request_id"]
+        .as_str()
+        .expect("the bad-credential request identifier")
+        .to_owned();
+    assert!(!expired_id.is_empty() && !refused_id.is_empty());
+    assert_ne!(
+        expired_id, refused_id,
+        "each refusal identifies its own request"
+    );
+    expired_answer.as_object_mut().unwrap().remove("request_id");
+    refused_answer.as_object_mut().unwrap().remove("request_id");
     assert_eq!(
-        String::from_utf8_lossy(&expired_body),
-        String::from_utf8_lossy(&refused_body),
-        "an expired key row is refused with the same body as any bad credential"
+        expired_answer, refused_answer,
+        "an expired key row is refused with the same error as any bad credential"
     );
     assert_eq!(
         rig.gov

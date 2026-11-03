@@ -181,7 +181,10 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         self.session_priced(token, ctx, sealed, !local).await
     }
 
-    pub(crate) async fn session_priced(
+    /// Pump a session with the composition root's actual admission charge state.
+    /// An open deployment can admit a routed session without a billing principal;
+    /// that zero-hold admission must not invent a priced money entry.
+    pub async fn session_priced(
         &self,
         token: &Pass<Route>,
         ctx: &UnitCtx,

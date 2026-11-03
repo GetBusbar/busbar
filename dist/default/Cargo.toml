@@ -964,7 +964,7 @@ busbar-plane-decisions = { git = "https://git.getbusbar.dev/GetBusbar/busbar-pla
 # plane's door row (`plane-a2a-door`, `busbar_plane_a2a::door`), whose own root cells it
 # states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
 # live in that repo's plugin CI.
-busbar-plane-a2a = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-a2a", rev = "d8308280976cb03197604c8e7c6c13f001bb8538" }
+busbar-plane-a2a = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-a2a", rev = "32665186eeb9b77e4a73a0982bec7ec27cb014bd" }
 # THE STREAMING PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door`), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
