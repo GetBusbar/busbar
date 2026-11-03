@@ -734,6 +734,7 @@ async fn far_end_answering(script: Script) -> (u16, tokio::sync::mpsc::Unbounded
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     let _one = PUBLISHING.lock().await;
+    crate::dist_root_install::install();
     let instance = "serve-door-served";
     let (port, mut heard) = far_end().await;
 
@@ -1650,6 +1651,7 @@ pub(super) mod session_door {
         opts: Opts,
         api_key: &str,
     ) -> Option<Result<SessionDoor, String>> {
+        crate::dist_root_install::install();
         busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
         let budget = opts.budget;
         let (port, heard) = match (opts.far_end, opts.far) {
@@ -5610,6 +5612,7 @@ async fn serve_configured(
     allowed_pools: Option<Vec<String>>,
     api_key: &str,
 ) -> Result<Serving, String> {
+    crate::dist_root_install::install();
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: false,
