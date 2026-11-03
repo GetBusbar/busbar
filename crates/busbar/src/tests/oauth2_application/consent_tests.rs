@@ -34,6 +34,7 @@ pub(super) async fn serve(
         "advanced": {"allow_destinations":["127.0.0.1"]},
     });
     if guarded {
+        crate::dist_root_install::install();
         let directory = super::plugins::scratch(&format!(
             "oauth-consent-operator-{}",
             busbar_kernel::door::op_id().counter()
