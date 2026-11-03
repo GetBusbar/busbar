@@ -2523,6 +2523,10 @@ pub(super) mod session_door {
         }
 
         async fn signal(&self, token: &str) -> (StatusCode, String) {
+            self.signal_inner(token, true).await
+        }
+
+        async fn signal_inner(&self, token: &str, wait_for_channel: bool) -> (StatusCode, String) {
             let (mut peer, offer) = RtcPeer::offer(
                 self.connector
                     .framer_for("webrtc")
@@ -2584,12 +2588,18 @@ pub(super) mod session_door {
                     "the actual media signal returns SDP"
                 );
                 peer.answer(&body);
-                let (task, received) = peer.run(self.media.0.subscribe(), None);
+                let (task, received, opened) = peer.run_ready(self.media.0.subscribe(), None);
                 self.peers.keep(task);
                 self.media_messages.lock().await.push(MediaPeer {
                     ready: false,
                     received,
                 });
+                if wait_for_channel {
+                    tokio::time::timeout(ANSWER_BOUND, opened)
+                        .await
+                        .expect("the actual browser peer establishes its data channel")
+                        .expect("the browser peer stays alive through its opening");
+                }
             }
             (status, head)
         }
@@ -2641,7 +2651,7 @@ pub(super) mod session_door {
             let ticket = self.local_ticket().await;
             let admitted = self.requests();
             let after_mint = self.audit_records().last().map_or(0, |record| record.seq);
-            let (status, _) = self.signal(&ticket).await;
+            let (status, _) = self.signal_inner(&ticket, false).await;
             let failed = if status.is_success() {
                 tokio::time::timeout(ANSWER_BOUND, async {
                     loop {

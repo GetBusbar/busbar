@@ -282,10 +282,25 @@ pub(crate) mod peer {
         }
 
         pub(crate) fn run(
+            self,
+            stopped: watch::Receiver<bool>,
+            announce: Option<&'static [u8]>,
+        ) -> (JoinHandle<()>, mpsc::UnboundedReceiver<Vec<u8>>) {
+            let (task, received, _opened) = self.run_ready(stopped, announce);
+            (task, received)
+        }
+
+        pub(crate) fn run_ready(
             mut self,
             mut stopped: watch::Receiver<bool>,
             mut announce: Option<&'static [u8]>,
-        ) -> (JoinHandle<()>, mpsc::UnboundedReceiver<Vec<u8>>) {
+        ) -> (
+            JoinHandle<()>,
+            mpsc::UnboundedReceiver<Vec<u8>>,
+            tokio::sync::oneshot::Receiver<()>,
+        ) {
+            let (ready, opened) = tokio::sync::oneshot::channel();
+            let mut ready = Some(ready);
             let (output, received) = mpsc::unbounded_channel();
             let task = tokio::spawn(async move {
                 let mut bytes = vec![0; 65536];
@@ -306,6 +321,9 @@ pub(crate) mod peer {
                                 continue;
                             }
                             if piece.fields && !piece.end && piece.bytes.starts_with(b"label: ") {
+                                if let Some(ready) = ready.take() {
+                                    let _ = ready.send(());
+                                }
                                 if let Some(message) = announce.take() {
                                     self.pending.push_back(
                                         self.framing
@@ -347,7 +365,7 @@ pub(crate) mod peer {
                     self.pending.push_back(yielded);
                 }
             });
-            (task, received)
+            (task, received, opened)
         }
     }
 }
