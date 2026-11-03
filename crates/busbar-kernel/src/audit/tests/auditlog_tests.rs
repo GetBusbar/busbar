@@ -1667,3 +1667,81 @@ fn accepted_event_origin_cannot_be_forged_by_mutation_resource_text() {
         "a normal mutation with identical export-failure resource text still dispatches"
     );
 }
+
+#[test]
+fn repeated_restore_keeps_exact_rows_once_and_preserves_raw_tamper_evidence() {
+    fn snapshot(
+        scope: &str,
+        body: Vec<u8>,
+    ) -> std::sync::Arc<dyn busbar_contract::records::RecordStore> {
+        let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
+            std::sync::Arc::new(DualDurableStore::new());
+        store
+            .append_plane_record(
+                PlaneRecord {
+                    kind: KIND_AUDIT.to_owned(),
+                    id: scope.to_owned(),
+                    parent: Some(scope.to_owned()),
+                    seq: 1,
+                    ts: 0,
+                    disposition: PlaneDisposition::Active,
+                    body,
+                }
+                .view(),
+            )
+            .unwrap();
+        store
+    }
+    let source: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
+        std::sync::Arc::new(DualDurableStore::new());
+    let h = AuditTestHarness::over(source.clone());
+    h.emit_full(
+        ADMIN_LOG,
+        audit_suffix_safe(42, "hook.register", "hook:a", "applied", "admin"),
+    );
+    let body = source
+        .list_plane_records(KIND_AUDIT, &PlaneSelector::Parent(ADMIN_LOG.into()))
+        .unwrap()
+        .remove(0);
+    let log = h.log;
+    let restore = |scope: &str, body: Vec<u8>| {
+        let plane = PlaneStoreView::narrow(snapshot(scope, body));
+        log.restore_from_store(plane.as_ref()).unwrap()
+    };
+    assert_eq!(restore(ADMIN_LOG, body.clone()).records, 1);
+    assert_eq!(restore(ADMIN_LOG, body.clone()).records, 1);
+    assert_eq!(log.list_filtered(0, 10, None, None).len(), 1);
+
+    let mut raw: NeutralBody = decode(&body).unwrap();
+    let displayed = parse_audit_suffix(&raw.content);
+    raw.content.extend_from_slice(b"\xff");
+    assert_eq!(
+        parse_audit_suffix(&raw.content),
+        displayed,
+        "the distinct raw suffix has identical parsed display fields"
+    );
+    let tampered = encode(&raw).unwrap();
+    assert!(!restore(ADMIN_LOG, tampered.clone()).chain_breaks.is_empty());
+    assert_eq!(
+        log.list_filtered(0, 10, None, None).len(),
+        2,
+        "same sequence and claimed hash cannot hide distinct raw content"
+    );
+    assert!(
+        !restore(ADMIN_LOG, tampered).chain_breaks.is_empty(),
+        "deduplication must not bypass repeated chain verification"
+    );
+    assert_eq!(log.list_filtered(0, 10, None, None).len(), 2);
+
+    raw.hash = "different-claimed-hash".to_owned();
+    assert!(!restore(ADMIN_LOG, encode(&raw).unwrap())
+        .chain_breaks
+        .is_empty());
+    assert_eq!(log.list_filtered(0, 10, None, None).len(), 3);
+    restore("other-scope", body);
+    assert_eq!(
+        log.list_filtered(0, 10, None, None).len(),
+        4,
+        "scope is part of persisted identity even for a scopeless digest"
+    );
+}

@@ -188,10 +188,26 @@ pub(crate) struct AuditRestored {
     pub(crate) chain_breaks: Vec<ChainBreak>,
 }
 
+// Keep the exact persisted identity beside its bounded ring entry. Parsed suffixes are
+// lossy, so comparing their displayed fields could hide distinct tampered rows.
+#[derive(PartialEq, Eq)]
+struct AuditIdentity {
+    scope: String,
+    seq: u64,
+    prev_hash: String,
+    hash: String,
+    content: Vec<u8>,
+}
+
+struct KeptAuditEntry {
+    entry: AuditEntry,
+    identity: AuditIdentity,
+}
+
 pub struct PlaneAuditLog {
     kind_id: u32,
 
-    ring: Mutex<VecDeque<AuditEntry>>,
+    ring: Mutex<VecDeque<KeptAuditEntry>>,
 }
 
 pub static AUDIT_LOG: std::sync::LazyLock<PlaneAuditLog> =
@@ -227,12 +243,27 @@ impl PlaneAuditLog {
         }
     }
 
-    pub(crate) fn push_entry(&self, entry: AuditEntry) {
+    fn push_entry(&self, entry: AuditEntry, scope: &str, content: Vec<u8>, restoring: bool) {
+        let identity = AuditIdentity {
+            scope: scope.to_owned(),
+            seq: entry.seq,
+            prev_hash: entry.prev_hash.clone(),
+            hash: entry.hash.clone(),
+            content,
+        };
         #[cfg(any(test, feature = "test-support"))]
         let observed = entry.recorded_here.then(|| entry.clone());
         let mut q = self.ring.lock().unwrap_or_else(|e| e.into_inner());
-        let pos = q.iter().position(|e| e.seq > entry.seq).unwrap_or(q.len());
-        q.insert(pos, entry);
+        // Only restore is idempotent. Live admission and its accepted-entry hook
+        // retain their existing behavior; a restore never replaces live provenance.
+        if restoring && q.iter().any(|kept| kept.identity == identity) {
+            return;
+        }
+        let pos = q
+            .iter()
+            .position(|e| e.entry.seq > entry.seq)
+            .unwrap_or(q.len());
+        q.insert(pos, KeptAuditEntry { entry, identity });
         while q.len() > MAX_AUDIT_ENTRIES {
             q.pop_front();
         }
@@ -257,6 +288,7 @@ impl PlaneAuditLog {
         let q = self.ring.lock().unwrap_or_else(|e| e.into_inner());
         q.iter()
             .rev()
+            .map(|kept| &kept.entry)
             .filter(|e| action.is_none_or(|a| e.action == a))
             .filter(|e| resource.is_none_or(|r| e.resource == r))
             .skip(offset)
@@ -289,7 +321,8 @@ impl PlaneAuditLog {
             for body in bodies {
                 match audit_entry_from_body(scope, &body) {
                     Ok(entry) => {
-                        self.push_entry(entry);
+                        let neutral: NeutralBody = decode(&body)?;
+                        self.push_entry(entry, scope, neutral.content, true);
                         good_bodies.push(body);
                     }
                     Err(e) => {
@@ -568,7 +601,7 @@ fn drain_pending_audit() {
                 scheme,
                 recorded_here: true,
             };
-            AUDIT_LOG.push_entry(entry.clone());
+            AUDIT_LOG.push_entry(entry.clone(), &p.scope, p.suffix.clone(), false);
             if p.origin.redispatch() {
                 deliver_audit_event(&entry);
             }
