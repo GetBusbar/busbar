@@ -40,6 +40,10 @@ fn settings() -> serde_json::Value {
     serde_json::json!({})
 }
 
+fn reference_settings() -> serde_json::Value {
+    serde_json::json!({"key": HIT})
+}
+
 fn unreached(r: &SecretRef) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
     panic!("no secret reference to resolve: {}", r.describe())
 }
@@ -155,31 +159,31 @@ fn replacing_or_removing_a_dropped_set_retires_its_cached_checker() {
             }
         };
         replace(vec![candidate.clone()]);
-        assert_eq!(rows.check(NAME, &settings()), Ok(()));
+        assert_eq!(rows.check(NAME, &reference_settings()), Ok(()));
         replace(vec![replacement.clone()]);
         assert!(
             rows.open(NAME, &settings(), &unreached).is_err(),
             "open already selects the current replacement image"
         );
         let error = rows
-            .check(NAME, &settings())
+            .check(NAME, &reference_settings())
             .expect_err("the current image must load, even when its Statement name is unchanged");
         assert!(
             error.iter().any(|e| e.contains("could not be loaded")),
             "{error:?}"
         );
         replace(vec![candidate.clone()]);
-        assert_eq!(rows.check(NAME, &settings()), Ok(()));
+        assert_eq!(rows.check(NAME, &reference_settings()), Ok(()));
         replace(Vec::new());
         assert!(!rows.answers(NAME));
         assert_eq!(
-            rows.check(NAME, &settings()),
+            rows.check(NAME, &reference_settings()),
             Ok(()),
             "unknown modules remain the registry's to refuse"
         );
         replace(vec![replacement.clone()]);
         assert!(
-            rows.check(NAME, &settings()).is_err(),
+            rows.check(NAME, &reference_settings()).is_err(),
             "a removed checker must not return after re-admission"
         );
     }
@@ -194,9 +198,9 @@ fn same_name_candidates_are_checked_using_the_exact_selected_row() {
     let rows = SecretRows::new(dispatcher, || None);
     rows.admit_dropped([good, bad])
         .expect("the rows state one plugin name and version");
-    assert_eq!(rows.check("checker-good", &settings()), Ok(()));
+    assert_eq!(rows.check("checker-good", &reference_settings()), Ok(()));
     assert!(
-        rows.check("checker-bad", &settings()).is_err(),
+        rows.check("checker-bad", &reference_settings()).is_err(),
         "the alias selects its own candidate image rather than a same-name cached checker"
     );
 }
@@ -239,7 +243,7 @@ fn a_retired_inflight_checker_load_neither_blocks_nor_repopulates_the_new_set() 
     let release = ReleaseCheckerLoad;
     let first = {
         let rows = Arc::clone(&rows);
-        std::thread::spawn(move || rows.check(NAME, &settings()))
+        std::thread::spawn(move || rows.check(NAME, &reference_settings()))
     };
     {
         let (lock, cv) = &CHECK_LOAD_GATE;
@@ -259,7 +263,7 @@ fn a_retired_inflight_checker_load_neither_blocks_nor_repopulates_the_new_set() 
     let second = {
         let rows = Arc::clone(&rows);
         std::thread::spawn(move || {
-            let _ = done_tx.send(rows.check(NAME, &settings()));
+            let _ = done_tx.send(rows.check(NAME, &reference_settings()));
         })
     };
     let current = done.recv_timeout(std::time::Duration::from_secs(5));
@@ -279,7 +283,7 @@ fn a_retired_inflight_checker_load_neither_blocks_nor_repopulates_the_new_set() 
         "the new set must load its replacement rather than use the old image"
     );
     assert!(
-        rows.check(NAME, &settings()).is_err(),
+        rows.check(NAME, &reference_settings()).is_err(),
         "the late old load must not republish its checker into the new set"
     );
 }
