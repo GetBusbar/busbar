@@ -1947,8 +1947,18 @@ pub(super) mod session_door {
             "advanced": { "allow_destinations": ["127.0.0.1"] },
         }))
         .expect("the session deployment parses");
-        let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        let mut config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the session deployment resolves");
+        if budget.is_some() {
+            // Admission and dated spend must consult the same configured plane fee.
+            config.plane_fees.insert(
+                plane_name.clone(),
+                busbar_kernel_ledger::cost::PlaneFees {
+                    per_request: 1,
+                    per_session: 0,
+                },
+            );
+        }
         let plugins = crate::root::test_plugins::trusted_config(&directory);
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
@@ -5898,8 +5908,15 @@ async fn serve_configured(
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the door deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let mut config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the door deployment resolves");
+    config.plane_fees.insert(
+        plane.clone(),
+        busbar_kernel_ledger::cost::PlaneFees {
+            per_request: fee,
+            per_session: 0,
+        },
+    );
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
