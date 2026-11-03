@@ -3958,6 +3958,8 @@ mod tools_door {
             registration("audited", &port_server, ""),
             &|app| app,
         );
+        busbar_kernel::boot::hydrate_all(&rig.app)
+            .expect("the actual boot registers the durable audit stream before serving units");
         let upstream_calls =
             |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
 
@@ -6641,6 +6643,8 @@ async fn the_pools_door_audits_a_control_the_far_dialect_cannot_carry() {
         },
     )
     .await;
+    busbar_kernel::boot::hydrate_all(&rig.app)
+        .expect("the actual boot registers the durable audit stream before serving units");
     let rows = |resource: &str| {
         busbar_kernel::audit::auditlog::AUDIT_LOG
             .list_filtered(
@@ -6990,6 +6994,8 @@ mod pools_door_walk_and_breaker {
             },
         )
         .await;
+        busbar_kernel::boot::hydrate_all(&rig.app)
+            .expect("the actual boot registers the durable audit stream before serving units");
         let (status, _, body) = rig
             .send(
                 "POST",
@@ -7431,10 +7437,7 @@ mod pools_door_walk_and_breaker {
         assert_eq!(answer["error"]["type"], "authentication_error", "{answer}");
         let message = answer["error"]["message"].as_str().unwrap_or("");
         assert_eq!(
-            message,
-            busbar_kernel::ingress::protocols::vendor_auth_failure_message(door_word(
-                "messages_dialect"
-            )),
+            message, "invalid x-api-key",
             "the dialect's own sentence: {answer}"
         );
         assert!(!message.contains("lane"), "{answer}");
