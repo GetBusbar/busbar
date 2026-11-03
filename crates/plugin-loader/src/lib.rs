@@ -192,6 +192,7 @@ mod export_conformance_tests;
 mod both_ways;
 
 #[cfg(test)]
+#[allow(unsafe_code)]
 #[path = "tests/auth_verify_conformance_tests.rs"]
 mod auth_verify_conformance_tests;
 
