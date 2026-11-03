@@ -152,11 +152,10 @@ extern "C" fn drive(
         if input.drive.head.flags & busbar_contract::abi::mechanism::call::FLAG_RESUME != 0 {
             state.resumes += 1;
         }
-        if state.defect != Defect::Session
-            && state
-                .retirement
-                .begin(input.drive.head.host, input.drive.driver, ext)
-                .is_err()
+        if state
+            .retirement
+            .begin(input.drive.head.host, input.drive.driver, ext)
+            .is_err()
         {
             return RawOutcome::of(Outcome::Fault);
         }
@@ -175,14 +174,13 @@ extern "C" fn drive(
                 Poll::Ready(Ok(Some(bytes))) if bytes == b"completed" => {
                     state.completed = true;
                     state.notify = true;
-                    if state.defect != Defect::Session
-                        && state
-                            .retirement
-                            .consumed(Handle {
-                                domain: Domain::Host,
-                                seq: 0,
-                            })
-                            .is_err()
+                    if state
+                        .retirement
+                        .consumed(Handle {
+                            domain: Domain::Host,
+                            seq: 0,
+                        })
+                        .is_err()
                     {
                         return RawOutcome::of(Outcome::Fault);
                     }
@@ -210,7 +208,7 @@ extern "C" fn drive(
                 ack.capability.nonce += 1;
             }
         }
-        if matches!(state.defect, Defect::Cancel | Defect::Session) {
+        if state.defect == Defect::Cancel {
             ack = None;
         }
         let bytes = ack
@@ -219,7 +217,7 @@ extern "C" fn drive(
             .into_boxed_slice();
         let outcome = match state.defect {
             _ if service_pending => Outcome::Pending,
-            Defect::Ready => Outcome::Ready,
+            Defect::Ready | Defect::Session => Outcome::Ready,
             Defect::Failed | Defect::Short => Outcome::Failed,
             _ if state.retirement.queued() => Outcome::Pending,
             _ => Outcome::Ready,
@@ -228,7 +226,7 @@ extern "C" fn drive(
         state.next_lease -= 1;
         output.head.extensions = Blob::ZERO;
         output.head.error = busbar_contract::abi::mechanism::call::AbiStr::ZERO;
-        if state.retirement.queued() && !matches!(state.defect, Defect::Cancel | Defect::Session) {
+        if state.retirement.queued() && state.defect != Defect::Cancel {
             output.head.extensions = Blob {
                 ptr: bytes.as_ptr(),
                 len: bytes.len(),
