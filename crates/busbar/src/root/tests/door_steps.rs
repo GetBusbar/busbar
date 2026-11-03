@@ -6217,12 +6217,22 @@ pub(crate) mod door_boundary {
         while server.heard.try_recv().is_ok() {}
         let generation = rig.live.current().generation;
 
-        let applied = Arc::new(dispatched((*rig.app).clone(), row, &slot_over(row, after)));
+        let next_slot = slot_over(row, after.clone());
+        let mut applied = dispatched((*rig.app).clone(), row, &next_slot);
+        // The rig names its serving instance separately from the declaration.
+        // Apply resolves that instance's actual configured slot, not row.key.
+        applied.plane_slots.insert(instance, next_slot);
+        let applied = Arc::new(applied);
         rig.live.apply(&applied);
         assert_eq!(
             rig.live.current().generation,
             generation + 1,
             "the door took the apply"
+        );
+        assert_eq!(
+            rig.live.current().section["fs"],
+            after["fs"],
+            "the serving generation took the applied member and its binding"
         );
         let (status, body) = admin_on(&applied, "POST", "/tools/fs/connect").await;
         let list = server
