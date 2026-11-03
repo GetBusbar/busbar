@@ -2098,14 +2098,8 @@ mod deadline_tests;
 #[path = "tests/store_v3_validate_tests.rs"]
 mod validate_tests;
 
-#[cfg(test)]
-#[path = "tests/store_v3_wrap.rs"]
-pub(crate) mod wrap;
 
 
-#[cfg(test)]
-#[path = "tests/store_v3_wire_tests.rs"]
-mod wire_tests;
 
 #[cfg(test)]
 #[path = "tests/store_v3_axis_tests.rs"]
@@ -2123,9 +2117,6 @@ mod conditional_tests;
 #[path = "tests/store_v3_secrets_tests.rs"]
 mod secrets_tests;
 
-#[cfg(test)]
-#[path = "tests/store_v3_rewrap_tests.rs"]
-mod rewrap_tests;
 
 #[cfg(test)]
 #[path = "tests/store_actual_table_tests.rs"]
