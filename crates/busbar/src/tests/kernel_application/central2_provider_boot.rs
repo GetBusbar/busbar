@@ -98,6 +98,10 @@ fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
         .into_iter()
         .next()
         .expect("the actual distribution declares a provider dialect");
+    let provider_defs = serde_json::from_value(serde_json::json!({
+        "acme": {"protocol": dialect, "base_url": "https://api.example.com"}
+    }))
+    .expect("the actual provider catalog entry parses");
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {"acme": {"protocol": dialect, "base_url": "https://api.example.com", "api_key": "none"}},
         "models": {},
@@ -106,7 +110,7 @@ fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
-    let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)
         .expect("the product deployment resolves");
     cfg.providers.get_mut("acme").unwrap().api_key =
         busbar_kernel::config::SecretRef::env(&unset_var);
@@ -245,6 +249,10 @@ fn boot_starts_a_keyless_lane_declared_none() {
         .into_iter()
         .next()
         .expect("the actual distribution declares a provider dialect");
+    let provider_defs = serde_json::from_value(serde_json::json!({
+        "acme": {"protocol": dialect, "base_url": "https://api.example.com"}
+    }))
+    .expect("the actual provider catalog entry parses");
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {"acme": {"protocol": dialect, "base_url": "https://api.example.com", "api_key": "none"}},
         "models": {},
@@ -253,7 +261,7 @@ fn boot_starts_a_keyless_lane_declared_none() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
-    let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)
         .expect("the product deployment resolves");
 
     cfg.models

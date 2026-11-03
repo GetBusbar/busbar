@@ -91,6 +91,10 @@ fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_banner() {
         .into_iter()
         .next()
         .expect("the actual distribution declares a provider dialect");
+    let provider_defs = serde_json::from_value(serde_json::json!({
+        "acme": {"protocol": dialect, "base_url": "https://api.example.com"}
+    }))
+    .expect("the actual provider catalog entry parses");
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {"acme": {"protocol": dialect, "base_url": "https://api.example.com", "api_key": "none"}},
         "models": {},
@@ -99,7 +103,7 @@ fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_banner() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
-    let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)
         .expect("the product deployment resolves");
     let members: Vec<_> = (0..9).map(|index| format!("unbounded-{index}")).collect();
     for name in &members {

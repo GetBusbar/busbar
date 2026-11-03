@@ -252,13 +252,22 @@ fn a_linked_rows_refusals_print_its_key() {
             )),
             "{word}: {refused}"
         );
+        let dialect = busbar_kernel::plane_driver::dispatch::provider_dialects()
+            .into_iter()
+            .next()
+            .expect("actual provider dialect");
+        let provider_defs = serde_json::from_value(serde_json::json!({
+            "acme": {"protocol": dialect, "base_url": "https://api.example.com"}
+        }))
+        .expect("the actual provider catalog entry parses");
         let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-            "providers": {"acme": {"protocol": busbar_kernel::plane_driver::dispatch::provider_dialects().into_iter().next().expect("actual provider dialect"),
+            "providers": {"acme": {"protocol": dialect,
                 "base_url": "https://api.example.com", "api_key": "none"}},
             "models": {}, "auth": {"chain": [], "admin_auth": []},
             "store": {"module": busbar_store_memory::linked::STORE.0},
-        })).expect("actual root input parses");
-        let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+        }))
+        .expect("actual root input parses");
+        let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)
             .expect("actual root input resolves");
         let refusal =
             |cfg: &busbar_kernel::config::RootCfg| match busbar_kernel::config_validate::check(

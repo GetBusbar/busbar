@@ -92,6 +92,10 @@ fn secrets_block_rejects_builtin_resolver_names() {
             .into_iter()
             .next()
             .expect("the actual distribution declares a provider dialect");
+        let provider_defs = serde_json::from_value(serde_json::json!({
+            "acme": {"protocol": dialect, "base_url": "https://api.example.com"}
+        }))
+        .expect("the actual provider catalog entry parses");
         let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {"acme": {"protocol": dialect, "base_url": "https://api.example.com", "api_key": "none"}},
         "models": {},
@@ -100,7 +104,7 @@ fn secrets_block_rejects_builtin_resolver_names() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
-        let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+        let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)
             .expect("the product deployment resolves");
         cfg.providers.get_mut("acme").unwrap().api_key = busbar_kernel::config::SecretRef::env("K");
         let plugins_cfg = crate::root::test_plugins::trusted_config(&directory);
@@ -229,6 +233,10 @@ fn one_validator_refuses_in_one_order() {
         .into_iter()
         .next()
         .expect("the actual distribution declares a provider dialect");
+    let provider_defs = serde_json::from_value(serde_json::json!({
+        "acme": {"protocol": dialect, "base_url": "https://api.example.com"}
+    }))
+    .expect("the actual provider catalog entry parses");
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {"acme": {"protocol": dialect, "base_url": "https://api.example.com", "api_key": "none"}},
         "models": {},
@@ -237,7 +245,7 @@ fn one_validator_refuses_in_one_order() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
-    let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)
         .expect("the product deployment resolves");
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let check = |cfg: &busbar_kernel::config::RootCfg,
@@ -297,7 +305,7 @@ fn one_validator_refuses_in_one_order() {
 
     let var = "BUSBAR_S10_ONE_VALIDATOR_UNSET_VAR";
     assert!(std::env::var_os(var).is_none());
-    let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)
         .expect("fresh ordinary config resolves");
     cfg.providers.get_mut("acme").unwrap().api_key = busbar_kernel::config::SecretRef::env(var);
     assert!(check(&cfg, &busbar_kernel::config_validate::no_root_rules, false).is_ok());
