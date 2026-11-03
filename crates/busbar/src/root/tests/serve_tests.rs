@@ -421,6 +421,18 @@ async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
         &rules,
     )
     .expect("the actual product builds the empty-plane deployment");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the serving application has its configured Store")
+            .store_calls()
+            .expect("the configured Store exposes its actual rate-history calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the serving application's actual Store boots its rate history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -903,6 +915,18 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         &rules,
     )
     .expect("the actual product builds the door deployment");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the serving application has its configured Store")
+            .store_calls()
+            .expect("the configured Store exposes its actual rate-history calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the serving application's actual Store boots its rate history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1033,6 +1057,18 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
         &rules,
     )
     .expect("the actual product builds the door deployment");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the serving application has its configured Store")
+            .store_calls()
+            .expect("the configured Store exposes its actual rate-history calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the serving application's actual Store boots its rate history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1170,6 +1206,18 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
         &rules,
     )
     .expect("the actual product builds the door deployment");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the serving application has its configured Store")
+            .store_calls()
+            .expect("the configured Store exposes its actual rate-history calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the serving application's actual Store boots its rate history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1863,6 +1911,18 @@ pub(super) mod session_door {
             &rules,
         )
         .expect("the actual product builds the session deployment");
+        limits.stage_boot();
+        crate::root::kernel::ROOT_CARD.keep_in_store(
+            app.governance
+                .as_ref()
+                .expect("the serving application has its configured Store")
+                .store_calls()
+                .expect("the configured Store exposes its actual rate-history calls"),
+            busbar_kernel::door::op_id().counter(),
+        );
+        crate::root::kernel::ROOT_CARD
+            .boot_in_store(None)
+            .expect("the serving application's actual Store boots its rate history");
         limits.keep().expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate();
@@ -5760,6 +5820,18 @@ async fn serve_configured(
         &rules,
     )
     .expect("the actual product builds the door deployment");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the serving application has its configured Store")
+            .store_calls()
+            .expect("the configured Store exposes its actual rate-history calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the serving application's actual Store boots its rate history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
