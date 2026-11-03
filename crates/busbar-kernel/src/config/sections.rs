@@ -74,6 +74,7 @@ pub struct StoreCfg {
 
     /// The module's own opaque settings, passed through verbatim as its config JSON.
     #[serde(default)]
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -128,6 +129,7 @@ pub struct SecretModuleCfg {
     /// JSON. Any `SecretRef`-typed value (e.g. `token: { env: VAULT_TOKEN }`) is resolved via the
     /// built-in env/file modules before it crosses the ABI.
     #[serde(default)]
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -448,6 +450,7 @@ pub struct ExportDefCfg {
     /// The module's own settings bag. OPAQUE at this layer exactly like `hooks.<name>.settings` —
     /// typed per module by busbar-core's `resolve_export`, so a typo inside it still fails boot loudly.
     #[serde(default)]
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 

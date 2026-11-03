@@ -27,6 +27,7 @@ pub struct HookDefCfg {
     /// The module's own opaque settings (busbar never interprets them; pushed to the plugin via
     /// `configure`).
     #[serde(default)]
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
     pub settings: serde_json::Map<String, serde_json::Value>,
     /// SCOPE: the caller groups this hook fires for. Omit or `[]` = ALL callers. A USER is a leaf
     /// group (e.g. `user:bob`); membership walks the `groups:` tree (self OR any ancestor).
@@ -338,6 +339,7 @@ pub struct HookCfg {
     /// load and re-pushed (commit-on-ack) by `PATCH /api/v1/admin/hooks/{name}/settings`. Busbar
     /// never interprets the contents.
     #[serde(default)]
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
     pub settings: serde_json::Map<String, serde_json::Value>,
     /// The "decision observability" DECLARED-SIGNAL surface: the typed
     /// [`busbar_contract::signal::Signal`] catalog entries this hook wants computed + projected onto its own

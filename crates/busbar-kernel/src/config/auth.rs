@@ -68,6 +68,7 @@ pub struct IdentityProviderCfg {
 
     /// The module's own opaque settings (pushed to the auth plugin verbatim).
     #[serde(default)]
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -92,6 +93,7 @@ pub struct AuthChainEntry {
     pub token: Option<SecretRef>,
 
     /// The module's own opaque settings (pushed to an auth plugin verbatim).
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -363,6 +365,7 @@ pub struct AuthMethodCfg {
     pub browser_login: Option<BrowserLoginCfg>,
 
     /// The module's own opaque settings, pushed to the module verbatim (issuer, audience, …).
+    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 

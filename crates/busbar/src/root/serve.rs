@@ -4861,7 +4861,10 @@ impl DataRoutes {
         let status = match admitted {
             Some((route, destinations)) => {
                 let _ = verdict.send(Ok(()));
-                match units.session(&route, &ctx, &destinations).await {
+                match units
+                    .session_priced(&route, &ctx, &destinations, steps.charged())
+                    .await
+                {
                     Ok(()) => self.post.completed(unit),
                     Err(reason) => self.post.stopped(unit, reason),
                 }

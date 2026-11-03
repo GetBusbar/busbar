@@ -175,19 +175,23 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         ctx: &UnitCtx,
         sealed: &[VerifiedDestination],
     ) -> Result<(), ReasonCode> {
-        let local = self.lock().decoded.as_ref().is_some_and(|decoded| {
-            decoded.route == ROUTE_LOCAL || decoded.route == ROUTE_SCOPE_LOCAL
-        });
-        self.session_priced(token, ctx, sealed, !local).await
+        self.session_priced(token, ctx, sealed, true).await
     }
 
-    pub(crate) async fn session_priced(
+    /// Pump a session with the composition root's actual admission charge state.
+    /// An open deployment can admit a routed session without a billing principal;
+    /// that zero-hold admission must not invent a priced money entry.
+    pub async fn session_priced(
         &self,
         token: &Pass<Route>,
         ctx: &UnitCtx,
         sealed: &[VerifiedDestination],
         priced: bool,
     ) -> Result<(), ReasonCode> {
+        let local = self.lock().decoded.as_ref().is_some_and(|decoded| {
+            decoded.route == ROUTE_LOCAL || decoded.route == ROUTE_SCOPE_LOCAL
+        });
+        let priced = priced && !local;
         let d = self.driver;
         self.open_hooks(token, ctx).await?;
         if priced {

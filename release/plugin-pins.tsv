@@ -1,0 +1,6 @@
+# The first-party plugins a release ships: <repo>\t<vX.Y.Z tag>\t<40-hex commit of that tag>.
+# Written by `scripts/release/candidate.py pins --kit-commit <test-kit commit>` (each repo's newest
+# tag whose .busbar-ref names the test kit), reviewed, and committed with the release. The
+# candidate-plugins checks build exactly these, so their outputs are reused while this file and the
+# other inputs are unchanged. EMPTY until the plugins are tagged against the 1.6.0 test kit; the
+# publish gate refuses a release whose plugins differ from plugins.yaml (G-3).

@@ -2057,12 +2057,19 @@ pub(super) mod session_door {
         let doors = [(instance.to_string(), Arc::new(plane))];
         let media_binds = crate::root::serve::datagram_binds(&doors, &sections)
             .expect("the real deployment's datagram binds");
-        assert!(
-            media_binds
-                .iter()
-                .any(|bind| bind.transport == "webrtc" && bind.listen.ip().is_loopback()),
-            "the actual media declaration binds a loopback WebRTC claim door"
-        );
+        if opts.no_media {
+            assert!(
+                media_binds.is_empty(),
+                "no media declaration binds no claim door"
+            );
+        } else {
+            assert!(
+                media_binds
+                    .iter()
+                    .any(|bind| bind.transport == "webrtc" && bind.listen.ip().is_loopback()),
+                "the actual media declaration binds a loopback WebRTC claim door"
+            );
+        }
         let mut served = match compose_planes(
             &doors,
             &dispatcher,
@@ -2516,6 +2523,10 @@ pub(super) mod session_door {
         }
 
         async fn signal(&self, token: &str) -> (StatusCode, String) {
+            self.signal_inner(token, true).await
+        }
+
+        async fn signal_inner(&self, token: &str, wait_for_channel: bool) -> (StatusCode, String) {
             let (mut peer, offer) = RtcPeer::offer(
                 self.connector
                     .framer_for("webrtc")
@@ -2568,7 +2579,7 @@ pub(super) mod session_door {
                 )
             };
             let result = tokio::time::timeout(ANSWER_BOUND, exchange).await;
-            serving.abort();
+            self.peers.keep(serving);
             let (status, head, body) = result.expect("the signal answers within its bound");
             if status.is_success() {
                 assert!(
@@ -2577,12 +2588,18 @@ pub(super) mod session_door {
                     "the actual media signal returns SDP"
                 );
                 peer.answer(&body);
-                let (task, received) = peer.run(self.media.0.subscribe(), None);
+                let (task, received, opened) = peer.run_ready(self.media.0.subscribe(), None);
                 self.peers.keep(task);
                 self.media_messages.lock().await.push(MediaPeer {
                     ready: false,
                     received,
                 });
+                if wait_for_channel {
+                    tokio::time::timeout(ANSWER_BOUND, opened)
+                        .await
+                        .expect("the actual browser peer establishes its data channel")
+                        .expect("the browser peer stays alive through its opening");
+                }
             }
             (status, head)
         }
@@ -2634,7 +2651,7 @@ pub(super) mod session_door {
             let ticket = self.local_ticket().await;
             let admitted = self.requests();
             let after_mint = self.audit_records().last().map_or(0, |record| record.seq);
-            let (status, _) = self.signal(&ticket).await;
+            let (status, _) = self.signal_inner(&ticket, false).await;
             let failed = if status.is_success() {
                 tokio::time::timeout(ANSWER_BOUND, async {
                     loop {
@@ -3726,8 +3743,15 @@ pub(super) mod session_door {
         )
         .await
         .expect("the build links the session door");
+        busbar_kernel::boot::hydrate_all(&s.app)
+            .expect("the actual boot registers the durable audit stream before serving units");
         let before = session_open_refusals(&s);
-        let (_browser, offer) = Peer::browser();
+        let (_browser, offer) = RtcPeer::offer(
+            s.connector
+                .framer_for("webrtc")
+                .expect("the real WebRTC framer"),
+        )
+        .await;
         let (status, content_type, body) = post_offer(&s, &offer).await;
         assert_eq!(status.as_u16(), 404, "{}", String::from_utf8_lossy(&body));
         assert!(content_type.contains("json"), "{content_type}");
@@ -3742,6 +3766,8 @@ pub(super) mod session_door {
         let mut s = session_with("serve-door-session-no-lines", Opts::default())
             .await
             .expect("the build links the session door");
+        busbar_kernel::boot::hydrate_all(&s.app)
+            .expect("the actual boot registers the durable audit stream before serving units");
         let before = session_open_refusals(&s);
         let (status, content_type, body) = post_offer(
             &s,
@@ -3758,86 +3784,6 @@ pub(super) mod session_door {
         );
         assert_eq!(session_open_refusals(&s), before + 1, "audited");
         assert!(s.heard.try_recv().is_err(), "nothing dialled");
-    }
-
-    const PLACED_CALL: &str = "rtc_root0001";
-
-    async fn far_calls_and_socket() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("a loopback port");
-        let port = listener.local_addr().expect("its address").port();
-        let (sent, heard) = tokio::sync::mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            while let Ok((mut socket, _)) = listener.accept().await {
-                let sent = sent.clone();
-                tokio::spawn(async move {
-                    let Some(head) = read_head(&mut socket).await else {
-                        return;
-                    };
-                    let line = head.lines().next().unwrap_or_default().to_string();
-                    let key = head.lines().find_map(|l| {
-                        let (name, value) = l.split_once(':')?;
-                        name.eq_ignore_ascii_case("sec-websocket-key")
-                            .then(|| value.trim().to_string())
-                    });
-                    let Some(key) = key else {
-                        let length = head
-                            .lines()
-                            .find_map(|l| {
-                                let (name, value) = l.split_once(':')?;
-                                name.eq_ignore_ascii_case("content-length")
-                                    .then(|| value.trim().parse::<usize>().ok())
-                                    .flatten()
-                            })
-                            .unwrap_or(0);
-                        let mut body = vec![0u8; length];
-                        if socket.read_exact(&mut body).await.is_err() {
-                            return;
-                        }
-                        let request = format!("{head}\r\n{}", String::from_utf8_lossy(&body));
-                        let _ = sent.send(format!("OFFER {request}"));
-                        let Some((peer, answer)) = Peer::accept(&call_offer(&request)) else {
-                            return;
-                        };
-                        tokio::spawn(peer.run());
-                        let reply = format!(
-                            "HTTP/1.1 201 Created\r\ncontent-type: application/sdp\r\n\
-                             location: /v1/realtime/calls/{PLACED_CALL}\r\ncontent-length: {}\r\n\
-                             connection: close\r\n\r\n",
-                            answer.len()
-                        );
-                        let _ = socket.write_all(reply.as_bytes()).await;
-                        let _ = socket.write_all(&answer).await;
-                        let _ = socket.shutdown().await;
-                        return;
-                    };
-                    let _ = sent.send(format!("DIAL {line}"));
-                    let reply = format!(
-                        "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\n\
-                         connection: Upgrade\r\nsec-websocket-accept: {}\r\n\r\n",
-                        ws_accept(&key)
-                    );
-                    if socket.write_all(reply.as_bytes()).await.is_err() {
-                        return;
-                    }
-                    if socket.write_all(&server_text(FAR_OPENING)).await.is_err() {
-                        return;
-                    }
-                    while let Some((opcode, payload)) = read_frame(&mut socket).await {
-                        match opcode {
-                            0x1 => {
-                                let _ = sent
-                                    .send(format!("TEXT {}", String::from_utf8_lossy(&payload)));
-                            }
-                            0x8 => return,
-                            _ => {}
-                        }
-                    }
-                });
-            }
-        });
-        (port, heard)
     }
 
     async fn next_report(
@@ -12507,10 +12453,28 @@ async fn a_key_row_whose_expires_at_is_in_the_past_is_refused_on_the_data_plane(
         refused, 401,
         "the keys chain is a real gate on this app: a bad token is refused"
     );
+    let mut expired_answer: serde_json::Value =
+        serde_json::from_slice(&expired_body).expect("the expired-key JSON refusal");
+    let mut refused_answer: serde_json::Value =
+        serde_json::from_slice(&refused_body).expect("the bad-credential JSON refusal");
+    let expired_id = expired_answer["request_id"]
+        .as_str()
+        .expect("the expired-key request identifier")
+        .to_owned();
+    let refused_id = refused_answer["request_id"]
+        .as_str()
+        .expect("the bad-credential request identifier")
+        .to_owned();
+    assert!(!expired_id.is_empty() && !refused_id.is_empty());
+    assert_ne!(
+        expired_id, refused_id,
+        "each refusal identifies its own request"
+    );
+    expired_answer.as_object_mut().unwrap().remove("request_id");
+    refused_answer.as_object_mut().unwrap().remove("request_id");
     assert_eq!(
-        String::from_utf8_lossy(&expired_body),
-        String::from_utf8_lossy(&refused_body),
-        "an expired key row is refused with the same body as any bad credential"
+        expired_answer, refused_answer,
+        "an expired key row is refused with the same error as any bad credential"
     );
     assert_eq!(
         rig.gov

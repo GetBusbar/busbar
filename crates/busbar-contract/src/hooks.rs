@@ -306,6 +306,7 @@ pub enum TransformOutcome {
 pub struct HookStatus {
     pub settings_version: Option<u64>,
 
+    // settings-leak-lint: allow — NON-PROJECTION engine type. This struct derives no `Serialize`:
     pub settings: Option<serde_json::Map<String, serde_json::Value>>,
     /// Raw metrics ARRAY (each entry `{name, type, value, labels?, quantiles?, ...}`); the engine
     /// validates + bounds entries before exposing them.

@@ -101,6 +101,9 @@ fn governed_config(dir: &Path, bindings_and_more: &str) -> String {
   dir: '{plugins}'
   trust:
     allow_unsigned: true
+    publishers:
+      - name: '{fixture_publisher}'
+        public_key: '{fixture_public_key}'
 identity-providers:
   idp:
     module: e2e-idp-module
@@ -110,6 +113,8 @@ identity-providers:
   signing_key: {{ env: BUSBAR_SIGNING_KEY }}
 {bindings_and_more}"#,
         plugins = dir.join("plugins").display(),
+        fixture_publisher = common::plugins::FIXTURE_PUBLISHER,
+        fixture_public_key = common::credentials::harness_release_key_hex(),
     )
 }
 
@@ -491,7 +496,7 @@ tools:
   ws:
     url: "http://127.0.0.1:9/rpc"
     allow_private: true
-    pin: { mechanism: cert_spki, key: "sha256/UNUSED=" }
+    pin: { mechanism: cert_spki, key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }
     tools_allow:
       read: { schema_hash: "sha256:0000" }
 "#,

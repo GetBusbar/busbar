@@ -582,7 +582,7 @@ operators allowlist):
 ```sh
 busbar-plugin-pack keygen
 # private (BUSBAR_SIGN_KEY, keep secret): 9f2c...
-# public  (publishers allowlist / BUSBAR_RELEASE_PUBKEY): 4ab1...
+# public  (publishers allowlist): 4ab1...
 ```
 
 Then sign and package in one step:
@@ -606,8 +606,15 @@ the grant-declaration flags `--needs-prompt <no|ro|rw>` and `--needs-user <no|ro
 signed manifest `needs` field. The core enforces the actual projection, so a plugin can never
 receive more than it declared.
 
-Every first-party plugin is built and signed with the same `BUSBAR_SIGN_KEY` / publisher `busbar`
-signing identity, but the *release* it ships from depends on the plugin:
+Every first-party plugin is published as `busbar` and SEALED: one release manifest lists every
+plugin artefact of the release (name, version, target, SHA-256 of its canonical manifest), the
+release signer signs it once, and each tarball carries it with the keys document that names that
+signer, signed by one of the ROOT keys the busbar binary compiles in (`busbar-plugins-root`, Cloud KMS
+HSM, and `busbar-plugins-2026a`, a YubiKey PIV slot). A release packs every plugin unsigned;
+`busbar-plugin-pack release-manifest`, `envelope` and `seal` build the seal, and `seal` refuses any
+tarball that does not verify through the chain against the compiled-in roots. The design, formats
+and refusals are in [design/release-trust.md](design/release-trust.md). The *release* a plugin
+ships from depends on the plugin:
 
 - **Store plugins** (`busbar-store-sqlite`, `busbar-store-postgres`, `busbar-store-mysql`,
   `busbar-store-valkey`), the **auth plugin** (`busbar-auth-oidc`), and the **secret plugin**

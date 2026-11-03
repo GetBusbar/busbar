@@ -80,6 +80,7 @@ struct Site {
     kind: String,
     module: String,
 
+    // settings-leak-lint: allow — the operator's own section as written, handed to its plugin's
     settings: serde_json::Value,
 
     read_only: Vec<String>,

@@ -261,6 +261,7 @@ pub struct ConfigSettingsView {
     ///
     /// This field NAME is frozen wire and is the response ENVELOPE member, not a plugin settings
     /// bag; the redaction applies to the bags nested INSIDE it.
+    // settings-leak-lint: allow — response ENVELOPE member; every bag nested inside it is reduced to
     pub settings: serde_json::Value,
     /// Fields that were stored durably but are RESTART-TO-APPLY: a socket rebind, a TLS acceptor
     /// build and a store open all happen once at process start, so a `POST /config/reload` does NOT

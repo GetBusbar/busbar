@@ -10,16 +10,64 @@ BUSBAR"). A branch file is named for the branch being moved and says what the mo
 |---|---|---|---|
 | a `lane-*` branch into **`dev`** | [`.ci/default.yaml`](.ci/default.yaml) | preflight, every registered gate, clippy, compile, test, doctest, deletion matrix, `cargo deny`, the gated suites; no worse than dev (required check `ci`) | none |
 | **`dev`** into **`qa`** | [`.ci/dev.yaml`](.ci/dev.yaml) | the gates, the oracle against the 1.5.5 golden, conformance, `scripts/verify-1.6.0-done.sh`, the Q128 audit, the gated suites; all absolute | the owner's approval (the org ruleset keeps `qa` locked) |
-| **`qa`** into **`main`** | `.ci/qa.yaml` | the same; on landing, the release is signed and published from the build that was judged, never rebuilt | the owner (the org ruleset keeps `main` locked) |
+| **`qa`** into **`main`** | `.ci/qa.yaml` (on ModernCI's `modernci-config` branch) | the five checks, plus `candidate`: every release artifact built once, kept, never rebuilt. It holds no key and publishes nothing | the owner. Then the owner's publish run (below) |
 
-`.ci/qa.yaml` is not written yet: until it lands, nothing is published from `main`. The
+## Publishing (the owner's run, with his hardware keys)
+
+ModernCI builds; the owner signs and publishes. No signing key exists in CI. The design is
+`PUBLISH-PIPELINE-1.6.0` (security docs); how users check the result is [`docs/verify.md`](docs/verify.md).
+
+The owner works in **his own clone at the release commit**, with `busbar-plugin-pack` built there by
+him:
+
+```
+cargo build --release -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
+modernci call artifact --check candidate ...            # the judged candidate's outputs -> ./candidate
+# The signed version tag (G-15), with K2 at the release commit, then on GitHub (touch the key):
+git -c gpg.format=ssh -c user.signingkey=<sk handle> tag -s v<V> -m "busbar <V>" <release commit>
+git -c gpg.ssh.allowedSignersFile="$PWD/release/allowed_signers" verify-tag v<V>
+git push <GitHub remote of GetBusbar/busbar> v<V>
+G=scripts/release/publish_gate.py; T=~/.config/busbar-release/trust.json; P=target/release/busbar-plugin-pack
+python3 $G verify --candidate candidate --trust $T --pack $P --out out    # every rule; nothing signed
+python3 $G sign   --candidate candidate --trust $T --pack $P --out out --k1-sign-cmd <release signer cmd> --k2-key <sk handle>
+python3 $G upload --candidate candidate --trust $T --pack $P --out out    # draft, Rekor, publish, verify, then latest
+```
+
+`verify` refuses, one named line per rule, on:
+- a version tag `v<V>` that is missing, lightweight, unsigned, not signed by K2 under the `git`
+  namespace (`release/allowed_signers` carries the K2 key once more, limited to `namespaces="git"`),
+  or not at the release commit (G-15); `upload` also refuses unless GitHub holds that same tag
+  object, and creates the release on it (`gh release create --verify-tag`);
+- any missing or undeclared artifact, `plugin-index.json` included (the release index
+  `busbar --migrate-config` fetches from this release; `candidate.py assemble` renders it and the
+  gate refuses any other bytes);
+- a digest mismatch;
+- a plugin tarball that is not an unsigned first-party build (`sign` then seals every plugin with ONE
+  release-manifest signature and refuses any tarball that does not verify through the chain to the
+  compiled-in roots: docs/design/release-trust.md);
+- a key list that differs from the owner's trust file;
+- a binary without the embedded key;
+- an image whose binary is not the built one;
+- a version already published.
+- a public conformance suite (conformance/registry.toml) without a real ModernCI `pass` for the
+  release commit, or for a plugin's shipped pin judged against it, unless a K2-signed owner
+  exception records it as `fail`/`not-run` (G-C, docs/design/conformance-release.md). The
+  candidate's `conformance-manifest.json` is pinned in `release-evidence.json` and attached to the
+  Release by `upload`.
+
+`sign` shows the full commit and the key-list diff before any key is touched. `upload` moves `latest`
+only after downloading the release back and verifying it as a user would. A plugin released between
+core releases is pinned in `release/plugin-pins.tsv`. The `candidate-plugins-<target>` checks build
+it unsigned, and the owner runs `publish_gate.py plugin-release <repo> <tag> --plugins <slices>`.
+Nothing runs on GitHub Actions. The
 busbar-release hop (`promote.yml`, the engine pin) is deleted and no move is decided by it.
 busbar-release remains the tools repo: the home of the oracle (`busbar-oracle`, pinned by
 the branch file's `BUSBAR_ORACLE_*` env and fetched from its `dev-bin` release by `bin/oracle`), the
 soak and the plugin fleet generator. The 1.5.5 golden the oracle reads stays in this tree, in
 `testing/shadow-oracle/golden/1.5.5`.
 
-**The tag is an OUTPUT of a green release, never an input.** Nobody tags by hand; no workflow is
+**The tag is an OUTPUT of a green release, never an input.** The only `v*` tag is the one the owner
+signs with K2 in the publish run above, at the judged candidate's commit; no workflow is
 triggered by a `v*` tag (`cargo xtask gate workflow-rules`, rule R1). Docker Hub tag immutability
 makes a published `X.Y.Z` impossible to overwrite, so a broken one is permanent.
 

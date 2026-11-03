@@ -71,6 +71,7 @@ pub struct SecretRef {
     pub module: String,
 
     /// The module's own settings (opaque to busbar; the built-ins read `key` / `path`).
+    // settings-leak-lint: allow — DECLARATION, not a projection. This bag is the REFERENCE itself
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
