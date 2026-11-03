@@ -407,7 +407,11 @@ async fn an_unfinished_session_retires_its_facts_and_preserves_its_destination_f
     assert_eq!(records[0].what.destination.as_deref(), Some(DESTINATION));
     assert_eq!(records[0].outcome.finish, RecordFinish::Error);
     assert_eq!(records[0].controls.policy_epoch, 7);
-    assert_eq!(records[0].usage.rate_card_version, None);
+    assert_eq!(
+        records[0].usage.rate_card_version,
+        Some([0; 20]),
+        "the swept unit keeps its opening history entry's actual key"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
