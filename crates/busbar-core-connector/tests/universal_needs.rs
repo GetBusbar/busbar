@@ -38,6 +38,16 @@ fn libraries_beside_the_test() -> Vec<std::path::PathBuf> {
 
 /// THE SOCKET FRAMER these tests drive alone: the neutral frame door (the plugin loader's
 fn socket_framer_door() -> Option<std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>> {
+    if let Some(path) = std::env::var_os("BUSBAR_TEST_WS_CDYLIB") {
+        let (door, stated) = open_stated(std::path::Path::new(&path))
+            .expect("BUSBAR_TEST_WS_CDYLIB opens the qualified WebSocket transport");
+        assert_eq!(
+            door.facts().role,
+            busbar_contract::abi::transport::ROLE_FRAMER
+        );
+        assert!(stated.sessions.contains(&door.facts().claims[0]));
+        return Some(door);
+    }
     let file = busbar_plugin_loader::plugin_library_filename("neutral_frame_door");
     libraries_beside_the_test()
         .into_iter()
@@ -230,12 +240,66 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
     rt.block_on(async {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let far = l.local_addr().unwrap().to_string();
+        let websocket = std::env::var_os("BUSBAR_TEST_WS_CDYLIB").is_some();
         tokio::spawn(async move {
-            let (mut s, _) = l.accept().await.unwrap();
-            let mut buf = [0_u8; 4096];
-            while let Ok(n) = s.read(&mut buf).await {
-                if n == 0 || s.write_all(&buf[..n]).await.is_err() {
-                    break;
+            let (mut socket, _) = l.accept().await.unwrap();
+            if websocket {
+                use base64::Engine;
+                let mut head = Vec::new();
+                while !head.ends_with(b"\r\n\r\n") {
+                    head.push(socket.read_u8().await.unwrap());
+                    assert!(head.len() < 16_384, "bounded WebSocket upgrade head");
+                }
+                let head = std::str::from_utf8(&head).unwrap();
+                assert!(head.starts_with("GET "));
+                let key = head.lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("sec-websocket-key").then(|| value.trim())
+                }).expect("the actual WebSocket transport sends its upgrade key");
+                let mut challenge = key.as_bytes().to_vec();
+                challenge.extend_from_slice(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+                let hash = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, &challenge);
+                let accept = base64::engine::general_purpose::STANDARD.encode(hash.as_ref());
+                socket.write_all(format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n").as_bytes()).await.unwrap();
+                let mut echoed = 0;
+                while echoed < 40_008 {
+                    let first = socket.read_u8().await.unwrap();
+                    let second = socket.read_u8().await.unwrap();
+                    assert_eq!(first & 0x70, 0, "no unnegotiated extensions");
+                    assert_ne!(second & 0x80, 0, "client frames must be masked");
+                    let length = match second & 0x7f {
+                        126 => u64::from(socket.read_u16().await.unwrap()),
+                        127 => socket.read_u64().await.unwrap(),
+                        length => u64::from(length),
+                    };
+                    assert!(length <= 40_008, "bounded real wire frame");
+                    let mut mask = [0; 4];
+                    socket.read_exact(&mut mask).await.unwrap();
+                    let mut payload = vec![0; usize::try_from(length).unwrap()];
+                    socket.read_exact(&mut payload).await.unwrap();
+                    for (index, byte) in payload.iter_mut().enumerate() {
+                        *byte ^= mask[index % 4];
+                    }
+                    assert!(matches!(first & 0x0f, 0..=2), "only data frames are expected");
+                    socket.write_u8(first).await.unwrap();
+                    if length < 126 {
+                        socket.write_u8(u8::try_from(length).unwrap()).await.unwrap();
+                    } else if length <= u64::from(u16::MAX) {
+                        socket.write_u8(126).await.unwrap();
+                        socket.write_u16(u16::try_from(length).unwrap()).await.unwrap();
+                    } else {
+                        socket.write_u8(127).await.unwrap();
+                        socket.write_u64(length).await.unwrap();
+                    }
+                    socket.write_all(&payload).await.unwrap();
+                    echoed += payload.len();
+                }
+            } else {
+                let mut buf = [0_u8; 4096];
+                while let Ok(n) = socket.read(&mut buf).await {
+                    if n == 0 || socket.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
                 }
             }
         });
@@ -243,7 +307,7 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
             door,
             &support::via(),
             Dial {
-                target: far,
+                target: if websocket { format!("ws://{far}/echo") } else { far },
                 tls: None,
                 alpn: Vec::new(),
                 open_timeout: std::time::Duration::from_secs(5),
