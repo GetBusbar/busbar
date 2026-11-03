@@ -97,11 +97,11 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         "advanced": {"allow_destinations": ["127.0.0.1"]},
         "store": {"module": store_module.expect("the actual store was staged"), "settings": settings},
         "hooks": {
-            "a": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":"b", "settings":{"url":endpoint}},
+            "a": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":{"hook":"b"}, "settings":{"url":endpoint}},
             "b": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":"reject", "settings":{"url":endpoint}},
             "n": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":"nothing", "settings":{"url":endpoint}},
             "c": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":"first", "settings":{"url":endpoint}},
-            "g": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":"cheapest", "settings":{"url":endpoint}},
+            "g": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":{"hook":"cheapest"}, "settings":{"url":endpoint}},
             "closedrw": {"module": hook_module, "kind":"gate", "timeout_ms":5000,
                          "prompt":"rw", "on_error":"reject", "settings":{"url":endpoint}},
             "rw": {"module": hook_module, "kind": "gate", "timeout_ms": 5000, "prompt": "rw",
@@ -125,7 +125,14 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the actual product deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let providers = std::collections::HashMap::from([(
+        "local".to_owned(),
+        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
+            "protocol": "anthropic", "base_url": "http://127.0.0.1:1"
+        }))
+        .expect("the actual provider catalog entry parses"),
+    )]);
+    let config = busbar_kernel::config::resolve(&deploy, &providers)
         .expect("the actual product deployment resolves");
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())

@@ -4,8 +4,7 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod actual_plugins;
+use crate::root::test_plugins as actual_plugins;
 
 // Only the real distribution mounts this suite. This is a component HookEnv proof;
 // it does not claim a cold application boot or route admission proof.
@@ -91,7 +90,7 @@ fn actual_rewrite(
         "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
         "advanced": {"allow_destinations": ["127.0.0.1"]},
         "store": {"module": store_module.unwrap(), "settings": settings},
-        "hooks": {"rw": {"module": hook_module.unwrap(), "kind": "gate", "prompt": "rw", "user": "ro", "global": true,
+        "hooks": {"rw": {"module": hook_module.unwrap(), "kind": "gate", "prompt": "rw", "user": "ro",
             "on_error": on_error, "timeout_ms": 5000, "settings": {"url": endpoint}}}
     })).expect("actual rewrite deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
