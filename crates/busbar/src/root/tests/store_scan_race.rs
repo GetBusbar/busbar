@@ -202,7 +202,7 @@ fn concurrent_atomic_append_after_saturated_4096_probe_fails_closed() {
             .unwrap()
             .len(),
         4096,
-        "genuine sealed parts saturate the actual root probe before the mixed epochs"
+        "genuine sealed parts saturate the opened Store root probe before the mixed epochs"
     );
     let upper_prefix = part_key(node, 256, 0)[..15].to_vec();
     assert_eq!(
