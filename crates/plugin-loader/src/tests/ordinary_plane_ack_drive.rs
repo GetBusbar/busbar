@@ -921,7 +921,9 @@ fn a_pending_driver_delivers_ids_resumes_and_retires_late_service_custody() {
     let release_deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let all = states().lock().unwrap();
-        let state = all.get(&host).expect("the actual pending driver is still open");
+        let state = all
+            .get(&host)
+            .expect("the actual pending driver is still open");
         if state.releases == 3 {
             break;
         }
