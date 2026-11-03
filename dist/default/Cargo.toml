@@ -253,12 +253,13 @@ plane-a2a = ["plane-a2a-door"]
 # loader beside every dropped-in plane door and binds it through the one load on the one dispatcher,
 # so the compiled-in plane is called through the same table as its dropped-in cdylib (#2, #30; THE
 # DESIGN section 11.4), and the serve row hands it its arrivals. It carries the ws wire its live
-# sessions arrive over and leave on.
-plane-streaming = ["dep:busbar-plane-streaming", "transport-ws"]
+# sessions arrive over and leave on, and the WebRTC wire its door declares as a required capability.
+plane-streaming = ["dep:busbar-plane-streaming", "transport-ws", "transport-webrtc"]
 # THE WS WIRE, the one optional transport: the streaming plane's edge and nothing else's, so `plane-streaming`
 # carries it and `--no-default-features` drops the crate edge and its linked row together.
 transport-ws = ["dep:busbar-transport-ws"]
-# THE WEBRTC WIRE, optional and never in `default`: on, the crate edge and its linked row together.
+# THE WEBRTC WIRE, carried by the default streaming plane to satisfy its declared inbound and
+# outbound needs. `--no-default-features` drops it with the plane unless enabled explicitly.
 transport-webrtc = ["dep:busbar-transport-webrtc"]
 # THE TCP WIRE'S LINKED ROW, DEFAULT ON (#3: a transport is swappable, compiled in OR dropped in). Off,
 # the build links no `tcp` row and the wire is served only when its tarball is dropped into
