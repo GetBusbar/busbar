@@ -653,10 +653,9 @@ fn screened(seal: &KernelSeal, call: CallId, refusal: Refusal) -> Refusal {
 /// How a session opener left the door.
 #[derive(Debug)]
 pub enum SessionOpen {
-    /// The door passed. A session admits at [`Admission::ZeroHold`], so nothing was swapped into
-    /// the cell and there is nothing to settle. The caller opens its live carrier next: every turn
-    /// leg of the session is a route walk under this ONE admission, with this Route pass, inside
-    /// the destination set Verify sealed at the open (K6).
+    /// The door passed. Own admission stays installed until its returned terminal token is
+    /// finished; ZeroHold admission has no terminal token. Every carrier turn uses this route
+    /// pass and the destination set Verify sealed at the open (K6).
     Admitted {
         /// The session's Route pass, for its turn legs.
         route: Pass<Route>,
@@ -673,12 +672,17 @@ pub enum SessionOpen {
 }
 
 /// Sole terminal authority for a session's actual installed Own hold.
-#[derive(Debug)]
 #[must_use = "the owning session must finish its actual hold on every exit"]
 pub struct SessionOwn {
     lineage: Option<crate::plane_driver::ReservedRequestLineage>,
     call: CallId,
     unit: UnitKey,
+}
+
+impl std::fmt::Debug for SessionOwn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionOwn").finish_non_exhaustive()
+    }
 }
 
 impl SessionOwn {
