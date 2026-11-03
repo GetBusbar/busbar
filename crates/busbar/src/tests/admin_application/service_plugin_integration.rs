@@ -177,6 +177,9 @@ async fn install_answers_the_admissions_refusals_in_their_classes() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -290,6 +293,9 @@ async fn install_catalog_remove_roundtrip() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -454,6 +460,9 @@ async fn remove_filesystem_failure_is_internal_error() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -578,6 +587,9 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -748,6 +760,9 @@ async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -895,6 +910,9 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1024,6 +1042,9 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1148,6 +1169,9 @@ async fn list_plugins_store_scan_does_not_park_the_reactor() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1286,6 +1310,9 @@ async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1442,6 +1469,9 @@ async fn the_store_catalog_heads_with_the_linked_store_rows() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1559,6 +1589,9 @@ async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1665,6 +1698,9 @@ async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor(
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1813,6 +1849,9 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -1984,6 +2023,9 @@ async fn rollback_reads_the_target_and_merges_pins() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
@@ -2008,10 +2050,6 @@ async fn rollback_reads_the_target_and_merges_pins() {
         .expect("actual governance")
         .store_calls()
         .expect("actual Store calls");
-    crate::root::kernel::ROOT_CARD.keep_in_store(calls.clone(), 91);
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
-        .expect("the actual rate history boots in its Store");
     let overlay =
         busbar_kernel::config::overlay::OverlayStore::new(calls).expect("actual Store overlay");
     let prior =
@@ -2159,6 +2197,9 @@ async fn install_filesystem_failures_are_internal_errors() {
         &rules,
     )
     .expect("the actual product builds the swap deployment");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual configured Store binds rate history before activation");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
