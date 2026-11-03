@@ -118,7 +118,14 @@ async fn pool_rw_gate_resolves_as_rewrite_not_decision() {
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the actual product deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let providers = std::collections::HashMap::from([(
+        "local".to_owned(),
+        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
+            "protocol": "anthropic", "base_url": "http://127.0.0.1:1"
+        }))
+        .expect("the actual provider catalog entry parses"),
+    )]);
+    let config = busbar_kernel::config::resolve(&deploy, &providers)
         .expect("the actual product deployment resolves");
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())

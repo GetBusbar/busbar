@@ -61,8 +61,15 @@ fn deployment(pool: &str) -> Arc<App> {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
-    let config = kernel::config::resolve(&deploy, &Default::default())
-        .expect("the product deployment resolves");
+    let providers = std::collections::HashMap::from([(
+        "local".to_owned(),
+        serde_json::from_value::<kernel::config::ProviderDef>(serde_json::json!({
+            "protocol": "anthropic", "base_url": "http://127.0.0.1:1"
+        }))
+        .expect("the actual provider catalog entry parses"),
+    )]);
+    let config =
+        kernel::config::resolve(&deploy, &providers).expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules =
         Arc::new(crate::root::door_steps::Rules::default()) as Arc<dyn kernel::appbuild::RootRules>;

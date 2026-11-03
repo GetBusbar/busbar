@@ -104,7 +104,14 @@ async fn a_routed_planes_section_attach_binds_to_its_units() {
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the actual plane and hook deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let providers = std::collections::HashMap::from([(
+        "local".to_owned(),
+        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
+            "protocol": "jev", "base_url": "http://127.0.0.1:1"
+        }))
+        .expect("the actual provider catalog entry parses"),
+    )]);
+    let config = busbar_kernel::config::resolve(&deploy, &providers)
         .expect("the actual plane and hook deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
