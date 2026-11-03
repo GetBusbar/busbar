@@ -57,6 +57,12 @@ class AuditVerifierPackaging(unittest.TestCase):
                 guard = root / "scripts/release-key-guard.sh"
                 guard.write_text("#!/usr/bin/env bash\nexit 0\n")
                 guard.chmod(0o755)
+                provenance = root / "scripts/build-provenance-gate.sh"
+                provenance.write_text("#!/usr/bin/env bash\nexit 0\n")
+                provenance.chmod(0o755)
+                subprocess.run(["git", "init", "-q", str(root)], check=True)
+                subprocess.run(["git", "-C", str(root), "-c", "user.name=Matthew Jackson", "-c", "user.email=1085847+MattJackson@users.noreply.github.com", "commit", "--allow-empty", "-qm", "Packaging fixture"], check=True)
+
                 doubles = root / "doubles"
                 doubles.mkdir()
                 cargo = doubles / "cargo"

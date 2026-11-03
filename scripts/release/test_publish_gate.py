@@ -53,6 +53,22 @@ def tgz(members: dict) -> bytes:
     return buf.getvalue()
 
 
+
+def verifier_fixture(candidate, target):
+    import zipfile
+    executable = "busbar-audit-verify" + (".exe" if "windows" in target else "")
+    extension = "zip" if "windows" in target else "tar.gz"
+    asset = candidate / "artifacts" / f"busbar-audit-verify-{target}.{extension}"
+    members = {executable: b"offline verifier", "audit-verify.md": b"Offline instructions"}
+    if extension == "zip":
+        with zipfile.ZipFile(asset, "w") as archive:
+            for name, data in members.items():
+                archive.writestr(name, data)
+    else:
+        asset.write_bytes(tgz(members))
+    (candidate / "sboms" / f"busbar-audit-verify-v{VERSION}-{target}.cdx.json").write_text(json.dumps(
+        {"bomFormat": "CycloneDX", "specVersion": "1.5", "metadata": {"component": {"name": "busbar-audit-verify", "version": VERSION}}}))
+
 def blob(layout: dict, data: bytes) -> str:
     d = hashlib.sha256(data).hexdigest()
     layout[f"blobs/sha256/{d}"] = data
@@ -174,6 +190,8 @@ class World:
             z.writestr("busbar.exe", self.binary("win"))
         (c / "artifacts" / "busbar-x86_64-pc-windows-msvc.zip").write_bytes(zbuf.getvalue())
         (c / "artifacts" / f"busbar-openapi-v{VERSION}.json").write_text("{}\n")
+        for target in ("x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"):
+            verifier_fixture(c, target)
         musl = {"amd64": self.binary("musl-amd64"), "arm64": self.binary("musl-arm64")}
         (c / "internal" / "busbar-x86_64-unknown-linux-musl.tar.gz").write_bytes(tgz({"busbar": musl["amd64"]}))
         (c / "internal" / "busbar-aarch64-unknown-linux-musl.tar.gz").write_bytes(tgz({"busbar": musl["arm64"]}))
@@ -684,6 +702,8 @@ def parser_keys() -> list:
     import re
     src = (Path(__file__).resolve().parents[2] / "crates/busbar/src/root/config_migrate.rs").read_text()
     body = src[src.index("pub fn parse(bytes: &[u8])"):src.index("fn by_repo(")]
+    fields = dict(re.findall(r'pub const ([A-Z_]+): &str = "([a-z_]+)";', src))
+    body = re.sub(r"index_field::([A-Z_]+)", lambda m: json.dumps(fields[m.group(1)]), body)
     return [re.findall(r'"([a-z_]+)"', m) for m in re.findall(r"&\[\s*((?:\"[a-z_]+\",?\s*)+)\]", body)]
 
 
@@ -711,6 +731,7 @@ class PluginIndex(unittest.TestCase):
             (c / d).mkdir(parents=True)
         (c / "artifacts" / "busbar-x86_64-unknown-linux-gnu.tar.gz").write_bytes(tgz({"busbar": b"bin"}))
         (c / "artifacts" / f"busbar-openapi-v{VERSION}.json").write_text("{}\n")
+        verifier_fixture(c, "x86_64-unknown-linux-gnu")
         (c / "sboms" / f"busbar-v{VERSION}-x86_64-unknown-linux-gnu.cdx.json").write_text("{}\n")
         manifest = json.dumps({"name": INDEX_PLUGIN, "alias": "stub", "kind": "store", "version": PVER,
                                "abi_version": 7}).encode()

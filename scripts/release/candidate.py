@@ -80,17 +80,16 @@ def target_row(target: str) -> dict:
     sys.exit(f"candidate: {target} is not a row of .github/release-targets.json")
 
 
-def sbom(triple: str, name: str, out: Path) -> None:
+def sbom(triple: str, name: str, out: Path, package: str = "busbar") -> None:
     tool = os.environ.get("CYCLONEDX")
     if not tool:
         sys.exit("candidate: CYCLONEDX=<pinned cargo-cyclonedx> is required")
-    tmp = Path(tempfile.mkdtemp())
-    sh([tool, "cyclonedx", "--manifest-path", str(ROOT / "crates/busbar/Cargo.toml"), "--format", "json",
+    manifest = ROOT / "crates" / package / "Cargo.toml"
+    sh([tool, "cyclonedx", "--manifest-path", str(manifest), "--format", "json",
         "--target", triple, "--override-filename", "bom"], cwd=ROOT)
-    produced = ROOT / "crates/busbar/bom.json"
+    produced = manifest.parent / "bom.json"
     (out / "sboms").mkdir(parents=True, exist_ok=True)
     shutil.move(produced, out / "sboms" / name)
-    shutil.rmtree(tmp)
 
 
 def cmd_pgo_train(target: str, out: Path) -> None:
@@ -124,6 +123,8 @@ def cmd_core(target: str, out: Path) -> None:
     triple = row.get("triple", target)
     feeds = row.get("packaged_into", "")
     sbom(triple, f"busbar-v{v}-{feeds or target}.cdx.json", out)
+    if row.get("published"):
+        sbom(triple, f"busbar-audit-verify-v{v}-{target}.cdx.json", out, package="busbar-kernel-audit")
 
 
 def plugin_tag(repo: str, kit: str) -> tuple:

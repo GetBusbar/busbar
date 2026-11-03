@@ -376,6 +376,8 @@ def expected_files(inp: Inputs, cj: dict) -> tuple:
         if t.get("kind") == "binary" and t.get("published"):
             pub.add(f"busbar-{t['target']}.{t['archive']}")
             sboms.add(f"busbar-v{v}-{t['target']}.cdx.json")
+            pub.add(f"busbar-audit-verify-{t['target']}.{t['archive']}")
+            sboms.add(f"busbar-audit-verify-v{v}-{t['target']}.cdx.json")
         elif t.get("kind") == "binary":
             internal.add(f"busbar-{t['target']}.{t['archive']}")
         elif t.get("kind") == "image":
@@ -565,19 +567,45 @@ def unpack_binary(archive: Path) -> bytes:
 
 def g6_embedded_keys(inp: Inputs, cj: dict, vd: Verdict) -> None:
     keys = inp.trust["k1"].encode()
-    for sub in ("artifacts", "internal"):
-        for f in sorted((inp.cand / sub).glob("busbar-*")):
-            if f.name.startswith("busbar-openapi") or not (f.name.endswith(".tar.gz") or f.name.endswith(".zip")):
-                continue
+    for target in release_targets(inp.root):
+        if target.get("kind") != "binary":
+            continue
+        sub = "artifacts" if target.get("published") else "internal"
+        f = inp.cand / sub / f"busbar-{target['target']}.{target['archive']}"
+        if f.is_file():
             try:
-                b = unpack_binary(f)
-            except (OSError, ValueError, tarfile.TarError, zipfile.BadZipFile) as e:
-                vd.refuse("G-6", f.name, "an archive holding the busbar binary", str(e), "Rebuild.")
-                continue
-            if keys not in b:
-                vd.refuse("G-6", f.name, f"the trusted key list ({inp.trust['k1'][:24]}…) embedded",
-                          "not embedded", "The build dropped BUSBAR_RELEASE_PUBKEY (#52); rebuild.")
+                binary = unpack_binary(f)
+                if keys not in binary:
+                    vd.refuse("G-6", f.name, "the trusted key list embedded", "not embedded",
+                              "The server build dropped BUSBAR_RELEASE_PUBKEY; rebuild.")
+                else:
+                    vd.ok("G-6")
+            except (OSError, ValueError, tarfile.TarError, zipfile.BadZipFile) as error:
+                vd.refuse("G-6", f.name, "an archive holding the busbar binary", str(error), "Rebuild.")
+        if not target.get("published"):
+            continue
+        tool = inp.cand / "artifacts" / f"busbar-audit-verify-{target['target']}.{target['archive']}"
+        if not tool.is_file():
+            continue  # G-3 refuses a missing asset.
+        executable = "busbar-audit-verify" + (".exe" if "windows" in target['target'] else "")
+        try:
+            if target['archive'] == "zip":
+                with zipfile.ZipFile(tool) as archive:
+                    entries = archive.infolist()
+                    if sorted(e.filename for e in entries) != sorted([executable, "audit-verify.md"]) or any(e.is_dir() for e in entries):
+                        raise ValueError("expected exactly the verifier and audit-verify.md")
+                    if not archive.read(executable) or not archive.read("audit-verify.md"):
+                        raise ValueError("an empty verifier or instructions")
+            else:
+                with tarfile.open(tool) as archive:
+                    entries = archive.getmembers()
+                    if sorted(e.name for e in entries) != sorted([executable, "audit-verify.md"]) or any(not e.isfile() for e in entries):
+                        raise ValueError("expected exactly regular verifier and instructions files")
+                    if not archive.extractfile(executable).read() or not archive.extractfile("audit-verify.md").read():
+                        raise ValueError("an empty verifier or instructions")
             vd.ok("G-6")
+        except (OSError, ValueError, tarfile.TarError, zipfile.BadZipFile, KeyError) as error:
+            vd.refuse("G-6", tool.name, "the standalone verifier with instructions", str(error), "Rebuild the verifier package.")
 
 
 def g8_sboms(inp: Inputs, cj: dict, vd: Verdict) -> None:

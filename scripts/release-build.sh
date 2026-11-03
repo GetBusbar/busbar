@@ -42,9 +42,7 @@ cd "$(dirname "$0")/.."
 
 # Production owns its flag/profile channel; preserve any existing owner instrumentation by
 # refusing to silently replace a rustc wrapper. The final compiler receipt checks resolved args.
-scripts/build-provenance-gate.sh --check-build-env || exit 1
-RECEIPT_WRAPPER="$(scripts/build-provenance-gate.sh --prepare-wrapper)" || exit 1
-RECEIPT_SOURCE="$(env -u GIT_INDEX_FILE -u GIT_DIR -u GIT_WORK_TREE git -C "$(pwd)" rev-parse --verify HEAD)" || exit 1
+
 
 TARGET="${1:?usage: release-build.sh <target-triple> [--out-dir DIR] [--evidence-dir DIR]}"
 shift
@@ -83,6 +81,7 @@ for t in spec["targets"]:
         # points `triple` at the shared rust triple. `baseline` marks that variant: build for
         # the armv8.0 baseline, i.e. WITHOUT the +lse floor the default arm64 artifact raises.
         print("SPEC_TRIPLE=%s" % shlex.quote(t.get("triple", t["target"])))
+        print("SPEC_PUBLISHED=%s" % shlex.quote(str(t.get("published", False)).lower()))
         print("SPEC_BASELINE=%s" % shlex.quote(str(t.get("baseline", False)).lower()))
         # `glibc_max` (W17): the newest glibc a linux-gnu artifact may require. Empty elsewhere.
         print("SPEC_GLIBC_MAX=%s" % shlex.quote(str(t.get("glibc_max", ""))))
@@ -95,6 +94,22 @@ PY
 )"
 
 ARCHIVE="busbar-${TARGET}.${SPEC_ARCHIVE}"
+VERIFIER_ARCHIVE="busbar-audit-verify-${TARGET}.${SPEC_ARCHIVE}"
+mkdir -p "$EVIDENCE_DIR" "$OUT_DIR"
+BUILD_FINISHED=false
+clean_failed_build() {
+  if [ "$BUILD_FINISHED" != true ]; then
+    rm -f "$OUT_DIR/$ARCHIVE" "$OUT_DIR/$VERIFIER_ARCHIVE"       "$EVIDENCE_DIR/artifact.sha256" "$EVIDENCE_DIR/audit-verifier.sha256"       "$EVIDENCE_DIR/busbar.pgo-verified"
+  fi
+}
+trap clean_failed_build EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+clean_failed_build
+
+scripts/build-provenance-gate.sh --check-build-env || exit 1
+RECEIPT_WRAPPER="$(scripts/build-provenance-gate.sh --prepare-wrapper)" || exit 1
+RECEIPT_SOURCE="$(env -u GIT_INDEX_FILE -u GIT_DIR -u GIT_WORK_TREE git -C "$(pwd)" rev-parse --verify HEAD)" || exit 1
 
 # ── THE KEY, ASSERTED BEFORE ANYTHING IS COMPILED, FOR EVERY TARGET ─────────────────────────────
 # `option_env!("BUSBAR_RELEASE_PUBKEY")` (crates/plugin-loader/src/sign.rs) is a COMPILE-time read that resolves
@@ -222,48 +237,61 @@ else
 fi
 [ -f "$BIN" ] || { echo "[release-build] the build produced no binary at $BIN" >&2; exit 1; }
 
+VERIFIER_BIN=""
+VERIFIER_EXE=""
+if [ "$SPEC_PUBLISHED" = "true" ]; then
+VERIFIER_EXE="busbar-audit-verify"
+case "$SPEC_EXE" in *.exe) VERIFIER_EXE="$VERIFIER_EXE.exe" ;; esac
+VERIFIER_FLAGS=""
+case "$SPEC_TRIPLE" in *-windows-msvc) VERIFIER_FLAGS="-Ctarget-feature=+crt-static" ;; esac
+# This independent offline tool does not consume the server's PGO profile.
+env -u CARGO_ENCODED_RUSTFLAGS RUSTFLAGS="$VERIFIER_FLAGS"   cargo build --release --locked --package busbar-kernel-audit --bin busbar-audit-verify   --target-dir target/audit-verifier --target "$SPEC_TRIPLE"
+VERIFIER_BIN="target/audit-verifier/${SPEC_TRIPLE}/release/$VERIFIER_EXE"
+[ -f "$VERIFIER_BIN" ] || { echo "[release-build] verifier binary missing" >&2; exit 1; }
+[ -f docs/audit-verify.md ] || { echo "[release-build] verifier instructions missing" >&2; exit 1; }
+
+fi
+
 # ── PACKAGE ─────────────────────────────────────────────────────────────────────────────────────
 # One archiver, parameterised by the declared extension, rather than tar here and a zip action
 # there. The archive contains exactly one member under exactly the declared name, which is what
 # verify-artifact.py's `archive_shape` row asserts and what the documented
 # `tar -xzf busbar-<target>.tar.gz && ./busbar` depends on.
-"$PY" - "$BIN" "$OUT_DIR/$ARCHIVE" "$SPEC_EXE" "$SPEC_ARCHIVE" "$EVIDENCE_DIR/artifact.sha256" <<'PY'
-import hashlib, os, sys, tarfile, zipfile
-src, out, member, kind, digest_out = sys.argv[1:6]
-if os.path.exists(out):
-    os.remove(out)
-# BYTE-STABLE ARCHIVES: every timestamp is SOURCE_DATE_EPOCH (the commit time), and the gzip
-# header carries mtime 0 and no file name, so the archive is a function of the binary alone and
-# a second builder's archive compares byte for byte (owner decision D4).
+"$PY" - "$BIN" "$OUT_DIR/$ARCHIVE" "$SPEC_EXE" "$SPEC_ARCHIVE" "$EVIDENCE_DIR/artifact.sha256"   "$VERIFIER_BIN" "$OUT_DIR/$VERIFIER_ARCHIVE" "$VERIFIER_EXE" "$EVIDENCE_DIR/audit-verifier.sha256" <<'PYARCHIVE'
+import gzip, hashlib, os, sys, tarfile, time, zipfile
+core, core_out, core_member, kind, core_digest, verifier, verifier_out, verifier_member, verifier_digest = sys.argv[1:]
 epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "0"))
-import gzip, time
-if kind == "zip":
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
-        zi = zipfile.ZipInfo(member, date_time=time.gmtime(max(epoch, 315532800))[:6])
-        zi.external_attr = 0o755 << 16
-        zi.compress_type = zipfile.ZIP_DEFLATED
-        with open(src, "rb") as fh:
-            zf.writestr(zi, fh.read())
-else:
-    with open(out, "wb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gz, \
-            tarfile.open(fileobj=gz, mode="w", format=tarfile.GNU_FORMAT) as tf:
-        info = tf.gettarinfo(src, arcname=member)
-        info.mtime = epoch
-        # Normalise ownership and mode so the archive is a function of the bytes, not of whichever
-        # runner account happened to build it -- and so the extracted binary is executable for the
-        # user who downloads it, which the documented quickstart depends on.
-        info.uid = info.gid = 0
-        info.uname = info.gname = ""
-        info.mode = 0o755
-        with open(src, "rb") as fh:
-            tf.addfile(info, fh)
-h = hashlib.sha256()
-with open(out, "rb") as fh:
-    for chunk in iter(lambda: fh.read(1 << 20), b""):
-        h.update(chunk)
-open(digest_out, "w").write(h.hexdigest() + "  " + os.path.basename(out) + "\n")
-print("[release-build] %s (%d bytes) sha256=%s" % (out, os.path.getsize(out), h.hexdigest()))
-PY
+def package(out, members, digest_out):
+    if kind == "zip":
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+            for source, name, mode in members:
+                entry = zipfile.ZipInfo(name, date_time=time.gmtime(max(epoch, 315532800))[:6])
+                entry.external_attr = mode << 16
+                entry.compress_type = zipfile.ZIP_DEFLATED
+                with open(source, "rb") as data:
+                    archive.writestr(entry, data.read())
+    else:
+        with open(out, "wb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gz, tarfile.open(fileobj=gz, mode="w", format=tarfile.GNU_FORMAT) as archive:
+            for source, name, mode in members:
+                entry = archive.gettarinfo(source, arcname=name)
+                entry.mtime = epoch
+                entry.uid = entry.gid = 0
+                entry.uname = entry.gname = ""
+                entry.mode = mode
+                with open(source, "rb") as data:
+                    archive.addfile(entry, data)
+    digest = hashlib.sha256()
+    with open(out, "rb") as data:
+        for block in iter(lambda: data.read(1 << 20), b""):
+            digest.update(block)
+    with open(digest_out, "w") as receipt:
+        receipt.write(digest.hexdigest() + "  " + os.path.basename(out) + "\n")
+    print("[release-build] " + out + " sha256=" + digest.hexdigest())
+package(core_out, [(core, core_member, 0o755)], core_digest)
+if verifier:
+    package(verifier_out, [(verifier, verifier_member, 0o755), ("docs/audit-verify.md", "audit-verify.md", 0o644)], verifier_digest)
+PYARCHIVE
+BUILD_FINISHED=true
 
 echo "[release-build] evidence in $EVIDENCE_DIR:"
 ls -l "$EVIDENCE_DIR"
