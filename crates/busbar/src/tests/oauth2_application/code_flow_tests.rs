@@ -95,7 +95,7 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
         .build()
         .expect("client");
 
-    let mut jar = Jar::new(false);
+    let mut jar = Jar::new(true);
 
     let authorize = format!(
         "{origin}/authorize?response_type=code&client_id={client_id}\
@@ -223,7 +223,7 @@ async fn mint_access_token(origin: &str, client_id: &str) -> String {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("client");
-    let mut jar = Jar::new(false);
+    let mut jar = Jar::new(true);
 
     let authorize = format!(
         "{origin}/authorize?response_type=code&client_id={}\
@@ -339,7 +339,7 @@ async fn shown_and_granted(
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("client");
-    let mut jar = Jar::new(false);
+    let mut jar = Jar::new(true);
     let authorize = format!(
         "{origin}/authorize?response_type=code&client_id={}\
          &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1{scope_param}\

@@ -226,7 +226,7 @@ async fn advertised_device_flow_requires_confirmation_mints_and_revokes() {
         "authorization_pending"
     );
     let grant = start(&subject).await;
-    let mut jar = Jar::new(false);
+    let mut jar = Jar::new(true);
     let token = screen(&client, &mut jar, &origin, &grant).await;
     assert!(jar.header_for("/token").is_none());
     assert!(jar.header_for("/revoke").is_none());
@@ -317,7 +317,7 @@ async fn device_forms_refuse_missing_forged_replayed_and_cross_origin_csrf_and_a
     let (origin, client) = (subject.origin.clone(), subject.client.clone());
     for attack in ["missing", "forged", "cross-origin", "replay"] {
         let grant = start(&subject).await;
-        let mut jar = Jar::new(false);
+        let mut jar = Jar::new(true);
         let token = screen(&client, &mut jar, &origin, &grant).await;
         let submitted = match attack {
             "missing" => "",
@@ -354,7 +354,7 @@ async fn device_forms_refuse_missing_forged_replayed_and_cross_origin_csrf_and_a
         );
     }
     let grant = start(&subject).await;
-    let mut jar = Jar::new(false);
+    let mut jar = Jar::new(true);
     let token = screen(&client, &mut jar, &origin, &grant).await;
     let (status, page) = submit(&client, &mut jar, &origin, &grant, &token, "deny", &origin).await;
     assert_eq!(status, 200, "{page}");

@@ -395,7 +395,7 @@ async fn consent(s: &Subject, jar: &mut Jar, authorize: &str, answer: &str) -> S
 
 async fn code_for(s: &Subject, dpop: &Key) -> String {
     let request_uri = push(s, &push_form(s, CLIENT_ID, &s.key), dpop).await;
-    let mut jar = Jar::new(false);
+    let mut jar = Jar::new(true);
     let redirect = consent(
         s,
         &mut jar,
@@ -518,7 +518,7 @@ async fn the_profile_flow_mints_a_sender_constrained_token() {
     let s = serve(true).await;
     let dpop = Key::new("dpop");
     let request_uri = push(&s, &push_form(&s, CLIENT_ID, &s.key), &dpop).await;
-    let mut jar = Jar::new(false);
+    let mut jar = Jar::new(true);
     let redirect = consent(
         &s,
         &mut jar,
@@ -577,7 +577,7 @@ async fn showing_the_consent_screen_does_not_spend_the_pushed_request() {
     let dpop = Key::new("dpop");
     let request_uri = push(&s, &push_form(&s, CLIENT_ID, &s.key), &dpop).await;
     let authorize = authorize_url(&s, CLIENT_ID, &request_uri);
-    let mut jar = Jar::new(false);
+    let mut jar = Jar::new(true);
     for visit in 1..=2 {
         let (status, headers, body) =
             send(&s.client, &mut jar, reqwest::Method::GET, &authorize, None).await;
@@ -610,7 +610,7 @@ async fn a_pushed_request_naming_no_scope_is_shown_the_default_it_is_granted() {
     let form = with(&push_form(&s, CLIENT_ID, &s.key), "scope", Value::Null);
     let request_uri = push(&s, &form, &dpop).await;
     let authorize = authorize_url(&s, CLIENT_ID, &request_uri);
-    let mut jar = Jar::new(false);
+    let mut jar = Jar::new(true);
     let (status, headers, body) =
         send(&s.client, &mut jar, reqwest::Method::GET, &authorize, None).await;
     assert_eq!(
@@ -642,7 +642,7 @@ async fn the_operator_can_deny_a_pushed_request() {
     let s = serve(true).await;
     let dpop = Key::new("dpop");
     let request_uri = push(&s, &push_form(&s, CLIENT_ID, &s.key), &dpop).await;
-    let mut jar = Jar::new(false);
+    let mut jar = Jar::new(true);
     let redirect = consent(
         &s,
         &mut jar,
@@ -706,7 +706,7 @@ async fn a_request_uri_is_single_use_and_bound_to_its_client() {
 
     let request_uri = push(&s, &push_form(&s, CLIENT_ID, &s.key), &dpop).await;
     let authorize = authorize_url(&s, CLIENT_ID, &request_uri);
-    let mut jar = Jar::new(false);
+    let mut jar = Jar::new(true);
     let redirect = consent(&s, &mut jar, &authorize, "approve").await;
     assert!(query_param(&redirect, "code").is_some(), "{redirect}");
     assert_refused_with_a_page(&s, &authorize, "invalid_request").await;
@@ -1394,7 +1394,7 @@ async fn a_ps256_client_runs_the_profile_and_rs256_is_refused() {
         .as_str()
         .expect("request_uri")
         .to_string();
-    let mut jar = Jar::new(false);
+    let mut jar = Jar::new(true);
     let redirect = consent(
         &s,
         &mut jar,
