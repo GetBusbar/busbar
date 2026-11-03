@@ -436,8 +436,9 @@ fn app() -> (
     if let Some(rotate) = rotate {
         rotate();
     }
-    let (router, handle) =
-        busbar_kernel::build_router_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let app = Arc::new(app);
+    busbar_kernel::boot::hydrate_all(&app).expect("the actual root hydrates its audit stream");
+    let (router, handle) = busbar_kernel::build_router_with_limits(app, 1 << 20, 0, false);
     (store, handle, router, book)
 }
 
