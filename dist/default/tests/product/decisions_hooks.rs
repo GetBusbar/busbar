@@ -71,11 +71,7 @@ fn stage(directory: &Path, file: &str, variable: &str, kind: &str) -> (String, S
         .expect("the actual product exports its statement");
     let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
         .expect("the actual product statement is valid");
-    let mut manifest = plugins::manifest(
-        kind,
-        &facts.name,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-    );
+    let mut manifest = plugins::manifest(kind, &facts.name, "third-party");
     manifest.version = facts.version;
     manifest.statement = Some(hex::encode(statement));
     if kind == "hook" {
@@ -91,7 +87,7 @@ fn stage(directory: &Path, file: &str, variable: &str, kind: &str) -> (String, S
         };
     }
     let library = std::fs::read(path).expect("read the actual product cdylib");
-    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    let archive = plugins::signed(&plugins::key(0x33), manifest, &library);
     let hash = busbar_contract::redacted::sha256_hex(&archive);
     std::fs::write(directory.join(file), archive).expect("stage the signed actual product");
     (facts.name, hash)
@@ -204,11 +200,13 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
     if attach {
         document["hooks"] = json!({"cell":{
             "kind":"gate","module":webrequest,"timeout_ms":10_000,"on_error":"weighted",
-            "prompt":prompt,"user":"ro","priority":0,"global":matches!(bound,Bound::Global),
-            "default":false,"signals":[],"groups":[],"phase":[],"settings":{"url":hook_url}
+            "prompt":prompt,"user":"ro","priority":0,
+            "groups":[],"phase":[],"settings":{"url":hook_url}
         }});
         if matches!(bound, Bound::Section) {
             document["decisions"]["hooks"] = json!(["cell"]);
+        } else {
+            document["pools"] = json!({"hooks":["cell"]});
         }
     }
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
@@ -226,7 +224,7 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
     crate::root::serve::compose(judge, &late, credentials);
     let dispatcher = Arc::new(crate::root::dispatch::build(2, &late));
     crate::root::connector::install_io(&dispatcher);
-    let plugins = busbar_kernel::config::PluginsCfg {
+    let mut plugins = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
         fetch: serde_json::from_value(
@@ -235,6 +233,13 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         .expect("actual Store archive pin"),
         ..Default::default()
     };
+    plugins
+        .trust
+        .publishers
+        .push(busbar_kernel::config::PluginPublisher {
+            name: "third-party".into(),
+            public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+        });
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(
