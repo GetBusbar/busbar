@@ -422,3 +422,8 @@ mod ordinary_plane_fault_outputs;
 #[allow(unsafe_code)]
 #[path = "tests/ordinary_declared_metadata.rs"]
 mod ordinary_declared_metadata;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/store_lifecycle_actual.rs"]
+mod store_lifecycle_actual;
