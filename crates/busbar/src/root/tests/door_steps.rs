@@ -1317,6 +1317,26 @@ fn a_live_parent_at_the_request_cap_admits_and_ledgers_its_child() {
         .expect("actual parent money and hold authorize its child");
     let child = steps().under_admission(&authority);
     child.lock().routed = pools.resolve(ROUTE_POOL, Some(b"frontier"));
+    for invalid in [kernel.admit_token(), kernel.admit_token_for(other_call)] {
+        let refusal = child
+            .admit(&invalid, &child_ctx, &principal, &[], &Default::default())
+            .expect_err("a child requires its own bound admission proof");
+        assert_eq!(
+            refusal.reason(),
+            busbar_contract::caps::ReasonCode::Replayed
+        );
+        assert_eq!(
+            money.open_units(),
+            1,
+            "invalid proof never registers child money"
+        );
+        assert_eq!(cell.accruals(), 0, "invalid proof never accrues to parent");
+        let usage = gov
+            .usage_for(&app.cost, &key.id, arrived)
+            .expect("actual governor usage reads")
+            .expect("parent ledger exists");
+        assert_eq!(usage.requests, 1, "invalid proof never charges admission");
+    }
     let admission = child
         .admit(
             &kernel.admit_token_for(child_ctx.call),
