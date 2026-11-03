@@ -16,6 +16,27 @@ use crate::root::loader::dispatch::auth_handle::{self, RefSpace};
 const OWNER: u64 = 11;
 const GEN: u64 = 1;
 
+fn captured_rates() -> std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg> {
+    let plane = busbar_kernel::plane_driver::registry::plane_decl_for(
+        busbar_kernel::plane_driver::dispatch::fallback_key(),
+    )
+    .expect("the actual linked fallback declares its billable unit vocabulary");
+    let mut entry = busbar_kernel::config::RateEntryCfg {
+        input_utok: 1.0,
+        ..Default::default()
+    };
+    let free =
+        serde_json::from_value(serde_json::json!(0)).expect("an exact explicit free unit price");
+    for class in plane.billable_classes {
+        if !busbar_contract::records::RESERVED_UNITS.contains(&class.class)
+            && !plane.fee_units.contains(&class.class)
+        {
+            entry.units.insert(class.class.to_owned(), free);
+        }
+    }
+    std::collections::BTreeMap::from([("priced-context".into(), entry)])
+}
+
 fn app(
     with_llm: bool,
 ) -> (
@@ -65,7 +86,6 @@ fn app(
         "public_url": "https://gw.example",
         "providers": {},
         "models": {},
-        "rate_card": {},
         "auth": { "chain": ["keys"], "admin_auth": [operator], "signing_key": {"file": signing} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
@@ -74,14 +94,48 @@ fn app(
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": {"file": operator_token},
     });
+    let mut providers = Default::default();
     if with_llm {
+        let dialects: Value =
+            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+                .expect("the actual linked model dialect fixture reads");
+        let dialect = dialects["body_model"]
+            .as_object()
+            .and_then(|rows| rows.keys().next())
+            .expect("the actual model plane declares a body-model dialect");
+        let credential = directory.join("unused-provider-credential");
+        std::fs::write(&credential, "inbound-context-provider-credential")
+            .expect("the actual context provider's credential exists");
+        providers = busbar_kernel::config::providers::catalog_from_str(&format!(
+            "wire:\n  protocol: {dialect}\n  base_url: http://127.0.0.1:9\n"
+        ))
+        .expect("the actual context provider has its catalogue declaration");
+        document["providers"] = serde_json::json!({"wire": {
+            "protocol": dialect, "base_url": "http://127.0.0.1:9", "api_key": {"file": credential}
+        }});
+        document["models"] = serde_json::json!({"priced-context": {"provider": "wire"}});
         document["pools"] = serde_json::json!({});
+        document["rate_card"] =
+            serde_json::to_value(captured_rates()).expect("the actual complete card serializes");
     }
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the product deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let config = busbar_kernel::config::resolve(&deploy, &providers)
         .expect("the product deployment resolves");
-    let listener_config = busbar_kernel::config::resolve(&deploy, &Default::default())
+    assert!(
+        !config.models.contains_key("nope"),
+        "the captured no-rate model remains unconfigured"
+    );
+    if with_llm {
+        assert!(
+            config
+                .rate_card
+                .as_ref()
+                .is_some_and(|card| !card.contains_key("nope")),
+            "the valid authoritative card does not price the captured unknown model"
+        );
+    }
+    let listener_config = busbar_kernel::config::resolve(&deploy, &providers)
         .expect("the same actual deployment resolves for listener topology");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -158,7 +212,17 @@ fn actual_listener_with_routers(
     let section = plugin.served().section;
     let mut sections = std::collections::BTreeMap::new();
     if with_llm {
-        sections.insert(section, serde_yaml::Value::Mapping(Default::default()));
+        sections = app
+            .config_projection
+            .as_ref()
+            .and_then(|projection| projection.downcast_ref::<crate::root::door_steps::DoorConfig>())
+            .expect("the normal root retains the actual resolved plane-owned sections")
+            .sections
+            .clone();
+        assert!(
+            sections.contains_key(section),
+            "the actual fallback section is configured"
+        );
     }
     let gov = app
         .governance
