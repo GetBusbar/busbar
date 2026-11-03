@@ -142,6 +142,7 @@ pub(crate) async fn reshape_body_limit_413(
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
+    let method = req.method().clone();
     let path = req.uri().path().to_owned();
     let target = target_of(req.uri()).to_owned();
     let resp = next.run(req).await;
@@ -151,6 +152,12 @@ pub(crate) async fn reshape_body_limit_413(
     }
 
     let render = || {
+        // The registered legacy admin verbs retain their frozen v1 envelope.
+        // This closure runs only for the actual plain-text body-cap marker;
+        // authentication failures, JSON errors and upstream responses pass through.
+        if crate::admin::seam::admin_verb_is_legacy(method.as_str(), &path) {
+            return crate::admin::gate::err_json(&crate::admin::gate::ApiError::NotFound);
+        }
         kernel_refusal_response(
             &handle,
             &app.planes,

@@ -67,6 +67,8 @@ pub struct AdminVerbTable {
     /// The operation name a request line (method, path) resolves to; `None` = the table declares
     /// no such pair.
     pub verb_at: fn(&str, &str) -> Option<&'static str>,
+    /// Whether this exact method and concrete path name a served legacy operation.
+    pub legacy_at: fn(&str, &str) -> bool,
 }
 
 static VERB_TABLE: OnceLock<AdminVerbTable> = OnceLock::new();
@@ -81,4 +83,10 @@ pub fn admin_verb_rung(name: &str) -> Option<busbar_contract::authz::Scope> {
 
 pub fn admin_verb_at(method: &str, path: &str) -> Option<&'static str> {
     VERB_TABLE.get().and_then(|t| (t.verb_at)(method, path))
+}
+
+pub fn admin_verb_is_legacy(method: &str, path: &str) -> bool {
+    VERB_TABLE
+        .get()
+        .is_some_and(|table| (table.legacy_at)(method, path))
 }

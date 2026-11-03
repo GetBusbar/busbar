@@ -51,6 +51,7 @@ pub fn install() {
         busbar_kernel::admin::seam::AdminVerbTable {
             rung_of: admin_codec::verbs::named_rung,
             verb_at: admin_codec::verbs::name_at,
+            legacy_at: admin_codec::verbs::legacy_at,
         },
     );
 }

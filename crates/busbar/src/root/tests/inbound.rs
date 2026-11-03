@@ -44,6 +44,17 @@ fn app(
     busbar_kernel::config::RootCfg,
     crate::root::durability::NodeBook,
 ) {
+    app_with_admin_reader(with_llm, false)
+}
+
+fn app_with_admin_reader(
+    with_llm: bool,
+    reader: bool,
+) -> (
+    Arc<busbar_kernel::state::App>,
+    busbar_kernel::config::RootCfg,
+    crate::root::durability::NodeBook,
+) {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -94,6 +105,31 @@ fn app(
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": {"file": operator_token},
     });
+    if reader {
+        let path = crate::test_common::plugins::token_verifier_cdylib_path()
+            .expect("the qualified actual OIDC verifier is required for the scope control");
+        let statement = crate::root::loader::dispatch::rendering_of_library(&path)
+            .expect("the actual verifier statement reads")
+            .expect("the verifier exports its statement");
+        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .expect("the actual verifier declaration is valid")
+            .name;
+        crate::test_common::credentials::install_auth_plugin(
+            &directory,
+            &module,
+            "body-cap-reader",
+            true,
+        );
+        document["identity-providers"]["body-cap-reader"] = serde_json::json!({
+            "module": module,
+            "settings": crate::test_common::credentials::settings("api://inbound-body-cap"),
+            "max_admin_scope": "read-only",
+        });
+        document["auth"]["admin_auth"] = serde_json::json!(["body-cap-reader", operator]);
+        document["auth"]["role_bindings"] = serde_json::json!({
+            "body-cap-reader": {"readers": {"admin_scope": "read-only"}},
+        });
+    }
     let mut providers = Default::default();
     if with_llm {
         let dialects: Value =
@@ -777,6 +813,123 @@ async fn retained_listener_refusals_keep_the_actual_llm_producer_after_its_claim
     assert_ne!(
         retained, current,
         "the removed actual producer cannot leak into another generation"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn actual_admin_body_cap_keeps_legacy_projection_new_verbs_and_authority_separate() {
+    async fn send(
+        router: axum::Router,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        size: usize,
+    ) -> kin::Refusal {
+        use tower::ServiceExt as _;
+        let mut request = axum::http::Request::builder().method(method).uri(path);
+        if let Some(token) = token {
+            request = request.header("x-admin-token", token);
+        }
+        let response = router
+            .oneshot(
+                request
+                    .body(axum::body::Body::from(vec![b'x'; size]))
+                    .unwrap(),
+            )
+            .await
+            .expect("the actual admin router answers");
+        let (head, body) = response.into_parts();
+        kin::Refusal {
+            status: head.status.as_u16(),
+            fields: head
+                .headers
+                .iter()
+                .map(|(name, value)| (name.as_str().into(), value.as_bytes().to_vec()))
+                .collect(),
+            body: axum::body::to_bytes(body, usize::MAX)
+                .await
+                .expect("the actual admin response drains")
+                .to_vec(),
+        }
+    }
+    const LEGACY: &str = "/api/v1/admin/keys";
+    const NEW: &str = "/api/v1/admin/ledger/recovery/list";
+    const OVERSIZE: usize = 33 * 1024 * 1024;
+    let (app, config, book) = app_with_admin_reader(false, true);
+    let gov = app
+        .governance
+        .as_ref()
+        .expect("the actual Store owns the key collection")
+        .clone();
+    let before = gov
+        .store()
+        .list_keys()
+        .expect("the actual key collection reads")
+        .len();
+    let (_, _, admin) = actual_listener_with_routers(app, &config, &book, false);
+    assert!(busbar_kernel::admin::seam::admin_verb_is_legacy(
+        "POST", LEGACY
+    ));
+    assert!(!busbar_kernel::admin::seam::admin_verb_is_legacy(
+        "TRACE", LEGACY
+    ));
+    assert!(!busbar_kernel::admin::seam::admin_verb_is_legacy(
+        "POST", NEW
+    ));
+    let legacy = send(
+        admin.clone(),
+        "POST",
+        LEGACY,
+        Some("actual-inbound-operator"),
+        OVERSIZE,
+    )
+    .await;
+    assert!(
+        differences(&legacy, "http.crosscut__413__api-prefix").is_empty(),
+        "the real registered legacy operation retains every frozen error byte"
+    );
+    let new = send(
+        admin.clone(),
+        "POST",
+        NEW,
+        Some("actual-inbound-operator"),
+        OVERSIZE,
+    )
+    .await;
+    assert_eq!(
+        new.status, 413,
+        "new verbs retain the native body-cap status"
+    );
+    let new_body: Value =
+        serde_json::from_slice(&new.body).expect("the native cap response is JSON");
+    assert_eq!(new_body["error"]["code"], "request_too_large");
+    let unauthorized = send(admin.clone(), "POST", LEGACY, None, OVERSIZE).await;
+    assert_eq!(
+        unauthorized.status, 401,
+        "body projection cannot bypass the actual credential gate"
+    );
+    let reader = crate::test_common::credentials::token_for(
+        "body-cap-viewer",
+        &["readers"],
+        "api://inbound-body-cap",
+    );
+    let allowed = send(admin.clone(), "GET", LEGACY, Some(&reader), 0).await;
+    assert_eq!(
+        allowed.status, 200,
+        "the actual verifier identifies a genuinely read-only principal"
+    );
+    let forbidden = send(admin, "POST", LEGACY, Some(&reader), OVERSIZE).await;
+    assert_eq!(
+        forbidden.status, 403,
+        "an oversized write cannot bypass the actual read-only grant"
+    );
+    assert_eq!(
+        gov.store()
+            .list_keys()
+            .expect("the actual key collection reads after refusal")
+            .len(),
+        before,
+        "neither oversized write executes a key mutation"
     );
 }
 
