@@ -174,3 +174,117 @@ fn the_entropy_failure_guard_restores_its_thread_after_unwind() {
         before
     );
 }
+
+// Metadata-only adversarial boundary: retain Ranking's actual image and every operation,
+// changing only the declared route list. This is not a product SERVE implementation.
+extern "C" fn ranking_with_metadata_route() -> &'static busbar_contract::abi::mechanism::door::Door
+{
+    use busbar_contract::abi::hook::{Route as AbiRoute, Tail, ROUTE_AUTH_KEY};
+    use busbar_contract::abi::mechanism::door::{Door, Statement};
+    use busbar_contract::abi::sdk::door::abi_str;
+    static DOOR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let address = *DOOR.get_or_init(|| {
+        let actual = ranking_door();
+        // SAFETY: ranking_door validates and permanently retains the actual image.
+        let statement = unsafe { &*actual.statement() };
+        // SAFETY: the validated Hook descriptor has a full, aligned Hook tail.
+        let mut tail = unsafe { *(statement.kind_tail.cast::<Tail>()) };
+        let route = Box::leak(Box::new(AbiRoute {
+            path: abi_str("/hooks/ranking/metadata-boundary"),
+            method: abi_str("POST"),
+            auth: ROUTE_AUTH_KEY,
+            _reserved: 0,
+        }));
+        tail.routes = route;
+        tail.routes_len = 1;
+        let tail = Box::leak(Box::new(tail));
+        let stated = Box::leak(Box::new(Statement {
+            kind_tail: std::ptr::from_ref(tail).cast(),
+            ..*statement
+        }));
+        let mut parts = actual.parts();
+        parts.statement = stated;
+        // SAFETY: only the route metadata points at new static allocations. All operation
+        // pointers and their original static metadata remain in the retained actual image.
+        let restated = unsafe { Door::__from_parts(parts).__with_migrate(actual.migrate()) };
+        Box::into_raw(Box::new(restated)) as usize
+    });
+    // SAFETY: the immutable descriptor is allocated once and retained permanently above.
+    unsafe { &*(address as *const Door) }
+}
+
+fn ranking_metadata_rows() -> HookRows {
+    HookRows::new(
+        &[ranking_with_metadata_route],
+        None,
+        Arc::new(Dispatcher::new(DispatchConfig::default())),
+    )
+    .expect("the metadata-only restatement retains the actual Ranking operations")
+}
+
+#[test]
+fn actual_ranking_nonempty_metadata_requires_validation_and_host_binding() {
+    let axis = ranking_metadata_rows();
+    let name = ranking_name();
+    let invalid = axis
+        .routes(
+            &name,
+            "hooks.actual-metadata-invalid",
+            &json!({"policy": 17}),
+        )
+        .expect_err("a declared route must run actual Ranking VALIDATE");
+    assert!(
+        invalid.contains("hook-ranking: settings.policy is required"),
+        "{invalid}"
+    );
+    let valid = axis
+        .routes(
+            &name,
+            "hooks.actual-metadata-valid",
+            &json!({"policy": "cheapest"}),
+        )
+        .expect("the same actual validator accepts a real Ranking policy");
+    assert_eq!(valid.len(), 1);
+    let result = {
+        let _entropy = EntropyFailure::new();
+        axis.routes(
+            &name,
+            "hooks.actual-metadata-bind",
+            &json!({"policy": "cheapest"}),
+        )
+    };
+    let error = result.expect_err("nonempty route queries require the actual HostCtx binding");
+    assert!(error.contains("entropy"), "{error}");
+}
+
+#[test]
+fn actual_ranking_metadata_routes_are_owned_after_row_retirement() {
+    let returned = {
+        let axis = ranking_metadata_rows();
+        axis.routes(
+            &ranking_name(),
+            "hooks.actual-metadata-owned",
+            &json!({"policy": "cheapest"}),
+        )
+        .expect("the metadata restatement uses actual Ranking validation")
+    };
+    assert_eq!(
+        returned,
+        vec![Route {
+            path: "/hooks/ranking/metadata-boundary".to_owned(),
+            method: RouteMethod::Post,
+            auth: RouteAuth::Key,
+        }]
+    );
+    // A copied String must not alias the static descriptor's path even while its image is
+    // retained. Row retirement above and independent storage are separate ownership controls.
+    let door = ranking_with_metadata_route();
+    // SAFETY: this test constructed a static, nonempty, validated route list above.
+    let route = unsafe {
+        let tail = &*(*door.statement())
+            .kind_tail
+            .cast::<busbar_contract::abi::hook::Tail>();
+        &*tail.routes
+    };
+    assert_ne!(returned[0].path.as_ptr(), route.path.ptr);
+}
