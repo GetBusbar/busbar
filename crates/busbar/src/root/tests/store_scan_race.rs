@@ -122,6 +122,17 @@ impl StoreCalls for MixedScan {
     }
 }
 
+fn bulky_audit(sealed: &mut Sealed, wall: u64) -> JournalRecord {
+    let mut inputs = crate::root::durability::audit::tests::inputs(sealed.audit.next_seq());
+    inputs.wall = wall;
+    inputs.what.destination = Some("x".repeat(4_096));
+    let audit = sealed.audit.seal(
+        inputs,
+        &busbar_kernel::teller::verb_audit_pass(&crate::root::kernel::new_kernel()),
+    );
+    sealed.append(crate::root::durability::audit_entry(&audit).unwrap())
+}
+
 #[test]
 fn concurrent_atomic_append_can_produce_a_mixed_prefix_view_that_fails_closed() {
     let slots = RecordSlots::new();
@@ -131,8 +142,16 @@ fn concurrent_atomic_append_can_produce_a_mixed_prefix_view_that_fails_closed() 
     lease.hold(taken.lease.unwrap());
     let mut sealed = Sealed::for_node(node);
     for index in 0..300 {
-        sealed.audit(START + index);
+        bulky_audit(&mut sealed, START + index);
     }
+    assert_eq!(sealed.records.len(), 300);
+    let upper_parts: usize = sealed
+        .records
+        .iter()
+        .filter(|record| record.node_seq >= 256)
+        .map(|record| record.encode().chunks(PART_BYTES).count())
+        .sum();
+    assert!(upper_parts >= 256, "the actual upper sequence prefix must saturate its page before the traversal can reach exact prefixes 301 and 302");
     for record in &sealed.records {
         let bytes = record.encode();
         let chunks: Vec<_> = bytes.chunks(PART_BYTES).collect();
@@ -146,8 +165,16 @@ fn concurrent_atomic_append_can_produce_a_mixed_prefix_view_that_fails_closed() 
             );
         }
     }
-    let next = sealed.audit(START + 300);
-    let last = sealed.audit(START + 301);
+    let upper_prefix = part_key(node, 256, 0)[..15].to_vec();
+    assert_eq!(
+        wait_for(slots.record_scan(JOURNAL_SCHEMA, &upper_prefix, 256))
+            .unwrap()
+            .len(),
+        256,
+        "the actual Store returns a saturated upper-prefix page before the mixed traversal starts"
+    );
+    let next = bulky_audit(&mut sealed, START + 300);
+    let last = bulky_audit(&mut sealed, START + 301);
     assert_eq!(next.node_seq, 301);
     assert_eq!(last.node_seq, 302);
     let mut mutations = Vec::new();
