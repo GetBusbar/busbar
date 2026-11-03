@@ -143,6 +143,18 @@ async fn pool_rw_gate_resolves_as_rewrite_not_decision() {
         &rules,
     )
     .expect("the actual root opens the signed products and builds the pool chains");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the actual deployment configured governance")
+            .store_calls()
+            .expect("the configured Store exposes its rate-history slots"),
+        131,
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the configured Store boots its initial rate history");
     limits.keep().expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate();
