@@ -461,7 +461,7 @@ fn a_lane_releases_its_host_lease_only_after_the_pending_writer_drains_and_retir
     successor.lease.unwrap().release(calls.as_ref()).unwrap();
 }
 
-// Probe controls use actual Store rows; only the read-boundary response selection or named
+// Probe controls use rows from the existing Store double; only read-boundary selection or a named
 // refusal is injected. They inspect traversal directly, without inventing sealed chain data.
 use busbar_contract::abi::store::OpId;
 use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
@@ -478,6 +478,7 @@ struct ProbeView {
     inner: Arc<dyn StoreCalls>,
     mode: ProbeMode,
     starts: Mutex<Vec<(Vec<u8>, u32)>>,
+    epoch_stores: Vec<Arc<dyn StoreCalls>>,
 }
 impl ProbeView {
     fn new(slots: &RecordSlots, mode: ProbeMode) -> Self {
@@ -485,6 +486,7 @@ impl ProbeView {
             inner: slots.calls(),
             mode,
             starts: Mutex::new(Vec::new()),
+            epoch_stores: Vec::new(),
         }
     }
 }
@@ -525,7 +527,19 @@ impl StoreCalls for ProbeView {
         limit: u32,
     ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
         Box::pin(async move {
-            self.starts.lock().unwrap().push((prefix.to_vec(), limit));
+            let index = {
+                let mut starts = self.starts.lock().unwrap();
+                let index = starts.len();
+                starts.push((prefix.to_vec(), limit));
+                index
+            };
+            if !self.epoch_stores.is_empty() {
+                assert_eq!(prefix.len(), 8);
+                assert_eq!(limit, JOURNAL_PROBE_ROWS);
+                return self.epoch_stores[index.min(self.epoch_stores.len() - 1)]
+                    .record_scan(schema, prefix, limit)
+                    .await;
+            }
             if limit == JOURNAL_PROBE_ROWS {
                 match self.mode {
                     ProbeMode::Overloaded => return Err(StoreFailure::Overloaded),
@@ -697,4 +711,171 @@ fn overloaded_probe_preserves_the_exhaustive_small_page_fallback() {
     assert_eq!(starts[0].1, 4096);
     assert!(starts[1..].iter().all(|(_, limit)| *limit == 256));
     assert!(starts.iter().any(|(prefix, _)| prefix.len() == 16));
+}
+
+fn proof_records(changed: Option<usize>) -> Vec<JournalRecord> {
+    let mut journal = busbar_kernel_wal::Journal::memory_buffered_to(
+        9,
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        || 1,
+    );
+    let entries: Vec<_> = (0..6)
+        .map(|index| {
+            busbar_kernel_wal::Entry::new(
+                RecordClass::Transaction,
+                vec![if changed == Some(index) {
+                    99
+                } else {
+                    index as u8
+                }],
+            )
+        })
+        .collect();
+    let token = busbar_kernel::teller::Kernel::new().durability_token();
+    journal
+        .append(&token, busbar_contract::caps::StepName::Meter, &entries)
+        .unwrap()
+        .sealed
+}
+
+fn proof_store(records: &[JournalRecord], omit: &[u64]) -> RecordSlots {
+    let slots = RecordSlots::new();
+    for record in records
+        .iter()
+        .filter(|record| !omit.contains(&record.node_seq))
+    {
+        let raw = Record::new(record.node, record.node_seq, record.encode());
+        for (part, value) in parts_of(&raw).unwrap().into_iter().enumerate() {
+            slots.put_row(
+                JOURNAL_SCHEMA,
+                &part_key(record.node, record.node_seq, part as u16),
+                value.as_slice(),
+            );
+        }
+    }
+    slots
+}
+
+fn proof_epochs(stores: &[&RecordSlots]) -> ProbeView {
+    let mut view = ProbeView::new(stores[0], ProbeMode::Healthy);
+    view.epoch_stores = stores.iter().map(|store| store.calls()).collect();
+    view
+}
+
+#[test]
+fn sealed_proof_retries_one_gap_and_retains_original_requested_seals() {
+    let records = proof_records(None);
+    let complete = proof_store(&records, &[]);
+    let mixed = proof_store(&records, &[3]);
+    let view = proof_epochs(&[&mixed, &mixed, &complete]);
+    let seals = [RecordSeal::of(&records[0]), RecordSeal::of(&records[5])];
+    verify_stored_chain_with_seals(&view, 9, &seals).unwrap();
+    assert_eq!(
+        view.starts.lock().unwrap().len(),
+        3,
+        "one mixed fold, its quarantine-authority scan, and one complete fresh proof"
+    );
+}
+
+#[test]
+fn cold_proof_does_not_acquire_a_gap_retry_budget() {
+    let records = proof_records(None);
+    let complete = proof_store(&records, &[]);
+    let mixed = proof_store(&records, &[3]);
+    let view = proof_epochs(&[&mixed, &mixed, &complete]);
+    assert!(verify_stored_chain(&view, 9).is_err());
+    assert_eq!(
+        view.starts.lock().unwrap().len(),
+        2,
+        "cold proof ends after its original fold and bridge-authority scan"
+    );
+}
+
+#[test]
+fn torn_or_malformed_gap_observations_cannot_heal_on_reread() {
+    let records = proof_records(None);
+    let complete = proof_store(&records, &[]);
+    for count in [0u16, 2] {
+        let broken = proof_store(&records, &[]);
+        let mut value = count.to_be_bytes().to_vec();
+        value.extend_from_slice(&records[2].encode());
+        broken.put_row(JOURNAL_SCHEMA, &part_key(9, 3, 0), &value);
+        let view = proof_epochs(&[&broken, &complete]);
+        assert!(verify_stored_chain_with_seals(&view, 9, &[]).is_err());
+        assert!(
+            view.starts.lock().unwrap().len() <= 2,
+            "a fatal part envelope or torn omitted record must not start a fresh proof"
+        );
+    }
+}
+
+#[test]
+fn canonical_consecutive_hash_mismatch_is_fatal_without_retry() {
+    let records = proof_records(None);
+    let changed = proof_records(Some(0));
+    let mut mismatched = records.clone();
+    mismatched[0] = changed[0].clone();
+    let broken = proof_store(&mismatched, &[]);
+    let complete = proof_store(&records, &[]);
+    let view = proof_epochs(&[&broken, &complete]);
+    assert!(verify_stored_chain_with_seals(&view, 9, &[]).is_err());
+    assert_eq!(
+        view.starts.lock().unwrap().len(),
+        2,
+        "consecutive canonical records with a hash mismatch permit only bridge lookup"
+    );
+}
+
+#[test]
+fn fresh_proof_cannot_change_or_omit_original_gap_boundaries_prefix_or_tail() {
+    let records = proof_records(None);
+    let mixed = proof_store(&records, &[3]);
+    for index in [0usize, 1, 3, 5] {
+        let changed = proof_records(Some(index));
+        let replacement = proof_store(&changed, &[]);
+        let view = proof_epochs(&[&mixed, &mixed, &replacement]);
+        assert!(
+            verify_stored_chain_with_seals(&view, 9, &[]).is_err(),
+            "changed original prefix/boundary/tail at index {index} must fail"
+        );
+        assert_eq!(view.starts.lock().unwrap().len(), 3);
+    }
+    for omitted in [vec![4], vec![6]] {
+        let replacement = proof_store(&records, &omitted);
+        let view = proof_epochs(&[&mixed, &mixed, &replacement]);
+        assert!(
+            verify_stored_chain_with_seals(&view, 9, &[]).is_err(),
+            "missing original boundary/tail must fail"
+        );
+    }
+}
+
+#[test]
+fn a_second_mixed_gap_exhausts_the_whole_proof_budget() {
+    let records = proof_records(None);
+    let first = proof_store(&records, &[3]);
+    let second = proof_store(&records, &[5]);
+    let complete = proof_store(&records, &[]);
+    let view = proof_epochs(&[&first, &first, &second, &second, &complete]);
+    assert!(verify_stored_chain_with_seals(&view, 9, &[]).is_err());
+    assert_eq!(
+        view.starts.lock().unwrap().len(),
+        4,
+        "the fresh proof's gap may inspect quarantine authority but never restart again"
+    );
+}
+
+#[test]
+fn missing_or_changed_requested_seals_never_authorize_retry() {
+    let records = proof_records(None);
+    let complete = proof_store(&records, &[]);
+    let mixed = proof_store(&records, &[3]);
+    let view = proof_epochs(&[&mixed, &mixed, &complete]);
+    assert!(verify_stored_chain_with_seals(&view, 9, &[RecordSeal::of(&records[2])]).is_err());
+    assert_eq!(view.starts.lock().unwrap().len(), 2);
+    let view = proof_epochs(&[&complete]);
+    let mut seal = RecordSeal::of(&records[0]);
+    seal.hash[0] ^= 1;
+    assert!(verify_stored_chain_with_seals(&view, 9, &[seal]).is_err());
+    assert_eq!(view.starts.lock().unwrap().len(), 1);
 }
