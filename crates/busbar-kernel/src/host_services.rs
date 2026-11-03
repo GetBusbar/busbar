@@ -463,12 +463,50 @@ impl VerifiedTicketIdentity {
     pub fn store(&self) -> &Arc<dyn RecordStore> {
         &self.store
     }
+    pub fn prefix(&self) -> &str {
+        &self.prefix
+    }
 }
 
 impl std::fmt::Debug for VerifiedTicketIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VerifiedTicketIdentity")
             .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Host policy classifies an authenticated ticket before its durable single-use spend.
+/// Only a real reservation grants reservation-backed financial authority.
+pub enum TicketClaimDisposition {
+    Ordinary,
+    Reserved(crate::plane_driver::money::TicketReservation),
+    Refused,
+}
+
+/// Shared request contexts carry one removable, durably spent reservation.
+/// Cloning this holder shares custody; it never clones the reservation itself.
+#[derive(Clone)]
+pub struct HostTicketAdmission(
+    Arc<Mutex<Option<crate::plane_driver::money::SpentTicketReservation>>>,
+);
+
+impl HostTicketAdmission {
+    pub(crate) fn new(spent: crate::plane_driver::money::SpentTicketReservation) -> Self {
+        Self(Arc::new(Mutex::new(Some(spent))))
+    }
+
+    pub fn take(&self) -> Option<crate::plane_driver::money::SpentTicketReservation> {
+        // A poisoned holder fails closed. In either case no financial destructor runs
+        // while the mutex is held: the removed token is returned to the caller.
+        let mut held = self.0.lock().ok()?;
+        held.take()
+    }
+}
+
+impl std::fmt::Debug for HostTicketAdmission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostTicketAdmission")
             .finish_non_exhaustive()
     }
 }
