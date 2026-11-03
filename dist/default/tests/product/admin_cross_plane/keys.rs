@@ -3461,7 +3461,9 @@ async fn named_map_app_opts(
         rotate();
     }
     app.serve_tables = tables;
-    let router = crate::distribution::admin_cross_plane::build_router(Arc::new(app));
+    let app = Arc::new(app);
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&app);
+    let router = crate::distribution::admin_cross_plane::build_router(app);
     let (addr, handle, _) = spin_up(router).await;
     (dir, overlay, addr, handle)
 }
