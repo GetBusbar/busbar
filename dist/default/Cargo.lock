@@ -798,7 +798,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://git.getbusbar.dev/GetBusbar/busbar-plane-mcp?rev=95cab2dd465b8a283a744b782e86af019f4dc94b#95cab2dd465b8a283a744b782e86af019f4dc94b"
+source = "git+https://git.getbusbar.dev/GetBusbar/busbar-plane-mcp?rev=dcfc3517a80901426d05219a9b77e7b0c21c9b6a#dcfc3517a80901426d05219a9b77e7b0c21c9b6a"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
