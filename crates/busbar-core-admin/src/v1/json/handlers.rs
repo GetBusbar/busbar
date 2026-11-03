@@ -2536,6 +2536,8 @@ pub(crate) async fn put_config_settings(
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct PatchSettingsReq {
+    // settings-leak-lint: allow — INBOUND request body (`Deserialize` only). This is the operator
+    // settings-leak-lint: allow — the envelope member; `redact_settings_bags` above has
     settings: serde_json::Map<String, serde_json::Value>,
 }
 

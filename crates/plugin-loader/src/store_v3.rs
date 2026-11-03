@@ -1993,6 +1993,7 @@ fn split_secrets(refs: &[String], settings: &[u8]) -> (Vec<u8>, Vec<Zeroing>) {
 }
 
 struct OpenLent {
+    // settings-leak-lint: allow — NON-PROJECTION engine type: OPEN's settings bytes,
     settings: Vec<u8>,
     #[allow(dead_code)]
     secrets: Vec<Zeroing>,
