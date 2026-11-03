@@ -16,7 +16,11 @@ use crate::root::test_plugins as plugins;
 fn actual_mcp_health_calls(
     app: &kernel::state::App,
     config: &kernel::config::RootCfg,
-) -> (Arc<dyn PlaneCalls>, Vec<ServeRoute>) {
+) -> (
+    Arc<dyn PlaneCalls>,
+    Vec<ServeRoute>,
+    Arc<kernel::plane_driver::PlaneDriver>,
+) {
     let late = crate::root::serve::LateServices::new();
     let (credentials, _credential_handle) = crate::root::credentials::AppCredentials::late();
     crate::root::serve::compose(
@@ -67,7 +71,47 @@ fn actual_mcp_health_calls(
             audit_verb: route.audit_verb.clone(),
         })
         .collect();
-    (Arc::new(PlaneInstance::new(plugin, dispatcher, 0)), routes)
+    let op_classes = plugin
+        .served()
+        .op_classes
+        .iter()
+        .map(|class| busbar_contract::ids::OpClassId::new(class))
+        .collect();
+    let calls: Arc<dyn PlaneCalls> = Arc::new(PlaneInstance::new(plugin, dispatcher, 0));
+    let node = Arc::new(crate::root::plane_node::Node::new());
+    let post = Arc::new(crate::root::plane_node::NodeEndPost::new(node));
+    let money = Arc::new(kernel::plane_driver::PlaneMoney::new(
+        Arc::clone(
+            app.governance
+                .as_ref()
+                .expect("the actual Store owns governance"),
+        ),
+        post,
+    ));
+    // MCP's real health verb reads its admitted counterparties through the host.
+    // Use the normal driver admission rather than an unadmitted raw Plugin.
+    let section = serde_yaml::from_str(
+        r#"x: {url: 'http://127.0.0.1:1', allow_private: true, pin: {mechanism: unpinned}}"#,
+    )
+    .expect("the same actual MCP section parses for host admission");
+    let driver = Arc::new(
+        kernel::plane_driver::PlaneDriver::new(
+            Arc::clone(&calls),
+            kernel::plane_driver::DriverConfig {
+                caps: kernel::plane_driver::BufferCaps::default(),
+                op_classes,
+                status_of: kernel::plane_driver::refusal_status,
+                refusal_statuses: calls.refusal_statuses(),
+                caller_refs: money.caller_refs(),
+            },
+            money,
+            late.kernel()
+                .expect("the actual host services are composed"),
+            ("tools", &section),
+        )
+        .expect("the actual MCP declaration admits its health subject"),
+    );
+    (calls, routes, driver)
 }
 
 fn health_table(instance: &str, calls: Arc<dyn PlaneCalls>, routes: &[ServeRoute]) -> ServeTable {
@@ -183,7 +227,7 @@ async fn two_apps_lent_two_tables_each_serve_only_their_own_instance() {
     let (mut a, config) = build();
     let (mut b, _) = build();
     let (unlent, _) = build();
-    let (calls, routes) = actual_mcp_health_calls(&a, &config);
+    let (calls, routes, _driver) = actual_mcp_health_calls(&a, &config);
     let (lent_a, lent_b) = (
         kernel::plane_driver::serve::ServeTables::default(),
         kernel::plane_driver::serve::ServeTables::default(),
@@ -304,7 +348,7 @@ async fn a_rebuild_carries_the_published_admin_table() {
         rotate();
     }
 
-    let (calls, routes) = actual_mcp_health_calls(&boot, &calls_config);
+    let (calls, routes, _driver) = actual_mcp_health_calls(&boot, &calls_config);
     let headers = axum::http::HeaderMap::new();
     let served = |on: &kernel::state::App, path: &str| {
         let headers = headers.clone();
