@@ -852,7 +852,7 @@ members = ["."]
 # THE LLM PLANE, pinned from its own repo like every other plane. da2ab5f (stuck3-1427-journal) is
 # e154678 plus its held-cell test reading the rig's node journal (busbar #1427: the node amendment
 # journal is an instance the node owns; `node_recent` is gone).
-busbar-plane-llm = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-llm", rev = "13b4360ef8f36a6d779c3f12887f82fc03245ad7" }
+busbar-plane-llm = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-llm", rev = "47733adda3b1ab66c8df1d2f055f295be4bbfbeb" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-admin-tokens", rev = "cafd7379f1857b27b6e87618ea4fe13b1bb353b7" }
 busbar-auth-admin-tokens-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-admin-tokens", rev = "cafd7379f1857b27b6e87618ea4fe13b1bb353b7" }
