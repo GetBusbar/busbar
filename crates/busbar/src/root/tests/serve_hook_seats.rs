@@ -1011,6 +1011,20 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         }),
         false,
     )?;
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the actual configured Store owns governance")
+            .store_calls()
+            .expect("the actual configured Store exposes rate history calls"),
+        durability
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record
+            .node(),
+    );
+    crate::root::kernel::ROOT_CARD.boot_in_store(None)?;
     limits.keep()?;
     if let Some(rotate) = rotate {
         rotate();
@@ -1156,9 +1170,8 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         let lanes = opts.members.len();
         let stream_ceiling_secs = opts.stream_ceiling_secs.unwrap_or(600);
         let (sections, providers) = (sections.clone(), providers.clone());
+        let secrets: Arc<dyn busbar_contract::secret::SecretResolve> = app.secret_resolver.clone();
         Arc::new(move || {
-            let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
-                app.secret_resolver.clone();
             let models = crate::root::model_egress::ModelServing {
                 pools: model_pools.clone(),
                 lanes: (0..lanes).map(|i| (format!("m{i}"), i)).collect(),
