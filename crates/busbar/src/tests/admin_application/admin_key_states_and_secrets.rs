@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 #[path = "../../root/tests/test_plugins.rs"]
@@ -63,10 +62,7 @@ async fn test_signed_mint_verify_then_delete_denies() {
     }
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
-    let store_library = PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built Store product"),
-    );
+    let store_library = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
         .expect("the actual Store statement reads")
         .expect("the actual Store exports its statement");
@@ -86,10 +82,8 @@ async fn test_signed_mint_verify_then_delete_denies() {
         &std::fs::read(store_library).expect("the actual Store artifact reads"),
     );
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("actual Store settings are JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -251,10 +245,7 @@ async fn test_signed_revoke_denylists_without_deleting() {
     }
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
-    let store_library = PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built Store product"),
-    );
+    let store_library = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
         .expect("the actual Store statement reads")
         .expect("the actual Store exports its statement");
@@ -274,10 +265,8 @@ async fn test_signed_revoke_denylists_without_deleting() {
         &std::fs::read(store_library).expect("the actual Store artifact reads"),
     );
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("actual Store settings are JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -454,10 +443,7 @@ async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
     }
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
-    let store_library = PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built Store product"),
-    );
+    let store_library = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
         .expect("the actual Store statement reads")
         .expect("the actual Store exports its statement");
@@ -478,10 +464,8 @@ async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
         &std::fs::read(store_library).expect("the actual Store artifact reads"),
     );
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("actual Store settings are JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -698,10 +682,7 @@ async fn test_list_keys_include_tombstoned() {
     }
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
-    let store_library = PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built Store product"),
-    );
+    let store_library = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
         .expect("the actual Store statement reads")
         .expect("the actual Store exports its statement");
@@ -721,10 +702,8 @@ async fn test_list_keys_include_tombstoned() {
         &std::fs::read(store_library).expect("the actual Store artifact reads"),
     );
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("actual Store settings are JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -914,10 +893,7 @@ async fn test_signed_mint_group_none_and_pool_acl_matrix() {
     }
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
-    let store_library = PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built Store product"),
-    );
+    let store_library = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
         .expect("the actual Store statement reads")
         .expect("the actual Store exports its statement");
@@ -938,10 +914,8 @@ async fn test_signed_mint_group_none_and_pool_acl_matrix() {
         &std::fs::read(store_library).expect("the actual Store artifact reads"),
     );
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("actual Store settings are JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -1105,10 +1079,7 @@ async fn a_repeated_key_post_keys_replays_the_first_response_byte_for_byte() {
     }
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
-    let store_library = PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built Store product"),
-    );
+    let store_library = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
         .expect("the actual Store statement reads")
         .expect("the actual Store exports its statement");
@@ -1130,10 +1101,8 @@ async fn a_repeated_key_post_keys_replays_the_first_response_byte_for_byte() {
         &std::fs::read(store_library).expect("the actual Store artifact reads"),
     );
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("actual Store settings are JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -1276,10 +1245,7 @@ async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_re
     }
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
-    let store_library = PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built Store product"),
-    );
+    let store_library = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
         .expect("the actual Store statement reads")
         .expect("the actual Store exports its statement");
@@ -1301,10 +1267,8 @@ async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_re
         &std::fs::read(store_library).expect("the actual Store artifact reads"),
     );
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("actual Store settings are JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
