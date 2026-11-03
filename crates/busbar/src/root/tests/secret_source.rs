@@ -50,6 +50,7 @@ fn source_in(render: &str, secret: &SecretRef) -> Vec<String> {
 }
 
 pub(super) fn refused_naming_its_source(secret: &SecretRef) -> String {
+    #[cfg(distribution_root)]
     crate::dist_root_install::install();
     let text = busbar_kernel::config::secret::resolve_linked_string_at_config(
         secret,

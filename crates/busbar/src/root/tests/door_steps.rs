@@ -1318,6 +1318,7 @@ fn resolve_upgrading(
     served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     upgrades: Vec<&'static str>,
 ) -> Result<std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
+    #[cfg(distribution_root)]
     crate::dist_root_install::install();
     let section: serde_yaml::Value = serde_yaml::from_str(section).expect("yaml");
     let providers = providers
@@ -8147,6 +8148,7 @@ static NO_PROVIDERS: std::collections::BTreeMap<String, super::ProviderRoute> =
     std::collections::BTreeMap::new();
 
 fn own_reach() -> super::DoorReach<'static> {
+    #[cfg(distribution_root)]
     crate::dist_root_install::install();
     let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
         crate::root::loader::dispatch::DispatchConfig::default(),
@@ -8530,6 +8532,7 @@ fn per_hop_over(
     auth: std::sync::Arc<CountingOpens>,
     secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
 ) -> super::PerHop {
+    #[cfg(distribution_root)]
     crate::dist_root_install::install();
     let secret = busbar_contract::secret_ref::SecretRef::file(path.display().to_string());
     let value = secrets.resolve_string(&secret).expect("it resolves");
