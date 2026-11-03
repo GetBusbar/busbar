@@ -406,4 +406,54 @@ fn an_actual_held_short_lease_is_released_exactly_once_when_its_token_drops() {
         ),
         (2, 1, 1)
     );
+    let lease = frame.out.head.lease;
+    let mut released = Frame::new(
+        busbar_contract::abi::mechanism::lifecycle::ReleaseIn {
+            head: crate::dispatch::in_head(),
+            lease,
+        },
+        crate::dispatch::out_head(),
+    );
+    assert_eq!(
+        plugin
+            .call(
+                busbar_contract::abi::mechanism::lifecycle::slot::RELEASE,
+                &mut released
+            )
+            .outcome,
+        Outcome::Refused,
+        "token drop already returned this SDK lease"
+    );
+    let mut next_input: VerifyIn = blank_in();
+    next_input.point = POINT_HEAD;
+    let mut next = Frame::new(next_input, blank_out::<IdentifyOut>());
+    let token = plugin
+        .call(slot::VERIFY, &mut next)
+        .recall
+        .expect("a new actual short answer owns its token");
+    assert_eq!(
+        plugin
+            .call(
+                busbar_contract::abi::mechanism::lifecycle::slot::CLOSE,
+                &mut Frame::new(crate::dispatch::in_head(), crate::dispatch::out_head())
+            )
+            .outcome,
+        Outcome::Ready
+    );
+    assert!(!plugin.is_open());
+    let mut recall_input: VerifyIn = blank_in();
+    recall_input.point = POINT_HEAD;
+    assert!(
+        matches!(
+            plugin
+                .recall(
+                    token,
+                    slot::VERIFY,
+                    &mut Frame::new(recall_input, blank_out::<IdentifyOut>())
+                )
+                .outcome,
+            Outcome::Refused | Outcome::Fault
+        ),
+        "a closed auth instance must never recall its old short answer"
+    );
 }
