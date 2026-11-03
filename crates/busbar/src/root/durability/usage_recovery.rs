@@ -493,7 +493,7 @@ fn selected_checkpoint_inner(
     let at = found.ok_or_else(|| invalid(missing))?;
     // Materialize only this one payload, after the selected lineage has verified.
     let record = read_record_exact(calls, at.node, at.sequence).map_err(invalid)?;
-    if let Some(facts) = facts.as_deref_mut() {
+    if let Some(facts) = facts {
         if !facts.capture(&record)? {
             return Ok(None);
         }
