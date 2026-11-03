@@ -4,9 +4,10 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
+use crate::host_services::VerifiedTicketIdentity;
 use busbar_contract::abi::plane::{units_bill, UnitCount};
-use busbar_contract::caps::ReasonCode;
-use busbar_contract::records::VirtualKey;
+use busbar_contract::caps::{Admittance, CallId, Grant, PrincipalId, ReasonCode};
+use busbar_contract::records::{RecordStore, VirtualKey};
 use busbar_contract::UnitKey;
 
 use super::cancel::{CancelBill, Checkpoint, MoneySeam};
@@ -112,6 +113,143 @@ pub struct ReservationMoney {
     grant: Arc<AdmitGrant>,
     fee: FeeParticipation,
     book: Arc<()>,
+}
+
+/// Linear host reservation bound to a verified ticket and actual source provenance.
+pub struct TicketReservation {
+    money: ReservationMoney,
+    id: String,
+    expires_at: u64,
+    key: Arc<VirtualKey>,
+    store: Arc<dyn RecordStore>,
+    source_call: CallId,
+    source_unit: UnitKey,
+    node_nonce: Arc<()>,
+    instance_nonce: Arc<()>,
+}
+
+/// Durable redemption has succeeded. Only kernel authentication can mint this wrapper.
+pub struct SpentTicketReservation(TicketReservation);
+
+pub struct ReturnedTicketReservation {
+    reason: ReasonCode,
+    reservation: TicketReservation,
+}
+
+impl ReturnedTicketReservation {
+    pub fn into_parts(self) -> (ReasonCode, TicketReservation) {
+        (self.reason, self.reservation)
+    }
+}
+
+/// Proof of an already committed reserved admission, usable by one terminal posting.
+pub struct ReservedRequestLineage {
+    call: CallId,
+    unit: UnitKey,
+    principal: PrincipalId,
+}
+
+impl ReservedRequestLineage {
+    pub fn consume(self, ctx: &UnitCtx, principal: &PrincipalId) -> Result<(), ReasonCode> {
+        if self.call == ctx.call && self.unit == ctx.key && &self.principal == principal {
+            Ok(())
+        } else {
+            Err(ReasonCode::Unpriced)
+        }
+    }
+}
+
+impl TicketReservation {
+    pub fn matches(&self, identity: &VerifiedTicketIdentity) -> bool {
+        self.id == identity.id()
+            && self.expires_at == identity.expires_at()
+            && self.key.as_ref() == identity.principal().as_ref()
+            && Arc::ptr_eq(&self.store, identity.store())
+    }
+}
+
+impl SpentTicketReservation {
+    pub(crate) fn after_redemption(
+        reservation: TicketReservation,
+        principal: &VirtualKey,
+    ) -> Result<Self, ReturnedTicketReservation> {
+        if reservation.key.as_ref() != principal {
+            return Err(ReturnedTicketReservation {
+                reason: ReasonCode::Unpriced,
+                reservation,
+            });
+        }
+        Ok(Self(reservation))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn adopt(
+        self,
+        money: &PlaneMoney,
+        ctx: &UnitCtx,
+        admit: &Grant<Admittance>,
+        principal: &PrincipalId,
+        expected_key: &VirtualKey,
+        lane: String,
+        classes: Arc<[String]>,
+        fee: FeeRefund,
+        node_nonce: &Arc<()>,
+        instance_nonce: &Arc<()>,
+        store: &Arc<dyn RecordStore>,
+    ) -> Result<ReservedRequestLineage, ReturnedTicketReservation> {
+        let reservation = self.0;
+        if !admit.bound_to(ctx.call)
+            || reservation.source_call == CallId::UNBOUND
+            || reservation.source_unit == ctx.key
+            || reservation.source_call == ctx.call
+            || principal != &PrincipalId::new(expected_key.id.clone())
+            || reservation.key.as_ref() != expected_key
+            || !Arc::ptr_eq(&reservation.node_nonce, node_nonce)
+            || !Arc::ptr_eq(&reservation.instance_nonce, instance_nonce)
+            || !Arc::ptr_eq(&reservation.store, store)
+            || !Arc::ptr_eq(&reservation.money.book, &money.book)
+        {
+            return Err(ReturnedTicketReservation {
+                reason: ReasonCode::Unpriced,
+                reservation,
+            });
+        }
+        let TicketReservation {
+            money: reserved,
+            id,
+            expires_at,
+            key,
+            store,
+            source_call,
+            source_unit,
+            node_nonce,
+            instance_nonce,
+        } = reservation;
+        match money.adopt_reserved(reserved, ctx.key, lane, classes, fee, expected_key) {
+            Ok(()) => Ok(ReservedRequestLineage {
+                call: ctx.call,
+                unit: ctx.key,
+                principal: principal.clone(),
+            }),
+            Err(returned) => {
+                let (reason, reserved) = returned.into_parts();
+                Err(ReturnedTicketReservation {
+                    reason,
+                    reservation: TicketReservation {
+                        money: reserved,
+                        id,
+                        expires_at,
+                        key,
+                        store,
+                        source_call,
+                        source_unit,
+                        node_nonce,
+                        instance_nonce,
+                    },
+                })
+            }
+        }
+    }
 }
 
 /// An unsuccessful adoption returns the unchanged financial reservation for retry or cleanup.
@@ -341,6 +479,34 @@ impl PlaneMoney {
                 refundable: true,
             },
             book: self.book.clone(),
+        })
+    }
+
+    /// Must run inside the source cell's `with_admitted_call` transaction and once latch.
+    #[allow(clippy::too_many_arguments)]
+    pub fn reserve_ticket_admission(
+        &self,
+        parent: UnitKey,
+        source_call: CallId,
+        expected_key: &VirtualKey,
+        identity: &VerifiedTicketIdentity,
+        node_nonce: Arc<()>,
+        instance_nonce: Arc<()>,
+    ) -> Result<TicketReservation, ReasonCode> {
+        if source_call == CallId::UNBOUND || identity.principal().as_ref() != expected_key {
+            return Err(ReasonCode::Unpriced);
+        }
+        let reserved = self.reserve_admission(parent, expected_key)?;
+        Ok(TicketReservation {
+            money: reserved,
+            id: identity.id().to_owned(),
+            expires_at: identity.expires_at(),
+            key: identity.principal().clone(),
+            store: identity.store().clone(),
+            source_call,
+            source_unit: parent,
+            node_nonce,
+            instance_nonce,
         })
     }
 

@@ -1960,3 +1960,151 @@ fn the_actual_reservation_grant_holds_concurrency_across_settled_mint_and_adopti
         );
     }
 }
+
+#[test]
+fn reserved_ticket_adoption_checks_receiving_authority_and_binding() {
+    for mismatch in 0..11 {
+        let r = rig(None, 7, ExhaustionMode::FinishUnit);
+        let kernel = crate::teller::Kernel::new();
+        let source_call = kernel.next_call();
+        let store = crate::real_store::store();
+        let identity = VerifiedTicketIdentity {
+            id: "ticket-test".into(),
+            principal: r.key.clone(),
+            expires_at: NOW + 60,
+            store: store.clone(),
+            prefix: "test".into(),
+            credential: "redacted".into(),
+        };
+        drop(reserve_parent(&r));
+        let node = Arc::new(());
+        let instance = Arc::new(());
+        let reservation = r
+            .money
+            .reserve_ticket_admission(
+                UnitKey::new(1),
+                source_call,
+                &r.key,
+                &identity,
+                node.clone(),
+                instance.clone(),
+            )
+            .expect("actual source");
+        assert!(reservation.matches(&identity));
+        let spent = match SpentTicketReservation::after_redemption(reservation, &r.key) {
+            Ok(spent) => spent,
+            Err(_) => panic!("matching redeemed principal"),
+        };
+        r.money.settle_end(UnitKey::new(1), 200);
+        let mut receiving = ctx(2);
+        receiving.call = kernel.next_call();
+        let grant = if mismatch == 1 {
+            kernel.admit_token()
+        } else {
+            kernel.admit_token_for(receiving.call)
+        };
+        if mismatch == 2 {
+            receiving.call = kernel.next_call();
+        }
+        if mismatch == 3 {
+            receiving.key = UnitKey::new(1);
+        }
+        let principal = PrincipalId::new(if mismatch == 4 { "foreign" } else { "k" });
+        let mut expected = r.key.as_ref().clone();
+        if mismatch == 5 {
+            expected.generation_hash.push('x');
+        }
+        let other_node = Arc::new(());
+        let other_instance = Arc::new(());
+        let other_store = crate::real_store::store();
+        let other_money = PlaneMoney::new(r.gov.clone(), r.posted.clone());
+        let outcome = spent.adopt(
+            if mismatch == 9 {
+                &other_money
+            } else {
+                &r.money
+            },
+            &receiving,
+            &grant,
+            &principal,
+            &expected,
+            "m".into(),
+            r.unit.classes.clone(),
+            r.unit.fee.clone(),
+            if mismatch == 6 { &other_node } else { &node },
+            if mismatch == 7 {
+                &other_instance
+            } else {
+                &instance
+            },
+            if mismatch == 8 { &other_store } else { &store },
+        );
+        if (1..=9).contains(&mismatch) {
+            assert!(outcome.is_err(), "mismatch {mismatch} must fail closed");
+            drop(outcome);
+        } else {
+            let lineage = match outcome {
+                Ok(lineage) => lineage,
+                Err(_) => panic!("valid adoption"),
+            };
+            if mismatch == 10 {
+                receiving.call = kernel.next_call();
+            }
+            assert_eq!(
+                lineage.consume(&receiving, &principal).is_ok(),
+                mismatch == 0
+            );
+            assert_eq!(
+                r.money.checkpoint(&ctx(2), &reported(1_000_000)),
+                Checkpoint::Continue
+            );
+            r.money.settle_end(UnitKey::new(2), 200);
+            assert_eq!(usage(&r).0, 1_000_000, "actual adopted usage priced once");
+        }
+    }
+}
+
+#[test]
+fn reserved_ticket_holder_clones_share_one_financial_token() {
+    let r = rig(None, 7, ExhaustionMode::FinishUnit);
+    let kernel = crate::teller::Kernel::new();
+    let identity = VerifiedTicketIdentity {
+        id: "one-take".into(),
+        principal: r.key.clone(),
+        expires_at: NOW + 60,
+        store: crate::real_store::store(),
+        prefix: "test".into(),
+        credential: "redacted".into(),
+    };
+    drop(reserve_parent(&r));
+    let reservation = r
+        .money
+        .reserve_ticket_admission(
+            UnitKey::new(1),
+            kernel.next_call(),
+            &r.key,
+            &identity,
+            Arc::new(()),
+            Arc::new(()),
+        )
+        .expect("reserve");
+    let spent = match SpentTicketReservation::after_redemption(reservation, &r.key) {
+        Ok(spent) => spent,
+        Err(_) => panic!("redeemed principal"),
+    };
+    let holder = crate::host_services::HostTicketAdmission::new(spent);
+    let clone = holder.clone();
+    r.money.settle_end(UnitKey::new(1), 500);
+    let token = holder.take().expect("sole token");
+    assert!(clone.take().is_none());
+    assert_eq!(usage(&r).1, 7, "reservation retains original fee decision");
+    drop(token);
+    assert_eq!(
+        usage(&r).1,
+        0,
+        "one final participation refunds exactly once"
+    );
+    drop(holder);
+    drop(clone);
+    assert_eq!(usage(&r).1, 0);
+}
