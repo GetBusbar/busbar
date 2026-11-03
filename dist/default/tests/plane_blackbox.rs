@@ -917,7 +917,7 @@ fn http(
     Ok((status, text))
 }
 
-type ResponseHeaders = BTreeMap<String, Vec<String>>;
+type ResponseHeaders = BTreeMap<String, Vec<Vec<u8>>>;
 
 fn http_response(
     method: &str,
@@ -956,12 +956,12 @@ fn http_response(
         }
         let resp = req.send().await.map_err(|e| format!("{url}: {e}"))?;
         let status = resp.status().as_u16();
-        let mut response_headers = BTreeMap::<String, Vec<String>>::new();
+        let mut response_headers = ResponseHeaders::new();
         for (name, value) in resp.headers() {
             response_headers
                 .entry(name.as_str().to_string())
                 .or_default()
-                .push(String::from_utf8_lossy(value.as_bytes()).into_owned());
+                .push(value.as_bytes().to_vec());
         }
         let text = resp
             .text()
@@ -1322,7 +1322,7 @@ fn run_step(world: &mut World, step: &Step) -> Result<(), String> {
                 secs(s, 60),
             )?;
             for (name, value) in string_map(s.get("response_headers_eq"), "response_headers_eq")? {
-                let expected = vec![world.fill(&value)?];
+                let expected = vec![world.fill(&value)?.into_bytes()];
                 if response_headers.get(&name.to_ascii_lowercase()) != Some(&expected) {
                     return Err(format!("response header {name:?} is not exactly {expected:?}: {response_headers:?}"));
                 }
