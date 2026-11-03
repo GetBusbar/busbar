@@ -1888,7 +1888,7 @@ async fn a_final_body_emit_remains_alive_through_graceful_drain() {
         "/hello",
         axum::routing::get(|| async {
             axum::response::Response::new(axum::body::Body::from_stream(futures::stream::once(
-                async { Ok::<_, std::convert::Infallible>(Bytes::from_static(b"hi")) },
+                async { Ok::<_, std::convert::Infallible>(bytes::Bytes::from_static(b"hi")) },
             )))
         }),
     );
