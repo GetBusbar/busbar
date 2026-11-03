@@ -932,7 +932,16 @@ impl DriverSteps for DoorSteps<'_> {
             }
         }
 
-        let named = self.lock().named.clone();
+        let (named, local_entry) = {
+            let u = self.lock();
+            let local_entry = u
+                .named
+                .as_ref()
+                .is_some_and(|(class, _)| *class == ROUTE_SCOPE_LOCAL)
+                .then(|| u.resolved.clone())
+                .flatten();
+            (u.named.clone(), local_entry)
+        };
 
         if self.facts.plane.is_empty() {
             if let Some(name) = named
@@ -952,9 +961,12 @@ impl DriverSteps for DoorSteps<'_> {
             }
         }
         let routed = named.and_then(|(class, n)| self.pools.resolve(class, n.as_deref()));
+        // A scope-local answer still belongs to the one entry admitted by its grant.
+        // Seal that identity for the unit's audit without giving it a pool or a walk.
         let sealed: Vec<VerifiedDestination> = routed
             .iter()
             .flat_map(|(_, members)| members)
+            .chain(local_entry.iter())
             .filter_map(|member| (self.lanes)(&plane_lane(&self.facts.plane, member)))
             .map(|lane| VerifiedDestination::seal(trust, lane))
             .collect();

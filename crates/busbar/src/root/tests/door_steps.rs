@@ -9420,7 +9420,11 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
         super::DoorSteps::new(
             &facts,
             &p,
-            std::sync::Arc::new(|_: &str| None),
+            std::sync::Arc::new(|name: &str| match name {
+                "p\u{1f}a" => Some(busbar_contract::LaneId::new("p\u{1f}a")),
+                "p\u{1f}b" => Some(busbar_contract::LaneId::new("p\u{1f}b")),
+                _ => None,
+            }),
             std::sync::Arc::new({
                 #[cfg(distribution_root)]
                 crate::dist_root_install::install();
@@ -9483,6 +9487,9 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
                         false,
                     )
                     .expect("the actual root builds the door generation");
+                limits.stage_boot();
+                let _book = crate::root::boot::book(&app, &module)
+                    .expect("the configured Store binds the boot rate authority");
                 limits.keep().expect("the product limits commit");
                 if let Some(rotate) = rotate {
                     rotate();
@@ -9526,7 +9533,12 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
 
     let one = steps(&["a"]);
     let sealed = verified(&one, ROUTE_SCOPE_LOCAL);
-    assert!(sealed.is_empty(), "no destination is sealed");
+    assert_eq!(
+        sealed.len(),
+        1,
+        "the granted local entry is sealed for audit"
+    );
+    assert_eq!(sealed[0].lane().as_str(), "p\u{1f}a");
     assert_eq!(one.resolved(&ctx), Some(b"a".to_vec()), "the one entry");
     assert_eq!(
         one.scope_entry(),
@@ -9551,7 +9563,16 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
 
     for reach in [&[][..], &["a", "b"][..]] {
         let s = steps(reach);
-        let _ = verified(&s, ROUTE_SCOPE_LOCAL);
+        let sealed = verified(&s, ROUTE_SCOPE_LOCAL);
+        assert!(
+            sealed.is_empty(),
+            "{reach:?}: no unique granted entry is sealed"
+        );
+        assert_eq!(
+            s.routed(),
+            None,
+            "{reach:?}: local units never acquire a walk"
+        );
         assert_eq!(s.resolved(&ctx), None, "{reach:?}");
         assert_eq!(s.scope_entry(), None, "{reach:?}");
         let refused = s.admit(
