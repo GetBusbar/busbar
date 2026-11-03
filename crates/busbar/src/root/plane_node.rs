@@ -1056,7 +1056,8 @@ impl SessionSlot<'_> {
 
     fn money_report(&self) -> Option<crate::root::linked::node::Reported> {
         let (money, facts) = self.money.as_ref()?;
-        crate::root::serve::report_of(&money.upgrade()?, self.key, facts)
+        let money = money.upgrade()?;
+        crate::root::serve::report_of(money.as_ref(), self.key, facts)
     }
 
     pub fn finish(mut self, post: &NodeEndPost) {
