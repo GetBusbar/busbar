@@ -293,3 +293,35 @@ fn final_origin_fold_rejects_parent_head_advanced_between_read_and_finish() {
     assert!(matches!(read.finish(), Err(RecoveryError::Conflict(_))));
     sink.verify_origin(&child).unwrap();
 }
+
+#[test]
+fn final_origin_fold_verifies_unselected_tail_after_all_facts_are_found() {
+    let slots = RecordSlots::new();
+    let book = opened(&slots, "origin-final-tail");
+    let sink = adapter(&book);
+    let initial = intent();
+    sink.persist(&initial).unwrap();
+    let read = sink.read_origin_for_final_fold(&initial).unwrap().unwrap();
+    let lane = book.lock().unwrap().lane().unwrap().clone();
+    let node = book.lock().unwrap().journal.node();
+    let mut unrelated = initial.clone();
+    unrelated.operation_id = [45; 16];
+    let tail = sink
+        .append_candidate(
+            &lane,
+            node,
+            Candidate {
+                event: unrelated,
+                previous_head: None,
+                adoption: None,
+            },
+        )
+        .unwrap();
+    lane.wait_acked(node, tail.head.sequence, ACK_DEADLINE)
+        .unwrap();
+    slots.corrupt(JOURNAL_SCHEMA, &part_key(node, tail.head.sequence, 0));
+    assert!(
+        read.finish().is_err(),
+        "finding all selected facts cannot skip an unrelated corrupt tail"
+    );
+}
