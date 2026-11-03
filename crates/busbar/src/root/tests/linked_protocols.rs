@@ -83,6 +83,7 @@ fn the_absorbed_sweeps_produce_the_sets_they_produced_before() {
     );
     let mut head_keys: Vec<_> = ["model", "stream", "stream_options", "system"]
         .into_iter()
+        .chain(array_stream_shim_keys.iter().copied())
         .chain(
             declarations
                 .iter()
