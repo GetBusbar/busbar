@@ -103,6 +103,9 @@ async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_appl
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -284,6 +287,9 @@ async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -464,6 +470,9 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -658,6 +667,9 @@ async fn test_admin_v1_config_settings_stale_if_match_conflicts() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -833,6 +845,9 @@ async fn test_admin_v1_config_settings_unknown_field_400() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });

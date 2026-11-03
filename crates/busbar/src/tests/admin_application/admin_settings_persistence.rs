@@ -12,12 +12,14 @@ const AUDIENCE: &str = "api://admin-settings-audit";
 
 fn free_open_units() -> serde_json::Value {
     crate::dist_root_install::install();
-    busbar_kernel::plane_driver::registry::plane_decls()
+    let plane = busbar_kernel::plane_driver::registry::plane_decls()
         .iter()
         .find(|decl| decl.fallback)
-        .expect("the actual linked planes carry the fallback plane")
+        .expect("the actual linked planes carry the fallback plane");
+    plane
         .billable_classes
         .iter()
+        .filter(|c| !plane.fee_units.contains(&c.class))
         .map(|c| c.class)
         .filter(|c| !busbar_contract::records::RESERVED_UNITS.contains(c))
         .map(|c| (c.to_string(), serde_json::json!(0)))
@@ -134,6 +136,9 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -426,6 +431,9 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -672,6 +680,9 @@ async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -886,6 +897,9 @@ async fn test_admin_v1_config_settings_put_with_persist_true_still_persists_when
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
@@ -1084,6 +1098,9 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
         "identity-providers": {},
     });
+    document["plugins"] = crate::root::test_plugins::config_document(
+        &crate::root::test_plugins::trusted_config(&directory),
+    );
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
