@@ -259,7 +259,7 @@ fn actual_http_target_and_request_path_reach_the_same_real_peer() {
         target: &target,
         method: b"GET",
         head_target: b"/reply",
-        body: Some(b"body".to_vec()),
+        body: busbar_contract::conn::Bytes::from_static(b"body"),
         timeout_ms: 5_000,
         ..Default::default()
     };
