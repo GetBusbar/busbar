@@ -1190,6 +1190,174 @@ fn charge_once_at(
     }
 }
 
+// A held child must reuse admission without losing its own billable usage.
+#[test]
+fn a_live_parent_at_the_request_cap_admits_and_ledgers_its_child() {
+    use busbar_contract::caps::{Admission, Hold, HoldCell, PrincipalId};
+    use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+    use busbar_kernel::plane_driver::{DriverSteps as _, EndPost, MoneySeam as _, PlaneMoney};
+    use std::sync::Arc;
+
+    let (app, key) = downgrade_book(
+        vec![LimitCfg {
+            metric: LimitMetric::Requests,
+            amount: 1,
+            per: Some(LimitWindow::Day),
+            scope: None,
+            on_exhaust: None,
+            downgrade_to: None,
+            admission: None,
+            on_exhaustion: None,
+        }],
+        None,
+    );
+    let pools = pools(DOWNGRADE_SECTION);
+    let facts = super::door_facts(
+        "",
+        &["pool"],
+        &["input", "per_request"],
+        &["per_request"],
+        "door",
+        Vec::new(),
+    );
+    let gov = Arc::clone(app.governance.as_ref().expect("actual governance"));
+    let post = Arc::new(crate::root::plane_node::NodeEndPost::new(Arc::new(
+        crate::root::plane_node::Node::new(),
+    )));
+    let money = PlaneMoney::new(Arc::clone(&gov), post as Arc<dyn EndPost>);
+    let principal = PrincipalId::new(key.id.as_str());
+    let arrived = busbar_kernel::store::now();
+    let kernel = busbar_kernel::teller::Kernel::new();
+    let context = |unit| busbar_kernel::teller::UnitCtx {
+        call: kernel.next_call(),
+        key: busbar_contract::UnitKey::new(unit),
+        origin: busbar_contract::caps::OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let steps = || {
+        super::DoorSteps::new(
+            &facts,
+            &pools,
+            Arc::new(|_: &str| None),
+            Arc::clone(&app),
+            Some(&money),
+            super::DoorCaller {
+                principal: principal.clone(),
+                key: Some(Arc::clone(&key)),
+                open: false,
+                arrived,
+                records: None,
+                depth: 0,
+                credential: None,
+                ticket: None,
+            },
+        )
+    };
+    let parent_ctx = context(7001);
+    let parent_token = kernel.admit_token_for(parent_ctx.call);
+    let parent = steps();
+    parent.lock().routed = pools.resolve(ROUTE_POOL, Some(b"frontier"));
+    let admitted = parent
+        .admit(
+            &parent_token,
+            &parent_ctx,
+            &principal,
+            &[],
+            &Default::default(),
+        )
+        .expect("the parent consumes the sole request slot");
+    let Admission::Own(parent_hold) = admitted else {
+        panic!("parent owns its admission")
+    };
+    let cell = HoldCell::new(Hold::open(&parent_token, principal.clone()));
+    drop(
+        cell.admit(parent_hold, &parent_token)
+            .expect("actual parent admission enters its cell"),
+    );
+    let child_ctx = context(7002);
+    let unopened = HoldCell::new(Hold::open(&parent_token, principal.clone()));
+    assert!(
+        parent.parent_admission(&parent_ctx, &unopened).is_err(),
+        "an arrival cell cannot authorize a free child"
+    );
+    let foreign = PrincipalId::new("foreign-held-principal");
+    let foreign_cell = HoldCell::new(Hold::open(&parent_token, foreign.clone()));
+    drop(
+        foreign_cell
+            .admit(Hold::open(&parent_token, foreign), &parent_token)
+            .expect("foreign cell is actually admitted"),
+    );
+    assert!(
+        parent.parent_admission(&parent_ctx, &foreign_cell).is_err(),
+        "another principal's admitted cell cannot lend this parent's money"
+    );
+    let other_call = kernel.next_call();
+    let other_token = kernel.admit_token_for(other_call);
+    let other_cell = HoldCell::new(Hold::open(&other_token, principal.clone()));
+    drop(
+        other_cell
+            .admit(Hold::open(&other_token, principal.clone()), &other_token)
+            .expect("same principal's other call is actually admitted"),
+    );
+    assert!(
+        parent.parent_admission(&parent_ctx, &other_cell).is_err(),
+        "the same principal's other call cannot substitute for this parent's hold"
+    );
+    let authority = parent
+        .parent_admission(&parent_ctx, &cell)
+        .expect("actual parent money and hold authorize its child");
+    let child = steps().under_admission(&authority);
+    child.lock().routed = pools.resolve(ROUTE_POOL, Some(b"frontier"));
+    let admission = child
+        .admit(
+            &kernel.admit_token_for(child_ctx.call),
+            &child_ctx,
+            &principal,
+            &[],
+            &Default::default(),
+        )
+        .expect("a live parent's child does not spend a second request slot");
+    assert!(
+        matches!(admission, Admission::Accrual(_)),
+        "child accrues to its actual parent"
+    );
+    assert_eq!(
+        money.open_units(),
+        2,
+        "child keeps a money registration for its own usage"
+    );
+    money.checkpoint(
+        &child_ctx,
+        &[busbar_contract::abi::plane::UnitCount {
+            class: 0,
+            source: busbar_contract::abi::plane::UNITS_REPORTED,
+            amount: 7,
+        }],
+    );
+    money.settle_end(child_ctx.key, 200);
+    let usage = gov
+        .usage_for(&app.cost, &key.id, arrived)
+        .expect("actual ledger reads")
+        .expect("actual caller ledger");
+    assert_eq!(usage.requests, 1, "one governor admission");
+    assert_eq!(
+        usage.tokens, 7,
+        "the child's nonzero billable units reach the ledger"
+    );
+    assert_eq!(
+        usage.spend_cents, 10,
+        "one parent fee survives child settlement"
+    );
+    money.settle_end(parent_ctx.key, 200);
+    assert!(
+        parent.parent_admission(&parent_ctx, &cell).is_err(),
+        "an admitted cell without a live parent money entry has no authority"
+    );
+}
+
 const DOWNGRADE_SECTION: &str = "models:\n  big: {}\n  small: {}\n  tiny: {}\n\
      pools:\n  frontier:\n    members: [big]\n  value:\n    members: [small]\n\
      \x20 first:\n    members: [big]\n  second:\n    members: [small]\n  third:\n    members: [tiny]";
