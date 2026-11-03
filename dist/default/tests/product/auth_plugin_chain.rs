@@ -455,6 +455,7 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
     );
     let (app, _rotation, limits) =
         built.expect("the current login-capable plugin with browser_login builds");
+    limits.stage_boot();
     let _book = crate::root::boot::book(&app, "memory")
         .expect("the real configured Store binds the boot rate authority before activation");
     limits
