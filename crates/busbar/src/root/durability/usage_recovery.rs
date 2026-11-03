@@ -1560,7 +1560,10 @@ mod tests {
                 {
                     return None;
                 }
-                assert_eq!(probe_slots.apply_transaction(request), Decision::Applied);
+                assert_eq!(
+                    probe_slots.apply_transaction(request),
+                    busbar_contract::abi::sdk::store::conditional::Decision::Applied,
+                );
                 let calls = probe_slots.calls();
                 let (holder, expires) = lease_row(calls.as_ref(), &probe_host).unwrap();
                 match change {
