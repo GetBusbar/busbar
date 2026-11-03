@@ -56,7 +56,15 @@ pub(super) fn governed(instance: &'static str, keys_chain: bool) -> Governed {
 const TEST_PLANE: &str = "plane-driver-test-plane";
 
 fn governed_with(instance: &'static str, keys_chain: bool, budget: Option<u64>) -> Governed {
-    governed_full(instance, keys_chain, budget, Screen::Nothing, None, None)
+    governed_full(
+        instance,
+        keys_chain,
+        budget,
+        Screen::Nothing,
+        None,
+        None,
+        false,
+    )
 }
 
 /// What a governed deployment's `hooks:` screen.
@@ -90,7 +98,7 @@ fn governed_hooked(
     budget: Option<u64>,
     screen: Screen<'_>,
 ) -> Governed {
-    governed_full(instance, keys_chain, budget, screen, None, None)
+    governed_full(instance, keys_chain, budget, screen, None, None, false)
 }
 
 type BoundNode = (
@@ -104,7 +112,15 @@ fn governed_over(
     budget: Option<u64>,
     on: Option<BoundNode>,
 ) -> Governed {
-    governed_full(instance, keys_chain, budget, Screen::Nothing, on, None)
+    governed_full(
+        instance,
+        keys_chain,
+        budget,
+        Screen::Nothing,
+        on,
+        None,
+        false,
+    )
 }
 
 fn governed_full(
@@ -114,6 +130,7 @@ fn governed_full(
     screen: Screen<'_>,
     on: Option<BoundNode>,
     flat_fee: Option<i64>,
+    pools_arrival: bool,
 ) -> Governed {
     static ROOT: std::sync::Once = std::sync::Once::new();
     ROOT.call_once(|| {
@@ -343,6 +360,19 @@ fn governed_full(
         serde_yaml::from_str("m: {}\npools: {p: {members: [m]}}").expect("yaml"),
     );
     config.groups = groups;
+    // Publish the same prices that this fixture asks its governance reads to use.
+    // Once the real rate history is active it, rather than the detached CostModel, prices units.
+    if budget.is_some() {
+        config.plane_fees.insert(
+            TEST_PLANE.to_string(),
+            busbar_kernel_ledger::cost::PlaneFees {
+                per_request: 1,
+                per_session: 0,
+            },
+        );
+    } else {
+        config.per_request_fee = flat_fee.unwrap_or(1);
+    }
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
         crate::root::test_plugins::trusted_config_with_key(
@@ -402,6 +432,14 @@ fn governed_full(
     )
     .expect("the door plane composes");
     served.post = Some(Arc::clone(&post));
+    if pools_arrival {
+        // This arrival-rule boundary deliberately presents the existing fixture as the pools
+        // section. Set that classification while it is unique, before any router can retain it.
+        Arc::get_mut(&mut served.planes[0].live)
+            .expect("the composed fixture has not been published")
+            .served_facts
+            .section = busbar_contract::section::RESERVED_POOLS_KEY;
+    }
     let driver = Arc::clone(&served.planes[0].driver);
 
     served.framers = Some(neutral_framers());
@@ -876,6 +914,7 @@ async fn an_ungrouped_key_is_authed_but_unlimited_and_admission_never_blocks() {
         Screen::Nothing,
         None,
         Some(FEE_CENTS),
+        false,
     );
     assert!(
         deployment.key.group.is_none(),
@@ -1017,10 +1056,11 @@ fn session_custody_routes(g: &mut Governed, pools_plane: bool) -> Arc<super::Dat
     g.router = axum::Router::new();
     let mut served = std::mem::take(&mut g.served);
     if pools_plane {
-        Arc::get_mut(&mut served.planes[0].live)
-            .expect("the original router was released")
-            .served_facts
-            .section = busbar_contract::section::RESERVED_POOLS_KEY;
+        assert_eq!(
+            served.planes[0].live.served_facts.section,
+            busbar_contract::section::RESERVED_POOLS_KEY,
+            "the requested arrival classification was set before publication"
+        );
     }
     let mut lines = Vec::new();
     let mut of_line = std::collections::HashMap::new();
@@ -1466,7 +1506,7 @@ async fn nested_anonymous_admission_matches_the_arrival_rule() {
         ("nested-other-plane", false, false, "/call/local", 401),
         ("nested-explicit-open", false, true, "/open", 503),
     ] {
-        let mut g = governed(instance, keys);
+        let mut g = governed_full(instance, keys, None, Screen::Nothing, None, None, pools);
         let routes = session_custody_routes(&mut g, pools);
         let bound = Arc::new(std::sync::Mutex::new(None));
         let capture = Arc::clone(&bound);
