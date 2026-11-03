@@ -107,10 +107,13 @@ fn publisher_posture(name: &str, key: &SigningKey) -> busbar_kernel::config::Plu
     cfg
 }
 
-fn gov_with_signer(admin_token: Option<String>) -> Arc<GovState> {
+fn gov_with_signer(
+    records: Arc<dyn busbar_contract::records::RecordStore>,
+    admin_token: Option<String>,
+) -> Arc<GovState> {
     Arc::new(
         GovState::new_with_signer(
-            crate::root::real_store::records(),
+            records,
             admin_token,
             Some(
                 busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
@@ -201,7 +204,16 @@ async fn serve_admission_with_inputs(
     if let Some(rotate) = rotation {
         rotate();
     }
-    app.governance = Some(gov_with_signer(Some("admintok".to_string())));
+    let configured = app
+        .governance
+        .as_ref()
+        .expect("the configured admission Store");
+    let calls = configured
+        .store_calls()
+        .expect("the configured Store's typed calls");
+    let gov = gov_with_signer(configured.store(), Some("admintok".to_string()));
+    assert!(gov.attach_store_calls(calls.clone()));
+    app.governance = Some(gov);
     app.plugins_dir = dir;
     app.plugins_cfg = cfg;
     app.plugin_admission = Some(&ADMISSION);
@@ -209,11 +221,19 @@ async fn serve_admission_with_inputs(
         app.hook_env = env;
     }
     if let Some((config, providers)) = disk_paths {
+        app.overlay_path = Some(
+            busbar_kernel::config::overlay::OverlayStore::new(calls).expect(
+                "the disk-backed admission deployment has its actual writable Store overlay",
+            ),
+        );
         app.config_path = Some(config);
         app.providers_path = Some(providers);
     }
+    let app = Arc::new(app);
+    busbar_kernel::boot::hydrate_all(&app)
+        .expect("the admission application hydrates its actual audit stream");
     let (router, _handle) = busbar_kernel::build_router_with_limits(
-        Arc::new(app),
+        app,
         256 * 1024 * 1024,
         0,
         busbar_kernel::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
