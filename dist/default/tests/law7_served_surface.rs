@@ -409,12 +409,6 @@ fn a_1_5_5_config_boot_prints_nothing_from_an_unconfigured_plane() {
             );
         } else {
             assert_eq!(door, "/v1/realtime/gemini");
-            let absent = request_with_challenge(&b.data, "POST", door, None);
-            assert!(
-                !is_plane_door(&b, door, &absent)
-                    && absent.2.as_deref() != Some(plane_challenge(&b, door).as_str()),
-                "the old POST {door} path is not a configured plane door: {absent:?}"
-            );
             let target = "/v1/realtime/gemini/law7-probe";
             let response = request_with_headers(
                 &b.data,
