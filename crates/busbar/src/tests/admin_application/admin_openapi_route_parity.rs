@@ -124,8 +124,6 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     }
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the actual admin deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
-        .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let mut plugin_config = busbar_kernel::config::PluginsCfg {
@@ -144,55 +142,65 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
             name: "third-party".into(),
             public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
         });
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
-    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
-        plugin_config,
-        Some(overlay),
-        HashSet::new(),
-        HashSet::new(),
-        (None, None),
-        None,
-        &rules,
-        Some(anchor),
-        true,
-    )
-    .expect("the real root composes the configured Store and admin application");
-    limits.stage_boot();
-    let _book = crate::root::boot::book(&app, &module)
-        .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
-    if let Some(rotate) = rotate {
-        rotate();
-    }
-    for declaration in busbar_kernel::plane_driver::registry::plane_decls() {
-        assert!(
-            declaration.fallback
-                || app
-                    .plane_sections
-                    .as_ref()
-                    .is_some_and(|sections| sections.contains(declaration.config_section)),
-            "the actual root must configure every plane for the full route/document census: {}",
-            declaration.config_section
+    // Each route batch has its own genuinely composed application and mutation
+    // budget. Sharing one App across the census exhausts the production limiter
+    // before later methods reach their routes, making 429s hide route parity.
+    // A batch sends at most four mutations, below every production class budget.
+    let compose = || {
+        let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the actual admin deployment resolves");
+        let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+            .expect("the actual Store opens the configuration authority");
+        let overlay = busbar_kernel::config::overlay::OverlayStore::new(
+            anchor
+                .calls
+                .as_ref()
+                .cloned()
+                .expect("the actual Store exposes typed calls"),
+        )
+        .expect("the actual Store supports conditional configuration records");
+        let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+            config,
+            plugin_config.clone(),
+            Some(overlay),
+            HashSet::new(),
+            HashSet::new(),
+            (None, None),
+            None,
+            &rules,
+            Some(anchor),
+            true,
+        )
+        .expect("the real root composes the configured Store and admin application");
+        limits.stage_boot();
+        let _book = crate::root::boot::book(&app, &module).expect(
+            "the actual Store binds rate-card history and usage recovery before activation",
         );
-    }
-    let app = Arc::new(app);
+        limits.keep().expect("the actual limits commit");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        for declaration in busbar_kernel::plane_driver::registry::plane_decls() {
+            assert!(
+                declaration.fallback
+                    || app
+                        .plane_sections
+                        .as_ref()
+                        .is_some_and(|sections| sections.contains(declaration.config_section)),
+                "the actual root must configure every plane for the full route/document census: {}",
+                declaration.config_section
+            );
+        }
+        (Arc::new(app), _book)
+    };
     let spawn = || {
-        let router = busbar_kernel::build_router(app.clone());
+        let (app, book) = compose();
+        let router = busbar_kernel::build_router(app);
         async move {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
             let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-            (addr, handle)
+            (addr, handle, book)
         }
     };
     use std::collections::{BTreeMap, BTreeSet};
@@ -228,7 +236,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         }
     };
 
-    let (addr, handle) = spawn().await;
+    let (addr, handle, _book) = spawn().await;
     let doc: serde_json::Value =
         serde_json::from_str(&ask(addr, "GET", &format!("{PREFIX}/openapi.json")).await.1)
             .expect("the served openapi.json parses");
@@ -321,12 +329,14 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     let mut failures: Vec<String> = Vec::new();
 
     handle.abort();
+    let _ = handle.await;
+    drop(_book);
 
     let mut probed = BTreeSet::new();
     let mut skipped = BTreeSet::new();
     let paths: BTreeSet<&String> = documented.keys().map(|(_, p)| p).collect();
     for path in paths {
-        let (addr, handle) = spawn().await;
+        let (addr, handle, _book) = spawn().await;
         for m in METHODS {
             let op = (m.to_string(), path.clone());
             let answer = match documented.get(&op) {
@@ -371,6 +381,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
             }
         }
         handle.abort();
+        let _ = handle.await;
     }
     assert_eq!(
         skipped, expected_skipped,
