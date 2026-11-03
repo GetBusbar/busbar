@@ -552,7 +552,6 @@ async fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_and_
         "{body}"
     );
     assert!(message.contains("credentials.at_rest.key"), "{body}");
-    use busbar_kernel::governance::RecordStore as _;
     assert!(store.list_keys().unwrap().is_empty(), "a key was written");
     assert!(store.list_credentials_since(0).unwrap().is_empty());
     assert!(

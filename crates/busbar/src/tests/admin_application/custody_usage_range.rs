@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::records::{MeteringDelta, RecordStore, VirtualKey, UNIT_INPUT};
+use busbar_contract::records::{MeteringDelta, VirtualKey, UNIT_INPUT};
 use busbar_kernel::cost::CostModel;
 use busbar_kernel::governance::{Adjustment, GovState};
 use std::collections::BTreeMap;

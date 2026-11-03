@@ -6,8 +6,6 @@
 use busbar_kernel::config::PluginsCfg;
 use busbar_plugin_loader::sign::{SigningKey, TrustPolicy};
 
-pub use crate::root::admission::ADMISSION;
-
 #[must_use]
 pub fn release_key() -> SigningKey {
     SigningKey::from_bytes(&[0x5a; 32])

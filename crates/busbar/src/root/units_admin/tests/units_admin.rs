@@ -1595,7 +1595,6 @@ fn answer_over_counts(
 #[cfg(feature = "root-admin")]
 #[test]
 fn the_ledger_paths_answer_counts_times_card_and_survive_a_restart() {
-    use busbar_contract::records::RecordStore as _;
     use busbar_kernel::governance::{GovState, VirtualKey};
     let store = crate::root::real_store::records();
     let key = VirtualKey {

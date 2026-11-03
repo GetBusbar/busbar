@@ -3,7 +3,7 @@
 
 use super::{
     application_with_document,
-    browser::{location, path_of, percent_decode, query_param, send, Jar},
+    browser::{location, percent_decode, query_param, send, Jar},
 };
 use busbar_core_oauth2::config::OauthAsCfg;
 use std::sync::Arc;

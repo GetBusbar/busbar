@@ -1164,7 +1164,7 @@ fn a_slow_admin_door_does_not_stall_healthz() {
                     )
                     .expect("forward actual client TLS bytes");
                     let _ = upstream_write.shutdown(Shutdown::Write);
-                    assert!(count + 1 <= 64 * 1024, "client wire overflow is a failure");
+                    assert!(count < 64 * 1024, "client wire overflow is a failure");
                     count + 1
                 });
                 let count =
