@@ -78,11 +78,42 @@ async fn get_one(
     if let Some(resp) = plane_gate(&handle, section) {
         return resp;
     }
-    let version = handle.load().config_version;
+    let current = handle.load();
+    let version = current.config_version;
+    let (paths, exports) = if section == NamedMapSection::Export {
+        let mut paths: Vec<String> = current
+            .plugin_routes
+            .descriptors()
+            .into_iter()
+            .filter(|route| {
+                route.kind == busbar_kernel::plugin_routes::RouteKind::Export
+                    && route.source_instance == name
+                    && !route.persistent
+                    && !current.boot_route_paths.contains(route.path)
+            })
+            .map(|route| route.path.to_string())
+            .collect();
+        paths.sort();
+        paths.dedup();
+        let exports = if busbar_kernel::export::plugin::requires_restart(
+            &name,
+            current.export_defs.get(&name),
+        ) {
+            vec![format!("export.{name}")]
+        } else {
+            Vec::new()
+        };
+        (paths, exports)
+    } else {
+        (Vec::new(), Vec::new())
+    };
     with_config_etag(
         respond(
             StatusCode::OK,
-            super::service(&handle).get_named_def(section, &name).await,
+            crate::v1::service::AdminService::new(current)
+                .get_named_def(section, &name)
+                .await
+                .map(|def| MutatedDefView::new(def, paths, Vec::new(), exports)),
         ),
         version,
     )
