@@ -1454,19 +1454,23 @@ fn registered_http_listener_accepts_only_its_planes_registered_upgrade() {
         }
         let app = projection_boundary_app(topology.clone(), vec![], 1);
         let mut plan = ListenerPlan::new(topology, offers.clone(), &framer);
-        plan.upgrades
-            .set(
-                super::upgrade_carriers(crate::LINKED.transports, &[])
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect(),
-            )
-            .unwrap();
         if disabled {
             plan.framers.remove("ws");
         }
         if datagram {
             plan.framers.get_mut("ws").unwrap().1 = true;
+        }
+        let initial_check = plan.check(&app);
+        if disabled || datagram || at == "admin_listen" {
+            assert!(
+                initial_check.is_err(),
+                "physical guards apply before plane OPEN"
+            );
+        } else {
+            assert!(
+                initial_check.is_ok(),
+                "initial app construction precedes plane OPEN: {initial_check:?}"
+            );
         }
         plan.planes
             .set(vec![super::ListenerPlaneLine {
@@ -1488,7 +1492,21 @@ fn registered_http_listener_accepts_only_its_planes_registered_upgrade() {
                 root_only: false,
             }])
             .unwrap();
-        plan.lists(&app)
+        if transport == "ws" {
+            assert!(
+                plan.check(&app).is_err(),
+                "a partially mounted snapshot must not defer claim proof"
+            );
+        }
+        plan.upgrades
+            .set(
+                super::upgrade_carriers(crate::LINKED.transports, &[])
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            )
+            .unwrap();
+        plan.check(&app)
     };
     assert!(check(Some("ws"), "streaming", "ws", "listen", false, false, false).is_ok());
     assert!(

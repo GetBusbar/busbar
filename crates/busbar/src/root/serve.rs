@@ -2820,23 +2820,34 @@ impl ListenerPlan {
                     &bind.transport
                 };
                 let physical = self.framers.get(scheme);
+                // App construction checks physical framing before OPEN has mounted plane
+                // claims. Defer only that claim proof; mount_planes checks again with both
+                // snapshots installed, before any listener is published.
+                let upgrade_claims_match = match (self.planes.get(), self.upgrades.get()) {
+                    (None, None) => true,
+                    (Some(lines), Some(upgrades)) => upgrades.contains(&need.transport)
+                        && lines.iter().any(|route| {
+                            matches!(&route.line.claimant, Claimant::Plane(instance) if instance == &need.instance)
+                                && !route.root_only
+                                && route.transport == need.transport
+                                && route.line.upgrade.as_deref() == Some(need.transport.as_str())
+                        }),
+                    _ => false,
+                };
                 let upgrades_here = bind.owner == BindOwner::Root
                     && bind.at == "listen"
                     && need.kind == KindCode::Plane
                     && !*datagram
-                    && self.upgrades.get().is_some_and(|upgrades| upgrades.contains(&need.transport))
                     && physical.is_some_and(|(_, datagram)| !datagram)
-                    && self.framers.get(crate::root::listener::framed::upgrade_claim(
-                        bind.tls.is_some(),
-                    )).is_some_and(|(upgrade_owner, datagram)| {
-                        upgrade_owner == owner && !datagram
-                    })
-                    && self.planes.get().is_some_and(|lines| lines.iter().any(|route| {
-                        matches!(&route.line.claimant, Claimant::Plane(instance) if instance == &need.instance)
-                            && !route.root_only
-                            && route.transport == need.transport
-                            && route.line.upgrade.as_deref() == Some(need.transport.as_str())
-                    }));
+                    && self
+                        .framers
+                        .get(crate::root::listener::framed::upgrade_claim(
+                            bind.tls.is_some(),
+                        ))
+                        .is_some_and(|(upgrade_owner, datagram)| {
+                            upgrade_owner == owner && !datagram
+                        })
+                    && upgrade_claims_match;
                 if bind.at == "admin_listen"
                     || (physical.is_none_or(|(physical, _)| physical != owner) && !upgrades_here)
                 {
