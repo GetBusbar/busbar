@@ -1535,12 +1535,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: SessionCaller> PlaneUnits<'_, S, F, C>
         ctx: &UnitCtx,
         sealed: &[VerifiedDestination],
     ) -> StepAnswer<Route> {
-        let local = self
-            .lock()
-            .decoded
-            .as_ref()
-            .is_some_and(|d| d.route == ROUTE_LOCAL || d.route == ROUTE_SCOPE_LOCAL);
-        match self.session_priced(token, ctx, sealed, !local).await {
+        match self.session(token, ctx, sealed).await {
             Ok(()) => StepAnswer::proceed(token, RoutePlan::default()),
             Err(reason) => failed(token, reason),
         }
