@@ -203,6 +203,39 @@ impl DoorSection {
         crate::trust::section::registrations(&self.value)
     }
 
+    fn ledger_lanes_for(&self, decl: &PlaneDeclaration) -> Vec<String> {
+        use busbar_contract::section::{RESERVED_MODELS_KEY, RESERVED_POOLS_KEY};
+
+        if !decl
+            .billable_classes
+            .iter()
+            .any(|c| !decl.fee_units.contains(&c.class))
+        {
+            return Vec::new();
+        }
+        let sep = crate::governance::PLANE_LANE_SEP;
+        // As in the served door's pool view, a model map names the routed entries. Their
+        // direct-route lanes are the model names; scope kinds describe grants, not prices.
+        if let Some(models) = self
+            .value
+            .get(RESERVED_MODELS_KEY)
+            .and_then(serde_yaml::Value::as_mapping)
+        {
+            return models
+                .keys()
+                .filter_map(serde_yaml::Value::as_str)
+                .map(|name| format!("{}{sep}{name}", decl.key))
+                .collect();
+        }
+        let Some(kind) = decl.scope_kinds.first() else {
+            return Vec::new();
+        };
+        self.registrations()
+            .filter(|(name, _)| ![RESERVED_MODELS_KEY, RESERVED_POOLS_KEY].contains(name))
+            .map(|(name, _)| format!("{}{sep}{kind}:{name}", decl.key))
+            .collect()
+    }
+
     fn hooks_of(v: &serde_yaml::Value) -> Vec<String> {
         v.as_mapping()
             .and_then(|m| m.get(busbar_contract::plugin::Kind::Hook.root()))
@@ -282,15 +315,7 @@ impl PlaneCfg for DoorSection {
         else {
             return Vec::new();
         };
-        let priced = (decl.billable_classes.iter()).any(|c| !decl.fee_units.contains(&c.class));
-        let Some(kind) = decl.scope_kinds.first().filter(|_| priced) else {
-            return Vec::new();
-        };
-        let sep = crate::governance::PLANE_LANE_SEP;
-        self.registrations()
-            .filter(|(name, _)| *name != busbar_contract::section::RESERVED_POOLS_KEY)
-            .map(|(name, _)| format!("{}{sep}{kind}:{name}", decl.key))
-            .collect()
+        self.ledger_lanes_for(&decl.declaration)
     }
 
     fn model_provider_refs(&self) -> Vec<(String, String)> {

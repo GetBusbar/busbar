@@ -122,6 +122,101 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
 }
 
 #[test]
+fn a_model_serving_doors_ledger_lanes_are_its_actual_model_names() {
+    let mut reg = registration("third-party-models", "third_party_models");
+    let section = DoorSection::new(
+        None,
+        reg.section,
+        serde_yaml::from_str(
+            "models:\n  first-model: { provider: one }\n  second-model: { provider: two }\n\
+             hooks: [audit]\npools: { both: { members: [first-model, second-model] } }\n",
+        )
+        .unwrap(),
+    );
+    for kinds in [vec!["member"], Vec::new()] {
+        reg.scope_kinds = kinds;
+        let mut lanes = section.ledger_lanes_for(&declaration_of(&reg));
+        lanes.sort();
+        assert_eq!(
+            lanes,
+            [
+                "third-party-models|first-model",
+                "third-party-models|second-model",
+            ],
+            "model prices use direct-route names, independently of the grant scope kinds"
+        );
+    }
+}
+
+#[test]
+fn a_model_map_owns_the_routed_entries_even_when_empty() {
+    let reg = registration("third-party-models", "third_party_models");
+    let decl = declaration_of(&reg);
+    for (models, want) in [
+        ("{}", Vec::<&str>::new()),
+        (
+            "{ actual-model: { provider: upstream } }",
+            vec!["third-party-models|actual-model"],
+        ),
+    ] {
+        let section = DoorSection::new(
+            None,
+            reg.section,
+            serde_yaml::from_str(&format!(
+                "models: {models}\nmetadata: {{ url: 'https://example.test' }}\n"
+            ))
+            .unwrap(),
+        );
+        assert_eq!(
+            section.ledger_lanes_for(&decl),
+            want,
+            "the served pool view uses the model map instead of top-level section keys"
+        );
+    }
+}
+
+#[test]
+fn named_doors_keep_their_explicit_scoped_registration_lanes() {
+    let reg = registration("third-party-members", "third_party_members");
+    let section = DoorSection::new(
+        None,
+        reg.section,
+        serde_yaml::from_str(
+            "first: { url: 'https://one.test' }\nsecond: { url: 'https://two.test' }\n\
+             hooks: [audit]\nupstream_credentials: own\nwork: { max_live: 2 }\n\
+             pools: { both: { members: [first, second] } }\nmodels: null\n",
+        )
+        .unwrap(),
+    );
+    let mut lanes = section.ledger_lanes_for(&declaration_of(&reg));
+    lanes.sort();
+    assert_eq!(
+        lanes,
+        [
+            "third-party-members|member:first",
+            "third-party-members|member:second",
+        ],
+    );
+}
+
+#[test]
+fn unpriced_and_fee_only_doors_add_no_resource_price_obligations() {
+    let mut reg = registration("third-party-fees", "third_party_fees");
+    for classes in [Vec::new(), vec![("request", "count")]] {
+        reg.billable_classes = classes;
+        let decl = declaration_of(&reg);
+        for written in [
+            "models: { actual-model: { provider: upstream } }\n",
+            "actual-member: { url: 'https://example.test' }\n",
+        ] {
+            let section =
+                DoorSection::new(None, reg.section, serde_yaml::from_str(written).unwrap());
+            assert!(section.ledger_lanes_for(&decl).is_empty());
+        }
+    }
+}
+
+#[test]
 fn a_door_registration_folds_into_a_row_every_word_of_which_is_the_doors() {
     let decl = fold(registration("door-fold-row", "door_fold_row")).expect("folds");
     assert_eq!(decl.key, "door-fold-row");
