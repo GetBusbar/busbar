@@ -213,11 +213,11 @@ fn confirm_immutable_record(
     record: &Record,
     parts: &[RecordBytes],
 ) -> Result<(), String> {
-    if lease.recovery_predicates(calls, record.node)?.as_slice() != fences {
+    if !lease.recovery_fence_matches(calls, record.node, fences)? {
         return Err("the node fence changed before recovery readback".into());
     }
     confirm_record_parts(calls, record, parts)?;
-    if lease.recovery_predicates(calls, record.node)?.as_slice() != fences {
+    if !lease.recovery_fence_matches(calls, record.node, fences)? {
         return Err("the node fence changed during recovery readback".into());
     }
     Ok(())
@@ -826,6 +826,19 @@ impl JournalLane {
         self.lane
             .lease
             .recovery_predicates(self.lane.calls.as_ref(), node)
+    }
+
+    pub(super) fn recovery_fence_matches(
+        &self,
+        node: u64,
+        before: &[Predicate],
+    ) -> Result<bool, String> {
+        if self.lane.lock().stopped {
+            return Err("the recovery journal writer has retired".into());
+        }
+        self.lane
+            .lease
+            .recovery_fence_matches(self.lane.calls.as_ref(), node, before)
     }
 
     pub(super) fn confirm_recovery_record(&self, record: &Record) -> Result<(), String> {

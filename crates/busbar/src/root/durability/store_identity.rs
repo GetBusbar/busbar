@@ -374,6 +374,37 @@ pub fn take_node(calls: &dyn StoreCalls, host: &str) -> Result<TakenNode, String
     Ok(TakenNode { id, lease: None })
 }
 
+// Only the boot-bound lease row has a volatile renewal deadline. Its holder is the
+// fencing generation; registry identities and every other predicate remain byte-exact.
+fn same_recovery_fence(
+    before: &[Predicate],
+    after: &[Predicate],
+    lease: Option<&NodeLease>,
+) -> bool {
+    before.len() == after.len()
+        && before.iter().zip(after).all(|(old, new)| {
+            if old.schema != new.schema || old.key != new.key {
+                return false;
+            }
+            let Some(lease) = lease
+                .filter(|lease| old.schema == NODE_SCHEMA && old.key == lease_key(&lease.host))
+            else {
+                return old == new;
+            };
+            match (&old.expected, &new.expected) {
+                (Expected::Bytes(old), Expected::Bytes(new))
+                    if old.len() == 24 && new.len() == 24 =>
+                {
+                    old[..16] == lease.holder
+                        && new[..16] == lease.holder
+                        && old[16..] != [0; 8]
+                        && new[16..] != [0; 8]
+                }
+                _ => false,
+            }
+        })
+}
+
 /// THE LEASE A BOOK'S LANE HOLDS on its host name (`JournalLane::hold_lease`): taken by the boot
 /// that opened the lane, refreshed on the checkpoint flush tick, released on a clean shutdown. It is
 /// kept on the lane to the store it is held in, the value the boot hands the book, never in a
@@ -448,6 +479,19 @@ impl HeldLease {
         }
         predicates.push(identity);
         Ok(predicates)
+    }
+
+    /// Revalidate read-only recovery custody across normal lease renewal. Write CAS requests
+    /// must continue to use `recovery_predicates` with their complete, exact row bytes.
+    pub(super) fn recovery_fence_matches(
+        &self,
+        calls: &dyn StoreCalls,
+        node: u64,
+        before: &[Predicate],
+    ) -> Result<bool, String> {
+        let after = self.recovery_predicates(calls, node)?;
+        let lease = self.lock().clone();
+        Ok(same_recovery_fence(before, &after, lease.as_ref()))
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<NodeLease>> {
@@ -745,4 +789,109 @@ pub fn stored_chains(
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod renewal_fence_tests {
+    use super::*;
+
+    #[test]
+    fn normal_lease_renewal_keeps_read_custody_but_not_a_stale_write_predicate() {
+        let slots = crate::root::store_double::RecordSlots::new();
+        let calls = slots.calls();
+        let host = "recovery-renewal-fence";
+        let taken = take_node(calls.as_ref(), host).expect("the actual Store mints the node");
+        let node = taken.id;
+        let lease = taken.lease.expect("this node holds its host lease");
+        let held = HeldLease::default();
+        held.hold(lease.clone());
+        held.bind_recovery_identity(calls.as_ref(), host, node)
+            .unwrap();
+        // Deterministically make the next real refresh change the deadline; no clock sleep.
+        set_lease_expiry(calls.as_ref(), host, 1);
+        let before = held.recovery_predicates(calls.as_ref(), node).unwrap();
+        assert!(lease.refresh(calls.as_ref()).unwrap());
+        let after = held.recovery_predicates(calls.as_ref(), node).unwrap();
+        assert_ne!(
+            before, after,
+            "normal renewal really changed the exact lease bytes"
+        );
+        assert!(held
+            .recovery_fence_matches(calls.as_ref(), node, &before)
+            .unwrap());
+        let stale_write = super::super::conditional::candidate(
+            before,
+            vec![Mutation::Put {
+                schema: NODE_SCHEMA.into(),
+                key: b"renewal-test-must-not-write".to_vec(),
+                value: vec![1],
+            }],
+        );
+        assert_eq!(
+            super::super::conditional::decide(calls.as_ref(), &stale_write).unwrap(),
+            Decision::ConditionConflict,
+            "writes still require the exact, current lease row"
+        );
+        assert!(
+            wait_for(calls.record_get(NODE_SCHEMA, b"renewal-test-must-not-write"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn read_custody_rejects_actual_release_replacement_missing_lease_and_registry_change() {
+        for change in 0..4 {
+            let slots = crate::root::store_double::RecordSlots::new();
+            let calls = slots.calls();
+            let host = format!("recovery-fence-negative-{change}");
+            let taken = take_node(calls.as_ref(), &host).unwrap();
+            let node = taken.id;
+            let lease = taken.lease.unwrap();
+            let held = HeldLease::default();
+            held.hold(lease.clone());
+            held.bind_recovery_identity(calls.as_ref(), &host, node)
+                .unwrap();
+            let before = held.recovery_predicates(calls.as_ref(), node).unwrap();
+            match change {
+                0 => lease.release(calls.as_ref()).unwrap(),
+                1 => put_lease(
+                    calls.as_ref(),
+                    &host,
+                    LeaseRow {
+                        holder: [lease.holder[0].wrapping_add(1); 16],
+                        expires_ms: now_ms().saturating_add(LEASE_TTL_MS),
+                    },
+                )
+                .unwrap(),
+                2 => {
+                    let key = lease_key(&host);
+                    let request = super::super::conditional::candidate(
+                        vec![],
+                        vec![Mutation::DeleteRange {
+                            schema: NODE_SCHEMA.into(),
+                            prefix: key.clone(),
+                            exact_key_length: key.len() as u64,
+                        }],
+                    );
+                    assert_eq!(
+                        super::super::conditional::decide(calls.as_ref(), &request).unwrap(),
+                        Decision::Applied
+                    );
+                }
+                _ => {
+                    let different =
+                        RecordBytes::new(node.wrapping_add(1).to_be_bytes().to_vec()).unwrap();
+                    wait_for(calls.record_put(NODE_SCHEMA, &host_key(&host), &different)).unwrap();
+                }
+            }
+            assert!(
+                !matches!(
+                    held.recovery_fence_matches(calls.as_ref(), node, &before),
+                    Ok(true)
+                ),
+                "change {change} must revoke read custody"
+            );
+        }
+    }
 }

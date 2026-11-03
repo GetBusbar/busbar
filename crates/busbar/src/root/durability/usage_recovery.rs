@@ -744,7 +744,10 @@ impl StoreRecovery {
                 });
             }
         }
-        if lane.recovery_predicates(node).map_err(unavailable)? != fences {
+        if !lane
+            .recovery_fence_matches(node, &fences)
+            .map_err(unavailable)?
+        {
             return Err(unavailable(
                 "the local node fence changed during foreign inspection",
             ));
@@ -792,7 +795,10 @@ impl StoreRecovery {
             )?;
             parent.authorizes_child(&initial)?;
         }
-        if lane.recovery_predicates(node).map_err(unavailable)? != fences {
+        if !lane
+            .recovery_fence_matches(node, &fences)
+            .map_err(unavailable)?
+        {
             return Err(unavailable(
                 "the local node fence changed during child-origin verification",
             ));
@@ -840,7 +846,10 @@ impl StoreRecovery {
                 ));
             }
         }
-        if lane.recovery_predicates(node).map_err(unavailable)? != fences {
+        if !lane
+            .recovery_fence_matches(node, &fences)
+            .map_err(unavailable)?
+        {
             return Err(unavailable(
                 "the local node fence changed during checkpoint verification",
             ));
@@ -860,7 +869,10 @@ impl StoreRecovery {
                 summaries.push(summary);
             }
         }
-        if lane.recovery_predicates(node).map_err(unavailable)? != fences {
+        if !lane
+            .recovery_fence_matches(node, &fences)
+            .map_err(unavailable)?
+        {
             return Err(unavailable(
                 "the local node fence changed during recovery replay",
             ));
@@ -911,7 +923,9 @@ impl StoreRecovery {
                 .as_ref()
                 .map(|(_, value)| value)
                 != Some(&raw)
-                || lane.recovery_predicates(node).map_err(unavailable)? != fences
+                || !lane
+                    .recovery_fence_matches(node, &fences)
+                    .map_err(unavailable)?
             {
                 return Err(unavailable(
                     "handover authority changed during confirmation",
@@ -1066,7 +1080,9 @@ impl StoreRecovery {
                     .as_ref()
                     .map(|(_, value)| value)
                     != Some(observed_raw)
-                    || lane.recovery_predicates(node).map_err(unavailable)? != fences
+                    || !lane
+                        .recovery_fence_matches(node, &fences)
+                        .map_err(unavailable)?
                 {
                     return Err(unavailable(
                         "handover authority changed during confirmation",
@@ -1128,7 +1144,10 @@ impl StoreRecovery {
                         "recovery selection advanced during confirmation".into(),
                     ));
                 }
-                if lane.recovery_predicates(node).map_err(unavailable)? != initial_fences {
+                if !lane
+                    .recovery_fence_matches(node, &initial_fences)
+                    .map_err(unavailable)?
+                {
                     return Err(unavailable(
                         "the node fence changed during recovery confirmation",
                     ));
@@ -1367,7 +1386,10 @@ impl RecoverySink for StoreRecovery {
                     events.extend(run);
                 }
             }
-            if lane.recovery_predicates(node).map_err(unavailable)? != predicates {
+            if !lane
+                .recovery_fence_matches(node, &predicates)
+                .map_err(unavailable)?
+            {
                 return Err(unavailable(
                     "the local node fence changed during recovery replay",
                 ));
