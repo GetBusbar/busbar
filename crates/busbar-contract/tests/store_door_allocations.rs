@@ -1042,7 +1042,7 @@ fn a_short_record_scan_replays_its_completed_snapshot_when_the_store_grows() {
             short.head.lease, 0,
             "the immutable completed scan is owned by a lease"
         );
-        busbar_contract::abi::store::check_record_scan(
+        busbar_contract::abi::store::check::check_record_scan(
             Outcome::Failed,
             &short,
             &input.out,
@@ -1068,7 +1068,7 @@ fn a_short_record_scan_replays_its_completed_snapshot_when_the_store_grows() {
             call(ops().record_scan, instance, &input, &mut recalled),
             Outcome::Ready
         );
-        busbar_contract::abi::store::check_record_scan(
+        busbar_contract::abi::store::check::check_record_scan(
             Outcome::Ready,
             &recalled,
             &input.out,
