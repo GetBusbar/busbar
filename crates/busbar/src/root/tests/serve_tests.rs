@@ -2731,6 +2731,9 @@ pub(super) mod session_door {
 
         let ticket = s.local_ticket().await;
         assert_eq!(s.requests(), 1, "local issuance is the one admission");
+        let issuance = s.audit_records();
+        assert_eq!(issuance.len(), 1, "issuance sealed before its ticket is usable");
+        assert_eq!(issuance[0].usage.fee_count, 0, "local issuance reports no session fee");
         let (status, _response) = s.signal(&ticket).await;
         assert_eq!(status.as_u16(), 201, "the actual ticket opens its SDP call");
 
@@ -2765,7 +2768,35 @@ pub(super) mod session_door {
         );
         assert_eq!(s.money.open_units(), 0, "its money facts closed");
         assert_eq!(s.post.open_units(), 0, "its node facts closed");
-        assert_eq!(s.lines(), 1, "its one record carries its counts");
+        let records = s.audit_records();
+        assert_eq!(records.len(), issuance.len() + 1, "one new media terminal receipt");
+        assert!(records[0] == issuance[0], "the issuance receipt is unchanged");
+        let (mint, media) = (&records[0], &records[1]);
+        assert_ne!(mint.what.unit_key, media.what.unit_key, "distinct physical units");
+        assert_eq!(media.seq, mint.seq + 1, "contiguous phase receipts");
+        assert!(media.prev_hash == mint.hash, "the media receipt follows issuance");
+        assert!(mint.what.op_class == media.what.op_class, "one session operation class");
+        assert!(mint.what.destination == media.what.destination, "one verified route");
+        for record in &records {
+            assert!(
+                record.subject == busbar_kernel_audit::Subject::PrincipalId(s.key.id.clone()),
+                "both phases belong to the presenting key"
+            );
+            assert!(record.what.parent.is_none(), "each phase is an external request");
+            assert!(record.outcome.unit_end.is_completed(), "both phases completed");
+            assert!(
+                record.what.destination.as_deref().is_some_and(|lane| lane.ends_with("m-cap")),
+                "both receipts retain the locked model"
+            );
+            assert!(record.usage.lines.is_empty(), "this session reported no usage quantities");
+        }
+        assert_eq!(media.usage.fee_count, 1, "the actual session reports its fee once");
+        assert_eq!(
+            records.iter().map(|record| record.usage.fee_count).sum::<u32>(),
+            1,
+            "one fee across both phase receipts"
+        );
+        assert!(busbar_kernel_audit::AuditChain::verify_chain(&records).is_ok());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
