@@ -119,6 +119,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
             // A genuine present section can contain only the kernel-owned attach list;
             // it need not invent a remote tool/agent registration for a route census.
             "tools" | "agents" => serde_json::json!({"hooks": []}),
+            "decisions" => serde_json::json!({"models": {}, "hooks": []}),
             "streams" => serde_json::json!({"context_window_tokens": 32768}),
             _ => panic!("provide an actual valid config for linked plane section {section}"),
         };
