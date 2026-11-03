@@ -325,3 +325,6 @@ fn final_origin_fold_verifies_unselected_tail_after_all_facts_are_found() {
         "finding all selected facts cannot skip an unrelated corrupt tail"
     );
 }
+
+#[path = "checkpoint_final_fold.rs"]
+mod checkpoint_final_fold_tests;

@@ -749,6 +749,38 @@ impl OriginRead {
     }
 }
 
+struct CheckpointRead {
+    origin: OriginRead,
+    lane: JournalLane,
+    node: u64,
+    fences: Vec<Predicate>,
+    operation: [u8; 16],
+    initial_head: Vec<u8>,
+}
+impl CheckpointRead {
+    fn finish(self) -> Result<(), RecoveryError> {
+        self.origin.finish()?;
+        let current = head(self.lane.calls().as_ref(), &self.operation)?;
+        if !current.as_ref().is_some_and(|(tip, current_raw)| {
+            tip.node == self.node && current_raw == &self.initial_head
+        }) {
+            return Err(RecoveryError::Conflict(
+                "recovery ownership or selection changed during checkpoint confirmation".into(),
+            ));
+        }
+        if !self
+            .lane
+            .recovery_fence_matches(self.node, &self.fences)
+            .map_err(unavailable)?
+        {
+            return Err(unavailable(
+                "the local node fence changed during checkpoint verification",
+            ));
+        }
+        Ok(())
+    }
+}
+
 struct StoreRecovery {
     book: Arc<Mutex<Durability>>,
     token: Grant<DurableWrite>,
@@ -890,10 +922,21 @@ impl StoreRecovery {
         &self,
         event: &RecoveryEvent,
     ) -> Result<Option<OriginRead>, RecoveryError> {
+        let (_, node) = self.inputs()?;
+        self.read_origin_with_facts(event, OriginFacts::new(node))
+    }
+
+    fn read_origin_with_facts(
+        &self,
+        event: &RecoveryEvent,
+        mut facts: OriginFacts,
+    ) -> Result<Option<OriginRead>, RecoveryError> {
         let (lane, node) = self.inputs()?;
         let fences = lane.recovery_predicates(node).map_err(unavailable)?;
+        if facts.node != node {
+            return Ok(None);
+        }
         let calls = lane.calls();
-        let mut facts = OriginFacts::new(node);
         let child = head(calls.as_ref(), &event.operation_id)?;
         let initial = match &child {
             Some((tip, _)) => {
@@ -1012,6 +1055,62 @@ impl StoreRecovery {
     }
 
     fn verify_checkpoint_at(
+        &self,
+        event: &RecoveryEvent,
+        require_owned: bool,
+    ) -> Result<(), RecoveryError> {
+        match self.read_checkpoint_for_final_fold(event, require_owned)? {
+            Some(read) => read.finish(),
+            None => self.verify_checkpoint_cold_at(event, require_owned),
+        }
+    }
+
+    fn read_checkpoint_for_final_fold(
+        &self,
+        event: &RecoveryEvent,
+        require_owned: bool,
+    ) -> Result<Option<CheckpointRead>, RecoveryError> {
+        let (lane, node) = self.inputs()?;
+        let fences = lane.recovery_predicates(node).map_err(unavailable)?;
+        let calls = lane.calls();
+        let (tip, raw) = head(calls.as_ref(), &event.operation_id)?
+            .ok_or_else(|| invalid("recovery checkpoint has no selected operation"))?;
+        if require_owned && tip.node != node {
+            return Err(RecoveryError::Conflict(
+                "recovery checkpoint belongs to another node's selected operation".into(),
+            ));
+        }
+        let mut facts = OriginFacts::new(node);
+        let Some(actual) = selected_checkpoint_inner(
+            calls.as_ref(),
+            &event.operation_id,
+            &tip,
+            event.fingerprint()?,
+            "recovery checkpoint is not in the current selected ancestry",
+            Some(&mut facts),
+        )?
+        else {
+            return Ok(None);
+        };
+        if &actual != event {
+            return Err(invalid(
+                "selected checkpoint differs from its exact event identity",
+            ));
+        }
+        let Some(origin) = self.read_origin_with_facts(&actual, facts)? else {
+            return Ok(None);
+        };
+        Ok(Some(CheckpointRead {
+            origin,
+            lane,
+            node,
+            fences,
+            operation: event.operation_id,
+            initial_head: raw,
+        }))
+    }
+
+    fn verify_checkpoint_cold_at(
         &self,
         event: &RecoveryEvent,
         require_owned: bool,
