@@ -190,6 +190,7 @@ impl Step {
                 "body_eq",
                 "json_eq",
                 "response_headers_eq",
+                "response_headers_absent",
                 "within_secs",
             ],
             "admin" => &["method", "path", "body", "status", "json_eq"],
@@ -208,8 +209,18 @@ impl Step {
                     "{what}.json_eq: an object of JSON pointers is required"
                 ));
             }
-            if let Some(headers) = body.get("response_headers_eq") {
-                string_map(Some(headers), &format!("{what}.response_headers_eq"))?;
+            let exact_headers = string_map(
+                body.get("response_headers_eq"),
+                &format!("{what}.response_headers_eq"),
+            )?;
+            let absent_headers = strings(
+                body.get("response_headers_absent"),
+                &format!("{what}.response_headers_absent"),
+            )?;
+            for name in exact_headers.keys().chain(absent_headers.iter()) {
+                reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
+                    format!("{what}: {name:?} is not a valid nonempty response header name")
+                })?;
             }
         }
         if matches!(kind.as_str(), "call" | "mint")
@@ -1329,6 +1340,13 @@ fn run_step(world: &mut World, step: &Step) -> Result<(), String> {
                     return Err(format!("response header {name:?} is not exactly {expected:?}: {response_headers:?}"));
                 }
             }
+            for name in texts(s, "response_headers_absent") {
+                if response_headers.contains_key(&name.to_ascii_lowercase()) {
+                    return Err(format!(
+                        "response header {name:?} must be absent: {response_headers:?}"
+                    ));
+                }
+            }
             if let Some(want) = s.get("status").and_then(Value::as_u64) {
                 if u64::from(status) != want {
                     return Err(format!("answered {status}, {want} was expected: {text}"));
@@ -1921,6 +1939,9 @@ fn exact_call_and_transport_fields_refuse_malformed_oracles() {
         json!({"body_eq":false}),
         json!({"json_eq":[]}),
         json!({"response_headers_eq":{"www-authenticate":7}}),
+        json!({"response_headers_absent":false}),
+        json!({"response_headers_absent":[""]}),
+        json!({"response_headers_absent":["not a header"]}),
         json!({"within_secs":0}),
     ] {
         let case =
@@ -2040,7 +2061,7 @@ fn exact_call_oracles_detect_changed_bytes_json_and_headers_on_actual_http() {
         issuer: false,
     };
     let good = json!({"path":"/raw", "status":200, "body":{}, "body_eq":body.to_string(),
-        "json_eq":{"":body}, "response_headers_eq":{"content-type":"application/json"}, "within_secs":5});
+        "json_eq":{"":body}, "response_headers_eq":{"content-type":"application/json"}, "response_headers_absent":["WWW-Authenticate"], "within_secs":5});
     run_step(&mut world, &Step::Call(good.clone())).unwrap();
     for (field, value, failure) in [
         ("body_eq", json!(format!("{} ", body)), "byte-identical"),
@@ -2054,6 +2075,11 @@ fn exact_call_oracles_detect_changed_bytes_json_and_headers_on_actual_http() {
             json!({"content-type":"text/plain"}),
             "response header",
         ),
+        (
+            "response_headers_absent",
+            json!(["Content-Type"]),
+            "must be absent",
+        ),
     ] {
         let mut changed = good.clone();
         changed[field] = value;
@@ -2063,6 +2089,6 @@ fn exact_call_oracles_detect_changed_bytes_json_and_headers_on_actual_http() {
     }
     assert_eq!(
         world.responder.as_ref().unwrap().received(),
-        BTreeMap::from([(String::new(), 4)])
+        BTreeMap::from([(String::new(), 5)])
     );
 }
