@@ -306,7 +306,7 @@ fn build_application(
                 .expect("the actual Store exposes typed calls"),
         )
         .expect("the actual hosted-login Store supports a writable config overlay");
-        (Some(opened), Some(Arc::new(overlay)))
+        (Some(opened), Some(overlay))
     } else {
         (opened_store, None)
     };
