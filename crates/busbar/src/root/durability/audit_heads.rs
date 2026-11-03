@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::abi::sdk::store::conditional::{Decision, Expected, Mutation, Predicate};
+use busbar_contract::abi::sdk::store::conditional::{
+    Decision, Expected, Mutation, Predicate, Request,
+};
 use busbar_contract::store_calls::StoreCalls;
 use busbar_kernel_audit::{heads::HEAD_SAMPLE_SECONDS, HeadHistory, SignedHead};
 use busbar_kernel_wal::{JournalRecord, Record};
@@ -448,47 +450,68 @@ impl Advance {
         final_key: Vec<u8>,
         final_value: Vec<u8>,
     ) -> Result<(), String> {
+        self.commit_parts(
+            calls,
+            lease,
+            vec![Mutation::Put {
+                schema: JOURNAL_SCHEMA.into(),
+                key: final_key,
+                value: final_value,
+            }],
+        )
+    }
+
+    pub(super) fn parts_fit(&self, parts: &[Mutation], fence: Option<Predicate>) -> bool {
+        self.request(parts, fence)
+            .is_ok_and(|request| request.encode_held().is_ok())
+    }
+
+    fn request(&self, parts: &[Mutation], fence: Option<Predicate>) -> Result<Request, String> {
         let encoded = encode(&self.next)?;
-        loop {
-            let mut predicates = vec![Predicate {
+        let mut predicates = vec![Predicate {
+            schema: SCHEMA.into(),
+            key: tip_key(self.node),
+            expected: self
+                .previous
+                .clone()
+                .map_or(Expected::Absent, Expected::Bytes),
+        }];
+        if let Some(fence) = fence {
+            predicates.push(fence);
+        }
+        let mut mutations = parts.to_vec();
+        mutations.push(Mutation::Put {
+            schema: SCHEMA.into(),
+            key: tip_key(self.node),
+            value: encoded,
+        });
+        if self.sample {
+            predicates.push(Predicate {
                 schema: SCHEMA.into(),
-                key: tip_key(self.node),
+                key: sample_key(self.node, self.next.last_sample_seq),
                 expected: self
-                    .previous
+                    .sample_previous
                     .clone()
                     .map_or(Expected::Absent, Expected::Bytes),
-            }];
-            if let Some(fence) = lease.predicate(calls)? {
-                predicates.push(fence);
-            }
-            let mut mutations = vec![
-                Mutation::Put {
-                    schema: JOURNAL_SCHEMA.into(),
-                    key: final_key.clone(),
-                    value: final_value.clone(),
-                },
-                Mutation::Put {
-                    schema: SCHEMA.into(),
-                    key: tip_key(self.node),
-                    value: encoded.clone(),
-                },
-            ];
-            if self.sample {
-                predicates.push(Predicate {
-                    schema: SCHEMA.into(),
-                    key: sample_key(self.node, self.next.last_sample_seq),
-                    expected: self
-                        .sample_previous
-                        .clone()
-                        .map_or(Expected::Absent, Expected::Bytes),
-                });
-                mutations.push(Mutation::Put {
-                    schema: SCHEMA.into(),
-                    key: sample_key(self.node, self.next.last_sample_seq),
-                    value: encode(&self.next.tip)?,
-                });
-            }
-            let request = super::conditional::candidate(predicates, mutations);
+            });
+            mutations.push(Mutation::Put {
+                schema: SCHEMA.into(),
+                key: sample_key(self.node, self.next.last_sample_seq),
+                value: encode(&self.next.tip)?,
+            });
+        }
+        Ok(super::conditional::candidate(predicates, mutations))
+    }
+
+    pub(super) fn commit_parts(
+        self,
+        calls: &dyn StoreCalls,
+        lease: &HeldLease,
+        parts: Vec<Mutation>,
+    ) -> Result<(), String> {
+        let encoded = encode(&self.next)?;
+        loop {
+            let request = self.request(&parts, lease.predicate(calls)?)?;
             match super::conditional::decide(calls, &request)? {
                 Decision::Applied => return Ok(()),
                 Decision::ConditionConflict => {

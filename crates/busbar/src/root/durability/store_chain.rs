@@ -126,6 +126,26 @@ pub(super) fn put_record(
     let parts = parts_of(record)?;
     let first_fence = lease.predicate(calls)?;
     let fenced = first_fence.is_some();
+    // Preflight before cleanup. Oversized conditional frames retain the original split path.
+    let atomic_parts = audit.as_ref().and_then(|advance| {
+        let mutations: Vec<_> = parts
+            .iter()
+            .enumerate()
+            .map(|(part, value)| Mutation::Put {
+                schema: JOURNAL_SCHEMA.into(),
+                key: part_key(
+                    record.node,
+                    record.node_seq,
+                    u16::try_from(part).expect("parts_of already bounded the part count"),
+                )
+                .to_vec(),
+                value: value.as_slice().to_vec(),
+            })
+            .collect();
+        advance
+            .parts_fit(&mutations, first_fence.clone())
+            .then_some(mutations)
+    });
     if let Some(first_fence) = first_fence {
         fenced_mutation(
             calls,
@@ -137,6 +157,12 @@ pub(super) fn put_record(
             },
             Some(first_fence),
         )?;
+    }
+    if let Some(mutations) = atomic_parts {
+        return audit
+            .take()
+            .expect("preflighted audit advance")
+            .commit_parts(calls, lease, mutations);
     }
     for (part, value) in parts.iter().enumerate() {
         let part = u16::try_from(part).map_err(|_| "too many parts".to_string())?;
