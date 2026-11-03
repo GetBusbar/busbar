@@ -433,3 +433,8 @@ mod store_actual_opid_tests;
 #[allow(unsafe_code)]
 #[path = "tests/store_actual_pending_tests.rs"]
 mod store_actual_pending_tests;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/actual_rewrap_contracts.rs"]
+mod actual_rewrap_contracts;
