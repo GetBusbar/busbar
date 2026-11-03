@@ -4,11 +4,12 @@
 use std::collections::BTreeMap;
 
 use busbar_kernel_ledger::cost::{
-    self as ledger_cost, Author, CardEntryDraft, History, LaneClass, LedgerEntry, MoneyError,
-    RateCard,
+    self as ledger_cost, Author, CardEntryDraft, EntryKey, History, LaneClass, LedgerEntry,
+    MoneyError, RateCard,
 };
 
 const LANE: &str = "gpt-4o";
+const OPENING_ENTRY: EntryKey = EntryKey([0; 20]);
 
 const INPUT: &str = "input";
 const OUTPUT: &str = "output";
@@ -151,7 +152,7 @@ fn rule(title: &str) {
 struct Answers {
     one_micros: Result<i128, MoneyError>,
     one_minor: Result<i128, MoneyError>,
-    micros: Vec<(&'static str, Result<i128, MoneyError>)>,
+    micros: Vec<(&'static str, Option<EntryKey>, Result<i128, MoneyError>)>,
 
     refuse_alike: Vec<(&'static str, Option<i128>)>,
 }
@@ -179,9 +180,10 @@ impl Case {
         let one_micros = one.clone().map(|m| m.micros());
         let one_minor = one.map(|m| m.minor());
 
-        let micros: Vec<(&'static str, Result<i128, MoneyError>)> = vec![
+        let micros: Vec<(&'static str, Option<EntryKey>, Result<i128, MoneyError>)> = vec![
             (
                 "ledger  MeteredRow::spend_micros_at_card",
+                None,
                 ledger_cost::MeteredRow::new(
                     self.lane,
                     units.clone(),
@@ -193,6 +195,7 @@ impl Case {
             ),
             (
                 "admin   derive_spend_micros_row (current card)",
+                None,
                 admin::derive_spend_micros_row(
                     &kernel,
                     self.lane,
@@ -202,6 +205,7 @@ impl Case {
             ),
             (
                 "admin   derive_spend_micros_row_at_card (dated, #79)",
+                Some(OPENING_ENTRY),
                 admin_row_at_card(&card, &kernel, self.lane, self.counts, self.fee_count)
                     .map(i128::from),
             ),
@@ -247,13 +251,53 @@ impl Case {
         rule(self.title);
         let a = self.run();
         row("THE ONE FUNCTION  [micro]", &a.one_micros);
-        for (label, got) in &a.micros {
+        for (label, expected_entry, got) in &a.micros {
             row(label, got);
-            assert_eq!(
-                got, &a.one_micros,
-                "{}: `{label}` diverges from the one function",
-                self.title
-            );
+            // A current card has no history identity; a dated read names its actual opening
+            // entry. Pin both provenances while comparing every pricing/refusal field.
+            match (got, &a.one_micros) {
+                (
+                    Err(MoneyError::LaneUnpriced { card_seq, lane }),
+                    Err(MoneyError::LaneUnpriced {
+                        card_seq: one_seq,
+                        lane: one_lane,
+                    }),
+                ) => {
+                    assert_eq!(
+                        *one_seq,
+                        Some(OPENING_ENTRY),
+                        "the ledger names its opening entry"
+                    );
+                    assert_eq!(card_seq, expected_entry, "{label}: exact card provenance");
+                    assert_eq!(lane, one_lane, "{label}: the same unpriced lane");
+                }
+                (
+                    Err(MoneyError::ClassUnpriced {
+                        card_seq,
+                        lane,
+                        class,
+                    }),
+                    Err(MoneyError::ClassUnpriced {
+                        card_seq: one_seq,
+                        lane: one_lane,
+                        class: one_class,
+                    }),
+                ) => {
+                    assert_eq!(
+                        *one_seq,
+                        Some(OPENING_ENTRY),
+                        "the ledger names its opening entry"
+                    );
+                    assert_eq!(card_seq, expected_entry, "{label}: exact card provenance");
+                    assert_eq!(lane, one_lane, "{label}: the same lane");
+                    assert_eq!(class, one_class, "{label}: the same unpriced class");
+                }
+                _ => assert_eq!(
+                    got, &a.one_micros,
+                    "{}: `{label}` diverges from the one function",
+                    self.title
+                ),
+            }
         }
         row("THE ONE FUNCTION  [minor]", &a.one_minor);
         for (label, got) in &a.refuse_alike {
