@@ -116,7 +116,7 @@ fn credentials_cross_as_secret_blobs_and_read_back() {
         meta: CredentialMeta {
             id: "c1".into(),
             key_id: "k1".into(),
-            kind: "generic".into(),
+            kind: "sigv4".into(),
             slot: 0,
             public_id: "pub".into(),
             secret_form: SecretForm::Recoverable,
