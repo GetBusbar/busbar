@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_core_admin::v1::service::build_with_hook;
+use busbar_core_admin::v1::service::{build_with_hook, build_without_hook};
 use busbar_kernel::config::{HookCfg, HookKind, PromptAccess, UserAccess};
 
 fn hook(kind: HookKind, global: bool) -> HookCfg {
@@ -64,6 +64,9 @@ fn build_with_hook_makes_a_plane_attach_live() {
         )
         .expect("the actual Store settings are JSON");
         let mut document = serde_json::json!({"tools": {"fs": {"url":"https://tools.internal/fs","pin":{"mechanism":"cert_spki","key":"sha256/BASE="},"hooks":["screen"]}}});
+        // A parsed deployment must define every attached hook. Exercise a missing live
+        // definition through the real delete API after this valid deployment has booted.
+        document["hooks"] = serde_json::json!({"screen": hook(HookKind::Gate, false)});
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
         document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
@@ -96,10 +99,18 @@ fn build_with_hook_makes_a_plane_attach_live() {
 
         std::sync::Arc::new(app)
     };
+    assert_eq!(
+        app.plane_gates(tools.key)
+            .and_then(|g| g.get("fs"))
+            .map(Vec::len),
+        Some(1),
+        "the valid initial deployment resolves its attached hook"
+    );
+    let app = build_without_hook(&app, "screen").expect("the live definition is removed");
     assert!(
         !app.plane_gates(tools.key)
             .is_some_and(|g| g.contains_key("fs")),
-        "the attach names a hook no registry entry defines yet, so it resolves to nothing"
+        "the attach remains after its live definition is removed, so it resolves to nothing"
     );
 
     let next = build_with_hook(&app, "screen", hook(HookKind::Gate, false))
