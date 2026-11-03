@@ -1704,6 +1704,69 @@ fn mint_reserved_source(g: &Governed, source: &ReservedSource, at: u64) -> (Stri
         .expect("the admitted source binds its sole ticket")
 }
 
+// Probe the real public admission path using a separate key in the same capped group.
+// The dependency's gauge introspection is cfg(test)-private to its own crate. A second probe
+// while the first is held also detects a double release that would leave the gauge negative.
+fn assert_concurrent_custody(g: &Governed, group: &str, held: bool, now: u64) {
+    use busbar_kernel::config::groups::{GroupCfg, LimitCfg, LimitMetric};
+    let groups = BTreeMap::from([(
+        group.to_owned(),
+        GroupCfg {
+            enabled: true,
+            limits: vec![LimitCfg {
+                metric: LimitMetric::Concurrent,
+                amount: 1,
+                per: None,
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
+            }],
+            ..Default::default()
+        },
+    )]);
+    let cost = CostModel::resolve_parts(None, 0, &groups);
+    let (probe, _) = g
+        .gov
+        .mint_signed(
+            NewKeySpec {
+                name: "actual-concurrent-probe".to_owned(),
+                group: Some(group.to_owned()),
+                ..Default::default()
+            },
+            4_000_000_000,
+            now,
+        )
+        .unwrap();
+    let attempt = g.gov.try_admit(&cost, &probe, "", now);
+    if held {
+        assert!(
+            matches!(
+                attempt,
+                Err(busbar_kernel::governance::LimitBlocked::Limit {
+                    metric: "concurrent",
+                    ..
+                })
+            ),
+            "the actual retained source grant must block its concurrent group"
+        );
+    } else {
+        let admitted = attempt.expect("retired custody releases the actual concurrent slot");
+        assert!(
+            matches!(
+                g.gov.try_admit(&cost, &probe, "", now),
+                Err(busbar_kernel::governance::LimitBlocked::Limit {
+                    metric: "concurrent",
+                    ..
+                })
+            ),
+            "one probe fills cap1; a double release must not create a spare slot"
+        );
+        drop(admitted);
+    }
+}
+
 fn assert_source_request_retained(g: &Governed, source: &ReservedSource) {
     assert_eq!(
         g.gov
@@ -1757,11 +1820,7 @@ async fn a_root_ticket_stays_pending_until_ack_and_concurrent_claims_move_one_re
         "one actual mint source cannot reserve twice"
     );
     g.money.settle_end(source.unit, 200);
-    assert_eq!(
-        g.gov.concurrent_in_flight(&source.group),
-        1,
-        "actual reservation retains the settled mint's governor grant"
-    );
+    assert_concurrent_custody(&g, &source.group, true, source.now);
     source.owner.custody.terminal(source.unit, true);
     let second = g
         .gov
@@ -1774,11 +1833,7 @@ async fn a_root_ticket_stays_pending_until_ack_and_concurrent_claims_move_one_re
     });
     assert_eq!(usize::from(a.is_some()) + usize::from(b.is_some()), 1);
     drop((a, b));
-    assert_eq!(
-        g.gov.concurrent_in_flight(&source.group),
-        0,
-        "unused claim releases the actual grant once"
-    );
+    assert_concurrent_custody(&g, &source.group, false, source.now);
     assert_source_request_retained(&g, &source);
 }
 
@@ -1793,14 +1848,14 @@ async fn failed_mint_completion_burns_pending_custody_without_refunding_its_requ
         .prepare_ticket_redemption("custody_test", &credential, source.now)
         .unwrap();
     g.money.settle_end(source.unit, 200);
-    assert_eq!(g.gov.concurrent_in_flight(&source.group), 1);
+    assert_concurrent_custody(&g, &source.group, true, source.now);
     source.owner.custody.terminal(source.unit, false);
     source.owner.custody.terminal(source.unit, true);
     assert!(
         source.owner.custody.claim(&identity).is_none(),
         "a later terminal callback cannot resurrect burned custody"
     );
-    assert_eq!(g.gov.concurrent_in_flight(&source.group), 0);
+    assert_concurrent_custody(&g, &source.group, false, source.now);
     assert!(
         matches!(
             super::claim_ticket_custody(&identity),
@@ -1836,7 +1891,7 @@ async fn source_unregister_and_shutdown_burn_owned_custody_outside_the_maps() {
     let stale = Arc::clone(&owner.source);
     drop(owner);
     assert!(custody.claim(&identity).is_none());
-    assert_eq!(g.gov.concurrent_in_flight(&group), 0);
+    assert_concurrent_custody(&g, &group, false, now);
     assert!(
         g.gov
             .mint_ticket_bound(&key.id, "custody_test", 60, None, b"late", now, |id| {
@@ -1864,7 +1919,7 @@ async fn source_unregister_and_shutdown_burn_owned_custody_outside_the_maps() {
     source.owner.custody.terminal(source.unit, true);
     source.owner.custody.shutdown();
     assert!(source.owner.custody.claim(&identity).is_none());
-    assert_eq!(g.gov.concurrent_in_flight(&source.group), 0);
+    assert_concurrent_custody(&g, &source.group, false, source.now);
     assert_source_request_retained(&g, &source);
 }
 
@@ -1877,11 +1932,7 @@ async fn root_custody_expiry_obeys_store_liveness_and_preserves_the_paid_request
     g.money.settle_end(source.unit, 200);
     source.owner.custody.terminal(source.unit, true);
     source.owner.custody.sweep().await;
-    assert_eq!(
-        g.gov.concurrent_in_flight(&source.group),
-        1,
-        "a Store-live unused ticket retains its actual reservation"
-    );
+    assert_concurrent_custody(&g, &source.group, true, source.now);
     let identity = g
         .gov
         .prepare_ticket_redemption("custody_test", &credential, source.now)
@@ -1893,7 +1944,7 @@ async fn root_custody_expiry_obeys_store_liveness_and_preserves_the_paid_request
             .claim(&identity)
             .expect("Store-live ticket survives sweep"),
     );
-    assert_eq!(g.gov.concurrent_in_flight(&source.group), 0);
+    assert_concurrent_custody(&g, &source.group, false, source.now);
     assert_source_request_retained(&g, &source);
 
     let source = reserved_source(&g, "root-ticket-expired-cap");
@@ -1901,11 +1952,7 @@ async fn root_custody_expiry_obeys_store_liveness_and_preserves_the_paid_request
     g.money.settle_end(source.unit, 200);
     source.owner.custody.terminal(source.unit, true);
     source.owner.custody.sweep().await;
-    assert_eq!(
-        g.gov.concurrent_in_flight(&source.group),
-        0,
-        "actual Store expiry releases unused custody"
-    );
+    assert_concurrent_custody(&g, &source.group, false, source.now);
     assert!(source
         .owner
         .custody
@@ -2025,7 +2072,7 @@ async fn a_root_reservation_rejects_a_different_full_key_and_an_exited_loaded_ge
         .tickets
         .is_empty());
     g.money.settle_end(source.unit, 200);
-    assert_eq!(g.gov.concurrent_in_flight(&source.group), 0);
+    assert_concurrent_custody(&g, &source.group, false, source.now);
     assert_source_request_retained(&g, &source);
 
     let source = reserved_source(&g, "root-ticket-wrong-generation-cap");
@@ -2057,6 +2104,6 @@ async fn a_root_reservation_rejects_a_different_full_key_and_an_exited_loaded_ge
         )
         .unwrap());
     source.owner.custody.shutdown();
-    assert_eq!(g.gov.concurrent_in_flight(&source.group), 0);
+    assert_concurrent_custody(&g, &source.group, false, source.now);
     assert_source_request_retained(&g, &source);
 }
