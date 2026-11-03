@@ -710,6 +710,13 @@ mod metrics_scrape {
             return;
         }
         linked::install();
+        // main initializes the real recorder from export.metrics.buffer_seconds before
+        // serving; this isolated fixture builds the app directly and must do that startup step.
+        busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
+        assert!(
+            busbar_kernel::snapshot::recorder_installed(),
+            "the actual recorder is installed before plane traffic"
+        );
         let peer = crate::root::door_steps::tests::tool_door::TlsToolServer::new().await;
         let sections = format!(
             "{}{}export:\n  metrics: {{module: prometheus, settings: {{buffer_seconds: 60}}}}\n",
