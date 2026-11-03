@@ -7,11 +7,9 @@ use super::*;
 fn env_whitespace_only_name_is_rejected() {
     for bad in ["", "   ", "\t\n"] {
         let r = SecretRef::env(bad);
-        let err = SecretResolver::builtins_only()
-            .resolve(&r)
-            .expect_err(&format!(
-                "whitespace-only env name {bad:?} must be rejected"
-            ));
+        let err = actual_product_resolver().resolve(&r).expect_err(&format!(
+            "whitespace-only env name {bad:?} must be rejected"
+        ));
         assert!(
             err.contains("requires settings.key"),
             "whitespace-only env name {bad:?} must fail the settings-shape check, got: {err}"
@@ -23,8 +21,11 @@ fn env_whitespace_only_name_is_rejected() {
 fn file_whitespace_only_path_is_rejected() {
     for bad in ["", "   ", "\t\n"] {
         let r = SecretRef::file(bad);
-        let err = SecretResolver::builtins_only()
-            .resolve(&r)
+        let err = actual_product_resolver()
+            .resolve_at_config(
+                &r,
+                &busbar_contract::config_time::ConfigScope::config_time(),
+            )
             .expect_err(&format!(
                 "whitespace-only file path {bad:?} must be rejected"
             ));
@@ -38,9 +39,9 @@ fn file_whitespace_only_path_is_rejected() {
 #[test]
 fn none_reference_has_no_value_to_resolve() {
     let r = SecretRef::none();
-    let resolver = SecretResolver::builtins_only();
+    let resolver = actual_product_resolver();
     for err in [
-        SecretResolver::builtins_only().resolve(&r).unwrap_err(),
+        actual_product_resolver().resolve(&r).unwrap_err(),
         resolver.resolve(&r).unwrap_err(),
         resolver.resolve_string(&r).unwrap_err(),
     ] {

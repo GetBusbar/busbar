@@ -116,7 +116,7 @@ fn credentials_cross_as_secret_blobs_and_read_back() {
         meta: CredentialMeta {
             id: "c1".into(),
             key_id: "k1".into(),
-            kind: "generic".into(),
+            kind: "sigv4".into(),
             slot: 0,
             public_id: "pub".into(),
             secret_form: SecretForm::Recoverable,
@@ -127,12 +127,15 @@ fn credentials_cross_as_secret_blobs_and_read_back() {
             revoke_reason: None,
             revision: 0,
         },
-        secret: "s3cret".into(),
+        // RecordStore carries the versioned secret envelope, including across the ABI.
+        secret: "v1:plain:s3cret".into(),
     };
     s.put_credential(&secret).expect("put");
     let since = s.list_credentials_since(0).expect("since");
     assert_eq!(since.len(), 1);
     assert_eq!(since[0].meta.id, "c1");
+    assert_eq!(since[0].secret, secret.secret);
+    assert_eq!(since[0].plaintext(), Some("s3cret"));
     assert_eq!(s.list_credentials("k1").expect("list").len(), 1);
 }
 

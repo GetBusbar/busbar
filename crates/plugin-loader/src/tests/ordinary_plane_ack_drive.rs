@@ -55,6 +55,7 @@ struct State {
     leases: HashMap<u64, Box<[u8]>>,
     next_lease: u64,
     resumes: usize,
+    confirmed: Vec<Handle>,
     notify: bool,
 }
 static STATES: OnceLock<Mutex<HashMap<u64, State>>> = OnceLock::new();
@@ -115,6 +116,7 @@ extern "C" fn open(
                 leases: HashMap::new(),
                 next_lease: u64::MAX,
                 resumes: 0,
+                confirmed: Vec::new(),
                 notify: true,
             },
         );
@@ -152,14 +154,13 @@ extern "C" fn drive(
         if input.drive.head.flags & busbar_contract::abi::mechanism::call::FLAG_RESUME != 0 {
             state.resumes += 1;
         }
-        if state.defect != Defect::Session
-            && state
-                .retirement
-                .begin(input.drive.head.host, input.drive.driver, ext)
-                .is_err()
-        {
+        let Ok(confirmed) = state
+            .retirement
+            .begin(input.drive.head.host, input.drive.driver, ext)
+        else {
             return RawOutcome::of(Outcome::Fault);
-        }
+        };
+        state.confirmed.extend(confirmed);
         let mut service_pending = false;
         if !state.completed {
             let handle = CompletionHandle {
@@ -175,14 +176,13 @@ extern "C" fn drive(
                 Poll::Ready(Ok(Some(bytes))) if bytes == b"completed" => {
                     state.completed = true;
                     state.notify = true;
-                    if state.defect != Defect::Session
-                        && state
-                            .retirement
-                            .consumed(Handle {
-                                domain: Domain::Host,
-                                seq: 0,
-                            })
-                            .is_err()
+                    if state
+                        .retirement
+                        .consumed(Handle {
+                            domain: Domain::Host,
+                            seq: 0,
+                        })
+                        .is_err()
                     {
                         return RawOutcome::of(Outcome::Fault);
                     }
@@ -210,7 +210,7 @@ extern "C" fn drive(
                 ack.capability.nonce += 1;
             }
         }
-        if matches!(state.defect, Defect::Cancel | Defect::Session) {
+        if state.defect == Defect::Cancel {
             ack = None;
         }
         let bytes = ack
@@ -219,7 +219,7 @@ extern "C" fn drive(
             .into_boxed_slice();
         let outcome = match state.defect {
             _ if service_pending => Outcome::Pending,
-            Defect::Ready => Outcome::Ready,
+            Defect::Ready | Defect::Session => Outcome::Ready,
             Defect::Failed | Defect::Short => Outcome::Failed,
             _ if state.retirement.queued() => Outcome::Pending,
             _ => Outcome::Ready,
@@ -228,7 +228,7 @@ extern "C" fn drive(
         state.next_lease -= 1;
         output.head.extensions = Blob::ZERO;
         output.head.error = busbar_contract::abi::mechanism::call::AbiStr::ZERO;
-        if state.retirement.queued() && !matches!(state.defect, Defect::Cancel | Defect::Session) {
+        if state.retirement.queued() && state.defect != Defect::Cancel {
             output.head.extensions = Blob {
                 ptr: bytes.as_ptr(),
                 len: bytes.len(),
@@ -682,6 +682,24 @@ impl busbar_contract::services::HostServices for Provider {
         busbar_contract::services::Ran::Now(result)
     }
 }
+// Raw loaded Plugin values do not own an automatic CLOSE lifecycle. Keep the
+// actual image live until its explicit CLOSE has released the boundary state.
+fn close_actual(plugin: &crate::dispatch::Plugin<Plane>, host: u64) {
+    use crate::dispatch::{in_head, out_head, Frame};
+    use busbar_contract::abi::mechanism::lifecycle::slot;
+    let mut frame = Frame::new(in_head(), out_head());
+    assert_eq!(
+        plugin.call(slot::CLOSE, &mut frame).outcome,
+        Outcome::Ready,
+        "the actual MCP instance closes after its tickets and answer leases retire"
+    );
+    assert!(
+        !states().lock().unwrap().contains_key(&host),
+        "actual CLOSE released the retained service snapshot and boundary state"
+    );
+}
+
+#[track_caller]
 fn until(mut predicate: impl FnMut() -> bool) {
     let end = Instant::now() + Duration::from_secs(5);
     while !predicate() {
@@ -767,9 +785,10 @@ fn automatic_driver_checks_ack_before_releasing_its_answer_lease() {
         }
         assert_eq!(provider.calls.load(SeqCst), 1);
         dispatcher.recycle(driver);
+        assert!(dispatcher.retirement_barrier(driver, Duration::from_secs(5)));
+        close_actual(&plugin, host);
         drop(plugin);
         drop(dispatcher);
-        until(|| !states().lock().unwrap().contains_key(&host));
     }
 }
 
@@ -843,9 +862,10 @@ fn canceling_an_actual_pending_crossing_cannot_ack_its_drivers_result() {
     assert_eq!(provider.calls.load(SeqCst), 1);
     dispatcher.recycle(session);
     dispatcher.recycle(driver);
+    assert!(dispatcher.retirement_barrier(driver, Duration::from_secs(5)));
+    close_actual(&plugin, host);
     drop(plugin);
     drop(dispatcher);
-    until(|| !states().lock().unwrap().contains_key(&host));
 }
 
 #[test]
@@ -919,25 +939,38 @@ fn a_pending_driver_delivers_ids_resumes_and_retires_late_service_custody() {
             .answered_after(2, Duration::from_secs(5)),
         Some(Outcome::Ready)
     );
-    until(|| {
-        states()
-            .lock()
-            .unwrap()
-            .get(&host)
-            .is_some_and(|s| s.releases == 3)
-    });
-    assert_eq!(plugin.inner.driven.drain(), vec![5]);
-    assert_eq!(dispatcher.services().held.held(driver), 0);
-    assert_eq!(dispatcher.services().held(), 0);
-    states().lock().unwrap().get_mut(&host).unwrap().completed = false;
-    crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
+    // Accepting the third DRIVE's ACK autonomously wakes a fourth crossing to
+    // deliver the host's confirmation nonce. Observe that exact crossing before
+    // beginning another service cycle; the third lease can be released too
+    // quickly for a polling assertion to observe its intermediate count.
     until(|| {
         plugin.inner.driven.answers() == 4
             && states()
                 .lock()
                 .unwrap()
                 .get(&host)
-                .is_some_and(|s| s.releases == 4)
+                .is_some_and(|s| s.releases == 4 && !s.retirement.queued())
+    });
+    assert_eq!(
+        states().lock().unwrap().get(&host).unwrap().confirmed,
+        vec![Handle {
+            domain: Domain::Host,
+            seq: 0
+        }],
+        "the SDK only returns the consumed handle after validating the host confirmation nonce"
+    );
+    assert_eq!(plugin.inner.driven.drain(), vec![5]);
+    assert_eq!(dispatcher.services().held.held(driver), 0);
+    assert_eq!(dispatcher.services().held(), 0);
+    states().lock().unwrap().get_mut(&host).unwrap().completed = false;
+    crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
+    until(|| {
+        plugin.inner.driven.answers() == 5
+            && states()
+                .lock()
+                .unwrap()
+                .get(&host)
+                .is_some_and(|s| s.releases == 5)
     });
     assert_eq!(provider.calls.load(SeqCst), 2);
     assert!(plugin.inner.driven.drain().is_empty());
@@ -996,12 +1029,13 @@ fn a_pending_driver_delivers_ids_resumes_and_retires_late_service_custody() {
             .outcome,
         Outcome::Ready
     );
-    assert_eq!(plugin.inner.driven.answers(), 4);
+    assert_eq!(plugin.inner.driven.answers(), 5);
     assert!(plugin.inner.driven.drain().is_empty());
     dispatcher.recycle(barrier);
+    assert!(dispatcher.retirement_barrier(barrier, Duration::from_secs(5)));
+    close_actual(&plugin, host);
     drop(plugin);
     drop(dispatcher);
-    until(|| !states().lock().unwrap().contains_key(&host));
 }
 
 #[test]
@@ -1059,7 +1093,7 @@ fn project_attributes_the_actual_host_service_call_to_its_unit() {
             ("the-instance".into(), None, "door:project-scope".into())
         ]
     );
+    close_actual(&plugin, host);
     drop(plugin);
     drop(dispatcher);
-    until(|| !states().lock().unwrap().contains_key(&host));
 }

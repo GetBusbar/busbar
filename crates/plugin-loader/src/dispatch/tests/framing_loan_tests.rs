@@ -217,7 +217,7 @@ mod typed_transport_cancellation {
     use std::pin::Pin;
     use std::sync::atomic::AtomicBool;
     use std::sync::OnceLock;
-    use std::task::{Context, Wake, Waker};
+    use std::task::{Context, Waker};
     use std::time::{Duration, Instant};
 
     const WAIT: Duration = Duration::from_secs(10);
@@ -274,13 +274,15 @@ mod typed_transport_cancellation {
         })
     }
 
+    type RetainedInput = (u32, Ticket, usize, usize, usize);
+
     #[derive(Default)]
     struct Control {
         calls: AtomicU64,
         cancel_entries: AtomicU64,
         cancel_completions: AtomicU64,
         release_cancel: AtomicBool,
-        input: Mutex<Option<(u32, Ticket, usize, usize, usize)>>,
+        input: Mutex<Option<RetainedInput>>,
     }
 
     fn controls() -> &'static Mutex<HashMap<usize, Arc<Control>>> {
@@ -377,11 +379,6 @@ mod typed_transport_cancellation {
         }
     }
 
-    struct NoWake;
-    impl Wake for NoWake {
-        fn wake(self: Arc<Self>) {}
-    }
-
     fn rig() -> (
         Dispatcher,
         Plugin<Transport>,
@@ -472,9 +469,9 @@ mod typed_transport_cancellation {
     ) {
         let release = Release(control.clone());
         until(|| control.calls.load(Ordering::SeqCst) == 1);
-        let waker = Waker::from(Arc::new(NoWake));
+        let waker = Waker::noop();
         assert!(Pin::new(&mut reply)
-            .poll(&mut Context::from_waker(&waker))
+            .poll(&mut Context::from_waker(waker))
             .is_pending());
         assert_eq!(control.input.lock().unwrap().unwrap().0, slot);
         assert_eq!(control.cancel_entries.load(Ordering::SeqCst), 0);

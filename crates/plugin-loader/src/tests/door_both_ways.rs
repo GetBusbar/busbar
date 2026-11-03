@@ -16,7 +16,8 @@ use crate::dispatch::{
 pub(crate) struct Loaded<K: Kind> {
     pub(crate) plugin: Plugin<K>,
 
-    pub(crate) dispatcher: Arc<Dispatcher>,
+    // Retain the dispatcher until after the plugin has been dropped.
+    _dispatcher: Arc<Dispatcher>,
 }
 
 pub(crate) fn bind(d: &Dispatcher) -> Bind {
@@ -33,7 +34,10 @@ pub(crate) fn linked<K: Kind>(door: DoorFn) -> Loaded<K> {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let row = LinkedRow::of(door).expect("the door states its Statement");
     let plugin = load_linked::<K>(&row, bind(&dispatcher)).expect("the linked door loads");
-    Loaded { plugin, dispatcher }
+    Loaded {
+        plugin,
+        _dispatcher: dispatcher,
+    }
 }
 
 pub(crate) fn dropped<K: Kind>(door: DoorFn, example: &str) -> Loaded<K> {
@@ -46,7 +50,10 @@ pub(crate) fn dropped_from<K: Kind>(door: DoorFn, path: &std::path::Path) -> Loa
     let stated = rendering_of(door).expect("the door renders its Statement");
     let plugin =
         load_dropped::<K>(path, &stated, bind(&dispatcher)).expect("the dropped-in door loads");
-    Loaded { plugin, dispatcher }
+    Loaded {
+        plugin,
+        _dispatcher: dispatcher,
+    }
 }
 
 pub(crate) fn octets(bytes: &[u8]) -> Blob {

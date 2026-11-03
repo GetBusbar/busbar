@@ -11,10 +11,8 @@ use busbar_kernel::state::AppHandle;
 use serde_json::{json, Value};
 use tokio::sync::Notify;
 
-#[path = "../../../../../dist/default/tests/common/mod.rs"]
-mod common;
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
+use crate::test_common as common;
 
 #[derive(Default)]
 struct Pause {
@@ -347,10 +345,7 @@ fn app() -> (
 ) {
     busbar_kernel::snapshot::init_for_test(Duration::from_secs(3600));
     crate::dist_root_install::install();
-    let library = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("actual built Store artifact"),
-    );
+    let library = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library)
         .unwrap()
         .unwrap();
@@ -367,10 +362,7 @@ fn app() -> (
     );
     let archive_sha256 = busbar_plugin_loader::sign::sha256_hex(&archive);
     std::fs::write(directory.join("store.tar.gz"), archive).unwrap();
-    let settings: Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .unwrap();
+    let settings: Value = crate::root::test_plugins::application_store_settings(&directory);
     assert!(settings.is_object());
     let oidc_path = common::plugins::token_verifier_cdylib_path().expect("actual OIDC artifact");
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
@@ -437,8 +429,9 @@ fn app() -> (
     if let Some(rotate) = rotate {
         rotate();
     }
-    let (router, handle) =
-        busbar_kernel::build_router_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let app = Arc::new(app);
+    busbar_kernel::boot::hydrate_all(&app).expect("the actual root hydrates its audit stream");
+    let (router, handle) = busbar_kernel::build_router_with_limits(app, 1 << 20, 0, false);
     (store, handle, router, book)
 }
 

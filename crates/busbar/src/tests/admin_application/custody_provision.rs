@@ -7,10 +7,8 @@ use busbar_core_admin::admin_state::AppAdmin as _;
 use busbar_kernel::audit_ring;
 use std::sync::Arc;
 
-#[path = "../../../../../dist/default/tests/common/mod.rs"]
-mod common;
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
+use crate::test_common as common;
 
 struct RefusesKeyWrites(Arc<dyn busbar_contract::records::RecordStore>);
 
@@ -187,10 +185,7 @@ const PROVISION_FAIL_VERSION_SUMMARY: &str = "group.provision group:user:alice-m
 #[tokio::test]
 async fn mint_failure_after_the_provision_commit_still_records_the_committed_group() {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -200,7 +195,7 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -208,10 +203,8 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -229,11 +222,7 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let opened = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
@@ -413,10 +402,7 @@ async fn auto_provision_stops_at_the_group_ceiling() {
     }
 
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -426,7 +412,7 @@ async fn auto_provision_stops_at_the_group_ceiling() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -434,10 +420,8 @@ async fn auto_provision_stops_at_the_group_ceiling() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -473,11 +457,7 @@ async fn auto_provision_stops_at_the_group_ceiling() {
     let mut config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     config.limits.max_auto_provisioned_groups = 2;
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
         .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(

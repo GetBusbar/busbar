@@ -77,10 +77,7 @@ fn accessed(journal: &NodeAmendments) -> Vec<String> {
 
 fn application(slots: &crate::root::store_double::RecordSlots) -> Arc<busbar_kernel::state::App> {
     crate::dist_root_install::install();
-    let path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the built product store"),
-    );
+    let path = crate::root::test_plugins::application_store_library();
     let statement = crate::root::loader::dispatch::rendering_of_library(&path)
         .expect("the product store statement reads")
         .expect("the product store exports its statement");
@@ -90,7 +87,7 @@ fn application(slots: &crate::root::store_double::RecordSlots) -> Arc<busbar_ker
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(path).expect("the product store library reads");
@@ -102,10 +99,7 @@ fn application(slots: &crate::root::store_double::RecordSlots) -> Arc<busbar_ker
     );
     std::fs::write(directory.0.join("store.tar.gz"), archive)
         .expect("the actual store archive is staged");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings = crate::root::test_plugins::application_store_settings(&directory.0);
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
@@ -116,11 +110,7 @@ fn application(slots: &crate::root::store_double::RecordSlots) -> Arc<busbar_ker
     .expect("the amendment deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the amendment deployment resolves");
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.0.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config(&directory.0);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(

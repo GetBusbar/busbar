@@ -709,7 +709,9 @@ fn plane_rig() -> (crate::dispatch::plane_calls::PlaneInstance, *const State) {
             max_inflight_cap: 2,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
-            conns: ConnTable::NoNeeds,
+            // This boundary control crosses no destination but the real MCP
+            // descriptor still declares HTTP and stdio needs.
+            conns: ConnTable::Probe,
         },
     )
     .unwrap();

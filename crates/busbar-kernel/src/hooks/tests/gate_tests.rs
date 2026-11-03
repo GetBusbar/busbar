@@ -120,7 +120,7 @@ impl RoutingPolicy for TargetGate {
 
 #[tokio::test]
 async fn door_gate_distinguishes_targets_with_equal_arguments_and_cached_clearance() {
-    const CASE: &str = "hooks::gate::tests::door_gate_distinguishes_targets_with_equal_arguments_and_cached_clearance";
+    const CASE: &str = "hooks::gate::gate_tests::door_gate_distinguishes_targets_with_equal_arguments_and_cached_clearance";
     if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
         let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
             .args(["--exact", CASE, "--nocapture"])
@@ -193,7 +193,7 @@ async fn door_gate_distinguishes_targets_with_equal_arguments_and_cached_clearan
 
 #[tokio::test]
 async fn door_target_disclosure_requires_the_content_grant_and_discards_unused_fields() {
-    const CASE: &str = "hooks::gate::tests::door_target_disclosure_requires_the_content_grant_and_discards_unused_fields";
+    const CASE: &str = "hooks::gate::gate_tests::door_target_disclosure_requires_the_content_grant_and_discards_unused_fields";
     if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
         let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
             .args(["--exact", CASE, "--nocapture"])
@@ -437,7 +437,7 @@ fn key() -> busbar_contract::records::VirtualKey {
 
 #[tokio::test]
 async fn an_invocation_is_projected_whole() {
-    const CASE: &str = "hooks::gate::tests::an_invocation_is_projected_whole";
+    const CASE: &str = "hooks::gate::gate_tests::an_invocation_is_projected_whole";
     if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
         let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
             .args(["--exact", CASE, "--nocapture"])
@@ -740,7 +740,7 @@ async fn screens_cache_piece(store: &SessionStore, piece: u32, now_ms: u64) -> b
 
 #[tokio::test]
 async fn incremental_scan_uses_the_shared_capacity_and_rescreens_evicted_pieces() {
-    const CASE: &str = "hooks::gate::tests::incremental_scan_uses_the_shared_capacity_and_rescreens_evicted_pieces";
+    const CASE: &str = "hooks::gate::gate_tests::incremental_scan_uses_the_shared_capacity_and_rescreens_evicted_pieces";
     if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
         let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
             .args(["--exact", CASE, "--nocapture"])
@@ -775,7 +775,7 @@ async fn incremental_scan_uses_the_shared_capacity_and_rescreens_evicted_pieces(
 #[tokio::test]
 async fn incremental_scan_rescreens_when_pinned_tenants_occupy_the_capacity() {
     const CASE: &str =
-        "hooks::gate::tests::incremental_scan_rescreens_when_pinned_tenants_occupy_the_capacity";
+        "hooks::gate::gate_tests::incremental_scan_rescreens_when_pinned_tenants_occupy_the_capacity";
     if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
         let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
             .args(["--exact", CASE, "--nocapture"])
@@ -819,7 +819,7 @@ async fn incremental_scan_rescreens_when_pinned_tenants_occupy_the_capacity() {
 #[tokio::test]
 async fn incremental_scan_expires_each_piece_without_extending_it_on_a_hit() {
     const CASE: &str =
-        "hooks::gate::tests::incremental_scan_expires_each_piece_without_extending_it_on_a_hit";
+        "hooks::gate::gate_tests::incremental_scan_expires_each_piece_without_extending_it_on_a_hit";
     if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
         let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
             .args(["--exact", CASE, "--nocapture"])
@@ -890,7 +890,7 @@ fn incremental_scan_requires_the_full_tuple_when_a_cache_index_collides() {
 #[tokio::test]
 async fn incremental_scan_skips_a_piece_already_cleared_this_session() {
     const CASE: &str =
-        "hooks::gate::tests::incremental_scan_skips_a_piece_already_cleared_this_session";
+        "hooks::gate::gate_tests::incremental_scan_skips_a_piece_already_cleared_this_session";
     if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
         let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
             .args(["--exact", CASE, "--nocapture"])
@@ -1076,7 +1076,7 @@ fn derive_session_key_partitions_by_principal_and_generation() {
 #[tokio::test]
 async fn incremental_scan_reclears_across_principal_and_generation() {
     const CASE: &str =
-        "hooks::gate::tests::incremental_scan_reclears_across_principal_and_generation";
+        "hooks::gate::gate_tests::incremental_scan_reclears_across_principal_and_generation";
     if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
         let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
             .args(["--exact", CASE, "--nocapture"])
@@ -1249,7 +1249,7 @@ const PROJECTED: &[u8] = br#"{"tool":"lookup","arguments":{"query":{"parts":[{"t
 #[tokio::test]
 async fn the_door_paths_incremental_scan_keys_on_the_views_session() {
     const CASE: &str =
-        "hooks::gate::tests::the_door_paths_incremental_scan_keys_on_the_views_session";
+        "hooks::gate::gate_tests::the_door_paths_incremental_scan_keys_on_the_views_session";
     if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
         let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
             .args(["--exact", CASE, "--nocapture"])
@@ -1391,7 +1391,7 @@ async fn a_broken_load_bearing_door_gate_answers_the_shared_refusal() {
 #[tokio::test]
 async fn the_door_gate_projection_is_under_the_hook_content_ceiling() {
     const CASE: &str =
-        "hooks::gate::tests::the_door_gate_projection_is_under_the_hook_content_ceiling";
+        "hooks::gate::gate_tests::the_door_gate_projection_is_under_the_hook_content_ceiling";
     if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
         let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
             .args(["--exact", CASE, "--nocapture"])
@@ -1487,7 +1487,7 @@ impl RoutingPolicy for CeilingChangingSpy {
 
 #[tokio::test]
 async fn incremental_door_clearance_tracks_the_delivered_prompt_across_ceiling_changes() {
-    const CASE: &str = "hooks::gate::tests::incremental_door_clearance_tracks_the_delivered_prompt_across_ceiling_changes";
+    const CASE: &str = "hooks::gate::gate_tests::incremental_door_clearance_tracks_the_delivered_prompt_across_ceiling_changes";
     if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
         let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
             .args(["--exact", CASE, "--nocapture"])
@@ -1639,7 +1639,7 @@ async fn incremental_system_clearance_distinguishes_empty_content_from_ceiling_o
         }
     }
 
-    const CASE: &str = "hooks::gate::tests::incremental_system_clearance_distinguishes_empty_content_from_ceiling_omission";
+    const CASE: &str = "hooks::gate::gate_tests::incremental_system_clearance_distinguishes_empty_content_from_ceiling_omission";
     if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
         let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
             .args(["--exact", CASE, "--nocapture"])
@@ -1861,7 +1861,7 @@ async fn the_first_link_that_answers_decides_before_the_terminal() {
 #[tokio::test]
 async fn a_piece_cleared_on_one_container_is_screened_again_on_another() {
     const CASE: &str =
-        "hooks::gate::tests::a_piece_cleared_on_one_container_is_screened_again_on_another";
+        "hooks::gate::gate_tests::a_piece_cleared_on_one_container_is_screened_again_on_another";
     if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
         let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
             .args(["--exact", CASE, "--nocapture"])
@@ -1985,7 +1985,7 @@ async fn an_unreadable_door_body_applies_a_content_gates_on_error() {
 #[tokio::test]
 async fn a_door_gate_sees_the_planes_document_and_the_planes_own_fields() {
     const CASE: &str =
-        "hooks::gate::tests::a_door_gate_sees_the_planes_document_and_the_planes_own_fields";
+        "hooks::gate::gate_tests::a_door_gate_sees_the_planes_document_and_the_planes_own_fields";
     if std::env::var("BUSBAR_HOOK_GATE_CASE_CHILD").ok().as_deref() != Some(CASE) {
         let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
             .args(["--exact", CASE, "--nocapture"])

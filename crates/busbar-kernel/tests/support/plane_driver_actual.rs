@@ -1582,7 +1582,6 @@ use busbar_contract::abi::host::service as svc;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::{RecordBytes, StoreError};
-use busbar_contract::records::RecordStore;
 use busbar_contract::services::{Caller as Instance, HostServices, Ran, RecordsList, Stored};
 use busbar_kernel::host_records::RecordRows;
 use busbar_kernel::host_services::{InstanceFacts, KernelServices, Offload};

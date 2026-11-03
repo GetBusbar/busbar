@@ -732,10 +732,342 @@ mod sdk_refresh {
 
 const BUDGET: Duration = Duration::from_secs(5);
 
+// These tests retain the actual Ranking lifecycle/state through each loader origin.
+// Only the named operation is adversarial: SERVE uses the real SDK loan writer;
+// DECIDE observes the ABI view and forwards the exact operation from that image.
+#[path = "../../tests/fixtures/hook_metadata_boundary.rs"]
+mod metadata_boundary;
+
+mod actual_boundary {
+    use super::*;
+    use busbar_contract::abi::mechanism::call::{AbiStr, Op, Outcome, RawOutcome};
+    use busbar_contract::abi::sdk::life::Leases;
+    use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
+    use std::collections::BTreeMap;
+    use std::ffi::c_void;
+    use std::sync::{Mutex, OnceLock};
+
+    // Use the full SDK trampoline: Entry::enter alone does not stamp the ABI out head.
+    struct LoanCapture;
+    impl busbar_contract::abi::sdk::capture::CaptureHome for LoanCapture {
+        fn with<R>(f: impl FnOnce(&mut busbar_contract::abi::sdk::capture::CaptureSlot) -> R) -> R {
+            std::thread_local! {
+                static CAPTURE: std::cell::RefCell<busbar_contract::abi::sdk::capture::CaptureSlot> =
+                    std::cell::RefCell::new(busbar_contract::abi::sdk::capture::CaptureSlot::new());
+            }
+            CAPTURE.with(|slot| f(&mut slot.borrow_mut()))
+        }
+        fn retention() -> &'static busbar_contract::abi::sdk::capture::CaptureRetention {
+            static RETENTION: OnceLock<busbar_contract::abi::sdk::capture::CaptureRetention> =
+                OnceLock::new();
+            RETENTION.get_or_init(Default::default)
+        }
+    }
+
+    static RELEASE: [OnceLock<Op>; 2] = [OnceLock::new(), OnceLock::new()];
+    static DECIDE: [OnceLock<Op>; 2] = [OnceLock::new(), OnceLock::new()];
+    static LOANS: Mutex<BTreeMap<usize, Arc<Leases>>> = Mutex::new(BTreeMap::new());
+    type ObservedSessions = BTreeMap<(usize, u64), Option<Vec<u8>>>;
+    static SESSIONS: Mutex<ObservedSessions> = Mutex::new(BTreeMap::new());
+    std::thread_local! { static CURRENT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+    fn change(ops: &mut [Op], way: usize, serve: bool) {
+        use busbar_contract::abi::{hook::slot, mechanism::lifecycle::slot as life};
+        if serve {
+            RELEASE[way].get_or_init(|| ops[life::RELEASE as usize]);
+            ops[life::RELEASE as usize] = if way == 0 {
+                release_linked
+            } else {
+                release_dropped
+            };
+            ops[slot::SERVE as usize] = serve_loan;
+        } else {
+            DECIDE[way].get_or_init(|| ops[slot::DECIDE as usize]);
+            ops[slot::DECIDE as usize] = if way == 0 {
+                decide_linked
+            } else {
+                decide_dropped
+            };
+        }
+    }
+    fn linked_serve(ops: &mut [Op]) {
+        change(ops, 0, true);
+    }
+    fn dropped_serve(ops: &mut [Op]) {
+        change(ops, 1, true);
+    }
+    fn linked_session(ops: &mut [Op]) {
+        change(ops, 0, false);
+    }
+    fn dropped_session(ops: &mut [Op]) {
+        change(ops, 1, false);
+    }
+
+    pub fn open(way: Way, serve: bool) -> super::super::HookInstance {
+        let axis = if serve {
+            rows(metadata_boundary::door, "hook_metadata_boundary", way)
+        } else {
+            ranking_rows(way)
+        };
+        let candidate = axis.candidates[0].clone();
+        let dispatcher = Arc::clone(&axis.dispatcher);
+        let change = match (way, serve) {
+            (Way::Linked, true) => linked_serve as fn(&mut [Op]),
+            (Way::Dropped, true) => dropped_serve,
+            (Way::Linked, false) => linked_session,
+            (Way::Dropped, false) => dropped_session,
+        };
+        let bind = {
+            let dispatcher = Arc::clone(&dispatcher);
+            move || {
+                crate::dispatch::plugin::with_test_slot_override(change, || {
+                    HookRows::bind(
+                        &candidate,
+                        &dispatcher,
+                        "hooks.boundary",
+                        Arc::new(super::super::NoSink),
+                        super::super::ConnTable::NoNeeds,
+                    )
+                })
+            }
+        };
+        super::super::HookInstance::open(
+            bind().unwrap(),
+            dispatcher,
+            br#"{"policy":"fastest"}"#,
+            bind,
+        )
+        .unwrap()
+    }
+
+    pub fn sessions(way: Way) -> Vec<Option<Vec<u8>>> {
+        let way = if matches!(way, Way::Linked) { 0 } else { 1 };
+        let seen = SESSIONS.lock().unwrap();
+        (7..10)
+            .map(|id| {
+                seen.get(&(way, id))
+                    .expect("actual DECIDE crossing observed")
+                    .clone()
+            })
+            .collect()
+    }
+
+    #[allow(unsafe_code)]
+    unsafe fn observe(
+        way: usize,
+        instance: *mut c_void,
+        input: *const c_void,
+        out: *mut c_void,
+    ) -> RawOutcome {
+        // SAFETY: this is installed only for DECIDE; the dispatcher lends its valid full frame.
+        let input_view = unsafe { &*input.cast::<busbar_contract::abi::hook::DecideIn>() };
+        let session = input_view.request.session;
+        let bytes = if session.fmt == busbar_contract::abi::mechanism::call::BLOB_ABSENT {
+            None
+        } else {
+            // SAFETY: the dispatcher retains the exact session range until this crossing returns.
+            Some(unsafe { session.bytes() }.to_vec())
+        };
+        SESSIONS
+            .lock()
+            .unwrap()
+            .insert((way, input_view.request.request_id), bytes);
+        // SAFETY: the original operation belongs to this same retained actual image and state.
+        unsafe { DECIDE[way].get().unwrap()(instance, input, out) }
+    }
+    #[allow(unsafe_code)]
+    unsafe extern "C" fn decide_linked(
+        i: *mut c_void,
+        n: *const c_void,
+        o: *mut c_void,
+    ) -> RawOutcome {
+        // SAFETY: forwards the unchanged actual linked DECIDE call.
+        unsafe { observe(0, i, n, o) }
+    }
+    #[allow(unsafe_code)]
+    unsafe extern "C" fn decide_dropped(
+        i: *mut c_void,
+        n: *const c_void,
+        o: *mut c_void,
+    ) -> RawOutcome {
+        // SAFETY: forwards the unchanged actual dropped DECIDE call.
+        unsafe { observe(1, i, n, o) }
+    }
+
+    #[allow(unsafe_code)]
+    unsafe fn release(
+        way: usize,
+        instance: *mut c_void,
+        input: *const c_void,
+        out: *mut c_void,
+    ) -> RawOutcome {
+        // SAFETY: this override is installed only in RELEASE's slot; the dispatcher lends
+        // its full ReleaseIn. Each fresh auxiliary SDK table mints lease 1 for one answer.
+        let lease = unsafe {
+            (*input.cast::<busbar_contract::abi::mechanism::lifecycle::ReleaseIn>()).lease
+        };
+        if lease == 1 && LOANS.lock().unwrap().contains_key(&(instance as usize)) {
+            CURRENT.with(|key| key.set(instance as usize));
+            let operation = busbar_contract::abi::sdk::door::kind_op::<
+                busbar_contract::abi::sdk::door::Lifecycle,
+                Safe<ReleaseLoan>,
+                LoanCapture,
+                { busbar_contract::abi::mechanism::lifecycle::slot::RELEASE },
+            >()
+            .expect("the SDK release trampoline");
+            // SAFETY: this is a checked RELEASE frame. The auxiliary SDK body reads no
+            // instance, so NULL keeps the actual product state entirely opaque.
+            return unsafe { operation(std::ptr::null_mut(), input, out) };
+        }
+        // SAFETY: a non-boundary loan belongs to the original image's RELEASE and actual state.
+        unsafe { RELEASE[way].get().unwrap()(instance, input, out) }
+    }
+    #[allow(unsafe_code)]
+    unsafe extern "C" fn release_linked(
+        i: *mut c_void,
+        n: *const c_void,
+        o: *mut c_void,
+    ) -> RawOutcome {
+        // SAFETY: forwards RELEASE with its original frame and retained product state.
+        unsafe { release(0, i, n, o) }
+    }
+    #[allow(unsafe_code)]
+    unsafe extern "C" fn release_dropped(
+        i: *mut c_void,
+        n: *const c_void,
+        o: *mut c_void,
+    ) -> RawOutcome {
+        // SAFETY: forwards RELEASE with its original frame and retained product state.
+        unsafe { release(1, i, n, o) }
+    }
+    #[allow(unsafe_code)]
+    unsafe extern "C" fn serve_loan(
+        instance: *mut c_void,
+        input: *const c_void,
+        out: *mut c_void,
+    ) -> RawOutcome {
+        CURRENT.with(|key| key.set(instance as usize));
+        // SAFETY: the dispatcher checked the SERVE frame. The auxiliary SDK writer takes no
+        // state, so NULL prevents any cast or access to the opaque actual product instance.
+        let operation = busbar_contract::abi::sdk::door::kind_op::<
+            busbar_contract::abi::hook::Ops,
+            Safe<Loan>,
+            LoanCapture,
+            { busbar_contract::abi::hook::slot::SERVE },
+        >()
+        .expect("the SDK serve trampoline");
+        // SAFETY: the original checked SERVE frame is passed through the SDK trampoline;
+        // its auxiliary writer uses no state and never interprets the product instance.
+        unsafe { operation(std::ptr::null_mut(), input, out) }
+    }
+    struct ReleaseLoan;
+    impl SafeSlot for ReleaseLoan {
+        type In = busbar_contract::abi::mechanism::lifecycle::ReleaseIn;
+        type Out = busbar_contract::abi::mechanism::call::OutHead;
+        type State = ();
+        fn call(_: Instance<'_, ()>, _: Lent<'_, Self::In>, _: Out<'_, Self::Out>) -> Outcome {
+            let key = CURRENT.with(std::cell::Cell::get);
+            if LOANS.lock().unwrap().remove(&key).is_some() {
+                Outcome::Ready
+            } else {
+                Outcome::Refused
+            }
+        }
+    }
+
+    struct Loan;
+    impl SafeSlot for Loan {
+        type In = busbar_contract::abi::hook::ServeIn;
+        type Out = busbar_contract::abi::hook::ServeOut;
+        type State = ();
+        fn call(
+            _: Instance<'_, ()>,
+            input: Lent<'_, Self::In>,
+            mut out: Out<'_, Self::Out>,
+        ) -> Outcome {
+            let query = input.field(|i| &i.query).bytes();
+            if query == b"sleep" {
+                std::thread::sleep(Duration::from_millis(100));
+                return Outcome::Refused;
+            }
+            let key = CURRENT.with(std::cell::Cell::get);
+            let count = LOANS
+                .lock()
+                .unwrap()
+                .get(&key)
+                .map_or(0, |leases| leases.held());
+            let leases = Arc::new(Leases::default());
+            LOANS.lock().unwrap().insert(key, Arc::clone(&leases));
+            let body = if query == b"lease-count" {
+                count.to_string().into_bytes()
+            } else {
+                let mut body = input.field(|i| &i.method).bytes().to_vec();
+                body.push(b' ');
+                body.extend_from_slice(input.field(|i| &i.path).bytes());
+                body.push(b'?');
+                body.extend_from_slice(query);
+                body.push(b'\n');
+                body.extend_from_slice(input.field(|i| &i.body).bytes());
+                body
+            };
+            out.set(|o| &o.status_code, 202);
+            out.lease(
+                |o| &o.body,
+                &leases,
+                body,
+                busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+            );
+            const NAME: AbiStr = AbiStr {
+                ptr: b"x-boundary".as_ptr(),
+                len: 10,
+            };
+            const VALUE: AbiStr = AbiStr {
+                ptr: b"present".as_ptr(),
+                len: 7,
+            };
+            const VALID: &[AbiStr] = &[NAME, VALUE];
+            const ODD: &[AbiStr] = &[NAME];
+            const NULL: &[AbiStr] = &[
+                NAME,
+                AbiStr {
+                    ptr: std::ptr::null(),
+                    len: 1,
+                },
+            ];
+            const OVERLONG: &[AbiStr] = &[
+                NAME,
+                AbiStr {
+                    ptr: b"x".as_ptr(),
+                    len: busbar_contract::abi::mechanism::call::MAX_TEXT + 1,
+                },
+            ];
+            const NON_UTF8: &[AbiStr] = &[
+                NAME,
+                AbiStr {
+                    ptr: b"\xff".as_ptr(),
+                    len: 1,
+                },
+            ];
+            out.list(
+                |o| &o.headers_out,
+                |o| &o.headers_out_len,
+                match query {
+                    b"odd" => ODD,
+                    b"null" => NULL,
+                    b"overlong" => OVERLONG,
+                    b"utf8" => NON_UTF8,
+                    _ => VALID,
+                },
+            );
+            Outcome::Ready
+        }
+    }
+}
+
 fn serve_request() -> busbar_contract::abi::mechanism::endpoint::EndpointRequest {
     busbar_contract::abi::mechanism::endpoint::EndpointRequest {
         method: "POST".into(),
-        path: hook_door_plugin::ROUTE_PATH.into(),
+        path: "/hooks/ranking/metadata-boundary".into(),
         query: "kind=feedback".into(),
         headers: vec![("content-type".into(), "text/plain".into())],
         body: b"received".to_vec(),
@@ -744,73 +1076,57 @@ fn serve_request() -> busbar_contract::abi::mechanism::endpoint::EndpointRequest
 
 #[tokio::test]
 async fn hook_routes_serve_leased_responses_through_both_doors_and_refused_stubs_fail() {
+    use busbar_contract::hook_calls::HookCalls;
     for way in [Way::Linked, Way::Dropped] {
-        let axis = rows(hook_door_plugin::conforming::door, "hook_door", way);
-        let calls = axis
-            .open(
-                NAME,
-                "receiver",
-                &json!({"reject_over_messages": 3}),
-                BUDGET,
-            )
-            .unwrap();
+        let calls = actual_boundary::open(way, true);
         assert_eq!(calls.routes().len(), 1);
-        assert_eq!(calls.routes()[0].path, hook_door_plugin::ROUTE_PATH);
+        assert_eq!(calls.routes()[0].path, "/hooks/ranking/metadata-boundary");
         let response = calls.serve(serve_request(), BUDGET).await.unwrap();
         assert_eq!(response.status, 202);
         assert_eq!(
             response.headers,
-            vec![("x-fixture".into(), "present".into())]
+            vec![("x-boundary".into(), "present".into())]
         );
         assert_eq!(
             response.body,
-            b"POST /hooks/receiver/feedback?kind=feedback\nreceived"
+            b"POST /hooks/ranking/metadata-boundary?kind=feedback\nreceived"
         );
-
         assert_eq!(
             calls.serve(serve_request(), BUDGET).await.unwrap().body,
             response.body
         );
-        let stub = rows(hook_door_plugin::broken::door, "hook_broken_door", way);
-        let calls = stub
+        let stub = ranking_rows(way)
             .open(
-                BROKEN_NAME,
+                &ranking_name(),
                 "receiver",
-                &json!({"reject_over_messages": 3}),
+                &json!({"policy":"fastest"}),
                 BUDGET,
             )
             .unwrap();
-        assert_eq!(calls.routes().len(), 1);
-        assert!(calls.serve(serve_request(), BUDGET).await.is_err());
+        assert!(stub.routes().is_empty());
+        assert!(stub.serve(serve_request(), BUDGET).await.is_err());
     }
 }
 
 #[tokio::test]
 async fn malformed_hook_serve_headers_are_refused_and_the_answer_lease_is_released() {
+    use busbar_contract::hook_calls::HookCalls;
     for way in [Way::Linked, Way::Dropped] {
         for mode in ["odd", "null", "overlong", "utf8"] {
-            let axis = rows(hook_door_plugin::conforming::door, "hook_door", way);
-            let calls = axis
-                .open(
-                    NAME,
-                    "receiver",
-                    &json!({
-                        "reject_over_messages": 3, "serve_headers": mode,
-                    }),
-                    BUDGET,
-                )
-                .unwrap();
+            let calls = actual_boundary::open(way, true);
+            let mut request = serve_request();
+            request.query = mode.into();
             let error = calls
-                .serve(serve_request(), BUDGET)
+                .serve(request, BUDGET)
                 .await
-                .expect_err("the actual hook answer must fail header validation");
+                .expect_err("the SDK loan must fail header validation");
             assert!(error.contains("response header"), "{way:?}/{mode}: {error}");
             let mut count = serve_request();
             count.query = "lease-count".into();
             assert_eq!(
                 calls.serve(count, BUDGET).await.unwrap().body,
                 b"0",
-                "{way:?}/{mode}: rejected answers must not retain their leased body"
+                "{way:?}/{mode}: rejected SDK loan is released"
             );
         }
     }
@@ -818,21 +1134,16 @@ async fn malformed_hook_serve_headers_are_refused_and_the_answer_lease_is_releas
 
 #[tokio::test]
 async fn a_slow_hook_serve_is_bounded_by_its_budget_through_both_doors() {
+    use busbar_contract::hook_calls::HookCalls;
     for way in [Way::Linked, Way::Dropped] {
-        let axis = rows(hook_door_plugin::conforming::door, "hook_door", way);
-        let calls = axis
-            .open(
-                NAME,
-                "receiver",
-                &json!({"reject_over_messages": 3, "sleep_ms": 100}),
-                BUDGET,
-            )
-            .unwrap();
-        assert!(calls
-            .serve(serve_request(), Duration::from_millis(10))
+        let calls = actual_boundary::open(way, true);
+        let mut slow = serve_request();
+        slow.query = "sleep".into();
+        let error = calls
+            .serve(slow, Duration::from_millis(10))
             .await
-            .is_err());
-
+            .unwrap_err();
+        assert!(error.contains("budget"), "{way:?}: {error}");
         assert_eq!(
             calls.serve(serve_request(), BUDGET).await.unwrap().status,
             202
@@ -897,6 +1208,62 @@ fn rows(door: DoorFn, example: &str, way: Way) -> HookRows {
     }
 }
 
+fn ranking_path() -> std::path::PathBuf {
+    std::env::var_os("BUSBAR_TEST_RANKING_CDYLIB")
+        .map(std::path::PathBuf::from)
+        .expect("the qualified actual Ranking image")
+}
+
+extern "C" fn ranking_door() -> &'static busbar_contract::abi::mechanism::door::Door {
+    use busbar_contract::abi::sdk::door::RawDoorFn;
+    static IMAGE: std::sync::OnceLock<(libloading::Library, RawDoorFn)> =
+        std::sync::OnceLock::new();
+    let image = IMAGE.get_or_init(|| {
+        let library =
+            crate::dlopen_on_worker(ranking_path().as_os_str()).expect("actual Ranking loads");
+        // SAFETY: the typed export belongs to the retained qualified product image.
+        let entry = unsafe {
+            *library
+                .get::<RawDoorFn>(busbar_contract::abi::mechanism::DOOR_SYMBOL)
+                .expect("actual Ranking door")
+        };
+        (library, entry)
+    });
+    let door = crate::dispatch::load::enter_door(image.1);
+    crate::dispatch::load::validate_door::<crate::dispatch::kinds::hook::Hook>(door)
+        .expect("actual Ranking Hook validates");
+    // SAFETY: validation checked the immutable descriptor and IMAGE retains its mapping.
+    unsafe { &*door }
+}
+
+fn ranking_name() -> String {
+    let stated = rendering_of(ranking_door).expect("actual Ranking renders");
+    busbar_contract::abi::mechanism::rendering::read(&stated)
+        .expect("actual Ranking statement")
+        .name
+}
+
+fn ranking_rows(way: Way) -> HookRows {
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    match way {
+        Way::Linked => {
+            HookRows::new(&[ranking_door], None, dispatcher).expect("actual descriptor linked row")
+        }
+        Way::Dropped => {
+            let row = Candidate::from_rendering(
+                rendering_of(ranking_door).unwrap(),
+                None,
+                Origin::Dropped {
+                    file: "actual-ranking.tar.gz".into(),
+                    bytes: Arc::new(std::fs::read(ranking_path()).expect("actual Ranking bytes")),
+                },
+            )
+            .expect("actual Ranking candidate");
+            HookRows::of(vec![row], dispatcher)
+        }
+    }
+}
+
 fn decided(messages: usize, a: &Answered<busbar_contract::abi::hook::DecideOut>) -> String {
     match a {
         Answered::Answer {
@@ -913,84 +1280,137 @@ fn decided(messages: usize, a: &Answered<busbar_contract::abi::hook::DecideOut>)
     }
 }
 
-async fn script(rows: &HookRows, module: &str) -> Vec<String> {
-    let probed = |settings: serde_json::Value| rows.probe(module, "gate", &settings);
-    let mut lines = vec![
-        format!(
-            "probe bad: {:?}",
-            probed(json!({"reject_over_messages": "three"}))
-        ),
-        format!(
-            "probe good: {:?}",
-            probed(json!({"reject_over_messages": 3}))
-        ),
-        format!(
-            "probe nobody: {:?}",
-            rows.probe("nobody", "gate", &json!({}))
-        ),
-    ];
-    let calls = rows
-        .open(
-            module,
-            "hooks.gate",
-            &json!({"reject_over_messages": 3}),
-            BUDGET,
-        )
-        .expect("the hook opens through the axis");
-    lines.push(format!("name: {}", calls.name()));
-    for messages in [2, 5] {
-        lines.push(decided(
-            messages,
-            &calls.decide(frame(messages), BUDGET).await,
-        ));
-    }
-    lines.push(format!("status: {:?}", calls.status(BUDGET).await));
-    lines.push(format!(
-        "configure: {:?}",
-        calls.configure("gate", "{}", 2, BUDGET).await
-    ));
-    lines
-}
-
 #[tokio::test]
 async fn a_linked_and_a_dropped_in_hook_open_through_the_axis_and_decide_identically() {
-    let door = hook_door_plugin::conforming::door;
-    let linked_rows = rows(door, "hook_door", Way::Linked);
-    let linked = script(&linked_rows, NAME).await;
-    let dropped_rows = rows(door, "hook_door", Way::Dropped);
-    let dropped = script(&dropped_rows, NAME).await;
-    assert_eq!(linked, dropped, "the same table, whichever door");
-
-    let facts = HookFacts {
-        name: NAME.to_string(),
-        class: CLASS_GATE,
-        prompt: PROMPT_NO,
-        user: USER_NO,
-        infallible: false,
-        words: Vec::new(),
-    };
-    assert!(
-        linked[0].contains(&format!("{facts:?}")) && linked[0].contains("must be a number"),
-        "{}",
-        linked[0]
+    async fn script(axis: HookRows, name: &str) -> Vec<String> {
+        let facts = HookFacts {
+            name: name.to_owned(),
+            class: CLASS_GATE,
+            prompt: PROMPT_NO,
+            user: USER_NO,
+            infallible: false,
+            words: busbar_contract::abi::mechanism::rendering::read(
+                &rendering_of(ranking_door).expect("actual Ranking renders"),
+            )
+            .expect("actual Ranking declaration")
+            .mark_words
+            .into_iter()
+            .filter_map(|(class, word)| {
+                (class == busbar_contract::abi::mechanism::door::MARK_WORD_HOOK).then_some(word)
+            })
+            .collect(),
+        };
+        let bad = axis.probe(name, "gate", &json!({"policy": 17})).unwrap();
+        assert_eq!(bad.0, Some(facts.clone()));
+        assert!(
+            bad.1.iter().any(|e| e.contains("policy must be a string")),
+            "{bad:?}"
+        );
+        let good = axis
+            .probe(name, "gate", &json!({"policy": "cheapest"}))
+            .unwrap();
+        assert_eq!(good, (Some(facts), Vec::new()));
+        assert_eq!(axis.probe("nobody", "gate", &json!({})), None);
+        assert!(axis
+            .open(name, "bad", &json!({"policy": "unknown"}), BUDGET)
+            .is_err());
+        let missing = axis
+            .open("nobody", "missing", &json!({}), BUDGET)
+            .err()
+            .unwrap();
+        assert!(missing.contains("nobody"), "{missing}");
+        let calls = axis
+            .open(name, "hooks.gate", &json!({"policy": "cheapest"}), BUDGET)
+            .unwrap();
+        assert_eq!(calls.name(), name);
+        let mut lines = vec![format!("bad: {bad:?}"), format!("good: {good:?}"), missing];
+        for with_costs in [false, true] {
+            let candidates = [9.0, 2.0]
+                .into_iter()
+                .enumerate()
+                .map(|(idx, cost)| busbar_contract::hooks::Candidate {
+                    idx,
+                    model: "model",
+                    provider: "provider",
+                    weight: 1,
+                    context_max: None,
+                    tier: None,
+                    cost_per_mtok: with_costs.then_some(cost),
+                    tags: &[],
+                    latency_ms: None,
+                    available_concurrency: 1,
+                    budget_remaining: None,
+                    rate_headroom: None,
+                    signals: SignalBag::new(),
+                })
+                .collect::<Vec<_>>();
+            let ctx = RoutingContext {
+                pool: "p",
+                budget_remaining: None,
+                budget: &[],
+            };
+            let frame = DecideFrame::first(DecideView::build(&request(2), &candidates, &ctx));
+            let answer = calls.decide(Arc::clone(&frame), BUDGET).await;
+            let Answered::Answer {
+                outcome,
+                out,
+                error,
+                frame,
+            } = answer
+            else {
+                panic!("the actual Ranking crossing answers: {answer:?}");
+            };
+            assert_eq!(
+                outcome,
+                busbar_contract::abi::mechanism::call::Outcome::Ready
+            );
+            assert!(error.is_none(), "{error:?}");
+            assert_eq!(out.verbs, if with_costs { 1 } else { 2 });
+            let order = frame.order(out.order_written);
+            assert_eq!(order, if with_costs { vec![1, 0] } else { vec![] });
+            assert_eq!(out.reject_message_written, 0);
+            assert_eq!(out.restrict_tags_written, 0);
+            lines.push(format!(
+                "result={:?} order={order:?} reject={:?} tags={:?}",
+                (
+                    out.verbs,
+                    out.reject_status,
+                    out._reserved,
+                    out.reject_message_written,
+                    out.reject_message_needed,
+                    out.restrict_tags_written,
+                    out.restrict_tags_needed,
+                    out.order_written,
+                    out.order_needed
+                ),
+                frame.reject_message(out.reject_message_written),
+                frame.restrict_tags(out.restrict_tags_written)
+            ));
+        }
+        let status = calls
+            .status(BUDGET)
+            .await
+            .expect("the actual SDK returns its status envelope");
+        assert_eq!(status, b"{}");
+        lines.push(format!("status: {status:?}"));
+        assert!(calls
+            .configure("gate", r#"{"policy":"unknown"}"#, 1, BUDGET)
+            .await
+            .is_err());
+        let configured = calls
+            .configure("gate", r#"{"policy":"fastest"}"#, 2, BUDGET)
+            .await;
+        assert!(configured.is_ok(), "{configured:?}");
+        lines.push(format!("configure: {configured:?}"));
+        lines
+    }
+    let name = ranking_name();
+    let linked = script(ranking_rows(Way::Linked), &name).await;
+    let dropped = script(ranking_rows(Way::Dropped), &name).await;
+    assert_eq!(
+        linked, dropped,
+        "actual Ranking lifecycle and complete results match across origins"
     );
-    assert!(linked[1].ends_with("[]))"), "{}", linked[1]);
-    assert_eq!(linked[2], "probe nobody: None");
-    assert_eq!(linked[3], format!("name: {NAME}"));
-    assert!(
-        linked[4].contains("Ready") && linked[4].contains("verbs=0x2 "),
-        "{}",
-        linked[4]
-    );
-    assert!(
-        linked[5].contains("Ready")
-            && linked[5].contains("verbs=0x14 ")
-            && linked[5].contains(&format!("reject_status={REJECT_STATUS}")),
-        "{}",
-        linked[5]
-    );
-    assert_eq!(linked[6], "status: None", "the fixture refuses `status`");
-    assert!(linked[7].starts_with("configure: Err("), "{}", linked[7]);
 }
 
 #[tokio::test]
@@ -1053,12 +1473,12 @@ async fn a_panicking_hook_is_broken_through_the_axis_never_a_verdict() {
 
 #[test]
 fn a_linked_row_is_linked_and_first_party_and_a_dropped_in_unsigned_row_is_neither() {
-    let door = hook_door_plugin::conforming::door;
-    let linked = rows(door, "hook_door", Way::Linked);
-    assert!(linked.linked(NAME) && linked.first_party(NAME));
+    let name = ranking_name();
+    let linked = ranking_rows(Way::Linked);
+    assert!(linked.linked(&name) && linked.first_party(&name));
     assert!(!linked.linked("nobody") && !linked.first_party("nobody"));
-    let dropped = rows(door, "hook_door", Way::Dropped);
-    assert!(!dropped.linked(NAME) && !dropped.first_party(NAME));
+    let dropped = ranking_rows(Way::Dropped);
+    assert!(!dropped.linked(&name) && !dropped.first_party(&name));
 }
 
 #[test]
@@ -1113,44 +1533,37 @@ fn a_dropped_in_1_5_5_json_hook_plugin_is_refused_naming_the_rebuild() {
 
 #[tokio::test]
 async fn a_hook_reads_the_request_session_through_both_doors() {
-    let run = |rows: HookRows| async move {
-        let calls = rows
-            .open(
-                NAME,
-                "hooks.gate",
-                &json!({"reject_over_messages": 3, "reject_session": "ctx-7"}),
-                BUDGET,
-            )
-            .expect("the hook opens");
+    use busbar_contract::hook_calls::HookCalls;
+    let mut transcripts = Vec::new();
+    for way in [Way::Linked, Way::Dropped] {
+        let calls = actual_boundary::open(way, false);
         let ctx = RoutingContext {
             pool: "p",
             budget_remaining: None,
             budget: &[],
         };
         let mut lines = Vec::new();
-        for session in [Some(&b"ctx-7"[..]), Some(&b"ctx-8"[..]), None] {
+        for (id, session) in (7..10).zip([Some(&b"ctx-7"[..]), Some(&b"ctx-8"[..]), None]) {
             let mut req = request(2);
+            req.request_id = id;
             req.session = session;
             let frame = DecideFrame::first(DecideView::build(&req, &[], &ctx));
-            lines.push(decided(2, &calls.decide(frame, BUDGET).await));
+            let answer = calls.decide(frame, BUDGET).await;
+            assert!(
+                matches!(answer, Answered::Answer { .. }),
+                "{way:?}: {answer:?}"
+            );
+            lines.push(decided(2, &answer));
         }
-        lines
-    };
-    let door = hook_door_plugin::conforming::door;
-    let linked = run(rows(door, "hook_door", Way::Linked)).await;
-    assert!(
-        linked[0].contains("verbs=0x14 ")
-            && linked[0].contains(&format!("reject_status={REJECT_STATUS}")),
-        "the named session is refused: {}",
-        linked[0]
-    );
-    assert!(linked[1].contains("verbs=0x2 "), "{}", linked[1]);
-    assert!(linked[2].contains("verbs=0x2 "), "{}", linked[2]);
-    let dropped_rows = rows(door, "hook_door", Way::Dropped);
+        assert_eq!(
+            actual_boundary::sessions(way),
+            [Some(b"ctx-7".to_vec()), Some(b"ctx-8".to_vec()), None]
+        );
+        transcripts.push(lines);
+    }
     assert_eq!(
-        linked,
-        run(dropped_rows).await,
-        "the same answers, whichever door"
+        transcripts[0], transcripts[1],
+        "actual Ranking answers match across origins"
     );
 }
 
@@ -1336,44 +1749,39 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the
 #[test]
 fn a_1_5_5_hook_name_opens_the_1_6_0_hook_both_ways() {
     const OLD: &str = "busbar-webrequest";
-    let door = hook_door_plugin::conforming::door;
-    let settings = json!({"reject_over_messages": 3});
+    let name = ranking_name();
+    let settings = json!({"policy": "fastest"});
     let opens = |rows: &HookRows| rows.open(OLD, "hooks.wr", &settings, BUDGET).is_ok();
     let dispatcher = || Arc::new(Dispatcher::new(DispatchConfig::default()));
-
-    let former_of = |w: &str| {
-        if w == NAME {
-            vec![OLD.to_string()]
-        } else {
-            Vec::new()
-        }
-    };
-    let linked = HookRows::new(&[door], None, dispatcher())
-        .expect("the linked row")
-        .with_former_names(former_of)
-        .expect("no other plugin claims the name");
+    let linked = HookRows::new(&[ranking_door], None, dispatcher())
+        .expect("actual linked row")
+        .with_former_names(|word| {
+            if word == name {
+                vec![OLD.to_owned()]
+            } else {
+                Vec::new()
+            }
+        })
+        .unwrap();
     assert!(opens(&linked), "linked: '{OLD}' opens the hook");
     assert!(linked.linked(OLD) && linked.first_party(OLD));
-    let bare = HookRows::new(&[door], None, dispatcher()).expect("the linked row");
+    let bare = HookRows::new(&[ranking_door], None, dispatcher()).unwrap();
     assert!(!opens(&bare), "RED: a linked row without its former name");
-
-    let path = crate::both_ways::example_cdylib("hook_door");
-    let lib = std::fs::read(path).expect("the example cdylib reads");
+    let lib = std::fs::read(ranking_path()).expect("actual Ranking bytes");
     let abi = crate::supported_abi("hook")[0];
-    let stated = hex::encode(rendering_of(door).expect("the door renders its Statement"));
+    let stated = hex::encode(rendering_of(ranking_door).unwrap());
     let manifest = |former: &[&str]| {
-        let mut m =
-            crate::both_ways::statement("hook", "busbar-hook-webrequest", "webrequest", abi);
-        m.statement = Some(stated.clone());
-        m.former_names = former.iter().map(|s| s.to_string()).collect();
-        m
+        let mut manifest = crate::both_ways::statement("hook", &name, &name, abi);
+        manifest.statement = Some(stated.clone());
+        manifest.former_names = former.iter().map(|word| (*word).to_owned()).collect();
+        manifest
     };
     let registry = crate::both_ways::dropped("former-hook", manifest(&[OLD]), &lib);
     assert!(registry.answers(OLD, "hook"), "preflight resolves '{OLD}'");
-    let dropped = HookRows::new(&[], Some(&registry), dispatcher()).expect("the dropped row");
+    let dropped = HookRows::new(&[], Some(&registry), dispatcher()).unwrap();
     assert!(opens(&dropped), "dropped in: '{OLD}' opens the hook");
     let registry = crate::both_ways::dropped("bare-hook", manifest(&[]), &lib);
-    let bare = HookRows::new(&[], Some(&registry), dispatcher()).expect("the dropped row");
+    let bare = HookRows::new(&[], Some(&registry), dispatcher()).unwrap();
     assert!(
         !opens(&bare),
         "RED: a dropped-in hook without its former name"
@@ -1693,12 +2101,12 @@ async fn red_a_hook_that_declared_no_orders_is_refused_when_it_orders() {
 #[tokio::test]
 async fn an_unrepresentable_call_budget_is_broken_without_poisoning_either_hook_door() {
     for way in [Way::Linked, Way::Dropped] {
-        let axis = rows(hook_door_plugin::conforming::door, "hook_door", way);
+        let axis = ranking_rows(way);
         let calls = axis
             .open(
-                NAME,
+                &ranking_name(),
                 "hooks.gate",
-                &json!({"reject_over_messages": 3}),
+                &json!({"policy":"fastest"}),
                 BUDGET,
             )
             .unwrap();

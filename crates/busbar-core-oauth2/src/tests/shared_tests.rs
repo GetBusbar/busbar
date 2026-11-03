@@ -32,10 +32,6 @@ struct OneStore {
     decisions: Arc<Mutex<Vec<DecisionDelay>>>,
 }
 
-pub(super) fn test_store_calls() -> Arc<dyn StoreCalls> {
-    OneStore::default().calls()
-}
-
 type AtomicRows = BTreeMap<(String, Vec<u8>), Vec<u8>>;
 
 #[derive(Default)]

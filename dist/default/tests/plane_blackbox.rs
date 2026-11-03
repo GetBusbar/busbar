@@ -1392,7 +1392,7 @@ fn run_case(krate: &str, case: &Case) -> Result<Option<String>, String> {
         issuer: case.credentials.issuer,
     };
     if case.credentials.issuer {
-        let _ = common::credentials::issuer();
+        common::credentials::issuer();
     }
     if case.credentials.signing_key {
         let (bytes, hex_key) = common::credentials::generate_signing_key();

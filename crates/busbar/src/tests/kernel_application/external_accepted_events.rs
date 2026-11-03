@@ -18,8 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 static ACCEPTED: AtomicUsize = AtomicUsize::new(0);
 fn accepted(entry: &busbar_kernel::audit_ring::AuditEntry) {
@@ -134,7 +133,7 @@ fn accepted_audit_records_recover_once_on_actual_sqlite_and_hydration_does_not_a
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let directory = plugins::scratch(&format!(
@@ -153,11 +152,7 @@ fn accepted_audit_records_recover_once_on_actual_sqlite_and_hydration_does_not_a
     .expect("actual SQLite deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("actual deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
         .expect("actual Store config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(

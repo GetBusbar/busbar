@@ -420,19 +420,6 @@ fn test_metadata_list_entries_are_mapped() {
     }
 }
 
-const NO_HOST_ENTRIES: [&str; 10] = [
-    "b\u{fc}cher\u{ff1c}.example",
-    "%6c%6fcalhost",
-    "169%2e254%2e169%2e254",
-    "1.2.3.4.5",
-    "999.1.1.1",
-    "foo.127",
-    "x.0",
-    "db.1",
-    "0x",
-    "\u{ff11}.\u{ff12}.\u{ff13}.\u{ff14}.\u{ff15}",
-];
-
 #[test]
 fn test_ssrf_allows_private_and_loopback_by_default() {
     for allowed in [

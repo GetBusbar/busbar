@@ -56,7 +56,7 @@ fn seed(store: &LoadedStore) -> CredentialSecret {
             meta: CredentialMeta {
                 id: "credential".into(),
                 key_id: "owner".into(),
-                kind: "signing".into(),
+                kind: "sigv4".into(),
                 slot: 0,
                 public_id: "public".into(),
                 secret_form: SecretForm::Recoverable,

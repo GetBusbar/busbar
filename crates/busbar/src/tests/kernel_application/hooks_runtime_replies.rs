@@ -5,8 +5,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 /// Ordinary hook wire, deadline, cache and configure oracles through actual products.
 #[tokio::test]
@@ -43,12 +42,17 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
     let mut store_module = None;
     let mut hook_module = None;
     for (kind, variable) in [
-        ("store", "BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN"),
+        ("store", "BUSBAR_TEST_SQLITE_CDYLIB"),
         ("hook", "BUSBAR_TEST_WEBREQUEST_CDYLIB"),
     ] {
-        let path = PathBuf::from(std::env::var_os(variable).unwrap_or_else(|| {
+        let path =
+            if kind == "store" {
+                crate::root::test_plugins::application_store_library()
+            } else {
+                PathBuf::from(std::env::var_os(variable).unwrap_or_else(|| {
             panic!("{variable} must name the actual built product cdylib; this test never skips")
-        }));
+        }))
+            };
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
             .expect("the actual product statement reads")
             .expect("the actual product exports its statement");
@@ -57,7 +61,7 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         let mut manifest = plugins::manifest(
             kind,
             &facts.name,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.version = facts.version;
         manifest.statement = Some(hex::encode(statement));
@@ -75,10 +79,8 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         std::fs::write(directory.join(format!("{kind}-product.tar.gz")), archive)
             .expect("stage the signed actual product archive");
     }
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -97,11 +99,11 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         "advanced": {"allow_destinations": ["127.0.0.1"]},
         "store": {"module": store_module.expect("the actual store was staged"), "settings": settings},
         "hooks": {
-            "a": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":"b", "settings":{"url":endpoint}},
+            "a": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":{"hook":"b"}, "settings":{"url":endpoint}},
             "b": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":"reject", "settings":{"url":endpoint}},
             "n": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":"nothing", "settings":{"url":endpoint}},
             "c": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":"first", "settings":{"url":endpoint}},
-            "g": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":"cheapest", "settings":{"url":endpoint}},
+            "g": {"module": hook_module, "kind": "gate", "timeout_ms":5000, "on_error":{"hook":"cheapest"}, "settings":{"url":endpoint}},
             "closedrw": {"module": hook_module, "kind":"gate", "timeout_ms":5000,
                          "prompt":"rw", "on_error":"reject", "settings":{"url":endpoint}},
             "rw": {"module": hook_module, "kind": "gate", "timeout_ms": 5000, "prompt": "rw",
@@ -125,13 +127,16 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the actual product deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let providers = std::collections::HashMap::from([(
+        "local".to_owned(),
+        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
+            "protocol": "anthropic", "base_url": "http://127.0.0.1:1"
+        }))
+        .expect("the actual provider catalog entry parses"),
+    )]);
+    let config = busbar_kernel::config::resolve(&deploy, &providers)
         .expect("the actual product deployment resolves");
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(

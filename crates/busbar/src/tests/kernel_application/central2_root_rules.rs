@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
+use crate::root::test_plugins as plugins;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
 #[test]
 fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_banner() {
     const CHILD: &str = "BUSBAR_CENTRAL2_UNBOUNDED_CHILD";
@@ -58,10 +57,7 @@ fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_banner() {
         }
     }
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -71,7 +67,7 @@ fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_banner() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -79,10 +75,8 @@ fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_banner() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -91,6 +85,10 @@ fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_banner() {
         .into_iter()
         .next()
         .expect("the actual distribution declares a provider dialect");
+    let provider_defs = serde_json::from_value(serde_json::json!({
+        "acme": {"protocol": dialect, "base_url": "https://api.example.com"}
+    }))
+    .expect("the actual provider catalog entry parses");
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {"acme": {"protocol": dialect, "base_url": "https://api.example.com", "api_key": "none"}},
         "models": {},
@@ -99,7 +97,7 @@ fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_banner() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
-    let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)
         .expect("the product deployment resolves");
     let members: Vec<_> = (0..9).map(|index| format!("unbounded-{index}")).collect();
     for name in &members {
@@ -115,11 +113,7 @@ fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_banner() {
         "wide".into(),
         serde_json::from_value(serde_json::json!({"members":members})).unwrap(),
     );
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(

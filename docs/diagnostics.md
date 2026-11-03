@@ -1884,7 +1884,7 @@ The collector accepted an OTLP export but returned a partial-success warning, or
 - **Since:** 1.6.0
 - **Slug:** `ranking-configure-refused`
 
-A settings push at the last applied version or a newer version was refused (an unknown key, a non-string `policy`, a strategy word the hook does not claim, or an invalid `expected_units` map), so the push was NACKed and the hook keeps ranking by the strategy it already had. The reason is in the line. Older versions are acknowledged without validation, application or logging.
+A settings push was refused (an unknown key, a non-string `policy`, a strategy word the hook does not claim, or an invalid `expected_units` map), so the push was NACKed and the hook keeps ranking by the strategy it already had. The reason is in the line. Invalid settings are refused even at an older version; valid older versions are acknowledged without application.
 
 **What to do:** Fix the named hook's settings (`policy` is one of cheapest, fastest, least_busy, usage; optional `expected_units` maps class names to finite non-negative numbers) and push the corrected configuration.
 

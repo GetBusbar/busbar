@@ -191,20 +191,16 @@ impl HookEnv {
                 continue;
             }
             let budget = policy_timeout(hook.timeout_ms);
-            let opened = match retained_route(
-                &self.route_calls,
-                name,
-                RouteIdentity {
-                    module: &hook.plugin,
-                    settings: &resolved,
-                    budget,
-                },
-                |opened| RouteIdentity {
-                    module: &opened.module,
-                    settings: &opened.resolved,
-                    budget: opened.budget,
-                },
-            )
+            let opened = match retained_route(&self.route_calls, name, |opened| {
+                same_call_inputs(
+                    &opened.module,
+                    &opened.resolved,
+                    opened.budget,
+                    &hook.plugin,
+                    &resolved,
+                    || budget,
+                )
+            })
             .filter(|opened| opened.calls.routes() == routes.as_slice())
             {
                 Some(opened) => opened.calls.clone(),
@@ -310,30 +306,12 @@ fn preopen_definitions<T>(
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-struct RouteIdentity<'a> {
-    module: &'a str,
-    settings: &'a serde_json::Map<String, serde_json::Value>,
-    budget: std::time::Duration,
-}
-
 fn retained_route<'a, T>(
     routes: &'a std::collections::HashMap<String, T>,
     name: &str,
-    requested: RouteIdentity<'_>,
-    identity: impl Fn(&'a T) -> RouteIdentity<'a>,
+    matches: impl Fn(&T) -> bool,
 ) -> Option<&'a T> {
-    routes.get(name).filter(|retained| {
-        let retained = identity(*retained);
-        same_call_inputs(
-            retained.module,
-            retained.settings,
-            retained.budget,
-            requested.module,
-            requested.settings,
-            || requested.budget,
-        )
-    })
+    routes.get(name).filter(|retained| matches(*retained))
 }
 
 struct RouteCalls {

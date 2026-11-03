@@ -94,6 +94,20 @@ pub(crate) fn sink_settings(
     module: &str,
     settings: &serde_json::Map<String, Value>,
 ) -> Result<ResolvedSettings, String> {
+    sink_settings_with_resolver(
+        axis,
+        module,
+        settings,
+        &crate::config::secret::SecretResolver::builtins_only(),
+    )
+}
+
+fn sink_settings_with_resolver(
+    axis: &dyn ExportAxis,
+    module: &str,
+    settings: &serde_json::Map<String, Value>,
+    resolver: &dyn busbar_contract::secret::SecretResolve,
+) -> Result<ResolvedSettings, String> {
     let secret = axis.secret_refs(module);
     let reference = axis.reference_fields(module);
     let declared = [secret.as_slice(), reference.as_slice()].concat();
@@ -109,7 +123,7 @@ pub(crate) fn sink_settings(
         &secret,
         &reference,
         module,
-        &crate::config::secret::SecretResolver::builtins_only(),
+        resolver,
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
 }

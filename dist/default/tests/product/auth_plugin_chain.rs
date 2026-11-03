@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::test_common as common;
 
 use busbar_contract::secret_ref::SECRET_MODULE_ENV;
 use busbar_kernel::auth::{AuthMiddleware, ChainVerdict};
@@ -454,8 +453,11 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
         &(std::sync::Arc::new(busbar_kernel::appbuild::AcceptAll)
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>),
     );
-    let (_app, _rotation, limits) =
+    let (app, _rotation, limits) =
         built.expect("the current login-capable plugin with browser_login builds");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, "memory")
+        .expect("the real configured Store binds the boot rate authority before activation");
     limits
         .keep()
         .expect("the login-capable app activates its configuration");

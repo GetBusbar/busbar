@@ -633,8 +633,7 @@ impl ControlledDoor {
             lock(&pair.caller.leg.outbound).channel = None;
             ready
                 .send(pair)
-                .ok()
-                .expect("host runtime is held by the test");
+                .unwrap_or_else(|_| panic!("host runtime is held by the test"));
             if poll_tasks {
                 runtime.block_on(async {
                     let _ = stopped.await;

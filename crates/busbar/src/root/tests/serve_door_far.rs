@@ -282,6 +282,18 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         &rules,
     )
     .expect("the actual root builds the far-end generation");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the actual deployment configured governance")
+            .store_calls()
+            .expect("the actual configured Store exposes its rate-history slots"),
+        124,
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the actual configured Store boots its rate history");
     limits.keep().expect("the actual limits commit");
     if let Some(rotate) = rotate {
         rotate();

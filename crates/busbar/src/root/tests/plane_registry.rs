@@ -55,6 +55,9 @@ pub(crate) fn fallback() -> &'static busbar_kernel::plane_driver::registry::Plan
 }
 
 pub(crate) fn register() {
+    // The ordinary composition root registers before a config query freezes the registry.
+    #[cfg(distribution_root)]
+    crate::dist_root_install::install();
     let mut registered = busbar_kernel::plane_driver::registry::plane_decls().to_vec();
     let fallback = fallback();
     if !registered.iter().any(|decl| decl.key == fallback.key) {

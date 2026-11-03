@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::actual_store;
 use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector, RecordStore};
-#[path = "actual_store.rs"]
-mod actual_store;
 
 fn child(id: &str, body: &[u8]) -> PlaneRecord {
     PlaneRecord {

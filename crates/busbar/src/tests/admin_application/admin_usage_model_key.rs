@@ -2,12 +2,10 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[tokio::test]
 async fn test_admin_v1_usage_meters_by_model_and_key() {
@@ -77,10 +75,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     .collect();
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
-    let store_library = PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built Store product"),
-    );
+    let store_library = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
         .expect("the actual Store statement reads")
         .expect("the actual Store exports its statement");
@@ -90,7 +85,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let directory = plugins::scratch("test_admin_v1_usage_meters_by_model_and_key-actual-store");
@@ -100,10 +95,8 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         &std::fs::read(store_library).expect("the actual Store artifact reads"),
     );
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("actual Store settings are JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -127,17 +120,18 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     document["rate_card"] =
         serde_json::to_value(&rate_card).expect("serialize the original token rates");
     document["per_request_fee"] = serde_json::json!(1);
+    super::admin_usage_history::complete_usage_fixture(
+        &mut document,
+        &directory,
+        &[("model-1", "vendor-a"), ("model-2", "acme")],
+    );
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
         .expect("the actual Store opens the configuration authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(

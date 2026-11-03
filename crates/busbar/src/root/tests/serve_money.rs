@@ -121,25 +121,21 @@ fn governed_full(
         use crate::root::loader::dispatch::{
             load_dropped, rendering_of_library, Bind, ConnTable, NoSink,
         };
-        let release = crate::root::test_plugins::key(0x5a);
-        std::env::set_var(
-            "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-            hex::encode(release.verifying_key().as_bytes()),
-        );
+        let late = super::LateServices::new();
+        let dispatcher = crate::root::dispatch::boot(1, &late);
+        crate::root::doors::install_dispatcher(dispatcher);
+        // Match main: publish the actual plane declarations before config parsing reads them.
+        crate::register_protocols();
+        crate::register_planes();
+        crate::register_diagnostics();
         let initial = busbar_kernel::config::deploy_from_yaml_str(
             "providers: {}\nmodels: {}\nadvanced:\n  allow_destinations: [127.0.0.1]\n",
         )
         .expect("the loopback deployment parses");
         let initial = busbar_kernel::config::resolve(&initial, &Default::default()).unwrap();
         let judge = crate::root::connector::dest_judge(&initial);
-        let late = super::LateServices::new();
-        let dispatcher = crate::root::dispatch::boot(1, &late);
-        crate::root::doors::install_dispatcher(dispatcher);
         let (credentials, _handle) = crate::root::credentials::AppCredentials::late();
         super::compose(judge.clone(), &late, credentials);
-        crate::register_protocols();
-        crate::register_planes();
-        crate::register_diagnostics();
         crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
         if crate::root::connector::installed().is_none() {
             let on = crate::root::dispatch::dispatcher();
@@ -211,10 +207,14 @@ fn governed_full(
     let mut store_module = None;
     let mut hook_module = None;
     for (kind, variable) in [
-        ("store", "BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN"),
+        ("store", "BUSBAR_TEST_SQLITE_CDYLIB"),
         ("hook", "BUSBAR_TEST_WEBREQUEST_CDYLIB"),
     ] {
-        let path = std::path::PathBuf::from(std::env::var_os(variable).expect(variable));
+        let path = if kind == "store" {
+            crate::root::test_plugins::application_store_library()
+        } else {
+            std::path::PathBuf::from(std::env::var_os(variable).expect(variable))
+        };
         let statement = crate::root::loader::dispatch::rendering_of_library(&path)
             .unwrap()
             .expect("the actual product states itself");
@@ -222,7 +222,7 @@ fn governed_full(
         let mut manifest = crate::root::test_plugins::manifest(
             kind,
             &facts.name,
-            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
         if kind == "hook" {
@@ -239,10 +239,7 @@ fn governed_full(
         );
         std::fs::write(directory.join(format!("{kind}.tar.gz")), archive).unwrap();
     }
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("the actual Store settings are JSON");
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {}, "models": {},
         "auth": {"chain": if keys_chain { vec!["keys"] } else { vec![] }, "admin_auth": []},
@@ -343,11 +340,10 @@ fn governed_full(
     config.groups = groups;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
+        crate::root::test_plugins::trusted_config_with_key(
+            &directory,
+            &crate::root::test_plugins::key(0x5a),
+        ),
         None,
         Default::default(),
         Default::default(),

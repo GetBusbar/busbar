@@ -295,6 +295,7 @@ fn test_removed_key_aliases_are_rejected() {
 
 #[test]
 fn test_retired_observability_export_keys_loud_fail_with_hint() {
+    install_normal_root_metadata();
     let err = serde_yaml::from_str::<DeployCfg>(
         "observability:\n  request_log_webhook_url: \"https://x.example.com/l\"\nproviders: {}\nmodels: {}\npools: {}\n",
     )
@@ -1685,18 +1686,18 @@ fn test_secret_ref_malformed_shapes_rejected() {
 
 #[test]
 fn test_secret_ref_builtin_resolution_fail_closed() {
-    use crate::config::secret::{resolve_linked_string, SecretResolver};
+    use crate::config::secret::actual_product_resolver;
 
     std::env::set_var("BUSBAR_T_SECRET_ENV_OK", "s3cr3t-value");
     assert_eq!(
-        SecretResolver::builtins_only()
+        actual_product_resolver()
             .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_OK"))
             .unwrap(),
         busbar_contract::redacted::Secret::new(b"s3cr3t-value".to_vec())
     );
     std::env::remove_var("BUSBAR_T_SECRET_ENV_OK");
 
-    let err = SecretResolver::builtins_only()
+    let err = actual_product_resolver()
         .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_UNSET"))
         .unwrap_err();
     assert!(
@@ -1705,7 +1706,7 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     );
 
     std::env::set_var("BUSBAR_T_SECRET_ENV_EMPTY", "");
-    let err = SecretResolver::builtins_only()
+    let err = actual_product_resolver()
         .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_EMPTY"))
         .unwrap_err();
     std::env::remove_var("BUSBAR_T_SECRET_ENV_EMPTY");
@@ -1716,17 +1717,32 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     std::fs::write(&path, "file-secret\n").unwrap();
     let sref = SecretRef::file(path.to_str().unwrap());
     assert_eq!(
-        SecretResolver::builtins_only().resolve(&sref).unwrap(),
+        actual_product_resolver()
+            .resolve_at_config(
+                &sref,
+                &busbar_contract::config_time::ConfigScope::config_time()
+            )
+            .unwrap(),
         busbar_contract::redacted::Secret::new(b"file-secret\n".to_vec())
     );
     assert_eq!(
-        resolve_linked_string(&sref).unwrap(),
+        actual_product_resolver()
+            .resolve_string_at_config(
+                &sref,
+                &busbar_contract::config_time::ConfigScope::config_time()
+            )
+            .unwrap(),
         busbar_contract::redacted::Secret::new("file-secret".to_string())
     );
     std::fs::remove_file(&path).unwrap();
 
     let missing = SecretRef::file("/nonexistent/busbar-secret-test");
-    assert!(SecretResolver::builtins_only().resolve(&missing).is_err());
+    assert!(actual_product_resolver()
+        .resolve_at_config(
+            &missing,
+            &busbar_contract::config_time::ConfigScope::config_time()
+        )
+        .is_err());
 
     let mut settings = serde_json::Map::new();
     settings.insert("path".to_string(), serde_json::Value::String("x".into()));
@@ -1734,9 +1750,7 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
         module: "vault".to_string(),
         settings,
     };
-    let err = SecretResolver::builtins_only()
-        .resolve(&unknown)
-        .unwrap_err();
+    let err = actual_product_resolver().resolve(&unknown).unwrap_err();
     assert!(
         err.contains("vault") && err.contains("fail-closed"),
         "{err}"
@@ -2206,6 +2220,7 @@ fn test_caller_in_hook_groups_scope() {
 
 #[test]
 fn test_resolve_projects_admin_auth_names() {
+    install_normal_root_metadata();
     let cfg = resolve(&base_deploy(), &HashMap::new()).expect("resolve");
     assert_eq!(cfg.admin_auth, [crate::config::operator_provider()]);
 
@@ -2510,6 +2525,7 @@ advanced:
 
 #[test]
 fn reserved_hook_names_are_frozen() {
+    install_normal_root_metadata();
     let mut frozen: Vec<&str> = crate::config::FROZEN_HOOK_NAME_WORD_SPACE.to_vec();
     frozen.sort_unstable();
 
@@ -2892,4 +2908,63 @@ fn an_on_exhausted_naming_both_a_fallback_and_a_queue_is_refused() {
         err.to_string().contains("exactly one of"),
         "must reject both fallback_pool and queue; got: {err}"
     );
+}
+
+// These owner tests need the same packaging metadata the normal root hands in,
+// rather than the deliberately empty metadata of the uncomposed core binary.
+pub(crate) fn install_normal_root_metadata() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let source = include_str!("../../../../../dist/default/Cargo.toml");
+        let table = |name: &str| -> Vec<(&'static str, &'static str)> {
+            let heading = format!("[package.metadata.busbar.{name}]");
+            let mut inside = false;
+            source
+                .lines()
+                .filter_map(|line| {
+                    let line = line.trim();
+                    if line.starts_with('[') {
+                        inside = line == heading;
+                        return None;
+                    }
+                    if !inside || line.is_empty() || line.starts_with('#') {
+                        return None;
+                    }
+                    let (key, value) = line.split_once('=').expect("normal metadata assignment");
+                    let key = key.trim().trim_matches('"').to_string();
+                    let value: String = serde_json::from_str(value.trim())
+                        .expect("normal metadata is a quoted string");
+                    Some((
+                        &*Box::leak(key.into_boxed_str()),
+                        &*Box::leak(value.into_boxed_str()),
+                    ))
+                })
+                .collect()
+        };
+        let migration = Box::leak(table("migration").into_boxed_slice());
+        assert!(
+            !migration.is_empty(),
+            "the normal root carries its migration table"
+        );
+        crate::config::migration_table::install(migration);
+        let operator = table("operator-auth");
+        let row = operator
+            .iter()
+            .find(|(key, _)| *key == "row")
+            .expect("normal root operator row")
+            .1;
+        let names = table("linked-name");
+        let provider = names
+            .iter()
+            .find(|(key, _)| *key == row)
+            .expect("normal root operator provider name")
+            .1;
+        busbar_kernel_identity::operator::install_linked(
+            &[],
+            busbar_kernel_identity::operator::OperatorWords {
+                provider,
+                ..busbar_kernel_identity::operator::words()
+            },
+        );
+    });
 }

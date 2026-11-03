@@ -18,7 +18,7 @@ fn obj(pairs: &[(&str, serde_json::Value)]) -> serde_json::Map<String, serde_jso
 fn resolves_secret_ref_settings_and_passes_plain_through() {
     let var = format!("BUSBAR_PLUGIN_LICENSE_TEST_{}", std::process::id());
     std::env::set_var(&var, "LIC-123\n");
-    let resolver = SecretResolver::builtins_only();
+    let resolver = actual_product_resolver();
     let settings = obj(&[
         ("licenseKey", serde_json::json!({ "env": var })),
         ("endpoint", serde_json::json!("https://example.test")),
@@ -49,7 +49,7 @@ fn resolves_secret_ref_settings_and_passes_plain_through() {
 
 #[test]
 fn leaves_non_ref_object_settings_untouched() {
-    let resolver = SecretResolver::builtins_only();
+    let resolver = actual_product_resolver();
     let settings = obj(&[("db", serde_json::json!({ "path": ":memory:", "wal": true }))]);
     let out = resolve_settings(
         &settings,
@@ -70,7 +70,7 @@ fn leaves_non_ref_object_settings_untouched() {
 fn unresolvable_secret_ref_setting_fails_closed_naming_field() {
     let var = format!("BUSBAR_PLUGIN_LICENSE_MISSING_{}", std::process::id());
     std::env::remove_var(&var);
-    let resolver = SecretResolver::builtins_only();
+    let resolver = actual_product_resolver();
     let settings = obj(&[("license", serde_json::json!({ "env": var }))]);
     let err = resolve_settings(
         &settings,
@@ -87,7 +87,7 @@ fn unresolvable_secret_ref_setting_fails_closed_naming_field() {
 
 #[test]
 fn unknown_secret_module_in_setting_fails_closed() {
-    let resolver = SecretResolver::builtins_only();
+    let resolver = actual_product_resolver();
     let settings = obj(&[(
         "licenseKey",
         serde_json::json!({ "module": "vault", "settings": { "path": "kv/license" } }),
@@ -111,7 +111,7 @@ fn unknown_secret_module_in_setting_fails_closed() {
 fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
     let path = std::env::temp_dir().join(format!("busbar-lit-{}.txt", std::process::id()));
     std::fs::write(&path, b"THE-SECRET").unwrap();
-    let resolver = SecretResolver::builtins_only();
+    let resolver = actual_product_resolver();
 
     let mut settings = serde_json::Map::new();
     settings.insert(
@@ -231,7 +231,7 @@ fn the_kernel_resolver_answers_the_same_at_config_time_for_a_built_in() {
         serde_json::json!({ (busbar_contract::secret_ref::SECRET_MODULE_ENV): var }),
     )
     .expect("an env reference");
-    let resolver = SecretResolver::builtins_only();
+    let resolver = actual_product_resolver();
     let scope = busbar_contract::config_time::ConfigScope::config_time();
     let dynamic: &dyn busbar_contract::secret::SecretResolve = &resolver;
     assert_eq!(
@@ -247,7 +247,7 @@ fn the_kernel_resolver_answers_the_same_at_config_time_for_a_built_in() {
 
 #[test]
 fn boot_refuses_a_reference_at_an_undeclared_field() {
-    let resolver = SecretResolver::builtins_only();
+    let resolver = actual_product_resolver();
     let scope = busbar_contract::config_time::ConfigScope::config_time();
     let top = obj(&[("api_base", serde_json::json!({ "env": "GHE_API" }))]);
     let err = resolve_settings(
@@ -286,7 +286,7 @@ fn boot_refuses_a_reference_at_an_undeclared_field() {
 fn boot_resolves_references_at_declared_exact_and_wildcard_paths() {
     let var = format!("BUSBAR_DECLARED_FIELD_{}", std::process::id());
     std::env::set_var(&var, "RESOLVED\n");
-    let resolver = SecretResolver::builtins_only();
+    let resolver = actual_product_resolver();
     let settings = obj(&[
         ("client_secret", serde_json::json!({ "env": var })),
         (
@@ -313,7 +313,7 @@ fn boot_resolves_references_at_declared_exact_and_wildcard_paths() {
 
 #[test]
 fn a_literal_at_a_declared_secret_path_is_refused_without_echo() {
-    let resolver = SecretResolver::builtins_only();
+    let resolver = actual_product_resolver();
     let scope = busbar_contract::config_time::ConfigScope::config_time();
     for (value, shown) in [
         (serde_json::json!("hunter2-bind-pw"), "hunter2-bind-pw"),
@@ -363,7 +363,7 @@ fn a_literal_at_a_declared_secret_path_is_refused_without_echo() {
 
 #[test]
 fn a_literal_at_a_wildcard_declared_secret_path_is_refused_without_echo() {
-    let resolver = SecretResolver::builtins_only();
+    let resolver = actual_product_resolver();
     let scope = busbar_contract::config_time::ConfigScope::config_time();
     for (value, shown) in [
         (serde_json::json!("hunter2-wild-pw"), "hunter2-wild-pw"),
@@ -421,7 +421,7 @@ fn a_literal_at_a_wildcard_declared_secret_path_is_refused_without_echo() {
 fn a_reference_capable_url_resolves_a_reference_and_passes_a_literal() {
     let var = format!("BUSBAR_T_REFCAP_URL_{}", std::process::id());
     std::env::set_var(&var, "postgres://db.internal:5432/busbar\n");
-    let resolver = SecretResolver::builtins_only();
+    let resolver = actual_product_resolver();
     let scope = busbar_contract::config_time::ConfigScope::config_time();
     for plugin in [
         "busbar-store-postgres",
@@ -467,7 +467,7 @@ fn a_reference_capable_url_resolves_a_reference_and_passes_a_literal() {
 fn a_reference_capable_field_fails_closed_and_leaves_the_secret_rules_whole() {
     let var = format!("BUSBAR_T_REFCAP_UNSET_{}", std::process::id());
     std::env::remove_var(&var);
-    let resolver = SecretResolver::builtins_only();
+    let resolver = actual_product_resolver();
     let scope = busbar_contract::config_time::ConfigScope::config_time();
     let unset = obj(&[("url", serde_json::json!({ "env": var }))]);
     let Err(e) = resolve_settings(
@@ -579,7 +579,7 @@ fn a_refusal_carries_its_error_kind_through_the_resolver() {
         serde_json::json!({ (busbar_contract::secret_ref::SECRET_MODULE_ENV): var }),
     )
     .expect("a reference");
-    let builtins = SecretResolver::builtins_only();
+    let builtins = actual_product_resolver();
     let refused = builtins
         .resolve_refusing(&unset, None)
         .expect_err("an unset variable does not resolve");

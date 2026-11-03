@@ -14,7 +14,7 @@ fn actual_mcp_function_macro_and_loaded_rows_preserve_the_same_door_and_statemen
     // and operation table; this wrapper returns that same descriptor without alteration.
     let macro_door = unsafe { MacroDoor::__from_door_macro(door) };
     let restated = unsafe { LoadedDoor::from_raw(crate::dispatch::load::raw(door)) };
-    assert_eq!(door as usize, macro_door.door_fn() as usize);
+    assert_eq!(door as *const () as usize, macro_door.door_fn() as usize);
     let by_fn = LinkedRow::of(door).expect("actual function door states itself");
     let by_macro = LinkedRow::of_macro(macro_door).expect("actual macro handle states itself");
     let by_loaded = LinkedRow::of_loaded(restated).expect("actual loaded door states itself");
@@ -31,23 +31,37 @@ fn actual_mcp_function_macro_and_loaded_rows_preserve_the_same_door_and_statemen
         rendering_of_loaded(restated).unwrap()
     );
 
-    let manifest = crate::LinkedPlugin::first_party_door("plane", "mcp", "tools", door).manifest;
-    let linked = crate::PluginRegistry::empty()
-        .link(vec![crate::LinkedPlugin::door(manifest.clone(), door)])
-        .expect("the actual function door links");
-    let linked_macro = crate::PluginRegistry::empty()
-        .link(vec![crate::LinkedPlugin::of_macro(
-            manifest.clone(),
-            macro_door,
-        )])
-        .expect("the actual macro handle links");
-    let linked_loaded = crate::PluginRegistry::empty()
-        .link(vec![crate::LinkedPlugin::of_loaded(manifest, restated)])
-        .expect("the actual loaded door links");
-    let entry = |registry: &crate::PluginRegistry| registry.linked()[0].door().map(|d| d as usize);
-    assert!(entry(&linked).is_some());
-    assert_eq!(entry(&linked), entry(&linked_macro));
-    assert_eq!(entry(&linked), entry(&linked_loaded));
+    // Plane descriptors are bound through the production plane loader; the generic
+    // registry's link method intentionally excludes planes.
+    use crate::dispatch::kinds::plane::Plane;
+    use crate::dispatch::{load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink};
+    use std::sync::Arc;
+    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let bind = |row: &LinkedRow| {
+        load_linked::<Plane>(
+            row,
+            Bind {
+                instance: "actual-mcp-identity".into(),
+                max_inflight_cap: 8,
+                sink: Arc::new(NoSink),
+                dispatcher: dispatcher.adopter(),
+                conns: ConnTable::Probe,
+            },
+        )
+        .expect("the actual plane descriptor binds")
+    };
+    let linked = bind(&by_fn);
+    let linked_macro = bind(&by_macro);
+    let linked_loaded = bind(&by_loaded);
+    let shape = |plugin: &crate::dispatch::Plugin<Plane>| {
+        (
+            plugin.name().to_string(),
+            plugin.kind(),
+            plugin.max_inflight(),
+        )
+    };
+    assert_eq!(shape(&linked), shape(&linked_macro));
+    assert_eq!(shape(&linked), shape(&linked_loaded));
 }
 
 #[test]

@@ -2,11 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 const X_ADMIN_TOKEN: &str = "x-admin-token";
 
@@ -66,10 +64,7 @@ async fn test_admin_blank_header_token_rejected() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     crate::dist_root_install::install();
-    let store_library = PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built Store product"),
-    );
+    let store_library = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
         .expect("the actual Store statement reads")
         .expect("the actual Store exports its statement");
@@ -79,7 +74,7 @@ async fn test_admin_blank_header_token_rejected() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let directory = plugins::scratch("test_admin_blank_header_token_rejected-actual-store");
@@ -89,10 +84,8 @@ async fn test_admin_blank_header_token_rejected() {
         &std::fs::read(store_library).expect("the actual Store artifact reads"),
     );
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("actual Store settings are JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -119,11 +112,7 @@ async fn test_admin_blank_header_token_rejected() {
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
         .expect("the actual Store opens the configuration authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
@@ -257,10 +246,7 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     crate::dist_root_install::install();
-    let store_library = PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built Store product"),
-    );
+    let store_library = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
         .expect("the actual Store statement reads")
         .expect("the actual Store exports its statement");
@@ -270,7 +256,7 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let directory =
@@ -281,10 +267,8 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
         &std::fs::read(store_library).expect("the actual Store artifact reads"),
     );
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("actual Store settings are JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -311,11 +295,7 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
         .expect("the actual Store opens the configuration authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
@@ -455,10 +435,7 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     crate::dist_root_install::install();
-    let store_library = PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built Store product"),
-    );
+    let store_library = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
         .expect("the actual Store statement reads")
         .expect("the actual Store exports its statement");
@@ -468,7 +445,7 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let directory =
@@ -479,10 +456,8 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
         &std::fs::read(store_library).expect("the actual Store artifact reads"),
     );
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("actual Store settings are JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -509,11 +484,7 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
         .expect("the actual Store opens the configuration authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Immutable declaration metadata through the actual SQLite operation table.
+use crate::actual_store;
 use crate::dispatch::kinds::store::Store;
 use crate::dispatch::{
     load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow, NoSink,
@@ -10,8 +11,6 @@ use busbar_contract::abi::mechanism::call::AbiStr;
 use busbar_contract::abi::mechanism::door::{Door, DoorParts};
 use busbar_contract::abi::sdk::door::abi_str;
 use std::sync::{Arc, OnceLock};
-#[path = "actual_store.rs"]
-mod actual_store;
 
 fn restated(slot: &OnceLock<usize>, refs: &'static [AbiStr]) -> &'static Door {
     let addr = *slot.get_or_init(|| {
@@ -66,7 +65,8 @@ fn a_store_door_states_its_declared_secret_paths() {
     assert!(load(silent).secret_refs().is_empty());
 }
 
-static OPENED: std::sync::Mutex<Option<(Vec<u8>, usize)>> = std::sync::Mutex::new(None);
+type ObservedOpen = (Vec<u8>, Vec<Vec<u8>>);
+static OPENED: std::sync::Mutex<Option<ObservedOpen>> = std::sync::Mutex::new(None);
 extern "C" fn observe_open(
     instance: *mut std::ffi::c_void,
     input: *const std::ffi::c_void,
@@ -80,7 +80,23 @@ extern "C" fn observe_open(
         // SAFETY: these settings are supplied by this test's live host-owned allocation.
         unsafe { std::slice::from_raw_parts(written.settings.ptr, written.settings.len) }.to_vec()
     };
-    *OPENED.lock().unwrap() = Some((bytes, written.secrets_len));
+    let secrets = if written.secrets_len == 0 {
+        Vec::new()
+    } else {
+        // SAFETY: OPEN's host-owned secret blob array lives through this crossing.
+        unsafe { std::slice::from_raw_parts(written.secrets, written.secrets_len) }
+            .iter()
+            .map(|blob| {
+                if blob.len == 0 {
+                    Vec::new()
+                } else {
+                    // SAFETY: each initialized secret blob is lent through this OPEN call.
+                    unsafe { std::slice::from_raw_parts(blob.ptr, blob.len) }.to_vec()
+                }
+            })
+            .collect()
+    };
+    *OPENED.lock().unwrap() = Some((bytes, secrets));
     let actual = actual_store::door();
     // SAFETY: the actual Store's operation table is validated and permanently retained.
     let ops = unsafe { &*actual.ops().cast::<busbar_contract::abi::store::Ops>() };
@@ -131,7 +147,9 @@ fn the_store_host_lends_nothing_and_hands_the_settings_as_resolved() {
     let opened =
         crate::store_v3::LoadedStore::open(plugin, dispatcher, &settings, actual_store::mint)
             .expect("the production Store host opens its actual SQLite database");
-    assert_eq!(*OPENED.lock().unwrap(), Some((settings, 0)));
+    // SQLite declares one license_key slot. An absent key still has an empty ABI
+    // placeholder; no secret value is lent, and the settings stay byte-identical.
+    assert_eq!(*OPENED.lock().unwrap(), Some((settings, vec![Vec::new()])));
     drop(opened);
 }
 
@@ -144,7 +162,7 @@ extern "C" fn referencing() -> &'static Door {
         let actual = *actual_store::door();
         // SAFETY: actual Store descriptor was validated and remains retained.
         let mut statement = unsafe { *actual.statement() };
-        let mut extensions = if statement.extensions.len == 0 {
+        let original = if statement.extensions.len == 0 {
             Vec::new()
         } else {
             // SAFETY: this valid immutable extension range belongs to the retained product.
@@ -153,7 +171,19 @@ extern "C" fn referencing() -> &'static Door {
             }
             .to_vec()
         };
-        extensions.extend_from_slice(&encode(&[(EXT_REFERENCE_FIELDS, br#"["url"]"#)]));
+        // Replace the product's existing reference_fields entry rather than appending
+        // a duplicate: extension lookup deliberately reads the first entry.
+        let mut entries: Vec<_> = busbar_contract::abi::mechanism::extensions::entries(&original)
+            .filter(|(key, _)| *key != EXT_REFERENCE_FIELDS.as_bytes())
+            .map(|(key, value)| {
+                (
+                    std::str::from_utf8(key).expect("extension key UTF-8"),
+                    value,
+                )
+            })
+            .collect();
+        entries.push((EXT_REFERENCE_FIELDS, br#"["url"]"#));
+        let extensions = encode(&entries);
         let extensions = Box::leak(extensions.into_boxed_slice());
         statement.extensions = Blob {
             ptr: extensions.as_ptr(),

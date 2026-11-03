@@ -249,6 +249,7 @@ async fn deployment(instance: &'static str) -> Deployment {
             records: records.clone(),
             calls: Some(calls.clone()),
         }),
+        false,
     )
     .expect("the production builder owns the supplied actual Store");
     let gov = Arc::new(

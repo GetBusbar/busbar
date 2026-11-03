@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::auth::LoginKind;
 
 #[test]
 fn inbound_default_selects_declared_styles_and_refuses_provider_names() {
@@ -80,7 +79,6 @@ fn idp_with_secret(env: &str) -> crate::config::AuthCfg {
 #[test]
 fn browser_login_secret_required_for_redirect_absent_for_credential() {
     use busbar_contract::auth::LoginKind;
-
     assert!(validate_browser_login_secret(LoginKind::Redirect, true).is_ok());
     assert!(
         validate_browser_login_secret(LoginKind::Redirect, false).is_err(),
@@ -110,7 +108,7 @@ fn the_client_secret_is_lent_at_open() {
         &method.module,
         method.browser_login.as_ref(),
         &["client_secret".into()],
-        &crate::config::secret::SecretResolver::builtins_only(),
+        &crate::config::secret::actual_product_resolver(),
         &mut resolved,
     )
     .expect("the declared secret is resolved into the settings lent at open");

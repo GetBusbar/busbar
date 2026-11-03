@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::root::test_plugins as plugins;
 use busbar_kernel::auth::AuthMiddleware;
 use busbar_kernel::config::{AuthCfg, AuthChainEntry, PluginsCfg};
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
 
 fn chain_with(module: &str, settings: serde_json::Map<String, serde_json::Value>) -> AuthCfg {
     let mut entry = AuthChainEntry::bare(module);
@@ -20,10 +19,7 @@ fn missing_auth_plugin_is_loud_boot_failure() {
     crate::dist_root_install::install();
     let dir = plugins::scratch("auth-plugin-missing");
 
-    let artifact = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("the freshly built actual Store product is required"),
-    );
+    let artifact = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&artifact)
         .expect("the actual Store statement reads")
         .expect("the actual Store exports its statement");
@@ -33,7 +29,7 @@ fn missing_auth_plugin_is_loud_boot_failure() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let archive = plugins::signed(
@@ -42,11 +38,7 @@ fn missing_auth_plugin_is_loud_boot_failure() {
         &std::fs::read(artifact).expect("the actual Store library reads"),
     );
     std::fs::write(dir.join("store.tar.gz"), archive).expect("stage the unrelated actual Store");
-    let plugins = PluginsCfg {
-        enabled: true,
-        dir: dir.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config(&dir);
     let cfg = chain_with("test-idp-double", serde_json::Map::new());
 
     let err = busbar_kernel::plugins_preflight(

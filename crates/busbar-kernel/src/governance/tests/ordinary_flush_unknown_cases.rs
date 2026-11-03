@@ -129,6 +129,39 @@ impl super::super::recovery::RecoverySink for RecoveryJournal {
         }
         Ok(())
     }
+    fn verify_origin(
+        &self,
+        event: &super::super::recovery::RecoveryEvent,
+    ) -> Result<(), super::super::recovery::RecoveryError> {
+        use super::super::recovery::RecoveryError;
+        // Validate every selected predecessor chain before using a stored parent
+        // as authority for a correction child. Merely finding a row is not proof.
+        self.replay_selections()?;
+        let events = self.0.lock().unwrap();
+        let genesis = events
+            .iter()
+            .find(|selected| selected.operation_id == event.operation_id && selected.revision == 0)
+            .unwrap_or(event);
+        if (event.revision == 0 && event != genesis)
+            || event.origin_reference()? != genesis.origin_reference()?
+            || event.kind != genesis.kind
+            || event.body_fingerprint != genesis.body_fingerprint
+            || event.first_sent_at_ms != genesis.first_sent_at_ms
+        {
+            return Err(RecoveryError::Conflict("child identity changed".into()));
+        }
+        let Some(origin) = genesis.origin_reference()? else {
+            return Ok(());
+        };
+        let parent = events
+            .iter()
+            .find(|parent| {
+                parent.operation_id == origin.operation_id
+                    && parent.fingerprint().ok() == Some(origin.event_fingerprint)
+            })
+            .ok_or_else(|| RecoveryError::Invalid("origin is not selected".into()))?;
+        parent.authorizes_child(genesis)
+    }
 }
 
 #[test]

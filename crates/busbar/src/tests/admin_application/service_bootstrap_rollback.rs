@@ -1,10 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::root::test_plugins as plugins;
 use base64::Engine as _;
 use std::sync::Arc;
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+
+fn trust_document(config: &busbar_kernel::config::PluginsCfg) -> serde_json::Value {
+    let publishers: Vec<_> = config.trust.publishers.iter().map(|publisher| {
+        serde_json::json!({"name": publisher.name, "public_key": publisher.public_key})
+    }).collect();
+    serde_json::json!({
+        "publishers": publishers,
+        "allow_unsigned": config.trust.allow_unsigned,
+        "allow_third_party": config.trust.allow_third_party,
+    })
+}
 
 #[tokio::test]
 async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_any_pin_is_returned()
@@ -24,7 +34,7 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
@@ -66,12 +76,7 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        fetch: vec![serde_json::from_value(serde_json::json!({"url":"https://plugins.example/store.tar.gz", "sha256":busbar_contract::redacted::sha256_hex(&archive)})).unwrap()],
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -123,7 +128,7 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
     }
     document["plugins"] = serde_json::json!({
         "enabled":true, "dir":directory,
-        "trust":{"publishers":[{"name":"acme", "public_key":publisher_hex}]},
+        "trust":trust_document(&app.plugins_cfg),
         "min_versions":{(target_name.clone()):base_floor}, "fetch":fetch
     });
     let config_path = directory.join("config.yaml");
@@ -204,7 +209,7 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
         let mut manifest = plugins::manifest(
             "store",
             &module,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.version = module_version.clone();
         manifest.statement = Some(hex::encode(statement));
@@ -245,12 +250,7 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
             .expect("the product deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the product deployment resolves");
-        let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        fetch: vec![serde_json::from_value(serde_json::json!({"url":"https://plugins.example/store.tar.gz", "sha256":busbar_contract::redacted::sha256_hex(&archive)})).unwrap()],
-        ..Default::default()
-    };
+        let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -271,10 +271,7 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
         let (target_name, target_version, library, manifest) = if anchor_target {
             (module.clone(), module_version.clone(), library, manifest)
         } else {
-            let target_path = std::path::PathBuf::from(
-                std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                    .expect("the actual distinct memory Store artifact is available"),
-            );
+            let target_path = crate::root::test_plugins::application_store_library();
             let target_statement =
                 busbar_plugin_loader::dispatch::rendering_of_library(&target_path)
                     .expect("the actual nonanchor Store Statement reads")
@@ -336,7 +333,7 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
         }
         document["plugins"] = serde_json::json!({
             "enabled":true, "dir":directory,
-            "trust":{"publishers":[{"name":"acme", "public_key":publisher_hex}]},
+            "trust":trust_document(&app.plugins_cfg),
             "min_versions":{(target_name.clone()):base_floor}, "fetch":fetch
         });
         let config_path = directory.join("config.yaml");
@@ -408,7 +405,7 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
@@ -450,12 +447,7 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        fetch: vec![serde_json::from_value(serde_json::json!({"url":"https://plugins.example/store.tar.gz", "sha256":busbar_contract::redacted::sha256_hex(&archive)})).unwrap()],
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -507,7 +499,7 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
     }
     document["plugins"] = serde_json::json!({
         "enabled":true, "dir":directory,
-        "trust":{"publishers":[{"name":"acme", "public_key":publisher_hex}]},
+        "trust":trust_document(&app.plugins_cfg),
         "min_versions":{(target_name.clone()):base_floor}, "fetch":fetch
     });
     let config_path = directory.join("config.yaml");
@@ -564,10 +556,7 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
 #[tokio::test]
 async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_store_pin() {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -578,7 +567,7 @@ async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_sto
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
@@ -594,10 +583,8 @@ async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_sto
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -622,11 +609,7 @@ async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_sto
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -710,7 +693,7 @@ async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_sto
     std::fs::write(directory.join("target.tar.gz"), &target).unwrap();
     document["plugins"] = serde_json::json!({
         "enabled":true, "dir":directory,
-        "trust":{"publishers":[{"name":"acme", "public_key":publisher_hex}]},
+        "trust":trust_document(&app.plugins_cfg),
         "min_versions":{(target_name.clone()):base_floor},
         "fetch":[{"url":"https://plugins.example/target.tar.gz", "sha256":busbar_contract::redacted::sha256_hex(&target)}]
     });

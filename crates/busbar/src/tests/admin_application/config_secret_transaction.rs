@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
+use crate::root::test_plugins as plugins;
 use axum::http::StatusCode;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 use std::time::{Duration, Instant};
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn slow_secret_plugin_does_not_stall_the_executor() {
     const CHILD: &str = "BUSBAR_ADMIN_SECRET_TRANSACTION_CHILD";
@@ -62,10 +61,7 @@ async fn slow_secret_plugin_does_not_stall_the_executor() {
         }
     }
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -75,7 +71,7 @@ async fn slow_secret_plugin_does_not_stall_the_executor() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -96,7 +92,7 @@ async fn slow_secret_plugin_does_not_stall_the_executor() {
     let mut hook_manifest = plugins::manifest(
         "hook",
         &hook_module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     hook_manifest.statement = Some(hex::encode(hook_statement));
     hook_manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
@@ -108,10 +104,8 @@ async fn slow_secret_plugin_does_not_stall_the_executor() {
     );
     std::fs::write(directory.join("actual-webrequest.tar.gz"), hook_archive)
         .expect("stage actual signed webrequest");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -127,11 +121,7 @@ async fn slow_secret_plugin_does_not_stall_the_executor() {
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(

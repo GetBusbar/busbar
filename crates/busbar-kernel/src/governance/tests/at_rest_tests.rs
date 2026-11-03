@@ -183,14 +183,17 @@ fn mint(g: &GovState) -> (String, String) {
     try_mint(g).unwrap()
 }
 
-const NOW: u64 = 1_700_000_001;
+// The actual Store validates claim expiry against its own wall clock.
+fn now() -> u64 {
+    crate::store::now()
+}
 
 fn read(g: &GovState, public_id: &str) -> (String, bool) {
     let kind = crate::tests::frozen_text("signed_credential_kind");
     let (s, live) = g.credential_secret(
         kind.as_str().expect("the frozen credential kind is text"),
         public_id,
-        NOW,
+        now(),
     );
     (s.expose(&crate::seal::lend()).clone(), live)
 }
@@ -252,7 +255,7 @@ fn rotation_reseals_a_row_under_the_new_key_and_it_still_authenticates() {
     let rotated = node(store.clone(), 2, Some(1));
     assert_eq!(read(&rotated, &public_id), (secret.clone(), true));
 
-    let pass = rotated.rewrap_credentials(NOW).unwrap();
+    let pass = rotated.rewrap_credentials(now()).unwrap();
     assert_eq!((pass.resealed, pass.pending), (1, 0), "{pass:?}");
     let after = row(&store);
     assert_eq!(kid_of(&after.secret), keys(2, None).kid());
@@ -265,7 +268,7 @@ fn rotation_reseals_a_row_under_the_new_key_and_it_still_authenticates() {
         (secret, true)
     );
 
-    let again = rotated.rewrap_credentials(NOW).unwrap();
+    let again = rotated.rewrap_credentials(now()).unwrap();
     assert_eq!((again.resealed, again.pending), (0, 0), "{again:?}");
 }
 
@@ -277,8 +280,8 @@ fn two_nodes_rotating_together_reseal_a_row_once() {
     let y = node(store.clone(), 2, Some(1));
 
     let candidates = store.list_credentials_since(0).unwrap();
-    let first = x.rewrap_rows(candidates.clone(), NOW).unwrap();
-    let second = y.rewrap_rows(candidates, NOW).unwrap();
+    let first = x.rewrap_rows(candidates.clone(), now()).unwrap();
+    let second = y.rewrap_rows(candidates, now()).unwrap();
     assert_eq!(first.resealed + second.resealed, 1, "{first:?} {second:?}");
     assert_eq!(kid_of(&row(&store).secret), keys(2, None).kid());
     assert_eq!(read(&y, &public_id), (secret, true));
@@ -293,11 +296,12 @@ fn a_rewrap_never_revives_a_revoked_row() {
     store
         .revoke_credential(&candidates[0].meta.id, "leaked")
         .unwrap();
-    let pass = rotated.rewrap_rows(candidates, NOW).unwrap();
+    let pass = rotated.rewrap_rows(candidates, now()).unwrap();
     assert_eq!(pass.resealed, 0, "{pass:?}");
     let r = row(&store);
     assert!(r.meta.revoked_at.is_some(), "the revocation was undone");
-    assert_eq!(kid_of(&r.secret), keys(1, None).kid());
+    assert!(r.secret.is_empty(), "revocation must retire the envelope");
+    assert_eq!(r.meta.secret_form, SecretForm::None);
     rotated.refresh().unwrap();
     assert!(!read(&rotated, &public_id).1);
 }
@@ -311,26 +315,40 @@ fn a_row_under_neither_key_does_not_authenticate() {
     assert!(!live);
     assert_ne!(got, secret);
     assert_eq!(got, "");
-    let pass = stranger.rewrap_credentials(NOW).unwrap();
+    let pass = stranger.rewrap_credentials(now()).unwrap();
     assert_eq!((pass.resealed, pass.pending), (0, 0), "{pass:?}");
     assert_eq!(kid_of(&row(&store).secret), keys(1, None).kid());
 
     assert!(!read(&signing_gov(store, 7), &public_id).1);
 }
 
+// A pre-1.6.0 row starts life as plaintext. The actual Store correctly refuses
+// replacing an already-live credential through ordinary PUT, so seed the legacy
+// envelope as the first credential insert into a separate opened Store.
+fn legacy_store() -> (
+    Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+    String,
+    String,
+) {
+    let source = crate::real_store::store();
+    let (public_id, secret) = mint(&node(source.clone(), 1, None));
+    let mut legacy = row(&source);
+    legacy.secret = format!("v1:plain:{secret}");
+    let key = source.get_key(&legacy.meta.key_id).unwrap().unwrap();
+    let store = crate::real_store::store();
+    store.put_key(&key).unwrap();
+    store.put_credential(&legacy).unwrap();
+    (store, public_id, secret)
+}
+
 #[test]
 fn a_legacy_plain_row_is_resealed_under_the_key() {
-    let store = crate::real_store::store();
+    let (store, public_id, secret) = legacy_store();
     let g = node(store.clone(), 1, None);
-    let (public_id, secret) = mint(&g);
-
-    let mut legacy = row(&store);
-    legacy.secret = format!("v1:plain:{secret}");
-    store.put_credential(&legacy).unwrap();
     g.refresh().unwrap();
     assert_eq!(read(&g, &public_id), (secret.clone(), true));
 
-    let pass = g.rewrap_credentials(NOW).unwrap();
+    let pass = g.rewrap_credentials(now()).unwrap();
     assert_eq!((pass.resealed, pass.pending), (1, 0), "{pass:?}");
     let r = row(&store);
     assert_eq!(kid_of(&r.secret), keys(1, None).kid());
@@ -411,13 +429,13 @@ mod immutable_store {
     }
 
     fn rewrap(legacy_plaintext: bool) {
-        let backing = crate::real_store::store();
-        let (public_id, secret) = mint(&node(backing.clone(), 1, None));
-        if legacy_plaintext {
-            let mut old = row(&backing);
-            old.secret = format!("v1:plain:{secret}");
-            backing.put_credential(&old).unwrap();
-        }
+        let (backing, public_id, secret) = if legacy_plaintext {
+            legacy_store()
+        } else {
+            let backing = crate::real_store::store();
+            let (public_id, secret) = mint(&node(backing.clone(), 1, None));
+            (backing, public_id, secret)
+        };
         let before = row(&backing);
         let store = Arc::new(ImmutableStore(backing.clone()));
         let mut forbidden = before.clone();
@@ -428,7 +446,7 @@ mod immutable_store {
         let rotated = GovState::new_with_signer(store.clone(), None, None).unwrap();
         rotated.set_at_rest_keys(Some(keys(2, Some(1))));
         assert_eq!(read(&rotated, &public_id), (secret.clone(), true));
-        let pass = rotated.rewrap_credentials(NOW).unwrap();
+        let pass = rotated.rewrap_credentials(now()).unwrap();
         assert_eq!((pass.resealed, pass.pending), (1, 0), "{pass:?}");
         let after = row(&backing);
         assert_eq!(kid_of(&after.secret), keys(2, None).kid());
@@ -443,7 +461,7 @@ mod immutable_store {
         retired.set_at_rest_keys(Some(keys(2, None)));
         assert_eq!(read(&retired, &public_id), (secret, true));
         assert!(store.put_credential(&forbidden).is_err());
-        let again = retired.rewrap_credentials(NOW).unwrap();
+        let again = retired.rewrap_credentials(now()).unwrap();
         assert_eq!((again.resealed, again.pending), (0, 0), "{again:?}");
         assert_eq!(row(&backing).meta.revision, after.meta.revision);
     }

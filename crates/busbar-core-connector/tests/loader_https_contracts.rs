@@ -186,7 +186,7 @@ fn actual_secure_and_undeclared_refusals_happen_before_any_destination_open() {
             false,
             123
         ),
-        Err(ConnError::Refused)
+        Err(ConnError::UndeclaredNeed)
     );
     assert_eq!(judged.load(Ordering::SeqCst), 1);
 }

@@ -20,8 +20,7 @@ use busbar_plugin_loader::dispatch::{load_linked, Bind, ConnTable, LinkedRow, No
 use serde_json::{json, Value};
 use tower::ServiceExt as _;
 
-#[path = "../../../../crates/busbar/src/root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 // Each ordinary case owns a real root process: ROOT_CARD's Store binding is
 // intentionally one-time, and a full test binary must not reuse another case's book.

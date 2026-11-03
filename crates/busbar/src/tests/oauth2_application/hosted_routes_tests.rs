@@ -6,6 +6,7 @@ use std::sync::Arc;
 use super::{application, application_with_document};
 
 fn keys_application() -> Arc<busbar_kernel::state::App> {
+    crate::dist_root_install::install();
     let directory = super::plugins::scratch(&format!(
         "oauth-hosted-secrets-{}",
         busbar_kernel::door::op_id().counter()

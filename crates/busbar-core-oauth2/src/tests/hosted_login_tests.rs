@@ -5,6 +5,29 @@ use super::*;
 
 #[test]
 fn the_button_brands_are_the_legacy_row_and_with_no_row_every_method_is_generic() {
+    // This crate's unit binary has no composition root. Supply the same frozen
+    // customer rows that the real root's migration-table contract pins.
+    static ROWS: std::sync::Once = std::sync::Once::new();
+    ROWS.call_once(|| {
+        let frozen: serde_yaml::Value = serde_yaml::from_str(include_str!(
+            "../../../busbar-kernel/src/tests/fixtures/frozen_customer_text.yaml"
+        ))
+        .expect("the frozen customer migration rows parse");
+        let rows: Vec<(&'static str, &'static str)> = frozen["migration_rows"]
+            .as_mapping()
+            .expect("the frozen migration rows are a map")
+            .iter()
+            .map(|(key, value)| {
+                let key = key.as_str().expect("a migration row name").to_owned();
+                let value = value.as_str().expect("a migration row value").to_owned();
+                (
+                    &*Box::leak(key.into_boxed_str()),
+                    &*Box::leak(value.into_boxed_str()),
+                )
+            })
+            .collect();
+        busbar_kernel::config::migration_table::install(Box::leak(rows.into_boxed_slice()));
+    });
     let row = busbar_kernel::config::migration_table::text("login_brands");
     let brands: Vec<(&str, &str, &str)> = row
         .split(" | ")
@@ -297,7 +320,7 @@ fn a_door_callback_renders_each_answer_on_its_page() {
     ] {
         let resp = callback_outcome("idp", outcome.clone()).unwrap_err();
         assert_eq!(resp.status().as_u16(), status, "{outcome:?}");
-        assert_branded_error_page(&body_of(resp), heading);
+        assert_branded_error_page(&body_of(*resp), heading);
     }
     let principal = callback_outcome("idp", LoginOutcome::Identify(Principal::from_id("alice")))
         .expect("an identified principal passes through to the real self-key issuer");
@@ -321,7 +344,7 @@ fn a_door_callback_renders_each_answer_on_its_page() {
         "retryable: the client is told when"
     );
     assert_eq!(unreachable.status(), page.status());
-    assert_eq!(body_of(unreachable), body_of(page));
+    assert_eq!(body_of(*unreachable), body_of(page));
 }
 
 #[test]
@@ -346,12 +369,12 @@ fn an_outage_sends_the_idps_retry_after_clamped() {
         let redirect = callback_outcome("idp", outcome.clone()).unwrap_err();
         assert_eq!(redirect.status().as_u16(), 503, "{stated:?}");
         assert_eq!(retry_after(&redirect), Some(sent.to_string()), "{stated:?}");
-        assert_branded_error_page(&body_of(redirect), "Couldn't reach your provider");
+        assert_branded_error_page(&body_of(*redirect), "Couldn't reach your provider");
 
         let posted = credential_outcome("idp", outcome).unwrap_err();
         assert_eq!(posted.status().as_u16(), 503, "{stated:?}");
         assert_eq!(retry_after(&posted), Some(sent.to_string()), "{stated:?}");
-        assert_branded_error_page(&body_of(posted), "Couldn't reach your provider");
+        assert_branded_error_page(&body_of(*posted), "Couldn't reach your provider");
     }
 }
 

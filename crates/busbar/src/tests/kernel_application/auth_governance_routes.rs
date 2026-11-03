@@ -4,10 +4,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-#[path = "../../../../../dist/default/tests/common/mod.rs"]
-mod common;
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
+use crate::test_common as common;
 
 // ROOT_CARD has process lifetime. Each ordinary test owns one cold root and one Store lineage.
 fn in_isolated_root() -> bool {
@@ -155,10 +153,7 @@ async fn keys_chain_preserves_carriers_disable_revoke_and_metering_controls() {
         return;
     }
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -168,7 +163,7 @@ async fn keys_chain_preserves_carriers_disable_revoke_and_metering_controls() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -176,10 +171,8 @@ async fn keys_chain_preserves_carriers_disable_revoke_and_metering_controls() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -203,11 +196,7 @@ async fn keys_chain_preserves_carriers_disable_revoke_and_metering_controls() {
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -312,10 +301,7 @@ async fn open_chain_with_operator_is_anonymous_keyless_and_unmetered() {
         return;
     }
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -325,7 +311,7 @@ async fn open_chain_with_operator_is_anonymous_keyless_and_unmetered() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -333,10 +319,8 @@ async fn open_chain_with_operator_is_anonymous_keyless_and_unmetered() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -360,11 +344,7 @@ async fn open_chain_with_operator_is_anonymous_keyless_and_unmetered() {
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -392,7 +372,7 @@ async fn open_chain_with_operator_is_anonymous_keyless_and_unmetered() {
     // The actual /stats endpoint requires Extension<GovCtx>; success proves that the
     // open chain inserts it. Session admission exposes the anonymous keyless context.
     let gov = app.governance.as_ref().expect("actual Store governance");
-    assert_eq!(gov.admin_token_hash().is_some(), true);
+    assert!(gov.admin_token_hash().is_some());
     let (key_id, secret) = mint(gov, "ignored-in-open-chain");
     let router = busbar_kernel::build_router(app.clone());
     for token in [None, Some(secret.as_str()), Some("unknown")] {
@@ -428,10 +408,7 @@ async fn open_chain_without_operator_still_inserts_default_context() {
         return;
     }
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -441,7 +418,7 @@ async fn open_chain_without_operator_still_inserts_default_context() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -449,10 +426,8 @@ async fn open_chain_without_operator_still_inserts_default_context() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -473,11 +448,7 @@ async fn open_chain_without_operator_still_inserts_default_context() {
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -505,7 +476,7 @@ async fn open_chain_without_operator_still_inserts_default_context() {
     // The actual /stats endpoint requires Extension<GovCtx>; success proves that the
     // open chain inserts it. Session admission exposes the anonymous keyless context.
     let gov = app.governance.as_ref().expect("actual Store governance");
-    assert_eq!(gov.admin_token_hash().is_some(), false);
+    assert!(gov.admin_token_hash().is_none());
     let (key_id, secret) = mint(gov, "ignored-in-open-chain");
     let router = busbar_kernel::build_router(app.clone());
     for token in [None, Some(secret.as_str()), Some("unknown")] {
@@ -542,10 +513,7 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
     }
     const AUDIENCE: &str = "api://ordinary-governance-routes";
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -555,7 +523,7 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -563,10 +531,8 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -597,11 +563,7 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -629,7 +591,7 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
     // Real OIDC replaces the old synthetic group token. A stored signed key remains
     // irrelevant to this configured chain, whether the operator is configured or absent.
     let gov = app.governance.as_ref().expect("actual Store governance");
-    assert_eq!(gov.admin_token_hash().is_some(), true);
+    assert!(gov.admin_token_hash().is_some());
     let (persisted_id, persisted) = mint(gov, "persisted-keys-do-not-override-chain");
     let token = common::credentials::token_for("static-chain", &["bound"], AUDIENCE);
     let router = busbar_kernel::build_router(app.clone());
@@ -674,10 +636,7 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
     }
     const AUDIENCE: &str = "api://ordinary-governance-routes";
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -687,7 +646,7 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -695,10 +654,8 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -726,11 +683,7 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -758,7 +711,7 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
     // Real OIDC replaces the old synthetic group token. A stored signed key remains
     // irrelevant to this configured chain, whether the operator is configured or absent.
     let gov = app.governance.as_ref().expect("actual Store governance");
-    assert_eq!(gov.admin_token_hash().is_some(), false);
+    assert!(gov.admin_token_hash().is_none());
     let (persisted_id, persisted) = mint(gov, "persisted-keys-do-not-override-chain");
     let token = common::credentials::token_for("static-chain", &["bound"], AUDIENCE);
     let router = busbar_kernel::build_router(app.clone());

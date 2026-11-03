@@ -6,8 +6,6 @@
 use busbar_kernel::config::PluginsCfg;
 use busbar_plugin_loader::sign::{SigningKey, TrustPolicy};
 
-pub use crate::root::admission::ADMISSION;
-
 #[must_use]
 pub fn release_key() -> SigningKey {
     SigningKey::from_bytes(&[0x5a; 32])
@@ -27,6 +25,7 @@ pub fn install() {
         let late = crate::root::serve::LateServices::new();
         let dispatcher = crate::root::dispatch::boot(1, &late);
         crate::root::doors::install_dispatcher(dispatcher);
+        crate::root::linked::register_stores(&crate::LINKED);
         crate::register_protocols();
         crate::register_planes();
         crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());

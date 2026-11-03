@@ -24,15 +24,30 @@ fn inbound_feedback_reaches_the_policy_instance_and_reload_keeps_old_state_separ
     // and response forwarding here; actual product transport identity is also
     // exercised by distribution::hooks_runtime_replies.
     let settings = serde_json::Map::new();
-    let identity = RouteIdentity {
-        module: "receiver-module",
-        settings: &settings,
-        budget: std::time::Duration::from_secs(1),
+    type Identity<'a> = (
+        &'a str,
+        &'a serde_json::Map<String, serde_json::Value>,
+        std::time::Duration,
+    );
+    let identity: Identity<'_> = (
+        "receiver-module",
+        &settings,
+        std::time::Duration::from_secs(1),
+    );
+    let matches = |actual: Identity<'_>, requested: Identity<'_>| {
+        same_call_inputs(
+            actual.0,
+            actual.1,
+            actual.2,
+            requested.0,
+            requested.1,
+            || requested.2,
+        )
     };
     let old_generation = Arc::new(1usize);
     let new_generation = Arc::new(0usize);
     let old_routes = HashMap::from([("receiver".to_owned(), (identity, old_generation.clone()))]);
-    let selected = retained_route(&old_routes, "receiver", identity, |entry| entry.0)
+    let selected = retained_route(&old_routes, "receiver", |entry| matches(entry.0, identity))
         .expect("the route and policy select the retained instance");
     assert!(Arc::ptr_eq(&selected.1, &old_generation));
     let response = hook_route_response(
@@ -47,8 +62,8 @@ fn inbound_feedback_reaches_the_policy_instance_and_reload_keeps_old_state_separ
     );
     assert_eq!(response.status, 202);
     let new_routes = HashMap::from([("receiver".to_owned(), (identity, new_generation.clone()))]);
-    let old = retained_route(&old_routes, "receiver", identity, |entry| entry.0).unwrap();
-    let new = retained_route(&new_routes, "receiver", identity, |entry| entry.0).unwrap();
+    let old = retained_route(&old_routes, "receiver", |entry| matches(entry.0, identity)).unwrap();
+    let new = retained_route(&new_routes, "receiver", |entry| matches(entry.0, identity)).unwrap();
     assert_eq!(
         *old.1, 1,
         "the retained old generation remains selected for its old route"
@@ -58,39 +73,24 @@ fn inbound_feedback_reaches_the_policy_instance_and_reload_keeps_old_state_separ
         "a new environment selects its independent new instance"
     );
     assert!(!Arc::ptr_eq(&old.1, &new.1));
-    assert!(retained_route(
-        &old_routes,
-        "receiver",
-        RouteIdentity {
-            module: "replacement",
-            ..identity
-        },
-        |entry| entry.0
-    )
+    assert!(retained_route(&old_routes, "receiver", |entry| matches(
+        entry.0,
+        ("replacement", identity.1, identity.2)
+    ))
     .is_none());
-    assert!(retained_route(
-        &old_routes,
-        "receiver",
-        RouteIdentity {
-            budget: std::time::Duration::from_secs(2),
-            ..identity
-        },
-        |entry| entry.0
-    )
+    assert!(retained_route(&old_routes, "receiver", |entry| matches(
+        entry.0,
+        (identity.0, identity.1, std::time::Duration::from_secs(2)),
+    ))
     .is_none());
     let changed = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(
         serde_json::json!({"url":"changed"}),
     )
     .unwrap();
-    assert!(retained_route(
-        &old_routes,
-        "receiver",
-        RouteIdentity {
-            settings: &changed,
-            ..identity
-        },
-        |entry| entry.0
-    )
+    assert!(retained_route(&old_routes, "receiver", |entry| matches(
+        entry.0,
+        (identity.0, &changed, identity.2)
+    ))
     .is_none());
 }
 

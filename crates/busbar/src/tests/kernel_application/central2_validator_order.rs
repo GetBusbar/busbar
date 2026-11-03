@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
+use crate::root::test_plugins as plugins;
 use std::time::{Duration, Instant};
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
 #[test]
 fn secrets_block_rejects_builtin_resolver_names() {
     const CHILD: &str = "BUSBAR_CENTRAL2_VALIDATOR_CHILD";
@@ -59,10 +58,7 @@ fn secrets_block_rejects_builtin_resolver_names() {
 
     for reserved in ["env", "file"] {
         crate::dist_root_install::install();
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual store statement reads")
             .expect("the actual store exports its statement");
@@ -72,7 +68,7 @@ fn secrets_block_rejects_builtin_resolver_names() {
         let mut manifest = plugins::manifest(
             "store",
             &module,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -80,10 +76,8 @@ fn secrets_block_rejects_builtin_resolver_names() {
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive)
             .expect("stage the actual store archive");
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+        let settings: serde_json::Value =
+            crate::root::test_plugins::application_store_settings(&directory);
         assert!(
             settings.is_object(),
             "the actual store settings are an object"
@@ -92,6 +86,10 @@ fn secrets_block_rejects_builtin_resolver_names() {
             .into_iter()
             .next()
             .expect("the actual distribution declares a provider dialect");
+        let provider_defs = serde_json::from_value(serde_json::json!({
+            "acme": {"protocol": dialect, "base_url": "https://api.example.com"}
+        }))
+        .expect("the actual provider catalog entry parses");
         let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {"acme": {"protocol": dialect, "base_url": "https://api.example.com", "api_key": "none"}},
         "models": {},
@@ -100,14 +98,10 @@ fn secrets_block_rejects_builtin_resolver_names() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
-        let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+        let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)
             .expect("the product deployment resolves");
         cfg.providers.get_mut("acme").unwrap().api_key = busbar_kernel::config::SecretRef::env("K");
-        let plugins_cfg = busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        };
+        let plugins_cfg = crate::root::test_plugins::trusted_config(&directory);
         cfg.secrets.insert(
             reserved.to_string(),
             busbar_kernel::config::SecretModuleCfg::default(),
@@ -200,10 +194,7 @@ fn one_validator_refuses_in_one_order() {
         }
     }
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -213,7 +204,7 @@ fn one_validator_refuses_in_one_order() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -221,10 +212,8 @@ fn one_validator_refuses_in_one_order() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -233,6 +222,10 @@ fn one_validator_refuses_in_one_order() {
         .into_iter()
         .next()
         .expect("the actual distribution declares a provider dialect");
+    let provider_defs = serde_json::from_value(serde_json::json!({
+        "acme": {"protocol": dialect, "base_url": "https://api.example.com"}
+    }))
+    .expect("the actual provider catalog entry parses");
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {"acme": {"protocol": dialect, "base_url": "https://api.example.com", "api_key": "none"}},
         "models": {},
@@ -241,13 +234,9 @@ fn one_validator_refuses_in_one_order() {
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
     .expect("the product deployment parses");
-    let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)
         .expect("the product deployment resolves");
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config(&directory);
     let check = |cfg: &busbar_kernel::config::RootCfg,
                  root: &dyn Fn(&busbar_kernel::config::RootCfg) -> Result<(), String>,
                  resolve_builtins: bool| {
@@ -305,7 +294,7 @@ fn one_validator_refuses_in_one_order() {
 
     let var = "BUSBAR_S10_ONE_VALIDATOR_UNSET_VAR";
     assert!(std::env::var_os(var).is_none());
-    let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)
         .expect("fresh ordinary config resolves");
     cfg.providers.get_mut("acme").unwrap().api_key = busbar_kernel::config::SecretRef::env(var);
     assert!(check(&cfg, &busbar_kernel::config_validate::no_root_rules, false).is_ok());

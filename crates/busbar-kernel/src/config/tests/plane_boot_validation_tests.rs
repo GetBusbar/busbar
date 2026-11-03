@@ -150,10 +150,10 @@ fn the_admin_write_path_refuses_what_the_section_refuses() {
             CADENCE_REFUSAL,
         ),
     ] {
-        let err = section
-            .validate("dock", &def, || Ok(()))
-            .err()
-            .expect("the write path must refuse it");
+        let err = match section.validate("dock", &def, || Ok(())) {
+            Err(error) => error,
+            Ok(_) => panic!("the write path must refuse it"),
+        };
         assert_eq!(err, sentence);
     }
     section
@@ -168,14 +168,14 @@ fn the_admin_write_path_refuses_what_the_section_refuses() {
 #[test]
 fn the_admin_write_path_refuses_a_pin_token_the_declaration_does_not_spell() {
     let section = &BAYS;
-    let err = section
-        .validate(
-            "dock",
-            &serde_json::json!({ "anchor": { "mechanism": "sealed-key" } }),
-            || Ok(()),
-        )
-        .err()
-        .expect("a drifted token must be refused on the write path");
+    let err = match section.validate(
+        "dock",
+        &serde_json::json!({ "anchor": { "mechanism": "sealed-key" } }),
+        || Ok(()),
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("a drifted token must be refused on the write path"),
+    };
     assert_eq!(
         err,
         "`bays.dock`: `anchor.mechanism: sealed-key` is not one of `sealed_key`, `open`"
@@ -283,14 +283,14 @@ fn a_registrations_own_passthrough_is_refused_in_the_planes_own_words() {
     moorings("  berth:\n    upstream_credentials: own\n")
         .expect("a registration's own credential is not refused");
 
-    let refused = MOORINGS
-        .validate(
-            "berth",
-            &serde_json::json!({ "upstream_credentials": "passthrough" }),
-            || Ok(()),
-        )
-        .err()
-        .expect("the admin write path refuses what boot refuses");
+    let refused = match MOORINGS.validate(
+        "berth",
+        &serde_json::json!({ "upstream_credentials": "passthrough" }),
+        || Ok(()),
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("the admin write path refuses what boot refuses"),
+    };
     assert!(
         refused.starts_with("`moorings.berth`") && refused.contains(FORWARD_REFUSAL),
         "{refused}"

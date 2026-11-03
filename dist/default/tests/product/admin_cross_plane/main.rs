@@ -12,8 +12,7 @@ mod openapi;
 mod served_surface;
 mod service;
 
-#[path = "../../../../../crates/busbar/src/root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 #[cfg(feature = "openapi-schema")]
 use self::openapi::openapi_doc_seamed;
@@ -26,7 +25,9 @@ pub(crate) fn ensure_seam() {
     SEAM_ONCE.call_once(|| {
         root_install::install();
 
-        linked::install();
+        // The real composition root already registered its linked planes.
+        // Installing the standalone plane-test registry here would register a
+        // second composition root before the document can be generated.
         busbar_core_admin::install();
     });
 }

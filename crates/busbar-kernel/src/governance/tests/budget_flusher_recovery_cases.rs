@@ -193,7 +193,7 @@ async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reac
         max_keys_per_principal: Default::default(),
         max_auto_provisioned_groups: Default::default(),
         governance: Some(gov.clone()),
-        secret_resolver: secret_resolver,
+        secret_resolver,
         cost: Arc::new(old_cost),
         plugins_dir: Default::default(),
         plugins_cfg: Default::default(),

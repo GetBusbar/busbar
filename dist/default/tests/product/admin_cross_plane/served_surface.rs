@@ -217,20 +217,14 @@ async fn admin_corpus_reconciles_with_the_served_router() {
             "admin-root-{}",
             busbar_kernel::door::op_id().counter()
         ));
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual Store statement reads")
             .expect("the actual Store states itself");
         let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
             .expect("the actual Store statement parses");
-        let mut manifest = super::plugins::manifest(
-            "store",
-            &facts.name,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-        );
+        let mut manifest =
+            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
         manifest.version = facts.version;
         manifest.statement = Some(hex::encode(statement));
         let archive = super::plugins::signed(
@@ -242,10 +236,7 @@ async fn admin_corpus_reconciles_with_the_served_router() {
             .expect("stage the actual Store product");
         std::fs::write(directory.join("admin.token"), TOKEN)
             .expect("write the operator credential");
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("the actual Store settings are JSON");
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let mut document = serde_json::json!({});
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
@@ -263,11 +254,7 @@ async fn admin_corpus_reconciles_with_the_served_router() {
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            super::plugins::trusted_config(&directory),
             None,
             Default::default(),
             Default::default(),
@@ -595,20 +582,14 @@ async fn served_openapi_lists_only_the_configured_planes() {
             "admin-root-{}",
             busbar_kernel::door::op_id().counter()
         ));
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual Store statement reads")
             .expect("the actual Store states itself");
         let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
             .expect("the actual Store statement parses");
-        let mut manifest = super::plugins::manifest(
-            "store",
-            &facts.name,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-        );
+        let mut manifest =
+            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
         manifest.version = facts.version;
         manifest.statement = Some(hex::encode(statement));
         let archive = super::plugins::signed(
@@ -620,10 +601,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
             .expect("stage the actual Store product");
         std::fs::write(directory.join("admin.token"), "served-openapi-token")
             .expect("write the operator credential");
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("the actual Store settings are JSON");
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let mut document = serde_json::json!({});
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
@@ -641,11 +619,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            super::plugins::trusted_config(&directory),
             None,
             Default::default(),
             Default::default(),
@@ -669,7 +643,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
             .expect("the actual Store opens its overlay"),
         );
         app.governance = Some(gov("served-openapi-token"));
-        app.plane_sections = Some((&sections).iter().copied().collect());
+        app.plane_sections = Some(sections.iter().copied().collect());
 
         std::sync::Arc::new(app)
     };
@@ -701,20 +675,14 @@ async fn served_openapi_lists_only_the_configured_planes() {
             "admin-root-{}",
             busbar_kernel::door::op_id().counter()
         ));
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual Store statement reads")
             .expect("the actual Store states itself");
         let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
             .expect("the actual Store statement parses");
-        let mut manifest = super::plugins::manifest(
-            "store",
-            &facts.name,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-        );
+        let mut manifest =
+            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
         manifest.version = facts.version;
         manifest.statement = Some(hex::encode(statement));
         let archive = super::plugins::signed(
@@ -726,10 +694,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
             .expect("stage the actual Store product");
         std::fs::write(directory.join("admin.token"), "served-openapi-token")
             .expect("write the operator credential");
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("the actual Store settings are JSON");
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let mut document = serde_json::json!({});
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
@@ -747,11 +712,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            super::plugins::trusted_config(&directory),
             None,
             Default::default(),
             Default::default(),
@@ -775,7 +736,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
             .expect("the actual Store opens its overlay"),
         );
         app.governance = Some(gov("served-openapi-token"));
-        app.plane_sections = Some((&[]).iter().copied().collect());
+        app.plane_sections = Some([].iter().copied().collect());
 
         std::sync::Arc::new(app)
     };
@@ -827,20 +788,14 @@ async fn served_openapi_lists_only_the_configured_planes() {
             "admin-root-{}",
             busbar_kernel::door::op_id().counter()
         ));
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual Store statement reads")
             .expect("the actual Store states itself");
         let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
             .expect("the actual Store statement parses");
-        let mut manifest = super::plugins::manifest(
-            "store",
-            &facts.name,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-        );
+        let mut manifest =
+            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
         manifest.version = facts.version;
         manifest.statement = Some(hex::encode(statement));
         let archive = super::plugins::signed(
@@ -852,10 +807,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
             .expect("stage the actual Store product");
         std::fs::write(directory.join("admin.token"), "served-openapi-token")
             .expect("write the operator credential");
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("the actual Store settings are JSON");
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let mut document = serde_json::json!({});
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
@@ -873,11 +825,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            super::plugins::trusted_config(&directory),
             None,
             Default::default(),
             Default::default(),
@@ -901,7 +849,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
             .expect("the actual Store opens its overlay"),
         );
         app.governance = Some(gov("served-openapi-token"));
-        app.plane_sections = Some((&["tools"]).iter().copied().collect());
+        app.plane_sections = Some(["tools"].iter().copied().collect());
 
         std::sync::Arc::new(app)
     };
@@ -926,20 +874,14 @@ async fn named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body(
             "admin-root-{}",
             busbar_kernel::door::op_id().counter()
         ));
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual Store statement reads")
             .expect("the actual Store states itself");
         let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
             .expect("the actual Store statement parses");
-        let mut manifest = super::plugins::manifest(
-            "store",
-            &facts.name,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
-        );
+        let mut manifest =
+            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
         manifest.version = facts.version;
         manifest.statement = Some(hex::encode(statement));
         let archive = super::plugins::signed(
@@ -951,10 +893,7 @@ async fn named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body(
             .expect("stage the actual Store product");
         std::fs::write(directory.join("admin.token"), TOKEN)
             .expect("write the operator credential");
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("the actual Store settings are JSON");
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let mut document = serde_json::json!({});
         document["providers"] = serde_json::json!({});
         document["models"] = serde_json::json!({});
@@ -972,11 +911,7 @@ async fn named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body(
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            super::plugins::trusted_config(&directory),
             None,
             Default::default(),
             Default::default(),

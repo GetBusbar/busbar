@@ -2,19 +2,77 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use busbar_contract::records::MeteringDelta;
 use busbar_kernel::governance::METERING_BUCKET_SECS;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 const LANE: &str = "m-dated-read";
 const PROVIDER: &str = "dated-read";
 const TOKENS: u64 = 1_000;
+
+// These usage fixtures price token counts and declare the other classes in the actual pools
+// Statement explicitly free. The model/provider names remain the names their recorded rows use.
+pub(super) fn complete_usage_fixture(
+    document: &mut serde_json::Value,
+    directory: &std::path::Path,
+    model_providers: &[(&str, &str)],
+) {
+    const UNUSED_CLASSES: &[&str] = &[
+        "search_units",
+        "classifications",
+        "web_fetch_requests",
+        "unitemized_tokens",
+        "images",
+        "audio_ms",
+        "guardrail_automated_reasoning_policies",
+        "guardrail_automated_reasoning_policy_units",
+        "guardrail_content_policy_image_units",
+        "guardrail_content_policy_units",
+        "guardrail_contextual_grounding_policy_units",
+        "guardrail_sensitive_information_policy_free_units",
+        "guardrail_sensitive_information_policy_units",
+        "guardrail_topic_policy_units",
+        "guardrail_word_policy_units",
+    ];
+    let credential = directory.join("usage-upstream-credential");
+    std::fs::write(&credential, b"unused-usage-fixture-upstream-credential")
+        .expect("the usage fixture writes its file-backed upstream credential");
+    for (model, provider) in model_providers {
+        document["providers"][*provider] = serde_json::json!({
+            "protocol": "openai", "base_url": "http://127.0.0.1:1", "api_key": {"file":credential},
+        });
+        document["models"][*model] = serde_json::json!({"provider":provider});
+    }
+    let card = document["rate_card"]
+        .as_object_mut()
+        .expect("the usage fixture has a rate card");
+    assert_eq!(
+        card.len(),
+        model_providers.len(),
+        "every original priced model is declared"
+    );
+    for (model, _) in model_providers {
+        let row = card
+            .get_mut(*model)
+            .expect("the original model's token rates remain");
+        let units = row
+            .as_object_mut()
+            .expect("a rate entry is an object")
+            .entry("units")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .expect("explicit named unit rates");
+        for class in UNUSED_CLASSES {
+            units
+                .entry((*class).to_string())
+                .or_insert_with(|| serde_json::json!(0));
+        }
+    }
+}
 
 #[tokio::test]
 async fn the_usage_read_prices_through_the_kernels_rate_dater() {
@@ -75,10 +133,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         "the isolated product process starts without a dated card"
     );
 
-    let store_library = PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built Store product"),
-    );
+    let store_library = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
         .expect("the actual Store statement reads")
         .expect("the actual Store exports its statement");
@@ -88,7 +143,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let directory = plugins::scratch("admin-dated-usage-actual-store");
@@ -98,15 +153,13 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         &std::fs::read(store_library).expect("the actual Store artifact reads"),
     );
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("actual Store settings are JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
     );
-    let document = serde_json::json!({
+    let mut document = serde_json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
@@ -117,6 +170,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         )]),
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     });
+    complete_usage_fixture(&mut document, &directory, &[(LANE, PROVIDER)]);
     let mut current_document = document.clone();
     current_document["rate_card"][LANE]["input_utok"] = serde_json::json!(1.0);
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
@@ -129,11 +183,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         .expect("the current lower-rate deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
         .expect("the actual Store opens the configuration authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(

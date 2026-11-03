@@ -1701,8 +1701,6 @@ pub mod deal;
 
 pub(crate) mod secret_refs;
 mod undeclared_secret_refs;
-#[cfg(test)]
-pub(crate) use secret_refs::registry_refusal;
 pub(crate) use secret_refs::{keyless_credential_allowed, secret_module, secret_refs};
 pub(crate) use undeclared_secret_refs::undeclared_secret_refs;
 

@@ -65,8 +65,7 @@ mod scoped_framing_tests;
 mod inbound_reload_tests;
 
 #[cfg(test)]
-#[path = "tests/test_plugins.rs"]
-pub(crate) mod test_plugins;
+pub(crate) use crate::test_common::plugins as test_plugins;
 
 #[cfg(test)]
 #[path = "tests/store_double.rs"]

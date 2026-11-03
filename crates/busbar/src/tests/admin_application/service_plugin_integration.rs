@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::root::test_plugins as plugins;
 use base64::Engine as _;
 use busbar_kernel::admission::{Admitted, Inventoried, Judged, PluginAdmission, Refusal, Stated};
 use busbar_kernel::config::PluginsCfg;
@@ -9,8 +10,31 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
 };
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+
+pub(super) fn trust_document(config: &PluginsCfg) -> serde_json::Value {
+    let publishers: Vec<_> = config.trust.publishers.iter().map(|publisher| {
+        serde_json::json!({"name": publisher.name, "public_key": publisher.public_key})
+    }).collect();
+    serde_json::json!({
+        "publishers": publishers,
+        "allow_unsigned": config.trust.allow_unsigned,
+        "allow_third_party": config.trust.allow_third_party,
+    })
+}
+
+fn fixture_config_document(directory: &Path) -> serde_json::Value {
+    let config = crate::root::test_plugins::trusted_config(directory);
+    let fetch: Vec<_> = config
+        .fetch_targets()
+        .expect("fixture archive URLs resolve")
+        .iter()
+        .map(|target| serde_json::json!({"url": target.url, "sha256": target.sha256}))
+        .collect();
+    serde_json::json!({
+        "enabled": true, "dir": directory,
+        "trust": trust_document(&config), "fetch": fetch,
+    })
+}
 
 struct InventoryReads {
     actual: &'static dyn PluginAdmission,
@@ -86,10 +110,7 @@ impl PluginAdmission for InventoryReads {
 #[tokio::test]
 async fn install_answers_the_admissions_refusals_in_their_classes() {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -100,7 +121,7 @@ async fn install_answers_the_admissions_refusals_in_their_classes() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
@@ -116,10 +137,8 @@ async fn install_answers_the_admissions_refusals_in_their_classes() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -144,11 +163,7 @@ async fn install_answers_the_admissions_refusals_in_their_classes() {
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -208,10 +223,7 @@ async fn install_answers_the_admissions_refusals_in_their_classes() {
 #[tokio::test]
 async fn install_catalog_remove_roundtrip() {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -222,7 +234,7 @@ async fn install_catalog_remove_roundtrip() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
@@ -238,10 +250,8 @@ async fn install_catalog_remove_roundtrip() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -266,11 +276,7 @@ async fn install_catalog_remove_roundtrip() {
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -381,10 +387,7 @@ async fn install_catalog_remove_roundtrip() {
 #[tokio::test]
 async fn remove_filesystem_failure_is_internal_error() {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -395,7 +398,7 @@ async fn remove_filesystem_failure_is_internal_error() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
@@ -411,10 +414,8 @@ async fn remove_filesystem_failure_is_internal_error() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -439,11 +440,7 @@ async fn remove_filesystem_failure_is_internal_error() {
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -514,10 +511,7 @@ async fn remove_filesystem_failure_is_internal_error() {
 #[tokio::test]
 async fn catalog_repeat_gets_reuse_the_cached_scan() {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -528,7 +522,7 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
@@ -544,10 +538,8 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -572,11 +564,7 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -658,7 +646,7 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
     let mut second = plugins::manifest(
         "store",
         &upload_name,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     second.version = upload.version;
     second.statement = Some(hex::encode(upload_statement));
@@ -693,10 +681,7 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
 #[tokio::test]
 async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -707,7 +692,7 @@ async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
@@ -723,10 +708,8 @@ async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -751,11 +734,7 @@ async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -849,10 +828,7 @@ async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
 #[tokio::test]
 async fn list_plugins_store_single_flights_concurrent_misses() {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -863,7 +839,7 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
@@ -879,10 +855,8 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -907,11 +881,7 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -987,10 +957,7 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
 #[tokio::test]
 async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -1001,7 +968,7 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
@@ -1017,10 +984,8 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -1045,11 +1010,7 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -1120,10 +1081,7 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn list_plugins_store_scan_does_not_park_the_reactor() {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -1134,7 +1092,7 @@ async fn list_plugins_store_scan_does_not_park_the_reactor() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
@@ -1150,10 +1108,8 @@ async fn list_plugins_store_scan_does_not_park_the_reactor() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -1178,11 +1134,7 @@ async fn list_plugins_store_scan_does_not_park_the_reactor() {
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -1267,10 +1219,7 @@ async fn list_plugins_store_scan_does_not_park_the_reactor() {
 #[tokio::test]
 async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -1281,7 +1230,7 @@ async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
@@ -1297,10 +1246,8 @@ async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -1325,11 +1272,7 @@ async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -1432,10 +1375,7 @@ async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
 #[tokio::test]
 async fn the_store_catalog_heads_with_the_linked_store_rows() {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -1446,7 +1386,7 @@ async fn the_store_catalog_heads_with_the_linked_store_rows() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
@@ -1462,10 +1402,8 @@ async fn the_store_catalog_heads_with_the_linked_store_rows() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -1490,11 +1428,7 @@ async fn the_store_catalog_heads_with_the_linked_store_rows() {
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -1558,10 +1492,7 @@ async fn the_store_catalog_heads_with_the_linked_store_rows() {
 #[tokio::test]
 async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -1572,7 +1503,7 @@ async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
@@ -1588,10 +1519,8 @@ async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -1616,11 +1545,7 @@ async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -1673,10 +1598,7 @@ async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
 #[tokio::test]
 async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor() {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -1687,7 +1609,7 @@ async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor(
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
@@ -1703,10 +1625,8 @@ async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor(
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -1731,11 +1651,7 @@ async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor(
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -1793,7 +1709,7 @@ async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor(
     .expect("the genuine scan owns the production gate");
     let validator_client = client.clone();
     let mut candidate = document;
-    candidate["plugins"] = serde_json::json!({"enabled":true, "dir":directory});
+    candidate["plugins"] = fixture_config_document(&directory);
     let validator = tokio::spawn(async move {
         validator_client
             .post(format!("http://{addr}/api/v1/admin/config/validate"))
@@ -1830,10 +1746,7 @@ async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor(
 #[tokio::test]
 async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -1844,7 +1757,7 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
@@ -1860,10 +1773,8 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -1888,11 +1799,7 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -2010,10 +1917,7 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
 #[tokio::test]
 async fn rollback_reads_the_target_and_merges_pins() {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -2024,7 +1928,7 @@ async fn rollback_reads_the_target_and_merges_pins() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
@@ -2040,10 +1944,8 @@ async fn rollback_reads_the_target_and_merges_pins() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -2068,11 +1970,7 @@ async fn rollback_reads_the_target_and_merges_pins() {
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -2097,7 +1995,7 @@ async fn rollback_reads_the_target_and_merges_pins() {
         public_key: hex::encode(publisher_key.verifying_key().to_bytes()),
     };
     app.plugins_cfg.trust.publishers.push(publisher);
-    document["plugins"] = serde_json::json!({"enabled":true, "dir":directory, "trust":{"publishers":[{"name":"acme", "public_key":hex::encode(publisher_key.verifying_key().to_bytes())}]}});
+    document["plugins"] = serde_json::json!({"enabled":true, "dir":directory, "trust":trust_document(&app.plugins_cfg)});
     let config_path = directory.join("config.yaml");
     let providers_path = directory.join("providers.yaml");
     std::fs::write(&config_path, serde_yaml::to_string(&document).unwrap()).unwrap();
@@ -2194,10 +2092,7 @@ async fn rollback_reads_the_target_and_merges_pins() {
 #[tokio::test]
 async fn install_filesystem_failures_are_internal_errors() {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -2208,7 +2103,7 @@ async fn install_filesystem_failures_are_internal_errors() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
     manifest.statement = Some(hex::encode(statement));
@@ -2224,10 +2119,8 @@ async fn install_filesystem_failures_are_internal_errors() {
     );
     std::fs::write(directory.join("store.tar.gz"), &archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -2252,11 +2145,7 @@ async fn install_filesystem_failures_are_internal_errors() {
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
@@ -2311,7 +2200,7 @@ async fn install_filesystem_failures_are_internal_errors() {
     manifest = plugins::manifest(
         "store",
         &upload_name,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = upload.version;
     manifest.statement = Some(hex::encode(upload_statement));

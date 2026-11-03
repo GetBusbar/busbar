@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::root::test_plugins as plugins;
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
 use busbar_contract::abi::host::service::{UnitRef, FLOW_CONTINUE};
 use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
@@ -9,8 +10,6 @@ use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use busbar_kernel::inbound::{Call, HandIn, Head, Listener, NO_LIST};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
 
 #[tokio::test]
 async fn actual_inbound_generation_keeps_only_original_request_authority() {
@@ -66,10 +65,7 @@ async fn actual_inbound_generation_keeps_only_original_request_authority() {
         }
     }
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -84,10 +80,8 @@ async fn actual_inbound_generation_keeps_only_original_request_authority() {
     let archive_sha256 = plugins::sha256(&archive);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"

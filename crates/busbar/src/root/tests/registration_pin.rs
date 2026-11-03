@@ -262,6 +262,8 @@ fn seal(
     origin: &str,
     registration: &serde_yaml::Value,
 ) -> Anchors {
+    #[cfg(distribution_root)]
+    crate::dist_root_install::install();
     let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
     let anchors = super::registration_anchors(entry, registration, need, served, &secrets)
         .expect("the registration's anchors read");

@@ -55,6 +55,18 @@ fn app(auth: RouteAuth, calls: &Arc<AtomicUsize>) -> Arc<busbar_kernel::state::A
         false,
     )
     .expect("the product builds the admission application");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the listener application has its configured governance Store")
+            .store_calls()
+            .expect("the configured product Store exposes its actual calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the listener's actual Store boots its rate-card history");
     limits.keep().expect("the admission limits commit");
     if let Some(rotate) = rotate {
         rotate();

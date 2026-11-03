@@ -4,14 +4,12 @@
 //! Distribution-only equivalence of the same real OIDC image admitted through both origins.
 #![cfg(linked_operator_auth)]
 
+use crate::root::test_plugins as plugins;
+use crate::test_common as common;
 use busbar_contract::auth_calls::{AuthCalls, Verified, VerifyAnswer, VerifyRequest};
 use busbar_contract::Secret;
 use busbar_plugin_loader::{auth_axis::AuthRows, LinkedPlugin, PluginRegistry};
 use std::sync::Arc;
-#[path = "../../../../../dist/default/tests/common/mod.rs"]
-mod common;
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
 
 fn request(token: Option<&str>) -> VerifyRequest {
     let mut request = VerifyRequest::default();
@@ -58,10 +56,7 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
         return;
     }
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -79,10 +74,8 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
     let archive_sha256 = busbar_contract::redacted::sha256_hex(&archive);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -168,29 +161,25 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
     let stated = busbar_plugin_loader::dispatch::rendering_of_library(&path)
         .expect("read actual OIDC")
         .expect("OIDC statement");
-    let linked_statements: Vec<_> = crate::LINKED.auths.iter().map(|(key, canonical, door)| {
-        let rendering = busbar_plugin_loader::dispatch::rendering_of(*door);
-        let diagnostic = match &rendering {
-            Ok(bytes) => serde_json::json!({
-                "key": key, "canonical": canonical,
-                "statement_sha256": busbar_contract::redacted::sha256_hex(bytes),
-                "rendering": String::from_utf8_lossy(bytes),
-            }),
-            Err(error) => serde_json::json!({"key": key, "canonical": canonical, "rendering_error": error.to_string()}),
-        };
-        ((*key, *canonical, *door), rendering, diagnostic)
-    }).collect();
-    let (key, canonical, door) = linked_statements.iter()
-        .find_map(|(row, rendering, _)| (rendering.as_ref().ok().map(Vec::as_slice) == Some(stated.as_slice())).then_some(*row))
-        .unwrap_or_else(|| panic!(
-            "the linked OIDC Statement must match the exact qualified dropped image: dropped_path={} dropped_image_sha256={} dropped_statement_sha256={} dropped_rendering={} linked_rows={}",
-            path.display(),
-            busbar_contract::redacted::sha256_hex(&std::fs::read(&path).expect("read actual dropped OIDC image for mismatch provenance")),
-            busbar_contract::redacted::sha256_hex(&stated),
-            String::from_utf8_lossy(&stated),
-            serde_json::Value::Array(linked_statements.iter().map(|(_, _, diagnostic)| diagnostic.clone()).collect()),
-        ));
-    let mut manifest = LinkedPlugin::auth_door_named(canonical, key, door).manifest;
+    // OIDC is an actual dev dependency, intentionally absent from the default product's
+    // linked registry. Admit its real production door directly for this both-origins proof.
+    let door = busbar_auth_oidc::door::door;
+    let linked_statement = busbar_plugin_loader::dispatch::rendering_of(door)
+        .expect("the real linked OIDC door renders its Statement");
+    assert_eq!(
+        linked_statement,
+        stated,
+        "the same pinned real OIDC product must render byte-identical Statements through both origins: dropped_path={} dropped_image_sha256={}",
+        path.display(),
+        busbar_contract::redacted::sha256_hex(&std::fs::read(&path).expect("read actual dropped OIDC image for mismatch provenance")),
+    );
+    let oidc_name = busbar_contract::abi::mechanism::rendering::read(&linked_statement)
+        .expect("the actual linked OIDC Statement is valid")
+        .name;
+    let mut manifest = LinkedPlugin::auth_door_named(&oidc_name, &oidc_name, door).manifest;
+    // A dropped admission carries the real Statement in its signed manifest; the linked
+    // convenience constructor alone has no envelope Statement to copy into the archive.
+    manifest.statement = Some(hex::encode(&stated));
     // Admission metadata names the same explicitly configured normal publisher on both origins.
     manifest.publisher = PUBLISHER.into();
     let linked_plugin = LinkedPlugin::door(manifest.clone(), door);
@@ -242,6 +231,12 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
         b'A'
     };
     let broken = String::from_utf8(broken).unwrap();
+    let groups: Vec<_> = (0..300).map(|i| format!("group-{i}")).collect();
+    let group_refs: Vec<_> = groups.iter().map(String::as_str).collect();
+    let wide = common::credentials::token_for("alice", &group_refs, audience);
+    let other_settings = serde_json::Value::Object(common::credentials::settings(
+        "api://different-verifier-policy",
+    ));
     let mut transcripts = Vec::new();
     for registry in [linked, dropped] {
         let rows =
@@ -253,7 +248,8 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
         let Verified::Identity(identity) = warm.verified else {
             panic!("the real signed JWT must identify: {warm:?}");
         };
-        assert_eq!(identity.subject, "alice");
+        // The real OIDC product namespaces its stable subject before crossing the auth ABI.
+        assert_eq!(identity.subject, "oidc:alice");
         assert_eq!(identity.groups, ["reader", "writer"]);
         let mut transcript = Vec::new();
         for token in [
@@ -285,7 +281,47 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
             transcript[0].1, transcript[2].1,
             "a genuinely different credential policy cannot compare as the same verdict"
         );
-        transcripts.push((auth.name().to_string(), auth.facts(), transcript));
+        // Change the verifier's configured audience while keeping the exact signed token.
+        let other_auth = rows
+            .open(&manifest.name, "the-auth-other-policy", &other_settings)
+            .expect("the real OIDC verifier opens with the other audience policy");
+        let other_answer = answered(&*other_auth, Some(&valid)).await;
+        assert!(
+            matches!(other_answer.verified, Verified::Reject),
+            "the same valid JWT must reject under another verifier's audience policy"
+        );
+        let other_transcript = (other_auth.verify_now(&request(Some(&valid))), other_answer);
+        assert_ne!(
+            transcript[0], other_transcript,
+            "changing the verifier policy for the same token must change its full verdict"
+        );
+
+        // The real 300-group JWT exceeds the host's initial identity group storage. Keep
+        // the original sync/submitted/submitted/sync sequence through each actual origin.
+        let wide_transcript = vec![
+            auth.verify_now(&request(Some(&wide)))
+                .expect("the warmed verifier answers the first wide JWT on the spot"),
+            answered(&*auth, Some(&wide)).await,
+            answered(&*auth, Some(&wide)).await,
+            auth.verify_now(&request(Some(&wide)))
+                .expect("the warmed verifier answers the fourth wide JWT on the spot"),
+        ];
+        for answer in &wide_transcript {
+            let Verified::Identity(identity) = &answer.verified else {
+                panic!("every real wide JWT judgment must identify: {answer:?}");
+            };
+            assert_eq!(identity.subject, "oidc:alice");
+            assert_eq!(identity.groups.len(), 300);
+            assert_eq!(identity.groups[299], "group-299");
+            assert_eq!(identity.groups, groups);
+        }
+        transcripts.push((
+            auth.name().to_string(),
+            auth.facts(),
+            transcript,
+            other_transcript,
+            wide_transcript,
+        ));
     }
     assert_eq!(
         transcripts[0], transcripts[1],

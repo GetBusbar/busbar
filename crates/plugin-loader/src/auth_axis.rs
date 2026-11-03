@@ -302,16 +302,6 @@ impl AuthRows {
             .map(|opened| opened as Arc<dyn AuthCalls>)
     }
 
-    #[cfg(test)]
-    pub(crate) fn open_for_test(
-        &self,
-        module: &str,
-        label: &str,
-        settings: &serde_json::Value,
-    ) -> Result<Arc<AuthInstance>, String> {
-        self.open_instance(module, label, settings)
-    }
-
     fn open_instance(
         &self,
         module: &str,

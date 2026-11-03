@@ -3,6 +3,7 @@
 
 #![cfg(all(distribution_root, linked_every_auth))]
 
+use crate::root::test_plugins as plugins;
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY};
 use busbar_contract::abi::host::service::{
     UnitRef, FLOW_CONTINUE, FLOW_STOP, REFUSE_OVER_GATE, REFUSE_STOPPED,
@@ -14,8 +15,6 @@ use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use busbar_kernel::inbound::{Call, HandIn, Head, Listener, Refuse};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
 
 // Ordinary signed-request fixture. The pinned SigV4 cfg(test) signer delegates
 // to the contract AWS4 recipe; dependency cfg(test) APIs are not exported to a
@@ -152,10 +151,7 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
         }
     }
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -170,10 +166,8 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
     let archive_sha256 = busbar_plugin_loader::sign::sha256_hex(&archive);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -275,9 +269,13 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
                     },
                     claimant: Claimant::Plane("inbound-signed-custody".into()),
                     dialect: 0,
-                    auth: LineAuth::Chain(vec!["keys".into()], AuthPoints::HEAD_BODY),
+                    // The fixture exercises both request phases, including the pending head.
+                    auth: LineAuth::Chain(
+                        vec!["keys".into()],
+                        AuthPoints(POINT_HEAD | POINT_HEAD_BODY),
+                    ),
                     upgrade: None,
-                    offered: AuthPoints::HEAD_BODY,
+                    offered: AuthPoints(POINT_HEAD | POINT_HEAD_BODY),
                 }])
                 .expect("actual host declaration seals"),
                 auths: Default::default(),

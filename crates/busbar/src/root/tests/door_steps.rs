@@ -50,10 +50,7 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
     let mut app = {
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual store statement reads")
             .expect("the actual store exports its statement");
@@ -63,14 +60,10 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
         let mut manifest = crate::root::test_plugins::manifest(
             "store",
             &module,
-            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
-        std::env::set_var(
-            "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-            hex::encode(release.verifying_key().as_bytes()),
-        );
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
             busbar_kernel::door::op_id().counter()
@@ -83,10 +76,7 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
             crate::LINKED.auths,
             crate::root::auth_bindings::operator_words(),
         );
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("the actual store settings are JSON");
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
             "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
@@ -103,11 +93,10 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
         };
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            crate::root::test_plugins::trusted_config_with_key(
+                &directory,
+                &crate::root::test_plugins::key(0x5a),
+            ),
             None,
             Default::default(),
             Default::default(),
@@ -181,10 +170,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
         let mut generation = {
             #[cfg(distribution_root)]
             crate::dist_root_install::install();
-            let library_path = std::path::PathBuf::from(
-                std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                    .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-            );
+            let library_path = crate::root::test_plugins::application_store_library();
             let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
                 .expect("the actual store statement reads")
                 .expect("the actual store exports its statement");
@@ -194,14 +180,10 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
             let mut manifest = crate::root::test_plugins::manifest(
                 "store",
                 &module,
-                crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+                crate::root::test_plugins::FIXTURE_PUBLISHER,
             );
             manifest.statement = Some(hex::encode(statement));
             let release = crate::root::test_plugins::key(0x5a);
-            std::env::set_var(
-                "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-                hex::encode(release.verifying_key().as_bytes()),
-            );
             let directory = crate::root::test_plugins::scratch(&format!(
                 "door-steps-{}",
                 busbar_kernel::door::op_id().counter()
@@ -215,11 +197,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
                 crate::LINKED.auths,
                 crate::root::auth_bindings::operator_words(),
             );
-            let settings: serde_json::Value = serde_json::from_str(
-                &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS")
-                    .unwrap_or_else(|_| "{}".into()),
-            )
-            .expect("the actual store settings are JSON");
+            let settings = crate::root::test_plugins::application_store_settings(&directory);
             let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
                 "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
                 "store": {"module": module, "settings": settings},
@@ -236,11 +214,10 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
             };
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
                 cfg,
-                busbar_kernel::config::PluginsCfg {
-                    enabled: true,
-                    dir: directory.to_string_lossy().into_owned(),
-                    ..Default::default()
-                },
+                crate::root::test_plugins::trusted_config_with_key(
+                    &directory,
+                    &crate::root::test_plugins::key(0x5a),
+                ),
                 None,
                 Default::default(),
                 Default::default(),
@@ -311,10 +288,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
     let no_card = steps(Arc::new({
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual store statement reads")
             .expect("the actual store exports its statement");
@@ -324,14 +298,10 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
         let mut manifest = crate::root::test_plugins::manifest(
             "store",
             &module,
-            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
-        std::env::set_var(
-            "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-            hex::encode(release.verifying_key().as_bytes()),
-        );
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
             busbar_kernel::door::op_id().counter()
@@ -344,10 +314,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
             crate::LINKED.auths,
             crate::root::auth_bindings::operator_words(),
         );
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("the actual store settings are JSON");
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
             "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
@@ -364,11 +331,10 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
         };
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            crate::root::test_plugins::trusted_config_with_key(
+                &directory,
+                &crate::root::test_plugins::key(0x5a),
+            ),
             None,
             Default::default(),
             Default::default(),
@@ -873,10 +839,7 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
             std::sync::Arc::new({
                 #[cfg(distribution_root)]
                 crate::dist_root_install::install();
-                let library_path = std::path::PathBuf::from(
-                    std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                        .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-                );
+                let library_path = crate::root::test_plugins::application_store_library();
                 let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
                     .expect("the actual store statement reads")
                     .expect("the actual store exports its statement");
@@ -886,14 +849,10 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
                 let mut manifest = crate::root::test_plugins::manifest(
                     "store",
                     &module,
-                    crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+                    crate::root::test_plugins::FIXTURE_PUBLISHER,
                 );
                 manifest.statement = Some(hex::encode(statement));
                 let release = crate::root::test_plugins::key(0x5a);
-                std::env::set_var(
-                    "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-                    hex::encode(release.verifying_key().as_bytes()),
-                );
                 let directory = crate::root::test_plugins::scratch(&format!(
                     "door-steps-{}",
                     busbar_kernel::door::op_id().counter()
@@ -907,11 +866,7 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
                     crate::LINKED.auths,
                     crate::root::auth_bindings::operator_words(),
                 );
-                let settings: serde_json::Value = serde_json::from_str(
-                    &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS")
-                        .unwrap_or_else(|_| "{}".into()),
-                )
-                .expect("the actual store settings are JSON");
+                let settings = crate::root::test_plugins::application_store_settings(&directory);
                 let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
                     "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
                     "store": {"module": module, "settings": settings},
@@ -929,11 +884,10 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
                 let (app, rotate, limits) =
                     busbar_kernel::appbuild::build_app_from_config_with_store(
                         cfg,
-                        busbar_kernel::config::PluginsCfg {
-                            enabled: true,
-                            dir: directory.to_string_lossy().into_owned(),
-                            ..Default::default()
-                        },
+                        crate::root::test_plugins::trusted_config_with_key(
+                            &directory,
+                            &crate::root::test_plugins::key(0x5a),
+                        ),
                         None,
                         Default::default(),
                         Default::default(),
@@ -1043,10 +997,7 @@ fn downgrade_book(
     let mut app = {
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual store statement reads")
             .expect("the actual store exports its statement");
@@ -1056,14 +1007,10 @@ fn downgrade_book(
         let mut manifest = crate::root::test_plugins::manifest(
             "store",
             &module,
-            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
-        std::env::set_var(
-            "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-            hex::encode(release.verifying_key().as_bytes()),
-        );
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
             busbar_kernel::door::op_id().counter()
@@ -1076,10 +1023,7 @@ fn downgrade_book(
             crate::LINKED.auths,
             crate::root::auth_bindings::operator_words(),
         );
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("the actual store settings are JSON");
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
             "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
@@ -1096,11 +1040,10 @@ fn downgrade_book(
         };
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            crate::root::test_plugins::trusted_config_with_key(
+                &directory,
+                &crate::root::test_plugins::key(0x5a),
+            ),
             None,
             Default::default(),
             Default::default(),
@@ -1343,6 +1286,8 @@ fn resolve_upgrading(
     served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     upgrades: Vec<&'static str>,
 ) -> Result<std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
+    #[cfg(distribution_root)]
+    crate::dist_root_install::install();
     let section: serde_yaml::Value = serde_yaml::from_str(section).expect("yaml");
     let providers = providers
         .iter()
@@ -3324,10 +3269,7 @@ pub(crate) mod tool_door {
             let mut app = {
                 #[cfg(distribution_root)]
                 crate::dist_root_install::install();
-                let library_path = std::path::PathBuf::from(
-                    std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                        .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-                );
+                let library_path = crate::root::test_plugins::application_store_library();
                 let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
                     .expect("the actual store statement reads")
                     .expect("the actual store exports its statement");
@@ -3337,14 +3279,10 @@ pub(crate) mod tool_door {
                 let mut manifest = crate::root::test_plugins::manifest(
                     "store",
                     &module,
-                    crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+                    crate::root::test_plugins::FIXTURE_PUBLISHER,
                 );
                 manifest.statement = Some(hex::encode(statement));
                 let release = crate::root::test_plugins::key(0x5a);
-                std::env::set_var(
-                    "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-                    hex::encode(release.verifying_key().as_bytes()),
-                );
                 let directory = crate::root::test_plugins::scratch(&format!(
                     "door-steps-{}",
                     busbar_kernel::door::op_id().counter()
@@ -3358,11 +3296,7 @@ pub(crate) mod tool_door {
                     crate::LINKED.auths,
                     crate::root::auth_bindings::operator_words(),
                 );
-                let settings: serde_json::Value = serde_json::from_str(
-                    &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS")
-                        .unwrap_or_else(|_| "{}".into()),
-                )
-                .expect("the actual store settings are JSON");
+                let settings = crate::root::test_plugins::application_store_settings(&directory);
                 let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
                     "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
                     "store": {"module": module, "settings": settings},
@@ -3380,11 +3314,10 @@ pub(crate) mod tool_door {
                 let (app, rotate, limits) =
                     busbar_kernel::appbuild::build_app_from_config_with_store(
                         cfg,
-                        busbar_kernel::config::PluginsCfg {
-                            enabled: true,
-                            dir: directory.to_string_lossy().into_owned(),
-                            ..Default::default()
-                        },
+                        crate::root::test_plugins::trusted_config_with_key(
+                            &directory,
+                            &crate::root::test_plugins::key(0x5a),
+                        ),
                         None,
                         Default::default(),
                         Default::default(),
@@ -5508,21 +5441,16 @@ pub(crate) mod door_boundary {
             server.footing(),
             &|app| {
                 std::env::set_var("BUSBAR_DOOR_BOUNDARY_UPSTREAM_KEY", "busbar-upstream-key");
-                let library_path = std::path::PathBuf::from(
-                    std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                        .expect("the actual product store is supplied"),
-                );
+                let library_path = crate::root::test_plugins::application_store_library();
                 let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
                     .unwrap()
                     .expect("the actual store states itself");
                 let module = busbar_contract::abi::mechanism::rendering::read(&statement)
                     .unwrap()
                     .name;
-                let settings: serde_json::Value = serde_json::from_str(
-                    &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS")
-                        .unwrap_or_else(|_| "{}".into()),
-                )
-                .unwrap();
+                let settings = crate::root::test_plugins::application_store_settings(
+                    std::path::Path::new(&app.plugins_cfg.dir),
+                );
                 let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
                     "providers":{"anthropic":{"api_key":{"env":"BUSBAR_DOOR_BOUNDARY_UPSTREAM_KEY"}}},
                     "models":{"test-model":{"provider":"anthropic"}},
@@ -8176,6 +8104,8 @@ static NO_PROVIDERS: std::collections::BTreeMap<String, super::ProviderRoute> =
     std::collections::BTreeMap::new();
 
 fn own_reach() -> super::DoorReach<'static> {
+    #[cfg(distribution_root)]
+    crate::dist_root_install::install();
     let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
         crate::root::loader::dispatch::DispatchConfig::default(),
     ));
@@ -8558,6 +8488,8 @@ fn per_hop_over(
     auth: std::sync::Arc<CountingOpens>,
     secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
 ) -> super::PerHop {
+    #[cfg(distribution_root)]
+    crate::dist_root_install::install();
     let secret = busbar_contract::secret_ref::SecretRef::file(path.display().to_string());
     let value = secrets.resolve_string(&secret).expect("it resolves");
     let seal = busbar_kernel::seal::lend();
@@ -9271,10 +9203,7 @@ fn the_configured_error_body_cap_reaches_both_egress_constructors() {
         app: LiveApp::fixed(std::sync::Arc::new({
             #[cfg(distribution_root)]
             crate::dist_root_install::install();
-            let library_path = std::path::PathBuf::from(
-                std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                    .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-            );
+            let library_path = crate::root::test_plugins::application_store_library();
             let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
                 .expect("the actual store statement reads")
                 .expect("the actual store exports its statement");
@@ -9284,14 +9213,10 @@ fn the_configured_error_body_cap_reaches_both_egress_constructors() {
             let mut manifest = crate::root::test_plugins::manifest(
                 "store",
                 &module,
-                crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+                crate::root::test_plugins::FIXTURE_PUBLISHER,
             );
             manifest.statement = Some(hex::encode(statement));
             let release = crate::root::test_plugins::key(0x5a);
-            std::env::set_var(
-                "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-                hex::encode(release.verifying_key().as_bytes()),
-            );
             let directory = crate::root::test_plugins::scratch(&format!(
                 "door-steps-{}",
                 busbar_kernel::door::op_id().counter()
@@ -9305,11 +9230,7 @@ fn the_configured_error_body_cap_reaches_both_egress_constructors() {
                 crate::LINKED.auths,
                 crate::root::auth_bindings::operator_words(),
             );
-            let settings: serde_json::Value = serde_json::from_str(
-                &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS")
-                    .unwrap_or_else(|_| "{}".into()),
-            )
-            .expect("the actual store settings are JSON");
+            let settings = crate::root::test_plugins::application_store_settings(&directory);
             let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
                 "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
                 "store": {"module": module, "settings": settings},
@@ -9326,11 +9247,10 @@ fn the_configured_error_body_cap_reaches_both_egress_constructors() {
             };
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
                 cfg,
-                busbar_kernel::config::PluginsCfg {
-                    enabled: true,
-                    dir: directory.to_string_lossy().into_owned(),
-                    ..Default::default()
-                },
+                crate::root::test_plugins::trusted_config_with_key(
+                    &directory,
+                    &crate::root::test_plugins::key(0x5a),
+                ),
                 None,
                 Default::default(),
                 Default::default(),
@@ -9504,10 +9424,7 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
             std::sync::Arc::new({
                 #[cfg(distribution_root)]
                 crate::dist_root_install::install();
-                let library_path = std::path::PathBuf::from(
-                    std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                        .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-                );
+                let library_path = crate::root::test_plugins::application_store_library();
                 let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
                     .expect("the actual store statement reads")
                     .expect("the actual store exports its statement");
@@ -9517,14 +9434,10 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
                 let mut manifest = crate::root::test_plugins::manifest(
                     "store",
                     &module,
-                    crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+                    crate::root::test_plugins::FIXTURE_PUBLISHER,
                 );
                 manifest.statement = Some(hex::encode(statement));
                 let release = crate::root::test_plugins::key(0x5a);
-                std::env::set_var(
-                    "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-                    hex::encode(release.verifying_key().as_bytes()),
-                );
                 let directory = crate::root::test_plugins::scratch(&format!(
                     "door-steps-{}",
                     busbar_kernel::door::op_id().counter()
@@ -9538,11 +9451,7 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
                     crate::LINKED.auths,
                     crate::root::auth_bindings::operator_words(),
                 );
-                let settings: serde_json::Value = serde_json::from_str(
-                    &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS")
-                        .unwrap_or_else(|_| "{}".into()),
-                )
-                .expect("the actual store settings are JSON");
+                let settings = crate::root::test_plugins::application_store_settings(&directory);
                 let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
                     "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
                     "store": {"module": module, "settings": settings},
@@ -9560,11 +9469,10 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
                 let (app, rotate, limits) =
                     busbar_kernel::appbuild::build_app_from_config_with_store(
                         cfg,
-                        busbar_kernel::config::PluginsCfg {
-                            enabled: true,
-                            dir: directory.to_string_lossy().into_owned(),
-                            ..Default::default()
-                        },
+                        crate::root::test_plugins::trusted_config_with_key(
+                            &directory,
+                            &crate::root::test_plugins::key(0x5a),
+                        ),
                         None,
                         Default::default(),
                         Default::default(),
@@ -9886,10 +9794,7 @@ fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
     let mut app = {
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual store statement reads")
             .expect("the actual store exports its statement");
@@ -9899,14 +9804,10 @@ fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
         let mut manifest = crate::root::test_plugins::manifest(
             "store",
             &module,
-            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
-        std::env::set_var(
-            "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-            hex::encode(release.verifying_key().as_bytes()),
-        );
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
             busbar_kernel::door::op_id().counter()
@@ -9919,10 +9820,7 @@ fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
             crate::LINKED.auths,
             crate::root::auth_bindings::operator_words(),
         );
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("the actual store settings are JSON");
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
             "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
@@ -9939,11 +9837,10 @@ fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
         };
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            crate::root::test_plugins::trusted_config_with_key(
+                &directory,
+                &crate::root::test_plugins::key(0x5a),
+            ),
             None,
             Default::default(),
             Default::default(),
@@ -10038,10 +9935,7 @@ fn asking_whether_a_name_is_configured_allocates_nothing() {
     let app = std::sync::Arc::new({
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
-        let library_path = std::path::PathBuf::from(
-            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-        );
+        let library_path = crate::root::test_plugins::application_store_library();
         let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual store statement reads")
             .expect("the actual store exports its statement");
@@ -10051,14 +9945,10 @@ fn asking_whether_a_name_is_configured_allocates_nothing() {
         let mut manifest = crate::root::test_plugins::manifest(
             "store",
             &module,
-            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
-        std::env::set_var(
-            "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-            hex::encode(release.verifying_key().as_bytes()),
-        );
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
             busbar_kernel::door::op_id().counter()
@@ -10071,10 +9961,7 @@ fn asking_whether_a_name_is_configured_allocates_nothing() {
             crate::LINKED.auths,
             crate::root::auth_bindings::operator_words(),
         );
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-        )
-        .expect("the actual store settings are JSON");
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
             "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
@@ -10091,11 +9978,10 @@ fn asking_whether_a_name_is_configured_allocates_nothing() {
         };
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             cfg,
-            busbar_kernel::config::PluginsCfg {
-                enabled: true,
-                dir: directory.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
+            crate::root::test_plugins::trusted_config_with_key(
+                &directory,
+                &crate::root::test_plugins::key(0x5a),
+            ),
             None,
             Default::default(),
             Default::default(),

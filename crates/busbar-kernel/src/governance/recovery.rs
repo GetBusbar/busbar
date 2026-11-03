@@ -1276,14 +1276,17 @@ pub(in crate::governance) mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
+    type ForeignJournals = std::collections::BTreeMap<[u8; 16], (u64, Vec<RecoveryEvent>)>;
+    type ConfirmedAdoptions =
+        std::collections::BTreeMap<[u8; 16], (RecoveryResolution, Vec<RecoveryEvent>)>;
+
     #[derive(Default)]
     pub(in crate::governance) struct Journal {
         pub(in crate::governance) selected: Mutex<Vec<RecoveryEvent>>,
         pub(in crate::governance) fail_after_write: AtomicBool,
-        foreign: Mutex<std::collections::BTreeMap<[u8; 16], (u64, Vec<RecoveryEvent>)>>,
+        foreign: Mutex<ForeignJournals>,
         adoption_attempts: Mutex<Vec<(RecoveryResolution, Vec<RecoveryEvent>)>>,
-        confirmed_adoptions:
-            Mutex<std::collections::BTreeMap<[u8; 16], (RecoveryResolution, Vec<RecoveryEvent>)>>,
+        confirmed_adoptions: Mutex<ConfirmedAdoptions>,
         lose_adoption_reply: AtomicBool,
     }
     impl RecoverySink for Journal {

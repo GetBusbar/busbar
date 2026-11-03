@@ -515,14 +515,7 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
         }
     }
     let release = crate::root::test_plugins::key(0x5a);
-    std::env::set_var(
-        "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY",
-        hex::encode(release.verifying_key().as_bytes()),
-    );
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
@@ -532,7 +525,7 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -542,10 +535,14 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
         crate::root::test_plugins::signed(&release, manifest, &library),
     )
     .expect("stage the actual store archive");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
+    let late = crate::root::serve::LateServices::new();
+    let dispatcher = crate::root::dispatch::boot(1, &late);
+    crate::root::doors::install_dispatcher(dispatcher);
+    // Match main: register the actual plane declarations before the first config read.
+    crate::register_protocols();
+    crate::register_planes();
+    crate::register_diagnostics();
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
@@ -557,14 +554,8 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual product deployment resolves");
     let judge = crate::root::connector::dest_judge(&config);
-    let late = crate::root::serve::LateServices::new();
-    let dispatcher = crate::root::dispatch::boot(1, &late);
-    crate::root::doors::install_dispatcher(dispatcher);
     let (credentials, _handle) = crate::root::credentials::AppCredentials::late();
     crate::root::serve::compose(judge.clone(), &late, credentials);
-    crate::register_protocols();
-    crate::register_planes();
-    crate::register_diagnostics();
     crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
     crate::root::connector::boot(
         crate::LINKED_TRANSPORT_DOORS,
@@ -572,11 +563,10 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
         judge,
         &[],
     );
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config_with_key(
+        &directory,
+        &crate::root::test_plugins::key(0x5a),
+    );
     let slots = crate::root::store_double::RecordSlots::new();
     let boot = busbar_kernel::config::card::CardFields {
         per_request_fee: BOOT_FEE,

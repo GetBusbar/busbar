@@ -44,12 +44,6 @@ impl AdminService {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_rate_history(mut self, history: Arc<busbar_kernel::cost::History>) -> Self {
-        self.rate_history = Some(history);
-        self
-    }
-
     pub(crate) async fn info(&self) -> Result<InfoView, AdminError> {
         let auth_modules = auth_modules_compiled_in();
         let hook_plugins = hook_plugins_compiled_in();
@@ -591,7 +585,6 @@ impl AdminService {
         admission: &dyn PluginAdmission,
         cfg: &busbar_kernel::config::PluginsCfg,
     ) -> Vec<PluginView> {
-        catalog_scan_test_hook!(dir);
         let mut rows = Vec::new();
 
         let Ok(inventory) = admission.inventory(dir, cfg) else {

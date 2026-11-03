@@ -243,14 +243,24 @@ extern "C" fn refusing_probe_refresh(
     if input_ref.settings.len == b"refuse-refresh".len() {
         return busbar_contract::abi::mechanism::call::RawOutcome::of(Outcome::Refused);
     }
+    let mut forwarded = *input_ref;
     if input_ref.settings.len == b"park-refresh".len() {
         REFRESH_GATE.park();
+        // This is the wrapper's synchronization marker, not MCP configuration.
+        // The actual product receives the same valid empty settings as the
+        // adjacent unparked probe, so only its ownership lifetime differs.
+        forwarded.settings = Blob {
+            ptr: b"{}".as_ptr(),
+            len: 2,
+            fmt: busbar_contract::abi::mechanism::call::BLOB_JSON,
+            flags: 0,
+        };
     }
     // SAFETY: the fixture's immutable table has this plane's exact shape.
     let ops = unsafe { &*crate::plane_door_plugin::door().ops().cast::<plane::Ops>() };
-    // SAFETY: forward the same REFRESH instance and complete host frames to their original
-    // SDK slot; all nested loans remain live for this same-thread crossing.
-    unsafe { ops.head.refresh.unwrap()(instance, input, out) }
+    // SAFETY: forward the same instance, head, generation, and secret loans. The
+    // copied REFRESH frame and its static settings remain live for the crossing.
+    unsafe { ops.head.refresh.unwrap()(instance, std::ptr::from_ref(&forwarded).cast(), out) }
 }
 
 static REFRESH_GATE: std::sync::LazyLock<Gate> = std::sync::LazyLock::new(Gate::default);

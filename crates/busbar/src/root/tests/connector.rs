@@ -198,7 +198,7 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
         "the boot config carves it out"
     );
     let store = crate::root::real_store::store();
-    let (_app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         deployment(&[], ""),
         Default::default(),
         None,
@@ -214,6 +214,18 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
         false,
     )
     .expect("the reload builds");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the actual deployment configured governance")
+            .store_calls()
+            .expect("the actual configured Store exposes its rate-history slots"),
+        122,
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the actual configured Store boots its rate history");
     limits.keep().expect("the reload commits its limits");
     if let Some(rotate) = rotate {
         rotate();
@@ -255,7 +267,7 @@ fn a_reload_that_changes_the_allowlist_changes_nothing() {
     );
     let reloaded = deployment(&[], "advanced:\n  allow_destinations: [model-b.internal]\n");
     let store = crate::root::real_store::store();
-    let (_app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         reloaded,
         Default::default(),
         None,
@@ -271,6 +283,18 @@ fn a_reload_that_changes_the_allowlist_changes_nothing() {
         false,
     )
     .expect("the reload builds");
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the actual deployment configured governance")
+            .store_calls()
+            .expect("the actual configured Store exposes its rate-history slots"),
+        122,
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the actual configured Store boots its rate history");
     limits.keep().expect("the reload commits its limits");
     if let Some(rotate) = rotate {
         rotate();

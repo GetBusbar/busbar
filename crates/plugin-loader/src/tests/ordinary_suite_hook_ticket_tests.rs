@@ -15,7 +15,7 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::door::{Door, DoorParts};
 use busbar_contract::abi::sdk::door::RawDoorFn;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -40,6 +40,9 @@ fn actual() -> &'static Door {
     unsafe { &*ptr }
 }
 
+static PENDING_ENTRIES: AtomicUsize = AtomicUsize::new(0);
+static PRODUCT_DECISIONS: AtomicUsize = AtomicUsize::new(0);
+
 extern "C" fn pending_decide(
     instance: *mut std::ffi::c_void,
     input: *const std::ffi::c_void,
@@ -49,11 +52,13 @@ extern "C" fn pending_decide(
     unsafe {
         let head = &*input.cast::<InHead>();
         if head.flags & FLAG_RESUME == 0 {
+            PENDING_ENTRIES.fetch_add(1, Ordering::SeqCst);
             crate::dispatch::ticket::host_wake(head.host, head.ticket);
             (*out.cast::<DecideOut>()).head.outcome = RawOutcome::of(Outcome::Pending);
             return RawOutcome::of(Outcome::Pending);
         }
         let ops = actual().ops().cast::<Ops>().read_unaligned();
+        PRODUCT_DECISIONS.fetch_add(1, Ordering::SeqCst);
         ops.decide.expect("actual Ranking decides")(instance, input, out)
     }
 }
@@ -85,6 +90,8 @@ fn red_a_gate_that_waits_is_resumed_on_its_ticket_never_faulted_ticketless() {
     use crate::dispatch::lifecycle::{blob, open_frame};
     use busbar_contract::abi::mechanism::call::BLOB_JSON;
     use busbar_contract::abi::mechanism::lifecycle::slot as life;
+    PENDING_ENTRIES.store(0, Ordering::SeqCst);
+    PRODUCT_DECISIONS.store(0, Ordering::SeqCst);
     let d = Dispatcher::new(DispatchConfig::default());
     let p = load_linked::<Hook>(
         &LinkedRow::of(pending_door).expect("actual Ranking descriptor"),
@@ -133,6 +140,10 @@ fn red_a_gate_that_waits_is_resumed_on_its_ticket_never_faulted_ticketless() {
         frame.out.verbs, VERB_ABSTAIN,
         "actual Ranking abstains on an empty candidate set"
     );
-    assert_eq!(p.inner.crossings.load(Ordering::SeqCst) - before.0, 1);
+    // The dispatcher counts both ABI crossings: the first Pending entry and
+    // the resumed entry. Only the latter reaches the actual product decision.
+    assert_eq!(p.inner.crossings.load(Ordering::SeqCst) - before.0, 2);
+    assert_eq!(PENDING_ENTRIES.load(Ordering::SeqCst), 1);
+    assert_eq!(PRODUCT_DECISIONS.load(Ordering::SeqCst), 1);
     assert_eq!(p.inner.resumes.load(Ordering::SeqCst) - before.1, 1);
 }

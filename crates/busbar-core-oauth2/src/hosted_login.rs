@@ -224,7 +224,7 @@ async fn callback(
     let outcome = login_step(app, &cookie.method, LoginStep::Complete(request)).await;
     let principal = match callback_outcome(&cookie.method, outcome) {
         Ok(principal) => principal,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
 
     clear_and(issue_and_render(app, handle, &cookie.method, principal, cookie.refresh).await)
@@ -243,7 +243,7 @@ fn callback_request(cookie: &LoginCookie, code: String, redirect_uri: String) ->
     }
 }
 
-fn callback_outcome(method: &str, outcome: LoginOutcome) -> Result<Principal, Response> {
+fn callback_outcome(method: &str, outcome: LoginOutcome) -> Result<Principal, Box<Response>> {
     match outcome {
         LoginOutcome::Identify(principal) => Ok(principal),
         LoginOutcome::Outage { retry_after_secs } => {
@@ -264,6 +264,7 @@ fn callback_outcome(method: &str, outcome: LoginOutcome) -> Result<Principal, Re
             )))
         }
     }
+    .map_err(Box::new)
 }
 
 async fn issue_and_render(
@@ -373,12 +374,12 @@ async fn credential_submit(
     let outcome = login_step(app, &cookie.method, LoginStep::Complete(request)).await;
     let principal = match credential_outcome(&cookie.method, outcome) {
         Ok(principal) => principal,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     clear_and(issue_and_render(app, handle, &cookie.method, principal, cookie.refresh).await)
 }
 
-fn credential_outcome(method: &str, outcome: LoginOutcome) -> Result<Principal, Response> {
+fn credential_outcome(method: &str, outcome: LoginOutcome) -> Result<Principal, Box<Response>> {
     match outcome {
         LoginOutcome::Identify(principal) => Ok(principal),
         LoginOutcome::Outage { retry_after_secs } => {
@@ -395,6 +396,7 @@ fn credential_outcome(method: &str, outcome: LoginOutcome) -> Result<Principal, 
             "This sign-in didn't complete. Please head back and try again.",
         ))),
     }
+    .map_err(Box::new)
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

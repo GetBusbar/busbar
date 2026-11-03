@@ -15,8 +15,7 @@ use crate::dispatch::{
 };
 use crate::store_v3::LoadedStore;
 
-#[path = "actual_store.rs"]
-mod actual_store;
+use crate::actual_store;
 
 fn bind(d: &Dispatcher) -> Bind {
     Bind {

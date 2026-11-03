@@ -80,7 +80,7 @@ fn chain_open_wipes_the_resolved_settings() {
         &["client_secret".to_string()],
         &[],
         "busbar-auth-oidc",
-        &crate::config::secret::SecretResolver::builtins_only(),
+        &crate::config::secret::actual_product_resolver(),
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
     .expect("the declared reference resolves");

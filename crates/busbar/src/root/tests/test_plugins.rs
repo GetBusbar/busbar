@@ -17,6 +17,73 @@ use busbar_plugin_loader::{
 };
 use std::path::{Path, PathBuf};
 
+/// The separately built durable Store used by normal application boot fixtures.
+/// Governance unit fixtures keep their independent memory Store input.
+pub fn application_store_library() -> PathBuf {
+    let path = PathBuf::from(
+        std::env::var_os("BUSBAR_TEST_SQLITE_CDYLIB")
+            .expect("BUSBAR_TEST_SQLITE_CDYLIB names the actual application Store image"),
+    );
+    assert!(
+        path.is_absolute() && path.is_file(),
+        "the actual application Store image exists"
+    );
+    path
+}
+
+pub fn application_store_settings(directory: &Path) -> serde_json::Value {
+    serde_json::json!({ "db_path": directory.join("application.sqlite") })
+}
+
+/// Publisher explicitly configured by normal distribution fixtures.
+pub const FIXTURE_PUBLISHER: &str = "distribution-fixture";
+
+/// Trust the exact staged fixture archives through ordinary configured-publisher admission.
+pub fn trusted_config(directory: &Path) -> busbar_kernel::config::PluginsCfg {
+    trusted_config_with_key(directory, &key(0x5a))
+}
+
+pub fn trusted_config_with_key(
+    directory: &Path,
+    signing_key: &SigningKey,
+) -> busbar_kernel::config::PluginsCfg {
+    let mut archives: Vec<_> = std::fs::read_dir(directory)
+        .expect("the fixture plugin directory exists")
+        .map(|entry| entry.expect("the fixture directory entry reads").path())
+        .filter(|path| path.is_file() && path.to_string_lossy().ends_with(".tar.gz"))
+        .collect();
+    archives.sort();
+    let fetch: Vec<serde_json::Value> = archives
+        .iter()
+        .map(|path| {
+            let name = path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .expect("fixture archive name is UTF-8");
+            serde_json::json!({
+                "url": format!("https://distribution-fixtures.example/{name}"),
+                "sha256": sha256(&std::fs::read(path).expect("the exact fixture archive reads"))
+            })
+        })
+        .collect();
+    let mut config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        fetch: serde_json::from_value(serde_json::Value::Array(fetch))
+            .expect("fixture archive pins"),
+        ..Default::default()
+    };
+    config
+        .trust
+        .publishers
+        .push(busbar_kernel::config::PluginPublisher {
+            name: FIXTURE_PUBLISHER.into(),
+            public_key: hex::encode(signing_key.verifying_key().as_bytes()),
+        });
+    config
+}
+
 pub fn manifest(kind: &str, name: &str, publisher: &str) -> Manifest {
     Manifest {
         name: name.into(),

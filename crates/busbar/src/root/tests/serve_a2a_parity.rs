@@ -195,13 +195,18 @@ async fn http_bytes(
     })
 }
 
-fn bind_plane(origin: Origin, instance: &str, dispatcher: &Dispatcher) -> Plugin<Plane> {
+fn bind_plane(
+    origin: Origin,
+    instance: &str,
+    dispatcher: &Dispatcher,
+    conns: Arc<dyn DeclaredConns>,
+) -> Plugin<Plane> {
     let bind = Bind {
         instance: Arc::from(instance),
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher.adopter(),
-        conns: ConnTable::Host(crate::root::connector::the().clone() as Arc<dyn DeclaredConns>),
+        conns: ConnTable::Host(conns),
     };
     let (row, getter) = crate::LINKED
         .plane_doors
@@ -591,9 +596,11 @@ fn raw_relay_and_lifecycle(
         Outcome::Refused
     );
 
+    // VALIDATE receives the dealt verb envelope; OPEN receives the section itself.
+    let section = serde_json::to_vec(&serde_json::json!({"vendor": entry})).unwrap();
     let mut opened: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(blank_in(), blank_out());
     opened.input.open.generation = 1;
-    opened.input.open.settings = blob(&settings, BLOB_JSON);
+    opened.input.open.settings = blob(&section, BLOB_JSON);
     opened.input.public_url = abi(b"https://gw.example");
     let (answer, snapshot) = plane.open(&mut opened);
     assert_eq!(answer.outcome, Outcome::Ready, "{:?}", answer.error);
@@ -767,7 +774,17 @@ fn raw_relay_and_lifecycle(
         plane.call(slot::REFUSAL, &mut refusal).outcome,
         Outcome::Ready
     );
-    assert_eq!(refusal.out.status, 403);
+    assert_eq!(
+        refusal.out.status, 0,
+        "the plane retains the requested status"
+    );
+    // A zero plane status retains the requested status, as the production driver does.
+    let refusal_status = if refusal.out.status == 0 {
+        refusal.input.status
+    } else {
+        refusal.out.status
+    };
+    assert_eq!(refusal_status, 403);
     assert_eq!(&reply[..refusal.out.reply_written as usize], REFUSAL);
     let auxiliary = serve_and_project(plane, dispatcher);
     let driven = &plane.inner.driven;
@@ -798,14 +815,19 @@ fn raw_relay_and_lifecycle(
                 && released.error.as_deref() == Some(b"release: no such lease"))
     );
 
+    // REFRESH receives the section itself, just as the production composition hands it.
     let settings =
-        serde_json::to_vec(&serde_json::json!({"agents": {"vendor": entry, "other": entry}}))
-            .unwrap();
+        serde_json::to_vec(&serde_json::json!({"vendor": entry, "other": entry})).unwrap();
     let mut refresh: Frame<life::RefreshIn, PlaneRefreshOut> = Frame::new(blank_in(), blank_out());
     refresh.input.generation = 2;
     refresh.input.settings = blob(&settings, BLOB_JSON);
     let (answer, snapshot) = plane.refresh(&mut refresh);
-    assert_eq!(answer.outcome, Outcome::Ready);
+    assert_eq!(
+        answer.outcome,
+        Outcome::Ready,
+        "actual REFRESH: {:?}",
+        answer.error
+    );
     let snapshot = snapshot.expect("the actual refreshed snapshot is owned by the host");
     assert_eq!(snapshot.generation, 2);
     assert_eq!(snapshot.claims.len(), 20);
@@ -920,10 +942,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         582,
         "the original reported byte count includes caller and far-end input"
     );
-    let store_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("the proof requires a freshly built actual Store image"),
-    );
+    let store_path = crate::root::test_plugins::application_store_library();
     assert!(store_path.is_absolute() && store_path.is_file());
     let stated = rendering_of_library(&store_path)
         .unwrap()
@@ -945,10 +964,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
     std::fs::write(&operator_file, ADMIN_TOKEN).unwrap();
     let signing_file = directory.join("signing.key");
     std::fs::write(&signing_file, hex::encode([9u8; 32])).unwrap();
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .unwrap();
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}/agent", listener.local_addr().unwrap());
     let issuer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
@@ -1002,6 +1018,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         step(&config.limits);
     }
     let destinations = config.destinations();
+    let transport_settings = crate::root::policy::client_settings(&config.limits);
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
         plugins,
@@ -1059,7 +1076,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
     assert!(!verified.scope_allowed("agent", "other"));
     let bearer = format!("Bearer {}", token.expose(&busbar_kernel::seal::lend()));
 
-    let control = Arc::new(cancellation::CardPeerControl::default());
+    let control = Arc::new(cancellation::CardPeerControl::new(&endpoint));
     let peer_control = control.clone();
     let peer_routes = axum::Router::new().fallback(move |request: axum::extract::Request| {
         let card = card.clone();
@@ -1076,12 +1093,20 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             .expect("the actual peer request stays within its byte bound");
             let reply = if method == axum::http::Method::POST {
                 assert_eq!(path, "/agent");
-                assert_eq!(
-                    body.as_ref(),
-                    REQUEST,
-                    "the actual root sends the original request byte for byte"
-                );
-                ANSWER.to_vec()
+                if body.as_ref() == cancellation::WAITER_REQUEST {
+                    serde_json::to_vec(&serde_json::json!({
+                        "jsonrpc": "2.0", "id": 1,
+                        "result": serde_json::from_slice::<serde_json::Value>(&card).unwrap()
+                    }))
+                    .unwrap()
+                } else {
+                    assert_eq!(
+                        body.as_ref(),
+                        REQUEST,
+                        "the actual root sends the original request byte for byte"
+                    );
+                    ANSWER.to_vec()
+                }
             } else {
                 assert_eq!(method, axum::http::Method::GET);
                 assert!(matches!(
@@ -1139,7 +1164,31 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             services.served(),
         ));
         let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
-        let plane = Arc::new(bind_plane(origin, &instance, &dispatcher));
+        crate::root::connector::install_io(&dispatcher);
+        // Pending connections must wake this plane's dispatcher, which owns their tickets.
+        // The process connector belongs to the process dispatcher, not this isolated origin.
+        let conns = busbar_core_connector::process::build_with_secrets(
+            || {
+                crate::root::connector::entries_on(
+                    &dispatcher,
+                    crate::LINKED_TRANSPORT_DOORS,
+                    &transport_settings,
+                )
+            },
+            crate::root::connector::guard_for(&destinations)
+                .expect("the normal deployment destination policy resolves"),
+            &[],
+            dispatcher.conn_waker(),
+            crate::root::connector::pool_posture(&transport_settings),
+            crate::root::connector::spawn_secret_resolver(),
+        )
+        .expect("the actual transports compose on the plane's dispatcher");
+        let plane = Arc::new(bind_plane(
+            origin,
+            &instance,
+            &dispatcher,
+            conns.clone() as Arc<dyn DeclaredConns>,
+        ));
         assert_eq!(plane.served().section, "agents");
         assert_eq!(
             plane.served().billable_classes,
@@ -1157,7 +1206,6 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             post.clone() as Arc<dyn EndPost>,
         ));
         let providers = BTreeMap::new();
-        let conns = crate::root::connector::the().clone();
         let reach = crate::root::door_steps::DoorReach {
             providers: &providers,
             secrets: Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
@@ -1168,7 +1216,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
                 ConnTable::Host(conns.clone() as Arc<dyn DeclaredConns>),
                 busbar_kernel::diagnostics::Catalogue::NEUTRAL,
             )),
-            conns: conns as Arc<dyn PollConns>,
+            conns: conns.clone() as Arc<dyn PollConns>,
             stream_ceiling_secs: 15,
             catalog: None,
             models: None,
@@ -1248,11 +1296,22 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             continue;
         }
         gov.flush_budgets();
-        let before_billable = gov
+        // Plane admissions keep their fee units in the plane's named fee lane; the legacy
+        // scalar belongs to pool-plane requests. Read the actual persisted quantity here.
+        let fee_lane = busbar_kernel_ledger::cost::plane_fee_lane(plane.name());
+        let fee_quantity = |ledger: &busbar_contract::records::UsageLedger| {
+            ledger
+                .models
+                .iter()
+                .filter(|row| row.model == fee_lane)
+                .map(|row| row.tier(busbar_contract::plane::PER_REQUEST))
+                .sum::<u64>()
+        };
+        let before_ledger = gov
             .store()
             .get_usage(&key.id, 0)
-            .expect("the actual Store reads the total fee quantity before the request")
-            .billable_requests;
+            .expect("the actual Store reads the total fee quantity before the request");
+        let before_billable = fee_quantity(&before_ledger);
         let before = gov
             .usage_for(&app.cost, &key.id, busbar_kernel::store::now())
             .unwrap()
@@ -1275,22 +1334,31 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             "the actual root counts one completed request"
         );
         gov.flush_budgets();
-        let after_billable = gov
+        let after_ledger = gov
             .store()
             .get_usage(&key.id, 0)
-            .expect("the actual Store reads the settled total fee quantity")
-            .billable_requests;
+            .expect("the actual Store reads the settled total fee quantity");
+        let after_billable = fee_quantity(&after_ledger);
         assert_eq!(
             after_billable,
             before_billable + 1,
             "the actual root keeps the fee unit exactly once"
+        );
+        assert_eq!(
+            after_ledger.billable_requests, before_ledger.billable_requests,
+            "a plane fee must not also charge the pool-plane legacy fee scalar"
         );
 
         // This is raw ABI/host-services qualification, separate from the governed HTTP
         // admission and paid billing above. The public owner seam holds the real verified key's
         // exact agent:vendor grant for these original raw unit ids. The opaque caller_ref bytes
         // below are original protocol input, never the source of authority.
-        let raw = bind_plane(origin, &instance, &dispatcher);
+        let raw = bind_plane(
+            origin,
+            &instance,
+            &dispatcher,
+            conns.clone() as Arc<dyn DeclaredConns>,
+        );
         let mut units = RawA2aUnits {
             records: kernel.units().clone(),
             owned: Vec::new(),

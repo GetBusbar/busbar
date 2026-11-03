@@ -185,6 +185,18 @@ async fn serve_admission_with_inputs(
     )
     .expect("the real product builds the admission deployment");
     std::fs::remove_file(admin_token_file).unwrap();
+    limits.stage_boot();
+    crate::root::kernel::ROOT_CARD.keep_in_store(
+        app.governance
+            .as_ref()
+            .expect("the admission application has its configured Store")
+            .store_calls()
+            .expect("the actual Store exposes its rate-card calls"),
+        busbar_kernel::door::op_id().counter(),
+    );
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .expect("the actual admission Store boots its rate-card history");
     limits.keep().unwrap();
     if let Some(rotate) = rotation {
         rotate();

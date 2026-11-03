@@ -63,6 +63,12 @@ name = "json_contract_auth"
 path = "tests/fixtures/json_contract_auth.rs"
 crate-type = ["cdylib"]
 
+# Adversarial metadata-only descriptor forwarding to the qualified actual Ranking image.
+[[example]]
+name = "hook_metadata_boundary"
+path = "tests/fixtures/hook_metadata_boundary.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
 ring = { workspace = true }
 arc-swap = { workspace = true }

@@ -8,8 +8,7 @@ use busbar_contract::records::VirtualKey;
 use busbar_kernel::cost::{CostModel, PlaneFees};
 use busbar_kernel::governance::PLANE_LANE_SEP;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod plugins;
+use crate::root::test_plugins as plugins;
 
 const KEY: &str = "vk_plane_fees";
 const POOLS_MODEL: &str = "m";
@@ -99,10 +98,7 @@ fn planes() -> &'static PlaneKeys {
 
 fn app(cost: CostModel) -> busbar_kernel::state::App {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual Store statement reads")
         .expect("the actual Store exports its statement");
@@ -112,7 +108,7 @@ fn app(cost: CostModel) -> busbar_kernel::state::App {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let directory = plugins::scratch(&format!(
@@ -125,10 +121,8 @@ fn app(cost: CostModel) -> busbar_kernel::state::App {
         plugins::signed(&crate::dist_root_install::release_key(), manifest, &library),
     )
     .unwrap();
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("the actual Store settings are JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(settings.is_object());
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {}, "models": {},
@@ -142,11 +136,7 @@ fn app(cost: CostModel) -> busbar_kernel::state::App {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
+        crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
         Default::default(),

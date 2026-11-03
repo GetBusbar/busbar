@@ -1,5 +1,12 @@
 use super::*;
 
+fn wire_provider(dialect: &str) -> HashMap<String, busbar_kernel::config::ProviderDef> {
+    busbar_kernel::config::providers::catalog_from_str(&format!(
+        "wire:\n  protocol: {dialect}\n  base_url: http://127.0.0.1:9\n"
+    ))
+    .expect("the configured wire provider has its actual catalog declaration")
+}
+
 #[test]
 fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
     use busbar_kernel::plane_driver::route_tables::{ConfigTables, EngineTablesView};
@@ -20,7 +27,8 @@ fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
         "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
     );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let cfg =
+            busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::store();
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
@@ -130,7 +138,8 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
         "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
     );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let cfg =
+            busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::store();
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
@@ -174,7 +183,8 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
         "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
     );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let cfg =
+            busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::store();
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
@@ -218,7 +228,8 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
         "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
     );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let cfg =
+            busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::store();
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
@@ -324,7 +335,8 @@ fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
         "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
     );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let cfg =
+            busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::store();
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
@@ -369,7 +381,8 @@ fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
         "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
     );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let cfg =
+            busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::store();
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
@@ -452,7 +465,8 @@ fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
         "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
     );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let cfg =
+            busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::store();
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
@@ -518,7 +532,8 @@ fn a_success_is_recorded_on_the_walks_clock() {
         "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
     );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let cfg =
+            busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::store();
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
@@ -595,7 +610,8 @@ fn a_probe_success_joins_the_walks_window() {
         "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
     );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let cfg =
+            busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::store();
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
@@ -678,7 +694,7 @@ fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
     );
             let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
             let cfg =
-                busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+                busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
             let store = crate::root::real_store::store();
             let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
                 Arc::new(crate::root::door_steps::Rules::default());
@@ -797,7 +813,8 @@ fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
         "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
     );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let cfg =
+            busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::store();
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
@@ -871,7 +888,8 @@ fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
         "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
     );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let cfg =
+            busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::store();
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
@@ -944,7 +962,8 @@ fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retires() {
         "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
     );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let cfg =
+            busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::store();
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
@@ -995,7 +1014,8 @@ fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retires() {
         "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
     );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let cfg =
+            busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
         let store = crate::root::real_store::store();
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
@@ -1078,7 +1098,7 @@ fn a_keyless_lane_is_not_probed() {
     );
             let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
             let cfg =
-                busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+                busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
             let store = crate::root::real_store::store();
             let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
                 Arc::new(crate::root::door_steps::Rules::default());

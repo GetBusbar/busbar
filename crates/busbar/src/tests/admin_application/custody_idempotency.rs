@@ -56,27 +56,28 @@ fn key(actor: &str, header: &str) -> (String, String) {
 
 #[test]
 fn create_and_rotate_claims_are_disjoint_after_cache_loss() {
+    let now = busbar_kernel::store::now();
     // Framing belongs to core-admin's private factory tests. Here the public durable API
     // receives distinct original header inputs as data, without recreating that framing.
     let rotate = key("alice", "h");
     let create = key("alice", "rotate:1:x:1:h");
     for (first, second) in [(&create, &rotate), (&rotate, &create)] {
         let store = durable_store();
-        let claim = durable::claim(store.as_ref(), first, 1_000).expect("first operation claims");
+        let claim = durable::claim(store.as_ref(), first, now).expect("first operation claims");
         durable::settle(
             store.as_ref(),
             &claim,
-            1_001,
+            now + 1,
             &Settled::Applied("key".into()),
         )
         .expect("first operation settles");
         assert!(
-            durable::claim(store.as_ref(), second, 1_002).is_ok(),
+            durable::claim(store.as_ref(), second, now + 2).is_ok(),
             "other operation must claim independently"
         );
         assert!(
             matches!(
-                durable::claim(store.as_ref(), first, 1_002),
+                durable::claim(store.as_ref(), first, now + 2),
                 Err(Refused::Applied(_))
             ),
             "the original operation remains protected"
@@ -86,83 +87,96 @@ fn create_and_rotate_claims_are_disjoint_after_cache_loss() {
 
 #[test]
 fn an_applied_claim_is_refused_after_a_restart_not_run_again() {
+    let now = busbar_kernel::store::now();
     let store = durable_store();
     let k = key("alice", "restart-1");
-    let claim = durable::claim(store.as_ref(), &k, 1_000).expect("the first claim is granted");
+    let claim = durable::claim(store.as_ref(), &k, now).expect("the first claim is granted");
     durable::settle(
         store.as_ref(),
         &claim,
-        1_001,
+        now + 1,
         &Settled::Applied("key:vk_1".into()),
     )
     .unwrap();
 
     let cache: IdempotencyCache<String> = IdempotencyCache::new();
-    assert!(matches!(cache.probe(k.clone(), 1_002), Probe::Reserved(_)));
+    assert!(matches!(
+        cache.probe(k.clone(), now + 2),
+        Probe::Reserved(_)
+    ));
     assert_eq!(
-        durable::claim(store.as_ref(), &k, 1_002),
+        durable::claim(store.as_ref(), &k, now + 2),
         Err(Refused::Applied("key:vk_1".into())),
     );
 }
 
 #[test]
 fn a_settled_answer_is_handed_to_the_next_claimer() {
+    let now = busbar_kernel::store::now();
     let store = durable_store();
     let k = key("alice", "answer-1");
-    let claim = durable::claim(store.as_ref(), &k, 1_000).unwrap();
+    let claim = durable::claim(store.as_ref(), &k, now).unwrap();
     durable::settle(
         store.as_ref(),
         &claim,
-        1_000,
+        now,
         &Settled::Answer(b"first".to_vec()),
     )
     .unwrap();
     assert_eq!(
-        durable::claim(store.as_ref(), &k, 1_010),
+        durable::claim(store.as_ref(), &k, now + 10),
         Err(Refused::Answer(b"first".to_vec()))
     );
 }
 
 #[test]
 fn a_released_claim_frees_the_key_for_exactly_one_retry() {
+    let now = busbar_kernel::store::now();
     let store = durable_store();
     let k = key("alice", "released-1");
-    let first = durable::claim(store.as_ref(), &k, 1_000).unwrap();
-    durable::settle(store.as_ref(), &first, 1_001, &Settled::Released).unwrap();
-    let second = durable::claim(store.as_ref(), &k, 1_002).expect("a released claim frees the key");
+    let first = durable::claim(store.as_ref(), &k, now).unwrap();
+    durable::settle(store.as_ref(), &first, now + 1, &Settled::Released).unwrap();
+    let second =
+        durable::claim(store.as_ref(), &k, now + 2).expect("a released claim frees the key");
     assert_ne!(first, second);
     assert_eq!(
-        durable::claim(store.as_ref(), &k, 1_003),
+        durable::claim(store.as_ref(), &k, now + 3),
         Err(Refused::InFlight)
     );
 }
 
 #[test]
 fn an_unsettled_claim_is_in_flight_until_it_lapses() {
+    // The actual Store owns token time and ignores the caller's `now` for expiry. Start
+    // this claim just before its real deadline, then let that clock pass the deadline.
+    let now = busbar_kernel::store::now() - IDEMPOTENCY_TTL_SECS + 5;
     let store = durable_store();
     let k = key("alice", "unsettled-1");
-    durable::claim(store.as_ref(), &k, 1_000).unwrap();
+    durable::claim(store.as_ref(), &k, now).unwrap();
     assert_eq!(
-        durable::claim(store.as_ref(), &k, 1_001),
+        durable::claim(store.as_ref(), &k, now + 1),
         Err(Refused::InFlight)
     );
 
-    assert!(durable::claim(store.as_ref(), &k, 1_001 + IDEMPOTENCY_TTL_SECS).is_ok());
+    std::thread::sleep(std::time::Duration::from_secs(6));
+    assert!(durable::claim(store.as_ref(), &k, now + 1 + IDEMPOTENCY_TTL_SECS).is_ok());
 }
 
 #[test]
 fn claims_are_scoped_to_the_principal() {
+    let now = busbar_kernel::store::now();
     let store = durable_store();
-    durable::claim(store.as_ref(), &key("alice", "same"), 1_000).unwrap();
-    assert!(durable::claim(store.as_ref(), &key("bob", "same"), 1_000).is_ok());
+    durable::claim(store.as_ref(), &key("alice", "same"), now).unwrap();
+    assert!(durable::claim(store.as_ref(), &key("bob", "same"), now).is_ok());
 }
 
 #[test]
 fn a_held_claim_never_expires_while_its_effect_or_settlement_is_unknown() {
+    let now = busbar_kernel::store::now();
     let store = durable_store();
     let k = key("alice", "held-without-settlement");
-    let first = durable::claim_held(store.as_ref(), &k, 1_000).unwrap();
-    let later = 1_000 + IDEMPOTENCY_TTL_SECS * 3;
+    let first = durable::claim_held(store.as_ref(), &k, now).unwrap();
+    let later = now + IDEMPOTENCY_TTL_SECS * 3;
 
     assert_eq!(
         durable::claim_held(store.as_ref(), &k, later),
@@ -172,7 +186,7 @@ fn a_held_claim_never_expires_while_its_effect_or_settlement_is_unknown() {
     durable::settle(
         store.as_ref(),
         &first,
-        1_000,
+        now,
         &Settled::Retained(receipt.clone()),
     )
     .unwrap();
@@ -194,17 +208,18 @@ fn a_held_claim_never_expires_while_its_effect_or_settlement_is_unknown() {
 
 #[test]
 fn an_old_held_refusal_cannot_skip_a_newer_in_flight_generation() {
+    let now = busbar_kernel::store::now();
     let store = durable_store();
     let k = key("alice", "held-released");
-    let first = durable::claim_held(store.as_ref(), &k, 1_000).unwrap();
-    durable::settle(store.as_ref(), &first, 1_000, &Settled::Released).unwrap();
-    let second = durable::claim_held(store.as_ref(), &k, 1_001).unwrap();
+    let first = durable::claim_held(store.as_ref(), &k, now).unwrap();
+    durable::settle(store.as_ref(), &first, now, &Settled::Released).unwrap();
+    let second = durable::claim_held(store.as_ref(), &k, now + 1).unwrap();
     assert_ne!(first, second);
     assert_eq!(
-        durable::claim_held(store.as_ref(), &k, 1_002),
+        durable::claim_held(store.as_ref(), &k, now + 2),
         Err(Refused::InFlight)
     );
-    let later = 1_000 + IDEMPOTENCY_TTL_SECS * 3;
+    let later = now + IDEMPOTENCY_TTL_SECS * 3;
     assert_eq!(
         durable::claim_held(store.as_ref(), &k, later),
         Err(Refused::InFlight)
@@ -212,7 +227,7 @@ fn an_old_held_refusal_cannot_skip_a_newer_in_flight_generation() {
     durable::settle(
         store.as_ref(),
         &second,
-        1_001,
+        now + 1,
         &Settled::Answer(b"completed".to_vec()),
     )
     .unwrap();
@@ -226,17 +241,18 @@ fn an_old_held_refusal_cannot_skip_a_newer_in_flight_generation() {
 
 #[test]
 fn a_late_predecessor_settlement_cannot_replace_a_successor_receipt() {
+    let now = busbar_kernel::store::now();
     let store = durable_store();
     let k = key("alice", "late-settlement");
-    let first = durable::claim_held(store.as_ref(), &k, 1_000).unwrap();
-    durable::settle(store.as_ref(), &first, 1_000, &Settled::Released).unwrap();
-    let second = durable::claim_held(store.as_ref(), &k, 1_001).unwrap();
+    let first = durable::claim_held(store.as_ref(), &k, now).unwrap();
+    durable::settle(store.as_ref(), &first, now, &Settled::Released).unwrap();
+    let second = durable::claim_held(store.as_ref(), &k, now + 1).unwrap();
     let receipt = Settled::Retained(b"exact successor operation and answer".to_vec());
-    durable::settle(store.as_ref(), &second, 1_001, &receipt).unwrap();
+    durable::settle(store.as_ref(), &second, now + 1, &receipt).unwrap();
 
-    durable::settle(store.as_ref(), &first, 1_000, &Settled::Released).unwrap();
+    durable::settle(store.as_ref(), &first, now, &Settled::Released).unwrap();
     assert_eq!(
-        durable::claim_held(store.as_ref(), &k, 10_000),
+        durable::claim_held(store.as_ref(), &k, now + 9_000),
         Err(Refused::Retained(
             b"exact successor operation and answer".to_vec()
         ))
@@ -245,13 +261,14 @@ fn a_late_predecessor_settlement_cannot_replace_a_successor_receipt() {
 
 #[test]
 fn a_legacy_refusal_cannot_hide_its_pending_successor_during_migration() {
+    let now = busbar_kernel::store::now();
     let store = durable_store();
     let k = key("alice", "legacy-pending-successor");
-    let first = durable::claim(store.as_ref(), &k, 1_000).unwrap();
-    durable::settle(store.as_ref(), &first, 1_000, &Settled::Released).unwrap();
-    let _pending = durable::claim(store.as_ref(), &k, 1_001).unwrap();
+    let first = durable::claim(store.as_ref(), &k, now).unwrap();
+    durable::settle(store.as_ref(), &first, now, &Settled::Released).unwrap();
+    let _pending = durable::claim(store.as_ref(), &k, now + 1).unwrap();
     assert_eq!(
-        durable::claim_held(store.as_ref(), &k, 1_002),
+        durable::claim_held(store.as_ref(), &k, now + 2),
         Err(Refused::InFlight)
     );
 }

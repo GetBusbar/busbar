@@ -312,7 +312,7 @@ fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
         logs: &logs,
         metrics: Arc::new(NoSink),
         dispatcher: Adopter::unwatched(),
-        conns: crate::dispatch::ConnTable::NoNeeds,
+        conns: crate::dispatch::ConnTable::Probe,
         max_inflight_cap: 8,
         opening: None,
     })
@@ -389,7 +389,7 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
         alias: "tools".into(),
         kind: "plane".into(),
         version: stated.version,
-        publisher: "acme".into(),
+        publisher: crate::sign::FIRST_PARTY_PUBLISHER.into(),
         abi_version: 1,
         sha256: crate::sign::sha256_hex(&lib),
         signature: String::new(),
@@ -404,20 +404,30 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
         statement: Some(hex::encode(&rendering)),
         former_names: Vec::new(),
     };
+    // MCP's real host-service needs include a first-party-only egress class. The
+    // dropped origin must carry an authenticated first-party grant just as its
+    // linked origin does; an unsigned opt-in does not confer that grant.
+    let release = crate::sign::SigningKey::from_bytes(&[37u8; 32]);
+    let manifest = crate::sign::sign(&release, manifest, &lib);
     let tarball = crate::tarball::package(&manifest, "lib.so", &lib).unwrap();
     std::fs::write(dir.join("plane-door.tar.gz"), tarball).unwrap();
     let policy = crate::sign::TrustPolicy {
-        first_party_key: None,
+        first_party_key: Some(release.verifying_key()),
         binary_version: "1.6.0".into(),
         first_party_floors: Default::default(),
         first_party_high_water: Default::default(),
         publishers: Default::default(),
-        allow_unsigned: true,
-        allow_third_party: true,
+        allow_unsigned: false,
+        allow_third_party: false,
         min_versions: Default::default(),
         ..crate::sign::TrustPolicy::default()
     };
     let dropped = crate::scan_and_validate(&dir.join("."), &policy).expect("the plane scans");
+    assert!(
+        dropped.skipped().is_empty(),
+        "the actual MCP artifact must receive its authenticated egress grant"
+    );
+    assert_eq!(dropped.loadable().len(), 1, "the actual plane is admitted");
     let logs = PluginLogConfig::from_words(
         Some(dir.join("logs").to_str().unwrap()),
         None,
@@ -434,7 +444,7 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
             Arc::new(NoSink),
             Adopter::unwatched(),
             8,
-            crate::dispatch::ConnTable::NoNeeds,
+            crate::dispatch::ConnTable::Probe,
         )
         .expect("the plane binds");
         (stated, bound)
@@ -486,7 +496,7 @@ fn a_plane_config_does_not_use_is_never_opened() {
             Arc::new(NoSink),
             Adopter::unwatched(),
             8,
-            crate::dispatch::ConnTable::NoNeeds,
+            crate::dispatch::ConnTable::Probe,
         )
         .map(|bound| bound.into_iter().map(|(i, _)| i).collect::<Vec<_>>())
     };
@@ -617,7 +627,7 @@ fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
         Arc::new(NoSink),
         Adopter::unwatched(),
         8,
-        crate::dispatch::ConnTable::NoNeeds,
+        crate::dispatch::ConnTable::Probe,
     )
     .expect_err("a pin naming no mechanism must refuse the boot");
     assert!(err.contains("trust_key.mechanisms"), "{err}");
@@ -631,7 +641,7 @@ fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
         Arc::new(NoSink),
         Adopter::unwatched(),
         8,
-        crate::dispatch::ConnTable::NoNeeds,
+        crate::dispatch::ConnTable::Probe,
     )
     .expect("the well-formed plane binds");
 }

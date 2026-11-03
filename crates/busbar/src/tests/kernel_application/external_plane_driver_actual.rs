@@ -4,8 +4,7 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-#[path = "../../root/tests/test_plugins.rs"]
-mod actual_plugins;
+use crate::root::test_plugins as actual_plugins;
 
 // Only the real distribution mounts this suite. This is a component HookEnv proof;
 // it does not claim a cold application boot or route admission proof.
@@ -51,13 +50,17 @@ fn actual_rewrite(
     let mut store_module = None;
     let mut hook_module = None;
     for (kind, variable) in [
-        ("store", "BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN"),
+        ("store", "BUSBAR_TEST_SQLITE_CDYLIB"),
         ("hook", "BUSBAR_TEST_WEBREQUEST_CDYLIB"),
     ] {
-        let path = std::path::PathBuf::from(
-            std::env::var_os(variable)
-                .unwrap_or_else(|| panic!("{variable} names the actual built product")),
-        );
+        let path = if kind == "store" {
+            crate::root::test_plugins::application_store_library()
+        } else {
+            std::path::PathBuf::from(
+                std::env::var_os(variable)
+                    .unwrap_or_else(|| panic!("{variable} names the actual built product")),
+            )
+        };
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
             .expect("read actual product statement")
             .expect("product exports its statement");
@@ -66,7 +69,7 @@ fn actual_rewrite(
         let mut manifest = actual_plugins::manifest(
             kind,
             &facts.name,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.version = facts.version;
         manifest.statement = Some(hex::encode(statement));
@@ -83,24 +86,18 @@ fn actual_rewrite(
         std::fs::write(directory.join(format!("{kind}.tar.gz")), archive)
             .expect("stage signed actual product");
     }
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("actual Store settings JSON");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
         "advanced": {"allow_destinations": ["127.0.0.1"]},
         "store": {"module": store_module.unwrap(), "settings": settings},
-        "hooks": {"rw": {"module": hook_module.unwrap(), "kind": "gate", "prompt": "rw", "user": "ro", "global": true,
+        "hooks": {"rw": {"module": hook_module.unwrap(), "kind": "gate", "prompt": "rw", "user": "ro",
             "on_error": on_error, "timeout_ms": 5000, "settings": {"url": endpoint}}}
     })).expect("actual rewrite deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("actual rewrite deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(

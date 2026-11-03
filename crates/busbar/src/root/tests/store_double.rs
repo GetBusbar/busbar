@@ -319,7 +319,12 @@ impl StoreCalls for RecordSlots {
         schema: &'a str,
         key: &'a [u8],
     ) -> StoreCall<'a, Option<RecordBytes>> {
-        self.inner.record_get(schema, key)
+        Box::pin(async move {
+            if self.unreadable.load(Ordering::Acquire) {
+                return Err(StoreFailure::Failed("the test store will not read".into()));
+            }
+            self.inner.record_get(schema, key).await
+        })
     }
 
     fn record_scan<'a>(

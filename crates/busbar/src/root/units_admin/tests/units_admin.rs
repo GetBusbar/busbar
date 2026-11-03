@@ -1014,10 +1014,7 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
     const WHO: &str = "operator-cifollow-one-entry";
 
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built Store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual Store statement reads")
         .expect("the actual Store exports its statement");
@@ -1027,7 +1024,7 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual Store library reads");
@@ -1041,10 +1038,7 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
         &library,
     );
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("actual Store settings are JSON");
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -1062,11 +1056,7 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (built, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
+        crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
         Default::default(),
@@ -1512,10 +1502,7 @@ fn answer_over_counts(
     path: &str,
 ) -> serde_json::Value {
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built Store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual Store statement reads")
         .expect("the actual Store exports its statement");
@@ -1525,7 +1512,7 @@ fn answer_over_counts(
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual Store library reads");
@@ -1539,10 +1526,7 @@ fn answer_over_counts(
         &library,
     );
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("actual Store settings are JSON");
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -1560,11 +1544,7 @@ fn answer_over_counts(
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut built, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
+        crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
         Default::default(),
@@ -1595,7 +1575,6 @@ fn answer_over_counts(
 #[cfg(feature = "root-admin")]
 #[test]
 fn the_ledger_paths_answer_counts_times_card_and_survive_a_restart() {
-    use busbar_contract::records::RecordStore as _;
     use busbar_kernel::governance::{GovState, VirtualKey};
     let store = crate::root::real_store::records();
     let key = VirtualKey {
@@ -1727,10 +1706,7 @@ fn real_admin_dispatch() -> RouterDispatch {
         .expect("governance"),
     );
     crate::dist_root_install::install();
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built Store"),
-    );
+    let library_path = crate::root::test_plugins::application_store_library();
     let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual Store statement reads")
         .expect("the actual Store exports its statement");
@@ -1740,7 +1716,7 @@ fn real_admin_dispatch() -> RouterDispatch {
     let mut manifest = crate::root::test_plugins::manifest(
         "store",
         &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual Store library reads");
@@ -1754,10 +1730,7 @@ fn real_admin_dispatch() -> RouterDispatch {
         &library,
     );
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("actual Store settings are JSON");
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -1775,11 +1748,7 @@ fn real_admin_dispatch() -> RouterDispatch {
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut built, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
+        crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
         Default::default(),

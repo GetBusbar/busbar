@@ -72,34 +72,6 @@ fn panicking_hook_empty_route_metadata_survives_entropy_failure() {
 }
 
 #[test]
-fn nonempty_route_metadata_keeps_validation_and_binding() {
-    for way in [Way::Linked, Way::Dropped] {
-        let axis = rows(hook_door_plugin::conforming::door, "hook_door", way);
-        let invalid = axis
-            .routes(
-                NAME,
-                "hooks.metadata-invalid",
-                &json!({"reject_over_messages": "not-a-number"}),
-            )
-            .expect_err("nonempty routes must still run the actual VALIDATE slot");
-        assert!(
-            invalid.contains("`reject_over_messages` must be a number"),
-            "{way:?}: {invalid}"
-        );
-        let result = {
-            let _entropy = EntropyFailure::new();
-            axis.routes(
-                NAME,
-                "hooks.metadata-still-binds",
-                &json!({"reject_over_messages": 3}),
-            )
-        };
-        let error = result.expect_err("a nonempty route query still needs a real bind");
-        assert!(error.contains("entropy"), "{way:?}: {error}");
-    }
-}
-
-#[test]
 fn route_metadata_refuses_a_missing_tail_and_an_image_statement_mismatch() {
     let untailed = rows(hook_door_plugin::untailed::door, "hook_door", Way::Linked);
     let error = untailed
@@ -137,30 +109,6 @@ fn route_metadata_refuses_a_missing_tail_and_an_image_statement_mismatch() {
 }
 
 #[test]
-fn route_metadata_returns_owned_routes_after_row_retirement() {
-    for way in [Way::Linked, Way::Dropped] {
-        let returned = {
-            let axis = rows(hook_door_plugin::conforming::door, "hook_door", way);
-            axis.routes(
-                NAME,
-                "hooks.metadata-owned",
-                &json!({"reject_over_messages": 3}),
-            )
-            .expect("the actual routed hook validates")
-        };
-        assert_eq!(
-            returned,
-            vec![Route {
-                path: hook_door_plugin::ROUTE_PATH.to_owned(),
-                method: RouteMethod::Post,
-                auth: RouteAuth::Key,
-            }],
-            "{way:?}: returned route strings remain owned after the row/image scope"
-        );
-    }
-}
-
-#[test]
 fn the_entropy_failure_guard_restores_its_thread_after_unwind() {
     let before = crate::dispatch::handle::ENTROPY_FAILS.with(std::cell::Cell::get);
     let panicked = std::panic::catch_unwind(|| {
@@ -173,4 +121,78 @@ fn the_entropy_failure_guard_restores_its_thread_after_unwind() {
         crate::dispatch::handle::ENTROPY_FAILS.with(std::cell::Cell::get),
         before
     );
+}
+
+use super::metadata_boundary;
+
+fn ranking_metadata_rows(way: Way) -> HookRows {
+    rows(metadata_boundary::door, "hook_metadata_boundary", way)
+}
+
+#[test]
+fn nonempty_route_metadata_keeps_validation_and_binding() {
+    for way in [Way::Linked, Way::Dropped] {
+        let axis = ranking_metadata_rows(way);
+        let name = ranking_name();
+        let invalid = axis
+            .routes(&name, "hooks.actual-metadata-invalid", &json!({}))
+            .expect_err("a declared route must run actual Ranking VALIDATE");
+        assert!(
+            invalid.contains("ranking: settings.policy is required"),
+            "{invalid}"
+        );
+        let valid = axis
+            .routes(
+                &name,
+                "hooks.actual-metadata-valid",
+                &json!({"policy": "cheapest"}),
+            )
+            .expect("the same actual validator accepts a real Ranking policy");
+        assert_eq!(valid.len(), 1);
+        let result = {
+            let _entropy = EntropyFailure::new();
+            axis.routes(
+                &name,
+                "hooks.actual-metadata-bind",
+                &json!({"policy": "cheapest"}),
+            )
+        };
+        let error = result.expect_err("nonempty route queries require the actual HostCtx binding");
+        assert!(error.contains("entropy"), "{error}");
+    }
+}
+
+#[test]
+#[allow(unsafe_code)]
+fn route_metadata_returns_owned_routes_after_row_retirement() {
+    for way in [Way::Linked, Way::Dropped] {
+        let returned = {
+            let axis = ranking_metadata_rows(way);
+            axis.routes(
+                &ranking_name(),
+                "hooks.actual-metadata-owned",
+                &json!({"policy": "cheapest"}),
+            )
+            .expect("the metadata restatement uses actual Ranking validation")
+        };
+        assert_eq!(
+            returned,
+            vec![Route {
+                path: "/hooks/ranking/metadata-boundary".to_owned(),
+                method: RouteMethod::Post,
+                auth: RouteAuth::Key,
+            }]
+        );
+        // A copied String must not alias the static descriptor's path even while its image is
+        // retained. Row retirement above and independent storage are separate ownership controls.
+        let door = metadata_boundary::door();
+        // SAFETY: this test constructed a static, nonempty, validated route list above.
+        let route = unsafe {
+            let tail = &*(*door.statement())
+                .kind_tail
+                .cast::<busbar_contract::abi::hook::Tail>();
+            &*tail.routes
+        };
+        assert_ne!(returned[0].path.as_ptr(), route.path.ptr);
+    }
 }
