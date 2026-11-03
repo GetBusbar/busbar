@@ -3,10 +3,17 @@
 
 mod linked;
 
+mod migration {
+    include!(concat!(env!("OUT_DIR"), "/migration_table.rs"));
+}
+
 use busbar_kernel::config::migrate::migrate_config;
 use busbar_kernel::config::{deploy_from_yaml_str, resolve, DeployCfg, ProviderDef};
 
 fn register_planes() {
+    // The normal composition installs its manifest migration facts before reading config.
+    // The default Store alias is one of those facts, alongside the plane registrations.
+    busbar_kernel::config::migration_table::install(migration::MIGRATION_ROWS);
     linked::install();
 }
 
