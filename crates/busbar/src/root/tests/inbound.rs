@@ -206,6 +206,39 @@ fn actual_listener_with_routers(
     };
     let mut listener = plan.policy("listen".into())(&source)
         .expect("the actual prepared listener retains its generation's producer");
+    if with_llm {
+        let plane = served
+            .planes
+            .iter()
+            .find(|plane| plane.instance == "inbound-actual-llm")
+            .expect("the actual LLM instance owns this listener's producer");
+        let (rung, claim) = plane
+            .snapshot
+            .claims
+            .iter()
+            .enumerate()
+            .find(|(_, claim)| {
+                claim.verb == "POST"
+                    && claim.target == "/"
+                    && claim.flags & busbar_contract::abi::plane::CLAIM_EXACT == 0
+            })
+            .expect("the actual OPEN snapshot declares its non-exact POST root fallback");
+        let rung = u32::try_from(rung).expect("the actual claim index fits the host route field");
+        let mounted = listener.guests.lines().iter().find(|line| {
+            matches!(&line.claimant, busbar_kernel::guest::Claimant::Plane(owner) if owner == &plane.instance)
+                && line.route.rung == rung
+        }).expect("the normal listener plan mounts that exact actual claim");
+        assert_eq!(
+            mounted.dialect,
+            u32::from(claim.refusal_dialect),
+            "the mounted line retains the actual claim's opaque refusal dialect"
+        );
+        assert!(
+            matches!(listener.guests.matched("POST", "/definitely/unknown", &[]),
+            Matched::Line(line) if std::ptr::eq(line, mounted)),
+            "the captured unknown path reaches the actual mounted fallback claim"
+        );
+    }
     listener.ids = listener
         .guests
         .lines()
@@ -240,10 +273,6 @@ fn side() -> (Arc<Inbound>, GuestList) {
     let (app, config, book) = app(true);
     let listener = actual_listener(app, &config, &book, true);
     let guests = listener.guests.clone();
-    assert!(
-        guests.lines().iter().any(|line| line.route.path == "/"),
-        "the qualified actual LLM product declares its root fallback claim"
-    );
     let next = Arc::new(AtomicU64::new(1));
     let inbound = Inbound::new(
         kin::Seals {
