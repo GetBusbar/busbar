@@ -5487,7 +5487,16 @@ impl FarEnd for DoorFar<'_, '_> {
 
     async fn send(&self, token: &Pass<Route>, request: OutboundRequest) -> bool {
         match self.far() {
-            Some(far) => far.send(token, request).await,
+            Some(far) => {
+                if crate::root::connector::the()
+                    .wait_session_opening(self.unit.get())
+                    .await
+                    .is_err()
+                {
+                    return false;
+                }
+                far.send(token, request).await
+            }
             None => false,
         }
     }
