@@ -21,6 +21,7 @@ fn app(
 ) -> (
     Arc<busbar_kernel::state::App>,
     busbar_kernel::config::RootCfg,
+    crate::root::durability::NodeBook,
 ) {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
@@ -53,13 +54,23 @@ fn app(
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let signing = directory.join("signing-key");
+    std::fs::write(&signing, [0x37; 32]).expect("write the real configured signing key");
+    let operator_token = directory.join("operator-token");
+    std::fs::write(&operator_token, "actual-inbound-operator")
+        .expect("write the real operator credential");
+    let operator = busbar_kernel::config::operator_provider();
     let mut document = serde_json::json!({
         "public_url": "https://gw.example",
         "providers": {},
         "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
+        "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing} },
+        "identity-providers": {},
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
+    });
+    document["identity-providers"][operator] = serde_json::json!({
+        "module": operator, "token": {"file": operator_token},
     });
     if with_llm {
         document["pools"] = serde_json::json!({});
@@ -82,16 +93,24 @@ fn app(
         &rules,
     )
     .expect("the actual product builds the door deployment");
-    drop(limits);
-    drop(rotate);
-    (Arc::new(app), config)
+    limits.stage_boot();
+    let book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate history before request admission");
+    limits
+        .keep()
+        .expect("the normal configured limits activate");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    (Arc::new(app), config, book)
 }
 
-fn actual_listener(
+fn actual_listener_with_routers(
     app: Arc<busbar_kernel::state::App>,
     config: &busbar_kernel::config::RootCfg,
+    book: &crate::root::durability::NodeBook,
     with_llm: bool,
-) -> kin::Listener {
+) -> (kin::Listener, axum::Router, axum::Router) {
     use crate::root::loader::dispatch::{
         kinds::plane::Plane, load_linked, Bind, ConnTable, LinkedRow, NoSink,
     };
@@ -143,6 +162,7 @@ fn actual_listener(
         .expect("the actual Store owns governance")
         .clone();
     let node = Arc::new(crate::root::plane_node::Node::new());
+    node.bind_book(Arc::clone(&book.durability));
     let post = Arc::new(crate::root::plane_node::NodeEndPost::new(node));
     let money = || {
         Arc::new(busbar_kernel::plane_driver::PlaneMoney::new(
@@ -190,12 +210,33 @@ fn actual_listener(
         .iter()
         .map(|_| auth_handle::next_ref_id(RefSpace::Line))
         .collect();
-    listener
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::clone(
+        &source.app,
+    )));
+    let select = Arc::clone(&plan);
+    let data = busbar_kernel::router::serve_listener_generations(
+        Arc::clone(&handle),
+        move |app| select.prepared(app, "listen"),
+        32 * 1024 * 1024,
+        0,
+        false,
+    );
+    let admin = busbar_kernel::router::build_admin_router_on(&handle, 32 * 1024 * 1024, false);
+    (listener, data, admin)
+}
+
+fn actual_listener(
+    app: Arc<busbar_kernel::state::App>,
+    config: &busbar_kernel::config::RootCfg,
+    book: &crate::root::durability::NodeBook,
+    with_llm: bool,
+) -> kin::Listener {
+    actual_listener_with_routers(app, config, book, with_llm).0
 }
 
 fn side() -> (Arc<Inbound>, GuestList) {
-    let (app, config) = app(true);
-    let listener = actual_listener(app, &config, true);
+    let (app, config, book) = app(true);
+    let listener = actual_listener(app, &config, &book, true);
     let guests = listener.guests.clone();
     assert!(
         guests.lines().iter().any(|line| line.route.path == "/"),
@@ -336,10 +377,108 @@ fn crosscut(family: &str) -> Vec<(String, kin::Head, bool)> {
         .collect()
 }
 
+fn captured_request(name: &str) -> Value {
+    let path = format!(
+        "{}/../../testing/shadow-oracle/cells.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let catalogue: Value =
+        serde_json::from_slice(&std::fs::read(path).expect("the actual request catalogue reads"))
+            .expect("the request catalogue is JSON");
+    catalogue["cells"]
+        .as_array()
+        .expect("the catalogue lists cells")
+        .iter()
+        .find(|cell| {
+            cell["id"]
+                .as_str()
+                .is_some_and(|id| id.replace('|', "__") == name)
+        })
+        .expect("the retained golden names an actual captured request")["request"]
+        .clone()
+}
+
+fn captured_router_crossing(
+    router: axum::Router,
+    head: &kin::Head,
+    captured: &Value,
+) -> kin::Refusal {
+    use tower::ServiceExt as _;
+    let raw = captured["body"].as_str().unwrap_or("");
+    let body = if let Some(size) = raw
+        .strip_prefix("@oversize:")
+        .and_then(|value| value.strip_suffix("MiB"))
+    {
+        vec![
+            b'x';
+            size.parse::<usize>()
+                .expect("the captured MiB count parses")
+                * 1024
+                * 1024
+        ]
+    } else {
+        raw.as_bytes().to_vec()
+    };
+    let mut request = axum::http::Request::builder()
+        .method(head.method.as_str())
+        .uri(head.target.as_str());
+    for (name, value) in &head.fields {
+        request = request.header(name.as_str(), value.as_slice());
+    }
+    if captured["listener"] == "admin" {
+        request = request.header("x-admin-token", "actual-inbound-operator");
+    }
+    let request = request
+        .body(axum::body::Body::from(body))
+        .expect("the captured real request builds");
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("the actual prepared-router crossing has a runtime")
+        .block_on(async {
+            let response = router
+                .oneshot(request)
+                .await
+                .expect("the actual router answers");
+            let (head, body) = response.into_parts();
+            let body = axum::body::to_bytes(body, usize::MAX)
+                .await
+                .expect("the actual response body drains");
+            kin::Refusal {
+                status: head.status.as_u16(),
+                fields: head
+                    .headers
+                    .iter()
+                    .map(|(name, value)| (name.as_str().into(), value.as_bytes().to_vec()))
+                    .collect(),
+                body: body.to_vec(),
+            }
+        })
+}
+
 fn refused_against(family: &str, cause: u32) -> Vec<String> {
     let (side, guests) = side();
+    let (router_app, router_config, router_book) = app(true);
+    let (_, data, admin) =
+        actual_listener_with_routers(router_app, &router_config, &router_book, true);
     let mut failing = Vec::new();
     for (name, head, credentialed) in crosscut(family) {
+        let captured = captured_request(&name);
+        // Arrival can classify a declared fallback path before the transport calls
+        // unit.refuse. Native admin availability likewise belongs to its real router.
+        if cause == REFUSE_NO_ROUTE || captured["listener"] == "admin" {
+            let router = if captured["listener"] == "admin" {
+                admin.clone()
+            } else {
+                data.clone()
+            };
+            let refusal = captured_router_crossing(router, &head, &captured);
+            let wrong = differences(&refusal, &name);
+            if !wrong.is_empty() {
+                failing.push(format!("{name}: {}", wrong.join("; ")));
+            }
+            continue;
+        }
         let line = selected_line(&guests, &head);
         let cause = if credentialed { cause } else { REFUSE_STOPPED };
         let refusal = side
@@ -385,9 +524,28 @@ fn red_every_over_gate_cell_answers_its_1_5_5_bytes() {
 }
 
 #[test]
+fn captured_rate_and_admin_availability_requests_match_their_unchanged_wire_goldens() {
+    let (app, config, book) = app(true);
+    let (_, data, admin) = actual_listener_with_routers(app, &config, &book, true);
+    for (family, target, router) in [
+        ("unknown-path", "/x/v1/chat/completions", data),
+        ("413", "/api/v1/admin/keys", admin),
+    ] {
+        let (name, head, _) = crosscut(family)
+            .into_iter()
+            .find(|(_, head, _)| head.target == target)
+            .expect("the existing catalogue captures the actual request");
+        let captured = captured_request(&name);
+        let response = captured_router_crossing(router, &head, &captured);
+        let wrong = differences(&response, &name);
+        assert!(wrong.is_empty(), "{name}: {wrong:#?}");
+    }
+}
+
+#[test]
 fn actual_listener_refusal_uses_only_its_sealed_claimant_route_and_dialect() {
-    let (app, config) = app(true);
-    let listener = actual_listener(app, &config, true);
+    let (app, config, book) = app(true);
+    let listener = actual_listener(app, &config, &book, true);
     let (name, head, _) = crosscut("wrong-method")
         .into_iter()
         .find(|(_, head, credentialed)| head.target == "/v1/messages" && *credentialed)
@@ -463,7 +621,7 @@ fn retained_listener_refusals_keep_the_actual_llm_producer_after_its_claims_are_
         "the actual linked producer matches the retained wire golden"
     );
 
-    let (next_app, next_config) = app(false);
+    let (next_app, next_config, next_book) = app(false);
     let generic = kin::Refusal::of(busbar_kernel::router::fallback_error_response(
         &next_app.planes,
         &head.target,
@@ -471,7 +629,7 @@ fn retained_listener_refusals_keep_the_actual_llm_producer_after_its_claims_are_
         busbar_contract::protocol::ERR_TYPE_NOT_FOUND,
         "the requested resource was not found",
     ));
-    let next = actual_listener(next_app, &next_config, false);
+    let next = actual_listener(next_app, &next_config, &next_book, false);
     assert!(
         matches!(
             next.guests.matched(&head.method, &head.target, &[]),
