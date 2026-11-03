@@ -1879,10 +1879,11 @@ mod recovery_record_tests {
         .unwrap();
         let entries: Vec<_> = (0u64..300)
             .map(|index| {
-                busbar_kernel_wal::Entry::new(
-                    RecordClass::Transaction,
-                    index.to_be_bytes().to_vec(),
-                )
+                // Genuine canonical payloads retain this test's exhaustive-page coverage
+                // after introduction of the complete 4096-row probe.
+                let mut body = vec![0; 8192];
+                body[..8].copy_from_slice(&index.to_be_bytes());
+                busbar_kernel_wal::Entry::new(RecordClass::Transaction, body)
             })
             .collect();
         let token = busbar_kernel::teller::Kernel::new().durability_token();
@@ -1893,6 +1894,17 @@ mod recovery_record_tests {
             .sealed;
         lane.wait_acked(taken.id, sealed.last().unwrap().node_seq, ACK_DEADLINE)
             .unwrap();
+        assert_eq!(
+            wait_for(slots.calls().record_scan(
+                JOURNAL_SCHEMA,
+                &taken.id.to_be_bytes(),
+                JOURNAL_PROBE_ROWS,
+            ))
+            .unwrap()
+            .len(),
+            JOURNAL_PROBE_ROWS as usize,
+            "canonical stored parts saturate the initial probe"
+        );
         let scans = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&scans);
         slots.on_scan(move || {
