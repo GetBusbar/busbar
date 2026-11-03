@@ -3885,6 +3885,51 @@ fn red_a_completion_fired_in_another_crossing_quarantines_its_supplier() {
 }
 
 #[test]
+fn a_connection_wake_uses_its_suppliers_dispatcher() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Wake, Waker};
+
+    struct Count(AtomicUsize);
+    impl Wake for Count {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let connector_dispatcher = Dispatcher::new(config());
+    let supplier_dispatcher = Dispatcher::new(config());
+    let supplier = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&supplier_dispatcher, &supplier, 0), Outcome::Ready);
+    let owner = crate::dispatch::handle::instance_id(supplier.inner.ctx());
+    let ticket = supplier_dispatcher.inline_ticket().expect("a live ticket");
+    let count = Arc::new(Count(AtomicUsize::new(0)));
+    ticket.register(&Waker::from(Arc::clone(&count)));
+    let wake = connector_dispatcher.conn_waker();
+    wake(
+        owner,
+        crate::dispatch::conn_services::conn_ticket(ticket.ticket()),
+    );
+    assert_eq!(
+        count.0.load(Ordering::SeqCst),
+        1,
+        "the supplier's task woke"
+    );
+    assert!(
+        !supplier.is_faulted(),
+        "a valid ticket never quarantines its supplier"
+    );
+
+    wake(
+        owner,
+        crate::dispatch::conn_services::conn_ticket(forged_generation(ticket.ticket())),
+    );
+    assert!(
+        supplier.is_faulted(),
+        "a forged ticket still quarantines its supplier"
+    );
+}
+
+#[test]
 fn red_an_off_crossing_forged_ticket_counts_toward_the_latch() {
     let d = Dispatcher::new(config());
     let latch: &'static crate::dispatch::handle::Latch =
