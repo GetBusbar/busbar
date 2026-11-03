@@ -83,6 +83,7 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
         manifest,
         &std::fs::read(store_library).expect("the actual Store artifact reads"),
     );
+    let archive_sha256 = plugins::sha256(&archive);
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
     let settings: serde_json::Value = serde_json::from_str(
         &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
@@ -117,6 +118,12 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
     let mut plugin_config = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
+        fetch: vec![busbar_kernel::config::PluginFetch::Url(
+            busbar_kernel::config::UrlFetch {
+                url: "https://plugins.invalid/store.tar.gz".into(),
+                sha256: Some(archive_sha256),
+            },
+        )],
         ..Default::default()
     };
     plugin_config
