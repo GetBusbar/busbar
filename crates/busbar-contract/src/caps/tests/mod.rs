@@ -7,6 +7,59 @@ use crate::caps::*;
 
 #[cfg(feature = "test-seal")]
 #[test]
+fn child_preparation_cannot_leave_an_accrual_on_failure_or_an_invalid_parent() {
+    let seal = KernelSeal::acquire_for_kernel();
+    let call = CallId::seal(&seal, 51);
+    let admit = Grant::<Admittance>::mint_bound(&seal, call);
+    let principal = PrincipalId::new("parent");
+    let cell = HoldCell::new(Hold::open(&admit, principal.clone()));
+    let not_called = || -> Result<(), &'static str> { panic!("invalid parent prepared") };
+    assert_eq!(
+        cell.accrue_child_after(&principal, &admit, not_called)
+            .unwrap_err(),
+        AccrualPrepareError::Parent(AccrualRefused::ParentNotAdmitted)
+    );
+    let arrival = cell
+        .admit(Hold::open(&admit, principal.clone()), &admit)
+        .unwrap();
+    assert_eq!(
+        cell.accrue_child_after(&PrincipalId::new("other"), &admit, not_called)
+            .unwrap_err(),
+        AccrualPrepareError::Parent(AccrualRefused::PrincipalMismatch)
+    );
+    assert_eq!(
+        cell.accrue_child_after(&principal, &admit, || Err("registration refused"))
+            .unwrap_err(),
+        AccrualPrepareError::Prepare("registration refused")
+    );
+    assert_eq!(cell.state(), HoldCellState::Admitted);
+    assert_eq!(cell.accruals(), 0);
+    let calls = std::cell::Cell::new(0);
+    let child = Grant::<Admittance>::mint_bound(&seal, CallId::seal(&seal, 52));
+    let accrual = cell
+        .accrue_child_after(&principal, &child, || {
+            calls.set(calls.get() + 1);
+            Ok::<(), &'static str>(())
+        })
+        .unwrap();
+    assert_eq!(calls.get(), 1);
+    assert_eq!(cell.accruals(), 1);
+    let admitted = cell.take(&Grant::<Exit>::mint_bound(&seal, call)).unwrap();
+    assert_eq!(
+        cell.accrue_child_after(&principal, &child, not_called)
+            .unwrap_err(),
+        AccrualPrepareError::Parent(AccrualRefused::ParentExited)
+    );
+    assert_eq!(cell.accruals(), 1);
+    let posted = Posted::settle_late(
+        accrual,
+        &Grant::<WriteMoney>::mint_bound(&seal, child.call()),
+    );
+    drop((arrival, admitted, posted));
+}
+
+#[cfg(feature = "test-seal")]
+#[test]
 fn admitted_cell_authority_requires_its_call_principal_and_live_admission() {
     let seal = KernelSeal::acquire_for_kernel();
     let call = CallId::seal(&seal, 41);

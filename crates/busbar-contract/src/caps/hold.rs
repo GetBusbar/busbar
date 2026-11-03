@@ -188,6 +188,15 @@ pub enum AccrualRefused {
     PrincipalMismatch,
 }
 
+/// Why preparing a child under a live parent admission failed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AccrualPrepareError<E> {
+    /// The parent cannot authorize the child; preparation was not called.
+    Parent(AccrualRefused),
+    /// Host preparation failed; no accrual was created.
+    Prepare(E),
+}
+
 impl std::fmt::Display for AccrualRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -341,20 +350,44 @@ impl HoldCell {
         principal: &PrincipalId,
         token: &Grant<Admittance>,
     ) -> Result<HoldAccrual, AccrualRefused> {
+        match self.accrue_child_after(principal, token, || Ok::<(), std::convert::Infallible>(())) {
+            Ok(accrual) => Ok(accrual),
+            Err(AccrualPrepareError::Parent(refused)) => Err(refused),
+            Err(AccrualPrepareError::Prepare(never)) => match never {},
+        }
+    }
+
+    /// Prepare host registration under a live parent, then create its child's accrual.
+    ///
+    /// `prepare` runs under the cell lock after parent and principal validation. It must be
+    /// all-or-nothing host registration: no plugin calls, awaits, cell reentry, or destruction
+    /// of arbitrary owners. Its locks must follow the cell lock in the host's lock order.
+    /// Failure leaves the cell and its accrual count unchanged.
+    pub fn accrue_child_after<E>(
+        &self,
+        principal: &PrincipalId,
+        token: &Grant<Admittance>,
+        prepare: impl FnOnce() -> Result<(), E>,
+    ) -> Result<HoldAccrual, AccrualPrepareError<E>> {
         let slot = self.slot();
         match &*slot {
             Slot::Admitted(parent) => {
                 if parent.principal() != principal {
-                    return Err(AccrualRefused::PrincipalMismatch);
+                    return Err(AccrualPrepareError::Parent(
+                        AccrualRefused::PrincipalMismatch,
+                    ));
                 }
+                prepare().map_err(AccrualPrepareError::Prepare)?;
                 self.accruals.fetch_add(1, Ordering::Relaxed);
                 Ok(HoldAccrual {
                     principal: principal.clone(),
                     call: token.call(),
                 })
             }
-            Slot::Arrival(_) => Err(AccrualRefused::ParentNotAdmitted),
-            Slot::Taken => Err(AccrualRefused::ParentExited),
+            Slot::Arrival(_) => Err(AccrualPrepareError::Parent(
+                AccrualRefused::ParentNotAdmitted,
+            )),
+            Slot::Taken => Err(AccrualPrepareError::Parent(AccrualRefused::ParentExited)),
         }
     }
 

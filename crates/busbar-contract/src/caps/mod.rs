@@ -23,8 +23,8 @@ pub use capability::{
 };
 pub use egress::{TransportKeyHandle, VerifiedDestination};
 pub use hold::{
-    AccrualRefused, Admission, AdmitRejected, CellError, DurabilityLost, Hold, HoldAccrual,
-    HoldCell, HoldCellState, Posted, PostingFlags,
+    AccrualPrepareError, AccrualRefused, Admission, AdmitRejected, CellError, DurabilityLost, Hold,
+    HoldAccrual, HoldCell, HoldCellState, Posted, PostingFlags,
 };
 pub use seat_verdict::{ReasonCode, Refusal, SeatVerdict};
 pub use step::{
