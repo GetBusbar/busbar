@@ -76,6 +76,8 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-both-origins");
     let archive = plugins::signed(&publisher_key, manifest, &library);
+    // Normal cold bootstrap resolves the Store from its signed archive fetch pin.
+    let archive_sha256 = busbar_contract::redacted::sha256_hex(&archive);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
     let settings: serde_json::Value = serde_json::from_str(
@@ -107,6 +109,14 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
     let mut plugin_config = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
+        fetch: vec![busbar_kernel::config::PluginFetch::Url(
+            busbar_kernel::config::UrlFetch {
+                // The staged archive exactly matches this pin, so normal fetch uses its cache.
+                // A miss must fail rather than silently load unrelated bytes.
+                url: "http://127.0.0.1:9/store.tar.gz".into(),
+                sha256: Some(archive_sha256),
+            },
+        )],
         ..Default::default()
     };
     plugin_config
