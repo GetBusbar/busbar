@@ -995,8 +995,15 @@ fn a_short_record_scan_replays_its_completed_snapshot_when_the_store_grows() {
         },
     ] {
         let instance = open();
-        let value = vec![42; 16 * 1024];
-        put_snapshot(instance, b"k0", &value);
+        let value = vec![42; busbar_contract::MAX_RECORD_BYTES];
+        let mut expected = Vec::new();
+        for index in 0..33 {
+            let key = format!("k{index:02}");
+            put_snapshot(instance, key.as_bytes(), &value);
+            expected.extend_from_slice(key.as_bytes());
+            expected.extend_from_slice(&value);
+        }
+        assert!(expected.len() > 16 * 1024);
         SNAPSHOT_SCAN_CALLS.with(|calls| calls.set(0));
         let mut small_bytes = vec![0; 16];
         let mut small_items = vec![zeroed::<RecordEntry>(); 4];
@@ -1037,7 +1044,7 @@ fn a_short_record_scan_replays_its_completed_snapshot_when_the_store_grows() {
         // Destroy the original buffers: the retained reply must own rows, never host pointers.
         drop(small_bytes);
         drop(small_items);
-        put_snapshot(instance, b"k1", &[7; 333]);
+        put_snapshot(instance, b"k99", &[7; 330]);
         let mut bytes = vec![0; short.needed_bytes as usize];
         let mut items = vec![zeroed::<RecordEntry>(); short.needed_items as usize];
         input.out = HostRecords {
@@ -1059,9 +1066,9 @@ fn a_short_record_scan_replays_its_completed_snapshot_when_the_store_grows() {
             input.limit,
         )
         .unwrap();
-        assert_eq!(recalled.items_written, 1);
-        assert_eq!(recalled.bytes_written, (2 + value.len()) as u64);
-        assert_eq!(bytes, [b"k0".as_slice(), value.as_slice()].concat());
+        assert_eq!(recalled.items_written, 33);
+        assert_eq!(recalled.bytes_written, expected.len() as u64);
+        assert_eq!(bytes, expected);
         assert_eq!(
             SNAPSHOT_SCAN_CALLS.with(Cell::get),
             1,
@@ -1075,7 +1082,7 @@ fn a_short_record_scan_replays_its_completed_snapshot_when_the_store_grows() {
         // A genuinely new read sees the new Store state after the retained snapshot is released.
         input.head.extensions = Blob::ABSENT;
         bytes.resize(32 * 1024, 0);
-        items.resize(4, zeroed());
+        items.resize(64, zeroed());
         input.out = HostRecords {
             items: items.as_mut_ptr(),
             items_cap: items.len(),
@@ -1086,7 +1093,7 @@ fn a_short_record_scan_replays_its_completed_snapshot_when_the_store_grows() {
             call(ops().record_scan, instance, &input, &mut fresh),
             Outcome::Ready
         );
-        assert_eq!(fresh.items_written, 2);
+        assert_eq!(fresh.items_written, 34);
         assert_eq!(SNAPSHOT_SCAN_CALLS.with(Cell::get), 2);
         close_store(instance);
     }
