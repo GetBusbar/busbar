@@ -281,6 +281,11 @@ fn genuine_saturated_mixed_prefix_proof(sealed_retry: bool) {
     assert!(view.upper_seen.load(Ordering::SeqCst));
     assert_eq!(*view.stages.lock().unwrap(), ["lower_snapshot_captured", "atomic_append_applied", "upper_backend_started", "upper_snapshot_observed"],
         "actual read and atomic Store completion order must establish the two distinct snapshot epochs");
+    assert_eq!(
+        view.node_probes.load(Ordering::SeqCst),
+        if sealed_retry { 3 } else { 2 },
+        "one initial fold and one bridge-authority scan, plus exactly one sealed outer retry"
+    );
     if sealed_retry {
         result
             .expect("one fresh complete proof fills the genuine mixed gap and retains both seals");
