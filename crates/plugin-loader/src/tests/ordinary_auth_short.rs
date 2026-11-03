@@ -48,9 +48,9 @@ impl VerifyPlugin for Probe {
     }
 
     fn verify(&self, _: &VerifyView<'_>) -> Answer {
-        JUDGMENTS.fetch_add(1, Ordering::SeqCst);
+        let judgment = JUDGMENTS.fetch_add(1, Ordering::SeqCst) + 1;
         Verdict::Identity(VerifiedIdentity {
-            subject: SUBJECT.to_string(),
+            subject: format!("{}judgment-{judgment}", SUBJECT.as_str()),
             groups: (0..300).map(|n| format!("group-{n}")).collect(),
             ..Default::default()
         })
@@ -238,8 +238,14 @@ fn verify(auth: &dyn busbar_contract::auth_calls::AuthCalls) {
     let Verified::Identity(identity) = answer.verified else {
         panic!("identity refused");
     };
-    assert_eq!(identity.subject, SUBJECT.as_str());
-    if JUDGMENTS.load(Ordering::SeqCst) != 0 {
+    let judgment = JUDGMENTS.load(Ordering::SeqCst);
+    let expected = if judgment == 0 {
+        SUBJECT.to_string()
+    } else {
+        format!("{}judgment-{judgment}", SUBJECT.as_str())
+    };
+    assert_eq!(identity.subject, expected);
+    if judgment != 0 {
         assert_eq!(identity.groups.len(), 300);
         assert_eq!(identity.groups[299], "group-299");
     }
@@ -402,7 +408,7 @@ fn an_actual_held_short_lease_is_released_exactly_once_when_its_token_drops() {
     let subject = frame.out.identity.subject;
     assert_eq!(
         &bytes[subject.offset as usize..subject.offset as usize + subject.len as usize],
-        SUBJECT.as_bytes()
+        format!("{}judgment-1", SUBJECT.as_str()).as_bytes()
     );
     assert_eq!(
         (
@@ -535,5 +541,38 @@ fn an_actual_held_short_lease_is_released_exactly_once_when_its_token_drops() {
             Outcome::Refused | Outcome::Fault
         ),
         "a closed auth instance must never recall its old short answer"
+    );
+}
+
+#[test]
+fn four_mixed_short_operations_keep_their_own_first_judgment_on_one_instance() {
+    let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+    let (_, auth) = opened(false);
+    let sync = |judgment: usize| {
+        let answer = auth
+            .verify_now(&request())
+            .expect("the immediate SDK verify answers synchronously");
+        let Verified::Identity(identity) = answer.verified else {
+            panic!("the real short identity was refused");
+        };
+        assert_eq!(
+            identity.subject,
+            format!("{}judgment-{judgment}", SUBJECT.as_str())
+        );
+        assert_eq!(identity.groups.len(), 300);
+        assert_eq!(identity.groups[299], "group-299");
+    };
+    sync(1);
+    verify(&*auth);
+    verify(&*auth);
+    sync(4);
+    assert_eq!(
+        (
+            VERIFIES.load(Ordering::SeqCst),
+            RELEASES.load(Ordering::SeqCst),
+            JUDGMENTS.load(Ordering::SeqCst)
+        ),
+        (8, 4, 4),
+        "each of four operations judges once, copies once, and releases once"
     );
 }
