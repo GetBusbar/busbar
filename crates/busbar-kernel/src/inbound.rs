@@ -899,7 +899,7 @@ fn connection_allows_key_prestep(answers: &[Option<Judged>]) -> bool {
 
 enum SignedReaderStep {
     Pass(Vec<Strip>),
-    Final(Option<VerifyAnswer>),
+    Final(Option<Box<VerifyAnswer>>),
 }
 
 fn signed_reader_step(answer: Option<VerifyAnswer>, faulted: bool) -> SignedReaderStep {
@@ -907,7 +907,7 @@ fn signed_reader_step(answer: Option<VerifyAnswer>, faulted: bool) -> SignedRead
         Some(answer) if !faulted && matches!(&answer.verified, Verified::Pass) => {
             SignedReaderStep::Pass(answer.strips)
         }
-        answer => SignedReaderStep::Final(answer),
+        answer => SignedReaderStep::Final(answer.map(Box::new)),
     }
 }
 
@@ -2275,7 +2275,7 @@ impl Inbound {
                                         original.as_ref().unwrap_or(&head),
                                         Some(SignedAnswer {
                                             faulted,
-                                            answer,
+                                            answer: *answer,
                                             kinds,
                                             provider,
                                         }),
