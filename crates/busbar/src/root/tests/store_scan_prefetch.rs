@@ -251,7 +251,7 @@ fn populated() -> (RecordSlots, Vec<JournalRecord>) {
                 .unwrap()
                 .len(),
             4096,
-            "the actual Store must saturate even the probe above the targeted window"
+            "the opened Store behind RecordSlots must saturate the probe above the targeted window"
         );
     }
     (slots, sealed.records)
