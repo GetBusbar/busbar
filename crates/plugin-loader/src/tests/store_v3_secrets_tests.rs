@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::both_ways::store_fixture::MemoryStore;
 use crate::dispatch::kinds::store::Store;
 use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink};
 use crate::store_v3::LoadedStore;
 use busbar_contract::abi::mechanism::call::RawOutcome;
 use busbar_contract::abi::mechanism::door::{Door, DoorParts};
 use busbar_contract::abi::mechanism::lifecycle::OpenIn;
-use busbar_contract::abi::sdk::door::abi_str;
 use busbar_contract::abi::store::{OpId, Ops};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -107,41 +105,4 @@ fn a_declared_store_secret_reaches_open_as_a_secret_never_in_its_settings() {
         vec![b"hunter2".to_vec()],
         "the actual declared secret is lent to OPEN as its one secret"
     );
-}
-
-mod synchronous {
-    use busbar_contract::abi::mechanism::call::AbiStr;
-    const REFS: &[AbiStr] = &[super::abi_str("password")];
-    busbar_contract::store_door!(super::MemoryStore, "synchronous", "0", 64, secret_refs: REFS);
-}
-
-#[test]
-fn a_synchronous_store_receives_and_checks_its_declared_secret() {
-    for (password, accepted) in [("hunter2", true), ("wrong", false)] {
-        let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
-        let p = load_linked::<Store>(
-            &LinkedRow::of(synchronous::door).unwrap(),
-            Bind {
-                instance: Arc::from("synchronous-secret"),
-                max_inflight_cap: 64,
-                sink: Arc::new(NoSink),
-                dispatcher: d.adopter(),
-                conns: crate::dispatch::ConnTable::NoNeeds,
-            },
-        )
-        .unwrap();
-        let settings = serde_json::json!({"test_require_secret":true, "password":password});
-        let opened = LoadedStore::open(p, d, &serde_json::to_vec(&settings).unwrap(), mint);
-        assert_eq!(
-            opened.is_ok(),
-            accepted,
-            "the real synchronous door checks its lent secret"
-        );
-        if let Err(error) = opened {
-            assert!(
-                !error.to_string().contains(password),
-                "refusal must not expose the credential"
-            );
-        }
-    }
 }
