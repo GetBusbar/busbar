@@ -72,15 +72,21 @@ impl Fixture {
             settings.is_object(),
             "the actual store settings are an object"
         );
-        let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
-        "store": { "module": module, "settings": settings },
-        "rate_card": { (LANE): {"input_utok":0.0,"output_utok":0.0,"cache_read_utok":0.0,"cache_write_utok":0.0} },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
-    }))
-    .expect("the product deployment parses");
+        let mut document = serde_json::json!({
+            "providers": {},
+            "models": {},
+            "auth": { "chain": [], "admin_auth": [] },
+            "store": { "module": module, "settings": settings },
+            "rate_card": { (LANE): {"input_utok":0.0,"output_utok":0.0,"cache_read_utok":0.0,"cache_write_utok":0.0} },
+            "advanced": { "allow_destinations": ["127.0.0.1"] },
+        });
+        super::admin_usage_history::complete_usage_fixture(
+            &mut document,
+            &directory,
+            &[(LANE, PROVIDER)],
+        );
+        let deploy = busbar_kernel::config::deploy_from_deserializer(document)
+            .expect("the product deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the product deployment resolves");
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);

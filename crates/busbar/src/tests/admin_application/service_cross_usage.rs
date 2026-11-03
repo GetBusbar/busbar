@@ -207,6 +207,11 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    super::admin_usage_history::complete_usage_fixture(
+        &mut document,
+        &directory,
+        &[(LANE, PROVIDER)],
+    );
     let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
@@ -244,6 +249,11 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
         },
     )]))
     .unwrap();
+    super::admin_usage_history::complete_usage_fixture(
+        &mut document,
+        &directory,
+        &[(LANE, PROVIDER)],
+    );
     let current = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the current deployment parses");
     let current = busbar_kernel::config::resolve(&current, &Default::default())

@@ -16,6 +16,66 @@ const LANE: &str = "m-dated-read";
 const PROVIDER: &str = "dated-read";
 const TOKENS: u64 = 1_000;
 
+// These usage fixtures price token counts and declare the other classes in the actual pools
+// Statement explicitly free. The model/provider names remain the names their recorded rows use.
+pub(super) fn complete_usage_fixture(
+    document: &mut serde_json::Value,
+    directory: &std::path::Path,
+    model_providers: &[(&str, &str)],
+) {
+    const UNUSED_CLASSES: &[&str] = &[
+        "search_units",
+        "classifications",
+        "web_fetch_requests",
+        "unitemized_tokens",
+        "images",
+        "audio_ms",
+        "guardrail_automated_reasoning_policies",
+        "guardrail_automated_reasoning_policy_units",
+        "guardrail_content_policy_image_units",
+        "guardrail_content_policy_units",
+        "guardrail_contextual_grounding_policy_units",
+        "guardrail_sensitive_information_policy_free_units",
+        "guardrail_sensitive_information_policy_units",
+        "guardrail_topic_policy_units",
+        "guardrail_word_policy_units",
+    ];
+    let credential = directory.join("usage-upstream-credential");
+    std::fs::write(&credential, b"unused-usage-fixture-upstream-credential")
+        .expect("the usage fixture writes its file-backed upstream credential");
+    for (model, provider) in model_providers {
+        document["providers"][*provider] = serde_json::json!({
+            "protocol": "openai", "base_url": "http://127.0.0.1:1", "api_key": {"file":credential},
+        });
+        document["models"][*model] = serde_json::json!({"provider":provider});
+    }
+    let card = document["rate_card"]
+        .as_object_mut()
+        .expect("the usage fixture has a rate card");
+    assert_eq!(
+        card.len(),
+        model_providers.len(),
+        "every original priced model is declared"
+    );
+    for (model, _) in model_providers {
+        let row = card
+            .get_mut(*model)
+            .expect("the original model's token rates remain");
+        let units = row
+            .as_object_mut()
+            .expect("a rate entry is an object")
+            .entry("units")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .expect("explicit named unit rates");
+        for class in UNUSED_CLASSES {
+            units
+                .entry((*class).to_string())
+                .or_insert_with(|| serde_json::json!(0));
+        }
+    }
+}
+
 #[tokio::test]
 async fn the_usage_read_prices_through_the_kernels_rate_dater() {
     const CHILD: &str = "BUSBAR_ADMIN_DATED_READ_CHILD";
@@ -106,7 +166,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         settings.is_object(),
         "the actual Store settings are an object"
     );
-    let document = serde_json::json!({
+    let mut document = serde_json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
@@ -117,6 +177,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         )]),
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     });
+    complete_usage_fixture(&mut document, &directory, &[(LANE, PROVIDER)]);
     let mut current_document = document.clone();
     current_document["rate_card"][LANE]["input_utok"] = serde_json::json!(1.0);
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)

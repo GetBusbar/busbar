@@ -127,6 +127,11 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     document["rate_card"] =
         serde_json::to_value(&rate_card).expect("serialize the original token rates");
     document["per_request_fee"] = serde_json::json!(1);
+    super::admin_usage_history::complete_usage_fixture(
+        &mut document,
+        &directory,
+        &[("model-1", "vendor-a"), ("model-2", "acme")],
+    );
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
