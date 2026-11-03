@@ -328,6 +328,7 @@ fn policy(
 }
 
 fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteTable> {
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
     use crate::root::loader::dispatch::{
         kinds::export::{Export, ExportFacts},
         load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,

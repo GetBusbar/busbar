@@ -187,6 +187,45 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
                     ..Default::default()
                 };
                 busbar_kernel::config::overlay::write(&overlay, &doc).unwrap();
+                // The normal writer stamps the supported version. Inject the newer document
+                // into its actual Store generation, retaining a valid container and digest.
+                use sha2::Digest as _;
+                let schema = "busbar.config.overlay.v1";
+                let raw = faults
+                    .inner
+                    .record_get(schema, b"head")
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let mut head: serde_json::Value = serde_json::from_slice(raw.as_slice()).unwrap();
+                let generation: [u8; 16] =
+                    serde_json::from_value(head["generation"].clone()).unwrap();
+                let bytes = serde_json::to_vec(&doc).unwrap();
+                assert!(bytes.len() <= busbar_contract::MAX_RECORD_BYTES);
+                let mut chunk = b"chunk:".to_vec();
+                chunk.extend_from_slice(&generation);
+                chunk.extend_from_slice(&0_u64.to_be_bytes());
+                faults
+                    .inner
+                    .record_put(schema, &chunk, &RecordBytes::new(bytes.clone()).unwrap())
+                    .await
+                    .unwrap();
+                head["length"] = serde_json::json!(bytes.len());
+                let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
+                head["digest"] = serde_json::json!(digest);
+                faults
+                    .inner
+                    .record_put(
+                        schema,
+                        b"head",
+                        &RecordBytes::new(serde_json::to_vec(&head).unwrap()).unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert!(matches!(
+                    busbar_kernel::config::overlay::read_state(&overlay),
+                    busbar_kernel::config::overlay::OverlayReadState::VersionTooNew(_)
+                ));
             }
             _ => unreachable!(),
         }
