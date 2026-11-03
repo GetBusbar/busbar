@@ -1367,7 +1367,9 @@ pub(super) mod session_door {
 
     const REALTIME: &str = "/v1/realtime?model=m-cap";
 
-    const MINTED: &str = r#"{"value":"ek_door_0001","expires_at":1767225600}"#;
+    const SIGNAL: &str = "/v1/realtime/calls";
+    const OFFER: &str = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=root-offer\r\nt=0 0\r\n";
+    const ANSWER: &str = "v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=root-answer\r\nt=0 0\r\n";
 
     const PUBLIC: &str = "http://gw.test";
 
@@ -1416,12 +1418,6 @@ pub(super) mod session_door {
     }
 
     type FarScript = Arc<dyn Fn(usize) -> Far + Send + Sync>;
-
-    async fn far_end_answering(
-        answer: &'static str,
-    ) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
-        far_end_scripted(Arc::new(move |_| Far::Says("200 OK", answer))).await
-    }
 
     async fn far_end_scripted(
         script: FarScript,
@@ -1473,8 +1469,18 @@ pub(super) mod session_door {
                             return;
                         }
                     };
+                    let kind = if body.starts_with("v=0") {
+                        "application/sdp"
+                    } else {
+                        "application/json"
+                    };
+                    let location = if body.starts_with("v=0") {
+                        "location: /v1/realtime/calls/rtc_provider0001\r\n"
+                    } else {
+                        ""
+                    };
                     let reply = format!(
-                        "HTTP/1.1 {line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+                        "HTTP/1.1 {line}\r\ncontent-type: {kind}\r\n{location}content-length: {}\r\n\
                          connection: close\r\n\r\n{body}",
                         body.len()
                     );
@@ -1486,7 +1492,10 @@ pub(super) mod session_door {
         (port, heard)
     }
 
-    async fn global_gate(reply: serde_json::Value) -> busbar_kernel::config::HookCfg {
+    async fn global_gate(
+        reply: serde_json::Value,
+        armed: Arc<std::sync::atomic::AtomicBool>,
+    ) -> busbar_kernel::config::HookCfg {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("the hook endpoint binds");
@@ -1495,7 +1504,16 @@ pub(super) mod session_door {
             "/hook",
             axum::routing::post(move || {
                 let reply = reply.clone();
-                async move { axum::Json(reply) }
+                let armed = Arc::clone(&armed);
+                async move {
+                    use axum::response::IntoResponse as _;
+                    if armed.load(std::sync::atomic::Ordering::SeqCst) {
+                        axum::Json(reply).into_response()
+                    } else {
+                        // The actual webrequest hook defines 204 as no opinion.
+                        StatusCode::NO_CONTENT.into_response()
+                    }
+                }
             }),
         );
         tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1554,7 +1572,7 @@ pub(super) mod session_door {
         limits: Vec<busbar_kernel::config::groups::LimitCfg>,
         /// The pools the caller's key is minted with; `None` = every pool.
         allowed_pools: Option<Vec<String>>,
-        /// How the provider answers; `None` = every mint answered 200 with [`MINTED`].
+        /// How the provider answers; `None` = an accepted SDP answer.
         far: Option<FarScript>,
         /// Hooks the deployment defines, each `global` (run on every plane's units), with the hook
         /// stage composed over the generation; empty = no hook stage.
@@ -1676,7 +1694,7 @@ pub(super) mod session_door {
         let (port, heard) = match (opts.far_end, opts.far) {
             (Some(far_end), _) => far_end,
             (None, Some(script)) => far_end_scripted(script).await,
-            (None, None) => far_end_answering(MINTED).await,
+            (None, None) => far_end_scripted(Arc::new(|_| Far::Says("201 Created", ANSWER))).await,
         };
         let _ = crate::root::inbound::install(crate::root::doors::dispatcher());
         let connector = connector();
@@ -2160,6 +2178,93 @@ pub(super) mod session_door {
                 .clone()
         }
 
+        async fn local_ticket(&mut self) -> String {
+            let before = busbar_kernel::store::now();
+            let response = self.mint().await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "the local ticket is issued"
+            );
+            let body: serde_json::Value = serde_json::from_slice(&body_of(response).await)
+                .expect("the local ticket response is JSON");
+            let ticket = body["value"]
+                .as_str()
+                .expect("the issued ticket")
+                .to_owned();
+            let expires = body["expires_at_unix"].as_u64().expect("its expiry");
+            assert!(
+                ticket.starts_with("ek_"),
+                "a browser ticket, never the real provider key"
+            );
+            assert_ne!(ticket, CREDENTIAL);
+            assert_ne!(ticket, self.plain);
+            assert!(
+                expires > before && expires <= busbar_kernel::store::now() + 600,
+                "a short-lived browser ticket: {expires}"
+            );
+            assert!(
+                self.heard.try_recv().is_err(),
+                "local issuance never dials a provider"
+            );
+            ticket
+        }
+
+        async fn signal(&self, token: &str) -> (StatusCode, String) {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("a signal listener");
+            let address = listener.local_addr().expect("its address");
+            let serving = tokio::spawn(serve_listener(
+                listener,
+                self.router.clone(),
+                self.framer.clone(),
+            ));
+            let exchange = async {
+                let mut socket = tokio::net::TcpStream::connect(address)
+                    .await
+                    .expect("the signal connection");
+                let request = format!("POST {SIGNAL} HTTP/1.1\r\nhost: {address}\r\nauthorization: Bearer {token}\r\ncontent-type: application/sdp\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{OFFER}", OFFER.len());
+                socket
+                    .write_all(request.as_bytes())
+                    .await
+                    .expect("the SDP offer");
+                let head = read_head(&mut socket)
+                    .await
+                    .expect("the signal response head");
+                let code = head
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .and_then(|code| code.parse::<u16>().ok())
+                    .expect("the HTTP status");
+                let mut body = Vec::new();
+                socket
+                    .read_to_end(&mut body)
+                    .await
+                    .expect("the signal response ends");
+                (
+                    StatusCode::from_u16(code).expect("a valid HTTP status"),
+                    format!("{head}{}", String::from_utf8_lossy(&body)),
+                )
+            };
+            let result = tokio::time::timeout(ANSWER_BOUND, exchange).await;
+            serving.abort();
+            result.expect("the signal answers within its bound")
+        }
+
+        async fn signal_once(&mut self) -> (StatusCode, bool) {
+            let ticket = self.local_ticket().await;
+            let admitted = self.requests();
+            let (status, _) = self.signal(&ticket).await;
+            assert_eq!(
+                self.requests(),
+                admitted,
+                "consuming the ticket never adds a second admission"
+            );
+            (status, self.heard.try_recv().is_ok())
+        }
+
         async fn mint_once(&mut self) -> (StatusCode, bool) {
             let response = self.mint().await;
             let status = response.status();
@@ -2189,8 +2294,8 @@ pub(super) mod session_door {
 
     async fn trip(s: &mut SessionDoor) -> Option<usize> {
         for n in 0..=MAX_FAILURES {
-            let (status, heard) = s.mint_once().await;
-            assert_ne!(status, StatusCode::OK, "mint {n} is not served");
+            let (status, heard) = s.signal_once().await;
+            assert!(!status.is_success(), "signal {n} is not served");
             if !heard {
                 return Some(n);
             }
@@ -2227,21 +2332,20 @@ pub(super) mod session_door {
         assert!(s.heard.try_recv().is_err(), "nothing was dialled for it");
         assert_eq!(s.requests(), 0, "nor charged");
 
-        let response = send_body(&s.router, MINT, Some(&s.plain), "{}").await;
-        assert_eq!(response.status(), StatusCode::OK, "served through the door");
-        let body = body_of(response).await;
-        let body: serde_json::Value = serde_json::from_slice(&body).expect("the door's JSON");
+        let ticket = s.local_ticket().await;
+        assert_eq!(s.requests(), 1, "local issuance is the one admission");
+        let (status, response) = s.signal(&ticket).await;
         assert_eq!(
-            body,
-            serde_json::json!({"value": "ek_door_0001", "expires_at_unix": 1_767_225_600_u64}),
-            "the minted secret and its expiry"
+            status.as_u16(),
+            201,
+            "the actual ticket opens its SDP call: {response}"
         );
 
         let head = tokio::time::timeout(ANSWER_BOUND, s.heard.recv())
             .await
             .expect("the provider's dial is heard within the bound")
             .expect("the provider was dialled");
-        assert!(head.starts_with(&format!("POST {MINT} ")), "{head}");
+        assert!(head.starts_with(&format!("POST {SIGNAL} ")), "{head}");
         assert!(
             head.lines()
                 .any(|l| l.eq_ignore_ascii_case(&format!("authorization: Bearer {CREDENTIAL}"))),
@@ -2250,6 +2354,10 @@ pub(super) mod session_door {
         assert!(
             !head.contains(&s.plain),
             "the caller's token never reaches the provider: {head}"
+        );
+        assert!(
+            !head.contains(&ticket),
+            "the browser ticket never reaches the provider: {head}"
         );
         assert!(
             head.contains(r#""model":"m-cap""#),
@@ -2309,7 +2417,7 @@ pub(super) mod session_door {
 
         let dialled = trip(&mut s)
             .await
-            .unwrap_or_else(|| panic!("{MAX_FAILURES} failing mints never opened the cell"));
+            .unwrap_or_else(|| panic!("{MAX_FAILURES} failing signals never opened the cell"));
         assert!(dialled >= 1, "the cell opened on a failure it recorded");
         assert!(
             counted(
@@ -2344,19 +2452,17 @@ pub(super) mod session_door {
         .expect("the build links the session door");
         trip(&mut s)
             .await
-            .unwrap_or_else(|| panic!("{MAX_FAILURES} failing mints never opened the cell"));
+            .unwrap_or_else(|| panic!("{MAX_FAILURES} failing signals never opened the cell"));
 
         holding.store(true, std::sync::atomic::Ordering::SeqCst);
         let started = std::time::Instant::now();
-        let response = tokio::time::timeout(std::time::Duration::from_secs(5), s.mint())
-            .await
-            .expect("the tripped route's mint is answered, not held at its provider");
+        let (status, heard) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), s.signal_once())
+                .await
+                .expect("the tripped route's signal is answered, not held at its provider");
         let took = started.elapsed();
-        assert_ne!(response.status(), StatusCode::OK, "the mint is refused");
-        assert!(
-            s.heard.try_recv().is_err(),
-            "the refused mint never reached the provider"
-        );
+        assert!(!status.is_success(), "the signal is refused");
+        assert!(!heard, "the refused signal never reached the provider");
         assert!(
             took < std::time::Duration::from_secs(1),
             "refused before the dial, in milliseconds: {took:?}"
@@ -2366,14 +2472,18 @@ pub(super) mod session_door {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_gate_hook_refuses_the_mint_before_the_provider_is_dialled() {
         let _one = PUBLISHING.lock().await;
+        let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut s = session_with(
             "serve-door-session-gated",
             Opts {
                 hooks: vec![(
                     "closed",
-                    global_gate(serde_json::json!({
-                        "reject": {"status": 409, "message": "no new sessions"}
-                    }))
+                    global_gate(
+                        serde_json::json!({
+                            "reject": {"status": 409, "message": "no new sessions"}
+                        }),
+                        Arc::clone(&armed),
+                    )
                     .await,
                 )],
                 ..Opts::default()
@@ -2381,9 +2491,19 @@ pub(super) mod session_door {
         )
         .await
         .expect("the build links the session door");
-        let (status, heard) = s.mint_once().await;
+        let ticket = s.local_ticket().await;
+        let admitted = s.requests();
+        let completed_before_signal = s.lines();
+        armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let (status, _) = s.signal(&ticket).await;
+        let heard = s.heard.try_recv().is_ok();
+        assert_eq!(
+            s.requests(),
+            admitted,
+            "a gated signal adds no second admission"
+        );
         assert_eq!(status.as_u16(), 409, "the hook's own status");
-        assert!(!heard, "the gated mint never reached the provider");
+        assert!(!heard, "the gated signal never reached the provider");
         assert_eq!(
             s.money.open_units(),
             0,
@@ -2394,7 +2514,11 @@ pub(super) mod session_door {
             0,
             "the refused unit's node facts closed"
         );
-        assert_eq!(s.lines(), 0, "no record carries counts");
+        assert_eq!(
+            s.lines(),
+            completed_before_signal,
+            "the gated signal adds no completed record carrying counts"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2409,16 +2533,47 @@ pub(super) mod session_door {
         )
         .await
         .expect("the build links the session door");
-        let (status, heard) = s.mint_once().await;
-        assert_eq!(status, StatusCode::OK, "the first mint is served");
-        assert!(heard, "and dialled");
+        let ticket = s.local_ticket().await;
+        assert_eq!(s.requests(), 1, "the local ticket is the one admission");
+        let (status, signal) = s.signal(&ticket).await;
+        assert_eq!(
+            status.as_u16(),
+            201,
+            "the admitted ticket places its call: {signal}"
+        );
+        assert!(
+            s.heard.try_recv().is_ok(),
+            "the signal reached its provider"
+        );
+        assert_eq!(
+            s.requests(),
+            1,
+            "ticket consumption never charges a second admission"
+        );
         let (status, heard) = s.mint_once().await;
         assert_ne!(status, StatusCode::OK, "the second is refused by the limit");
         assert!(!heard, "before its dial");
 
         let records = s.audit_records();
-        assert_eq!(records.len(), 2, "one record per unit: {records:?}");
-        let (served, refused) = (&records[0], &records[1]);
+        assert_eq!(
+            records.len(),
+            3,
+            "one record for local issuance, its signal, and the refused issuance: {records:?}"
+        );
+        let (served, signal, refused) = (&records[0], &records[1], &records[2]);
+        for record in &records {
+            assert_eq!(
+                record.subject,
+                busbar_kernel_audit::Subject::PrincipalId(s.key.id.clone()),
+                "one presenting/billing key across issuance and consumption"
+            );
+        }
+        assert_eq!(
+            signal.outcome.unit_end,
+            busbar_contract::caps::Outcome::Completed
+        );
+        assert_eq!(signal.seq, served.seq + 1);
+        assert_eq!(signal.prev_hash, served.hash);
         assert_eq!(
             served.what.op_class.as_str(),
             refused.what.op_class.as_str(),
@@ -2436,9 +2591,9 @@ pub(super) mod session_door {
             "the refusal is chained as one: {:?}",
             refused.outcome
         );
-        assert_eq!(refused.seq, served.seq + 1, "contiguous");
+        assert_eq!(refused.seq, signal.seq + 1, "contiguous");
         assert_eq!(
-            refused.prev_hash, served.hash,
+            refused.prev_hash, signal.hash,
             "linked to the record before"
         );
         assert!(busbar_kernel_audit::AuditChain::verify_window(&records).is_ok());
@@ -2469,8 +2624,8 @@ pub(super) mod session_door {
             &s.scrape().await,
             busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
         );
-        let (status, heard) = s.mint_once().await;
-        assert_eq!(status, StatusCode::OK, "served");
+        let (status, heard) = s.signal_once().await;
+        assert_eq!(status.as_u16(), 201, "the actual signal is served");
         assert!(heard, "dialled");
         let exposition = s.scrape().await;
         assert_eq!(
@@ -2505,6 +2660,18 @@ pub(super) mod session_door {
         assert_eq!(s.money.open_units(), 0);
         assert_eq!(s.post.open_units(), 0);
         assert_eq!(s.lines(), 0, "no record carries counts");
+        let (signal, response) = s.signal(&s.plain).await;
+        assert!(
+            signal.is_client_error(),
+            "the same denied grant cannot open a signal: {response}"
+        );
+        assert!(
+            s.heard.try_recv().is_err(),
+            "nor can the denied signal dial"
+        );
+        assert_eq!(s.requests(), 0, "neither denied entry charges the caller");
+        assert_eq!(s.money.open_units(), 0);
+        assert_eq!(s.post.open_units(), 0);
     }
 
     fn sha1(data: &[u8]) -> [u8; 20] {
