@@ -225,3 +225,166 @@ async fn member_ca_is_scoped_to_members_and_separately_built_root_owners() {
     );
     server.close().await;
 }
+
+async fn read_host_http_response(
+    conns: &dyn busbar_contract::conn::PollConns,
+    owner: busbar_contract::conn::InstanceId,
+    connection: busbar_contract::conn::ConnId,
+) -> Result<(u32, Vec<u8>), busbar_contract::conn::ConnError> {
+    use busbar_contract::conn::PieceKind;
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut bytes = vec![0; 16 * 1024];
+        let mut body = Vec::new();
+        let mut status = None;
+        loop {
+            let piece =
+                std::future::poll_fn(|cx| conns.poll_read(owner, connection, cx, &mut bytes))
+                    .await?;
+            match piece.kind {
+                PieceKind::Fields => status = piece.status_code,
+                PieceKind::Body => {
+                    body.extend_from_slice(&bytes[..piece.len]);
+                    if piece.end {
+                        return Ok((status.expect("the HTTP head precedes its body"), body));
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("the real host-boundary HTTP exchange settles")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn member_ca_is_not_inherited_by_another_declared_need_on_the_same_connector() {
+    use busbar_contract::abi::host::conn::connector::CAUSE_SECURITY;
+    use busbar_contract::conn::{ConnError, NeedId, OpenDesc};
+    use busbar_contract::transport::trust::Anchors;
+
+    let _one = crate::root::PUBLISHING.lock().await;
+    let mut server = TlsToolServer::member_ca_fixture("127.0.0.1", false, false).await;
+    let tools = member(&server);
+    let target = tools["fs"]["url"].as_str().unwrap().to_string();
+    let rig = root_rig("member-ca-need-boundary", server.port, tools).unwrap();
+    served(&rig).await;
+
+    let row = crate::root::loader::dispatch::LinkedRow::of(
+        crate::root::door_steps::tests::tool_door::line_door(),
+    )
+    .expect("the actual loaded MCP declaration");
+    let statement = busbar_contract::abi::mechanism::rendering::read(&row.statement)
+        .expect("the real MCP declaration reads");
+    let (index, spec) = statement
+        .needs
+        .iter()
+        .enumerate()
+        .find(|(_, need)| {
+            need.transport == "http"
+                && need.target_from == "settings.*.url"
+                && need.trust_from == "settings.*.tls"
+        })
+        .expect("the actual MCP HTTP member Need selects the structured TLS bundle");
+    let actual_need = NeedId(u32::try_from(index).unwrap());
+    let foreign_need = NeedId(u32::try_from(statement.needs.len()).unwrap());
+    assert_ne!(actual_need, foreign_need);
+
+    let binding = rig.plane.connection_binding();
+    let owner = binding.owner();
+    let declarations = rig
+        .plane
+        .conn_table()
+        .expect("the actual Root connection table");
+    let conns = &rig
+        .live
+        .reach
+        .as_ref()
+        .expect("the actual member reach")
+        .conns;
+    assert_eq!(
+        std::sync::Arc::as_ptr(&declarations) as *const (),
+        std::sync::Arc::as_ptr(conns) as *const (),
+        "declarations and host reads use the SAME production Connector"
+    );
+    assert_eq!(declarations.declared(owner, actual_need), Some(Ok(())));
+    assert_eq!(declarations.declared(owner, foreign_need), None);
+
+    let fields: &[(&str, &[u8])] = &[("content-type", b"application/json")];
+    let request = OpenDesc {
+        target: &target,
+        member: "fs",
+        method: b"POST",
+        head_target: b"/rpc",
+        fields,
+        body: busbar_contract::conn::Bytes::from_static(
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#,
+        ),
+        timeout_ms: 5_000,
+        ..Default::default()
+    };
+    let actual = declarations
+        .open_request(owner, actual_need, &request, true, 5_000)
+        .expect("the same valid request opens on the actual configured Need");
+    let (status, body) = read_host_http_response(conns.as_ref(), owner, actual)
+        .await
+        .expect("the member CA verifies the real peer on the actual Need");
+    assert_eq!(status, 200);
+    let answer: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(answer["result"]["tools"].is_array());
+    declarations
+        .close(owner, actual)
+        .expect("close the positive host exchange");
+    assert!(server.heard.try_recv().is_ok());
+    while server.heard.try_recv().is_ok() {}
+
+    // This is an adversarial HOST declaration-boundary control, not a claim that the MCP product
+    // naturally opens a foreign Need. Copy its actual ReadNeed to a fresh declared slot so that
+    // transport, member, target, private reach and SPKI remain equal; omit only the member CA.
+    declarations
+        .declare(owner, foreign_need, spec, None, None)
+        .expect("the copied actual carrier Need is explicitly declared");
+    conns
+        .seal_reach(owner, foreign_need, "fs", &target, true)
+        .expect("the control is independently authorized to reach loopback");
+    conns
+        .anchor(
+            owner,
+            foreign_need,
+            "fs",
+            &target,
+            &Anchors {
+                key_pin: Some(server.pin.clone()),
+                private_reach: true,
+                ..Default::default()
+            },
+        )
+        .expect("the control has the same real peer SPKI but no member CA");
+    assert_eq!(declarations.declared(owner, foreign_need), Some(Ok(())));
+    let before = server.http_bytes.load(Ordering::SeqCst);
+    let foreign = declarations
+        .open_request(owner, foreign_need, &request, true, 5_000)
+        .expect("the declared, reach-authorized control starts a real TLS exchange");
+    assert_eq!(
+        read_host_http_response(conns.as_ref(), owner, foreign).await,
+        Err(ConnError::Refused),
+        "a different Need cannot inherit the configured member's CA"
+    );
+    let cause = declarations
+        .cause(owner, foreign)
+        .expect("the real transport refusal");
+    assert_eq!(
+        cause.stage, CAUSE_SECURITY,
+        "the failure is TLS, not undeclared reach"
+    );
+    assert_eq!(server.http_bytes.load(Ordering::SeqCst), before);
+    assert!(server.heard.try_recv().is_err());
+    declarations
+        .close(owner, foreign)
+        .expect("close the refused control");
+
+    // Keep the actual generation guard and owner alive throughout both exchanges. Do not forget
+    // the real owner to clean up a control Need: normal Rig retirement owns that lifecycle.
+    served(&rig).await;
+    assert_eq!(binding.owner(), owner);
+    server.close().await;
+}
