@@ -60,3 +60,20 @@ pub fn requests_settled(reached_admitted: bool, drawn: u32) -> u32 {
         0
     }
 }
+
+/// A receipt changes only the request quantity; origin, usage and the real hold remain intact.
+/// Invalid custody cannot produce a money posting.
+pub(crate) fn requests_drawn_with_lineage(
+    ctx: &crate::teller::UnitCtx,
+    principal: &busbar_contract::caps::PrincipalId,
+    upstream_candidate: bool,
+    lineage: Option<crate::plane_driver::ReservedRequestLineage>,
+) -> Result<u32, busbar_contract::caps::ReasonCode> {
+    match lineage {
+        Some(lineage) => {
+            lineage.consume(ctx, principal)?;
+            Ok(0)
+        }
+        None => Ok(requests_drawn(ctx.origin, upstream_candidate)),
+    }
+}

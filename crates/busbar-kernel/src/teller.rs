@@ -139,6 +139,14 @@ pub use crate::settlement::{
 };
 
 pub trait Units: UnitEnds {
+    /// Consume host custody once, only at the actual hold's terminal posting.
+    fn take_reserved_request_lineage(
+        &self,
+        _ctx: &UnitCtx,
+    ) -> Option<crate::plane_driver::ReservedRequestLineage> {
+        None
+    }
+
     fn govern<'a>(
         &'a self,
         ctx: &'a UnitCtx,
@@ -935,7 +943,30 @@ pub fn exit<U: Units + ?Sized>(
         Some(hold) => {
             let evidence = units.evidence(ctx);
             let Written { amount, flags, fee } = settle_written(&outcome, &evidence);
-            let drawn = requests_drawn(ctx.origin, evidence.upstream_candidate);
+            let drawn = match crate::settlement::requests_drawn_with_lineage(
+                ctx,
+                hold.principal(),
+                evidence.upstream_candidate,
+                units.take_reserved_request_lineage(ctx),
+            ) {
+                Ok(drawn) => drawn,
+                Err(reason) => {
+                    drop_arrival(hold);
+                    run.canary.settled();
+                    return Ended::Settled {
+                        end: UnitEnd::seal(
+                            &Grant::<Exit>::mint_bound(seal, ctx.call),
+                            Outcome::Failed(StepName::Admit, reason),
+                            Err(DurabilityLost::observed(
+                                &Grant::<DurableWrite>::mint_bound(seal, ctx.call),
+                                StepName::Admit,
+                            )),
+                        ),
+                        requests: 0,
+                        fee: 0,
+                    };
+                }
+            };
             let requests = requests_settled(reached_admitted, drawn);
             let class = evidence.class.unwrap_or(KERNEL_ACCRUAL_CLASS);
             let lines = vec![UsageLine {

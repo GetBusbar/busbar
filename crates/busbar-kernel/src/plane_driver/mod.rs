@@ -58,7 +58,10 @@ pub use host::{
     engine_host, engine_host_from_handle, engine_host_value, live_host_factory, live_standing,
     standing_over, CostHandle, EngineHost, EngineHostImpl, GovHandle, LiveHostFactory, MeterPin,
 };
-pub use money::{EndPost, FeeRefund, ParentMoney, PlaneMoney, UnitEnd, UnitMoney};
+pub use money::{
+    EndPost, FeeRefund, ParentMoney, PlaneMoney, ReservedRequestLineage, ReturnedTicketReservation,
+    SpentTicketReservation, TicketReservation, UnitEnd, UnitMoney,
+};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;
 pub use route::{configure_route_policy_headers, HDR_ROUTE_POLICY, HDR_ROUTE_TARGET};
@@ -573,6 +576,11 @@ pub fn sticky_hash(key: &[u8]) -> u64 {
 }
 
 pub trait DriverSteps {
+    /// Remove the sole receipt for an already adopted ticket reservation.
+    fn take_reserved_request_lineage(&self, _ctx: &UnitCtx) -> Option<ReservedRequestLineage> {
+        None
+    }
+
     fn arrival(&self, ctx: &UnitCtx) -> Result<busbar_contract::ArrivalRecord, Refusal>;
 
     fn authenticate(&self, ctx: &UnitCtx) -> Result<Authenticated, Refusal>;
