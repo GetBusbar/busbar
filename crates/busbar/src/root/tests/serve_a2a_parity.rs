@@ -1077,7 +1077,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
     assert!(!verified.scope_allowed("agent", "other"));
     let bearer = format!("Bearer {}", token.expose(&busbar_kernel::seal::lend()));
 
-    let control = Arc::new(cancellation::CardPeerControl::default());
+    let control = Arc::new(cancellation::CardPeerControl::new(&endpoint));
     let peer_control = control.clone();
     let peer_routes = axum::Router::new().fallback(move |request: axum::extract::Request| {
         let card = card.clone();
@@ -1094,12 +1094,20 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             .expect("the actual peer request stays within its byte bound");
             let reply = if method == axum::http::Method::POST {
                 assert_eq!(path, "/agent");
-                assert_eq!(
-                    body.as_ref(),
-                    REQUEST,
-                    "the actual root sends the original request byte for byte"
-                );
-                ANSWER.to_vec()
+                if body.as_ref() == cancellation::WAITER_REQUEST {
+                    serde_json::to_vec(&serde_json::json!({
+                        "jsonrpc": "2.0", "id": 1,
+                        "result": serde_json::from_slice::<serde_json::Value>(&card).unwrap()
+                    }))
+                    .unwrap()
+                } else {
+                    assert_eq!(
+                        body.as_ref(),
+                        REQUEST,
+                        "the actual root sends the original request byte for byte"
+                    );
+                    ANSWER.to_vec()
+                }
             } else {
                 assert_eq!(method, axum::http::Method::GET);
                 assert!(matches!(

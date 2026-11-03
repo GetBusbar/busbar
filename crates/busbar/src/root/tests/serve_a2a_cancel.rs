@@ -17,7 +17,8 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, BLOB_OCTETS};
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneCancelIn, PlaneCancelOut,
-    RecordWrite, UnitCount, EMIT_DONE, FROM_KERNEL,
+    RecordWrite, UnitCount, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
+    PIECE_HAS_STATUS, PIECE_LAST,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::records::VirtualKey;
@@ -29,7 +30,7 @@ use crate::root::loader::dispatch::{kinds::plane::Plane, Dispatcher, Frame, Inli
 // The original cancelled message/send input. It never reaches the peer's POST handler: its
 // verification card GET is held until after the owner has been cancelled and the waiter finishes.
 const OWNER_REQUEST: &[u8] = br#"{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"kind":"message","messageId":"m-1","role":"user","parts":[{"kind":"text","text":"plan"}]}}}"#;
-const WAITER_REQUEST: &[u8] =
+pub(super) const WAITER_REQUEST: &[u8] =
     br#"{"jsonrpc":"2.0","id":1,"method":"GetExtendedAgentCard","params":{}}"#;
 const TARGET: &[u8] = b"/a2a/agents/vendor";
 // The parent's asserted actual A2A snapshot puts POST /a2a/agents/{agent_id} at this index.
@@ -40,12 +41,20 @@ const DEADLINE: Duration = Duration::from_secs(5);
 #[derive(Default)]
 pub(super) struct CardPeerControl {
     fetches: AtomicUsize,
+    endpoint: String,
     hold_next: Mutex<Option<oneshot::Receiver<()>>>,
     held: AtomicBool,
     entered: Notify,
 }
 
 impl CardPeerControl {
+    pub(super) fn new(endpoint: &str) -> Self {
+        Self {
+            endpoint: endpoint.to_owned(),
+            ..Self::default()
+        }
+    }
+
     /// Called only by the parent's real HTTP card handler, immediately before its signed reply.
     pub(super) async fn card_requested(&self) {
         self.fetches.fetch_add(1, Ordering::SeqCst);
@@ -291,6 +300,69 @@ pub(super) async fn run(
         control.held.load(Ordering::SeqCst),
         "the first response stayed held"
     );
+    // The resumed kernel piece opens the verified relay attempt. Complete the same actual
+    // caller/far-end exchange before observing a reply head: an attempt is not a caller reply.
+    assert_eq!(frame.out.reply_status, 0);
+    assert_ne!(frame.out.flags & EMIT_TO_FAR_END, 0);
+    let span = |span: busbar_contract::abi::mechanism::call::Span| {
+        let start = span.offset as usize;
+        &arena[start..start + span.len as usize]
+    };
+    assert_eq!(span(frame.out.verb), b"POST");
+    assert_eq!(span(frame.out.target), b"/agent");
+    frame.input.from = FROM_CALLER;
+    frame.input.flags = PIECE_LAST;
+    frame.input.attempt_no = 0;
+    frame.input.bytes = Blob::of(WAITER_REQUEST).with_fmt(BLOB_OCTETS);
+    frame.out = blank_out();
+    let called =
+        waiter
+            .plane
+            .call_inline(waiter.ticket.ticket(), false, slot::ON_PIECE, &mut frame);
+    assert_eq!(called.outcome, Outcome::Ready, "{:?}", called.error);
+    assert_ne!(frame.out.flags & EMIT_TO_FAR_END, 0);
+    assert_eq!(&reply[..frame.out.emitted as usize], WAITER_REQUEST);
+    let response = reqwest::Client::new()
+        .post(&control.endpoint)
+        .header("content-type", "application/json")
+        .body(reply[..frame.out.emitted as usize].to_vec())
+        .timeout(DEADLINE)
+        .send()
+        .await
+        .expect("the actual waiter reaches the peer");
+    let status = u32::from(response.status().as_u16());
+    assert_eq!(status, 200);
+    let body = response.bytes().await.expect("the actual peer card answer");
+    frame.input.from = FROM_FAR_END;
+    frame.input.flags = PIECE_LAST | PIECE_HAS_STATUS;
+    frame.input.status_code = status;
+    frame.input.bytes = Blob::of(&body).with_fmt(BLOB_OCTETS);
+    frame.out = blank_out();
+    let mut resume = false;
+    tokio::time::timeout(DEADLINE, async {
+        loop {
+            waiter.ticket.register(&waker);
+            let called = waiter.plane.call_inline(
+                waiter.ticket.ticket(),
+                resume,
+                slot::ON_PIECE,
+                &mut frame,
+            );
+            match called.outcome {
+                Outcome::Ready => break,
+                Outcome::Pending => {
+                    resume = true;
+                    wake.notified.notified().await;
+                }
+                other => panic!(
+                    "the actual waiter reply failed: {other:?}: {:?}",
+                    called.error
+                ),
+            }
+        }
+    })
+    .await
+    .expect("the actual waiter reply settles");
     assert_eq!(
         frame.out.reply_status, 200,
         "the actual SDK waiter answers OK"
