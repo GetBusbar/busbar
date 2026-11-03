@@ -216,6 +216,21 @@ fn final_origin_fold_overflow_falls_back_to_fresh_full_tamper_verification() {
     let lane = book.lock().unwrap().lane().unwrap().clone();
     let node = book.lock().unwrap().journal.node();
     let initial = intent();
+    let mut unrelated = initial.clone();
+    unrelated.operation_id = [44; 16];
+    let unrelated = sink
+        .append_candidate(
+            &lane,
+            node,
+            Candidate {
+                event: unrelated,
+                previous_head: None,
+                adoption: None,
+            },
+        )
+        .unwrap();
+    lane.wait_acked(node, unrelated.head.sequence, ACK_DEADLINE)
+        .unwrap();
     let mut event = initial.clone();
     let mut prior = None;
     for _ in 0..130 {
@@ -257,14 +272,9 @@ fn final_origin_fold_overflow_falls_back_to_fresh_full_tamper_verification() {
     );
     assert!(sink.read_origin_for_final_fold(&event).unwrap().is_none());
     sink.verify_origin(&event).unwrap();
-    // Corrupt an ancestor far outside the bounded transcript. Fresh cold proof
+    // Corrupt an unselected operation outside the bounded transcript. Fresh cold proof
     // must still inspect it, rather than trusting the previously successful run.
-    let first = read_chain(slots.calls().as_ref(), node)
-        .unwrap()
-        .first()
-        .unwrap()
-        .node_seq;
-    slots.corrupt(JOURNAL_SCHEMA, &part_key(node, first, 0));
+    slots.corrupt(JOURNAL_SCHEMA, &part_key(node, unrelated.head.sequence, 0));
     assert!(sink.verify_origin(&event).is_err());
 }
 
