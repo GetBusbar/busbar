@@ -208,10 +208,6 @@ mod dispatch_tests;
 #[cfg(test)]
 use actual_mcp as plane_door_plugin;
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/plane_conformance_tests.rs"]
-mod plane_conformance_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
@@ -324,10 +320,6 @@ mod conformance_plane_lending_tests;
 #[path = "tests/conformance_plane_release_tests.rs"]
 mod conformance_plane_release_tests;
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/conformance_plane_sessions_tests.rs"]
-mod conformance_plane_sessions_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
@@ -434,3 +426,13 @@ mod store_memory_facts_actual;
 #[allow(unsafe_code)]
 #[path = "tests/ordinary_plane_ack_drive.rs"]
 mod ordinary_plane_ack_drive;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/ordinary_plane_lifecycle.rs"]
+mod ordinary_plane_lifecycle;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/ordinary_plane_sessions_actual.rs"]
+mod ordinary_plane_sessions_actual;
