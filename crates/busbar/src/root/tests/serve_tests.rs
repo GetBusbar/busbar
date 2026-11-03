@@ -2206,6 +2206,12 @@ pub(super) mod session_door {
             "models": {},
             "groups": groups,
             "hooks": hooks,
+            "pools": {
+                "hooks": opts.hooks.iter()
+                    .filter(|(_, hook)| hook.global)
+                    .map(|(name, _)| *name)
+                    .collect::<Vec<_>>()
+            },
             "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": {"file": signing_file} },
             "store": { "module": module, "settings": settings },
             "advanced": { "allow_destinations": ["127.0.0.1"] },
