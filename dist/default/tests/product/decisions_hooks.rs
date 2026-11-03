@@ -23,6 +23,77 @@ use tower::ServiceExt as _;
 #[path = "../../../../crates/busbar/src/root/tests/test_plugins.rs"]
 mod plugins;
 
+// Each ordinary case owns a real root process: ROOT_CARD's Store binding is
+// intentionally one-time, and a full test binary must not reuse another case's book.
+fn isolated_case() -> bool {
+    const CHILD: &str = "BUSBAR_DECISIONS_HOOKS_CHILD";
+    const WITNESS: &str = "actual Decisions hook assertions completed";
+    let name = std::thread::current()
+        .name()
+        .expect("the exact test is named")
+        .to_owned();
+    if std::env::var(CHILD).ok().as_deref() == Some(name.as_str()) {
+        return false;
+    }
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", &name, "--nocapture"])
+        .env(CHILD, &name)
+        .stdout(std::process::Stdio::piped());
+    let mut settings: Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("actual Store settings");
+    if settings.get("db_path").is_some() {
+        let directory = plugins::scratch("decisions-child-store");
+        settings["db_path"] = json!(directory.join("governance.sqlite"));
+        command.env(
+            "BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS",
+            settings.to_string(),
+        );
+    }
+    let mut child = Child(
+        command
+            .spawn()
+            .expect("start the exact isolated Decisions case"),
+    );
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            use std::io::Read;
+            let mut output = String::new();
+            child
+                .0
+                .stdout
+                .take()
+                .unwrap()
+                .read_to_string(&mut output)
+                .unwrap();
+            assert!(
+                status.success(),
+                "the actual Decisions child failed: {status}: {output}"
+            );
+            assert!(
+                output.contains(WITNESS),
+                "the exact child did not complete its assertions: {output}"
+            );
+            return true;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "the actual Decisions child timed out"
+        );
+        std::thread::park_timeout(std::time::Duration::from_millis(5));
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Bound {
     Global,
@@ -401,6 +472,9 @@ impl Served {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_global_gate_refuses_a_decisions_request_before_its_dial() {
+    if isolated_case() {
+        return;
+    }
     let _one = crate::root::PUBLISHING.lock().await;
     let mut s = served(
         "decisions-hooks-gate",
@@ -417,10 +491,14 @@ async fn a_global_gate_refuses_a_decisions_request_before_its_dial() {
         heard.is_none(),
         "the gated unit reached the provider: {heard:?}"
     );
+    println!("actual Decisions hook assertions completed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_decisions_hooks_rewrite_alters_the_request_the_provider_receives() {
+    if isolated_case() {
+        return;
+    }
     let _one = crate::root::PUBLISHING.lock().await;
     let mut s = served(
         "decisions-hooks-rewrite",
@@ -437,10 +515,14 @@ async fn a_decisions_hooks_rewrite_alters_the_request_the_provider_receives() {
         head.ends_with(r#"{"state":{"amount":0}}"#),
         "the provider received the hook's document, not the caller's: {head}"
     );
+    println!("actual Decisions hook assertions completed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_gate_named_in_decisions_hooks_refuses_the_unit() {
+    if isolated_case() {
+        return;
+    }
     let _one = crate::root::PUBLISHING.lock().await;
     let mut s = served(
         "decisions-hooks-section-gate",
@@ -454,10 +536,14 @@ async fn a_gate_named_in_decisions_hooks_refuses_the_unit() {
     assert_eq!(status.as_u16(), 403, "{body}");
     assert_eq!(body["error"]["message"], "decisions closed", "{body}");
     assert!(heard.is_none(), "{heard:?}");
+    println!("actual Decisions hook assertions completed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn with_no_hook_bound_the_provider_receives_the_callers_bytes() {
+    if isolated_case() {
+        return;
+    }
     let _one = crate::root::PUBLISHING.lock().await;
     let mut s = served(
         "decisions-hooks-none",
@@ -471,4 +557,5 @@ async fn with_no_hook_bound_the_provider_receives_the_callers_bytes() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let head = heard.expect("the provider was dialled");
     assert!(head.ends_with(r#"{"state":{"amount":7}}"#), "{head}");
+    println!("actual Decisions hook assertions completed");
 }
