@@ -902,10 +902,12 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
     let settings = crate::root::test_plugins::application_store_settings(&directory);
+    let signing_file = directory.join("signing.key");
+    std::fs::write(&signing_file, [7u8; 32]).expect("the actual token signing secret");
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
-        "auth": { "chain": ["keys"], "admin_auth": [] },
+        "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": {"file": signing_file} },
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
@@ -1896,13 +1898,38 @@ pub(super) mod session_door {
                 .expect("stage the actual webrequest hook");
         }
         let settings = crate::root::test_plugins::application_store_settings(&directory);
+        let signing_file = directory.join("signing.key");
+        std::fs::write(&signing_file, [7u8; 32]).expect("the actual token signing secret");
+        let hooks: BTreeMap<_, _> = opts
+            .hooks
+            .iter()
+            .map(|(name, hook)| {
+                // The public named-hook grammar carries scope and phase in each definition.
+                // Runtime-only legacy attachment fields are not configuration keys.
+                (
+                    *name,
+                    serde_json::json!({
+                        "module": hook.plugin,
+                        "settings": hook.settings,
+                        "groups": hook.groups,
+                        "phase": hook.resolved_stages(),
+                        "kind": hook.kind,
+                        "timeout_ms": hook.timeout_ms,
+                        "on_error": hook.on_error,
+                        "on_empty": hook.on_empty,
+                        "prompt": hook.prompt,
+                        "user": hook.user,
+                        "priority": hook.priority,
+                    }),
+                )
+            })
+            .collect();
         let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
             "providers": {},
             "models": {},
             "groups": groups,
-            "hooks": opts.hooks.iter().cloned().collect::<std::collections::BTreeMap<_, _>>(),
-            "global_hooks": opts.hooks.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
-            "auth": { "chain": ["keys"], "admin_auth": [] },
+            "hooks": hooks,
+            "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": {"file": signing_file} },
             "store": { "module": module, "settings": settings },
             "advanced": { "allow_destinations": ["127.0.0.1"] },
         }))
@@ -5808,11 +5835,13 @@ async fn serve_configured(
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
     let settings = crate::root::test_plugins::application_store_settings(&directory);
+    let signing_file = directory.join("signing.key");
+    std::fs::write(&signing_file, [7u8; 32]).expect("the actual token signing secret");
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
         "groups": groups,
-        "auth": { "chain": ["keys"], "admin_auth": [] },
+        "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": {"file": signing_file} },
         "store": { "module": module, "settings": settings },
         "advanced": { "allow_destinations": ["127.0.0.1"] },
     }))
