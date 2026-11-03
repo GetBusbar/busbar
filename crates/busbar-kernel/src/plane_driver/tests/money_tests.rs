@@ -1177,7 +1177,7 @@ fn lent_to_p(gov: &GovState) -> String {
 }
 
 fn booted(signer: Option<crate::governance::signing::TokenSigner>) -> GovState {
-    let store = crate::real_store::store();
+    let store: Arc<dyn RecordStore> = crate::real_store::store();
     GovState::new_with_signer(store, None, signer).expect("gov")
 }
 
@@ -1967,7 +1967,7 @@ fn reserved_ticket_adoption_checks_receiving_authority_and_binding() {
         let r = rig(None, 7, ExhaustionMode::FinishUnit);
         let kernel = crate::teller::Kernel::new();
         let source_call = kernel.next_call();
-        let store = crate::real_store::store();
+        let store: Arc<dyn RecordStore> = crate::real_store::store();
         let identity = VerifiedTicketIdentity {
             id: "ticket-test".into(),
             principal: r.key.clone(),
@@ -2016,7 +2016,7 @@ fn reserved_ticket_adoption_checks_receiving_authority_and_binding() {
         }
         let other_node = Arc::new(());
         let other_instance = Arc::new(());
-        let other_store = crate::real_store::store();
+        let other_store: Arc<dyn RecordStore> = crate::real_store::store();
         let other_money = PlaneMoney::new(r.gov.clone(), r.posted.clone());
         let outcome = spent.adopt(
             if mismatch == 9 {
