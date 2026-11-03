@@ -116,7 +116,8 @@ async fn actual_inbound_generation_keeps_only_original_request_authority() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config.clone(),
+        busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the unchanged deployment resolves for its first actual build"),
         plugin_config.clone(),
         None,
         Default::default(),

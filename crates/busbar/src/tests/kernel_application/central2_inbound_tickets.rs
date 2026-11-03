@@ -262,7 +262,17 @@ async fn actual_ticket_preflight_preserves_unspent_custody_and_invalid_prefix_re
                 .id,
             key.id
         );
-        let mut changed = original.stripped(&answer.strips).unwrap();
+        let mut changed = original.clone();
+        assert!(
+            changed.query.is_none(),
+            "this actual ticket request carries no query fields"
+        );
+        changed.fields.retain(|(name, _)| {
+            !answer.strips.iter().any(|strip| {
+                strip.place == busbar_contract::auth_calls::StripPlace::Field
+                    && strip.name.eq_ignore_ascii_case(name)
+            })
+        });
         changed.target = "/different".into();
         assert_eq!(
             inbound
