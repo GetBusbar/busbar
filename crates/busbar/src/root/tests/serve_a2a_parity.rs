@@ -855,17 +855,14 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         .unwrap()
         .name;
     let directory = crate::root::test_plugins::scratch("actual-a2a-parity");
-    let mut manifest = crate::root::test_plugins::manifest(
-        "store",
-        &module,
-        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
-    );
+    let mut manifest = crate::root::test_plugins::manifest("store", &module, "third-party");
     manifest.statement = Some(hex::encode(stated));
     let archive = crate::root::test_plugins::signed(
-        &crate::dist_root_install::release_key(),
+        &crate::root::test_plugins::key(0x33),
         manifest,
         &std::fs::read(&store_path).unwrap(),
     );
+    let store_pin = busbar_contract::redacted::sha256_hex(&archive);
     std::fs::write(directory.join("store.tar.gz"), archive).unwrap();
     let operator_file = directory.join("operator.token");
     std::fs::write(&operator_file, ADMIN_TOKEN).unwrap();
@@ -896,11 +893,26 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         signing_file.to_string_lossy().into_owned(),
     ));
     config.per_request_fee = 1;
-    let plugins = busbar_kernel::config::PluginsCfg {
+    let mut plugins = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
+        fetch: serde_json::from_value(serde_json::json!([{
+            "url":"https://plugins.example/store.tar.gz", "sha256":store_pin
+        }]))
+        .expect("the operator pins the exact signed Store archive"),
         ..Default::default()
     };
+    plugins
+        .trust
+        .publishers
+        .push(busbar_kernel::config::PluginPublisher {
+            name: "third-party".into(),
+            public_key: hex::encode(
+                crate::root::test_plugins::key(0x33)
+                    .verifying_key()
+                    .as_bytes(),
+            ),
+        });
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
         Arc::new(crate::root::door_steps::Rules::default());
     for step in crate::ROOT_UNITS.iter().filter_map(|unit| unit.on_config) {
