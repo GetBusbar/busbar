@@ -952,7 +952,7 @@ fn generate_signing_key_emits_a_usable_referenced_key() {
 }
 
 #[cfg(linked_section_pools)]
-fn run_busbar_with_overlay(dir: &Path, overlay: &Path, args: &[&str]) -> (i32, String, String) {
+fn write_legacy_overlay_selector(dir: &Path, overlay: &Path) {
     let config_path = dir.join("config.yaml");
     let mut config = std::fs::read_to_string(&config_path).expect("read fixture config.yaml");
 
@@ -964,7 +964,36 @@ fn run_busbar_with_overlay(dir: &Path, overlay: &Path, args: &[&str]) -> (i32, S
         std::fs::write(&config_path, config)
             .expect("rewrite fixture config.yaml with overlay pointer");
     }
+}
+
+#[cfg(linked_section_pools)]
+fn overlay_validation_tree(dir: &Path) -> std::collections::BTreeMap<PathBuf, Option<Vec<u8>>> {
+    fn walk(
+        root: &Path,
+        dir: &Path,
+        tree: &mut std::collections::BTreeMap<PathBuf, Option<Vec<u8>>>,
+    ) {
+        for entry in std::fs::read_dir(dir).expect("read the CLI fixture tree") {
+            let path = entry.unwrap().path();
+            let key = path.strip_prefix(root).unwrap().to_path_buf();
+            if path.is_dir() {
+                tree.insert(key, None);
+                walk(root, &path, tree);
+            } else {
+                tree.insert(key, Some(std::fs::read(path).unwrap()));
+            }
+        }
+    }
+    let mut tree = std::collections::BTreeMap::new();
+    walk(dir, dir, &mut tree);
+    tree
+}
+
+#[cfg(linked_section_pools)]
+fn run_busbar_with_overlay(dir: &Path, overlay: &Path, args: &[&str]) -> (i32, String, String) {
+    write_legacy_overlay_selector(dir, overlay);
     let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+        .current_dir(dir)
         .args(args)
         .env("MOCK_KEY", "test-key-value")
         .env(
@@ -984,30 +1013,48 @@ fn run_busbar_with_overlay(dir: &Path, overlay: &Path, args: &[&str]) -> (i32, S
 
 #[cfg(linked_section_pools)]
 #[test]
-fn validate_applies_and_rejects_a_bad_root_overlay() {
+fn validate_keeps_legacy_overlay_files_outside_the_store_only_root() {
     let dir = fixture_dir("rootovl");
     write_configs(&dir, "");
     let overlay = dir.join("overlay.json");
-
     std::fs::write(
         &overlay,
         r#"{"version":1,"root":{"limits":{"reasoning_effort_budgets":{"minimal":16384,"low":8192,"medium":4096,"high":1024}}}}"#,
-    )
-    .unwrap();
-    let (code, _stdout, stderr) = run_busbar_with_overlay(&dir, &overlay, &["--validate"]);
-    assert_eq!(code, 1, "a bad root overlay fails --validate: {stderr}");
-    assert!(
-        stderr.contains("reasoning_effort_budgets") && stderr.contains("ascending"),
-        "the overlay's root section was validated: {stderr}"
-    );
-
-    let (code, stdout, stderr) =
-        run_busbar_with_overlay(&dir, &overlay, &["--validate", "--safe-mode"]);
-    assert_eq!(
-        code, 0,
-        "--safe-mode ignores the overlay root: stdout={stdout} stderr={stderr}"
-    );
-    assert!(stdout.contains("ok: config valid"), "got {stdout}");
+    ).unwrap();
+    write_legacy_overlay_selector(&dir, &overlay);
+    for args in [vec!["--validate"], vec!["--validate", "--safe-mode"]] {
+        let before = overlay_validation_tree(&dir);
+        let (code, stdout, stderr) = run_busbar_with_overlay(&dir, &overlay, &args);
+        assert_eq!(
+            code, 0,
+            "a retired file selector cannot replace the configured Store: {stderr}"
+        );
+        assert!(stdout.contains("ok: config valid"), "{stdout}");
+        assert_eq!(
+            overlay_validation_tree(&dir),
+            before,
+            "native validation must not import, quarantine, or rewrite a legacy overlay file"
+        );
+    }
+    write_configs(&dir, "limits:\n  reasoning_effort_budgets: {minimal: 16384, low: 8192, medium: 4096, high: 1024}\n");
+    write_legacy_overlay_selector(&dir, &overlay);
+    for args in [vec!["--validate"], vec!["--validate", "--safe-mode"]] {
+        let before = overlay_validation_tree(&dir);
+        let (code, _, stderr) = run_busbar_with_overlay(&dir, &overlay, &args);
+        assert_eq!(
+            code, 1,
+            "an invalid actual root config must still fail: {stderr}"
+        );
+        assert!(
+            stderr.contains("reasoning_effort_budgets") && stderr.contains("ascending"),
+            "the actual root was validated even in safe mode: {stderr}"
+        );
+        assert_eq!(
+            overlay_validation_tree(&dir),
+            before,
+            "a refused native validation has no file effects"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1030,37 +1077,57 @@ fn validate_ok_on_valid_root_overlay() {
 
 #[cfg(linked_section_pools)]
 #[test]
-fn validate_honors_deprecated_busbar_config_overlay_env_var() {
+fn validate_deprecated_overlay_env_does_not_override_or_mutate_the_store_only_root() {
     let dir = fixture_dir("ovlenvdep");
     write_configs(&dir, "");
-    let bad_overlay = dir.join("bad-overlay.json");
+    let overlay = dir.join("bad-overlay.json");
     std::fs::write(
-        &bad_overlay,
+        &overlay,
         r#"{"version":1,"root":{"limits":{"reasoning_effort_budgets":{"minimal":16384,"low":8192,"medium":4096,"high":1024}}}}"#,
-    )
-    .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
-        .args(["--validate"])
-        .env("MOCK_KEY", "test-key-value")
-        .env(
-            "BUSBAR_SIGNING_KEY",
-            "0000000000000000000000000000000000000000000000000000000000000001",
-        )
-        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
-        .env("BUSBAR_CONFIG_OVERLAY", &bad_overlay)
+    ).unwrap();
+    let before = overlay_validation_tree(&dir);
+    let out = command(&dir)
+        .current_dir(&dir)
+        .arg("--validate")
+        .env("BUSBAR_CONFIG_OVERLAY", &overlay)
         .output()
-        .expect("run busbar");
-    let code = out.status.code().unwrap_or(-1);
+        .expect("run the native validator");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(
-        code, 1,
-        "the deprecated BUSBAR_CONFIG_OVERLAY env var must still be honored, so the bad overlay IS \
-         applied and validate fails: {stderr}"
+        out.status.code(),
+        Some(0),
+        "the retired environment selector cannot import a file overlay: {stderr}"
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("ok: config valid"));
+    assert_eq!(
+        overlay_validation_tree(&dir),
+        before,
+        "the deprecated selector must not import, rewrite, or quarantine files"
+    );
+    // A legacy file cannot repair an invalid real root, either.
+    std::fs::write(&overlay, r#"{"version":1,"root":{"limits":{"reasoning_effort_budgets":{"minimal":1024,"low":4096,"medium":8192,"high":16384}}}}"#).unwrap();
+    write_configs(&dir, "limits:\n  reasoning_effort_budgets: {minimal: 16384, low: 8192, medium: 4096, high: 1024}\n");
+    let before = overlay_validation_tree(&dir);
+    let out = command(&dir)
+        .current_dir(&dir)
+        .arg("--validate")
+        .env("BUSBAR_CONFIG_OVERLAY", &overlay)
+        .output()
+        .expect("run the invalid-root native validator");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "an invalid real root remains refused: {stderr}"
     );
     assert!(
         stderr.contains("reasoning_effort_budgets") && stderr.contains("ascending"),
-        "the env-selected overlay's root section was validated: {stderr}"
+        "{stderr}"
+    );
+    assert_eq!(
+        overlay_validation_tree(&dir),
+        before,
+        "invalid-root validation has no file effects"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
