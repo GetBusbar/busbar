@@ -23,20 +23,6 @@ use tower::ServiceExt as _;
 #[path = "../../../../crates/busbar/src/root/tests/test_plugins.rs"]
 mod plugins;
 
-static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
-    std::sync::LazyLock::new(|| {
-        let history = crate::root::kernel::RootHistory::default();
-        history.apply(
-            crate::root::kernel::card_from_config(
-                std::iter::empty::<(&str, busbar_contract::billing::RawTierRates)>(),
-                0,
-                true,
-            ),
-            1_000,
-        );
-        history
-    });
-
 #[derive(Clone, Copy)]
 enum Bound {
     Global,
@@ -148,6 +134,7 @@ struct Served {
     token: String,
     heard: tokio::sync::mpsc::UnboundedReceiver<String>,
     _handle: Arc<AppHandle>,
+    _book: crate::root::durability::NodeBook,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -256,7 +243,17 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         &rules,
     )
     .expect("the production root builds the decisions application");
+    limits.stage_boot();
+    let book = crate::root::boot::book(&app, &store)
+        .expect("the actual Store binds root card history before activation");
     limits.keep().expect("commit actual application limits");
+    let ctx = crate::root::linked::BookCtx {
+        book: &book,
+        app: &app,
+    };
+    for step in crate::ROOT_UNITS.iter().filter_map(|unit| unit.on_book) {
+        step(&ctx);
+    }
     if let Some(rotate) = rotate {
         rotate();
     }
@@ -304,7 +301,6 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         .expect("the actual decisions door binds"),
     );
     let node = Arc::new(crate::root::plane_node::Node::new());
-    let book = crate::root::durability::node_book();
     node.bind_book(book.durability.clone());
     let post = Arc::new(crate::root::plane_node::NodeEndPost::new(node));
     let money_gov = gov.clone();
@@ -356,8 +352,13 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
     )
     .expect("the actual root composes decisions egress and hooks");
     composed.post = Some(post);
-    let doors = crate::root::serve::door_routes(composed, || CARD.pin(), &[], &[])
-        .expect("actual decisions routes mount");
+    let doors = crate::root::serve::door_routes(
+        composed,
+        || crate::root::kernel::ROOT_CARD.pin(),
+        &[],
+        &[],
+    )
+    .expect("actual decisions routes mount");
     let (router, _, handle) =
         busbar_kernel::build_split_routers_serving(app, doors, 1 << 20, 0, false);
     credential_handle.set(handle.clone());
@@ -366,6 +367,7 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         token: token.expose(&busbar_kernel::seal::lend()).to_owned(),
         heard,
         _handle: handle,
+        _book: book,
         tasks: vec![provider_task, hook_task],
     }
 }
