@@ -312,7 +312,7 @@ fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
         logs: &logs,
         metrics: Arc::new(NoSink),
         dispatcher: Adopter::unwatched(),
-        conns: crate::dispatch::ConnTable::NoNeeds,
+        conns: crate::dispatch::ConnTable::Probe,
         max_inflight_cap: 8,
         opening: None,
     })
@@ -434,7 +434,7 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
             Arc::new(NoSink),
             Adopter::unwatched(),
             8,
-            crate::dispatch::ConnTable::NoNeeds,
+            crate::dispatch::ConnTable::Probe,
         )
         .expect("the plane binds");
         (stated, bound)
@@ -486,7 +486,7 @@ fn a_plane_config_does_not_use_is_never_opened() {
             Arc::new(NoSink),
             Adopter::unwatched(),
             8,
-            crate::dispatch::ConnTable::NoNeeds,
+            crate::dispatch::ConnTable::Probe,
         )
         .map(|bound| bound.into_iter().map(|(i, _)| i).collect::<Vec<_>>())
     };
@@ -617,7 +617,7 @@ fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
         Arc::new(NoSink),
         Adopter::unwatched(),
         8,
-        crate::dispatch::ConnTable::NoNeeds,
+        crate::dispatch::ConnTable::Probe,
     )
     .expect_err("a pin naming no mechanism must refuse the boot");
     assert!(err.contains("trust_key.mechanisms"), "{err}");
@@ -631,7 +631,7 @@ fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
         Arc::new(NoSink),
         Adopter::unwatched(),
         8,
-        crate::dispatch::ConnTable::NoNeeds,
+        crate::dispatch::ConnTable::Probe,
     )
     .expect("the well-formed plane binds");
 }
