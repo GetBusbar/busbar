@@ -84,7 +84,9 @@ extern "C" fn observe_open(
     let actual = actual_store::door();
     // SAFETY: the actual Store's operation table is validated and permanently retained.
     let ops = unsafe { &*actual.ops().cast::<busbar_contract::abi::store::Ops>() };
-    ops.head.open.expect("actual SQLite OPEN")(instance, input, out)
+    // SAFETY: delegate the unchanged OPEN instance and live host input/output frames to
+    // the retained Store operation; observation above neither mutates nor retains them.
+    unsafe { ops.head.open.expect("actual SQLite OPEN")(instance, input, out) }
 }
 extern "C" fn observed_store() -> &'static Door {
     static SLOT: OnceLock<usize> = OnceLock::new();
