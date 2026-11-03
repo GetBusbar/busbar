@@ -22,7 +22,7 @@ pub const FIXTURE_PUBLISHER: &str = "distribution-fixture";
 
 /// Trust the exact staged fixture archives through ordinary configured-publisher admission.
 pub fn trusted_config(directory: &Path) -> busbar_kernel::config::PluginsCfg {
-    trusted_config_with_key(directory, &crate::dist_root_install::release_key())
+    trusted_config_with_key(directory, &key(0x5a))
 }
 
 pub fn trusted_config_with_key(

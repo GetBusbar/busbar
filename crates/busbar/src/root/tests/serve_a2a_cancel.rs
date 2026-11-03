@@ -337,7 +337,12 @@ pub(super) async fn run(
     frame.input.from = FROM_FAR_END;
     frame.input.flags = PIECE_LAST | PIECE_HAS_STATUS;
     frame.input.status_code = status;
-    frame.input.bytes = Blob::of(&body).with_fmt(BLOB_OCTETS);
+    frame.input.bytes = Blob {
+        ptr: body.as_ptr(),
+        len: body.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
     frame.out = blank_out();
     let mut resume = false;
     tokio::time::timeout(DEADLINE, async {
