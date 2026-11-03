@@ -954,7 +954,11 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         // every other class the actual plane declares as free, as product validation requires.
         for entry in card.values_mut() {
             for class in &plane.served().billable_classes {
-                if !busbar_contract::records::RESERVED_UNITS.contains(class) {
+                // Fee units are configured by per_request_fee/plane fees, not by
+                // the open-unit rate card. Listing one here would price it twice.
+                if !busbar_contract::records::RESERVED_UNITS.contains(class)
+                    && !plane.served().fee_units.contains(class)
+                {
                     entry.units.entry((*class).to_string()).or_default();
                 }
             }
