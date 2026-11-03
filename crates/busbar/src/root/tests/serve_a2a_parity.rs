@@ -822,7 +822,12 @@ fn raw_relay_and_lifecycle(
     refresh.input.generation = 2;
     refresh.input.settings = blob(&settings, BLOB_JSON);
     let (answer, snapshot) = plane.refresh(&mut refresh);
-    assert_eq!(answer.outcome, Outcome::Ready);
+    assert_eq!(
+        answer.outcome,
+        Outcome::Ready,
+        "actual REFRESH: {:?}",
+        answer.error
+    );
     let snapshot = snapshot.expect("the actual refreshed snapshot is owned by the host");
     assert_eq!(snapshot.generation, 2);
     assert_eq!(snapshot.claims.len(), 20);
