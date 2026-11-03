@@ -72,7 +72,7 @@ fn boot_refusal_releases_the_completed_candidates_routes_without_committing_limi
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -98,11 +98,7 @@ fn boot_refusal_releases_the_completed_candidates_routes_without_committing_limi
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let refusing = Arc::new(RefuseBoot::default());
     let rules: Arc<dyn RootRules> = refusing.clone();
     let refusal = match busbar_kernel::build_app_from_config(
@@ -163,7 +159,7 @@ fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_the_old
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -189,11 +185,7 @@ fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_the_old
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let accepting: Arc<dyn RootRules> = Arc::new(busbar_kernel::appbuild::AcceptAll);
     let (prior, rotate, limits) = busbar_kernel::build_app_from_config(
         {
@@ -254,7 +246,7 @@ fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -280,11 +272,7 @@ fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let mut config = config;
     config.allow_all_metadata = true;
     let expected = config.destinations();
@@ -367,7 +355,7 @@ fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -393,11 +381,7 @@ fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let mut config = config;
     let rules: Arc<dyn RootRules> = Arc::new(Refusing);
     config.public_url = Some(REFUSED.to_string());

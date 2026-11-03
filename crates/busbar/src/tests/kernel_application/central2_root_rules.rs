@@ -71,7 +71,7 @@ fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_banner() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -115,11 +115,7 @@ fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_banner() {
         "wide".into(),
         serde_json::from_value(serde_json::json!({"members":members})).unwrap(),
     );
-    let plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(

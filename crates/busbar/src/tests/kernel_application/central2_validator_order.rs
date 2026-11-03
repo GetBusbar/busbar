@@ -72,7 +72,7 @@ fn secrets_block_rejects_builtin_resolver_names() {
         let mut manifest = plugins::manifest(
             "store",
             &module,
-            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -103,11 +103,7 @@ fn secrets_block_rejects_builtin_resolver_names() {
         let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the product deployment resolves");
         cfg.providers.get_mut("acme").unwrap().api_key = busbar_kernel::config::SecretRef::env("K");
-        let plugins_cfg = busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        };
+        let plugins_cfg = crate::root::test_plugins::trusted_config(&directory);
         cfg.secrets.insert(
             reserved.to_string(),
             busbar_kernel::config::SecretModuleCfg::default(),
@@ -213,7 +209,7 @@ fn one_validator_refuses_in_one_order() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -243,11 +239,7 @@ fn one_validator_refuses_in_one_order() {
     .expect("the product deployment parses");
     let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let plugins = crate::root::test_plugins::trusted_config(&directory);
     let check = |cfg: &busbar_kernel::config::RootCfg,
                  root: &dyn Fn(&busbar_kernel::config::RootCfg) -> Result<(), String>,
                  resolve_builtins: bool| {

@@ -78,7 +78,7 @@ fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -126,11 +126,7 @@ fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let result = busbar_kernel::build_app_from_config(
         cfg,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
+        crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
         Default::default(),
@@ -229,7 +225,7 @@ fn boot_starts_a_keyless_lane_declared_none() {
     let mut manifest = plugins::manifest(
         "store",
         &module,
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
@@ -266,11 +262,7 @@ fn boot_starts_a_keyless_lane_declared_none() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let result = busbar_kernel::build_app_from_config(
         cfg,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
+        crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
         Default::default(),
