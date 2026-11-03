@@ -89,9 +89,16 @@ fn fenced_mutation(
     calls: &dyn StoreCalls,
     lease: &HeldLease,
     mutation: Mutation,
+    mut initial_fence: Option<Predicate>,
 ) -> Result<(), String> {
     loop {
-        let Some(predicate) = lease.predicate(calls)? else {
+        // Consume an already-read exact fence only once. A conflict always re-reads the
+        // current lease; renewal never turns this into a stale-predicate retry loop.
+        let current = match initial_fence.take() {
+            Some(predicate) => Some(predicate),
+            None => lease.predicate(calls)?,
+        };
+        let Some(predicate) = current else {
             return Err("a journal fence was released while its writer was active".into());
         };
         let request = super::conditional::candidate(vec![predicate], vec![mutation.clone()]);
@@ -117,8 +124,9 @@ pub(super) fn put_record(
         super::audit_heads::Write::New(advance) => Some(advance),
     };
     let parts = parts_of(record)?;
-    let fenced = lease.predicate(calls)?.is_some();
-    if fenced {
+    let first_fence = lease.predicate(calls)?;
+    let fenced = first_fence.is_some();
+    if let Some(first_fence) = first_fence {
         fenced_mutation(
             calls,
             lease,
@@ -127,6 +135,7 @@ pub(super) fn put_record(
                 prefix: part_key(record.node, record.node_seq, 0)[..16].to_vec(),
                 exact_key_length: 18,
             },
+            Some(first_fence),
         )?;
     }
     for (part, value) in parts.iter().enumerate() {
@@ -147,6 +156,7 @@ pub(super) fn put_record(
                     key: key.to_vec(),
                     value: value.as_slice().to_vec(),
                 },
+                None,
             )?;
         } else {
             wait_for(calls.record_put(JOURNAL_SCHEMA, &key, value)).map_err(|f| f.to_string())?;
@@ -1065,6 +1075,55 @@ mod recovery_record_tests {
             .bind_recovery_identity(slots.calls().as_ref(), host, taken.id)
             .unwrap();
         (taken.id, lease)
+    }
+
+    #[test]
+    fn first_delete_fence_is_exact_and_a_conflict_rechecks_current_custody() {
+        use super::super::store_identity::{lease_row, set_lease_expiry};
+        use std::sync::atomic::AtomicUsize;
+
+        for release in [false, true] {
+            let slots = RecordSlots::new();
+            let host = format!("first-delete-fence-{release}");
+            let (node, lease) = identity(&slots, &host);
+            let first = lease.predicate(slots.calls().as_ref()).unwrap().unwrap();
+            let expected = first.expected.clone();
+            let probes = Arc::new(AtomicUsize::new(0));
+            let observed = Arc::clone(&probes);
+            let probe_slots = slots.clone();
+            slots.on_transaction(move |request| {
+                if !request.mutations.iter().any(|mutation| {
+                    matches!(mutation, Mutation::DeleteRange { schema, .. } if schema == JOURNAL_SCHEMA)
+                }) {
+                    return None;
+                }
+                if observed.fetch_add(1, Ordering::AcqRel) == 0 {
+                    assert_eq!(request.predicates[0].expected, expected);
+                    let calls = probe_slots.calls();
+                    let (_, expires) = lease_row(calls.as_ref(), &host).unwrap();
+                    set_lease_expiry(calls.as_ref(), &host, if release { 0 } else { expires + 1 });
+                } else {
+                    assert_ne!(request.predicates[0].expected, expected,
+                        "a conflicted first CAS must use the freshly read raw fence");
+                }
+                None
+            });
+            let record = Record::new(node, 17, vec![42; PART_BYTES + 1]);
+            let result = put_record(slots.calls().as_ref(), &lease, &record);
+            slots.on_transaction(|_| None);
+            if release {
+                assert!(
+                    result.is_err(),
+                    "released custody cannot delete or put any part"
+                );
+                assert_eq!(probes.load(Ordering::Acquire), 1);
+                assert_eq!(slots.rows_under(JOURNAL_SCHEMA), 0);
+            } else {
+                result.expect("normal renewal refreshes the exact conditional predicate");
+                assert_eq!(probes.load(Ordering::Acquire), 2);
+                confirm_record_bytes(slots.calls().as_ref(), &record).unwrap();
+            }
+        }
     }
 
     #[test]
