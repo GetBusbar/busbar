@@ -1564,6 +1564,7 @@ async fn nested_anonymous_admission_matches_the_arrival_rule() {
 /// the actual request's draft/hold/audit path.
 struct ReservedSource {
     owner: super::TicketSourceOwner,
+    money: Arc<PlaneMoney>,
     _table: busbar_kernel::inflight::InFlight,
     _slot: Arc<busbar_kernel::inflight::UnitSlot>,
     cost: Arc<CostModel>,
@@ -1612,7 +1613,13 @@ fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
             now,
         )
         .expect("the actual governor mints a source key");
-    let key = Arc::new(key);
+    // Match the host's authenticated principal: a real Store may normalize persisted key
+    // metadata, so the mint's write input is not the source's resolved binding.
+    let key = g
+        .gov
+        .lookup_by_sub(&key.id)
+        .expect("the host resolves the actual stored source key");
+    let money = Arc::clone(&g.served.planes[0].money);
     let node = g.post.node();
     let unit = node.mint();
     let (kernel, _) = node.kernel_and_keys();
@@ -1647,7 +1654,7 @@ fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
             .expect("one paid source admission"),
     );
     let live = g.served.planes[0].live.current();
-    g.money.open_admitted(
+    money.open_admitted(
         unit,
         UnitMoney {
             key: Arc::clone(&key),
@@ -1678,8 +1685,14 @@ fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
         },
         &slot,
     );
+    drop(
+        money
+            .parent_money(unit, &key)
+            .expect("the actual served book owns the original live admission"),
+    );
     ReservedSource {
         owner,
+        money,
         _table: table,
         _slot: slot,
         cost,
@@ -1819,7 +1832,7 @@ async fn a_root_ticket_stays_pending_until_ack_and_concurrent_claims_move_one_re
             .is_err(),
         "one actual mint source cannot reserve twice"
     );
-    g.money.settle_end(source.unit, 200);
+    source.money.settle_end(source.unit, 200);
     assert_concurrent_custody(&g, &source.group, true, source.now);
     source.owner.custody.terminal(source.unit, true);
     let second = g
@@ -1847,7 +1860,7 @@ async fn failed_mint_completion_burns_pending_custody_without_refunding_its_requ
         .gov
         .prepare_ticket_redemption("custody_test", &credential, source.now)
         .unwrap();
-    g.money.settle_end(source.unit, 200);
+    source.money.settle_end(source.unit, 200);
     assert_concurrent_custody(&g, &source.group, true, source.now);
     source.owner.custody.terminal(source.unit, false);
     source.owner.custody.terminal(source.unit, true);
@@ -1876,7 +1889,7 @@ async fn source_unregister_and_shutdown_burn_owned_custody_outside_the_maps() {
         .gov
         .prepare_ticket_redemption("custody_test", &credential, source.now)
         .unwrap();
-    g.money.settle_end(source.unit, 200);
+    source.money.settle_end(source.unit, 200);
     let ReservedSource {
         owner,
         key,
@@ -1915,7 +1928,7 @@ async fn source_unregister_and_shutdown_burn_owned_custody_outside_the_maps() {
         .gov
         .prepare_ticket_redemption("custody_test", &credential, source.now)
         .unwrap();
-    g.money.settle_end(source.unit, 200);
+    source.money.settle_end(source.unit, 200);
     source.owner.custody.terminal(source.unit, true);
     source.owner.custody.shutdown();
     assert!(source.owner.custody.claim(&identity).is_none());
@@ -1929,7 +1942,7 @@ async fn root_custody_expiry_obeys_store_liveness_and_preserves_the_paid_request
     let g = governed("root-ticket-expiry", true);
     let source = reserved_source(&g, "root-ticket-live-cap");
     let (credential, _) = mint_reserved_source(&g, &source, source.now);
-    g.money.settle_end(source.unit, 200);
+    source.money.settle_end(source.unit, 200);
     source.owner.custody.terminal(source.unit, true);
     source.owner.custody.sweep().await;
     assert_concurrent_custody(&g, &source.group, true, source.now);
@@ -1949,7 +1962,7 @@ async fn root_custody_expiry_obeys_store_liveness_and_preserves_the_paid_request
 
     let source = reserved_source(&g, "root-ticket-expired-cap");
     let _expired = mint_reserved_source(&g, &source, source.now - 120);
-    g.money.settle_end(source.unit, 200);
+    source.money.settle_end(source.unit, 200);
     source.owner.custody.terminal(source.unit, true);
     source.owner.custody.sweep().await;
     assert_concurrent_custody(&g, &source.group, false, source.now);
@@ -2071,7 +2084,7 @@ async fn a_root_reservation_rejects_a_different_full_key_and_an_exited_loaded_ge
         .unwrap()
         .tickets
         .is_empty());
-    g.money.settle_end(source.unit, 200);
+    source.money.settle_end(source.unit, 200);
     assert_concurrent_custody(&g, &source.group, false, source.now);
     assert_source_request_retained(&g, &source);
 
@@ -2081,7 +2094,7 @@ async fn a_root_reservation_rejects_a_different_full_key_and_an_exited_loaded_ge
         .gov
         .prepare_ticket_redemption("custody_test", &credential, source.now)
         .unwrap();
-    g.money.settle_end(source.unit, 200);
+    source.money.settle_end(source.unit, 200);
     source.owner.custody.terminal(source.unit, true);
     {
         let mut current = g.served.planes[0].live.live.write().unwrap();
