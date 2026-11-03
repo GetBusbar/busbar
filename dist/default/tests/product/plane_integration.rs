@@ -774,6 +774,23 @@ mod metrics_scrape {
         }
         let app = Arc::new(app);
 
+        let (_, traffic_token) = app
+            .governance
+            .as_ref()
+            .expect("actual governance book")
+            .mint_signed(
+                busbar_kernel::governance::NewKeySpec {
+                    name: "plane-metrics-traffic".to_string(),
+                    ..Default::default()
+                },
+                busbar_kernel::store::now().saturating_add(300),
+                busbar_kernel::store::now(),
+            )
+            .expect("mint an actual credential for traffic through the protected plane doors");
+        let traffic_bearer = format!(
+            "Bearer {}",
+            traffic_token.expose(&busbar_kernel::seal::lend())
+        );
         let router = plane_router(app, &sections, usize::MAX, &["keys"]);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -783,6 +800,7 @@ mod metrics_scrape {
 
         let door_status = client
             .post(format!("{base}{door_mount}"))
+            .header("authorization", &traffic_bearer)
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -797,6 +815,7 @@ mod metrics_scrape {
 
         let agents_status = client
             .post(format!("{base}{agents_mount}/agents/planner"))
+            .header("authorization", &traffic_bearer)
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 1,
