@@ -1497,16 +1497,31 @@ fn answer_over_seeded_ledger(request: AdminRequest) -> AdminAnswer {
 }
 
 #[cfg(feature = "root-admin")]
+fn one_lane_rates() -> std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg> {
+    crate::dist_root_install::install();
+    let mut entry = busbar_kernel::config::RateEntryCfg {
+        input_utok: 2.5,
+        ..Default::default()
+    };
+    let plane = busbar_kernel::plane_driver::registry::plane_decl_for(
+        busbar_kernel::plane_driver::dispatch::fallback_key(),
+    )
+    .expect("the actual fallback plane declares its billable classes");
+    let zero = serde_json::from_value(serde_json::json!(0)).expect("an exact free unit rate");
+    for class in plane.billable_classes {
+        if !busbar_contract::records::RESERVED_UNITS.contains(&class.class)
+            && !plane.fee_units.contains(&class.class)
+        {
+            entry.units.insert(class.class.to_owned(), zero);
+        }
+    }
+    std::collections::BTreeMap::from([("m".to_string(), entry)])
+}
+
+#[cfg(feature = "root-admin")]
 fn one_lane_card() -> busbar_kernel::cost::CostModel {
-    let rates = std::collections::BTreeMap::from([(
-        "m".to_string(),
-        busbar_kernel::config::RateEntryCfg {
-            input_utok: 2.5,
-            ..Default::default()
-        },
-    )]);
     busbar_kernel::cost::CostModel::resolve_parts(
-        Some(&rates),
+        Some(&one_lane_rates()),
         0,
         &std::collections::BTreeMap::new(),
     )
@@ -1547,14 +1562,28 @@ fn answer_over_counts(
         settings.is_object(),
         "the actual Store settings are an object"
     );
+    let dialects: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/plane_node_dialects.json"
+    ))
+    .expect("the actual model dialects are recorded");
+    let dialect = dialects["body_model"]
+        .as_object()
+        .and_then(|rows| rows.keys().next())
+        .expect("the distribution links a model dialect");
+    let providers = busbar_kernel::config::providers::catalog_from_str(&format!(
+        "wire:\n  protocol: {dialect}\n  base_url: http://127.0.0.1:9\n"
+    ))
+    .expect("the actual wire provider has its catalog declaration");
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {}, "models": {},
+        "providers": {"wire": {"protocol": dialect, "base_url": "http://127.0.0.1:9", "api_key": "none"}},
+        "models": {"m": {"provider": "wire"}},
+        "rate_card": one_lane_rates(),
         "auth": {"chain": [], "admin_auth": []},
         "store": {"module": module, "settings": settings},
         "advanced": {"allow_destinations": ["127.0.0.1"]},
     }))
     .expect("the real admin deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+    let config = busbar_kernel::config::resolve(&deploy, &providers)
         .expect("the real admin deployment resolves");
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
