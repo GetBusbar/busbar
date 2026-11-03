@@ -301,7 +301,7 @@ impl HoldCell {
     /// This observes authority without changing the cell or creating a hold or accrual.
     pub fn admitted_for(&self, token: &Grant<Admittance>, principal: &PrincipalId) -> bool {
         matches!(&*self.slot(), Slot::Admitted(hold)
-            if hold.call() == token.call() && hold.principal() == principal)
+            if token.bound_to(hold.call()) && hold.principal() == principal)
     }
 
     /// The one transition: swap the arrival hold for the admitted one, and hand the arrival hold

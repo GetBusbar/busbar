@@ -83,6 +83,18 @@ fn admitted_cell_authority_requires_its_call_principal_and_live_admission() {
     assert!(!cell.admitted_for(&admit, &principal));
     assert_eq!(cell.state(), HoldCellState::Taken);
     drop((arrival, admitted));
+
+    let unbound = Grant::<Admittance>::mint(&seal);
+    let cell = HoldCell::new(Hold::open(&unbound, principal.clone()));
+    let arrival = cell
+        .admit(Hold::open(&unbound, principal.clone()), &unbound)
+        .unwrap();
+    assert!(!cell.admitted_for(&unbound, &principal));
+    assert!(!cell.admitted_for(&admit, &principal));
+    assert_eq!(cell.state(), HoldCellState::Admitted);
+    assert_eq!(cell.accruals(), 0);
+    let admitted = cell.take(&exit).unwrap();
+    drop((arrival, admitted));
 }
 
 /// The lint rule data. It is a proof, not surface: no plugin, unit or kernel path names it, so it
