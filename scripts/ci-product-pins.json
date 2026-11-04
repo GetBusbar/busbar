@@ -26,7 +26,7 @@
     {
       "repo": "busbar-auth-ldap",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-auth-ldap",
-      "commit": "6d07915c7e6b49dd1489a9407c968cd8dbd57115",
+      "commit": "b2096610f63cbbb06401e6d5df1b61b7c1555a05",
       "package": "busbar-auth-ldap-plugin",
       "kind": "auth",
       "alias": "ldap",
