@@ -49,7 +49,8 @@ fn instance_ephemeral(blob: Blob) -> Result<Option<bool>, String> {
         return Ok(None);
     }
     if blob.fmt != BLOB_OCTETS
-        || blob.len > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES
+        || u64::try_from(blob.len).unwrap_or(u64::MAX)
+            > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES
         || (blob.len != 0 && blob.ptr.is_null())
     {
         return Err(invalid());
