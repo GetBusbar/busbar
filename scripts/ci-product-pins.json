@@ -92,7 +92,7 @@
     {
       "repo": "busbar-plane-llm",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-plane-llm",
-      "commit": "d81787ed595977f05e6c58fa382dd546e356f32d",
+      "commit": "6f9bc45c48260ec987e3cadde0014b2bd8bc7e06",
       "package": "busbar-plane-llm-plugin",
       "kind": "plane",
       "alias": "llm",
@@ -125,7 +125,7 @@
     {
       "repo": "busbar-store-memory",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-store-memory",
-      "commit": "569f08d683cf20bba1eac21614a92e81a8c0de23",
+      "commit": "dd8d1ba6de3e6dee9e97338d08f9627b92291577",
       "package": "busbar-store-memory-plugin",
       "kind": "store",
       "alias": "memory",
@@ -160,7 +160,7 @@
     {
       "repo": "busbar-transport-http",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-transport-http",
-      "commit": "7ecfa7b62d38a2407e765d9f42fc735295851e89",
+      "commit": "dd052a95c3450a4fa339d1506a018702d5dca671",
       "package": "busbar-transport-http-plugin",
       "kind": "transport",
       "alias": "http",
@@ -282,7 +282,7 @@
     {
       "repo": "busbar-plane-a2a",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-plane-a2a",
-      "commit": "bf01062e973958b0d7ea249a4679909c15b66c16",
+      "commit": "b452f2a050024cfa02e5335646ae1c06185daa93",
       "package": "busbar-plane-a2a-plugin",
       "kind": "plane",
       "alias": "a2a",
@@ -293,7 +293,7 @@
     {
       "repo": "busbar-plane-decisions",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-plane-decisions",
-      "commit": "3373aec9a58848855d10aebf3007777749af0122",
+      "commit": "7295734162759dd7a6d46acd913bd97925535ac2",
       "package": "busbar-plane-decisions-plugin",
       "kind": "plane",
       "alias": "decisions",
