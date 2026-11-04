@@ -103,7 +103,7 @@
     {
       "repo": "busbar-secret-env",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-secret-env",
-      "commit": "b11f698e9d19282085b6c420388c50ea67a46f75",
+      "commit": "92b1687d3a08b081f11e8173467819eb11260357",
       "package": "busbar-secret-env-plugin",
       "kind": "secret",
       "alias": "env",
