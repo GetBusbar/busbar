@@ -9,6 +9,7 @@ pub mod door;
 
 pub mod dedupe;
 pub mod fork;
+pub mod metadata;
 pub mod rewrap;
 pub mod wire;
 
@@ -72,6 +73,12 @@ pub struct Tail {
 pub trait StoreSlots: Sized + Send + Sync + 'static {
     /// What this store states in its Statement tail.
     const TAIL: Tail;
+
+    /// Whether this opened instance loses state on restart. Variable backends return a value;
+    /// fixed backends keep `None` and the loader retains their static Statement mark.
+    fn ephemeral(&self) -> Option<bool> {
+        None
+    }
 
     /// Explicit opt-in to the atomic conditional-record protocol. Never enabled by default.
     const RECORD_TRANSACTION: bool = false;
