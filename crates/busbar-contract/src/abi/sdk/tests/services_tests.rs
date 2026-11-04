@@ -89,6 +89,7 @@ fn table(slot: Option<ServiceFn>) -> HostSlots {
         unit_refuse: None,
         ticket_mint: None,
         ticket_take: None,
+        work_status: None,
     }
 }
 
@@ -1985,8 +1986,7 @@ extern "C" fn refuses(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut)
         let i = input.cast::<UnitRefuseIn>().read_unaligned();
         i.answer.write_unaligned(RefusalAnswer {
             size: size_of::<RefusalAnswer>() as u32,
-            status: 404,
-            _reserved: 0,
+            status: 70_123,
             fields: fields.as_ptr(),
             fields_len: fields.len(),
             body: blob(b"refused", BLOB_OCTETS),
@@ -2013,7 +2013,7 @@ fn unit_refuse_copies_the_kernels_answer_out() {
             &request()
         ),
         Ok(RefusalCopy {
-            status: 404,
+            status: 70_123,
             fields: vec![("x-reason".to_string(), b"no route".to_vec())],
             body: b"refused".to_vec(),
         })
@@ -2322,5 +2322,95 @@ fn a_minted_ticket_that_is_not_text_is_broken() {
             .ticket_mint(handle(), 600, b"{}")
             .map(|m| m.expires_at_unix),
         Err(ServiceError::Broken)
+    );
+}
+
+extern "C" fn work_status_answer(
+    _ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    use crate::abi::host::service::WorkStatusIn;
+    // SAFETY: the SDK lends the initialized input and writable output for this call.
+    unsafe {
+        let i = input.cast::<WorkStatusIn>().read_unaligned();
+        let reference = std::slice::from_raw_parts(i.reference.ptr, i.reference.len);
+        let outcome = match reference {
+            b"failed" => Outcome::Failed,
+            b"refused" => Outcome::Refused,
+            b"pending" => Outcome::Pending,
+            _ => Outcome::Ready,
+        };
+        (*out).value = match reference {
+            b"absent" => 0,
+            b"live" => 1,
+            b"settled" => 2,
+            b"settling" => 3,
+            b"unknown" => 4,
+            _ => 0,
+        };
+        if reference == b"payload" {
+            (*out).len = 1;
+        }
+        (*out).outcome = RawOutcome::of(outcome);
+        RawOutcome::of(outcome)
+    }
+}
+
+#[test]
+fn work_status_distinguishes_terminal_proof_from_all_other_answers() {
+    let mut t = table(None);
+    t.work_status = Some(work_status_answer);
+    let s = services(&t);
+    let h = CompletionHandle {
+        ticket: Ticket {
+            slot: 1,
+            generation: 1,
+        },
+        ..handle()
+    };
+    for (reference, expected) in [
+        ("absent", WorkStatus::Absent),
+        ("live", WorkStatus::Live),
+        ("settling", WorkStatus::Settling),
+        ("settled", WorkStatus::Settled),
+    ] {
+        assert_eq!(s.work_status(h, reference), Poll::Ready(Ok(expected)));
+    }
+    for (reference, outcome) in [("failed", Outcome::Failed), ("refused", Outcome::Refused)] {
+        assert_eq!(
+            s.work_status(h, reference),
+            Poll::Ready(Err(ServiceError::Declined(outcome)))
+        );
+    }
+    assert_eq!(s.work_status(h, "pending"), Poll::Pending);
+    for reference in ["unknown", "payload"] {
+        assert_eq!(
+            s.work_status(h, reference),
+            Poll::Ready(Err(ServiceError::Broken))
+        );
+    }
+}
+
+#[test]
+fn work_status_tail_is_unserved_when_old_host_size_or_slot_count_excludes_it() {
+    let mut t = table(None);
+    t.work_status = Some(work_status_answer);
+    t.size = std::mem::offset_of!(HostSlots, work_status) as u32;
+    assert_eq!(
+        services(&t).work_status(handle(), "settled"),
+        Poll::Ready(Err(ServiceError::Unserved))
+    );
+    t.size = size_of::<HostSlots>() as u32;
+    t.slots = op::WORK_STATUS;
+    assert_eq!(
+        services(&t).work_status(handle(), "settled"),
+        Poll::Ready(Err(ServiceError::Unserved))
+    );
+    t.slots = SERVICES;
+    t.work_status = None;
+    assert_eq!(
+        services(&t).work_status(handle(), "settled"),
+        Poll::Ready(Err(ServiceError::Unserved))
     );
 }

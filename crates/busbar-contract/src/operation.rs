@@ -77,7 +77,7 @@
 //! caller-supplied string reaching it is a cardinality explosion. Nothing constructs an `OpVerb`
 //! from the wire: the entire set of values that exist is [`OpVerb::ALL`] (the six shape verbs the
 //! core owns) plus `proto::registry::declared_verbs()` (the verbs the registered protocols declare,
-//! folded at boot from `ProtocolDecl::verbs` — the seven model-inference words arrive this way).
+//! folded at boot from plane operation declarations — the seven model-inference words arrive this way).
 //! Every one of them is an associated `const` — here for the shapes, in `operation.rs` still for
 //! the seven model-inference verbs that `ir::variant` constructs — and a protocol's
 //! `resolve_operation` RETURNS one of these constants after matching the wire word; it never builds

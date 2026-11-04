@@ -18,7 +18,7 @@ use crate::store::{HealthState, LaneData};
 use crate::{
     admin, audit, auth, catalogue, config, config_validate, core_routes, cost, durable, endpoints,
     export, governance, hooks, ingress, ir, json, oauth_as, observability, operation,
-    plugin_routes, profile, ratelimit, snapshot, state, store, telemetry, transport, trust,
+    plugin_routes, profile, ratelimit, snapshot, state, store, telemetry, trust,
 };
 use busbar_kernel::plane_driver::route_input::{
     LaneInput, OnExhaustedInput, PoolInput, PoolMemberInput,

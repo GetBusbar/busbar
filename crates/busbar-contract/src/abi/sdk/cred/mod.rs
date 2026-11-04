@@ -120,23 +120,6 @@ pub struct Cred {
     floor: AuthFloor,
 }
 
-/// The URL schemes whose connection is secured from the first byte: a credential the operator
-const SECURE_SCHEMES: &[&str] = &["https", "wss", "rediss", "ldaps", "grpcs", "mqtts", "amqps"];
-
-/// Whether a framed request's `target` is secured by its scheme ([`SECURE_SCHEMES`]); a target
-pub(crate) fn secure_target(target: &str) -> bool {
-    !target.contains("://") || secure_scheme(target)
-}
-
-/// Whether `url`'s scheme is one of [`SECURE_SCHEMES`] (case-insensitive).
-pub(crate) fn secure_scheme(url: &str) -> bool {
-    url.split_once("://").is_some_and(|(scheme, _)| {
-        SECURE_SCHEMES
-            .iter()
-            .any(|s| s.eq_ignore_ascii_case(scheme))
-    })
-}
-
 impl Cred {
     /// A credential this plugin captured itself (a token from a reply it decoded), taken by value so
     pub fn captured(bytes: Zeroizing<Vec<u8>>) -> Self {
@@ -151,13 +134,6 @@ impl Cred {
     #[must_use]
     pub fn secure_required(&self) -> bool {
         self.secure
-    }
-
-    /// This credential, required to go out secured when the operator's `url` names a secure
-    #[must_use]
-    pub fn secure_for(mut self, url: &str) -> Self {
-        self.secure |= secure_scheme(url);
-        self
     }
 
     /// THE AUTH FLOOR (rulings S4, S5): the auth methods weaker than a protocol's best that the
@@ -175,6 +151,14 @@ impl Cred {
     #[must_use]
     pub fn require_secure(mut self) -> Self {
         self.secure = true;
+        self
+    }
+
+    /// Add the protocol owner's explicit connection-security requirement. A false requirement
+    /// never relaxes a requirement already attached to this credential.
+    #[must_use]
+    pub fn require_secure_if(mut self, required: bool) -> Self {
+        self.secure |= required;
         self
     }
 

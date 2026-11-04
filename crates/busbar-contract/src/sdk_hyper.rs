@@ -434,6 +434,11 @@ macro_rules! hyper_io {
                 fn wire_pending(&self) -> bool;
                 /// The pieces waiting for the host.
                 fn pieces(&mut self) -> &mut VecDeque<Piece>;
+                /// A producer marks codes in its separately declared opening namespace.
+                fn code_handoff(_piece: &Piece) -> bool {
+                    false
+                }
+
                 /// The earliest host time the framing must be called at.
                 fn next_deadline(&self) -> Option<u64>;
                 /// Whether the connection has ended.
@@ -454,6 +459,10 @@ macro_rules! hyper_io {
                 fn pieces(&mut self) -> &mut VecDeque<Piece> {
                     self.0.pieces()
                 }
+                fn code_handoff(piece: &Piece) -> bool {
+                    F::code_handoff(piece)
+                }
+
                 fn next_deadline(&self) -> Option<u64> {
                     self.0.next_deadline()
                 }

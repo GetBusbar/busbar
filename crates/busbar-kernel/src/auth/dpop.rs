@@ -53,6 +53,17 @@ pub(crate) async fn judge(
     bearer: Option<&str>,
     read: &mut Option<Bearer>,
 ) -> SenderConstraint {
+    judge_method(app, method.as_str(), path, headers, bearer, read).await
+}
+
+pub(crate) async fn judge_method(
+    app: &crate::state::App,
+    method: &str,
+    path: &str,
+    headers: &HeaderMap,
+    bearer: Option<&str>,
+    read: &mut Option<Bearer>,
+) -> SenderConstraint {
     if let Some(token) = dpop_credential(headers) {
         let (Some(plane), Some(seam)) = (app.oauth_as.as_ref(), crate::oauth_as::seam::seam())
         else {
@@ -68,7 +79,7 @@ pub(crate) async fn judge(
             return SenderConstraint::Refused;
         };
         let presented = crate::oauth_as::seam::DpopPresentation {
-            method: method.as_str().to_string(),
+            method: method.to_string(),
             path: path.to_string(),
             token: token.clone(),
             proof: proof.to_string(),

@@ -1085,6 +1085,7 @@ fn session_custody_routes(g: &mut Governed, pools_plane: bool) -> Arc<super::Dat
         }
     }
     Arc::new(super::DataRoutes {
+        entries: super::arrival_entries(&served),
         served,
         claim_doors: None,
         post: Arc::clone(&g.post),
@@ -2125,3 +2126,9 @@ async fn a_root_reservation_rejects_a_different_full_key_and_an_exited_loaded_ge
     assert_concurrent_custody(&g, &source.group, false, source.now);
     assert_source_request_retained(&g, &source);
 }
+
+#[path = "serve_neutral_tests.rs"]
+mod neutral_ingress_tests;
+
+#[path = "governed_upgrade.rs"]
+mod governed_upgrade_tests;

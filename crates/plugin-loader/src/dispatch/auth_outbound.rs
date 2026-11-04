@@ -44,6 +44,35 @@ pub fn outbound_styles(plugin: &Plugin<Auth>) -> Vec<OutboundStyle> {
         .unwrap_or_default()
 }
 
+/// Validate one outbound style without opening the plugin or lending a credential.
+pub fn check_settings(plugin: &Plugin<Auth>, style: &str, settings: &[u8]) -> Result<(), String> {
+    if !plugin
+        .context::<AuthFacts>()
+        .is_some_and(|facts| facts.outbound_settings_check)
+    {
+        return Err(format!(
+            "outbound style '{style}' has no settings-only validator"
+        ));
+    }
+    let ext = extensions::encode(&[(
+        busbar_contract::abi::auth::EXT_OUTBOUND_SETTINGS_CHECK,
+        style.as_bytes(),
+    )]);
+    let mut frame = super::lifecycle::validate_frame(blob(settings, BLOB_JSON, 0));
+    frame.input.head.extensions = blob(&ext, BLOB_OCTETS, 0);
+    let called = plugin.call(
+        busbar_contract::abi::mechanism::lifecycle::slot::VALIDATE,
+        &mut frame,
+    );
+    let _lease = AnswerLease::new(plugin, called.lease);
+    match called.outcome {
+        Outcome::Ready => Ok(()),
+        outcome => {
+            Err(super::lifecycle::text(called.error).unwrap_or_else(|| format!("{outcome:?}")))
+        }
+    }
+}
+
 impl OutboundInstance {
     pub fn new(
         plugin: impl Into<Arc<Plugin<Auth>>>,

@@ -1945,7 +1945,7 @@ fn a_fault_reading_is_the_transports_vocabulary_on_a_ready_answer() {
     o.fault = FAULT_CALLER;
     assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
     o.verdict = 0;
-    o.fault = FAULT_HEALTHY + 1;
+    o.fault = crate::abi::transport::FAULT_RATE_LIMIT + 1;
     assert_eq!(
         piece(&o, &[], &[], &[]),
         f(Rule::UnknownCode, "on_piece.fault")

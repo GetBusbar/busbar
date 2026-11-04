@@ -11,6 +11,8 @@ use ring::digest;
 
 use crate::host_records::{record_key, RecordRows};
 
+mod status;
+
 pub const WORK_SCHEMA: RecordSchemaId = RecordSchemaId::new("kernel-work");
 
 pub type Reference = [u8; 16];

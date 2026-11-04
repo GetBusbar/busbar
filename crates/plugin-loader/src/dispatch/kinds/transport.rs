@@ -31,6 +31,8 @@ const TRANSPORT_TAIL_FROZEN: usize = std::mem::offset_of!(TransportTail, fault_r
 /// [`crate::dispatch::Plugin::context`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransportFacts {
+    /// Configuration bind slots mapped to claims by this transport's declaration.
+    pub listener_bindings: Vec<transport::listener_bindings::ListenerBinding>,
     /// The Statement's `name` (interned): what a LINKED row's key is held to, its own claim
     /// (`BUSBAR-1.6.0.md` A.2, l.3567: the Statement carries the name; l.3561: a linked row reaches
     /// the same table a dropped-in one does).
@@ -64,12 +66,20 @@ pub struct TransportFacts {
     /// Its status table, row by row: `(claim, lo, hi)`, the code ranges each claim's numbering
     /// has (`TransportTail::status_rows`); a stream's final status is judged against them.
     pub status_rows: Vec<(u32, u32, u32)>,
+    /// Final numbering for each exact claim, owned by this declaration snapshot.
+    pub status_namespaces: Vec<Option<std::sync::Arc<str>>>,
+    /// Separate opening numbering for each claim.
+    pub handoff_status: Vec<Option<std::sync::Arc<str>>>,
     /// Its tail states `FRAMING_DATAGRAM`: a framer over the host's datagram port, whose calls
     /// carry the datagram lane, never a stream's framer.
     pub datagram: bool,
     /// Its tail states `FACT_ACCEPTS` (`TransportTail::facts`): its framer begins on the accepting
     /// side, so a listener may be framed by it.
     pub accepts: bool,
+    /// Its tail declares that it can release framing custody.
+    pub detaches: bool,
+    /// Its tail declares that it can adopt framing custody.
+    pub adopts: bool,
     /// The auth points it offers, its Statement's `extensions` record
     /// (`abi::transport::EXT_OFFERED_POINTS`): `{Head, HeadBody}` when it states none.
     pub offered: busbar_contract::abi::transport::AuthPoints,
@@ -210,11 +220,38 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     check_status_rows(status, tail.claim_rows_len as u64).map_err(broke)?;
     check_fault_rows(faults, tail.claim_rows_len as u64).map_err(broke)?;
     check_fault_cover(status, faults).map_err(broke)?;
+    let status_namespaces = rows
+        .iter()
+        .map(|row| {
+            // SAFETY: check_claims validated each borrowed ABI string before projection.
+            let bytes = unsafe { crate::dispatch::validate::lent_str(row.status_namespace) }
+                .ok_or("status namespace exceeds its declaration bound")?;
+            let value = std::str::from_utf8(bytes).map_err(|_| "status namespace is not UTF-8")?;
+            transport::status::namespace(value)
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    for row in status {
+        if status_namespaces[row.claim as usize].is_none() {
+            return Err("a numbered status table requires its claim's namespace".into());
+        }
+    }
+    let handoff_status = transport::status::handoff(extensions, &claims)?;
+    let listener_bindings = transport::listener_bindings::read(extensions, &claims)?;
+    if !listener_bindings.is_empty()
+        && (tail.role != transport::ROLE_FRAMER || tail.facts & transport::FACT_ACCEPTS == 0)
+    {
+        return Err("listener-bindings requires an accepting framer".into());
+    }
     Ok(TransportFacts {
+        status_namespaces,
+        handoff_status,
+        listener_bindings,
         adopts_session,
         name: owned(st.name, "Statement name")?,
         datagram: tail.framing == busbar_contract::abi::transport::FRAMING_DATAGRAM,
         accepts: tail.facts & busbar_contract::abi::transport::FACT_ACCEPTS != 0,
+        detaches: tail.facts & transport::FACT_DETACHES != 0,
+        adopts: tail.facts & transport::FACT_ADOPTS != 0,
         status_rows: status.iter().map(|r| (r.claim, r.lo, r.hi)).collect(),
         offered,
         seals,

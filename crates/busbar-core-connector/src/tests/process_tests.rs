@@ -65,20 +65,42 @@ fn process_judge(allow: &[&str], names: Vec<(&'static str, IpAddr)>) -> Arc<dyn 
 
 /// Judge `dest` under `class`, answering at once (a literal, or a refusal the name decides).
 fn now(j: &Arc<dyn DialJudge>, dest: &str, class: u32) -> Result<SocketAddr, Verdict> {
-    j.judge_dial(dest, class, Box::new(|_| panic!("a literal never pends")))
-        .expect("answered at once")
+    j.judge_target_all(
+        Destination {
+            authority: dest,
+            secure: true,
+            egress_class: class,
+        },
+        false,
+        Box::new(|_, _| panic!("a literal never pends")),
+    )
+    .expect("answered at once")
 }
 
 /// Judge a name that must resolve: `None` at once, the pin or the refusal later.
 fn pended(j: &Arc<dyn DialJudge>, dest: &str, class: u32) -> Result<SocketAddr, Verdict> {
     let (tx, rx) = std::sync::mpsc::channel();
-    let at_once = j.judge_dial(
-        dest,
-        class,
-        Box::new(move |v| {
-            let _ = tx.send(v);
-        }),
-    );
+    let at_once = if dest.contains("://") {
+        j.judge_dial(
+            dest,
+            class,
+            Box::new(move |v| {
+                let _ = tx.send(v);
+            }),
+        )
+    } else {
+        j.judge_target_all(
+            Destination {
+                authority: dest,
+                secure: true,
+                egress_class: class,
+            },
+            false,
+            Box::new(move |v, _| {
+                let _ = tx.send(v);
+            }),
+        )
+    };
     assert_eq!(at_once, None, "a name resolves off the caller's thread");
     rx.recv_timeout(Duration::from_secs(10))
         .expect("the judgement answered")
@@ -339,4 +361,45 @@ fn an_idn_name_is_resolved_as_its_punycode_name() {
             "{dest}"
         );
     }
+}
+
+#[test]
+fn bare_user_authority_never_supplies_a_security_fact() {
+    let guard = guard_judge(&[], vec![]);
+    assert_eq!(
+        guard.judge_name("93.184.216.34:443", EGRESS_OPEN_WEB, false),
+        Err(DEST_SCHEME)
+    );
+    let target = Destination {
+        authority: "93.184.216.34:443",
+        secure: false,
+        egress_class: EGRESS_OPEN_WEB,
+    };
+    assert_eq!(guard.judge_target_name(target, false), Err(DEST_PLAINTEXT));
+    assert_eq!(
+        guard.judge_target_name(
+            Destination {
+                secure: true,
+                ..target
+            },
+            false
+        ),
+        Ok(())
+    );
+    let dial = judge(guard, &[]);
+    assert_eq!(
+        dial.judge_dial(target.authority, target.egress_class, Box::new(|_| {})),
+        Some(Err(DEST_PLAINTEXT))
+    );
+    assert_eq!(
+        dial.judge_target_all(
+            Destination {
+                secure: true,
+                ..target
+            },
+            false,
+            Box::new(|_, _| {})
+        ),
+        Some(Ok("93.184.216.34:443".parse().unwrap()))
+    );
 }

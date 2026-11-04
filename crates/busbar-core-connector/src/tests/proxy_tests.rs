@@ -743,3 +743,102 @@ fn the_proxy_credential_is_percent_decoded_before_it_is_presented() {
     let request = String::from_utf8(connect_request("upstream.test:443", &spec)).unwrap();
     assert!(request.contains(&expected), "{request}");
 }
+
+#[test]
+fn configured_plain_connect_proxy_carries_an_open_web_tls_target() {
+    use crate::guard::{Guard, Resolve, Resolved};
+    use crate::process::GuardJudge;
+    use crate::support::Knobs;
+    use busbar_contract::abi::host::conn::connector::EGRESS_OPEN_WEB;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    struct NoDns;
+    impl Resolve for NoDns {
+        fn resolve(&self, _: &str, _: Resolved) {
+            panic!("both targets are pinned literals")
+        }
+    }
+    crate::tls::install_crypto_provider();
+    worker().block_on(async {
+        let ca = crate::test_support::private_ca();
+        let trust = busbar_contract::transport::trust::EgressTrust {
+            extra_anchors: crate::test_support::certs_from_pem(&ca.ca_pem),
+            ..Default::default()
+        };
+        let client = Arc::new(crate::tls::client::build_client_config(&trust).unwrap());
+        let server = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![ca.leaf_der.into()],
+                rustls_pki_types::PrivateKeyDer::try_from(ca.key_der).unwrap(),
+            )
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let peer = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                head.push(socket.read_u8().await.unwrap());
+            }
+            assert!(head.starts_with(b"CONNECT 93.184.216.34:443 HTTP/1.1\r\n"));
+            socket.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await.unwrap();
+            let mut secure = acceptor.accept(socket).await.unwrap();
+            let mut ping = [0; 4];
+            secure.read_exact(&mut ping).await.unwrap();
+            assert_eq!(&ping, b"ping");
+            secure.write_all(b"pong").await.unwrap();
+            secure.shutdown().await.unwrap();
+        });
+        let view = Transports::new(vec![
+            Entry {
+                door: Arc::new(
+                    TestDoor::new(
+                        "secure-foreign",
+                        &["secure-foreign"],
+                        &[],
+                        Knobs {
+                            secure_name: Some("localhost"),
+                            ..Knobs::default()
+                        },
+                    )
+                    .with_role(busbar_contract::abi::transport::ROLE_FRAMER),
+                ),
+                alpn: vec![],
+            },
+            Entry {
+                door: Arc::new(TestDoor::identity("carrier")),
+                alpn: vec![],
+            },
+        ])
+        .unwrap();
+        let guard = Arc::new(GuardJudge::new(Guard::default(), Arc::new(NoDns)));
+        let c = Connector::serving(
+            view,
+            crate::process::judge(guard, &[]),
+            Some(client),
+            Arc::new(|_, _: Ticket| {}),
+        )
+        .proxying(Some(test_config("127.0.0.1", port, None, "")));
+        c.declare_need(OWNER, NeedId(0), "secure-foreign", EGRESS_OPEN_WEB)
+            .unwrap();
+        let id = c
+            .open(
+                OWNER,
+                NeedId(0),
+                &OpenDesc {
+                    target: "93.184.216.34:443",
+                    ..OpenDesc::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(c.write(OWNER, id, b"ping", false, false), Ok(4));
+        assert!(read_until(&c, id, b"pong")
+            .await
+            .unwrap()
+            .ends_with(b"pong"));
+        c.close(OWNER, id).unwrap();
+        peer.await.unwrap();
+    });
+}

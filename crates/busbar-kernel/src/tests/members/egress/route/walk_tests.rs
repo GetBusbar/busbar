@@ -3,7 +3,6 @@
 
 use busbar_contract::abi::transport::STATUS_CALLER_FAULT;
 use busbar_contract::conn::ConnError;
-use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::transport::wire::{WireFault, WireStatus};
 
@@ -345,7 +344,7 @@ fn a_hard_reading_reaches_the_classifier_and_the_destination_goes_hard_down() {
         "a",
         Script::Frames(vec![frame_with_upstream(
             Some(WireStatusClass::CallerFault),
-            Some(WireStatus::new(status_ns::HTTP, 403)),
+            Some(WireStatus::new("test-status", 403)),
             Some(WireFault::Hard),
             None,
             "forbidden",
@@ -393,10 +392,13 @@ fn a_transient_reading_carries_the_upstreams_own_wait_through_to_the_breaker() {
     node.conns.script("b", Script::Frames(ok_frames()));
 
     assert!(node.route("primary").is_delivered());
-    let seen = node.breaker.classified.lock().unwrap().first().copied();
-    assert_eq!(seen.map(|s| s.fault), Some(Some(WireFault::Transient)));
+    let seen = node.breaker.classified.lock().unwrap().first().cloned();
     assert_eq!(
-        seen.map(|s| s.retry_after),
+        seen.as_ref().map(|s| s.fault),
+        Some(Some(WireFault::Transient))
+    );
+    assert_eq!(
+        seen.as_ref().map(|s| s.retry_after),
         Some(Some(7)),
         "the seven seconds the far end asked for reached the classifier"
     );
@@ -425,9 +427,12 @@ fn a_transient_reading_with_no_wait_leaves_the_cooldown_to_the_ladder() {
     node.conns.script("b", Script::Frames(ok_frames()));
 
     assert!(node.route("primary").is_delivered());
-    let seen = node.breaker.classified.lock().unwrap().first().copied();
-    assert_eq!(seen.map(|s| s.fault), Some(Some(WireFault::Transient)));
-    assert_eq!(seen.map(|s| s.retry_after), Some(None));
+    let seen = node.breaker.classified.lock().unwrap().first().cloned();
+    assert_eq!(
+        seen.as_ref().map(|s| s.fault),
+        Some(Some(WireFault::Transient))
+    );
+    assert_eq!(seen.as_ref().map(|s| s.retry_after), Some(None));
     assert_eq!(
         node.breaker.outcomes("primary", DestinationId::new(0)),
         vec![Outcome::Transient { retry_after: None }],
@@ -760,7 +765,7 @@ pub(super) fn answer(status: u32) -> Vec<Reply> {
     vec![
         frame_with_upstream(
             Some(class),
-            Some(WireStatus::new(status_ns::HTTP, status)),
+            Some(WireStatus::new("test-status", status)),
             fault,
             None,
             "head",
@@ -1046,7 +1051,7 @@ fn test_permit_lifetime_during_stream() {
     node.capacity.set_ceiling(lane, 1);
     let mut replies = vec![frame_with_upstream(
         Some(WireStatusClass::Success),
-        Some(WireStatus::new(status_ns::HTTP, 200)),
+        Some(WireStatus::new("test-status", 200)),
         None,
         None,
         "data-0",
@@ -1110,7 +1115,7 @@ fn test_repeated_pre_first_byte_failures_trip_breaker() {
         "m",
         Script::Truncated(frame_with_upstream(
             Some(WireStatusClass::Success),
-            Some(WireStatus::new(status_ns::HTTP, 200)),
+            Some(WireStatus::new("test-status", 200)),
             None,
             None,
             "",
@@ -1167,7 +1172,7 @@ fn refunded_after_a_post_first_byte_cut(stream: bool) -> bool {
         "m",
         Script::Truncated(frame_with_upstream(
             Some(WireStatusClass::Success),
-            Some(WireStatus::new(status_ns::HTTP, 200)),
+            Some(WireStatus::new("test-status", 200)),
             None,
             None,
             "{\"id\":\"x\",",

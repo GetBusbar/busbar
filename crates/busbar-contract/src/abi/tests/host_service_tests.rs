@@ -580,6 +580,7 @@ fn every_service_field_sits_at_its_op_index() {
         (offset_of!(HostSlots, unit_refuse), op::UNIT_REFUSE),
         (offset_of!(HostSlots, ticket_mint), op::TICKET_MINT),
         (offset_of!(HostSlots, ticket_take), op::TICKET_TAKE),
+        (offset_of!(HostSlots, work_status), op::WORK_STATUS),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {
         assert_eq!(*op as usize, i, "op constants run 0.. in table order");
@@ -1166,11 +1167,10 @@ fn refuse_in(cause: u32, line: u32, answer: &mut RefusalAnswer) -> UnitRefuseIn 
     }
 }
 
-fn refusal(status: u16) -> RefusalAnswer {
+fn refusal(status: u32) -> RefusalAnswer {
     RefusalAnswer {
         size: core::mem::size_of::<RefusalAnswer>() as u32,
         status,
-        _reserved: 0,
         fields: core::ptr::null(),
         fields_len: 0,
         body: empty_blob(),
@@ -1645,7 +1645,7 @@ fn red_unit_hand_in_answer_refuses_each_break() {
     );
 }
 
-/// RED: the caller's check of a `unit.refuse` answer: the exact size, a status in range, no list or
+/// The caller checks exact size and memory bounds; status belongs to the transport.
 #[test]
 fn red_unit_refuse_answer_refuses_each_break() {
     let mut a = refusal(404);
@@ -1653,11 +1653,10 @@ fn red_unit_refuse_answer_refuses_each_break() {
     let o = out(Outcome::Ready);
     assert!(unsafe { check_unit_refuse(&i, ready(&o), &o) }.is_ok());
     // SAFETY (each block below): the test's own answer slot.
-    for status in [0u16, 99, 600] {
+    for status in [0u32, 99, 600, 70_123, u32::MAX] {
         unsafe { (*i.answer).status = status };
-        assert_eq!(
-            unsafe { check_unit_refuse(&i, ready(&o), &o) }.unwrap_err(),
-            fault(Rule::UnknownCode, "unit_refuse.answer.status"),
+        assert!(
+            unsafe { check_unit_refuse(&i, ready(&o), &o) }.is_ok(),
             "{status}"
         );
     }

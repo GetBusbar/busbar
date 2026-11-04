@@ -178,6 +178,7 @@ pub mod check;
 pub mod datagram;
 pub mod fields;
 pub mod guest_policy;
+pub mod listener_bindings;
 pub mod route;
 pub mod sensitive_fields;
 
@@ -203,8 +204,9 @@ use super::mechanism::check::{contract, OpContract};
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 
-/// The transport kind's ABI version: new in 1.6.0 (v1.5.5 had no transport kind ABI), so it ships `1`.
-pub const ABI_VERSION: u32 = 1;
+/// The transport kind's ABI version: `2` requires semantic rate-limit fault and namespace provenance.
+/// v1.5.5 had no transport ABI; incompatible development generation `1` is refused.
+pub const ABI_VERSION: u32 = 2;
 
 /// The transport kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
 pub const LAYOUT_FINGERPRINT: u64 = 0x715dbad81f3872c0;
@@ -521,6 +523,8 @@ pub const FAULT_TRANSIENT: u8 = 2;
 pub const FAULT_HARD: u8 = 3;
 /// Fault reading: the destination is HEALTHY. It answered; the breaker records a SUCCESS against
 pub const FAULT_HEALTHY: u8 = 4;
+/// The destination throttled the request: transient health, rate-limit retry policy.
+pub const FAULT_RATE_LIMIT: u8 = 5;
 
 /// [`Claim::status_at`]: no status.
 pub const STATUS_AT_NONE: u8 = 0;
@@ -1288,6 +1292,11 @@ pub struct ArrivalOut {
 }
 
 /// `locate`'s `in`.
+///
+/// Target location is pure and may be called before lifecycle OPEN with a null instance, for
+/// configuration validation. It must not dial, resolve DNS, read secrets, or require runtime
+/// readiness. An opened instance may additionally supply its configured protocol offer; authority,
+/// name and security intent must agree with the same target's pre-open interpretation.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct LocateIn {
@@ -1775,3 +1784,6 @@ super::sdk::door::slot_structs!(
 #[cfg(test)]
 #[path = "../tests/transport_kind_tests.rs"]
 mod tests;
+
+/// Bounded status namespace declarations, including opening numbering.
+pub mod status;

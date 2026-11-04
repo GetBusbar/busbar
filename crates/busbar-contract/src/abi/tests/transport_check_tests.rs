@@ -1246,6 +1246,10 @@ fn a_pieces_fault_reading_is_known_and_reads_its_code() {
     p.fault = FAULT_HEALTHY;
     assert_eq!(check_framer(Ready, &yielded(1, 1), &[p], 8, 8, 8), Ok(()));
 
+    p.fault = FAULT_RATE_LIMIT;
+    assert_eq!(check_framer(Ready, &yielded(1, 1), &[p], 8, 8, 8), Ok(()));
+    p.fault = FAULT_RATE_LIMIT + 1;
+    assert!(check_framer(Ready, &yielded(1, 1), &[p], 8, 8, 8).is_err());
     p.fault = FAULT_CALLER;
     p.flags = PIECE_END_OF_FRAME;
     assert_eq!(

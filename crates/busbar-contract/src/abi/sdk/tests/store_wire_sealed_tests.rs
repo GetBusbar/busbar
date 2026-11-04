@@ -203,7 +203,7 @@ type Retained = Arc<Mutex<Option<Wire>>>;
 fn seal(required: bool) -> Seal {
     let cred = Cred::captured(zeroize::Zeroizing::new(CANARY.to_vec()));
     if required {
-        cred.secure_for("https://store.example").field()
+        cred.require_secure().field()
     } else {
         cred.field()
     }

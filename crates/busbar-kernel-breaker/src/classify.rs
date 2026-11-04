@@ -27,7 +27,9 @@ pub const fn classify(reading: Reading) -> Disposition {
     match reading {
         Reading::NoAnswer => StatusClass::Network.disposition(),
         Reading::Answered(Some(WireFault::Hard)) => Disposition::HardDown,
-        Reading::Answered(Some(WireFault::Transient)) => Disposition::TransientUpstream,
+        Reading::Answered(Some(WireFault::Transient | WireFault::RateLimit)) => {
+            Disposition::TransientUpstream
+        }
         Reading::Answered(Some(WireFault::Caller | WireFault::Healthy) | None) => {
             Disposition::ClientFault
         }

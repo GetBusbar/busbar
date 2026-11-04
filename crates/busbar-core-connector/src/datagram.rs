@@ -28,6 +28,9 @@ pub(crate) const ROUTES_CAP: usize = 64;
 /// The most far-end addresses one association numbers at once.
 const MAX_PATHS: usize = 64;
 
+/// A borrowed bounded port sender during explicit retirement; aborts have none.
+type RetirementSender<'a> = Option<&'a (dyn Fn(SocketAddr, &[u8]) + 'a)>;
+
 const NO_TEXT: AbiStr = AbiStr {
     ptr: std::ptr::null(),
     len: 0,
@@ -511,6 +514,9 @@ pub struct DatagramFraming {
     memory: Option<Arc<Memory>>,
     credit: Option<Custody>,
     continuation: Option<Continuation>,
+    /// Once retirement starts, no destructor or duplicate close may enter the door again.
+    /// An error means the host let go, but the plugin did not prove its framing retired.
+    retirement: Option<Result<(), Refused>>,
 }
 
 impl std::fmt::Debug for DatagramFraming {
@@ -778,10 +784,13 @@ impl DatagramFraming {
                 ),
             });
         }
+        let mut bufs = Buffers::for_side(side);
+        // Datagram Begin has no Established selector; its door's documented own claim applies.
+        bufs.set_status(door.facts(), None)?;
         let mut f = DatagramFraming {
             door,
             token: 0,
-            bufs: Buffers::for_side(side),
+            bufs,
             routes: vec![DatagramRoute::default(); ROUTES_CAP],
             cert,
             local: local.to_string(),
@@ -804,6 +813,7 @@ impl DatagramFraming {
             memory: None,
             credit: None,
             continuation: None,
+            retirement: None,
         };
         let y = f.run(Op::Begin(opening), Instant::now())?;
         Ok((f, y))
@@ -1260,7 +1270,16 @@ impl DatagramFraming {
             return false;
         };
         matches!(
-            judge.judge_dial(&addr.to_string(), *class, Box::new(|_| {})),
+            judge.judge_target_all(
+                busbar_kernel::host_services::Destination {
+                    authority: &addr.to_string(),
+                    // The host owns DTLS for this association, independently of its claim.
+                    secure: true,
+                    egress_class: *class,
+                },
+                false,
+                Box::new(|_, _| {}),
+            ),
             Some(Ok(pinned)) if pinned == addr
         )
     }
@@ -1850,6 +1869,11 @@ impl PortAssociations {
             let emission = assocs.emissions.get(&id).cloned();
             assocs.forget(id);
             drop(assocs);
+            if result.is_ok() {
+                if let Some(framing) = taken.framing.as_mut() {
+                    let _ = framing.close(send);
+                }
+            }
             drop(taken.framing.take());
             if let Some(emission) = emission {
                 emission.order.close();
@@ -2007,6 +2031,11 @@ impl PortAssociations {
         if closing || result.is_err() {
             assocs.forget(id);
             drop(assocs);
+            if result.is_ok() {
+                if let Some(framing) = taken.framing.as_mut() {
+                    let _ = framing.close(send);
+                }
+            }
             drop(taken.framing.take());
             emission.order.close();
             emission.ready.notify_waiters();
@@ -2095,6 +2124,16 @@ impl PortAssociations {
 
     /// Stop carrying association `id`: its framing finishes, here with no lock held, or by its
     pub fn remove(&self, id: u64) {
+        self.remove_inner(id, None);
+    }
+
+    /// Explicitly close an association, routing checked FINISH output through the existing
+    /// bounded port sender. No association lock is held across FINISH or the sender callback.
+    pub fn remove_sending(&self, id: u64, send: &dyn Fn(SocketAddr, &[u8])) {
+        self.remove_inner(id, Some(send));
+    }
+
+    fn remove_inner(&self, id: u64, send: RetirementSender<'_>) {
         let (gone, pending, emission) = {
             let mut assocs = self.lock();
             let emission = assocs.emissions.get(&id).cloned();
@@ -2121,8 +2160,12 @@ impl PortAssociations {
             emission.ready.notify_waiters();
             emission.wake.wake();
         }
-        drop(gone);
-        drop(pending);
+        for mut framing in gone
+            .into_iter()
+            .chain(pending.and_then(|out| out.continuing))
+        {
+            let _ = framing.close_inner(send);
+        }
     }
 
     /// How many associations the port carries.
@@ -2345,6 +2388,11 @@ impl PortAssociations {
                     emission.order.close();
                     emission.ready.notify_waiters();
                     emission.wake.wake();
+                }
+                if !failed {
+                    if let Some(framing) = taken.framing.as_mut() {
+                        let _ = framing.close(send);
+                    }
                 }
                 drop(taken.framing.take());
                 break;
@@ -2810,10 +2858,52 @@ impl Pairing {
 
 impl DatagramFraming {
     fn finish(&mut self) {
+        let _ = self.close_inner(None);
+    }
+
+    /// Retire synchronously, sending checked closing datagrams through the port's existing
+    /// bounded sender. The callback must enqueue or try-send, never wait for network progress.
+    /// Repeated calls return the original result without entering the door again.
+    pub fn close(&mut self, send: &dyn Fn(SocketAddr, &[u8])) -> Result<(), Refused> {
+        self.close_inner(Some(send))
+    }
+
+    /// The retirement result, if close or abort has started. An error records incomplete plugin
+    /// cleanup; dropping host ownership alone is not a successful FINISH.
+    #[must_use]
+    pub fn retirement(&self) -> Option<&Result<(), Refused>> {
+        self.retirement.as_ref()
+    }
+
+    fn close_inner(&mut self, send: RetirementSender<'_>) -> Result<(), Refused> {
+        if let Some(result) = &self.retirement {
+            return result.clone();
+        }
         let token = std::mem::take(&mut self.token);
         if token == 0 {
-            return;
+            return Ok(());
         }
+        // Publish the tombstone before crossing: unwinding or a reentrant association removal
+        // must never retry a broken FINISH from Drop.
+        self.retirement = Some(Err(fault("datagram retirement was interrupted")));
+        self.ended = true;
+        let result = self.drain_finish(token, send);
+        self.bufs.wipe_output();
+        if let Err(error) = &result {
+            tracing::error!(
+                entry = %self.door.facts().name,
+                framing = token,
+                outcome = ?error.outcome,
+                error = %error.error,
+                "datagram framing retirement is incomplete"
+            );
+            self.door.incomplete_retirement(error);
+        }
+        self.retirement = Some(result.clone());
+        result
+    }
+
+    fn drain_finish(&mut self, token: u64, send: RetirementSender<'_>) -> Result<(), Refused> {
         let untold: Vec<(u32, String)> = self
             .book
             .untold
@@ -2829,8 +2919,10 @@ impl DatagramFraming {
             })
             .collect();
         let verified = self.verified();
-        let keying = self
-            .keying
+        // FINISH recalls all borrow the same keying owner and lane metadata. Keep them local
+        // while output routing mutates the association.
+        let retained_keying = self.keying.take();
+        let keying = retained_keying
             .as_ref()
             .filter(|_| verified)
             .map(|keying| KeyingMaterial {
@@ -2839,13 +2931,14 @@ impl DatagramFraming {
                 bytes: keying.material().as_ptr(),
                 len: keying.material().len(),
             });
+        let local = self.local.clone();
         let lane = DatagramLane {
             size: u32::try_from(std::mem::size_of::<DatagramLane>()).unwrap_or(u32::MAX),
             lane: 0,
             path: 0,
             bound: self.bound_path(),
             path_addr: NO_TEXT,
-            local_addr: text(self.local.as_bytes()),
+            local_addr: text(local.as_bytes()),
             verified: u32::from(verified),
             _reserved: 0,
             keying: keying
@@ -2863,10 +2956,68 @@ impl DatagramFraming {
         let mut i: FinishIn = blank_in();
         i.framing = token;
         i.reason = CLOSE_NORMAL;
-        i.sink = self.bufs.sink();
         i.lane = &lane;
-        let mut o: FramerOut = blank_out();
-        let _ = self.door.cross(Call::Finish(&mut i, &mut o));
+        let mut recalls = crate::framer::Recalls::default();
+        loop {
+            // A fresh answer and sink for every recall: no stale lengths, flags or route rows
+            // may carry over from the preceding partial batch.
+            self.routes.fill(DatagramRoute::default());
+            self.bufs.wipe_output();
+            i.framing = token;
+            i.lane = &lane;
+            i.sink = self.bufs.sink();
+            let mut o: FramerOut = blank_out();
+            let crossed = self.door.cross(Call::Finish(&mut i, &mut o));
+            self.bufs.validate(crossed.outcome, &o)?;
+            check_datagram(crossed.outcome, &o, &self.routes, self.routes.len() as u64).map_err(
+                |f| {
+                    fault(format!(
+                        "the framer's FINISH datagram answer breaks {:?} at {}",
+                        f.rule, f.field
+                    ))
+                },
+            )?;
+            if crossed.outcome == Outcome::Pending {
+                return Err(fault("datagram FINISH must not pend"));
+            }
+            ready(crossed)?;
+            let more = o.yielded.flags & busbar_contract::abi::transport::YIELD_MORE != 0;
+            if more {
+                recalls.owed(&o, &self.bufs)?;
+            }
+            if let Some(send) = send {
+                for index in 0..o.datagram.routes_len as usize {
+                    let route = self.routes[index];
+                    let wire = self
+                        .bufs
+                        .wire_written(o.yielded.wire_len)
+                        .ok_or_else(|| fault("the framer's FINISH wire is out of bounds"))?;
+                    let at =
+                        usize::try_from(route.offset).map_err(|_| fault("FINISH route offset"))?;
+                    let len =
+                        usize::try_from(route.len).map_err(|_| fault("FINISH route length"))?;
+                    let bytes = wire
+                        .get(at..at.saturating_add(len))
+                        .ok_or_else(|| fault("the framer's FINISH route is out of bounds"))?
+                        .to_vec();
+                    self.send_answered(route.path, route.lane, bytes);
+                    self.send_closing(send);
+                }
+                self.send_closing(send);
+            }
+            if !more {
+                return Ok(());
+            }
+        }
+    }
+
+    fn send_closing(&mut self, send: &dyn Fn(SocketAddr, &[u8])) {
+        while let Some((to, bytes)) = self
+            .poll_send()
+            .or_else(|| self.secure.as_mut().and_then(Association::poll_wire))
+        {
+            send(to, &bytes);
+        }
     }
 }
 

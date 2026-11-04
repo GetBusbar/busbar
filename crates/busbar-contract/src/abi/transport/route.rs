@@ -154,7 +154,7 @@ impl RouteView<'_> {
     /// Whether the route admits `method`.
     #[must_use]
     pub fn admits(&self, method: &str) -> bool {
-        self.methods & method_bit(method) != 0
+        self.methods == METHOD_ANY || self.methods & method_bit(method) != 0
     }
 }
 

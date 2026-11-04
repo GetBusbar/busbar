@@ -3,7 +3,7 @@
 
 use super::{HeaderMap, HeaderName, HeaderValue};
 use crate::bound_credential::CredentialProvider;
-use busbar_contract::protocol::SigningContext;
+use busbar_contract::auth_egress::SigningContext;
 
 /// What the auth gate holds of one request's credentials (request extension): the header names the
 /// configured gate reads a credential from, and the credential it extracted, as a ref. Inserted by the gate on every request it judged;
@@ -63,6 +63,21 @@ impl ConsumedCredentials {
         if let Some(consumed) = consumed {
             consumed.strip(headers);
         }
+    }
+
+    /// Strip consumed carriers without imposing HTTP field syntax on the remaining head.
+    pub(crate) fn strip_neutral(&self, head: &mut crate::inbound::Head) {
+        use zeroize::Zeroize as _;
+        head.fields.retain_mut(|(name, value)| {
+            let keep = !self
+                .names
+                .iter()
+                .any(|carrier| carrier.as_str().eq_ignore_ascii_case(name));
+            if !keep {
+                value.zeroize();
+            }
+            keep
+        });
     }
 }
 

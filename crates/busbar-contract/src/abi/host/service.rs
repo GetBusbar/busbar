@@ -317,10 +317,12 @@ pub mod op {
     pub const TICKET_MINT: u32 = 32;
     /// `ticket.take`.
     pub const TICKET_TAKE: u32 = 33;
+    /// `work.status`: instance-scoped, read-only durable receipt status.
+    pub const WORK_STATUS: u32 = 34;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 34;
+pub const SERVICES: u32 = 35;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for
 #[must_use]
@@ -598,6 +600,28 @@ pub struct WorkFindIn {
 pub const WORK_LIVE: u8 = 1;
 /// `work.find`'s state byte: the handle is settled.
 pub const WORK_SETTLED: u8 = 2;
+
+/// [`op::WORK_STATUS`]'s `in`: observe an owned durable reference without a unit.
+/// The calling instance supplies the namespace; no principal, handle, or record is disclosed.
+/// Only [`WORK_STATUS_SETTLED`] proves durable settlement. ABSENT (including foreign or expired
+/// references), refusal, failure, and an unavailable slot never prove settlement. May pend.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct WorkStatusIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The stable lowercase hex reference returned by `work.open`.
+    pub reference: AbiStr,
+}
+
+/// No retained work in the calling instance's namespace; never settlement proof.
+pub const WORK_STATUS_ABSENT: u64 = 0;
+/// The owned work is live.
+pub const WORK_STATUS_LIVE: u64 = 1;
+/// The owned work has a confirmed durable settlement.
+pub const WORK_STATUS_SETTLED: u64 = 2;
+/// A settlement write is in flight and not yet confirmed.
+pub const WORK_STATUS_SETTLING: u64 = 3;
 
 /// [`op::WORK_SETTLE`]'s `in`: settle a live handle of the calling instance with its final record
 /// (at most [`MAX_WORK_RECORD`] bytes). A settled handle is retained for the instance's retention
@@ -1415,10 +1439,8 @@ pub const REFUSE_CHECK_FAILED: u32 = 5;
 pub struct RefusalAnswer {
     /// `size_of::<RefusalAnswer>()`, exactly.
     pub size: u32,
-    /// The status, `100..=599`.
-    pub status: u16,
-    /// Alignment padding.
-    pub _reserved: u16,
+    /// The opaque status in the selected claim's numbering, framed by its owning transport.
+    pub status: u32,
     /// The answer's head fields, in order.
     pub fields: *const Field,
     /// How many, at most [`MAX_SPANS`].
@@ -1678,6 +1700,8 @@ pub struct HostSlots {
     pub ticket_mint: Option<ServiceFn>,
     /// [`op::TICKET_TAKE`], in [`TicketTakeIn`]. A tail addition.
     pub ticket_take: Option<ServiceFn>,
+    /// [`op::WORK_STATUS`], in [`WorkStatusIn`]. Optional size-checked tail addition.
+    pub work_status: Option<ServiceFn>,
 }
 
 /// The head of an `in` for `service`, whose `in` type is `in_size` bytes: the op is the slot's, and
@@ -2147,6 +2171,23 @@ pub unsafe fn check_work_find(
     unsafe {
         // SAFETY: the caller guarantees the live initialized spans in `i.into`.
         answer(ret, &i.head, out, into(op::WORK_FIND, i.into, ANY))
+    }
+}
+
+/// `work.status`'s scalar-only answer. Unknown statuses and any payload fail closed.
+pub fn check_work_status(
+    i: &WorkStatusIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    // SAFETY: `bare` has no buffers or raw memory to read.
+    unsafe {
+        answer(
+            ret,
+            &i.head,
+            out,
+            bare(op::WORK_STATUS, (WORK_STATUS_ABSENT, WORK_STATUS_SETTLING)),
+        )
     }
 }
 
@@ -2794,7 +2835,7 @@ pub unsafe fn check_unit_hand_in(
 }
 
 /// `unit.refuse`'s answer: the common rules (no buffer; `value` is `0`), and on READY a
-/// [`RefusalAnswer`] of this layout's size with a status in `100..=599`, at most [`MAX_SPANS`]
+/// [`RefusalAnswer`] of this layout's size with an opaque status, at most [`MAX_SPANS`]
 /// fields and no list or body a count behind NULL.
 ///
 /// # Errors
@@ -2819,7 +2860,6 @@ pub unsafe fn check_unit_refuse(
     }
     // SAFETY: the caller's own answer slot.
     let a = unsafe { exact_answer(i.answer, "unit_refuse.answer") }?;
-    check::code(u64::from(a.status), 100, 599, "unit_refuse.answer.status")?;
     check::listed(a.fields, a.fields_len, "unit_refuse.answer.fields")?;
     if a.fields_len as u64 > MAX_SPANS {
         return Err(fault(Rule::OverMax, "unit_refuse.answer.fields"));

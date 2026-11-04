@@ -204,17 +204,12 @@ pub mod test_hooks;
 
 pub mod topology;
 
-pub use busbar_contract::transport::transport;
-
 #[cfg(test)]
 #[path = "tests/billing_tests.rs"]
 mod billing_tests;
 #[cfg(test)]
 #[path = "tests/breaker_tests.rs"]
 mod breaker_tests;
-#[cfg(test)]
-#[path = "tests/handler_contract_tests.rs"]
-mod handler_contract_tests;
 #[cfg(test)]
 #[path = "tests/transport_tests.rs"]
 mod transport_tests;

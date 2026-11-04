@@ -43,7 +43,7 @@ fn a_transient_fault_reading_is_recorded_against_the_destination_and_suppresses_
 
 #[test]
 fn the_breakers_classification_never_moves_with_the_number_beside_the_fault_reading() {
-    use busbar_contract::transport::registry::status_ns::RESERVED;
+    const RESERVED: &[&str] = &["alpha-status", "beta-status"];
     use busbar_contract::WireStatus;
     let breaker = adapter_for("pool");
     let dest = DestinationId::new(21);
@@ -60,6 +60,10 @@ fn the_breakers_classification_never_moves_with_the_number_beside_the_fault_read
         (
             Some(WireStatusClass::FarEndFault),
             Some(WireFault::Transient),
+        ),
+        (
+            Some(WireStatusClass::CallerFault),
+            Some(WireFault::RateLimit),
         ),
         (Some(WireStatusClass::CallerFault), Some(WireFault::Caller)),
         (Some(WireStatusClass::CallerFault), Some(WireFault::Hard)),
@@ -80,8 +84,8 @@ fn the_breakers_classification_never_moves_with_the_number_beside_the_fault_read
             )
         };
         let baseline = at(None);
-        for code in codes {
-            let got = at(code);
+        for code in &codes {
+            let got = at(code.clone());
             assert_eq!(
                 (got.disposition, got.outcome, got.label),
                 (baseline.disposition, baseline.outcome, baseline.label),

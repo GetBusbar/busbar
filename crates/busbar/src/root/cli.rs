@@ -219,7 +219,8 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
                                 "warning: {code}: config at {config_path} did not parse; printing the \
                                  built-in metadata denylist only (security.blocked_metadata_hosts \
                                  skipped). Run busbar normally to see the parse error.",
-                                code = diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
+                                code =
+                                    diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
                             );
                         }
                     },
@@ -353,7 +354,12 @@ pub(crate) fn validate_config_command() -> i32 {
         listen: &cfg.listen,
         admin_listen: &cfg.admin_listen,
     };
-    let stages = match crate::root::boot::validate(&config_path, &registry, &root) {
+    let stages = match crate::root::boot::validate(
+        &config_path,
+        &registry,
+        &root,
+        cfg.listen_explicit || cfg.tls.is_some(),
+    ) {
         Ok(s) => s,
         Err(e) => {
             eprintln!(

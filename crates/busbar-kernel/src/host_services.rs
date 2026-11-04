@@ -34,7 +34,34 @@ use crate::trust::demotion::DemotionRecord;
 use crate::trust::section::TrustEntry;
 use crate::trust::signed;
 
+/// A destination whose transport already supplied authority and security intent. The intent is
+/// independent of its spelling and is not evidence that connection security has completed.
+#[derive(Debug, Clone, Copy)]
+pub struct Destination<'a> {
+    pub authority: &'a str,
+    pub secure: bool,
+    pub egress_class: u32,
+}
+
 pub trait DestJudge: Send + Sync {
+    /// Judge a transport-located target without interpreting a URL scheme.
+    fn judge_target_name(&self, target: Destination<'_>, refuse_private: bool) -> Result<(), u64> {
+        let _ = (target, refuse_private);
+        Err(svc::DEST_SCHEME)
+    }
+
+    /// Resolve and pin the located target; a missing implementation fails closed.
+    fn judge_target(
+        &self,
+        target: Destination<'_>,
+        refuse_private: bool,
+        reach: bool,
+        done: Box<dyn FnOnce(Admitted) + Send>,
+    ) -> Option<Admitted> {
+        let _ = (target, refuse_private, reach, done);
+        Some(Err(svc::DEST_SCHEME.into()))
+    }
+
     fn judge_name(&self, dest: &str, class: u32, refuse_private: bool) -> Result<(), u64>;
 
     fn judge(
@@ -2634,6 +2661,27 @@ impl HostServices for KernelServices {
         })
     }
 
+    fn work_status(&self, caller: &Caller, reference: &[u8], later: Later) -> Ran {
+        let (_, records, pool) = match self.work_scope(caller) {
+            Ok(scope) => scope,
+            Err(refused) => return Ran::Now(refused),
+        };
+        let Some(reference) = parse_reference(reference) else {
+            return Ran::Now(Stored::ready(svc::WORK_STATUS_ABSENT));
+        };
+        let book = Arc::clone(&self.work);
+        let rows = Arc::clone(&records.reads);
+        let instance = Arc::clone(&caller.instance);
+        let retain_ms = self.work_bounds_of(&instance).retain_ms;
+        let wall_ms = Arc::clone(&self.wall_ms);
+        submit(pool, later, move || {
+            match book.status(&*rows, &instance, &reference, wall_ms(), retain_ms) {
+                Ok(status) => Stored::ready(status),
+                Err(_) => failed(STORE_FAILED),
+            }
+        })
+    }
+
     fn work_settle(
         &self,
         caller: &Caller,
@@ -2835,12 +2883,38 @@ fn judged(v: Admitted, explain: bool) -> Stored {
 }
 
 impl KernelServices {
+    /// A connector destination, with explicit security intent supplied by its transport.
+    pub fn judge_destination(
+        &self,
+        target: Destination<'_>,
+        done: Judged,
+    ) -> Option<Result<SocketAddr, u64>> {
+        let pin = |v: Admitted| v.map(|(addr, _)| addr).map_err(|r| r.verdict);
+        match &self.judge {
+            Some(j) => j
+                .judge_target(target, false, false, Box::new(move |v| done(pin(v))))
+                .map(pin),
+            None => Some(Err(svc::DEST_NO_HOST)),
+        }
+    }
+
+    /// Legacy host call: a bare authority has unknown security and is conservatively plaintext.
     pub fn judge_dial(
         &self,
         dest: &str,
         class: u32,
         done: Judged,
     ) -> Option<Result<SocketAddr, u64>> {
+        if !dest.contains("://") {
+            return self.judge_destination(
+                Destination {
+                    authority: dest,
+                    secure: false,
+                    egress_class: class,
+                },
+                done,
+            );
+        }
         let pin = |v: Admitted| v.map(|(addr, _)| addr).map_err(|r| r.verdict);
         match &self.judge {
             Some(j) => j

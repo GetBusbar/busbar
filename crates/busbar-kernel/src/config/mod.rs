@@ -333,6 +333,8 @@ fn mapping_key_repr(key: &serde_yaml::Value) -> String {
 #[derive(Debug)]
 pub struct RootCfg {
     pub listen: String,
+    /// Whether the operator supplied the legacy data bind, including its default address.
+    pub listen_explicit: bool,
     /// busbar's PUBLIC base URL (top-level `public_url:`). The externally-reachable origin used to
     /// build `/auth/token` links AND shown to devs as the `base_url` they point BYOK clients at (no
     /// `/v1` suffix — clients append their own). Absent ⇒ no hosted-login/token links can be built.
@@ -866,6 +868,9 @@ pub struct PlaneFeesCfg {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeployCfg {
+    /// Set by the document reader without changing the frozen configuration grammar.
+    #[serde(skip)]
+    pub listen_explicit: bool,
     #[serde(default = "default_listen")]
     pub listen: String,
     /// busbar's PUBLIC base URL (top-level `public_url:`) — see [`RootCfg::public_url`]. Absent by
@@ -1932,6 +1937,7 @@ pub fn resolve(
         let security = deploy.security.clone().unwrap_or_default();
         Ok(RootCfg {
             listen: deploy.listen.clone(),
+            listen_explicit: deploy.listen_explicit,
             public_url: deploy.public_url.clone(),
             endpoint_resources,
             oauth_as,

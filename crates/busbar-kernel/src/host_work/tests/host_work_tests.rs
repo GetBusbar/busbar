@@ -836,7 +836,11 @@ impl RecordRows for SettlementRows {
         schema: RecordSchemaId,
         key: &[u8],
     ) -> Result<Option<RecordBytes>, StoreError> {
-        self.rows.record_get(schema, key)
+        match self.mode.load(Ordering::SeqCst) {
+            5 => Err(StoreError::Unavailable),
+            6 => Err(StoreError::Timeout),
+            _ => self.rows.record_get(schema, key),
+        }
     }
     fn record_scan(
         &self,
@@ -1017,4 +1021,226 @@ fn dropping_a_queued_settlement_retires_ownership_before_its_callback_retries() 
     drop(job);
     assert!(answered.load(Ordering::SeqCst));
     assert_eq!(s.work().get("inst", handle).unwrap().record, b"retry");
+}
+
+fn status(s: &KernelServices, instance: &str, reference: &[u8]) -> Stored {
+    let answer = run(|later| s.work_status(&caller(instance), reference, later));
+    assert!(answer.bytes.is_empty());
+    assert!(answer.spans.is_empty());
+    answer
+}
+
+#[test]
+fn work_status_is_instance_scoped_read_only_and_survives_restart() {
+    let r = rig();
+    let (handle, reference) = open(&r, 1, b"private record");
+    let before = r.s.work().get("inst", handle).unwrap();
+    assert_eq!(
+        status(&r.s, "inst", &reference).value,
+        svc::WORK_STATUS_LIVE
+    );
+    assert_eq!(
+        status(&r.s, "other", &reference).value,
+        svc::WORK_STATUS_ABSENT
+    );
+    assert_eq!(
+        status(&r.s, "inst", b"00000000000000000000000000000000").value,
+        svc::WORK_STATUS_ABSENT
+    );
+    assert_eq!(
+        r.s.work().get("inst", handle).unwrap(),
+        before,
+        "observation does not bind or alter work"
+    );
+    assert_eq!(
+        status(&r.s, "unadmitted", &reference).outcome,
+        Outcome::Refused
+    );
+    assert_eq!(
+        settle(&r, "inst", Some(1), handle, b"secret final record").outcome,
+        Outcome::Ready
+    );
+    assert_eq!(
+        status(&r.s, "inst", &reference).value,
+        svc::WORK_STATUS_SETTLED
+    );
+    let restarted = rig_over(r.store.clone(), WorkBounds::default());
+    assert_eq!(
+        status(&restarted.s, "inst", &reference).value,
+        svc::WORK_STATUS_SETTLED
+    );
+    assert_eq!(
+        status(&restarted.s, "other", &reference).value,
+        svc::WORK_STATUS_ABSENT
+    );
+    assert_eq!(
+        restarted.s.work().held(),
+        0,
+        "receipt observation never adopts a handle"
+    );
+    restarted.clock.store(1_300_000, Ordering::SeqCst);
+    assert_eq!(
+        status(&restarted.s, "inst", &reference).value,
+        svc::WORK_STATUS_ABSENT,
+        "expired receipt is not proof"
+    );
+}
+
+#[test]
+fn work_status_requires_confirmed_settlement_and_preserves_failed_work() {
+    for fails in [false, true] {
+        let store = crate::real_store::store();
+        let mode = Arc::new(AtomicU64::new(0));
+        let r = rig_with_rows(
+            store.clone(),
+            WorkBounds::default(),
+            Arc::new(SettlementRows {
+                rows: StoreRows(store),
+                mode: mode.clone(),
+            }),
+        );
+        let (handle, reference) = open(&r, 1, b"live");
+        let held = Arc::new(HoldNext::default());
+        let s = r.s.with_pool(held.clone());
+        held.armed.store(true, Ordering::SeqCst);
+        let result: Arc<Mutex<Option<Stored>>> = Arc::default();
+        let delivered = result.clone();
+        assert!(matches!(
+            s.work_settle(
+                &caller("inst"),
+                Some(1),
+                handle,
+                b"done",
+                Box::new(move |answer| {
+                    *delivered.lock().unwrap() = Some(answer);
+                })
+            ),
+            Ran::Later
+        ));
+        assert_eq!(
+            status(&s, "inst", &reference).value,
+            svc::WORK_STATUS_SETTLING
+        );
+        assert_eq!(
+            status(&s, "other", &reference).value,
+            svc::WORK_STATUS_ABSENT
+        );
+        mode.store(u64::from(fails), Ordering::SeqCst);
+        held.job.lock().unwrap().take().unwrap()();
+        assert_eq!(
+            result.lock().unwrap().take().unwrap().outcome,
+            if fails {
+                Outcome::Failed
+            } else {
+                Outcome::Ready
+            }
+        );
+        assert_eq!(
+            status(&s, "inst", &reference).value,
+            if fails {
+                svc::WORK_STATUS_LIVE
+            } else {
+                svc::WORK_STATUS_SETTLED
+            }
+        );
+    }
+}
+
+#[test]
+fn work_status_restart_rejects_corrupt_rows_and_handles_live_and_tombstoned_rows() {
+    let r = rig();
+    let (handle, reference) = open(&r, 1, b"live");
+    let restarted = rig_over(r.store.clone(), WorkBounds::default());
+    assert_eq!(
+        status(&restarted.s, "inst", &reference).value,
+        svc::WORK_STATUS_LIVE
+    );
+    assert_eq!(restarted.s.work().held(), 0);
+    let work = r.s.work().get("inst", handle).unwrap();
+    let rows = StoreRows(r.store.clone());
+    rows.record_put(
+        WORK_SCHEMA,
+        &work_key("inst", &work.reference),
+        &RecordBytes::new(vec![255]).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        status(&restarted.s, "inst", &reference).outcome,
+        Outcome::Failed
+    );
+    rows.record_put(
+        WORK_SCHEMA,
+        &work_key("inst", &work.reference),
+        &RecordBytes::new(vec![]).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        status(&restarted.s, "inst", &reference).value,
+        svc::WORK_STATUS_ABSENT
+    );
+}
+
+#[test]
+fn work_status_cold_store_read_failure_never_proves_or_mutates_settlement() {
+    for settled in [false, true] {
+        let original = rig();
+        let (handle, reference) = open(&original, 1, b"private live record");
+        if settled {
+            assert_eq!(
+                settle(
+                    &original,
+                    "inst",
+                    Some(1),
+                    handle,
+                    b"private terminal record"
+                )
+                .outcome,
+                Outcome::Ready
+            );
+        }
+        let work = original.s.work().get("inst", handle).unwrap();
+        let rows = StoreRows(original.store.clone());
+        let key = work_key("inst", &work.reference);
+        let before = rows.record_get(WORK_SCHEMA, &key).unwrap().unwrap();
+        let mode = Arc::new(AtomicU64::new(5));
+        let restarted = rig_with_rows(
+            original.store.clone(),
+            WorkBounds::default(),
+            Arc::new(SettlementRows {
+                rows: StoreRows(original.store.clone()),
+                mode: mode.clone(),
+            }),
+        );
+        for failure in [5, 6] {
+            mode.store(failure, Ordering::SeqCst);
+            let answer = status(&restarted.s, "inst", &reference);
+            assert_eq!(answer.outcome, Outcome::Failed);
+            assert_ne!(answer.value, svc::WORK_STATUS_SETTLED);
+            assert_eq!(
+                restarted.s.work().held(),
+                0,
+                "a failed observation never adopts or settles work"
+            );
+            assert_eq!(
+                rows.record_get(WORK_SCHEMA, &key)
+                    .unwrap()
+                    .unwrap()
+                    .as_slice(),
+                before.as_slice(),
+                "read failure leaves the durable row unchanged"
+            );
+        }
+        mode.store(0, Ordering::SeqCst);
+        let answer = status(&restarted.s, "inst", &reference);
+        assert_eq!(answer.outcome, Outcome::Ready);
+        assert_eq!(
+            answer.value,
+            if settled {
+                svc::WORK_STATUS_SETTLED
+            } else {
+                svc::WORK_STATUS_LIVE
+            }
+        );
+        assert_eq!(restarted.s.work().held(), 0);
+    }
 }

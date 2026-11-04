@@ -73,11 +73,11 @@ fn a_sealed_authorization_frames_the_head_the_plain_one_framed() {
 fn a_scheme_seal_carries_the_credentials_secure_requirement() {
     assert!(!cred("t").scheme("Bearer").secure_required());
     assert!(cred("t")
-        .secure_for("https://hooks.example/")
+        .require_secure()
         .scheme("Bearer")
         .secure_required());
     assert!(Cred::empty()
-        .secure_for("https://hooks.example/")
+        .require_secure()
         .scheme("Basic")
         .secure_required());
 }

@@ -59,7 +59,6 @@ use busbar_contract::conn::{
     ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
 use busbar_contract::redacted::Secret;
-use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::{WireFault, WireStatus, WireStatusClass};
 use busbar_kernel_egress::{
     attempt::attempt_cap_ms,
@@ -412,7 +411,7 @@ struct Live {
 }
 
 /// The transport's reading of a relayed answer, held for the plane's.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Unjudged {
     /// The transport's classification.
     classified: Classified,
@@ -429,12 +428,15 @@ struct Unjudged {
 }
 
 fn wire_code(piece: &busbar_contract::conn::Piece) -> Option<WireStatus> {
-    let namespace = piece
-        .status_namespace
-        .as_deref()
-        .and_then(|ns| status_ns::RESERVED.iter().copied().find(|r| *r == ns))
-        .unwrap_or(status_ns::RESERVED[0]);
-    piece.status_code.map(|c| WireStatus::new(namespace, c))
+    let namespace = piece.status_namespace.as_deref()?;
+    if namespace.is_empty()
+        || namespace.len() > busbar_contract::abi::transport::status::MAX_NAMESPACE_BYTES
+    {
+        return None;
+    }
+    piece
+        .status_code
+        .map(|code| WireStatus::new(namespace, code))
 }
 
 struct State {
@@ -1871,7 +1873,7 @@ impl EgressFarEnd<'_> {
                     retirement.finish();
                 }
             } else {
-                let classified = self.breaker().classify(destination, status);
+                let classified = self.breaker().classify(destination, status.clone());
                 let mut w = self.lock();
                 if let Some(live) = w
                     .live
@@ -1945,7 +1947,7 @@ impl EgressFarEnd<'_> {
                 ..FarPiece::default()
             };
         }
-        let classified = self.breaker().classify(target.1, status);
+        let classified = self.breaker().classify(target.1, status.clone());
         let hard = matches!(classified.disposition, Disposition::HardDown);
         let client_fault = matches!(classified.disposition, Disposition::ClientFault);
         let mut w = self.lock();
@@ -2138,7 +2140,7 @@ impl FarEnd for EgressFarEnd<'_> {
             } else {
                 None
             };
-            let read = held.map(|_| Reading::take(self, live));
+            let read = held.as_ref().map(|_| Reading::take(self, live));
             (
                 (live.record.attempt, live.member.destination),
                 held,

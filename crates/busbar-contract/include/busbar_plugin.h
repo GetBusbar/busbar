@@ -79,9 +79,9 @@ extern "C" {
 #define BB_MECH_SECTION_REQUIRED UINT32_C(2) /* [`Section::flags`]: a document must carry the section when the plugin is linked. */
 #define BB_MECH_SECTION_CONSUMED UINT32_C(4) /* [`Section::flags`]: the plugin reads the section but does not own its grammar. */
 #define BB_MECH_SECTION_SELECTS UINT32_C(16) /* [`Section::flags`]: this section's presence uses the plane (it selects it at boot, Law 7). */
-#define BB_MECH_EXT_DECLARES "declares" /* THE `declares` DOCUMENT'S KEY in a door's `Statement::extensions` (ARCHITECT ruling 2026-10-21 */
-#define BB_MECH_EXT_REFERENCE_FIELDS "reference_fields" /* THE REFERENCE-CAPABLE, NOT-SECRET SETTINGS FIELDS' KEY in a door's `Statement::extensions` (lead */
-#define BB_MECH_EXT_SPAN_RECORDS "span_records" /* THE FULL SPAN RECORDS' KEY in an export door's `Statement::extensions` (status row 173). Its */
+#define BB_MECH_EXT_DECLARES "declares" /* The `declares` document's key in a door's `Statement::extensions`. */
+#define BB_MECH_EXT_REFERENCE_FIELDS "reference_fields" /* The reference-capable, non-secret settings fields' key in a door's `Statement::extensions`. */
+#define BB_MECH_EXT_SPAN_RECORDS "span_records" /* The full span records' key in an export door's `Statement::extensions`. */
 #define BB_MECH_SLOT_VALIDATE UINT32_C(0) /* `validate`. */
 #define BB_MECH_SLOT_OPEN UINT32_C(1) /* `open`. */
 #define BB_MECH_SLOT_REFRESH UINT32_C(2) /* `refresh`. */
@@ -180,6 +180,7 @@ extern "C" {
 /* auth */
 #define BB_AUTH_IDENTITY_GROUPS_HARD_MAX UINT32_C(0x10000) /* The hard maximum of `needed_groups`: no identity asserts more groups than this. */
 #define BB_AUTH_FIELDS_HARD_MAX UINT32_C(64) /* The hard maximum of `needed_fields`: no style writes more auth fields than this. Also the */
+#define BB_AUTH_EXT_OUTBOUND_SETTINGS_CHECK "auth.outbound-settings-check" /* Pure outbound settings validation support: Statement value `b"\x01"`; on lifecycle */
 #define BB_AUTH_ABI_VERSION UINT32_C(3) /* The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`), so 1.6.0 ships `3`. */
 #define BB_AUTH_LAYOUT_FINGERPRINT UINT64_C(0xc89280c6692621) /* The auth kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_AUTH_SLOT_VERIFY UINT32_C(9) /* `verify`. */
@@ -352,7 +353,7 @@ extern "C" {
 #define BB_PLANE_MAX_SESSIONS UINT64_C(1024) /* The most ready sessions one `drive` answer may name. */
 #define BB_PLANE_MAX_SIGNALS UINT64_C(64) /* The most signals one `project` answer may carry. */
 #define BB_PLANE_MAX_TURNS UINT64_C(0x10000) /* The most prompt turns one `project` answer may carry. */
-#define BB_PLANE_ABI_VERSION UINT32_C(1) /* The plane kind's ABI version: new in 1.6.0 (v1.5.5 had no plane ABI), so it ships `1`. */
+#define BB_PLANE_ABI_VERSION UINT32_C(2) /* The plane kind's ABI version: `2` requires semantic rate-limit fault and namespace provenance. */
 #define BB_PLANE_LAYOUT_FINGERPRINT UINT64_C(0xded167218e200fce) /* The plane kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_PLANE_SLOT_ARRIVE UINT32_C(9) /* Classify an arrival. */
 #define BB_PLANE_SLOT_ON_PIECE UINT32_C(10) /* One piece of a unit's bytes. */
@@ -405,9 +406,9 @@ extern "C" {
 #define BB_PLANE_ROUTE_SCOPE UINT8_C(3) /* [`ArriveOut::route`]: the unit names no entry and is ROUTED BY THE PRINCIPAL'S SCOPE */
 #define BB_PLANE_ROUTE_SCOPE_SEPARATOR ", " /* What joins the reachable entries a [`ROUTE_SCOPE`] refusal's [`RefusalIn::text`] names. */
 #define BB_PLANE_ROUTE_SCOPE_LOCAL UINT8_C(4) /* [`ArriveOut::route`]: the plane ANSWERS THIS UNIT ITSELF at the ONE entry the principal's grant */
-#define BB_PLANE_ROUTE_ONCE UINT8_C(1) /* [`ArriveOut::route_flags`]: the unit's operation is performed AT MOST ONCE (ARCHITECT round 4 */
-#define BB_PLANE_ROUTE_SESSION UINT8_C(2) /* [`ArriveOut::route_flags`]: the unit is served as a DUPLEX SESSION (K6; ARCHITECT round 5 */
-#define BB_PLANE_ROUTE_STREAM UINT8_C(4) /* [`ArriveOut::route_flags`]: the caller asked for its answer STREAMED (ARCHITECT Q1 ArriveOut, */
+#define BB_PLANE_ROUTE_ONCE UINT8_C(1) /* [`ArriveOut::route_flags`]: the unit's operation is performed at most once. */
+#define BB_PLANE_ROUTE_SESSION UINT8_C(2) /* [`ArriveOut::route_flags`]: the unit is served as a duplex session. */
+#define BB_PLANE_ROUTE_STREAM UINT8_C(4) /* [`ArriveOut::route_flags`]: the caller requested a streamed answer. */
 #define BB_PLANE_ROUTE_COUNTED UINT8_C(8) /* [`ArriveOut::route_flags`], on a unit the plane answers itself ([`ROUTE_LOCAL`] or */
 #define BB_PLANE_REFUSED_UNSUPPORTED_ACTION UINT32_C(1) /* [`ArriveOut::refusal_flags`]: the arrival names an ACTION THE PLANE'S PROTOCOL HAS BUT THE PLANE */
 #define BB_PLANE_REFUSED_AFTER_ADMISSION UINT32_C(2) /* [`ArriveOut::refusal_flags`]: the refusal about an entry is rendered AFTER ADMISSION, not before */
@@ -499,7 +500,8 @@ extern "C" {
 #define BB_TRANSPORT_EXT_GUEST_OPEN "guest.open" /* A framer reply asks the host to open this stream before route matching or auth. */
 #define BB_TRANSPORT_EXT_GUEST_POLICY "guest.policy" /* The following call lends the selected generation's policy to the requesting operation. */
 #define BB_TRANSPORT_EXT_GUEST_CURRENT "guest.current" /* A reply confirming that the stream may use a previously decoded policy identity. */
-#define BB_TRANSPORT_ABI_VERSION UINT32_C(1) /* The transport kind's ABI version: new in 1.6.0 (v1.5.5 had no transport kind ABI), so it ships `1`. */
+#define BB_TRANSPORT_EXT_LISTENER_BINDINGS "listener-bindings" /* Statement extension carrying a JSON array of [`ListenerBinding`] records. */
+#define BB_TRANSPORT_ABI_VERSION UINT32_C(2) /* The transport kind's ABI version: `2` requires semantic rate-limit fault and namespace provenance. */
 #define BB_TRANSPORT_LAYOUT_FINGERPRINT UINT64_C(0x715dbad81f3872c0) /* The transport kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_TRANSPORT_SLOT_LISTEN UINT32_C(9) /* Carrier: bind a listener. */
 #define BB_TRANSPORT_SLOT_ACCEPT UINT32_C(10) /* Carrier: accept one connection. */
@@ -557,6 +559,7 @@ extern "C" {
 #define BB_TRANSPORT_FAULT_TRANSIENT UINT8_C(2) /* Fault reading: a transient fault of the destination. Its cell counts it toward a trip, and the */
 #define BB_TRANSPORT_FAULT_HARD UINT8_C(3) /* Fault reading: the destination itself is down for every caller (its credential or its account */
 #define BB_TRANSPORT_FAULT_HEALTHY UINT8_C(4) /* Fault reading: the destination is HEALTHY. It answered; the breaker records a SUCCESS against */
+#define BB_TRANSPORT_FAULT_RATE_LIMIT UINT8_C(5) /* The destination throttled the request: transient health, rate-limit retry policy. */
 #define BB_TRANSPORT_STATUS_AT_NONE UINT8_C(0) /* [`Claim::status_at`]: no status. */
 #define BB_TRANSPORT_STATUS_AT_FIRST_FRAME UINT8_C(1) /* [`Claim::status_at`]: the first frame carries the status. */
 #define BB_TRANSPORT_STATUS_AT_TERMINAL UINT8_C(2) /* [`Claim::status_at`]: the terminal frame carries the status. */
@@ -613,6 +616,8 @@ extern "C" {
 #define BB_TRANSPORT_FIELD_VALUE_PREFIX UINT32_C(2) /* The field line is present and its value starts with the predicate's value. */
 #define BB_TRANSPORT_EXT_SENSITIVE_FIELDS "fields.sensitive" /* An opening Emit input's credential field names; never a wire field. */
 #define BB_TRANSPORT_REQUEST_TARGET_FIELD ":path" /* The request-target pseudo-field classified by the sensitive-field extension. */
+#define BB_TRANSPORT_MAX_NAMESPACE_BYTES ((size_t)128) /* Maximum UTF-8 byte length of a numbering key. */
+#define BB_TRANSPORT_EXT_HANDOFF_STATUS "handoff-status" /* Statement extension containing claim/opening-namespace records. */
 
 /* hconn */
 #define BB_HCONN_DIRECTION_INBOUND UINT32_C(1) /* [`Need::direction`]: the plugin is reached (it listens). */
@@ -701,7 +706,8 @@ extern "C" {
 #define BB_HSVC_OP_UNIT_REFUSE UINT32_C(31) /* `unit.refuse`. */
 #define BB_HSVC_OP_TICKET_MINT UINT32_C(32) /* `ticket.mint`. */
 #define BB_HSVC_OP_TICKET_TAKE UINT32_C(33) /* `ticket.take`. */
-#define BB_HSVC_SERVICES UINT32_C(34) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_OP_WORK_STATUS UINT32_C(34) /* `work.status`: instance-scoped, read-only durable receipt status. */
+#define BB_HSVC_SERVICES UINT32_C(35) /* How many services [`HostSlots`] holds. */
 #define BB_HSVC_SECRET_NOT_LIVE UINT64_C(0) /* `value` of [`op::RECORDS_SECRET`]: not live, or no such credential. */
 #define BB_HSVC_SECRET_LIVE UINT64_C(1) /* `value` of [`op::RECORDS_SECRET`]: the credential is live. */
 #define BB_HSVC_ABSENT UINT64_C(0) /* `value` of [`op::RECORDS_GET`]: no such record. */
@@ -724,6 +730,10 @@ extern "C" {
 #define BB_HSVC_MAX_WORK_RECORD ((size_t)256) /* The most bytes a work handle's record carries (the body lives in the plugin's own records; the */
 #define BB_HSVC_WORK_LIVE UINT8_C(1) /* `work.find`'s state byte: the handle is live. */
 #define BB_HSVC_WORK_SETTLED UINT8_C(2) /* `work.find`'s state byte: the handle is settled. */
+#define BB_HSVC_WORK_STATUS_ABSENT UINT64_C(0) /* No retained work in the calling instance's namespace; never settlement proof. */
+#define BB_HSVC_WORK_STATUS_LIVE UINT64_C(1) /* The owned work is live. */
+#define BB_HSVC_WORK_STATUS_SETTLED UINT64_C(2) /* The owned work has a confirmed durable settlement. */
+#define BB_HSVC_WORK_STATUS_SETTLING UINT64_C(3) /* A settlement write is in flight and not yet confirmed. */
 #define BB_HSVC_TRUST_REACHED UINT32_C(0) /* [`TrustSightIn::outcome`]: the plane reached the counterparty and reports what it serves. */
 #define BB_HSVC_TRUST_UNREACHABLE UINT32_C(1) /* [`TrustSightIn::outcome`]: the plane could not reach the counterparty; nothing is sighted. */
 #define BB_HSVC_TRUST_NEW UINT64_C(1) /* `trust.sight` verdict: never seen before. */
@@ -1165,6 +1175,7 @@ typedef struct bb_hsvc_SignIn bb_hsvc_SignIn;
 typedef struct bb_hsvc_UnitNestIn bb_hsvc_UnitNestIn;
 typedef struct bb_hsvc_WorkOpenIn bb_hsvc_WorkOpenIn;
 typedef struct bb_hsvc_WorkFindIn bb_hsvc_WorkFindIn;
+typedef struct bb_hsvc_WorkStatusIn bb_hsvc_WorkStatusIn;
 typedef struct bb_hsvc_WorkSettleIn bb_hsvc_WorkSettleIn;
 typedef struct bb_hsvc_WorkResumeIn bb_hsvc_WorkResumeIn;
 typedef struct bb_hsvc_TrustSightIn bb_hsvc_TrustSightIn;
@@ -2266,7 +2277,7 @@ struct bb_hook_NotifyIn {
     uint32_t _reserved;
 };
 
-/* `configure`'s `in`. ARCHITECT review ruling (fresh-Opus M3-SHAPES review, parity item): */
+/* Input to `configure`. It echoes the instance name, so the fresh management instance knows which */
 struct bb_hook_ConfigureIn {
     bb_mech_InHead head;
     uint64_t version;
@@ -2313,7 +2324,7 @@ struct bb_hook_ServeOut {
     bb_mech_Blob body;
 };
 
-/* One HTTP route this instance serves via `serve` (ARCHITECT review ruling, fresh-Opus M3-SHAPES */
+/* One HTTP route this instance serves via `serve`. The pair `{path, method}` */
 struct bb_hook_Route {
     bb_mech_AbiStr path;
     bb_mech_AbiStr method;
@@ -2354,7 +2365,7 @@ struct bb_export_DeliverIn {
     bb_mech_Blob batch;
 };
 
-/* One label on a [`ScrapeSample`]: a key AND its value, ARCHITECT review ruling (fresh-Opus */
+/* One label on a [`ScrapeSample`]: a key and its value. A */
 struct bb_export_ScrapeLabel {
     bb_mech_AbiStr key;
     bb_mech_AbiStr value;
@@ -2379,7 +2390,7 @@ struct bb_export_ScrapeFamily {
     size_t samples_len;
 };
 
-/* `scrape`'s `in`. ARCHITECT review ruling 2 (fresh-Opus M3-SHAPES review, 2026-09-28): the */
+/* Input to `scrape`. Results use host buffers, never plugin-owned pointers in */
 struct bb_export_ScrapeIn {
     bb_mech_InHead head;
     const bb_export_ScrapeFamily *families;
@@ -2401,7 +2412,7 @@ struct bb_export_StatusOut {
     bb_mech_Blob status;
 };
 
-/* One instance `check` may read across, at [`CHECK_PHASE_INSTANCES`] (ARCHITECT review ruling, */
+/* One sink-module instance visible during [`CHECK_PHASE_INSTANCES`]. */
 struct bb_export_CheckInstance {
     bb_mech_AbiStr name;
     bb_mech_Blob settings;
@@ -2443,7 +2454,7 @@ struct bb_export_ServeOut {
     bb_mech_Blob body;
 };
 
-/* One HTTP route this instance serves via `serve` (ARCHITECT review ruling, fresh-Opus */
+/* One HTTP route this instance serves via `serve`. The pair `{path, method}` */
 struct bb_export_Route {
     bb_mech_AbiStr path;
     bb_mech_AbiStr method;
@@ -3763,6 +3774,12 @@ struct bb_hsvc_WorkFindIn {
     bb_hsvc_ServiceBufs into;
 };
 
+/* [`op::WORK_STATUS`]'s `in`: observe an owned durable reference without a unit. */
+struct bb_hsvc_WorkStatusIn {
+    bb_hsvc_ServiceHead head;
+    bb_mech_AbiStr reference;
+};
+
 /* [`op::WORK_SETTLE`]'s `in`: settle a live handle of the calling instance with its final record */
 struct bb_hsvc_WorkSettleIn {
     bb_hsvc_ServiceHead head;
@@ -3800,7 +3817,7 @@ struct bb_hsvc_TrustSightItemIn {
     bb_mech_AbiStr digest;
 };
 
-/* [`op::TRUST_SERVES`]'s `in`: the KERNEL'S APPROVE as a query (ARCHITECT 2026-10-06: trust is */
+/* [`op::TRUST_SERVES`]'s input queries the kernel's current approval. */
 struct bb_hsvc_TrustServesIn {
     bb_hsvc_ServiceHead head;
     bb_mech_AbiStr counterparty;
@@ -3869,7 +3886,7 @@ struct bb_hsvc_ContentScanIn {
     bb_hsvc_ServiceBufs into;
 };
 
-/* [`op::HOOK_CALL`]'s `in` (THE DESIGN, host services; ARCHITECT H2 ruling: op 17): run the calling */
+/* [`op::HOOK_CALL`]'s input: run the calling */
 struct bb_hsvc_HookCallIn {
     bb_hsvc_ServiceHead head;
     uint32_t stage;
@@ -3970,8 +3987,7 @@ struct bb_hsvc_UnitHandInIn {
 /* What [`op::UNIT_REFUSE`] answers: the refusal the transport frames verbatim. */
 struct bb_hsvc_RefusalAnswer {
     uint32_t size;
-    uint16_t status;
-    uint16_t _reserved;
+    uint32_t status;
     const bb_mech_Field *fields;
     size_t fields_len;
     bb_mech_Blob body;
@@ -4041,6 +4057,7 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn unit_refuse;
     bb_hsvc_ServiceFn ticket_mint;
     bb_hsvc_ServiceFn ticket_take;
+    bb_hsvc_ServiceFn work_status;
 };
 
 /* THE HOST'S I/O TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is one this host */
@@ -4129,7 +4146,7 @@ struct bb_hio_SpawnIn {
     size_t env_len;
 };
 
-/* ---- layout proof: 289 of 289 structures are pinned by the golden ---- */
+/* ---- layout proof: 290 of 290 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -6166,6 +6183,10 @@ BB_ASSERT(BB_ALIGNOF(bb_hsvc_WorkFindIn) == 8, "bb_hsvc_WorkFindIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_WorkFindIn, head) == 0, "bb_hsvc_WorkFindIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_WorkFindIn, reference) == 24, "bb_hsvc_WorkFindIn.reference: offset");
 BB_ASSERT(offsetof(bb_hsvc_WorkFindIn, into) == 40, "bb_hsvc_WorkFindIn.into: offset");
+BB_ASSERT(sizeof(bb_hsvc_WorkStatusIn) == 40, "bb_hsvc_WorkStatusIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_WorkStatusIn) == 8, "bb_hsvc_WorkStatusIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_WorkStatusIn, head) == 0, "bb_hsvc_WorkStatusIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_WorkStatusIn, reference) == 24, "bb_hsvc_WorkStatusIn.reference: offset");
 BB_ASSERT(sizeof(bb_hsvc_WorkSettleIn) == 56, "bb_hsvc_WorkSettleIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_WorkSettleIn) == 8, "bb_hsvc_WorkSettleIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_WorkSettleIn, head) == 0, "bb_hsvc_WorkSettleIn.head: offset");
@@ -6334,7 +6355,6 @@ BB_ASSERT(sizeof(bb_hsvc_RefusalAnswer) == 48, "bb_hsvc_RefusalAnswer: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_RefusalAnswer) == 8, "bb_hsvc_RefusalAnswer: alignment");
 BB_ASSERT(offsetof(bb_hsvc_RefusalAnswer, size) == 0, "bb_hsvc_RefusalAnswer.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_RefusalAnswer, status) == 4, "bb_hsvc_RefusalAnswer.status: offset");
-BB_ASSERT(offsetof(bb_hsvc_RefusalAnswer, _reserved) == 6, "bb_hsvc_RefusalAnswer._reserved: offset");
 BB_ASSERT(offsetof(bb_hsvc_RefusalAnswer, fields) == 8, "bb_hsvc_RefusalAnswer.fields: offset");
 BB_ASSERT(offsetof(bb_hsvc_RefusalAnswer, fields_len) == 16, "bb_hsvc_RefusalAnswer.fields_len: offset");
 BB_ASSERT(offsetof(bb_hsvc_RefusalAnswer, body) == 24, "bb_hsvc_RefusalAnswer.body: offset");
@@ -6358,7 +6378,7 @@ BB_ASSERT(sizeof(bb_hsvc_TicketTakeIn) == 56, "bb_hsvc_TicketTakeIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_TicketTakeIn) == 8, "bb_hsvc_TicketTakeIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_TicketTakeIn, head) == 0, "bb_hsvc_TicketTakeIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_TicketTakeIn, into) == 24, "bb_hsvc_TicketTakeIn.into: offset");
-BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 280, "bb_hsvc_HostSlots: size");
+BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 288, "bb_hsvc_HostSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HostSlots) == 8, "bb_hsvc_HostSlots: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, size) == 0, "bb_hsvc_HostSlots.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, slots) == 4, "bb_hsvc_HostSlots.slots: offset");
@@ -6396,6 +6416,7 @@ BB_ASSERT(offsetof(bb_hsvc_HostSlots, unit_hand_in) == 248, "bb_hsvc_HostSlots.u
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, unit_refuse) == 256, "bb_hsvc_HostSlots.unit_refuse: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, ticket_mint) == 264, "bb_hsvc_HostSlots.ticket_mint: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, ticket_take) == 272, "bb_hsvc_HostSlots.ticket_take: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, work_status) == 280, "bb_hsvc_HostSlots.work_status: offset");
 BB_ASSERT(sizeof(bb_hio_IoSlots) == 88, "bb_hio_IoSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hio_IoSlots) == 8, "bb_hio_IoSlots: alignment");
 BB_ASSERT(offsetof(bb_hio_IoSlots, size) == 0, "bb_hio_IoSlots.size: offset");

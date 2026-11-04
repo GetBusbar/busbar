@@ -32,7 +32,8 @@
 # `fail`, never skipped), stamps what the suite's freshness is judged by (`repo`, `commit`,
 # `core_pin`, `run_id`, `evidence`: the ModernCI move, `generated_at`) and writes it to
 # target/conformance/verdicts/<id>.json, the check's output. Exit 0 only when every suite passed; an
-# empty list exits 0 and says so.
+# empty list exits 0 and says so. Each suite gets CONFORMANCE_TIMEOUT_SECONDS (default 1800,
+# valid range 1..86400); expiry refuses the verdict and terminates its complete process group.
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -48,6 +49,7 @@ judge() {
   python3 -I - "$@" <<'PY'
 import json, sys, os, datetime, urllib.parse
 raw, suite, rc, out = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+SCHEMA = "busbar.conformance.verdict/1"
 KEYS = {"schema", "suite", "standard", "plan", "spec_version", "status", "armed", "commit",
         "run_id", "evidence", "generated_at", "reason", "repo", "core_pin"}
 def refuse(why):
@@ -61,6 +63,8 @@ def check(v):
     extra = set(v) - KEYS
     if extra:
         return f"verdict carries unknown fields {sorted(extra)}"
+    if v.get("schema", SCHEMA) != SCHEMA:
+        return f"verdict states schema {v.get('schema')!r}, not {SCHEMA!r}"
     if v.get("status") not in ("pass", "fail", "not-run"):
         return f"status {v.get('status')!r} is not pass|fail|not-run"
     if not isinstance(v.get("armed"), bool):
@@ -77,8 +81,8 @@ try:
         v = refuse(why)
 except FileNotFoundError:
     v = refuse(f"no verdict.json (command exit {rc})")
-except ValueError as e:
-    v = refuse(f"verdict.json is not JSON: {e}")
+except (OSError, ValueError, RecursionError) as e:
+    v = refuse(f"verdict.json cannot be read: {type(e).__name__}")
 env = os.environ
 repo = env.get("MODERNCI_REPO") or env["CONF_REPO"]
 head = env["CONF_HEAD"]
@@ -88,7 +92,7 @@ for field, value in expected.items():
     if field in v and v[field] != value:
         v = refuse(f"the suite's subject {field} is {v[field]!r}, expected {value!r}")
         break
-v["schema"] = "busbar.conformance.verdict/1"
+v["schema"] = SCHEMA
 v["repo"] = repo
 v["commit"] = head
 v["core_pin"] = env["BUSBAR_PIN"]
@@ -96,16 +100,55 @@ url = env["CONF_MCI_URL"].rstrip("/") + "/move?" + urllib.parse.urlencode({"repo
 v["run_id"] = "modernci:" + repo + "@" + head + ":conformance"
 v["evidence"] = url
 v["generated_at"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-with open(out, "w") as f:
-    json.dump(v, f, indent=2, sort_keys=True)
-    f.write("\n")
+try:
+    with open(out, "w") as f:
+        json.dump(v, f, indent=2, sort_keys=True)
+        f.write("\n")
+except OSError as error:
+    print(f"cannot publish conformance verdict: {type(error).__name__}", file=sys.stderr)
+    sys.exit(1)
 print(v["status"], v.get("reason", ""))
 sys.exit(0 if v["status"] == "pass" else 1)
 PY
 }
 
-selftest() {
-  local t; t="$(mktemp -d)"; trap 'rm -rf "$t"' RETURN
+# Each suite owns a process group so a timed-out judge cannot leave its subjects running.
+run_suite() {
+  python3 -I - "$1" "$SUITE_TIMEOUT" <<'PYTIMEOUT'
+import os, signal, subprocess, sys
+command, budget = sys.argv[1:3]
+def interrupted(signum, frame):
+    raise SystemExit(128 + signum)
+signal.signal(signal.SIGTERM, interrupted)
+signal.signal(signal.SIGINT, interrupted)
+process = subprocess.Popen(["bash", "-c", command], stdin=subprocess.DEVNULL, start_new_session=True)
+try:
+    try:
+        result = process.wait(timeout=int(budget))
+    except subprocess.TimeoutExpired:
+        print("conformance: suite exceeded its time budget", file=sys.stderr)
+        result = 124
+    sys.exit(result)
+finally:
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
+PYTIMEOUT
+}
+
+selftest() (
+  export MODERNCI_REPO=selftest/repo
+  local t; t="$(mktemp -d)"; trap 'rm -rf "$t"' EXIT
   export BUSBAR_PIN=0000000000000000000000000000000000000000 CONF_REPO=selftest/repo CONF_HEAD=1111111111111111111111111111111111111111 CONF_MCI_URL="$MCI_URL"
   local ok=0
   expect() { # expect <want rc> <name> <verdict text or -> <rc>
@@ -121,6 +164,7 @@ selftest() {
   expect 1 "an unarmed pass is red" '{"suite":"s1","status":"pass","armed":false}' 0
   expect 1 "a pass whose command failed is red" '{"suite":"s1","status":"pass","armed":true}' 1
   expect 1 "an unknown field is red" '{"suite":"s1","status":"pass","armed":true,"x":1}' 0
+  expect 1 "another schema is red" '{"schema":"busbar.conformance.verdict/2","suite":"s1","status":"pass","armed":true}' 0
   expect 1 "a fail is red" '{"suite":"s1","status":"fail","armed":true}' 1
   expect 1 "not-run is red" '{"suite":"s1","status":"not-run","armed":false}' 3
   expect 1 "an older subject cannot be stamped current" '{"suite":"s1","status":"pass","armed":true,"commit":"2222222222222222222222222222222222222222"}' 0
@@ -130,14 +174,26 @@ selftest() {
   python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["repo"]=="selftest/repo" and v["core_pin"].startswith("0000") and v["evidence"].endswith("&head=1111111111111111111111111111111111111111"), v' "$t/out.json" \
     && echo "  ok: the stamp names the repo, the commit, the core pin and the move" || { echo "selftest FAILED: the stamp"; ok=1; }
   return "$ok"
-}
+)
 
 [ "${1:-}" = --selftest ] && { selftest; exit $?; }
 
+SUITE_TIMEOUT="${CONFORMANCE_TIMEOUT_SECONDS-1800}"
+[[ "$SUITE_TIMEOUT" =~ ^[1-9][0-9]{0,4}$ ]] && [ "$SUITE_TIMEOUT" -le 86400 ] \
+  || { say "CONFORMANCE_TIMEOUT_SECONDS must be an integer from 1 to 86400"; exit 2; }
+
+[ -f "$LIST" ] || { say "$LIST is missing"; exit 2; }
 if [ ! -s "$LIST" ] || ! grep -qvE '^[[:space:]]*(#|$)' "$LIST"; then
   say "this repo lists no suites ($LIST); nothing to judge"
   exit 0
 fi
+
+# Validate the entire list before fetching core or provisioning any tool.
+awk -F '\t' '!/^[[:space:]]*(#|$)/ {
+  if ($1 !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/ || seen[$1]++ || $2 !~ /[^[:space:]]/) {
+    print "invalid, duplicate, or command-less suite: " $1 > "/dev/stderr"; bad=1
+  }
+} END { exit bad }' "$LIST" || { say "$LIST is invalid"; exit 2; }
 
 unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE
 actual_head="$(git -C "$here" rev-parse HEAD)" || { say "the checkout has no source commit"; exit 2; }
@@ -153,7 +209,10 @@ else
 fi
 export BUSBAR_PIN="$pin"
 # Infer only the repository path: authenticated HTTPS/SSH origins must never stamp credentials.
-export CONF_REPO="$(git config --get remote.origin.url | python3 -I -c '
+CONF_REPO="${MODERNCI_REPO:-}"
+if [ -z "$CONF_REPO" ]; then
+  origin="$(git config --get remote.origin.url)" || { say "the checkout has no origin"; exit 2; }
+  CONF_REPO="$(printf '%s' "$origin" | python3 -I -c '
 import sys, urllib.parse
 origin = sys.stdin.read().strip()
 if "://" in origin:
@@ -164,8 +223,14 @@ else:
     repo = origin
 repo = repo.strip("/")
 print(repo[:-4] if repo.endswith(".git") else repo)
-')"
-export CONF_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+')" || { say "the origin could not be parsed"; exit 2; }
+fi
+[ -n "$CONF_REPO" ] || { say "the repository is empty"; exit 2; }
+export CONF_REPO
+CONF_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+# A detached checkout names no branch (git prints `HEAD`): the judge then falls back to dev.
+[ "$CONF_BRANCH" != HEAD ] || CONF_BRANCH=""
+export CONF_BRANCH
 export CONF_MCI_URL="$MCI_URL"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$here/target}"
 
@@ -186,19 +251,19 @@ fi
 # shellcheck source=testing/conformance/tools.sh
 . testing/conformance/tools.sh rust node || { say "the pinned tools could not be provisioned"; exit 2; }
 
-# Refuse duplicate ids before they can share a work directory and overwrite a verdict.
-awk -F '\t' '!/^[[:space:]]*(#|$)/ { if (seen[$1]++) { print "duplicate suite id: " $1 > "/dev/stderr"; bad=1 } } END { exit bad }' "$LIST" \
-  || { say "$LIST repeats a suite id"; exit 2; }
-rm -rf "$OUT"; mkdir -p "$OUT/verdicts"
+if ! rm -rf "$OUT" || ! mkdir -p "$OUT/verdicts"; then
+  say "the conformance output could not be cleaned and created"; exit 2
+fi
 fail=0; n=0
 while IFS=$'\t' read -r id cmd || [ -n "$id" ]; do
-  case "$id" in ''|\#*) continue ;; esac
+  # Blank and comment lines, leading whitespace included, as the emptiness and duplicate checks skip them.
+  case "${id#"${id%%[![:space:]]*}"}" in ''|\#*) continue ;; esac
   [ -n "${cmd:-}" ] || { say "$LIST: suite $id names no command"; fail=1; continue; }
   n=$((n + 1))
   dir="$OUT/$id"; mkdir -p "$dir"
   say "=== $id: $cmd"
   start=$(date +%s); rc=0
-  ( export CONFORMANCE_SUITE="$id" CONFORMANCE_OUT="$dir"; bash -c "$cmd" </dev/null ) || rc=$?
+  ( export CONFORMANCE_SUITE="$id" CONFORMANCE_OUT="$dir"; run_suite "$cmd" ) || rc=$?
   say "$id: command exit $rc after $(( $(date +%s) - start ))s"
   if res="$(judge "$dir/verdict.json" "$id" "$rc" "$OUT/verdicts/$id.json")"; then
     say "$id: PASS"

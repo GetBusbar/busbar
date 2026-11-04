@@ -92,7 +92,7 @@
     {
       "repo": "busbar-plane-llm",
       "url": "https://github.com/GetBusbar/busbar-plane-llm",
-      "commit": "f5b3f7cd85a1fd2fcd9dfa6b0d0c6a207e2a365c",
+      "commit": "1709f690f82e321c4c2740cbf1c7f6737aaa2a98",
       "package": "busbar-plane-llm-plugin",
       "kind": "plane",
       "alias": "llm",
@@ -160,7 +160,7 @@
     {
       "repo": "busbar-transport-http",
       "url": "https://github.com/GetBusbar/busbar-transport-http",
-      "commit": "e7b9fc49abce829af1ba8b071e6cd36b0b4298af",
+      "commit": "5c815b16217a8aba628ba1fa81643e6c4bf61f5d",
       "package": "busbar-transport-http-plugin",
       "kind": "transport",
       "alias": "http",

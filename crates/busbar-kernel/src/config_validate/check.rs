@@ -51,6 +51,14 @@ pub fn check(cfg: &RootCfg, c: Check<'_>) -> Result<Arc<dyn PluginRows>, Refusal
         &cfg.export,
     )
     .map_err(Refusal::Plugins)?;
+    super::validate_provider_destinations(cfg, c.unset_env_vars, &|target| {
+        crate::preflight::root_rows()
+            .endpoint_locate
+            .ok_or_else(|| "no transport declaration locator is installed".to_owned())?(
+            &registry, target,
+        )
+    })
+    .map_err(Refusal::Config)?;
     crate::preflight::validate_pool_strategies(cfg, &registry).map_err(Refusal::Plugins)?;
     secret_refs::registry_refusal(registry.as_ref(), cfg).map_err(Refusal::Plugins)?;
 

@@ -152,7 +152,15 @@ type Found = (Bytes, PasswordAt);
 
 /// Whether the operator's text (its password already taken out) asks for a secure connection: a
 fn secure_requested(public: &str) -> bool {
-    if super::secure_scheme(public) {
+    // These are the syntax rules of the URL credential parsers, not a transport registry.
+    // Unknown transport schemes acquire no security assertion here: their owner must call
+    // Cred::require_secure from its own validated settings.
+    if public.split_once("://").is_some_and(|(scheme, _)| {
+        matches!(
+            scheme.to_ascii_lowercase().as_str(),
+            "https" | "wss" | "rediss" | "ldaps" | "grpcs" | "mqtts" | "amqps"
+        )
+    }) {
         return true;
     }
     let lower = public.to_ascii_lowercase();

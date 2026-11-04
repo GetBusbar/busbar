@@ -654,6 +654,9 @@ impl Breaker for WalkCells {
                 store.record_success_in(cell, lane, now);
                 false
             }
+            Outcome::RateLimit { retry_after } => {
+                store.record_rate_limit_in(cell, lane, now, cfg, retry_after)
+            }
             Outcome::Transient { retry_after } => {
                 store.record_transient_in_at(cell, lane, now, cfg, retry_after)
             }
@@ -674,29 +677,7 @@ impl Breaker for WalkCells {
         token: &Pass<Route>,
     ) -> (Classified, bool) {
         let classified = adapters::classify(status);
-
-        let code = status.code.and_then(|c| {
-            c.in_namespace(busbar_contract::transport::registry::status_ns::RESERVED[0])
-        });
-        let cell = self.cell(pool);
-        let bound = self.bound();
-        let Some(translated) = self.destination(&bound, destination) else {
-            return (classified, false);
-        };
-        let lane = lane_of(translated);
-        let tripped = match (classified.outcome, code) {
-            (Outcome::Transient { retry_after }, Some(429)) => match self.plan.records.get(cell) {
-                Some(cfg) => {
-                    bound
-                        .app
-                        .store
-                        .record_rate_limit_in(cell, lane, now, cfg, retry_after)
-                }
-                None => false,
-            },
-
-            (outcome, _) => self.observe(pool, destination, outcome, now, token),
-        };
+        let tripped = self.observe(pool, destination, classified.outcome, now, token);
         (classified, tripped)
     }
 
@@ -719,7 +700,7 @@ impl Breaker for WalkCells {
                 }
                 store.record_probe_success_all_cells(lane, now);
             }
-            Outcome::Transient { retry_after } => {
+            Outcome::Transient { retry_after } | Outcome::RateLimit { retry_after } => {
                 let resolve = |pool: &str| self.plan.records.get(pool).cloned().unwrap_or_default();
                 store.record_probe_failure_all_cells(
                     lane,

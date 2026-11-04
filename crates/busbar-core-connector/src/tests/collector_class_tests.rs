@@ -94,10 +94,14 @@ fn open(
         return Err(DEST_PLAINTEXT);
     }
     let (tx, rx) = mpsc::channel();
-    let judged = j.judge_dial(
-        authority,
-        class,
-        Box::new(move |v| {
+    let judged = j.judge_target_all(
+        busbar_kernel::host_services::Destination {
+            authority,
+            secure,
+            egress_class: class,
+        },
+        false,
+        Box::new(move |v, _| {
             let _ = tx.send(v);
         }),
     );

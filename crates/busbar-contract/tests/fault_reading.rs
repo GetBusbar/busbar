@@ -29,6 +29,13 @@ fn every_stated_reading_round_trips_and_an_unknown_byte_is_none() {
         WireFault::from_code(FAULT_HEALTHY),
         Some(WireFault::Healthy)
     );
-    assert_eq!(WireFault::from_code(FAULT_HEALTHY + 1), None);
+    assert_eq!(
+        WireFault::from_code(busbar_contract::abi::transport::FAULT_RATE_LIMIT + 1),
+        None
+    );
+    assert_eq!(
+        WireFault::from_code(busbar_contract::abi::transport::FAULT_RATE_LIMIT),
+        Some(WireFault::RateLimit)
+    );
     assert_eq!(WireFault::from_code(u8::MAX), None);
 }

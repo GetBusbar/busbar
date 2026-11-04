@@ -22,6 +22,7 @@ struct Far {
     facts_pending: bool,
     advance_in_facts: bool,
     established: bool,
+    writes: usize,
     closes: Vec<Ticket>,
     pieces: std::collections::HashMap<u32, u32>,
 }
@@ -55,6 +56,7 @@ extern "C" fn establish(_: HostCtx, _: *const c_void, out: *mut ServiceOut) -> R
     })
 }
 extern "C" fn write(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    FAR.with(|far| far.borrow_mut().writes += 1);
     // SAFETY: this connector slot's input is the SDK's RequestIn for this call.
     let input = unsafe { &*input.cast::<crate::abi::host::conn::connector::RequestIn>() };
     // SAFETY: out is the SDK's writable service result.
@@ -684,4 +686,56 @@ fn configure_refuses_nonobject_shapes_without_calling_the_hook() {
         assert!(!why.contains("CANARY"));
     }
     closed::<OpenPickyConfigure>(instance);
+}
+
+#[test]
+fn protected_exchange_pending_facts_keep_the_original_deadline_without_writing() {
+    with_tables(
+        Far {
+            now: START,
+            facts_pending: true,
+            ..Default::default()
+        },
+        |tables| {
+            // SAFETY: with_tables owns these host tables for the whole closure.
+            let host = crate::abi::sdk::conn::Host::of(unsafe { Lent::new(tables) });
+            let credential = crate::abi::sdk::cred::Cred::captured(zeroize::Zeroizing::new(
+                b"deadline-CANARY".to_vec(),
+            ))
+            .require_secure();
+            let mut exchange = crate::abi::sdk::exchange::Exchange::request_sealed(
+                Request::default(),
+                vec![(0, b"authorization".to_vec(), credential.bearer())],
+            )
+            .unwrap()
+            .with_timeout_ms(BOUND_MS);
+            for now in [START, EXPIRY - 1] {
+                FAR.with(|far| far.borrow_mut().now = now);
+                assert!(crate::abi::sdk::exchange::exchange(
+                    &mut host.connector(TICKET),
+                    &mut exchange,
+                    0,
+                    Some("foreign://receiver")
+                )
+                .is_pending());
+                assert_eq!(exchange.wake_at_ns(), Some(EXPIRY));
+                FAR.with(|far| assert_eq!(far.borrow().writes, 0));
+            }
+            FAR.with(|far| far.borrow_mut().now = EXPIRY);
+            let result = crate::abi::sdk::exchange::exchange(
+                &mut host.connector(TICKET),
+                &mut exchange,
+                0,
+                Some("foreign://receiver"),
+            );
+            assert!(
+                matches!(result, Poll::Ready(Err(ConnFailure::Failed(ref text))) if text.contains("deadline passed"))
+            );
+            assert_eq!(exchange.stream(), None);
+            FAR.with(|far| {
+                assert_eq!(far.borrow().writes, 0);
+                assert_eq!(far.borrow().closes, [Ticket::NONE]);
+            });
+        },
+    );
 }

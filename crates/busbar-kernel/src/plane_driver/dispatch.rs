@@ -416,5 +416,3 @@ pub struct PlaneAdmission {
     /// out of the `401`, and follows it to the operator's authorization server.
     pub resource_metadata: String,
 }
-
-pub use busbar_contract::transport::transport::plane::{WIRE_GRPC, WIRE_HTTP_JSON, WIRE_JSONRPC};

@@ -55,6 +55,8 @@ pub enum WireFault {
     /// A transient fault of the destination: it counts toward a trip, the stated wait floors the
     /// cooldown.
     Transient,
+    /// The destination throttled this request; transient for breaker health, with rate-limit retry policy.
+    RateLimit,
     /// The destination is down for every caller (a refused credential or account): every pool's
     /// cell for it trips.
     Hard,
@@ -70,6 +72,7 @@ impl WireFault {
         match code {
             crate::abi::transport::FAULT_CALLER => Some(Self::Caller),
             crate::abi::transport::FAULT_TRANSIENT => Some(Self::Transient),
+            crate::abi::transport::FAULT_RATE_LIMIT => Some(Self::RateLimit),
             crate::abi::transport::FAULT_HARD => Some(Self::Hard),
             crate::abi::transport::FAULT_HEALTHY => Some(Self::Healthy),
             _ => None,
@@ -124,15 +127,14 @@ pub enum Framing {
 /// about it beyond "not mine". The key says the same thing once. A reader asks its own namespace's
 /// question and gets `None` from every other numbering BECAUSE THE NAMESPACES DIFFER, which is the
 /// reading it wanted, and a family this tree has never heard of costs it nothing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct WireStatus {
     /// The numbering that spelled this status, as the reporting transport declares it in its
     /// claim row ([`crate::abi::transport::Claim::status_namespace`]).
     ///
-    /// The kernel reserves the two the arrival grammar already reads against — see
-    /// `registry::status_ns` — and a transport with a numbering of its own names it whatever it
-    /// likes.
-    pub namespace: &'static str,
+    /// Owned by the validated declaration snapshot; unknown namespace keys remain opaque.
+    #[serde(serialize_with = "serialize_namespace")]
+    pub namespace: Arc<str>,
     /// The number the upstream put on the answer, in that numbering and unmangled.
     ///
     /// Wide enough for every numbering rather than each family's own width: narrowing to what a
@@ -141,17 +143,27 @@ pub struct WireStatus {
     pub code: u32,
 }
 
+fn serialize_namespace<S: serde::Serializer>(
+    namespace: &str,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(namespace)
+}
+
 impl WireStatus {
     /// A status in the numbering that spelled it.
     #[must_use]
-    pub const fn new(namespace: &'static str, code: u32) -> Self {
-        Self { namespace, code }
+    pub fn new(namespace: impl Into<Arc<str>>, code: u32) -> Self {
+        Self {
+            namespace: namespace.into(),
+            code,
+        }
     }
 
     /// The number, when this status is in the numbering asked for. `None` otherwise — never a
     #[must_use]
-    pub fn in_namespace(self, namespace: &str) -> Option<u32> {
-        (self.namespace == namespace).then_some(self.code)
+    pub fn in_namespace(&self, namespace: &str) -> Option<u32> {
+        (self.namespace.as_ref() == namespace).then_some(self.code)
     }
 }
 
@@ -168,7 +180,7 @@ impl WireStatus {
 /// other takes every sibling lane down with it — needs the number. The wait is here for the same
 /// reason: it is a fact ABOUT THIS ANSWER, so it rides the answer's frame rather than being
 /// re-derived from a header the layer above never sees.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct FrameMeta {
     /// How many bytes this frame carried on the wire.
     pub bytes: u64,

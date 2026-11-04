@@ -228,6 +228,10 @@ impl Candidate {
         })?;
         let kind = KindCode::from_raw(r.kind)
             .ok_or_else(|| format!("the Statement names kind {}", r.kind))?;
+        if kind == KindCode::Transport {
+            let claims: Vec<_> = r.claims.iter().map(String::as_str).collect();
+            busbar_contract::abi::transport::listener_bindings::read(&r.extensions.bytes, &claims)?;
+        }
         let words = |class| rewrites(&r, class);
         let mut aliases: Vec<String> = words(REWRITE_ALIAS).collect();
         if let Some(a) = alias.filter(|a| *a != r.name && !aliases.iter().any(|x| x == a)) {
@@ -321,6 +325,17 @@ impl Candidate {
         uses.schemes
             .iter()
             .any(|s| self.schemes.contains(s) || self.answers(s))
+            || (self.kind == KindCode::Transport
+                && read(&self.stated).ok().is_some_and(|stated| {
+                    let claims: Vec<_> = stated.claims.iter().map(String::as_str).collect();
+                    // The legacy slot exists even when its address is implicit. Its declaration
+                    // selects the transport before OPEN; a URL need is not required.
+                    busbar_contract::abi::transport::listener_bindings::read(
+                        &stated.extensions.bytes,
+                        &claims,
+                    )
+                    .is_ok_and(|bindings| bindings.iter().any(|binding| binding.slot == "listen"))
+                }))
     }
 
     #[must_use]

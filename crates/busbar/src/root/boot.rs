@@ -450,6 +450,8 @@ pub struct ListenerNeed {
 /// Physical binds and the declarations assigned to them.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ListenerNeeds {
+    /// An operator supplied the root data bind or its TLS policy.
+    pub root_required: bool,
     /// Root binds followed by additional plugin binds.
     pub binds: Vec<InboundBind>,
     /// Assignments, including needs sharing the root data bind.
@@ -460,13 +462,17 @@ pub fn configured_listener_needs(
     cfg: &busbar_kernel::config::RootCfg,
     sections: &std::collections::BTreeMap<&'static str, serde_yaml::Value>,
 ) -> Result<ListenerNeeds, String> {
-    listener_projection(
+    let mut listeners = listener_projection(
         listener_candidates(&crate::LINKED)?,
         &cfg.hooks,
         &cfg.export_defs,
         sections,
         configured_root_binds(cfg)?,
-    )
+    )?;
+    listeners.root_required = cfg.listen_explicit
+        || cfg.listen != busbar_kernel::config::DEFAULT_LISTEN_ADDR
+        || cfg.tls.is_some();
+    Ok(listeners)
 }
 
 pub fn configured_root_binds(
@@ -474,13 +480,21 @@ pub fn configured_root_binds(
 ) -> Result<Vec<InboundBind>, String> {
     let doc = serde_json::json!({"tls": serde_json::to_value(&cfg.tls).map_err(|e| e.to_string())?,
         "admin_tls": serde_json::to_value(&cfg.admin_tls).map_err(|e| e.to_string())?});
-    Ok(root_binds(
+    let binds = root_binds(
         &doc,
         &RootListens {
             listen: &cfg.listen,
             admin_listen: &cfg.admin_listen,
         },
-    ))
+    );
+    for (setting, addr) in [("listen", &cfg.listen), ("admin_listen", &cfg.admin_listen)] {
+        if !binds.iter().any(|bind| bind.at == setting) {
+            return Err(format!(
+                "cannot bind listen address '{addr}': it resolves to no socket address"
+            ));
+        }
+    }
+    Ok(binds)
 }
 
 pub fn candidate_listener_needs(
@@ -769,6 +783,7 @@ pub fn listener_needs(
         }
     }
     Ok(ListenerNeeds {
+        root_required: doc.get("listen").is_some() || doc.get("tls").is_some_and(|v| !v.is_null()),
         binds,
         needs: shared,
     })
@@ -845,12 +860,113 @@ pub fn validate(
     path: &std::path::Path,
     registry: &PluginRegistry,
     root: &RootListens<'_>,
+    root_required: bool,
 ) -> Result<Stages, String> {
     let doc = document(path)
         .map(|d| d.value().clone())
         .unwrap_or_default();
-    let root = root_binds(&doc, root);
-    stages(&doc, discover(registry)?, root)
+    let root_required = root_required
+        || doc.get("listen").is_some()
+        || doc.get("tls").is_some_and(|v| !v.is_null())
+        || root.listen != busbar_kernel::config::DEFAULT_LISTEN_ADDR;
+    let binds = root_binds(&doc, root);
+    for (slot, address) in [("listen", root.listen), ("admin_listen", root.admin_listen)] {
+        if !binds.iter().any(|bind| bind.at == slot) {
+            return Err(format!(
+                "cannot bind listen address '{address}': it resolves to no socket address"
+            ));
+        }
+    }
+    let mut stages = stages(&doc, discover(registry)?, binds)?;
+    resolve_validation_listeners(
+        &mut stages,
+        registry,
+        &transport_uses_for(path, &[]),
+        root_required,
+    )?;
+    Ok(stages)
+}
+
+/// Resolve validation's physical binds from declarations without calling lifecycle OPEN.
+fn resolve_validation_listeners(
+    stages: &mut Stages,
+    registry: &PluginRegistry,
+    uses: &Uses,
+    root_required: bool,
+) -> Result<(), String> {
+    use super::loader::dispatch::{
+        kinds::transport::{self, TransportFacts},
+        Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
+    };
+    let mut facts = crate::LINKED_TRANSPORT_DOORS
+        .iter()
+        .map(|(_, door)| transport::linked_facts(*door))
+        .collect::<Result<Vec<_>, _>>()?;
+    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let bind = Bind {
+        instance: Arc::from("configuration-listeners"),
+        max_inflight_cap: 1,
+        sink: Arc::new(NoSink),
+        dispatcher: dispatcher.adopter(),
+        conns: ConnTable::NoNeeds,
+    };
+    let declared = registry.open_transport_entries(&bind, uses, plugin_logs())?;
+    for plugin in &declared.doors {
+        facts.push(
+            plugin
+                .context::<TransportFacts>()
+                .cloned()
+                .ok_or("listener transport has no validated declaration")?,
+        );
+    }
+    let accepting: Vec<_> = facts
+        .iter()
+        .filter(|facts| facts.role == busbar_contract::abi::transport::ROLE_FRAMER && facts.accepts)
+        .collect();
+    let data_required = stages.selected.iter().any(|selection| {
+        stages.candidates[selection.candidate]
+            .needs
+            .iter()
+            .any(|need| {
+                need.direction == busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND
+            })
+    });
+    if !root_required && !data_required && accepting.is_empty() {
+        stages.inbound.retain(|bind| bind.at != "listen");
+    } else {
+        let claim = busbar_contract::abi::transport::listener_bindings::resolve(
+            "listen",
+            accepting.iter().flat_map(|facts| &facts.listener_bindings),
+        )?;
+        if !accepting
+            .iter()
+            .any(|facts| facts.claims.contains(&claim.as_str()) && !facts.datagram)
+        {
+            return Err("listen: its declared claim requires an accepting stream framer".into());
+        }
+        for bind in &mut stages.inbound {
+            if bind.owner == BindOwner::Root && bind.at == "listen" {
+                bind.transport.clone_from(&claim);
+            }
+        }
+    }
+    for bind in stages
+        .inbound
+        .iter()
+        .filter(|bind| bind.at != "admin_listen")
+    {
+        let count = accepting
+            .iter()
+            .filter(|facts| facts.claims.contains(&bind.transport.as_str()))
+            .count();
+        if count != 1 {
+            return Err(format!(
+                "{}: expected one accepting framer for {}, found {count}",
+                bind.at, bind.transport
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The addresses the host's own listeners take, as the resolved configuration states them.
@@ -1380,3 +1496,101 @@ mod transport_inventory_tests;
 #[cfg(all(test, unix, linked_every_plane_door, feature = "test-harness"))]
 #[path = "tests/bootstrap_pins.rs"]
 mod bootstrap_pin_tests;
+
+/// Select the exact admitted transport claim and run its pre-open, pure LOCATE operation.
+/// This path uses an isolated dispatcher with no connection needs and never opens an instance.
+pub fn locate_provider_destination(
+    rows: &Arc<dyn PluginRows>,
+    target: &str,
+) -> Result<busbar_kernel::config_validate::ProviderDestination, String> {
+    locate_provider_destination_with(rows, target, crate::LINKED_TRANSPORT_DOORS)
+}
+
+fn locate_provider_destination_with(
+    rows: &Arc<dyn PluginRows>,
+    target: &str,
+    linked: &[(&str, busbar_contract::abi::mechanism::door::DoorFn)],
+) -> Result<busbar_kernel::config_validate::ProviderDestination, String> {
+    use crate::root::loader::dispatch::{
+        kinds::transport::{Transport, TransportFacts},
+        load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow, NoSink,
+    };
+    let claim = target
+        .split_once("://")
+        .map(|(s, _)| s)
+        .filter(|s| {
+            s.starts_with(|c: char| c.is_ascii_alphabetic())
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+        })
+        .ok_or("endpoint must name an absolute registered transport claim")?
+        .to_ascii_lowercase();
+    let on = Dispatcher::new(DispatchConfig::default());
+    let bind = Bind {
+        instance: Arc::from("configuration-locate"),
+        max_inflight_cap: 1,
+        sink: Arc::new(NoSink),
+        dispatcher: on.adopter(),
+        conns: ConnTable::NoNeeds,
+    };
+    let mut selected = Vec::new();
+    for (_, door) in linked {
+        let facts = crate::root::loader::dispatch::kinds::transport::linked_facts(*door)?;
+        if facts.claims.iter().any(|c| *c == claim) {
+            let row = LinkedRow::of(*door).map_err(|e| e.to_string())?;
+            selected.push(load_linked::<Transport>(&row, bind.clone()).map_err(|e| e.to_string())?);
+        }
+    }
+    let registry = rows
+        .as_any()
+        .downcast_ref::<PluginRegistry>()
+        .ok_or("configuration registry cannot supply transport declarations")?;
+    let uses = Uses::default().reaching([target]);
+    // Loading/binding checks the signed declaration; it does not call lifecycle OPEN or READY.
+    let logs = crate::root::loader::dispatch::PluginLogConfig::from_words(
+        None,
+        None,
+        &std::collections::BTreeMap::new(),
+        None,
+        None,
+    )?;
+    selected.extend(
+        registry
+            .open_transport_entries(&bind, &uses, &logs)?
+            .doors
+            .into_iter()
+            .filter(|p| {
+                p.context::<TransportFacts>()
+                    .is_some_and(|f| f.claims.iter().any(|c| *c == claim))
+            }),
+    );
+    let plugin = match selected.as_slice() {
+        [] => return Err(format!("no admitted transport claims '{claim}'")),
+        [plugin] => plugin,
+        _ => {
+            return Err(format!(
+                "multiple admitted transports claim '{claim}': {}",
+                selected
+                    .iter()
+                    .map(|p| p.name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        }
+    };
+    let facts = plugin
+        .context::<TransportFacts>()
+        .ok_or("transport declaration disappeared")?;
+    let located = if facts.role == busbar_contract::abi::transport::ROLE_CARRIER && facts.ported {
+        // A network carrier is carried as itself at runtime too: its declared claim names an
+        // authority, and the connector never invents connection security for that authority.
+        busbar_core_connector::compose::carried_at(&claim, target).map_err(|e| e.to_string())?
+    } else {
+        crate::root::doors::locate_bound(plugin, target)?
+    };
+    Ok(busbar_kernel::config_validate::ProviderDestination {
+        authority: located.authority,
+        secure: located.secure,
+        name: located.name,
+    })
+}

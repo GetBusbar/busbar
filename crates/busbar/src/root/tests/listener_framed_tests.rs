@@ -12,6 +12,32 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::{data_framer, DataFramer, DATA_SCHEME};
 
+#[test]
+fn neutral_head_decoding_preserves_the_shared_abi_without_http_parsing() {
+    let head = busbar_core_connector::framer::Head {
+        method: Some(b"READ OBJECT".to_vec()),
+        target: Some(b"opaque target with spaces?kept=%2f".to_vec()),
+        authority: Some(b"opaque authority".to_vec()),
+        ..Default::default()
+    };
+    let decoded = super::decoded_head(&head, b"opaque field: \0value\r\n").unwrap();
+    assert_eq!(decoded.method, "READ OBJECT");
+    assert_eq!(decoded.target, "opaque target with spaces");
+    assert_eq!(decoded.query.as_deref(), Some("kept=%2f"));
+    assert_eq!(decoded.authority, "opaque authority");
+    assert_eq!(
+        decoded.fields,
+        vec![("opaque field".to_owned(), b"\0value".to_vec())]
+    );
+    assert!(super::decoded_head(&head, b"field: complete\r\nunparsed-tail").is_none());
+    let mut invalid_text = head;
+    invalid_text.method = Some(vec![0xff]);
+    assert!(
+        super::decoded_head(&invalid_text, &[]).is_none(),
+        "the existing auth head ABI requires text"
+    );
+}
+
 fn actual_http_framing() -> (DataFramer, busbar_core_connector::framer::Framing) {
     use busbar_core_connector::framer::{Established, Framing};
     let framer = actual_http_framer();
@@ -782,6 +808,8 @@ async fn framer_results_retire_failed_continuations_independent_of_response_head
     }
 }
 
+// These axum handlers test the fixed operator adapter and connection actor.
+// Governed plane dispatch is covered by serve_neutral_tests.
 async fn anonymous_policy() -> tokio::sync::MutexGuard<'static, ()> {
     anonymous_policy_with_upgrade(None).await
 }
@@ -802,7 +830,7 @@ async fn anonymous_policy_with_upgrade(
             fields: Vec::new(),
             rung: 0,
         },
-        claimant: Claimant::Plane("listener-fixture".into()),
+        claimant: Claimant::Clean("listener-operator-fixture".into()),
         dialect: 0,
         auth: LineAuth::None,
         upgrade: upgrade.map(str::to_owned),
@@ -904,7 +932,7 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
             fields: Vec::new(),
             rung: 0,
         },
-        claimant: Claimant::Plane("body-wait-fixture".into()),
+        claimant: Claimant::Clean("body-wait-operator-fixture".into()),
         dialect: 0,
         auth: LineAuth::None,
         upgrade: None,
@@ -1380,6 +1408,12 @@ impl FramerDoor for ObservedDoor {
     }
     fn accepts(&self) -> bool {
         self.actual.accepts()
+    }
+    fn detaches(&self) -> bool {
+        self.actual.detaches()
+    }
+    fn adopts(&self) -> bool {
+        self.actual.adopts()
     }
     fn instance(&self) -> Option<u64> {
         self.actual.instance()
@@ -2925,6 +2959,11 @@ async fn a_dropped_pending_admission_ack_cannot_publish_a_late_acceptance() {
         "no admitted application effect"
     );
     assert_eq!(
+        http.count(|call| matches!(call, ObservedCall::Detach)),
+        0,
+        "an already cancelled admission never detaches its source framing"
+    );
+    assert_eq!(
         http.count(|call| matches!(call, ObservedCall::Emit { status: 101, .. })),
         0
     );
@@ -3303,7 +3342,7 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
                     fields: Vec::new(),
                     rung: 0,
                 },
-                claimant: Claimant::Plane("listener-public-first".into()),
+                claimant: Claimant::Clean("listener-public-first".into()),
                 dialect: 0,
                 auth: LineAuth::None,
                 upgrade: None,
@@ -3317,7 +3356,7 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
                     fields: Vec::new(),
                     rung: 0,
                 },
-                claimant: Claimant::Plane("listener-real-eof".into()),
+                claimant: Claimant::Clean("listener-real-eof".into()),
                 dialect: 0,
                 auth: LineAuth::Chain(vec!["held".into()], points),
                 upgrade: None,

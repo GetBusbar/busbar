@@ -45,6 +45,8 @@ fn door() -> Arc<LengthDoor> {
             composes_over: Vec::new(),
             ported: false,
             status_rows: vec![(1, 0, 9)],
+            status_namespaces: vec![],
+            handoff_status: vec![],
             duplex: Vec::new(),
             datagram: false,
         },
@@ -335,4 +337,65 @@ fn a_stream_begins_with_its_listeners_scheme() {
             Some(scheme)
         );
     }
+}
+
+#[test]
+fn neutral_closing_uses_producer_metadata_and_preserves_an_unknown_namespace() {
+    struct MetadataDoor {
+        inner: Arc<LengthDoor>,
+        facts: DoorFacts,
+    }
+    impl FramerDoor for MetadataDoor {
+        fn facts(&self) -> &DoorFacts {
+            &self.facts
+        }
+        fn cross(&self, call: Call<'_>) -> Crossed {
+            match call {
+                Call::Refuse(input, output) => {
+                    wire(&input.sink, output, b"opaque field: opaque value\r\n");
+                    assert!(input.sink.pieces_cap > 0);
+                    // SAFETY: the host lends one writable frame slot, checked above.
+                    unsafe {
+                        *input.sink.pieces = FramePiece {
+                            stream: input.stream,
+                            offset: 0,
+                            len: 0,
+                            code: 70_123,
+                            status_class: busbar_contract::abi::transport::STATUS_SUCCESS,
+                            flags: busbar_contract::abi::transport::PIECE_FIELDS
+                                | busbar_contract::abi::transport::PIECE_HAS_CODE
+                                | busbar_contract::abi::transport::PIECE_CODE_HANDOFF
+                                | PIECE_END_OF_FRAME,
+                            fault: busbar_contract::abi::transport::FAULT_NONE,
+                            retry_after_secs: 0,
+                            declared_len: 0,
+                        };
+                    }
+                    output.yielded.pieces_len = 1;
+                    Crossed {
+                        outcome: Outcome::Ready,
+                        error: None,
+                    }
+                }
+                other => self.inner.cross(other),
+            }
+        }
+    }
+    let inner = door();
+    let mut facts = inner.facts.clone();
+    facts.handoff_status = vec![None, Some(Arc::from("quartz-opening-v7"))];
+    let door: Arc<dyn FramerDoor> = Arc::new(MetadataDoor { inner, facts });
+    let mut stream =
+        FramedStream::open_neutral(door, "lp", "opaque target", &[], SCHEME_PLAIN).unwrap();
+    let closing = stream.refuse_response(&[], 503, false).unwrap();
+    assert_eq!(
+        closing.status,
+        Some(70_123),
+        "no HTTP status range restriction"
+    );
+    assert_eq!(
+        closing.status_namespace.as_deref(),
+        Some("quartz-opening-v7")
+    );
+    assert_eq!(closing.fields, pairs(&[("opaque field", "opaque value")]));
 }

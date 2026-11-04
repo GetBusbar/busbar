@@ -289,6 +289,7 @@ pub fn register_stores(linked: &Linked) {
         Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
             stores: linked.stores,
             registry_build: Some(crate::root::boot::registry_rows),
+            endpoint_locate: Some(crate::root::boot::locate_provider_destination),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
             hook_axis: Some(crate::root::hooks::axis),
             hook_names: crate::LINKED_HOOK_NAMES,

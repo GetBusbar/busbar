@@ -9,7 +9,7 @@ use crate::diagnostics::{
 use crate::{
     admin, audit, auth, catalogue, config, config_validate, core_routes, cost, durable, endpoints,
     export, governance, hooks, ingress, ir, json, limits, oauth_as, observability, operation,
-    plugin_routes, profile, snapshot, state, store, telemetry, transport, trust,
+    plugin_routes, profile, snapshot, state, store, telemetry, trust,
 };
 
 pub fn fleet_data_dir() -> Option<std::path::PathBuf> {
@@ -98,6 +98,10 @@ pub enum BuildNote<'r> {
     FloorUnwritable(&'r std::io::Error),
 }
 
+/// Pure declaration-owned target syntax, followed by the kernel's independent destination policy.
+pub type EndpointLocate =
+    fn(&Arc<dyn PluginRows>, &str) -> Result<crate::config_validate::ProviderDestination, String>;
+
 pub type SecretAdmit = fn(&Arc<dyn PluginRows>, &config::PluginsCfg) -> Result<(), String>;
 
 pub struct RegistryIn<'a> {
@@ -150,6 +154,9 @@ pub struct RootInstall {
     pub stores: &'static [LinkedStore],
     /// The root's registry build.
     pub registry_build: Option<RegistryBuild>,
+    /// Resolve a provider target through an admitted transport's pure LOCATE operation.
+    /// No instance is opened and no address is resolved or dialled.
+    pub endpoint_locate: Option<EndpointLocate>,
     /// The root's `plugins.fetch`.
     pub plugins_fetch: Option<PluginsFetch>,
     /// The hook axis the root builds over a registry: every `kind:

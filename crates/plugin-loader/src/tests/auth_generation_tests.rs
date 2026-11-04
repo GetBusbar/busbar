@@ -62,7 +62,6 @@ fn existing_units_keep_their_generation_at_all_three_services_but_new_requests_c
     let mut refusal = RefusalAnswer {
         size: size_of::<RefusalAnswer>() as u32,
         status: 0,
-        _reserved: 0,
         fields: std::ptr::null(),
         fields_len: 0,
         body: no_blob(),

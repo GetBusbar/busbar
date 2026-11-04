@@ -93,6 +93,13 @@ impl Drop for Head {
 }
 
 impl Head {
+    fn path_and_query(&self) -> String {
+        match &self.query {
+            Some(query) => format!("{}?{query}", self.target),
+            None => self.target.clone(),
+        }
+    }
+
     fn stripped(&self, strips: &[Strip]) -> Option<Self> {
         use zeroize::Zeroize as _;
         let mut head = self.clone();
@@ -111,13 +118,13 @@ impl Head {
             .map(|strip| strip.name.as_ref())
             .collect();
         if !keys.is_empty() {
-            let bytes = bytes::Bytes::from_owner(FieldBytes(zeroize::Zeroizing::new(
-                head.path_and_query().into_bytes(),
-            )));
-            let uri = axum::http::Uri::from_maybe_shared(bytes).ok()?;
-            if let Some(stripped) = crate::auth::without_query_keys(&uri, &keys) {
+            if let Some(stripped) = head
+                .query
+                .as_deref()
+                .and_then(|query| crate::auth::without_query_keys_text(query, &keys))
+            {
                 let mut original =
-                    std::mem::replace(&mut head.query, stripped.query().map(str::to_owned));
+                    std::mem::replace(&mut head.query, (!stripped.is_empty()).then_some(stripped));
                 if let Some(query) = &mut original {
                     query.zeroize();
                 }
@@ -132,13 +139,6 @@ impl Head {
             && self.authority.is_empty()
             && self.query.is_none()
             && self.fields.is_empty()
-    }
-
-    fn path_and_query(&self) -> String {
-        match &self.query {
-            Some(q) => format!("{}?{q}", self.target),
-            None => self.target.clone(),
-        }
     }
 }
 
@@ -241,8 +241,8 @@ pub struct Refuse {
 /// verbatim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
-    /// The status.
-    pub status: u16,
+    /// The opaque status in the selected transport claim's numbering.
+    pub status: u32,
     /// The head fields: (name, value).
     pub fields: Vec<(String, Vec<u8>)>,
     /// The body.
@@ -262,7 +262,7 @@ impl Refusal {
             .map(|c| c.to_bytes().to_vec())
             .unwrap_or_default();
         Self {
-            status: parts.status.as_u16(),
+            status: u32::from(parts.status.as_u16()),
             fields: parts
                 .headers
                 .iter()
@@ -286,7 +286,7 @@ pub struct RefusedUnit {
     /// `REFUSE_*`.
     pub cause: u32,
     /// The status answered.
-    pub status: u16,
+    pub status: u32,
 }
 
 /// What a unit ref's MAC covers (#74).
@@ -364,9 +364,20 @@ pub struct Listener {
 pub type ListenerAdmission =
     Arc<dyn Fn(&App, &Head) -> Option<crate::plane_driver::dispatch::PlaneAdmission> + Send + Sync>;
 
+pub type NeutralRefuse = Arc<
+    dyn Fn(
+            &Arc<App>,
+            &crate::plane_routes::KernelRefusal<'_>,
+        ) -> Option<crate::plane_driver::Rendered>
+        + Send
+        + Sync,
+>;
+
 /// Host-only route ownership retained with one listener generation.
 #[derive(Clone)]
 pub struct ListenerScope {
+    /// Neutral refusal producer retained with the same sealed data dispatcher.
+    pub neutral_refuse: Option<NeutralRefuse>,
     /// Resolve the selected claimant's own audience, never another listener's path match.
     pub admission: ListenerAdmission,
     /// Whether the root's legacy fallback surface is physically present.
@@ -466,12 +477,18 @@ pub struct RequestAdmission {
 }
 
 pub(crate) struct AdmittedRequest {
+    owner: u64,
+    line: u32,
+    binding: RequestBinding,
+    upgrade: Option<String>,
+    upgrade_used: std::sync::atomic::AtomicBool,
     table: Arc<Table>,
     pub(crate) admitted: Option<Admitted>,
     pub(crate) credential: Option<Secret<String>>,
 
     pub(crate) signed: bool,
     pub(crate) original: Head,
+    handed: Head,
     pub(crate) strips: Vec<Strip>,
     replay: Option<Arc<ReplayAdmission>>,
     deadline: Option<std::time::Instant>,
@@ -483,7 +500,91 @@ struct ReplayAdmission {
     won: tokio::sync::OnceCell<bool>,
 }
 
+/// Host-only upgrade authority derived from one admitted request's sealed route.
+#[derive(Clone)]
+pub struct UpgradePermit {
+    request: Arc<AdmittedRequest>,
+}
+
+impl std::fmt::Debug for UpgradePermit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UpgradePermit").finish_non_exhaustive()
+    }
+}
+
+impl UpgradePermit {
+    /// Consume once, only for the original admitted inflow and source framing.
+    pub fn consume(
+        &self,
+        admission: &RequestAdmission,
+        owner: u64,
+        framing: u64,
+        stream: u64,
+    ) -> Option<&str> {
+        let request = &self.request;
+        if !Arc::ptr_eq(request, &admission.inner)
+            || request.owner != owner
+            || request.binding.framing != Some(framing)
+            || request.binding.stream != stream
+            || !request.alive.load(std::sync::atomic::Ordering::Acquire)
+            || request
+                .replay
+                .as_ref()
+                .is_some_and(|replay| replay.won.get() != Some(&true))
+            || request
+                .deadline
+                .is_some_and(|at| std::time::Instant::now() >= at)
+        {
+            return None;
+        }
+        let claim = request.upgrade.as_deref()?;
+        request
+            .upgrade_used
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .ok()?;
+        Some(claim)
+    }
+}
+
 impl RequestAdmission {
+    /// The exact sealed line that admitted this request, retained across publication.
+    #[must_use]
+    pub fn selected_line(&self) -> &Line {
+        &self.inner.table.listener.guests.lines()[self.inner.line as usize]
+    }
+
+    /// The verified head after the transport stripped consumed credentials.
+    #[must_use]
+    pub fn head(&self) -> &Head {
+        &self.inner.handed
+    }
+
+    #[must_use]
+    pub fn deadline(&self) -> Option<std::time::Instant> {
+        self.inner.deadline
+    }
+
+    #[must_use]
+    pub fn ticket_prefix(&self) -> Option<&str> {
+        self.inner
+            .table
+            .doors
+            .door_ticket_for_token(&self.inner.original.target, &self.inner.original.method)
+    }
+
+    /// Derive authority only when the exact sealed route declares an upgrade.
+    #[must_use]
+    pub fn upgrade_permit(&self) -> Option<UpgradePermit> {
+        self.inner.upgrade.as_ref()?;
+        Some(UpgradePermit {
+            request: Arc::clone(&self.inner),
+        })
+    }
     #[must_use]
     pub fn body_limit(&self) -> u64 {
         self.inner.table.listener.body_limit
@@ -493,7 +594,7 @@ impl RequestAdmission {
         self.inner.table.listener.admission(&self.inner.original)
     }
 
-    pub(crate) fn app(&self) -> Arc<App> {
+    pub fn app(&self) -> Arc<App> {
         Arc::clone(&self.inner.table.listener.app)
     }
 
@@ -1782,11 +1883,17 @@ impl Inbound {
         }
         let admission = RequestAdmission {
             inner: Arc::new(AdmittedRequest {
+                owner,
+                line: unit.line,
+                binding: unit.binding,
+                upgrade: line.upgrade.clone(),
+                upgrade_used: std::sync::atomic::AtomicBool::new(false),
                 table: Arc::clone(&unit.table),
                 admitted: unit.admitted.clone(),
                 credential: unit.credential.clone(),
                 signed: unit.signed,
                 original: unit.head.as_ref().unwrap_or(handed).clone(),
+                handed: handed.clone(),
                 strips: unit.strips.clone(),
                 replay: unit.replay.clone(),
                 deadline: unit.deadline,
@@ -2684,6 +2791,115 @@ impl Inbound {
                 .unwrap_or_else(|| path.clone()),
         );
         let app = &table.listener.app;
+        if let Some(renderer) = table
+            .listener
+            .scope
+            .as_ref()
+            .and_then(|scope| scope.neutral_refuse.as_ref())
+        {
+            if !line.is_some_and(|line| {
+                matches!(
+                    line.claimant,
+                    crate::guest::Claimant::Clean(_) | crate::guest::Claimant::Need(..)
+                )
+            }) {
+                use busbar_contract::caps::ReasonCode;
+                let (reason, status, text) = match r.cause {
+                    REFUSE_NO_ROUTE => (
+                        ReasonCode::NoDestination,
+                        404,
+                        "the requested resource was not found",
+                    ),
+                    REFUSE_METHOD_MISS => (
+                        ReasonCode::MethodNotAllowed,
+                        405,
+                        "method not allowed for this resource",
+                    ),
+                    REFUSE_OVER_GATE => (
+                        ReasonCode::BodyTooLarge,
+                        413,
+                        "request body exceeds the maximum allowed size",
+                    ),
+                    REFUSE_STOPPED | REFUSE_CHECK_FAILED if overloaded => (
+                        ReasonCode::InFlightCap,
+                        503,
+                        "The gateway is at capacity. Please retry shortly.",
+                    ),
+                    REFUSE_STOPPED | REFUSE_CHECK_FAILED => (
+                        ReasonCode::Unauthenticated,
+                        401,
+                        "Authentication is required for this resource.",
+                    ),
+                    _ => return Err(CAUSE_UNKNOWN),
+                };
+                let challenge = if reason == ReasonCode::Unauthenticated {
+                    head.as_ref()
+                        .and_then(|head| table.listener.admission(head))
+                        .map(|admission| {
+                            let present = head.as_ref().is_some_and(|head| {
+                                crate::auth::inbound_candidate(app, &header_map(head)).is_some()
+                            });
+                            crate::auth::challenge::render(
+                                if present {
+                                    crate::auth::challenge::ChallengeError::InvalidToken
+                                } else {
+                                    crate::auth::challenge::ChallengeError::Absent
+                                },
+                                &admission.resource_metadata,
+                                text,
+                                None,
+                            )
+                        })
+                } else {
+                    None
+                };
+                // Resolve the exact producer even for a declared challenge so its auth
+                // completion taps observe the rejection once.
+                let produced = renderer(
+                    app,
+                    &crate::plane_routes::KernelRefusal {
+                        reason,
+                        status,
+                        text,
+                        path: &path,
+                        target: &target,
+                        selected_line: line,
+                    },
+                );
+                let rendered =
+                    challenge
+                        .or(produced)
+                        .unwrap_or_else(|| crate::plane_driver::Rendered {
+                            status: u32::from(status),
+                            fields: Vec::new(),
+                            body: Vec::new(),
+                        });
+                let refusal = Refusal {
+                    status: rendered.status,
+                    fields: rendered
+                        .fields
+                        .into_iter()
+                        .map(|(name, value)| {
+                            String::from_utf8(name)
+                                .map(|name| (name, value))
+                                .map_err(|_| "a unit refusal field name is not text")
+                        })
+                        .collect::<Result<_, _>>()?,
+                    body: rendered.body,
+                };
+                if let Some(unit) = unit {
+                    self.exit(unit.id);
+                }
+                (self.refused)(&RefusedUnit {
+                    unit: unit.map(|unit| unit.id),
+                    owner: r.owner,
+                    line: r.line,
+                    cause: r.cause,
+                    status: refusal.status,
+                });
+                return Ok(refusal);
+            }
+        }
         let respond = || {
             if let Some(response) = overloaded_refusal(r.cause, overloaded) {
                 return Ok(response);

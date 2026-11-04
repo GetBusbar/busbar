@@ -733,6 +733,25 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
         let i = &*input.cast::<ArriveIn>();
         let o = &mut *out.cast::<ArriveOut>();
         let target = text(i.target);
+        if target == b"/framed/object with spaces?selection=[]" {
+            let fields = if i.fields_len == 0 {
+                &[][..]
+            } else {
+                std::slice::from_raw_parts(i.fields, i.fields_len)
+            };
+            let opaque_survived = fields.iter().any(|field| {
+                text(field.name) == b"field with spaces" && text(field.value) == b"\0opaque"
+            });
+            let private_leaked = fields.iter().any(|field| {
+                text(field.value)
+                    .windows(b"private-secret".len())
+                    .any(|part| part == b"private-secret")
+            });
+            if !opaque_survived || private_leaked {
+                return say(out, Outcome::Fault);
+            }
+        }
+
         me.heads.lock().unwrap().insert(i.unit, target.to_vec());
         let cap = i.units_cap;
         let write = |units: &[UnitCount]| {
@@ -1550,6 +1569,11 @@ extern "C" fn refusal(_: *mut c_void, input: *const c_void, out: *mut c_void) ->
         .concat();
 
         let target = text(i.target);
+        if target == b"/framed/opaque-refusal" {
+            // An opaque plane refusal code must survive the preadmission host service.
+            o.status = 70_123;
+        }
+
         if target == b"/target-echo" {
             body.extend_from_slice(b" for ");
             body.extend_from_slice(target);

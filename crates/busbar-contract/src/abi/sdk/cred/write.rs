@@ -5,7 +5,7 @@
 
 use std::task::Poll;
 
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use super::Seal;
 use crate::abi::host::conn::connector::RequestPiece;
@@ -73,17 +73,23 @@ pub struct SealedWrite {
     /// It carries a credential that goes out only secured ([`super::Cred::secure_required`]).
     pub(crate) secure: bool,
     /// The connection was confirmed secured before the first byte.
-    confirmed: bool,
+    confirmed: Option<u64>,
     /// The connection was found in the clear: every later poll refuses (a replayed `FACTS` writes
     refused: bool,
 }
 
-/// Before a credential that must go out secured is written on `stream`: whether the host connector
-pub(crate) fn confirm_secure(c: &mut Connector<'_>, stream: u64, allow_replay: bool) -> Answer<()> {
+/// Confirm the established stream's host facts before writing a protected credential.
+/// Outputless replay is accepted only when this caller already observed secure facts for the
+/// same stream; an unavailable initial answer never proves security.
+pub(crate) fn confirm_secure(
+    c: &mut Connector<'_>,
+    stream: u64,
+    previously_confirmed: bool,
+) -> Answer<()> {
     match c.facts(stream) {
         Poll::Pending => Poll::Pending,
         Poll::Ready(Ok(Some(o))) if o.secure => Poll::Ready(Ok(())),
-        Poll::Ready(Ok(None)) if allow_replay => Poll::Ready(Ok(())),
+        Poll::Ready(Ok(None)) if previously_confirmed => Poll::Ready(Ok(())),
         Poll::Ready(Ok(_) | Err(_)) => Poll::Ready(Err(
             crate::abi::sdk::conn::ConnFailure::Refused(super::NOT_SECURE.into()),
         )),
@@ -104,7 +110,7 @@ impl SealedWrite {
             buf,
             done: 0,
             secure: wire.secure,
-            confirmed: false,
+            confirmed: None,
             refused: false,
         }
     }
@@ -114,7 +120,7 @@ impl SealedWrite {
             buf,
             done: 0,
             secure,
-            confirmed: false,
+            confirmed: None,
             refused: false,
         }
     }
@@ -125,12 +131,19 @@ impl SealedWrite {
     }
 
     fn confirm(&mut self, c: &mut Connector<'_>, stream: u64) -> Answer<()> {
-        if self.secure && !self.confirmed {
-            match confirm_secure(c, stream, true) {
-                Poll::Ready(Ok(())) if !self.refused => self.confirmed = true,
-                Poll::Pending if !self.refused => return Poll::Pending,
+        if self.refused {
+            return Poll::Ready(Err(crate::abi::sdk::conn::ConnFailure::Refused(
+                super::NOT_SECURE.into(),
+            )));
+        }
+        if self.secure && self.confirmed != Some(stream) {
+            match confirm_secure(c, stream, false) {
+                Poll::Ready(Ok(())) => self.confirmed = Some(stream),
+                Poll::Pending => return Poll::Pending,
                 _ => {
                     self.refused = true;
+                    self.buf.zeroize();
+                    c.closer().close(stream);
                     return Poll::Ready(Err(crate::abi::sdk::conn::ConnFailure::Refused(
                         super::NOT_SECURE.into(),
                     )));

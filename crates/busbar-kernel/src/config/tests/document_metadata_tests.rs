@@ -350,3 +350,31 @@ fn a_section_a_plane_owns_beside_its_own_is_lifted_raw_for_it() {
         .expect("the plane's own section alone parses");
     assert!(!bare.plane_raw.contains_key("beside_owned"));
 }
+
+#[test]
+fn data_listener_provenance_distinguishes_omitted_explicit_default_and_empty() {
+    let read = |text: &str| read_with(serde_yaml::Deserializer::from_str(text), &[], &[]).unwrap();
+    let omitted = read("providers: {}\nmodels: {}\n");
+    assert!(!omitted.listen_explicit);
+    let explicit = read(&format!(
+        "providers: {{}}\nmodels: {{}}\nlisten: '{}'\n",
+        crate::config::DEFAULT_LISTEN_ADDR,
+    ));
+    assert!(explicit.listen_explicit);
+    assert_eq!(omitted.listen, explicit.listen);
+    let empty = read("providers: {}\nmodels: {}\nlisten: ''\n");
+    assert!(empty.listen_explicit);
+    assert!(empty.listen.is_empty());
+}
+
+#[test]
+fn overlay_data_listener_is_an_explicit_requirement() {
+    let mut deploy = crate::config::tests::base_deploy();
+    assert!(!deploy.listen_explicit);
+    let settings = crate::config::overlay::RootSettings {
+        listen: Some(deploy.listen.clone()),
+        ..Default::default()
+    };
+    settings.apply_to_deploy(&mut deploy);
+    assert!(deploy.listen_explicit);
+}

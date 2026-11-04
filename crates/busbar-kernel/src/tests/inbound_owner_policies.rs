@@ -4,6 +4,43 @@
 use super::*;
 
 #[test]
+fn consumed_query_credentials_are_stripped_without_interpreting_the_opaque_target() {
+    let head = Head {
+        method: "invoke".into(),
+        target: "opaque target with spaces".into(),
+        authority: "fixture".into(),
+        query: Some("kept=%2f&%74oken=secret&tail=a+b".into()),
+        fields: vec![("Authorization".into(), b"secret".to_vec())],
+    };
+    let stripped = head
+        .stripped(&[
+            Strip {
+                place: StripPlace::Query,
+                name: "token".into(),
+            },
+            Strip {
+                place: StripPlace::Field,
+                name: "authorization".into(),
+            },
+        ])
+        .unwrap();
+    assert_eq!(stripped.target, head.target);
+    assert_eq!(stripped.method, "invoke");
+    assert_eq!(stripped.query.as_deref(), Some("kept=%2f&tail=a+b"));
+    assert!(stripped.fields.is_empty());
+    let mut only_credential = head.clone();
+    only_credential.query = Some("token=secret".into());
+    assert!(only_credential
+        .stripped(&[Strip {
+            place: StripPlace::Query,
+            name: "token".into(),
+        }])
+        .unwrap()
+        .query
+        .is_none());
+}
+
+#[test]
 fn list_order_fixes_identity_refusal_and_overload_before_later_answers() {
     let providers = vec!["first".into(), "second".into()];
     let requests = HashSet::new();

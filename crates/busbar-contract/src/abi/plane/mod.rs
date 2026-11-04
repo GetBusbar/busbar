@@ -232,8 +232,9 @@ use super::mechanism::lifecycle::{
 };
 use crate::caps::ReasonCode;
 
-/// The plane kind's ABI version: new in 1.6.0 (v1.5.5 had no plane ABI), so it ships `1`.
-pub const ABI_VERSION: u32 = 1;
+/// The plane kind's ABI version: `2` requires semantic rate-limit fault and namespace provenance.
+/// v1.5.5 had no plane ABI; incompatible development generation `1` is refused.
+pub const ABI_VERSION: u32 = 2;
 
 /// The plane kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
 pub const LAYOUT_FINGERPRINT: u64 = 0xded167218e200fce;

@@ -233,6 +233,8 @@ fn lp_door(
         composes_over: Vec::new(),
         ported: false,
         status_rows: Vec::new(),
+        status_namespaces: Vec::new(),
+        handoff_status: Vec::new(),
         duplex,
         datagram: false,
     }))
@@ -247,6 +249,8 @@ fn a_datagram_framer_is_never_a_streams_framer_though_its_claim_states_a_session
         composes_over: Vec::new(),
         ported: false,
         status_rows: Vec::new(),
+        status_namespaces: Vec::new(),
+        handoff_status: Vec::new(),
         duplex: vec!["dg"],
         datagram,
     };
@@ -308,6 +312,8 @@ fn the_line_carrier_is_never_handed_to_a_framer_that_claims_its_name() {
         composes_over: Vec::new(),
         ported: false,
         status_rows: Vec::new(),
+        status_namespaces: Vec::new(),
+        handoff_status: Vec::new(),
         duplex: vec![line, "framed"],
         datagram: false,
     }));

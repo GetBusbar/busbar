@@ -4,7 +4,7 @@ use axum::Router;
 use crate::{
     admin, audit, auth, catalogue, config, config_validate, core_routes, cost, durable, endpoints,
     export, governance, hooks, ingress, ir, json, limits, oauth_as, observability, operation,
-    plugin_routes, profile, state, store, telemetry, transport, trust,
+    plugin_routes, profile, state, store, telemetry, trust,
 };
 
 pub(crate) const HEADER_SERVER_TIMING: &str = "server-timing";
@@ -1115,6 +1115,7 @@ pub fn build_data_router_on(
 }
 
 pub struct PreparedListener {
+    data: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     router: Router<std::sync::Arc<state::AppHandle>>,
     core_routes: crate::core_routes::CoreRouteTable,
 
@@ -1165,6 +1166,7 @@ impl PreparedListener {
         }))
         .map_err(|_| "candidate physical routes cannot be mounted together".to_string())?;
         Ok(Self {
+            data: None,
             router,
             core_routes: core_routes.with_door_refusals(refusals.clone()),
             refusals,
@@ -1177,6 +1179,16 @@ impl PreparedListener {
     /// The refusal producer captured with this prepared listener's route snapshot.
     pub fn refusal_renderer(&self) -> Option<crate::plane_routes::PlaneRefuseByPathFn> {
         self.refuse_by_path.clone()
+    }
+
+    /// Retain the composition's neutral dispatcher with this exact route snapshot.
+    pub fn with_data(mut self, data: std::sync::Arc<dyn std::any::Any + Send + Sync>) -> Self {
+        self.data = Some(data);
+        self
+    }
+
+    pub fn data(&self) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
+        self.data.clone()
     }
 
     /// Apply the composition's dispatch preparation after auth, under the listener's one cap.

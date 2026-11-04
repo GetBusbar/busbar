@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+//! HTTP response compatibility for the fixed router adapter. Admitted plane data uses
+//! `serve_neutral::FramedOutput`; only the stream custody primitives below are shared.
+
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use axum::body::Body;
@@ -29,11 +32,11 @@ pub(super) type Shared = Arc<Mutex<Slot>>;
 type Close = Box<dyn FnOnce(FramedStream) + Send>;
 
 pub(super) struct Slot {
-    stream: Option<FramedStream>,
+    pub(super) stream: Option<FramedStream>,
 
-    out: bool,
+    pub(super) out: bool,
 
-    then: Option<Close>,
+    pub(super) then: Option<Close>,
 }
 
 pub(super) fn shared(stream: FramedStream) -> Shared {
@@ -44,11 +47,11 @@ pub(super) fn shared(stream: FramedStream) -> Shared {
     }))
 }
 
-fn lock(s: &Shared) -> MutexGuard<'_, Slot> {
+pub(super) fn lock(s: &Shared) -> MutexGuard<'_, Slot> {
     s.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn close_with(s: &Shared, close: impl FnOnce(FramedStream) + Send + 'static) {
+pub(super) fn close_with(s: &Shared, close: impl FnOnce(FramedStream) + Send + 'static) {
     let mut slot = lock(s);
     if let Some(stream) = slot.stream.take() {
         drop(slot);
@@ -241,7 +244,7 @@ impl Stated for FramedCaller {
     }
 }
 
-fn cut_reason(outcome: busbar_contract::caps::Outcome) -> Option<ReasonCode> {
+pub(super) fn cut_reason(outcome: busbar_contract::caps::Outcome) -> Option<ReasonCode> {
     use busbar_contract::caps::{Abort, Outcome};
     match outcome {
         Outcome::Completed => None,

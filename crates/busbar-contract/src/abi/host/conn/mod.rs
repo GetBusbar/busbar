@@ -571,6 +571,15 @@ unsafe extern "C" fn host_read(
         {
             return Err(ConnError::Fault);
         }
+        if piece.status_code.is_some()
+            && piece.status_namespace.as_deref().is_none_or(str::is_empty)
+            || piece.status_namespace.as_deref().is_some_and(|value| {
+                value.len() > crate::abi::transport::status::MAX_NAMESPACE_BYTES
+                    || value.chars().any(char::is_control)
+            })
+        {
+            return Err(ConnError::Fault);
+        }
         let mut flags = 0;
         if piece.status_code.is_some() {
             flags |= PIECE_HAS_CODE;
@@ -812,8 +821,18 @@ impl HostConns {
         if p.len > buf.len() {
             return Err(ConnError::Fault);
         }
+        if p.ns.len > crate::abi::transport::status::MAX_NAMESPACE_BYTES {
+            return Err(ConnError::Fault);
+        }
         // SAFETY: the host's numbering, borrowed until the connection closes; copied out now.
         let ns = unsafe { text(p.ns) }?.map(str::to_string);
+        if p.flags & PIECE_HAS_CODE != 0 && ns.as_deref().is_none_or(str::is_empty)
+            || ns
+                .as_deref()
+                .is_some_and(|value| value.chars().any(char::is_control))
+        {
+            return Err(ConnError::Fault);
+        }
         Ok(Piece {
             kind: piece_kind_of(p.kind).ok_or(ConnError::Fault)?,
             stream: StreamId(p.stream),

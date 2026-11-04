@@ -45,8 +45,7 @@ fn finish(probe: InitializedPayloadProbe) -> Vec<crate::alloc_counter::ObservedP
 
 #[test]
 fn every_secret_bearing_form_buffer_is_wiped_before_it_is_freed() {
-    let secret = Cred::captured(zeroize::Zeroizing::new(b"s&=e cr+t".repeat(256)))
-        .secure_for("https://issuer.example");
+    let secret = Cred::captured(zeroize::Zeroizing::new(b"s&=e cr+t".repeat(256))).require_secure();
     let body = FormBody::new()
         .sealed("client_secret", &secret)
         .public("code", "a b&c");

@@ -58,7 +58,11 @@ fn program_heads_bind_command_and_monotonic_member_incarnation_without_private_r
                 piece.status,
                 Some(busbar_contract::transport::wire::WireStatusClass::Success)
             );
-            assert_eq!(piece.status_code, Some(200));
+            assert_eq!(
+                piece.status_code, None,
+                "process framing declares no numbering"
+            );
+            assert_eq!(piece.status_namespace, None);
             std::str::from_utf8(&bytes[..piece.len])
                 .unwrap()
                 .lines()

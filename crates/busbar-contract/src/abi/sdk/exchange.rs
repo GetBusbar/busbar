@@ -223,6 +223,9 @@ pub struct Exchange {
     sealed_lines: Vec<usize>,
     /// A sealed value goes out only secured ([`Cred::secure_required`]): the stream is confirmed
     secure_required: bool,
+    /// The established stream whose host facts proved security. Replayed FACTS may omit their
+    /// output only after this exchange has observed those facts for this same stream.
+    secure_confirmed: Option<u64>,
     /// The stream was found in the clear: every re-entry answers the refusal (a replayed `FACTS`
     insecure: bool,
     /// What closes `stream` should the exchange be dropped before it closed it: set whenever the
@@ -279,6 +282,7 @@ impl Exchange {
             refused_read: None,
             sealed_lines: Vec::new(),
             secure_required: false,
+            secure_confirmed: None,
             insecure: false,
             closer: None,
             timeout_ms: None,
@@ -355,7 +359,18 @@ impl Exchange {
         Ok(())
     }
 
+    fn wipe_sending(&mut self) {
+        match &mut self.sending {
+            Sending::Raw(bytes) => bytes.zeroize(),
+            Sending::Framed { head, body, .. } => {
+                head.zeroize();
+                body.zeroize();
+            }
+        }
+    }
+
     fn timeout_failed(&mut self, c: &Connector<'_>, error: ConnFailure) -> Result<(), ConnFailure> {
+        self.wipe_sending();
         if let Some(stream) = self.stream.take() {
             c.closer().close(stream);
         }
@@ -730,16 +745,29 @@ fn exchange_once(
         return Poll::Ready(Err(error));
     }
 
-    if state.secure_required
-        && (state.insecure || target.is_some_and(|t| !crate::abi::sdk::cred::secure_target(t)))
-    {
-        state.insecure = true;
+    if state.insecure {
         return Poll::Ready(Err(ConnFailure::Refused(
             crate::abi::sdk::cred::NOT_SECURE.into(),
         )));
     }
     let stream = ready!(c.establish_as(need, target, &state.within, 0, state.member.as_deref()));
     state.stream = Some(stream);
+    if state.secure_required {
+        let confirmed = state.secure_confirmed == Some(stream);
+        match bounded_step(c, state.expires_at_ns, |c| {
+            crate::abi::sdk::cred::confirm_secure(c, stream, confirmed)
+        }) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Ok(())) => state.secure_confirmed = Some(stream),
+            Poll::Ready(Err(error)) => {
+                state.insecure = true;
+                state.stream = None;
+                c.closer().close(stream);
+                state.wipe_sending();
+                return Poll::Ready(Err(error));
+            }
+        }
+    }
     let ended = match read_to_end(c, state, stream) {
         Poll::Ready(ended) => ended,
         Poll::Pending => return Poll::Pending,

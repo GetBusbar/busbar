@@ -27,6 +27,11 @@ pub use outbound::{
 };
 pub use points::{AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 
+/// Pure outbound settings validation support: Statement value `b"\x01"`; on lifecycle
+/// VALIDATE the value is the UTF-8 outbound style. It validates settings without opening an
+/// instance, resolving credentials, reading secrets, or performing network work.
+pub const EXT_OUTBOUND_SETTINGS_CHECK: &str = "auth.outbound-settings-check";
+
 /// The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`), so 1.6.0 ships `3`.
 pub const ABI_VERSION: u32 = 3;
 

@@ -4839,3 +4839,29 @@ fn a_path_both_secret_and_reference_capable_is_refused_at_load() {
         "a malformed list is refused"
     );
 }
+
+#[test]
+fn semantic_status_generation_one_is_rejected_before_reading_kind_metadata() {
+    fn rejected<K: Kind>() {
+        let kind = K::CODE;
+        assert_eq!(kind.abi_version(), 2);
+        for version in [1, 3] {
+            let mut parts = plug::door().parts();
+            parts.kind = kind as u32;
+            parts.kind_abi = version;
+            // SAFETY: the fixture's valid leading fields are copied; the ABI rejection must
+            // happen before its deliberately foreign Statement or ops are interpreted.
+            let door = unsafe { Door::__from_parts(parts) };
+            assert_eq!(
+                validate_door::<K>(&door).err(),
+                Some(LoadError::KindAbi {
+                    kind,
+                    door: version,
+                    host: 2
+                })
+            );
+        }
+    }
+    rejected::<crate::dispatch::kinds::transport::Transport>();
+    rejected::<crate::dispatch::kinds::plane::Plane>();
+}

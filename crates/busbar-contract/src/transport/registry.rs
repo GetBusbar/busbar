@@ -42,23 +42,6 @@ pub mod facts {
     }
 }
 
-/// The status numberings the kernel reserves, spelled once.
-pub mod status_ns {
-    /// The status-line numbering: three-digit codes, as the request-response transports (and the
-    pub const HTTP: &str = "http";
-    /// The trailer numbering, as a call-per-path transport reads it off an answer's trailer.
-    pub const GRPC: &str = "grpc";
-
-    /// Every reserved numbering, for the readers that walk them.
-    pub const RESERVED: &[&str] = &[HTTP, GRPC];
-
-    /// Whether a numbering is one the kernel reserves.
-    #[must_use]
-    pub fn is_reserved(namespace: &str) -> bool {
-        RESERVED.contains(&namespace)
-    }
-}
-
 /// The deployment's settings every transport is built from — the operator's `limits:` knobs a wire
 /// holds itself to, resolved once by the composition root and handed to each transport's build.
 ///

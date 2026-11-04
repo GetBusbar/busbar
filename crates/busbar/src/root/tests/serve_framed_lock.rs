@@ -60,6 +60,8 @@ fn a_close_beside_a_hung_framer_emit_never_waits_and_the_write_makes_it() {
             composes_over: Vec::new(),
             ported: false,
             status_rows: Vec::new(),
+            status_namespaces: Vec::new(),
+            handoff_status: Vec::new(),
             duplex: vec!["lp"],
             datagram: false,
         },

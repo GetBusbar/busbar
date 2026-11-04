@@ -4,8 +4,6 @@ pub mod dest;
 pub mod registry;
 pub mod surface;
 
-#[allow(clippy::module_inception)]
-pub mod transport;
 pub mod trust;
 pub mod wire;
 
@@ -19,7 +17,7 @@ pub struct AbiVersion(pub u16);
 
 /// The transport kind's ABI generation, the fact keys the kernel reserves, and the boot check over
 pub use registry::{
-    check_composition, facts, status_ns, CompositionError, Registered, TransportSettings,
+    check_composition, facts, CompositionError, Registered, TransportSettings,
     DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS, TRANSPORT_ABI,
 };
 

@@ -86,6 +86,11 @@ pub enum Outcome {
         /// The upstream's requested wait, in seconds, if any.
         retry_after: Option<u64>,
     },
+    /// A throttled request: transient health with a distinct retry ladder.
+    RateLimit {
+        /// The upstream's requested wait, in seconds.
+        retry_after: Option<u64>,
+    },
     /// A definitive signal (bad key, billing exhausted): trips every pool cell for this
     /// destination, not just the one this attempt ran through — see [`BreakerUnit::hard_down_all`].
     HardDown,
@@ -407,7 +412,7 @@ impl BreakerUnit {
                     let _ = cell.record_success(now);
                 }
             }
-            Outcome::Transient { retry_after } => {
+            Outcome::Transient { retry_after } | Outcome::RateLimit { retry_after } => {
                 for (pool, cell) in cells() {
                     if let Some(cfg) = cfg_of(&pool) {
                         let _ = cell.record_failure(
@@ -484,7 +489,7 @@ impl Breaker for BreakerUnit {
                 false
             }
 
-            Outcome::Transient { retry_after } => {
+            Outcome::Transient { retry_after } | Outcome::RateLimit { retry_after } => {
                 let max_honored = self.max_honored_retry_after_secs();
                 self.on_cell(pool, destination, |cell| {
                     cell.record_failure(now, cfg, retry_after, max_honored)

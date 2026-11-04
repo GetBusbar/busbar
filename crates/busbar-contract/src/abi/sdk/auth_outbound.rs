@@ -437,6 +437,15 @@ pub trait OutboundPlugin: Send + Sync + Sized + 'static {
         Ok(())
     }
 
+    /// Pure settings validation for one declared style, with no credential or instance. A
+    /// supporting Statement advertises `abi::auth::EXT_OUTBOUND_SETTINGS_CHECK` version 1.
+    fn validate_outbound_settings(style: &str, settings: &[u8]) -> Result<(), Refusal> {
+        let _ = (style, settings);
+        Err(Refusal::refused(
+            "outbound settings validation is not supported",
+        ))
+    }
+
     /// Build the plugin from its settings blob (one JSON document) and its resolved secrets (one
     fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal>;
 
@@ -530,12 +539,28 @@ impl<T> Outbound<T> {
     }
 }
 
+fn validate_outbound<T: OutboundPlugin>(settings: &[u8], ext: &[u8]) -> Result<(), Refusal> {
+    match crate::abi::mechanism::extensions::get(ext, crate::abi::auth::EXT_OUTBOUND_SETTINGS_CHECK)
+    {
+        None => T::validate(settings),
+        Some(style) => {
+            let style = std::str::from_utf8(style)
+                .map_err(|_| Refusal::refused("outbound validation style is not UTF-8"))?;
+            T::validate_outbound_settings(style, settings)
+        }
+    }
+}
+
 impl<T: OutboundPlugin> Life for Outbound<T> {
     const CANCEL: u32 = crate::abi::auth::CANCEL_ABANDONED;
     const DRIVE: Outcome = Outcome::Refused;
 
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
         T::validate(settings)
+    }
+
+    fn validate_with_extensions(settings: &[u8], extensions: &[u8]) -> Result<(), Refusal> {
+        validate_outbound::<T>(settings, extensions)
     }
 
     fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal> {
@@ -586,6 +611,10 @@ impl<T: VerifyPlugin + OutboundPlugin> Life for Both<T> {
 
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
         <T as OutboundPlugin>::validate(settings)
+    }
+
+    fn validate_with_extensions(settings: &[u8], extensions: &[u8]) -> Result<(), Refusal> {
+        validate_outbound::<T>(settings, extensions)
     }
 
     fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal> {
