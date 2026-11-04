@@ -492,18 +492,29 @@ macro_rules! hyper_io {
             pub fn field_block(headers: &::hyper::header::HeaderMap, also: &[&str]) -> Vec<u8> {
                 use $crate::abi::transport::fields::{hop_by_hop, LINE_END, SEPARATOR};
                 let nominated = headers.get_all(::hyper::header::CONNECTION);
-                let mut block = Vec::new();
-                for (name, value) in headers {
-                    let name = name.as_str();
-                    if name == "content-length"
-                        || also.contains(&name)
-                        || hop_by_hop(
+                let keep = |name: &str| {
+                    name != "content-length"
+                        && !also.contains(&name)
+                        && !hop_by_hop(
                             name,
                             nominated.iter().map(::hyper::header::HeaderValue::as_bytes),
                         )
-                    {
-                        continue;
-                    }
+                };
+                // Size the retained fields before copying any credentials. Growing a Vec after
+                // writing a secret may release its old allocation without wiping that copy.
+                let capacity = headers
+                    .iter()
+                    .filter(|(name, _)| keep(name.as_str()))
+                    .map(|(name, value)| {
+                        name.as_str().len()
+                            + SEPARATOR.len()
+                            + value.as_bytes().len()
+                            + LINE_END.len()
+                    })
+                    .sum();
+                let mut block = Vec::with_capacity(capacity);
+                for (name, value) in headers.iter().filter(|(name, _)| keep(name.as_str())) {
+                    let name = name.as_str();
                     block.extend_from_slice(name.as_bytes());
                     block.extend_from_slice(SEPARATOR);
                     block.extend_from_slice(value.as_bytes());
