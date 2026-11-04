@@ -900,7 +900,7 @@ busbar-transport-tcp-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busba
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
 # (feature `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split). The pin ranks
 # 1.5.5's `bearer` and `api-key` first (arch-audit u29 F1, busbar-auth-header #35).
-busbar-auth-header = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-header", rev = "6a6b4b067b12eb8a747859d1feb4dc0710437f4e" }
+busbar-auth-header = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-header", rev = "d5fee42d2d5106c09c4436e8acbc6f5a1970a131" }
 # THE OAUTH MINTING STYLES (kind: auth): the logic crate the root links on its `auths` axis (feature
 # `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin: the lane pin over predev's
 # rev that names the connection table's credential-unavailable cause in its exhaustive maps, plus the
@@ -919,7 +919,7 @@ busbar-auth-oauth = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-oau
 # private `Held<Zeroizing<String>>` (busbar-auth-sigv4 #20; secret-hygiene check1, #1192).
 # On that pin, the signer logs the region warning 1.5.5 logged on every signature scoped to a
 # region defaulted at seal (`region_unread`), with the host (busbar-auth-sigv4 pin-1809-region-warn, merged onto the dev pin).
-busbar-auth-sigv4 = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-sigv4", rev = "6a54f25a6e51550771f23b1c639126c0cfab3be5" }
+busbar-auth-sigv4 = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-sigv4", rev = "a03bbf398507d5e0870457bf9506d0a190443d2d" }
 # THE WEBHOOK-SIGNATURE STYLE (kind: auth): the inbound verify of a webhook sender's HMAC (variants
 # Twilio and Standard Webhooks), linked on the root's `auths` axis (feature `auth-webhook-signature`,
 # default-on, ARCHITECT 2026-10-14: its inbound verify is an auth-chain module, so

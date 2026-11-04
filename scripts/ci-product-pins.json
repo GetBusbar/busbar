@@ -15,7 +15,7 @@
     {
       "repo": "busbar-auth-header",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-auth-header",
-      "commit": "6a6b4b067b12eb8a747859d1feb4dc0710437f4e",
+      "commit": "d5fee42d2d5106c09c4436e8acbc6f5a1970a131",
       "package": "busbar-auth-header-plugin",
       "kind": "auth",
       "alias": "header",
@@ -37,13 +37,13 @@
     {
       "repo": "busbar-auth-sigv4",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-auth-sigv4",
-      "commit": "6a54f25a6e51550771f23b1c639126c0cfab3be5",
+      "commit": "a03bbf398507d5e0870457bf9506d0a190443d2d",
       "package": "busbar-auth-sigv4-plugin",
       "kind": "auth",
       "alias": "sigv4",
       "image": "libbusbar_auth_sigv4_plugin.so",
       "declares": "auth-sigv4/declares.json",
-      "lock_sha256": "d0dc6da4b2450b16b28d7a3ffece87d15fe40f51dc2c27b9081bba5d1869dea6"
+      "lock_sha256": "8cfe1bb75dcaea8da0d64e23b79778b2513c2edede04bced64c83812a80e0993"
     },
     {
       "repo": "busbar-auth-webhook-signature",
