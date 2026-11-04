@@ -89,7 +89,8 @@ def generate(archive_roots):
 def validate(data):
     path = ROOT / "conformance/registry.toml"
     registry = {r["id"]: r for r in tomllib.loads(path.read_text())["suite"]}
-    pins = {p["repo"]: p["commit"] for p in json.loads((ROOT / "scripts/ci-product-pins.json").read_text())["products"]}
+    pin_data = json.loads((ROOT / "scripts/ci-product-pins.json").read_text())
+    pins = {p["repo"]: p["commit"] for p in pin_data["products"]}
     if data.get("registry_sha256") != hashlib.sha256(path.read_bytes()).hexdigest():
         raise ValueError("registry changed; regenerate CI coverage")
     if set(data.get("suites", {})) != set(registry):
@@ -98,6 +99,10 @@ def validate(data):
     for name, row in data["suites"].items():
         if row["repo"] != registry[name]["repo"] or row["stage"] not in {"qa", "main"}:
             raise ValueError(f"{name}: wrong execution owner/stage")
+        expected_check = "main/certify-sigstore" if name == "sigstore" else "conformance"
+        expected_core = "checkout" if row["repo"] == "GetBusbar/busbar" else pin_data["sdk"]
+        if row["check"] != expected_check or row["core_pin"] != expected_core:
+            raise ValueError(f"{name}: wrong CI check or SDK binding")
         if row["repo"] == "GetBusbar/busbar":
             expected_stage = "main" if name == "sigstore" else "qa"
             expected_command = "python3 -I testing/conformance/sigstore.py" if name == "sigstore" else core_commands.get(name)
@@ -105,8 +110,8 @@ def validate(data):
                 raise ValueError(f"{name}: CI stage or roster command does not match the declared execution")
             if hashlib.sha256((ROOT / row["script"]).read_bytes()).hexdigest() != row["script_sha256"]:
                 raise ValueError(f"{name}: core check changed; regenerate coverage")
-        elif row["source_commit"] != pins[row["repo"].split("/")[1]]:
-            raise ValueError(f"{name}: product pin changed; regenerate from the new exact archive")
+        elif row["stage"] != "qa" or row["source_commit"] != pins[row["repo"].split("/")[1]]:
+            raise ValueError(f"{name}: wrong QA stage or product pin; regenerate from the new exact archive")
 
 
 def main():

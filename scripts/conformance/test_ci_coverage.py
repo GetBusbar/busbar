@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import importlib.util
+import copy
+import json
 from pathlib import Path
 import unittest
 
@@ -19,6 +21,18 @@ class RosterTests(unittest.TestCase):
     def test_duplicate_suite_cannot_overwrite_an_execution(self):
         with self.assertRaises(ValueError):
             coverage.roster(b"ws\tbash testing/ws/run.sh\nws\tbash testing/other.sh\n")
+
+    def test_coverage_cannot_silently_move_or_drop_a_suite(self):
+        data = json.loads(coverage.OUTPUT.read_text())
+        coverage.validate(data)
+        for field, value in [("stage", "main"), ("check", "no-op"), ("core_pin", "0" * 40)]:
+            wrong = copy.deepcopy(data)
+            wrong["suites"]["a2a"][field] = value
+            with self.assertRaises(ValueError):
+                coverage.validate(wrong)
+        del data["suites"]["a2a"]
+        with self.assertRaises(ValueError):
+            coverage.validate(data)
 
 
 if __name__ == "__main__":
