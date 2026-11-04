@@ -421,6 +421,7 @@ jobs:
           cargo build --release --locked -p "$CRATE" --lib $feat
           target="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
           export BUSBAR_PLUGIN_CDYLIB="$target/release/lib${CRATE//-/_}.so"
+          export BUSBAR_EXPECT_RELEASE=1
           features=()
           if [ -n "$TEST_FEATURES" ]; then
             cp "$BUSBAR_PLUGIN_CDYLIB" "$RUNNER_TEMP/production-release-lib${CRATE//-/_}.so"
