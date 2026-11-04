@@ -3815,3 +3815,10 @@ fn response_headers_obey_the_original_need_on_raw_and_framed_streams() {
         }
     }
 }
+
+#[test]
+fn a_response_reason_cannot_alias_a_removed_field() {
+    let mut buf = *b"private: secret\r\n";
+    let n = buf.len();
+    assert!(super::filter_reply_head(&mut buf, n, 9..15, None).is_err());
+}

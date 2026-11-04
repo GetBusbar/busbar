@@ -1350,6 +1350,9 @@ fn filter_reply_head(
     reason: std::ops::Range<usize>,
     policy: Option<&ResponseKeep>,
 ) -> Result<(usize, std::ops::Range<usize>), Answered> {
+    if reason.start < field_len {
+        return Err(Answered::fault());
+    }
     let reason_bytes = buf
         .get(reason.clone())
         .ok_or_else(Answered::fault)?
