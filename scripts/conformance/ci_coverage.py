@@ -41,6 +41,7 @@ def generate(archive_roots):
     entries = tomllib.loads(registry_file.read_text())["suite"]
     pin_data = json.loads((ROOT / "scripts/ci-product-pins.json").read_text())
     pins = {p["repo"]: p["commit"] for p in pin_data["products"]}
+    sdks = {p["repo"]: p.get("sdk", pin_data["sdk"]) for p in pin_data["products"]}
     core_roster = roster((ROOT / "testing/conformance/suites.tsv").read_bytes())
     result = {"schema": "busbar.conformance.ci-coverage/1",
               "registry_sha256": hashlib.sha256(registry_file.read_bytes()).hexdigest(),
@@ -79,7 +80,7 @@ def generate(archive_roots):
                 raise ValueError(f"{suite}: no git archive at exact {repo} pin {commit}")
             stage = "qa"
         result["suites"][suite] = {"repo": repo, "source_commit": commit,
-                                    "core_pin": "checkout" if repo == "GetBusbar/busbar" else pin_data["sdk"], "stage": stage,
+                                    "core_pin": "checkout" if repo == "GetBusbar/busbar" else sdks[name], "stage": stage,
                                     "check": "main/certify-sigstore" if stage == "main" else "conformance",
                                     "command": command, "script": script,
                                     "script_sha256": hashlib.sha256(data).hexdigest()}
@@ -91,6 +92,7 @@ def validate(data):
     registry = {r["id"]: r for r in tomllib.loads(path.read_text())["suite"]}
     pin_data = json.loads((ROOT / "scripts/ci-product-pins.json").read_text())
     pins = {p["repo"]: p["commit"] for p in pin_data["products"]}
+    sdks = {p["repo"]: p.get("sdk", pin_data["sdk"]) for p in pin_data["products"]}
     if data.get("registry_sha256") != hashlib.sha256(path.read_bytes()).hexdigest():
         raise ValueError("registry changed; regenerate CI coverage")
     if set(data.get("suites", {})) != set(registry):
@@ -100,7 +102,7 @@ def validate(data):
         if row["repo"] != registry[name]["repo"] or row["stage"] not in {"qa", "main"}:
             raise ValueError(f"{name}: wrong execution owner/stage")
         expected_check = "main/certify-sigstore" if name == "sigstore" else "conformance"
-        expected_core = "checkout" if row["repo"] == "GetBusbar/busbar" else pin_data["sdk"]
+        expected_core = "checkout" if row["repo"] == "GetBusbar/busbar" else sdks[row["repo"].split("/")[1]]
         if row["check"] != expected_check or row["core_pin"] != expected_core:
             raise ValueError(f"{name}: wrong CI check or SDK binding")
         if row["repo"] == "GetBusbar/busbar":
