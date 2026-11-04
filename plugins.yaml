@@ -663,3 +663,5 @@ plugins:
     # version that pins it.
     released: false
     lang: c
+    source_role: c_abi_test
+    extra_test: "set -euo pipefail; work=$(mktemp -d); trap 'rm -rf \"$work\"' EXIT; inc=\"$BUSBAR_CHECKOUT/crates/busbar-contract/include\"; cc -std=c11 -Wall -Wextra -Werror -pedantic -pthread -DBUSBAR_SECRET_C_UNIT -I \"$inc\" secret-c/tests/unit.c -o \"$work/unit\"; \"$work/unit\"; cc -std=c11 -Wall -Wextra -Werror -pedantic -pthread -DBUSBAR_SECRET_C_UNIT -fsanitize=thread -g -I \"$inc\" secret-c/tests/unit.c -o \"$work/unit-tsan\"; TSAN_OPTIONS=halt_on_error=1 \"$work/unit-tsan\""
