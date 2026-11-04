@@ -266,3 +266,59 @@ fn span_ids_do_not_restart_from_a_fixed_value_in_each_process() {
         "span id {id} is a small fixed-start counter value: every process mints the same ids"
     );
 }
+
+static WIRE: std::sync::Mutex<Vec<Value>> = std::sync::Mutex::new(Vec::new());
+
+fn capture_wire(_: &[(ExportField, Value)], span: Option<&Value>) {
+    WIRE.lock().unwrap().extend(span.cloned());
+}
+
+#[test]
+fn trace_wire_keeps_last_attributes_and_typed_nonfinite_floats() {
+    let subscriber = tracing_subscriber::registry().with(Producer(capture_wire, records));
+    tracing::subscriber::with_default(subscriber, || {
+        let span = tracing::debug_span!(target: "compiled", "typed",
+            target = "recorded", repeated = tracing::field::Empty,
+            nan = f64::NAN, positive = f64::INFINITY, negative = f64::NEG_INFINITY,
+            literal = "NaN");
+        span.record("repeated", 1_i64);
+        span.record("repeated", 2_i64);
+        span.in_scope(|| tracing::info!(positive = f64::INFINITY, "event"));
+    });
+    let seen = std::mem::take(&mut *WIRE.lock().unwrap());
+    assert_eq!(seen.len(), 1);
+    let attrs = seen[0]["attributes"].as_array().unwrap();
+    let mut names = std::collections::HashSet::new();
+    for attr in attrs {
+        assert!(
+            names.insert(attr["key"].as_str().unwrap()),
+            "duplicate key: {attr}"
+        );
+    }
+    let get = |key: &str| attrs.iter().find(|a| a["key"] == key).unwrap()["value"].clone();
+    assert_eq!(get("target"), "recorded");
+    assert_eq!(get("repeated"), 2);
+    assert_eq!(get("literal"), "NaN");
+    for (key, value) in [("nan", "NaN"), ("positive", "inf"), ("negative", "-inf")] {
+        assert_eq!(get(key), serde_json::json!({"$busbar_f64": value}));
+    }
+    let event = seen[0]["events"][0]["attributes"].as_array().unwrap();
+    assert_eq!(
+        event.iter().find(|a| a["key"] == "positive").unwrap()["value"],
+        serde_json::json!({"$busbar_f64": "inf"})
+    );
+    assert_eq!(float_value(1.25), serde_json::json!(1.25));
+}
+
+#[test]
+fn duplicate_trace_keys_preserve_first_key_order_and_last_values() {
+    let result = key_values(vec![
+        ("x".into(), Value::from(1)),
+        ("y".into(), Value::from(2)),
+        ("x".into(), Value::from(3)),
+    ]);
+    assert_eq!(
+        result,
+        serde_json::json!([{"key":"x","value":3},{"key":"y","value":2}])
+    );
+}

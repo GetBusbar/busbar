@@ -86,7 +86,7 @@ impl tracing::field::Visit for Fields {
     }
 
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
-        self.fact(field, Value::from(value));
+        self.fact(field, float_value(value));
     }
 }
 
@@ -195,13 +195,30 @@ impl SpanRecord {
     }
 }
 
+// JSON numbers cannot carry these IEEE-754 values. This exact one-key marker is
+// reserved for typed floats in the neutral trace record; strings stay strings.
+fn float_value(value: f64) -> Value {
+    if value.is_finite() {
+        Value::from(value)
+    } else {
+        serde_json::json!({"$busbar_f64": value.to_string()})
+    }
+}
+
 fn key_values(attributes: Vec<(String, Value)>) -> Value {
-    Value::Array(
-        attributes
-            .into_iter()
-            .map(|(key, value)| serde_json::json!({"key": key, "value": value}))
-            .collect(),
-    )
+    let mut positions = std::collections::HashMap::with_capacity(attributes.len());
+    let mut values = Vec::with_capacity(attributes.len());
+    for (key, value) in attributes {
+        let item = serde_json::json!({"key": key, "value": value});
+        match positions.entry(key) {
+            std::collections::hash_map::Entry::Occupied(at) => values[*at.get()] = item,
+            std::collections::hash_map::Entry::Vacant(at) => {
+                at.insert(values.len());
+                values.push(item);
+            }
+        }
+    }
+    Value::Array(values)
 }
 
 struct Attrs<'a>(&'a mut SpanRecord);
@@ -245,7 +262,7 @@ impl tracing::field::Visit for Attrs<'_> {
     }
 
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
-        self.push(field.name(), Value::from(value));
+        self.push(field.name(), float_value(value));
     }
 
     fn record_error(
@@ -330,7 +347,7 @@ impl tracing::field::Visit for EventFields<'_> {
     }
 
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
-        self.typed(field.name(), Value::from(value));
+        self.typed(field.name(), float_value(value));
     }
 
     fn record_error(
