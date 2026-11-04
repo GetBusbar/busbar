@@ -337,7 +337,7 @@
     {
       "repo": "busbar-store-mysql",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-store-mysql",
-      "commit": "e4e392097139237333c68ff198f9c030d1cfb08a",
+      "commit": "65ec1650023c4c5e9fef9d49a0f157a3815c219a",
       "package": "busbar-store-mysql-plugin",
       "kind": "store",
       "alias": "mysql",

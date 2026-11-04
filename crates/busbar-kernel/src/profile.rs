@@ -30,7 +30,7 @@ use std::time::Instant;
 
 /// The hot-path stages attributed by the profiler. The report order is [`dump`]'s list; a stage with
 /// no call site simply reports zero samples. Nothing counts these variants: a stage's bucket is made
-/// the first time it records (item 571), so adding one needs no second edit to stay safe.
+/// the first time it records, so adding one needs no second edit to stay safe.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
     /// `auth_middleware` pre-handler work: carrier token extract + chain/cache verdict + extension

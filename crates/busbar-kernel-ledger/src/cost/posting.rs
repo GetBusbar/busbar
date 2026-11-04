@@ -167,7 +167,7 @@ pub enum Unpriceable {
         class: String,
     },
     /// The priced figure does not fit the arithmetic. A REFUSAL, never a figure pinned at the
-    /// ceiling (item 28): the one function is checked, and so is every reader of it.
+    /// ceiling: the one function is checked, and so is every reader of it.
     Overflow,
 }
 

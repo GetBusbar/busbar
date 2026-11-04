@@ -59,7 +59,7 @@ pub const CLASS_CACHE_WRITE: &str = "cache_write";
 ///
 /// NO FLOAT LIVES HERE (#81, #77(8)). Each configured decimal was converted to its integer nano-unit
 /// rate ONCE, at the config intake, by [`representable_nano_rate`]; this record and every hop that
-/// carries it hold that integer. `None` is a configured rate the card cannot hold (item 22), placed
+/// carries it hold that integer. `None` is a configured rate the card cannot hold, placed
 /// as an UNPRICED cell so a hit refuses (#42) — never a zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TierRates {

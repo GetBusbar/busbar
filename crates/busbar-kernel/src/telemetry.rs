@@ -618,7 +618,7 @@ thread_local! {
     ///
     /// A bank whose thread has exited is RELEASED at the next flush, not kept: its counters are
     /// folded into each slot's `retired` base and its histogram buffers drained, and then the
-    /// registry lets go (item 567). Tokio reaps idle blocking threads and spawns fresh ones on the
+    /// registry lets go. Tokio reaps idle blocking threads and spawns fresh ones on the
     /// next burst, and banked emission is reachable from them (`translation`, via a cross-protocol
     /// body large enough to be offloaded) — a registry that only grew kept one bank per thread that
     /// ever emitted, for the process's life, and walked every one of them on every flush.
