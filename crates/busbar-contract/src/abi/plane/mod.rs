@@ -532,13 +532,13 @@ pub const ROUTE_SCOPE_SEPARATOR: &str = ", ";
 /// [`ArriveOut::route`]: the plane ANSWERS THIS UNIT ITSELF at the ONE entry the principal's grant
 pub const ROUTE_SCOPE_LOCAL: u8 = 4;
 
-/// [`ArriveOut::route_flags`]: the unit's operation is performed AT MOST ONCE (ARCHITECT round 4
+/// [`ArriveOut::route_flags`]: the unit's operation is performed at most once.
 pub const ROUTE_ONCE: u8 = 1;
 
-/// [`ArriveOut::route_flags`]: the unit is served as a DUPLEX SESSION (K6; ARCHITECT round 5
+/// [`ArriveOut::route_flags`]: the unit is served as a duplex session.
 pub const ROUTE_SESSION: u8 = 2;
 
-/// [`ArriveOut::route_flags`]: the caller asked for its answer STREAMED (ARCHITECT Q1 ArriveOut,
+/// [`ArriveOut::route_flags`]: the caller requested a streamed answer.
 pub const ROUTE_STREAM: u8 = 4;
 
 /// [`ArriveOut::route_flags`], on a unit the plane answers itself ([`ROUTE_LOCAL`] or
@@ -933,7 +933,7 @@ pub const fn nothing_sent(reason: u32) -> bool {
 }
 
 /// THE ONE REFUSAL CLASSIFICATION: which family of answer a refusal reason gets, whatever the
-/// plane. This is the P-item "refusal-reason collapse" (spec DONE item 2).
+/// plane.
 ///
 /// A refusal reason is the kernel's own word, and a client never sees it. A client sees the plane's
 /// rendering of it. Before this table there were eight hand-copied reason matches, and they

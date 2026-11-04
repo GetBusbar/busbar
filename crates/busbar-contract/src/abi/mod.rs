@@ -95,7 +95,7 @@ macro_rules! abi_lists {
     ($($list:ident, $len:ident: $t:ty => $ptr:ident, $with:ident, $raw:ident;)+) => {$(
         #[doc = concat!(
             "Set `", stringify!($list), "` to `items`, which live for the program: its pointer ",
-            "and its length together (status row 194)."
+            "and its length together."
         )]
         #[must_use]
         pub const fn $with(mut self, items: &'static [$t]) -> Self {

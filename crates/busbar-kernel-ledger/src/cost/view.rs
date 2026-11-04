@@ -375,9 +375,8 @@ enum Source<'a> {
 /// 5. The flat fee is one dimension, a straight multiply, never rounded (#44).
 /// 6. The tier applies ONCE per tier over that tier's summed pre-tier amount, half-to-even
 ///    ([`checked_apply_tier`] — #44's per-N-units term), IDENTICALLY for settlement and for every
-///    read (item 27): a row carries its tier and this is the only place it is applied.
-/// 7. Every operation is CHECKED. Overflow is [`MoneyError::Overflow`] — a refusal, never a pin
-///    (item 28).
+///    read: a row carries its tier and this is the only place it is applied.
+/// 7. Every operation is CHECKED. Overflow is [`MoneyError::Overflow`] — a refusal, never a pin.
 /// 8. One truncation, in the projection the caller asks for ([`Money`], [`nanos_of_exact`]).
 pub struct Tally<'a> {
     source: Source<'a>,

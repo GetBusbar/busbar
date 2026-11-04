@@ -5,7 +5,7 @@ set -eo pipefail
 root=$(git rev-parse --show-toplevel)
 pins="$root/scripts/ci-product-pins.json"
 [ -f "$pins" ] || { echo "missing normal fleet pins: $pins" >&2; exit 1; }
-target="$root/target"
+target="${CARGO_TARGET_DIR:-$root/target}"
 work="${MODERNCI_CACHE_DIR:-$target}/ci-product-inputs/$(git rev-parse HEAD)"
 mkdir -p "$work"
 envfile="$work/environment.sh"

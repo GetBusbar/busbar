@@ -218,7 +218,13 @@ do_url() {  # STDOUT IS THE DSN AND NOTHING ELSE — this is consumed by command
   local lport; lport="$(svc_lport "$svc")"
   case "$svc" in
     postgres) printf 'postgres://busbar:busbar@127.0.0.1:%s/busbar_store_qa\n' "$lport" ;;
-    mysql)    printf 'mysql://busbar:busbar@127.0.0.1:%s/busbar_store_qa\n' "$lport" ;;
+    mysql)
+      # Obtain the RSA pin through the owned fixture, never the unauthenticated wire.
+      local pem pin
+      pem="$(docker exec "$(container mysql)" cat /var/lib/mysql/public_key.pem)" || return 1
+      pin="$(printf '%s\n' "$pem" | python3 -c 'import base64,hashlib,re,sys; p=sys.stdin.read(); body="".join(re.search(r"-----BEGIN (?:RSA )?PUBLIC KEY-----([A-Za-z0-9+/=\s]+)-----END (?:RSA )?PUBLIC KEY-----",p).group(1).split()); print(hashlib.sha256(base64.b64decode(body,validate=True)).hexdigest())')" || return 1
+      printf 'mysql://busbar:busbar@127.0.0.1:%s/busbar_store_qa?server_public_key_sha256=%s\n' "$lport" "$pin"
+      ;;
     valkey)   printf 'redis://127.0.0.1:%s/0\n' "$lport" ;;
   esac
 }

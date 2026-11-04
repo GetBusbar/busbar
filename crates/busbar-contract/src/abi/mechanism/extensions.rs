@@ -79,10 +79,10 @@ pub fn get<'a>(blob: &'a [u8], key: &str) -> Option<&'a [u8]> {
         .map(|(_, v)| v)
 }
 
-/// THE `declares` DOCUMENT'S KEY in a door's `Statement::extensions` (ARCHITECT ruling 2026-10-21
+/// The `declares` document's key in a door's `Statement::extensions`.
 pub const EXT_DECLARES: &str = "declares";
 
-/// THE REFERENCE-CAPABLE, NOT-SECRET SETTINGS FIELDS' KEY in a door's `Statement::extensions` (lead
+/// The reference-capable, non-secret settings fields' key in a door's `Statement::extensions`.
 pub const EXT_REFERENCE_FIELDS: &str = "reference_fields";
 
 /// The reference-capable paths a Statement's extensions state under [`EXT_REFERENCE_FIELDS`];
@@ -101,7 +101,7 @@ pub fn reference_fields(extensions: &[u8]) -> Result<Vec<String>, String> {
     Ok(paths)
 }
 
-/// THE FULL SPAN RECORDS' KEY in an export door's `Statement::extensions` (status row 173). Its
+/// The full span records' key in an export door's `Statement::extensions`.
 pub const EXT_SPAN_RECORDS: &str = "span_records";
 
 pub use crate::export_calls::{EXT_PERSISTENT_ROUTES, EXT_PUBLIC_ROUTES};

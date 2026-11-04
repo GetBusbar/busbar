@@ -887,7 +887,7 @@ pub struct CardForm {
     /// `(lane, reserved class, nano-units per unit)` for each configured lane's four reserved
     /// classes, as the card holds them; `None` is a cell the card could not represent (UNPRICED).
     cells: Vec<(String, String, Option<u64>)>,
-    /// `(lane, open class, nano-units per unit)`, as configured (item 123).
+    /// `(lane, open class, nano-units per unit)`, as configured.
     units: Vec<(String, String, u64)>,
     /// `(plane, per request, per session)`, clamped as the card holds them.
     planes: Vec<(String, u64, u64)>,

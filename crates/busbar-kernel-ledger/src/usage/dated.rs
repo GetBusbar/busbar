@@ -74,7 +74,7 @@ impl<E: Copy + Eq + Into<RawRateEra> + From<u64>> FeeEras<E> {
 /// The instant matters for ONE thing: which entry is IN FORCE NOW. A segment whose era resolves to
 /// that entry is priced at the caller's live card — the configuration the gate is enforcing this
 /// instant, built by the same constructor from the same figures as the entry, and the only card that
-/// also carries the open classes (item 123) a deployment configured. Amendments always retain their
+/// also carries the open classes a deployment configured. Amendments always retain their
 /// own card. Every other segment is priced at its recorded entry, including a voided original.
 #[derive(Clone, Copy)]
 pub struct DatedHistory<'h> {

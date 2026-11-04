@@ -663,7 +663,7 @@ fn apply_common_layers_for_mounts(
     router.with_state(handle.clone())
 }
 
-/// POLICY (1.6.0 item 148): **A PANIC IN A REQUEST HANDLER FAILS THAT REQUEST — NEVER THE
+/// POLICY: **A PANIC IN A REQUEST HANDLER FAILS THAT REQUEST — NEVER THE
 /// CONNECTION, NEVER ITS MULTIPLEXED SIBLINGS.**
 ///
 /// The workspace keeps `panic = "unwind"` on purpose (see the root `Cargo.toml`) so one request's

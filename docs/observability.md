@@ -65,6 +65,7 @@ Prometheus text exposition (`text/plain; version=0.0.4`). Goes through the same 
 Metrics are **off unless you ask for them.** With no `module: prometheus` instance under `export:` busbar installs no recorder, records nothing on the request path, and does not mount `/metrics` or `/metrics/hooks` at all. A scrape of either gets the same 404 as any other unknown path. Opting in is one `export:` instance, and `buffer_seconds` is **required**:
 
 ```yaml
+store: { module: memory }
 export:
   metrics:                      # the INSTANCE NAME, yours to choose
     module: prometheus

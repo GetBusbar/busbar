@@ -359,7 +359,7 @@ pub struct OverlayBackend {
 /// (validated at boot). Floats exist ONLY here at the config boundary: [`RateEntryCfg::raw_tier_rates`]
 /// converts them ONCE, exactly, to integer nano-units per token, and nothing past it carries a float.
 ///
-/// `units:` (item 123) prices the OPEN meter classes a plane declares on this lane — a rerank's
+/// `units:` prices the OPEN meter classes a plane declares on this lane — a rerank's
 /// `search_units`, an a2a `hops` — keyed by the class string, each rate in micro-units per unit like
 /// the four above but parsed EXACTLY, with no float, straight into the card's integer nano-unit
 /// representation ([`UnitRate`]). Absent ⇒ no open class is priced

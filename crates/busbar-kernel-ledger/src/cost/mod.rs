@@ -39,7 +39,7 @@
 //!    See [`Posting`].
 //! 3. **Projections.** Minor units and micro-units are read-only views of the summed nano-units,
 //!    each truncating exactly once at the very end, and each CHECKED: a figure the served type
-//!    cannot hold refuses, never pins (item 28). See [`Money::of_nanos`], [`Money::micros_i64`] and
+//!    cannot hold refuses, never pins. See [`Money::of_nanos`], [`Money::micros_i64`] and
 //!    [`Money::minor_i64`]. The divisor is [`NANOS_PER_CENT`] — THE ONE SCALE, and the only one there
 //!    is.
 //! 4. **Append-only.** A card is never replaced. A price change APPENDS a [`CardEntry`], and a

@@ -4,7 +4,7 @@
 //! AN OPEN METER CLASS'S CONFIGURED RATE, in the card's own representation (#83a O1: the rate-card
 
 /// **ONE OPEN METER CLASS'S CONFIGURED RATE, held the way the rate card holds it: an integer number
-/// of NANO-units per unit** (item 123, #71, #77(4)).
+/// of NANO-units per unit**.
 ///
 /// The four reserved classes cross into the card through
 /// [`RawTierRates`](busbar_contract::billing::RawTierRates) and one float conversion (#44's
@@ -13,7 +13,7 @@
 /// configured text is read EXACTLY, by integer arithmetic over its digits
 /// ([`busbar_contract::Count`]), straight into the card's own representation. A rate finer than one
 /// nano-unit, negative, or past a `u64` of nano-units is REFUSED at parse — a card that cannot hold
-/// a configured rate must not claim to (item 22), and a refusal at the config boundary is the boot
+/// a configured rate must not claim to, and a refusal at the config boundary is the boot
 /// refusal #77(5) asks for.
 ///
 /// **THE WIRE FORM.** An integer (`calls: 2000` — 2000 micro-units per unit) or a decimal STRING

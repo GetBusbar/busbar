@@ -1385,6 +1385,7 @@ two URLs is a real deployment: app logs plus SIEM). Presence is the switch; an a
 leaves collection inert.
 
 ```yaml
+store: { module: memory }
 export:
   metrics:  { module: prometheus,          settings: { buffer_seconds: 60 } }
   req-log:  { module: request-log-webhook, settings: { url: "https://logs.example.com/busbar" } }

@@ -280,7 +280,7 @@ pub struct App {
     /// would be an instance with no sink — a quarantine that stopped being written down because
     /// somebody edited an unrelated section of config. See [`crate::trust::demotion`].
     pub demotion_record: Arc<crate::trust::demotion::DemotionRecord>,
-    /// THE NODE'S AMENDMENT JOURNAL (item 404): every hook or export content access this node seals,
+    /// THE NODE'S AMENDMENT JOURNAL: every hook or export content access this node seals,
     /// and the sink that makes them durable. The SAME instance on every generation — the one the
     /// node's governance owns ([`crate::governance::GovState::amendments`]), carried across every
     /// config apply — and an instance, never a process static, so two nodes never share one. Its

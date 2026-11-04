@@ -21,7 +21,7 @@
 //!    table, authenticate/verify resolve and keep the principal, approve compares the 1.5.5 matrix
 //!    against the grant, admit takes no concurrency lease, ROUTE hands the operation to the mounted
 //!    surface, and AUDIT seals the operation class and finish — the mutation's row on the ONE
-//!    administrative ring is the kernel's, written by the core-admin handler at Route (item 237);
+//!    administrative ring is the kernel's, written by the core-admin handler at Route;
 //! 5. the answer the surface produced comes back, byte for byte.
 //!
 //! So these cells assert two things the removal must not have cost: that a real verb still travels
