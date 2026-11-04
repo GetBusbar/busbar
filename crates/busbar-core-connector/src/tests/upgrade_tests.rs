@@ -115,6 +115,16 @@ fn declare(c: &Connector, trust_from: &str, pem: Option<&str>) {
 
 /// [`declare`] under egress class `class`.
 fn declare_class(c: &Connector, trust_from: &str, pem: Option<&str>, class: u32) {
+    declare_class_timeout(c, trust_from, pem, class, 0);
+}
+
+fn declare_class_timeout(
+    c: &Connector,
+    trust_from: &str,
+    pem: Option<&str>,
+    class: u32,
+    timeout_ms: u64,
+) {
     let need = ReadNeed {
         direction: DIRECTION_OUTBOUND,
         egress_class: class,
@@ -127,7 +137,7 @@ fn declare_class(c: &Connector, trust_from: &str, pem: Option<&str>, class: u32)
             flags: 0,
             bytes: Vec::new(),
         },
-        timeout_ms: 0,
+        timeout_ms,
         keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
         keep_response_headers: Vec::new(),
         deny_response_headers: Vec::new(),
@@ -473,5 +483,86 @@ fn a_sha384_signed_far_end_binds_with_sha384() {
             "the binding hashes with the certificate's signature hash"
         );
         c.close(OWNER, id).unwrap();
+    });
+}
+
+/// A mid-stream handshake uses the same selected bound as the raw dial, including
+/// a per-open override. A peer accepting TCP without answering TLS must time out.
+#[test]
+fn security_upgrade_inherits_the_declared_or_per_open_timeout() {
+    worker().block_on(async {
+        for explicit in [0, 100] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let far = listener.local_addr().unwrap().to_string();
+            let c = raw_connector();
+            declare_class_timeout(
+                &c,
+                "",
+                None,
+                crate::DEFAULT_CLASS,
+                if explicit == 0 { 100 } else { 30_000 },
+            );
+            let id = c
+                .open_request(
+                    OWNER,
+                    NeedId(0),
+                    &OpenDesc {
+                        target: &far,
+                        ..Default::default()
+                    },
+                    false,
+                    explicit,
+                )
+                .unwrap();
+            let peer = listener.accept().await.unwrap().0;
+            loop {
+                match c.landed(OWNER, id, NO_TICKET) {
+                    Ok(()) => break,
+                    Err(ConnError::Pending) => tokio::time::sleep(Duration::from_millis(2)).await,
+                    other => panic!("the raw dial must land before its handshake: {other:?}"),
+                }
+            }
+            let result = tokio::time::timeout(Duration::from_secs(2), upgrade(&c, id, None))
+                .await
+                .expect("the selected 100ms bound, not the host's 10s default");
+            assert_eq!(result, Err(ConnError::Timeout));
+            c.close(OWNER, id).unwrap();
+            drop(peer);
+        }
+    });
+}
+
+/// A declared 30-second handshake must also work past the old 10-second cap.
+#[test]
+fn a_declared_security_upgrade_can_outlive_the_default_ten_seconds() {
+    let (ca, leaf, key) = private_ca();
+    worker().block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = listener.local_addr().unwrap().to_string();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(11)).await;
+            acceptor(leaf, key).accept(socket).await
+        });
+        let c = raw_connector();
+        declare_class_timeout(&c, "settings.ca", Some(&ca), crate::DEFAULT_CLASS, 30_000);
+        let id = open(&c, &far);
+        let result = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                match c.upgrade_secure(OWNER, id, Some("localhost"), None, false, NO_TICKET) {
+                    Err(ConnError::Pending) => tokio::time::sleep(Duration::from_millis(2)).await,
+                    answer => break answer,
+                }
+            }
+        })
+        .await
+        .expect("the delayed handshake finishes within its declared bound");
+        assert_eq!(result, Ok(()));
+        let peer = server
+            .await
+            .unwrap()
+            .expect("the server also completed TLS");
+        c.close(OWNER, id).unwrap();
+        drop(peer);
     });
 }

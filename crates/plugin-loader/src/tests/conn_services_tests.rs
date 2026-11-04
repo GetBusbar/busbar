@@ -979,6 +979,8 @@ struct Scripted {
     parked: Mutex<Vec<(InstanceId, u64)>>,
     /// Armed, a close parks here until released: a transport door wedged in its close.
     close_gate: Gate,
+    /// Successful closes, including dials whose ESTABLISH never returned an id.
+    closed: Mutex<Vec<(InstanceId, ConnId)>>,
     /// Every dial is still connecting when its establish asks: `landed` answers PENDING.
     landing: bool,
     /// The independent dial and whole-request bounds every actual open received.
@@ -1185,7 +1187,9 @@ impl Conns for Scripted {
     }
     fn close(&self, c: InstanceId, id: ConnId) -> Result<(), ConnError> {
         self.close_gate.park();
-        self.slab.remove(c, id).map(|_| ())
+        self.slab.remove(c, id)?;
+        self.closed.lock().unwrap().push((c, id));
+        Ok(())
     }
 }
 
@@ -3821,4 +3825,65 @@ fn a_response_reason_cannot_alias_a_removed_field() {
     let mut buf = *b"private: secret\r\n";
     let n = buf.len();
     assert!(super::filter_reply_head(&mut buf, n, 9..15, None).is_err());
+}
+
+/// ESTABLISH may pend before its caller receives any stream id. Forgetting the
+/// ticket still closes that dial, exactly once, using its original authority.
+#[test]
+fn forgetting_a_pending_establish_reclaims_the_unpublished_connection() {
+    let table = Arc::new(Scripted {
+        landing: true,
+        ..Default::default()
+    });
+    let p = bound_over(&table);
+    let pending = opened_stream(&p, 0);
+    assert_eq!(pending.outcome, RawOutcome::of(Outcome::Pending));
+    assert!(table.closed.lock().unwrap().is_empty());
+    drop(super::forget(p.instance(), T));
+    let closed = table.closed.lock().unwrap().clone();
+    assert_eq!(closed.len(), 1);
+    assert_eq!(closed[0].0, p.instance());
+    assert!(table.slab.get(closed[0].0, closed[0].1).is_err());
+    drop(super::forget(p.instance(), T));
+    assert_eq!(*table.closed.lock().unwrap(), closed, "no double close");
+}
+
+/// The real host replays the FACTS payload, not just READY. Secure credentials
+/// never depend on the SDK's legacy missing-payload replay compatibility path.
+#[test]
+fn sdk_facts_replay_always_retains_the_observed_security_state() {
+    use std::task::Poll;
+    for secure in [false, true] {
+        let table = Arc::new(Scripted::default());
+        let p = bound_over(&table);
+        let stream = opened_stream(&p, 0).value;
+        *table.facts.lock().unwrap() = Some(ConnFacts {
+            peer_cert: secure.then(|| busbar_contract::transport::wire::CertFacts {
+                subject: String::new(),
+                issuer: String::new(),
+                fingerprint: "ab".repeat(32),
+            }),
+            ..Default::default()
+        });
+        let host = sdk_host(&p);
+        let observed = || {
+            let mut c = host.connector_from(T, 1);
+            let Poll::Ready(Ok(Some(facts))) = c.facts(stream) else {
+                panic!("a real host READY, including replay, must carry its FACTS");
+            };
+            facts.secure
+        };
+        assert_eq!(observed(), secure);
+        *table.facts.lock().unwrap() = None;
+        assert_eq!(
+            observed(),
+            secure,
+            "replay retains the original security decision"
+        );
+        let mut fresh = host.connector_from(T, 2);
+        assert!(
+            matches!(fresh.facts(stream), Poll::Ready(Err(_))),
+            "fresh missing facts fail closed"
+        );
+    }
 }

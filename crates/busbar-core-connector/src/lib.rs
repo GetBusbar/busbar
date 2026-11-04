@@ -545,6 +545,8 @@ struct Held {
     due: Mutex<Option<Due>>,
     /// The dial's original bound, including a pended judgement, independent of the request.
     dial_due: Mutex<Option<Due>>,
+    /// The caller-selected dial bound, also used for a later security handshake.
+    open_timeout: Duration,
     /// A held session's UPSTREAM LEG over a datagram framer's need ([`dialled`]): its exchange
     dialled: Option<dialled::Dialled>,
 }
@@ -719,6 +721,7 @@ impl Held {
             lease: None,
             due: Mutex::new(None),
             dial_due: Mutex::new(None),
+            open_timeout: DEFAULT_OPEN_TIMEOUT,
             dialled: None,
         }
     }
@@ -757,7 +760,8 @@ impl Held {
         due.map_or(Ok(()), |d| d.check())
     }
 
-    fn dial_bounded(self, timeout: Duration) -> Self {
+    fn dial_bounded(mut self, timeout: Duration) -> Self {
+        self.open_timeout = timeout;
         if let Some(at) = std::time::Instant::now().checked_add(timeout) {
             *self.dial_due.lock().expect("dial due") = Some(Due::new(at));
         }
@@ -2351,7 +2355,7 @@ impl DeclaredConns for Connector {
         let answer = line.upgrade_secure(
             &config,
             &name,
-            DEFAULT_OPEN_TIMEOUT,
+            held.open_timeout,
             kept.is_some(),
             &mut Context::from_waker(&waker),
         );
