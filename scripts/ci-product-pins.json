@@ -4,7 +4,7 @@
     {
       "repo": "busbar-auth-admin-tokens",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-auth-admin-tokens",
-      "commit": "dd661c15b0251dd8be8ca2afbbd7e9c3922b9d1e",
+      "commit": "df4f9e5549bb38a9074dccc60e8c2a85c0c68bd5",
       "package": "busbar-auth-admin-tokens-plugin",
       "kind": "auth",
       "alias": "admin-tokens",

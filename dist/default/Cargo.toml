@@ -855,8 +855,8 @@ members = ["."]
 # journal is an instance the node owns; `node_recent` is gone).
 busbar-plane-llm = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-llm", rev = "f5b3f7cd85a1fd2fcd9dfa6b0d0c6a207e2a365c" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
-busbar-auth-admin-tokens = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-admin-tokens", rev = "dd661c15b0251dd8be8ca2afbbd7e9c3922b9d1e" }
-busbar-auth-admin-tokens-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-admin-tokens", rev = "dd661c15b0251dd8be8ca2afbbd7e9c3922b9d1e" }
+busbar-auth-admin-tokens = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-admin-tokens", rev = "df4f9e5549bb38a9074dccc60e8c2a85c0c68bd5" }
+busbar-auth-admin-tokens-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-admin-tokens", rev = "df4f9e5549bb38a9074dccc60e8c2a85c0c68bd5" }
 # auth-oidc dev a19d113327 (security item 3, #59 + #62): discovery and the JWKS in open-web, the
 # token exchange in the default class named per request (a private IdP refused unless allowlisted).
 busbar-auth-oidc = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-oidc", rev = "29e6d9ac9f9b31f0ff3035615a0e28763b90a516" }
