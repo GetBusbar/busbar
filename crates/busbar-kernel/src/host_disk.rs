@@ -149,7 +149,9 @@ pub fn rotate(path: &str, keep: u32) -> (bool, u8) {
         let from = format!("{path}.{i}");
         if Path::new(&from).exists() && std::fs::rename(&from, format!("{path}.{}", i + 1)).is_err()
         {
-            faults |= DISK_SHIFT_FAILED;
+            // Lower archives cannot move into an occupied slot without losing data.
+            // Keep the live file in place and let append continue without truncation.
+            return (false, faults | DISK_SHIFT_FAILED | DISK_RENAME_FAILED);
         }
     }
     let renamed = std::fs::rename(path, format!("{path}.1")).is_ok();

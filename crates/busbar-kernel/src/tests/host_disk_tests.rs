@@ -482,3 +482,41 @@ fn an_append_completion_can_submit_another_whole_append() {
 
 #[path = "host_disk_export_tests.rs"]
 mod exporter_host_policy;
+
+#[test]
+fn a_failed_archive_shift_preserves_lower_archives_and_appends_to_the_live_file() {
+    for keep in [2, 3] {
+        let d = dir("failed-shift");
+        let file = d.join("log.jsonl");
+        let path = file.display().to_string();
+        std::fs::write(&file, b"live\n").unwrap();
+        std::fs::write(format!("{path}.1"), b"previous\n").unwrap();
+        // Non-empty directories make rename fail on real filesystems, without
+        // permission assumptions that would disappear when tests run as root.
+        for i in 2..=keep {
+            let blocked = PathBuf::from(format!("{path}.{i}"));
+            std::fs::create_dir(&blocked).unwrap();
+            std::fs::write(blocked.join("sentinel"), b"retained").unwrap();
+        }
+        let to = DiskDest {
+            rotate: DiskRotate::Rename { keep },
+            ..dest(&file, Some(1))
+        };
+        let report = append(&to, b"new\n");
+        assert_eq!(report.step, 0, "append still succeeds");
+        assert!(!report.rotated);
+        assert_eq!(
+            report.faults,
+            DISK_RETENTION_FAILED | DISK_SHIFT_FAILED | DISK_RENAME_FAILED
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), b"live\nnew\n");
+        assert_eq!(std::fs::read(format!("{path}.1")).unwrap(), b"previous\n");
+        for i in 2..=keep {
+            assert_eq!(
+                std::fs::read(format!("{path}.{i}/sentinel")).unwrap(),
+                b"retained"
+            );
+        }
+        std::fs::remove_dir_all(d).unwrap();
+    }
+}
