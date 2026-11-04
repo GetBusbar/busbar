@@ -289,3 +289,13 @@ fn a_failed_resolve_answers_its_code_and_text_through_the_door() {
         Outcome::Ready
     );
 }
+
+#[test]
+fn a_source_with_no_settings_escapes_refused_keys_without_losing_its_reason() {
+    let refused = takes_no_settings(br#"{"a\n\nb":1}"#, "probe", NAMES).unwrap_err();
+    assert!(refused.contains(r"settings.a\n\nb"));
+    assert!(!refused.contains('\n'));
+    assert!(refused.contains("takes no settings"));
+    assert_eq!(takes_no_settings(br#"{"key":1}"#, "probe", NAMES).unwrap_err(),
+        format!("secret module 'probe' takes no settings; remove settings.key (each reference names its {NAMES})"));
+}

@@ -2,8 +2,9 @@
 
 This document traces a request end-to-end and explains the two seams that make
 Busbar's thesis, *protocols, not providers*, work: the **superset IR** with its
-`ProtocolReader` / `ProtocolWriter` traits, and the **two-stage failure-disposition
-pipeline**.
+plane-owned readers and writers, and the **two-stage failure-disposition pipeline**.
+The LLM trace below describes that plane's implementation; these codecs are not a core
+plugin-dispatch interface.
 
 ## A thin core that hosts plugins
 
@@ -45,11 +46,10 @@ trust model.
 Busbar carries five planes of traffic, and the point of the architecture is that they are
 five *ingresses onto one core* rather than five products sharing a process. By crate, they
 are `busbar-plane-llm`, `busbar-plane-mcp`, `busbar-plane-a2a`, `busbar-plane-streaming`
-and `busbar-plane-decisions`. One is in this repository (`crates/busbar-plane-llm`); the
-MCP, A2A, streaming and decisions planes live in their own repositories
-(GetBusbar/busbar-plane-mcp, GetBusbar/busbar-plane-a2a, GetBusbar/busbar-plane-streaming,
-GetBusbar/busbar-plane-decisions) and are pinned into the build as git dependencies in the
-root `Cargo.toml`. Each is a plugin
+and `busbar-plane-decisions`. All five live in separate GetBusbar repositories.
+The default product pins them as git dependencies in `dist/default/Cargo.toml`;
+`scripts/ci-product-pins.json` records the exact product revisions. The root workspace
+contains the core and its shared contract, rather than plane implementations. Each is a plugin
 of kind `plane`, compiled in or dropped into the plugins directory on the same contract, and
 each talks to core only over the ABI.
 
