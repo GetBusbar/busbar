@@ -304,15 +304,23 @@ fn a_blocked_disk_job_does_not_block_ordered_appends_or_their_completions() {
     let file = d.join("log.jsonl");
     let lane = DiskLane::default();
     let (entered_tx, entered) = std::sync::mpsc::channel();
-    let (release, released) = std::sync::mpsc::channel();
     let (finished_tx, finished) = std::sync::mpsc::channel();
-    lane.run(Box::new(move || {
-        let _ = entered_tx.send(());
-        let _ = released.recv();
-        let _ = finished_tx.send(());
-    }))
-    .unwrap();
-    let running = entered.recv_timeout(std::time::Duration::from_secs(10));
+    let mut releases = Vec::new();
+    for _ in 0..SECRET_WORKERS {
+        let (release, released) = std::sync::mpsc::channel();
+        releases.push(release);
+        let entered = entered_tx.clone();
+        let finished = finished_tx.clone();
+        lane.run(Box::new(move || {
+            let _ = entered.send(());
+            let _ = released.recv_timeout(std::time::Duration::from_secs(30));
+            let _ = finished.send(());
+        }))
+        .unwrap();
+    }
+    let running: Vec<_> = (0..SECRET_WORKERS)
+        .map(|_| entered.recv_timeout(std::time::Duration::from_secs(10)))
+        .collect();
     let (drained_tx, drained) = std::sync::mpsc::channel();
     let mut queued = true;
     for n in 0..LANE_BOUND {
@@ -343,8 +351,12 @@ fn a_blocked_disk_job_does_not_block_ordered_appends_or_their_completions() {
     let first = submitted.then(|| done.recv_timeout(std::time::Duration::from_secs(2)));
     let second = submitted.then(|| done.recv_timeout(std::time::Duration::from_secs(2)));
 
-    let _ = release.send(());
-    let cleaned = finished.recv_timeout(std::time::Duration::from_secs(10));
+    for release in releases {
+        let _ = release.send(());
+    }
+    let cleaned: Vec<_> = (0..SECRET_WORKERS)
+        .map(|_| finished.recv_timeout(std::time::Duration::from_secs(10)))
+        .collect();
     let backlog_cleaned = drained.recv_timeout(std::time::Duration::from_secs(10));
     if first.as_ref().is_some_and(Result::is_err) {
         let _ = done.recv_timeout(std::time::Duration::from_secs(10));
@@ -355,8 +367,12 @@ fn a_blocked_disk_job_does_not_block_ordered_appends_or_their_completions() {
     let bytes = std::fs::read(&file);
     drop(lane);
     let _ = std::fs::remove_dir_all(&d);
-    running.expect("the disk job entered its blocking callback");
-    cleaned.expect("the callback is released before the test ends");
+    for running in running {
+        running.expect("each secret worker entered its blocking callback");
+    }
+    for cleaned in cleaned {
+        cleaned.expect("each callback is released before the test ends");
+    }
     backlog_cleaned.expect("the bounded backlog is drained before the test ends");
     assert!(queued, "the existing bound admits the queued jobs");
     assert_eq!(
@@ -410,13 +426,20 @@ fn full_secret_admission_drops_reentrant_custody_without_blocking_appends() {
     let file = d.join("log.jsonl");
     let lane = Arc::new(DiskLane::default());
     let (entered_tx, entered) = std::sync::mpsc::channel();
-    let (release, released) = std::sync::mpsc::channel();
-    lane.run(Box::new(move || {
-        let _ = entered_tx.send(());
-        let _ = released.recv_timeout(std::time::Duration::from_secs(30));
-    }))
-    .unwrap();
-    let running = entered.recv_timeout(std::time::Duration::from_secs(10));
+    let mut releases = Vec::new();
+    for _ in 0..SECRET_WORKERS {
+        let (release, released) = std::sync::mpsc::channel();
+        releases.push(release);
+        let entered = entered_tx.clone();
+        lane.run(Box::new(move || {
+            let _ = entered.send(());
+            let _ = released.recv_timeout(std::time::Duration::from_secs(30));
+        }))
+        .unwrap();
+    }
+    let running: Vec<_> = (0..SECRET_WORKERS)
+        .map(|_| entered.recv_timeout(std::time::Duration::from_secs(10)))
+        .collect();
     let mut admitted = true;
     for _ in 0..LANE_BOUND {
         admitted &= lane.run(Box::new(|| {})).is_ok();
@@ -433,8 +456,12 @@ fn full_secret_admission_drops_reentrant_custody_without_blocking_appends() {
     let submitter = std::thread::spawn(move || lane.run(Box::new(move || drop(reenter))));
     let reentered = answered.recv_timeout(std::time::Duration::from_secs(2));
     let appended = completion.recv_timeout(std::time::Duration::from_secs(2));
-    let _ = release.send(());
-    running.expect("the controlled secret job entered");
+    for release in releases {
+        let _ = release.send(());
+    }
+    for running in running {
+        running.expect("each controlled secret job entered");
+    }
     assert!(admitted, "the declared queue bound remains available");
     assert!(reentered.expect("reentrant Drop returns").is_ok());
     assert_eq!(
@@ -519,4 +546,33 @@ fn a_failed_archive_shift_preserves_lower_archives_and_appends_to_the_live_file(
         }
         std::fs::remove_dir_all(d).unwrap();
     }
+}
+
+#[test]
+fn one_blocked_secret_read_does_not_starve_an_unrelated_resolve() {
+    let lane = DiskLane::default();
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let (finished_tx, finished) = std::sync::mpsc::channel();
+    lane.run(Box::new(move || {
+        let _ = entered_tx.send(());
+        let _ = released.recv_timeout(std::time::Duration::from_secs(10));
+        let _ = finished_tx.send(());
+    }))
+    .unwrap();
+    let running = entered.recv_timeout(std::time::Duration::from_secs(2));
+    let (answer, answered) = std::sync::mpsc::channel();
+    lane.run(Box::new(move || {
+        let _ = answer.send("resolved");
+    }))
+    .unwrap();
+    let healthy = answered.recv_timeout(std::time::Duration::from_secs(2));
+    let _ = release.send(());
+    let cleaned = finished.recv_timeout(std::time::Duration::from_secs(2));
+    running.expect("the first read is blocked");
+    cleaned.expect("the controlled read is released before the test ends");
+    assert_eq!(
+        healthy.expect("an unrelated resolve proceeds while the first read is stuck"),
+        "resolved"
+    );
 }

@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::io::Write as _;
 use std::path::Path;
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use busbar_contract::abi::host::service::{
     DISK_APPEND_FAILED, DISK_OPEN_FAILED, DISK_RENAME_FAILED, DISK_RETENTION_FAILED,
@@ -29,9 +29,13 @@ struct Append {
 
 type SecretJob = Box<dyn FnOnce() + Send>;
 
+// Two bounded workers let unrelated resolves proceed while one filesystem read is stuck.
+const SECRET_WORKERS: usize = 2;
+
 /// The FIFO append executor and an isolated config-time secret executor, each lazy and bounded.
-/// A filesystem read cannot be interrupted by a caller deadline. It may occupy the secret thread
-/// until it returns, but can never occupy the append thread or reserve append queue space.
+/// A filesystem read cannot be interrupted by a caller deadline. Two secret workers tolerate one
+/// stuck read without starving other resolves; both remain bounded by the existing queue. Stuck
+/// reads cannot occupy the append thread or reserve append queue space.
 #[derive(Debug, Default)]
 pub struct DiskLane {
     tx: OnceLock<Option<SyncSender<Append>>>,
@@ -93,15 +97,23 @@ fn start() -> Option<SyncSender<Append>> {
 
 fn start_secrets() -> Option<SyncSender<SecretJob>> {
     let (tx, rx) = sync_channel::<SecretJob>(LANE_BOUND);
-    std::thread::Builder::new()
-        .name("busbar-disk-secrets".into())
-        .spawn(move || {
-            for job in rx {
+    let rx = Arc::new(Mutex::new(rx));
+    for _ in 0..SECRET_WORKERS {
+        let rx = Arc::clone(&rx);
+        std::thread::Builder::new()
+            .name("busbar-disk-secrets".into())
+            .spawn(move || loop {
+                let job = rx
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .recv();
+                let Ok(job) = job else { break };
+                // Queue ownership is released before running any plugin or filesystem code.
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
-            }
-        })
-        .ok()
-        .map(|_| tx)
+            })
+            .ok()?;
+    }
+    Some(tx)
 }
 
 #[must_use]

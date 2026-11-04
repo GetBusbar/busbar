@@ -43,8 +43,9 @@ pub fn takes_no_settings(bytes: &[u8], module: &str, names: &str) -> Result<(), 
         Ok(serde_json::Value::Object(m)) => match m.keys().next() {
             None => Ok(()),
             Some(k) => Err(format!(
-                "secret module '{module}' takes no settings; remove settings.{k} (each reference \
-                 names its {names})"
+                "secret module '{module}' takes no settings; remove settings.{} (each reference \
+                 names its {names})",
+                k.escape_debug()
             )),
         },
         _ => Err("settings: must be a JSON object".to_string()),
