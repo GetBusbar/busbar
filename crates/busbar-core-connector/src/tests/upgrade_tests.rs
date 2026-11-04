@@ -491,7 +491,7 @@ fn a_sha384_signed_far_end_binds_with_sha384() {
 #[test]
 fn security_upgrade_inherits_the_declared_or_per_open_timeout() {
     worker().block_on(async {
-        for explicit in [0, 100] {
+        for (explicit, request) in [(0, 0), (100, 0), (0, 100)] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let far = listener.local_addr().unwrap().to_string();
             let c = raw_connector();
@@ -500,7 +500,11 @@ fn security_upgrade_inherits_the_declared_or_per_open_timeout() {
                 "",
                 None,
                 crate::DEFAULT_CLASS,
-                if explicit == 0 { 100 } else { 30_000 },
+                if explicit == 0 && request == 0 {
+                    100
+                } else {
+                    30_000
+                },
             );
             let id = c
                 .open_request(
@@ -508,6 +512,7 @@ fn security_upgrade_inherits_the_declared_or_per_open_timeout() {
                     NeedId(0),
                     &OpenDesc {
                         target: &far,
+                        timeout_ms: request,
                         ..Default::default()
                     },
                     false,
@@ -558,8 +563,10 @@ fn a_declared_security_upgrade_can_outlive_the_default_ten_seconds() {
         .await
         .expect("the delayed handshake finishes within its declared bound");
         assert_eq!(result, Ok(()));
-        let peer = server
+        send(&c, id, b"x").await;
+        let peer = tokio::time::timeout(Duration::from_secs(2), server)
             .await
+            .expect("the client flushes its final handshake flight")
             .unwrap()
             .expect("the server also completed TLS");
         c.close(OWNER, id).unwrap();

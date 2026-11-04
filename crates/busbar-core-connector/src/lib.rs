@@ -2340,6 +2340,7 @@ impl DeclaredConns for Connector {
         };
         let waker = self.waker(caller, ticket);
         held.watch_deadlines(DeadlineInterest::Ticket(ticket), &waker);
+        held.within_due()?;
         if !self.settle(&held, Some(&waker))? {
             return Err(ConnError::Pending);
         }

@@ -1260,7 +1260,7 @@ impl Connection {
             self.upgraded = true;
             self.established.offered_name = Some(name.to_owned());
             self.established.scheme = Established::scheme_of(true);
-            self.open_deadline = Some(Instant::now() + timeout);
+            self.open_deadline = Instant::now().checked_add(timeout);
             if !matches!(self.phase, Phase::Connecting) {
                 if let Err(f) = self.tls_out() {
                     self.fail(f.clone());
