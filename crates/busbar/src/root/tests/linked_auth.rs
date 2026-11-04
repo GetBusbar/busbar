@@ -159,7 +159,7 @@ fn the_info_auth_modules_are_the_inbound_rows_only() {
             "busbar-auth-webhook-signature"
         ],
         "only inbound auth-chain modules are listed, 1.5.5's two first and the default build's \
-         webhook-signature row after them (ARCHITECT 2026-10-14; linked rows: {linked:?})"
+         webhook-signature row after them (linked rows: {linked:?})"
     );
 }
 

@@ -644,7 +644,7 @@ pub const SCRAPE_KIND_UNTYPED: u8 = 4;
 /// [`super::mechanism::call::InHead::flags`] on `scrape`: the families are the HOOK families.
 pub const SCRAPE_FLAG_HOOK_FAMILIES: u32 = 2;
 
-/// One label on a [`ScrapeSample`]: a key AND its value, ARCHITECT review ruling (fresh-Opus
+/// One label on a [`ScrapeSample`]: a key and its value. A
 /// value-only array cannot carry a histogram's `le` or a
 /// summary's `quantile` label, which is exactly what makes the host's exposition losslessly
 /// reproducible.
@@ -699,8 +699,7 @@ pub struct ScrapeFamily {
     pub samples_len: usize,
 }
 
-/// `scrape`'s `in`. ARCHITECT review ruling 2 (fresh-Opus M3-SHAPES review, 2026-09-28): the
-/// results use host buffers, never plugin-owned pointers in
+/// Input to `scrape`. Results use host buffers, never plugin-owned pointers in
 /// `out`. The host zeroes `out` before each call,
 /// so no input data may live there.
 #[repr(C)]
@@ -750,9 +749,8 @@ pub const CHECK_PHASE_LIMITS: u32 = 0;
 /// [`CheckIn::phase`]: after the limits, each instance's own settings — the OLD
 pub const CHECK_PHASE_INSTANCES: u32 = 1;
 
-/// One instance `check` may read across, at [`CHECK_PHASE_INSTANCES`] (ARCHITECT review ruling,
-/// [`CHECK_PHASE_INSTANCES`], for checks spanning every
-/// instance of a sink module.
+/// One sink-module instance visible during [`CHECK_PHASE_INSTANCES`].
+/// Checks in this phase may inspect every instance of the module.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct CheckInstance {
@@ -841,8 +839,8 @@ pub const ROUTE_AUTH_KEY: u32 = 1;
 /// [`Route::auth`]: admin auth required, reachable only on the admin listener — OLD
 pub const ROUTE_AUTH_ADMIN: u32 = 2;
 
-/// One HTTP route this instance serves via `serve` (ARCHITECT review ruling, fresh-Opus
-/// method}` is the collision key the kernel checks at
+/// One HTTP route this instance serves via `serve`. The pair `{path, method}`
+/// is the collision key the kernel checks at
 /// load; `auth` is enforced by the kernel BEFORE `serve` is ever called.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
