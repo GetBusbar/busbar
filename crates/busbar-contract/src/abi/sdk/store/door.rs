@@ -244,6 +244,13 @@ mod reply_tests;
 impl<B: StoreSlots> Life for Served<B> {
     const CANCEL: u32 = CANCEL_UNKNOWN;
 
+    fn extensions(&self) -> Vec<u8> {
+        self.store
+            .ephemeral()
+            .map(super::metadata::encode)
+            .unwrap_or_default()
+    }
+
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
         B::validate(settings).map_err(Refusal::failed)
     }

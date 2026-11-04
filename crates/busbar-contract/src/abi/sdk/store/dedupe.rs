@@ -3,7 +3,8 @@
 
 //! THE `op_id` DEDUPE, ONCE FOR EVERY STORE (`abi::store` S1-S5). A store keeps, per `op_id` it
 
-use std::fmt::Write as _;
+#[path = "legacy_receipt.rs"]
+mod legacy;
 
 use sha2::{Digest as _, Sha256};
 
@@ -219,18 +220,18 @@ impl<'a> Dedupe<'a> {
         match self.values {
             Values::RecordTransaction(_) | Values::UsageCorrection(_) => return false,
             Values::Usage(cells) => {
-                let _ = write!(older, "add_usage_batch:{cells:?}");
+                legacy::usage(&mut older, cells);
             }
             Values::Metering(deltas) => {
-                let _ = write!(older, "add_metering_batch:{deltas:?}");
+                legacy::metering(&mut older, deltas);
             }
             Values::Append(record) => {
-                let _ = write!(older, "append_plane_record:{record:?}");
+                legacy::append(&mut older, record, false);
                 if recorded == older.as_bytes() {
                     return true;
                 }
                 older.clear();
-                let _ = write!(older, "append_plane_record:{:?}", record.to_record());
+                legacy::append(&mut older, record, true);
             }
         }
         recorded == older.as_bytes()

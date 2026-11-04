@@ -50,6 +50,11 @@ impl std::error::Error for StoreFailure {}
 
 /// ONE STORE INSTANCE'S CALLS, as the kernel makes them: the store v3 slots, typed.
 pub trait StoreCalls: Send + Sync {
+    /// Per-open durability metadata. `None` is an older door; use its static Statement mark.
+    fn ephemeral(&self) -> Option<bool> {
+        None
+    }
+
     /// Whether this instance negotiated atomic raw-usage correction support.
     fn supports_usage_correction(&self) -> bool {
         false

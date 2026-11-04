@@ -1175,7 +1175,19 @@ pub fn build_app_from_config_with_store(
             || cfg.plane_pools.values().any(|p| !p.is_empty());
 
         let row = plugin_registry.resolve(&g.module);
-        let ephemeral = row.as_ref().is_some_and(|p| p.ephemeral);
+        let opened = match boot_store {
+            Some(opened) => opened,
+            None => open_config_store(
+                cfg.store.as_ref(),
+                &plugin_registry,
+                secret_resolver.as_ref(),
+            )?,
+        };
+        let ephemeral = opened
+            .calls
+            .as_ref()
+            .and_then(|calls| calls.ephemeral())
+            .unwrap_or_else(|| row.as_ref().is_some_and(|p| p.ephemeral));
         if ephemeral {
             diag_warn!(
                 GOVERNANCE_STORE_EPHEMERAL,
@@ -1187,14 +1199,6 @@ pub fn build_app_from_config_with_store(
                 diag_warn!(STATEFUL_PLANE_EPHEMERAL_STORE, "{msg}");
             }
         }
-        let opened = match boot_store {
-            Some(opened) => opened,
-            None => open_config_store(
-                cfg.store.as_ref(),
-                &plugin_registry,
-                secret_resolver.as_ref(),
-            )?,
-        };
         let store: Arc<dyn governance::RecordStore> = opened.records;
         let store_calls = opened.calls;
 

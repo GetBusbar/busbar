@@ -213,9 +213,9 @@ fn a_body_kept_as_hex_text_replays_and_conflicts_as_the_raw_one() {
 #[test]
 fn an_older_builds_usage_row_replays_the_same_batch_and_conflicts_with_another() {
     let cells = [("b", 60, delta(1))];
-    let older = format!("add_usage_batch:{cells:?}");
+    let older = r#"add_usage_batch:[("b", 60, UsageDelta { requests: 1, billable_requests: 1, models: [ModelTokensDelta { model: "m", usage_units: {"input": 7} }] })]"#;
     let mut log = Log::default();
-    log.ops.insert(id(1), older.into_bytes());
+    log.ops.insert(id(1), older.as_bytes().to_vec());
     assert_eq!(log.raw(id(1), &Dedupe::usage(&cells)), Ok(()));
     assert_eq!(
         log.raw(id(1), &Dedupe::usage(&[("b", 60, delta(2))])),
@@ -229,7 +229,7 @@ fn an_older_builds_metering_row_replays_the_same_batch() {
     let deltas = vec![metering(10)];
     let mut log = Log::default();
     log.ops
-        .insert(id(1), format!("add_metering_batch:{deltas:?}").into_bytes());
+        .insert(id(1), r#"add_metering_batch:[MeteringDelta { key_id: "k", bucket: 20000, model: "m", provider: "p", tokens_input: 10, tokens_output: 2, tokens_cache_read: 3, tokens_cache_write: 4, requests: 1, billable_requests: 1, key_group_at_use: "", pricing_version: "", priced_from_ms: 0, usage_units: {} }]"#.as_bytes().to_vec());
     assert_eq!(log.raw(id(1), &Dedupe::metering(&deltas)), Ok(()));
     assert_eq!(
         log.raw(id(1), &Dedupe::metering(&[metering(11)])),
@@ -242,11 +242,11 @@ fn an_older_builds_metering_row_replays_the_same_batch() {
 fn an_older_builds_append_row_replays_in_the_borrowed_and_the_owned_form() {
     let r = record(b"x");
     for older in [
-        format!("append_plane_record:{r:?}"),
-        format!("append_plane_record:{:?}", r.to_record()),
+        r#"append_plane_record:PlaneRecordRef { kind: "task_event", id: "e-1", parent: Some("t-1"), seq: 3, ts: 1700000000, disposition: Active, body: [120] }"#,
+        r#"append_plane_record:PlaneRecord { kind: "task_event", id: "e-1", parent: Some("t-1"), seq: 3, ts: 1700000000, disposition: Active, body: [120] }"#,
     ] {
         let mut log = Log::default();
-        log.ops.insert(id(1), older.into_bytes());
+        log.ops.insert(id(1), older.as_bytes().to_vec());
         assert_eq!(log.raw(id(1), &Dedupe::append(r)), Ok(()));
         assert_eq!(
             log.raw(id(1), &Dedupe::append(record(b"y"))),
@@ -265,7 +265,7 @@ fn an_async_bodys_answer_is_done_replay_or_conflict() {
     assert_eq!(d.answer(Ok(Some(d.body().to_vec()))), Ok(()));
     assert_eq!(d.answer(Ok(Some(d.body_hex()))), Ok(()));
     assert_eq!(
-        d.answer(Ok(Some(format!("add_usage_batch:{cells:?}")))),
+        d.answer(Ok(Some(r#"add_usage_batch:[("b", 60, UsageDelta { requests: 1, billable_requests: 1, models: [ModelTokensDelta { model: "m", usage_units: {"input": 7} }] })]"#))),
         Ok(())
     );
     assert_eq!(
@@ -327,5 +327,49 @@ fn length_prefixes_keep_neighbouring_fields_apart() {
     assert_ne!(
         Dedupe::append(r).body(),
         Dedupe::append(record(b"x")).body()
+    );
+}
+
+#[test]
+fn frozen_legacy_receipts_keep_quoting_order_signed_units_and_terminal_rows() {
+    let cells = [(
+        "b\n\"",
+        u64::MAX,
+        UsageDelta {
+            requests: i64::MIN,
+            billable_requests: 0,
+            models: vec![ModelTokensDelta {
+                model: "\tπ".into(),
+                usage_units: BTreeMap::from([("z".into(), -1), ("a".into(), 0)]),
+            }],
+        },
+    )];
+    let legacy = r#"add_usage_batch:[("b\n\"", 18446744073709551615, UsageDelta { requests: -9223372036854775808, billable_requests: 0, models: [ModelTokensDelta { model: "\tπ", usage_units: {"a": 0, "z": -1} }] })]"#;
+    assert_eq!(
+        Dedupe::usage(&cells).seen(Some(legacy.as_bytes())),
+        Seen::Replay
+    );
+    assert_eq!(
+        Dedupe::usage(&[]).seen(Some(legacy.as_bytes())),
+        Seen::Conflict
+    );
+    let bytes = [0, 255, 10];
+    let row = PlaneRecordRef {
+        parent: None,
+        disposition: PlaneDisposition::Terminal,
+        ..record(&bytes)
+    };
+    let legacy = r#"append_plane_record:PlaneRecordRef { kind: "task_event", id: "e-1", parent: None, seq: 3, ts: 1700000000, disposition: Terminal, body: [0, 255, 10] }"#;
+    assert_eq!(
+        Dedupe::append(row).seen(Some(legacy.as_bytes())),
+        Seen::Replay
+    );
+    let changed = PlaneRecordRef {
+        parent: Some(""),
+        ..row
+    };
+    assert_eq!(
+        Dedupe::append(changed).seen(Some(legacy.as_bytes())),
+        Seen::Conflict
     );
 }

@@ -42,10 +42,30 @@ const FIRST_ITEMS: usize = 256;
 
 const CALL_DEADLINE: Duration = Duration::from_secs(30);
 
+fn instance_ephemeral(blob: Blob) -> Result<Option<bool>, String> {
+    use busbar_contract::abi::mechanism::call::{BLOB_ABSENT, BLOB_OCTETS};
+    let invalid = || "store instance returned invalid durability metadata".to_string();
+    if blob.fmt == BLOB_ABSENT && blob.len == 0 {
+        return Ok(None);
+    }
+    if blob.fmt != BLOB_OCTETS
+        || u64::try_from(blob.len).unwrap_or(u64::MAX)
+            > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES
+        || (blob.len != 0 && blob.ptr.is_null())
+    {
+        return Err(invalid());
+    }
+    // SAFETY: the validated READY answer's range is bounded above and its lease remains live
+    // until this decoder has copied the scalar property, in both direct and ticketed opens.
+    let bytes = unsafe { crate::dispatch::plugin::blob_bytes(blob) };
+    busbar_contract::abi::sdk::store::metadata::decode(bytes).map_err(str::to_string)
+}
+
 pub struct LoadedStore {
     plugin: Plugin<Store>,
     dispatcher: Arc<Dispatcher>,
     facts: StoreFacts,
+    ephemeral: Option<bool>,
     next_worker: AtomicU32,
 
     mint: OpIdMint,
@@ -81,15 +101,23 @@ impl LoadedStore {
             o.input.secrets = lent.blobs.as_ptr();
             o.input.secrets_len = lent.blobs.len();
         }
-        let c = Self::open_on_ticket(&plugin, &dispatcher, o, lent);
+        let (c, ephemeral) = Self::open_on_ticket(&plugin, &dispatcher, o, lent);
         if c.outcome != Outcome::Ready {
             return Err(c.open_failure(plugin.name()));
         }
 
+        let ephemeral = match ephemeral {
+            Ok(value) => value,
+            Err(error) => {
+                lifecycle::close(&plugin);
+                return Err(error);
+            }
+        };
         let store = Self {
             plugin,
             dispatcher,
             facts,
+            ephemeral,
             next_worker: AtomicU32::new(0),
             mint,
         };
@@ -105,17 +133,28 @@ impl LoadedStore {
         dispatcher: &Dispatcher,
         mut o: Frame<OpenIn, OpenOut>,
         settings: Arc<OpenLent>,
-    ) -> crate::dispatch::Called {
+    ) -> (crate::dispatch::Called, Result<Option<bool>, String>) {
         let Some(worker) = pick_worker(dispatcher, 0) else {
-            return plugin.call(life::OPEN, &mut o);
+            let mut called = plugin.call(life::OPEN, &mut o);
+            let _lease = lifecycle::AnswerLease::new(plugin, called.lease);
+            let ephemeral = if called.outcome == Outcome::Ready {
+                instance_ephemeral(o.out.head.extensions)
+            } else {
+                Ok(None)
+            };
+            called.lease = 0;
+            return (called, ephemeral);
         };
         let Some(ticket) = dispatcher.mint(worker) else {
-            return crate::dispatch::Called {
-                outcome: Outcome::Refused,
-                error: None,
-                lease: 0,
-                recall: None,
-            };
+            return (
+                crate::dispatch::Called {
+                    outcome: Outcome::Refused,
+                    error: None,
+                    lease: 0,
+                    recall: None,
+                },
+                Ok(None),
+            );
         };
         let _recycle = Recycle(dispatcher, ticket);
         let deadline = now_ns().saturating_add(CALL_DEADLINE.as_nanos() as u64);
@@ -130,12 +169,24 @@ impl LoadedStore {
                 settings,
             )
             .wait_done();
-        crate::dispatch::Called {
-            outcome: done.outcome,
-            error: done.error,
-            lease: done.lease,
-            recall: None,
-        }
+        let _lease = lifecycle::AnswerLease::new(plugin, done.lease);
+        let ephemeral = if done.outcome == Outcome::Ready {
+            done.frame
+                .as_ref()
+                .ok_or_else(|| "store open returned no frame".to_string())
+                .and_then(|frame| instance_ephemeral(frame.out.head.extensions))
+        } else {
+            Ok(None)
+        };
+        (
+            crate::dispatch::Called {
+                outcome: done.outcome,
+                error: done.error,
+                lease: 0,
+                recall: None,
+            },
+            ephemeral,
+        )
     }
 
     pub fn validate(plugin: &Plugin<Store>, settings: &[u8]) -> Result<(), String> {
@@ -1084,6 +1135,10 @@ fn boxed<'a, T>(f: impl Future<Output = Result<T, StoreFailure>> + Send + 'a) ->
 }
 
 impl StoreCalls for LoadedStore {
+    fn ephemeral(&self) -> Option<bool> {
+        self.ephemeral
+    }
+
     fn supports_usage_correction(&self) -> bool {
         self.facts.usage_correction
     }
@@ -2120,3 +2175,7 @@ mod actual_table;
 #[allow(unsafe_code)]
 #[path = "tests/store_actual_open_pending_tests.rs"]
 mod store_actual_open_pending_tests;
+
+#[cfg(test)]
+#[path = "tests/store_instance_metadata_tests.rs"]
+mod instance_metadata_tests;

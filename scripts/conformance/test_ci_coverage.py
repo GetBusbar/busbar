@@ -4,6 +4,8 @@ import copy
 import json
 from pathlib import Path
 import unittest
+import tempfile
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("ci_coverage", Path(__file__).with_name("ci_coverage.py"))
 coverage = importlib.util.module_from_spec(spec)
@@ -11,6 +13,23 @@ spec.loader.exec_module(coverage)
 
 
 class RosterTests(unittest.TestCase):
+    def test_product_sdk_override_is_required_in_evidence_binding(self):
+        data = json.loads(coverage.OUTPUT.read_text())
+        pins = json.loads((coverage.ROOT / "scripts/ci-product-pins.json").read_text())
+        sdk = "9" * 40
+        next(p for p in pins["products"] if p["repo"] == "busbar-plane-a2a")["sdk"] = sdk
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ["conformance", "testing"]:
+                (root / name).symlink_to(coverage.ROOT / name, target_is_directory=True)
+            (root / "scripts").mkdir()
+            (root / "scripts/ci-product-pins.json").write_text(json.dumps(pins))
+            with patch.object(coverage, "ROOT", root):
+                with self.assertRaisesRegex(ValueError, "SDK binding"):
+                    coverage.validate(data)
+                data["suites"]["a2a"]["core_pin"] = sdk
+                coverage.validate(data)
+
     def test_valid_commands_and_comments(self):
         self.assertEqual(coverage.roster(b"# suite\nws\tbash testing/ws/run.sh\n"), {"ws": "bash testing/ws/run.sh"})
 
