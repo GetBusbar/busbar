@@ -182,7 +182,7 @@ jobs:
         ports:
           - 3306:3306
         options: >-
-          ${{ inputs.service == 'mysql' && '--health-cmd "mysqladmin ping -h localhost -ubusbar -pbusbar" --health-interval 10s --health-timeout 5s --health-retries 10' || '' }}
+          ${{ inputs.service == 'mysql' && '--health-cmd "mysqladmin ping --protocol=TCP -h 127.0.0.1 -ubusbar -pbusbar" --health-interval 10s --health-timeout 5s --health-retries 10' || '' }}
       valkey:
         image: ${{ inputs.service == 'valkey' && 'valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6' || '' }}
         ports:
@@ -261,13 +261,19 @@ jobs:
         env:
           SERVICE: ${{ inputs.service }}
           CHECKOUT: ${{ inputs.busbar_checkout }}
+          MYSQL_CONTAINER_ID: ${{ job.services.mysql.id }}
         run: |
           set -euo pipefail
           {
             case "$SERVICE" in
               none) ;;
               postgres) echo "BUSBAR_TEST_POSTGRES_URL=postgres://busbar:busbar@localhost:5432/busbar_test" ;;
-              mysql)    echo "BUSBAR_TEST_MYSQL_URL=mysql://busbar:busbar@127.0.0.1:3306/busbar_test" ;;
+              mysql)
+                # Read the RSA pin through the owned service, not its network greeting.
+                pem=$(docker exec "$MYSQL_CONTAINER_ID" cat /var/lib/mysql/public_key.pem)
+                pin=$(printf '%s\n' "$pem" | python3 -c 'import base64,hashlib,re,sys; body="".join(re.search(r"-----BEGIN (?:RSA )?PUBLIC KEY-----([A-Za-z0-9+/=\s]+)-----END (?:RSA )?PUBLIC KEY-----",sys.stdin.read()).group(1).split()); print(hashlib.sha256(base64.b64decode(body,validate=True)).hexdigest())')
+                echo "BUSBAR_TEST_MYSQL_URL=mysql://busbar:busbar@127.0.0.1:3306/busbar_test?server_public_key_sha256=$pin"
+                ;;
               # `redis://` is the Valkey client's own URL scheme (wire-compatible upstream name).
               valkey)   echo "VALKEY_URL=redis://127.0.0.1:6379/0" ;;
               vault)    echo "BUSBAR_TEST_VAULT_ADDR=http://127.0.0.1:8200"; echo "BUSBAR_TEST_VAULT_TOKEN=root" ;;

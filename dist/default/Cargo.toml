@@ -858,8 +858,8 @@ busbar-auth-admin-tokens = { git = "https://git.getbusbar.dev/GetBusbar/busbar-a
 busbar-auth-admin-tokens-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-admin-tokens", rev = "cafd7379f1857b27b6e87618ea4fe13b1bb353b7" }
 # auth-oidc dev a19d113327 (security item 3, #59 + #62): discovery and the JWKS in open-web, the
 # token exchange in the default class named per request (a private IdP refused unless allowlisted).
-busbar-auth-oidc = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-oidc", rev = "074f353f25b19b4b7e1027aab72bea81a1419437" }
-busbar-auth-oidc-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-oidc", rev = "074f353f25b19b4b7e1027aab72bea81a1419437" }
+busbar-auth-oidc = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-oidc", rev = "b73ec21305cd03ce277594f27ddeeda4d97fe367" }
+busbar-auth-oidc-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-oidc", rev = "b73ec21305cd03ce277594f27ddeeda4d97fe367" }
 busbar-export-file = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-file", rev = "0792a6cfbf9f699355ad9dc4fc38101f2e4b8a02" }
 busbar-export-file-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-file", rev = "0792a6cfbf9f699355ad9dc4fc38101f2e4b8a02" }
 busbar-export-otlp = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-otlp", rev = "524ccfb1bad547a3a86fd41d7c6b7985a407ebd2" }
@@ -918,7 +918,7 @@ busbar-auth-oauth = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-oau
 # private `Held<Zeroizing<String>>` (busbar-auth-sigv4 #20; secret-hygiene check1, #1192).
 # On that pin, the signer logs the region warning 1.5.5 logged on every signature scoped to a
 # region defaulted at seal (`region_unread`), with the host (busbar-auth-sigv4 pin-1809-region-warn, merged onto the dev pin).
-busbar-auth-sigv4 = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-sigv4", rev = "37f0755b989f7953c2e30364dc1b5ccb49455965" }
+busbar-auth-sigv4 = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-sigv4", rev = "6a54f25a6e51550771f23b1c639126c0cfab3be5" }
 # THE WEBHOOK-SIGNATURE STYLE (kind: auth): the inbound verify of a webhook sender's HMAC (variants
 # Twilio and Standard Webhooks), linked on the root's `auths` axis (feature `auth-webhook-signature`,
 # default-on, ARCHITECT 2026-10-14: its inbound verify is an auth-chain module, so

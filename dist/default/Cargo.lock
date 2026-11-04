@@ -316,7 +316,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oidc"
 version = "1.6.0"
-source = "git+https://git.getbusbar.dev/GetBusbar/busbar-auth-oidc?rev=074f353f25b19b4b7e1027aab72bea81a1419437#074f353f25b19b4b7e1027aab72bea81a1419437"
+source = "git+https://git.getbusbar.dev/GetBusbar/busbar-auth-oidc?rev=b73ec21305cd03ce277594f27ddeeda4d97fe367#b73ec21305cd03ce277594f27ddeeda4d97fe367"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -332,7 +332,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oidc-plugin"
 version = "1.6.0"
-source = "git+https://git.getbusbar.dev/GetBusbar/busbar-auth-oidc?rev=074f353f25b19b4b7e1027aab72bea81a1419437#074f353f25b19b4b7e1027aab72bea81a1419437"
+source = "git+https://git.getbusbar.dev/GetBusbar/busbar-auth-oidc?rev=b73ec21305cd03ce277594f27ddeeda4d97fe367#b73ec21305cd03ce277594f27ddeeda4d97fe367"
 dependencies = [
  "busbar-auth-oidc",
  "busbar-contract",
@@ -341,7 +341,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-sigv4"
 version = "1.6.0"
-source = "git+https://git.getbusbar.dev/GetBusbar/busbar-auth-sigv4?rev=37f0755b989f7953c2e30364dc1b5ccb49455965#37f0755b989f7953c2e30364dc1b5ccb49455965"
+source = "git+https://git.getbusbar.dev/GetBusbar/busbar-auth-sigv4?rev=6a54f25a6e51550771f23b1c639126c0cfab3be5#6a54f25a6e51550771f23b1c639126c0cfab3be5"
 dependencies = [
  "busbar-contract",
  "hex",

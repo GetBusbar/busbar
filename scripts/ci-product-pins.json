@@ -26,7 +26,7 @@
     {
       "repo": "busbar-auth-ldap",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-auth-ldap",
-      "commit": "ac8d0f8c4a903709018a48cf11c3985c20e122d7",
+      "commit": "293d21f7ec9d183eb720f233730130df37726c60",
       "package": "busbar-auth-ldap-plugin",
       "kind": "auth",
       "alias": "ldap",
@@ -37,7 +37,7 @@
     {
       "repo": "busbar-auth-sigv4",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-auth-sigv4",
-      "commit": "37f0755b989f7953c2e30364dc1b5ccb49455965",
+      "commit": "6a54f25a6e51550771f23b1c639126c0cfab3be5",
       "package": "busbar-auth-sigv4-plugin",
       "kind": "auth",
       "alias": "sigv4",
@@ -137,7 +137,7 @@
     {
       "repo": "busbar-store-sqlite",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-store-sqlite",
-      "commit": "77e26f72a86266ece8e3e00468cf90099499c18e",
+      "commit": "460a039c0323546572d13c59f2253f4a088b2b83",
       "package": "busbar-store-sqlite-plugin",
       "kind": "store",
       "alias": "sqlite",
@@ -238,7 +238,7 @@
     {
       "repo": "busbar-auth-oidc",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-auth-oidc",
-      "commit": "074f353f25b19b4b7e1027aab72bea81a1419437",
+      "commit": "b73ec21305cd03ce277594f27ddeeda4d97fe367",
       "package": "busbar-auth-oidc-plugin",
       "kind": "auth",
       "alias": "oidc",
@@ -337,7 +337,7 @@
     {
       "repo": "busbar-store-mysql",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-store-mysql",
-      "commit": "7234096085310f8f8b11cc004f3272ab2dc553e9",
+      "commit": "e4e392097139237333c68ff198f9c030d1cfb08a",
       "package": "busbar-store-mysql-plugin",
       "kind": "store",
       "alias": "mysql",
@@ -349,7 +349,7 @@
     {
       "repo": "busbar-store-postgres",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-store-postgres",
-      "commit": "d796121fe5ab6c676e13c3a0d244839f300d59bc",
+      "commit": "d1c9cb50f59ba9e4598559905d430cb32266d926",
       "package": "busbar-store-postgres-plugin",
       "kind": "store",
       "alias": "postgres",
@@ -361,7 +361,7 @@
     {
       "repo": "busbar-store-valkey",
       "url": "https://git.getbusbar.dev/GetBusbar/busbar-store-valkey",
-      "commit": "45db668733366741f52b4ded28fa58064b643948",
+      "commit": "18bf76649a8abbf915664a06a11e382746a8a429",
       "package": "busbar-store-valkey-plugin",
       "kind": "store",
       "alias": "valkey",
