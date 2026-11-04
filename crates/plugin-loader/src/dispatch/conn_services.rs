@@ -335,6 +335,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 st.streams().insert(
                     stream,
                     Stream {
+                        need: NeedId(i.need),
                         authority: Authority::capture(id, table),
                         conn: Conn::Held {
                             need: NeedId(i.need),
@@ -378,12 +379,12 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             };
 
             if ticket.is_none() {
-                st.record_raw(id, table, conn, need_timeout_ms);
+                st.record_raw(id, table, conn, NeedId(i.need), need_timeout_ms);
                 return Answered::ready(conn.0, 0);
             }
             match table.landed(id, conn, conn_ticket(ticket)) {
                 Ok(()) => {
-                    st.record_raw(id, table, conn, need_timeout_ms);
+                    st.record_raw(id, table, conn, NeedId(i.need), need_timeout_ms);
                     Answered::ready(conn.0, 0)
                 }
                 Err(ConnError::Pending) => {
@@ -842,6 +843,7 @@ pub(crate) struct ConnState {
     context: OnceLock<HostCtx>,
     /// Statement metadata, fixed at bind; open/refresh redeclare that same signed need.
     need_timeouts: OnceLock<Box<[u64]>>,
+    response_keeps: OnceLock<Box<[ResponseKeep]>>,
     /// The instance's streams the host holds ([`Stream`]), by stream id.
     streams: Mutex<HashMap<u64, Stream>>,
     /// The facts strings its streams were answered ([`HeldFacts`]).
@@ -942,6 +944,16 @@ impl ConnState {
         let _ = self
             .need_timeouts
             .set(needs.iter().map(|n| n.timeout_ms).collect());
+        let _ = self.response_keeps.set(
+            needs
+                .iter()
+                .map(|n| ResponseKeep {
+                    mode: n.keep_mode,
+                    kept: n.keep_response_headers.clone(),
+                    denied: n.deny_response_headers.clone(),
+                })
+                .collect(),
+        );
     }
 
     fn need_timeout(&self, need: NeedId) -> u64 {
@@ -957,9 +969,11 @@ impl ConnState {
         id: InstanceId,
         table: &Arc<dyn DeclaredConns>,
         conn: ConnId,
+        need: NeedId,
         reply_timeout_ms: u64,
     ) {
         self.streams().entry(conn.0).or_insert(Stream {
+            need,
             authority: Authority::capture(id, table),
             conn: Conn::Open(conn),
             headed: false,
@@ -1321,9 +1335,67 @@ impl std::fmt::Debug for Authing {
     }
 }
 
+#[derive(Debug, Default)]
+struct ResponseKeep {
+    mode: u32,
+    kept: Vec<String>,
+    denied: Vec<String>,
+}
+
+/// Compact only declared response fields, preserving duplicates/order and the reason.
+/// Clear removed bytes before returning the caller-owned answer buffer to the plugin.
+fn filter_reply_head(
+    buf: &mut [u8],
+    field_len: usize,
+    reason: std::ops::Range<usize>,
+    policy: Option<&ResponseKeep>,
+) -> Result<(usize, std::ops::Range<usize>), Answered> {
+    let reason_bytes = buf
+        .get(reason.clone())
+        .ok_or_else(Answered::fault)?
+        .to_vec();
+    let block = buf.get(..field_len).ok_or_else(Answered::fault)?;
+    let mut kept_bytes = Vec::new();
+    if let Some(policy) = policy {
+        let kept: Vec<&str> = policy.kept.iter().map(String::as_str).collect();
+        let denied: Vec<&str> = policy.denied.iter().map(String::as_str).collect();
+        for (name, value) in fields::lines(block) {
+            let lower = std::str::from_utf8(name)
+                .map_err(|_| Answered::fault())?
+                .to_ascii_lowercase();
+            let nominated = fields::lines(block)
+                .filter(|(n, _)| n.eq_ignore_ascii_case(b"connection"))
+                .map(|(_, v)| v);
+            if busbar_contract::abi::host::conn::connector::keeps_response_field(
+                policy.mode,
+                &kept,
+                &denied,
+                &lower,
+                nominated,
+            ) {
+                kept_bytes.extend_from_slice(name);
+                kept_bytes.extend_from_slice(fields::SEPARATOR);
+                kept_bytes.extend_from_slice(value);
+                kept_bytes.extend_from_slice(fields::LINE_END);
+            }
+        }
+    }
+    let n = kept_bytes.len();
+    let end = n
+        .checked_add(reason_bytes.len())
+        .filter(|end| *end <= buf.len())
+        .ok_or_else(Answered::fault)?;
+    let old_end = field_len.max(reason.end);
+    buf[..old_end].fill(0);
+    buf[..n].copy_from_slice(&kept_bytes);
+    buf[n..end].copy_from_slice(&reason_bytes);
+    Ok((n, n..end))
+}
+
 /// What the host keeps for one stream an instance holds.
 #[derive(Debug)]
 struct Stream {
+    need: NeedId,
     conn: Conn,
     reply_timeout_ms: u64,
     /// The reply's head was read.
@@ -1920,6 +1992,7 @@ fn reply(
     {
         let mut all = st.streams();
         let s = all.entry(stream).or_insert(Stream {
+            need: NeedId(u32::MAX),
             authority: Authority::capture(id, table),
             conn: Conn::Open(ConnId(stream)),
             reply_timeout_ms: 0,
@@ -1983,8 +2056,16 @@ fn reply(
                     continue;
                 }
                 PieceKind::Fields => {
-                    s.headed = true;
                     let reason = p.reason.clone().unwrap_or(p.len..p.len);
+                    let policy = st
+                        .response_keeps
+                        .get()
+                        .and_then(|policies| policies.get(s.need.0 as usize));
+                    let (field_len, reason) = match filter_reply_head(buf, p.len, reason, policy) {
+                        Ok(filtered) => filtered,
+                        Err(error) => return (None, error),
+                    };
+                    s.headed = true;
                     (
                         Some(ReplyPiece {
                             kind: REPLY_HEAD,
@@ -1995,10 +2076,10 @@ fn reply(
                             },
                             fields: FrameSpan {
                                 offset: 0,
-                                len: p.len as u64,
+                                len: field_len as u64,
                             },
                         }),
-                        Answered::ready(0, reason.end.max(p.len) as u64),
+                        Answered::ready(0, reason.end.max(field_len) as u64),
                     )
                 }
                 PieceKind::Body | PieceKind::HookReply => (
@@ -2365,10 +2446,12 @@ mod creating_authority_tests {
             generation: 2,
         };
         super::super::export_bindings::crossing(Some(old.clone()), || {
-            wake.conn_state.record_raw(old_owner, &table, raw, 0);
+            wake.conn_state
+                .record_raw(old_owner, &table, raw, NeedId(0), 0);
             wake.conn_state.streams().insert(
                 held,
                 Stream {
+                    need: NeedId(0),
                     conn: Conn::Held {
                         need: NeedId(0),
                         target: String::new(),
@@ -2400,6 +2483,7 @@ mod creating_authority_tests {
             wake.conn_state.streams().insert(
                 framed,
                 Stream {
+                    need: NeedId(0),
                     conn: Conn::Held {
                         need: NeedId(0),
                         target: String::new(),
@@ -2502,7 +2586,7 @@ mod creating_authority_tests {
             actual.slab.declare(owner, NeedId(0));
             let conn = table.open(owner, NeedId(0), &OpenDesc::default()).unwrap();
             super::super::export_bindings::crossing(Some(binding.clone()), || {
-                state.record_raw(owner, &table, conn, 1000);
+                state.record_raw(owner, &table, conn, NeedId(0), 1000);
             });
             let mut handle: CompletionHandle = unsafe { std::mem::zeroed() };
             handle.ticket = Ticket {
@@ -2692,6 +2776,7 @@ mod creating_authority_tests {
         wake.conn_state.streams().insert(
             stream,
             Stream {
+                need: NeedId(0),
                 conn: Conn::Held {
                     need: NeedId(0),
                     target: "https://upstream.example/rpc".to_owned(),

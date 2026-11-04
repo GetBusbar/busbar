@@ -1189,6 +1189,8 @@ impl Conns for Scripted {
     }
 }
 
+const KEPT_X: [AbiStr; 1] = [abi_str("x")];
+
 const NAMED: [Need; 1] = [Need {
     direction: DIRECTION_OUTBOUND,
     egress_class: 0,
@@ -1197,8 +1199,8 @@ const NAMED: [Need; 1] = [Need {
     target_from: NONE,
     trust_from: NONE,
     details: NO_BLOB,
-    keep_response_headers: std::ptr::null(),
-    keep_response_headers_len: 0,
+    keep_response_headers: KEPT_X.as_ptr(),
+    keep_response_headers_len: KEPT_X.len(),
     timeout_ms: 0,
     keep_mode: KEEP_NAMED,
     _reserved: 0,
@@ -3747,5 +3749,69 @@ fn framed_opens_keep_the_serving_unit_through_sync_and_pending_auth() {
                 vec![71, 93]
             }
         );
+    }
+}
+
+#[test]
+fn response_headers_obey_the_original_need_on_raw_and_framed_streams() {
+    use busbar_contract::abi::host::conn::connector::KEEP_ALL_EXCEPT_DENIED;
+    const DENIED: [AbiStr; 1] = [abi_str("private")];
+    const EMPTY: [Need; 1] = [Need {
+        keep_response_headers: std::ptr::null(),
+        keep_response_headers_len: 0,
+        ..NAMED[0]
+    }];
+    const ALL: [Need; 1] = [Need {
+        keep_mode: KEEP_ALL_EXCEPT_DENIED,
+        keep_response_headers: std::ptr::null(),
+        keep_response_headers_len: 0,
+        deny_response_headers: DENIED.as_ptr(),
+        deny_response_headers_len: DENIED.len(),
+        ..NAMED[0]
+    }];
+    let block = b"X: first\r\nx: second\r\nprivate: secret\r\nconnection: x-hop\r\nx-hop: hidden\r\ncontent-length: 1\r\n";
+    const CASES: [(&[Need], &[u8]); 3] = [
+        (&NAMED, b"X: first\r\nx: second\r\n"),
+        (&EMPTY, b""),
+        (&ALL, b"X: first\r\nx: second\r\n"),
+    ];
+    for framed in [false, true] {
+        for (needs, expected) in CASES {
+            let table = Arc::new(Scripted {
+                framed,
+                ..Scripted::default()
+            });
+            let mut bytes = block.to_vec();
+            bytes.extend_from_slice(b"Fine By Me");
+            table.script.lock().unwrap().push_back((
+                piece(
+                    PieceKind::Fields,
+                    Some(201),
+                    Some(block.len()..bytes.len()),
+                    block.len(),
+                ),
+                bytes,
+            ));
+            let plugin = bound_over_needs(table, Adopter::unwatched(), needs);
+            let stream = if framed {
+                whole_request(&plugin, 0)
+            } else {
+                opened_stream(&plugin, 0).value
+            };
+            let mut buf = [0u8; 256];
+            let (out, head) = read_reply(&plugin, 3, stream, &mut buf);
+            assert!(ready(&out), "{}", error_text(&out));
+            assert_eq!(head.kind, REPLY_HEAD);
+            assert_eq!(head.code, 201);
+            assert_eq!(head.fields, span(0, expected.len()));
+            assert_eq!(&buf[..expected.len()], expected);
+            assert_eq!(head.reason, span(expected.len(), 10));
+            assert_eq!(&buf[expected.len()..expected.len() + 10], b"Fine By Me");
+            assert!(
+                !buf.windows(6).any(|bytes| bytes == b"secret"),
+                "removed fields must not remain readable outside the declared span"
+            );
+            assert!(!buf.windows(6).any(|bytes| bytes == b"hidden"));
+        }
     }
 }
