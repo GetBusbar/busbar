@@ -478,9 +478,10 @@ busbar-export-webhook = "busbar_export_webhook"
 busbar-transport-grpc = "busbar_transport_grpc"
 plane-streaming = "busbar_plane_streaming"
 
-# Each linked plane door's declared metadata (its manifest `declares` section, as JSON): the item that
+# Each linked door's declared metadata (its manifest `declares` section, as JSON): the item that
 # holds it. A door row with no row here declares nothing.
 [package.metadata.busbar.linked-declares]
+secret-env = "busbar_secret_env::DECLARES"
 plane-llm-door = "busbar_plane_llm::DECLARES"
 plane-mcp-door = "busbar_plane_mcp::DECLARES"
 plane-a2a-door = "busbar_plane_a2a::DECLARES"
