@@ -1421,6 +1421,7 @@ fn compute_layout() -> String {
     record!(s, hsvc::UnitNestIn, [head, verb, target, body, into]);
     record!(s, hsvc::WorkOpenIn, [head, kind, record, into]);
     record!(s, hsvc::WorkFindIn, [head, reference, into]);
+    record!(s, hsvc::WorkStatusIn, [head, reference]);
     record!(s, hsvc::WorkSettleIn, [head, handle, record]);
     record!(s, hsvc::WorkResumeIn, [head, handle, into]);
     record!(
@@ -1492,7 +1493,8 @@ fn compute_layout() -> String {
             unit_hand_in,
             unit_refuse,
             ticket_mint,
-            ticket_take
+            ticket_take,
+            work_status
         ]
     );
     record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);
@@ -1545,7 +1547,7 @@ fn compute_layout() -> String {
     record!(
         s,
         hsvc::RefusalAnswer,
-        [size, status, _reserved, fields, fields_len, body]
+        [size, status, fields, fields_len, body]
     );
     record!(
         s,

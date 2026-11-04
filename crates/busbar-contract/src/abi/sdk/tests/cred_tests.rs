@@ -451,9 +451,9 @@ fn the_operators_url_decides_whether_the_password_goes_out_secured() {
 fn the_requirement_travels_with_every_seal() {
     let c = Cred::captured(zeroize::Zeroizing::new(b"pw".to_vec()));
     assert!(!c.secure_required() && !c.bearer().secure_required());
-    let c = c.secure_for("http://x").secure_for("ldaps://dir");
+    let c = c.require_secure_if(false).require_secure_if(true);
     assert!(c.secure_required());
-    let c = c.secure_for("http://x");
+    let c = c.require_secure_if(false);
     assert!(c.secure_required(), "never relaxed");
     for s in [c.field(), c.bearer(), c.basic("u"), c.resp_auth(None)] {
         assert!(s.secure_required());

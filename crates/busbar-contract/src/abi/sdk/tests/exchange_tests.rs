@@ -54,6 +54,9 @@ struct Script {
     reply: Vec<Scripted>,
     framed: Framed,
     unframed: bool,
+    insecure_facts: bool,
+    unknown_facts: bool,
+    pending_facts: usize,
     /// The registration each ESTABLISH named, in order (`None` = an absent member).
     members: Vec<Option<Vec<u8>>>,
     /// Streams established and not closed: the host's held streams.
@@ -137,6 +140,11 @@ fn serve(op: u32, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     let seq = head.handle.seq;
     let mut g = SCRIPT.lock().unwrap();
     let s = g.as_mut().expect("a script");
+    if op == service::CLOSE && head.handle.ticket.is_none() {
+        s.held -= 1;
+        s.ops.push(op);
+        return answer(out, Outcome::Ready, 0, 0);
+    }
     if let Some(&(o, v, l)) = s.stored.get(&seq) {
         return answer(out, o, v, l);
     }
@@ -230,13 +238,22 @@ slot! {
         if s.stored.contains_key(&seq) {
             return answer(o, Outcome::Ready, 0, 0);
         }
+        if s.pending_facts > 0 {
+            s.pending_facts -= 1;
+            assert!(s.framed.fields.is_empty(), "credentials precede security facts");
+            assert!(s.framed.body.is_empty(), "credentials precede security facts");
+            return answer(o, Outcome::Pending, 0, 0);
+        }
         *s.runs.entry(seq).or_default() += 1;
         s.stored.insert(seq, (Outcome::Ready, 0, 0));
+        if s.unknown_facts {
+            return answer(o, Outcome::Ready, 0, 0);
+        }
         // SAFETY: the SDK's facts slot, live for the call.
         unsafe {
             io.facts.write(StreamFacts {
                 size: std::mem::size_of::<StreamFacts>() as u32,
-                secure: 1,
+                secure: u32::from(!s.insecure_facts),
                 endpoint: AbiStr {
                     ptr: std::ptr::null(),
                     len: 0,
@@ -1180,39 +1197,71 @@ fn a_sealed_body_replaces_the_requests_own() {
     );
 }
 
-/// SECURE_REQUIRED (CHIP-DESIGN v4.1 change 4), RED before the check: a credential the operator's
+/// A scheme is transport selection, never evidence that a connection protects a credential.
 #[test]
-fn a_credential_that_must_go_out_secured_is_refused_on_a_clear_target() {
-    use crate::abi::sdk::cred::{Cred, NOT_SECURE};
+fn protected_exchange_requires_actual_security_facts_for_every_target_shape() {
+    use crate::abi::sdk::cred::{Cred, FormBody, NOT_SECURE};
     let _g = SERIAL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let required = Cred::captured(zeroize::Zeroizing::new(b"sk-CANARY".to_vec()))
-        .secure_for("https://far/hook");
-    let free = Cred::captured(zeroize::Zeroizing::new(b"sk-CANARY".to_vec()));
-    let go = |cred: &Cred, target: &'static str| {
-        let ex =
-            Exchange::request_sealed(post(), vec![(0, b"authorization".to_vec(), cred.bearer())])
-                .expect("frames");
-        run(http_reply(), false, ex, None, move |c, st| {
-            exchange(c, st, 0, Some(target))
-        })
-    };
-    let refused = go(&required, "http://far/hook");
-    assert!(
-        matches!(&refused.answered, Err(ConnFailure::Refused(t)) if t == NOT_SECURE),
-        "{:?}",
-        refused.answered.as_ref().err()
-    );
-    assert!(
-        refused.ops.is_empty(),
-        "the stream was opened: {:?}",
-        refused.ops
-    );
-    let sent = go(&required, "https://far/hook");
-    assert_eq!(sent.answered.expect("sent secured").status, 200);
-    let clear = go(&free, "http://far/hook");
-    assert_eq!(clear.answered.expect("no requirement").status, 200);
+    for target in [
+        None,
+        Some(""),
+        Some("far:443"),
+        Some("foreign://far/hook"),
+        Some("http://far/hook"),
+        Some("https://far/hook"),
+    ] {
+        for (insecure, unknown) in [(false, false), (true, false), (false, true)] {
+            let required =
+                Cred::captured(zeroize::Zeroizing::new(b"sk-CANARY".to_vec())).require_secure();
+            let body = FormBody::new()
+                .sealed("secret", &required)
+                .encoded()
+                .unwrap();
+            let ex = Exchange::request_with(
+                post(),
+                vec![(0, b"authorization".to_vec(), required.bearer())],
+                Some(body),
+            )
+            .unwrap();
+            let first = std::cell::Cell::new(true);
+            let result = run(http_reply(), false, ex, None, |c, st| {
+                if first.replace(false) {
+                    let mut script = SCRIPT.lock().unwrap();
+                    let script = script.as_mut().unwrap();
+                    script.insecure_facts = insecure;
+                    script.unknown_facts = unknown;
+                    script.pending_facts = 2;
+                }
+                exchange(c, st, 0, target)
+            });
+            assert_eq!(result.held, 0, "every terminal outcome closes its stream");
+            if insecure || unknown {
+                assert!(
+                    matches!(&result.answered, Err(ConnFailure::Refused(text)) if text == NOT_SECURE)
+                );
+                assert!(result.framed.fields.is_empty());
+                assert!(result.framed.body.is_empty());
+                assert!(!result.ops.contains(&service::WRITE_REQUEST));
+                let Sending::Framed { head, body, .. } = &result.state.sending else {
+                    panic!("framed")
+                };
+                assert!(
+                    head.is_empty() && body.is_empty(),
+                    "retained secrets wiped on refusal"
+                );
+            } else {
+                assert_eq!(result.answered.unwrap().status, 200);
+                assert!(result
+                    .framed
+                    .fields
+                    .windows(b"sk-CANARY".len())
+                    .any(|part| part == b"sk-CANARY"));
+                assert!(!result.framed.body.is_empty());
+            }
+        }
+    }
 }
 
 /// One READ_CHUNK of body: a reply that plays it without end passes [`REPLY_MAX`].

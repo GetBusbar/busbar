@@ -158,6 +158,12 @@ pub trait Owed<B> {
     fn wire_pending(&self) -> bool;
     /// The pieces waiting for the host.
     fn pieces(&mut self) -> &mut VecDeque<Piece<B>>;
+    /// Whether this piece's numeric status belongs to the claim's declared opening namespace.
+    /// The producer chooses the domain; the sink never infers it from a number.
+    fn code_handoff(_piece: &Piece<B>) -> bool {
+        false
+    }
+
     /// The earliest host time the framing must be called at.
     fn next_deadline(&self) -> Option<u64>;
     /// Whether the connection has ended.
@@ -278,6 +284,9 @@ pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
         };
         if let Some(code) = piece.status {
             flags |= PIECE_HAS_CODE;
+            if F::code_handoff(piece) {
+                flags |= crate::abi::transport::PIECE_CODE_HANDOFF;
+            }
             fp.code = u32::from(code);
             fp.status_class = class_of(code);
             fp.fault = piece.fault.unwrap_or_else(|| fault_of(code));

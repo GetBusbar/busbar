@@ -76,6 +76,8 @@ impl Deadlined {
                 composes_over: Vec::new(),
                 ported: false,
                 status_rows: Vec::new(),
+                status_namespaces: Vec::new(),
+                handoff_status: Vec::new(),
                 duplex: Vec::new(),
                 datagram: true,
             },

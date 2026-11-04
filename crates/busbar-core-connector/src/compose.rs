@@ -1990,6 +1990,7 @@ impl Connection {
                     bytes: bytes.to_vec(),
                     end_of_frame,
                     status_code: None,
+                    status_namespace: None,
                     handoff: false,
                     status_class: 0,
                     fault: FAULT_NONE,

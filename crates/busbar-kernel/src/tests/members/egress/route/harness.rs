@@ -309,7 +309,7 @@ impl Breaker for TestBreaker {
         self.classified
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push(status);
+            .push(status.clone());
 
         if let Some(v) = self
             .verdicts
@@ -333,7 +333,7 @@ impl Breaker for TestBreaker {
                 outcome: Outcome::HardDown,
                 label: disposition::HARD_DOWN,
             },
-            (Some(WireFault::Transient), _) | (None, None) => transient,
+            (Some(WireFault::Transient | WireFault::RateLimit), _) | (None, None) => transient,
             (Some(WireFault::Healthy), _) => Classified {
                 disposition: Disposition::ClientFault,
                 outcome: Outcome::Success,
@@ -684,8 +684,8 @@ fn body_piece(reply: &Reply) -> (Piece, Vec<u8>) {
             len: reply.body.len(),
             end: false,
             status: reply.status,
-            status_code: reply.code.map(|c| c.code),
-            status_namespace: reply.code.map(|c| c.namespace.to_string()),
+            status_code: reply.code.as_ref().map(|c| c.code),
+            status_namespace: reply.code.as_ref().map(|c| c.namespace.to_string()),
             retry_after_secs: reply.retry_after,
             fault: reply.fault,
             reason: None,

@@ -368,6 +368,14 @@ impl TestDoor {
                 composes_over: composes_over.to_vec(),
                 ported: composes_over.is_empty() && !frames,
                 status_rows: Vec::new(),
+                status_namespaces: claims
+                    .iter()
+                    .map(|_| Some(std::sync::Arc::from("test-status")))
+                    .collect(),
+                handoff_status: claims
+                    .iter()
+                    .map(|_| Some(std::sync::Arc::from("test-opening")))
+                    .collect(),
                 duplex: Vec::new(),
                 datagram: false,
             },

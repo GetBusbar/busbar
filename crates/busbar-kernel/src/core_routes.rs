@@ -104,13 +104,16 @@ impl CoreRouteTable {
     }
 
     pub(crate) fn door_ticket(&self, path: &str, method: &Method) -> Option<&str> {
+        self.door_ticket_for_token(path, method.as_str())
+    }
+
+    pub(crate) fn door_ticket_for_token(&self, path: &str, method: &str) -> Option<&str> {
         if self.door_refusals.is_empty() {
             return None;
         }
-        let rm = route_method_of(method)?;
         self.door_refusals
             .iter()
-            .find(|r| r.route.method == rm && route_matches(&r.route.path, path))
+            .find(|r| r.route.method.as_str() == method && route_matches(&r.route.path, path))
             .and_then(|r| r.ticket_prefix.as_deref())
     }
 

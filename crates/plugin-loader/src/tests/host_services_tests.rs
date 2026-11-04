@@ -312,6 +312,11 @@ impl HostServices for Provider {
         Ran::Now(Stored::ready(svc::ABSENT))
     }
 
+    fn work_status(&self, c: &Caller, reference: &[u8], _: Later) -> Ran {
+        self.saw(c, "work.status", reference);
+        Ran::Now(Stored::ready(svc::WORK_STATUS_SETTLED))
+    }
+
     fn work_settle(&self, c: &Caller, unit: Option<u64>, handle: u64, rec: &[u8], _: Later) -> Ran {
         let arg = [format!("{unit:?} {handle} ").as_bytes(), rec].concat();
         self.saw(c, "work.settle", &arg);
@@ -592,6 +597,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.unit_refuse,
         HOST_SLOTS.ticket_mint,
         HOST_SLOTS.ticket_take,
+        HOST_SLOTS.work_status,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
 
@@ -2551,7 +2557,6 @@ fn an_auth_handle_in_one_field_short_is_refused() {
     let mut refusal = RefusalAnswer {
         size: 0,
         status: 0,
-        _reserved: 0,
         fields: std::ptr::null(),
         fields_len: 0,
         body: no_blob(),
@@ -2976,7 +2981,7 @@ impl AuthHandleHost for KernelSide {
     fn refuse(&self, ask: RefuseAsk) -> Result<RefusalBytes, &'static str> {
         self.refusals.lock().unwrap().push(ask);
         Ok(RefusalBytes {
-            status: 404,
+            status: 70_123,
             fields: vec![("content-type".to_string(), b"application/json".to_vec())],
             body: b"{\"error\":{}}".to_vec(),
         })
@@ -3183,7 +3188,6 @@ fn red_hand_in_and_refuse_delegate_to_the_installed_kernel_side() {
     let mut refusal = RefusalAnswer {
         size: 0,
         status: 0,
-        _reserved: 0,
         fields: std::ptr::null(),
         fields_len: 0,
         body: no_blob(),
@@ -3207,7 +3211,7 @@ fn red_hand_in_and_refuse_delegate_to_the_installed_kernel_side() {
         unsafe { svc::check_unit_refuse(&refuse, ret, &o) },
         Ok(Filled::Written)
     );
-    assert_eq!(refusal.status, 404);
+    assert_eq!(refusal.status, 70_123);
     assert_eq!(refusal.fields_len, 1);
     // SAFETY: the kernel-owned answer, valid until the next call on this connection.
     let (field, body) = unsafe {
@@ -3332,7 +3336,6 @@ fn red_n_refusals_keep_nothing_per_connection() {
         let mut refusal = RefusalAnswer {
             size: 0,
             status: 0,
-            _reserved: 0,
             fields: std::ptr::null(),
             fields_len: 0,
             body: no_blob(),
@@ -3347,7 +3350,7 @@ fn red_n_refusals_keep_nothing_per_connection() {
             HOST_SLOTS.unit_refuse.unwrap()(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut o)
         };
         assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
-        assert_eq!(refusal.status, 404);
+        assert_eq!(refusal.status, 70_123);
         assert!(refusals_held() <= 1, "{} refusals held", refusals_held());
     }
 }
@@ -3490,5 +3493,36 @@ fn a_lent_none_line_admits_before_delegating_to_an_installed_auth_host() {
     assert!(
         side.hands.lock().unwrap().is_empty(),
         "the installed auth host must not stop an open line"
+    );
+}
+
+#[test]
+fn work_status_routes_the_instance_without_a_serving_unit_and_returns_no_payload() {
+    let d = double();
+    let input = svc::WorkStatusIn {
+        head: head(op::WORK_STATUS, TICKET, 0, size_of::<svc::WorkStatusIn>()),
+        reference: text("0123456789abcdef0123456789abcdef"),
+    };
+    let mut out = blank();
+    let ret = {
+        let _unit = serving(None);
+        // SAFETY: this test owns the initialized input and writable output.
+        unsafe {
+            HOST_SLOTS.work_status.unwrap()(d.ctx, std::ptr::from_ref(&input).cast(), &mut out)
+        }
+    };
+    assert_eq!(
+        (ret.outcome(), out.value),
+        (Outcome::Ready, svc::WORK_STATUS_SETTLED)
+    );
+    assert!(svc::check_work_status(&input, ret, &out).is_ok());
+    assert_eq!((out.len, out.items), (0, 0));
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().as_slice(),
+        &[(
+            "double".to_string(),
+            "work.status",
+            b"0123456789abcdef0123456789abcdef".to_vec()
+        ),]
     );
 }

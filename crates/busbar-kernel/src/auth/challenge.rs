@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 /// The `error` code of a challenge, per RFC 6750 §3.1. The set is closed on purpose: these three are
@@ -79,12 +79,12 @@ fn quoted(v: &str) -> String {
     out
 }
 
-pub fn refuse(
+pub fn render(
     error: ChallengeError,
     resource_metadata: &str,
     description: &str,
     scope: Option<&str>,
-) -> Response {
+) -> crate::plane_driver::Rendered {
     let challenge = www_authenticate(error, resource_metadata, Some(description), scope);
     let mut body = serde_json::json!({
         "error": error.code().unwrap_or("unauthorized"),
@@ -92,10 +92,35 @@ pub fn refuse(
     if error != ChallengeError::Absent {
         body["error_description"] = serde_json::json!(description);
     }
-    let mut resp = (error.status(), axum::Json(body)).into_response();
+    let challenge = HeaderValue::from_str(&challenge)
+        .ok()
+        .map(|value| value.as_bytes().to_vec())
+        .unwrap_or_else(|| b"Bearer".to_vec());
+    crate::plane_driver::Rendered {
+        status: u32::from(error.status().as_u16()),
+        fields: vec![
+            (b"content-type".to_vec(), b"application/json".to_vec()),
+            (b"www-authenticate".to_vec(), challenge),
+        ],
+        body: serde_json::to_vec(&body).expect("the challenge is a JSON value"),
+    }
+}
 
-    let hv =
-        HeaderValue::from_str(&challenge).unwrap_or_else(|_| HeaderValue::from_static("Bearer"));
-    resp.headers_mut().insert(header::WWW_AUTHENTICATE, hv);
-    resp
+pub fn refuse(
+    error: ChallengeError,
+    resource_metadata: &str,
+    description: &str,
+    scope: Option<&str>,
+) -> Response {
+    let rendered = render(error, resource_metadata, description, scope);
+    let mut response = (error.status(), rendered.body).into_response();
+    for (name, value) in rendered.fields {
+        if let (Ok(name), Ok(value)) = (
+            axum::http::HeaderName::from_bytes(&name),
+            HeaderValue::from_bytes(&value),
+        ) {
+            response.headers_mut().insert(name, value);
+        }
+    }
+    response
 }

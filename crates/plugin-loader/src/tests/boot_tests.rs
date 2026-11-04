@@ -1121,3 +1121,46 @@ fn a_literal_at_a_wildcard_declared_secret_path_is_refused_as_an_exact_one_is() 
         assert!(!e.contains("pasted-pw-7b"), "the value is echoed: {e}");
     }
 }
+
+#[test]
+fn a_dropped_listener_binding_selects_its_exact_declared_claim_without_a_url() {
+    use busbar_contract::abi::mechanism::call::Blob;
+    use busbar_contract::abi::transport::listener_bindings::EXT_LISTENER_BINDINGS;
+    const CLAIMS: &[busbar_contract::abi::mechanism::call::AbiStr] = &[abi_str("foreign-wire")];
+    let read_candidate = |binding: &[u8]| {
+        let extensions = busbar_contract::abi::mechanism::extensions::encode(&[(
+            EXT_LISTENER_BINDINGS,
+            binding,
+        )]);
+        let st = busbar_contract::abi::mechanism::door::Statement {
+            kind: KindCode::Transport as u32,
+            claims: CLAIMS.as_ptr(),
+            claims_len: CLAIMS.len(),
+            extensions: Blob {
+                fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+                flags: 0,
+                len: extensions.len(),
+                ptr: extensions.as_ptr(),
+            },
+            ..statement("foreign-listener", "1.0.0", 1)
+        };
+        // SAFETY: the static claim list and extension buffer are live through rendering.
+        let stated = unsafe { render(&st) }.unwrap();
+        Candidate::from_rendering(
+            stated,
+            None,
+            Origin::Dropped {
+                file: "foreign-listener.tar.gz".into(),
+                bytes: Arc::new(Vec::new()),
+            },
+        )
+    };
+    let candidate = read_candidate(br#"[{"slot":"listen","claim":"foreign-wire"}]"#).unwrap();
+    assert!(candidate.serves(&Uses::default()));
+    let candidates = [candidate];
+    assert_eq!(select(&Uses::default(), &candidates).len(), 1);
+    let unrelated = read_candidate(br#"[{"slot":"another-slot","claim":"foreign-wire"}]"#).unwrap();
+    assert!(!unrelated.serves(&Uses::default()));
+    assert!(read_candidate(br#"[{"slot":"listen","claim":"undeclared"}]"#).is_err());
+    assert!(read_candidate(br#"[{"slot":"listen","claim":"foreign-wire","priority":0}]"#).is_err());
+}

@@ -155,7 +155,7 @@ impl Breaker for Book {
     fn classify(&self, _: DestinationId, s: UpstreamStatus) -> Classified {
         let (disposition, outcome, label) = match s.fault {
             Some(WireFault::Hard) => (Disposition::HardDown, Outcome::HardDown, "hard_down"),
-            Some(WireFault::Transient) => (
+            Some(WireFault::Transient | WireFault::RateLimit) => (
                 Disposition::TransientUpstream,
                 Outcome::Transient {
                     retry_after: s.retry_after,

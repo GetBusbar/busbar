@@ -1131,3 +1131,125 @@ __attribute__((constructor)) static void mark_loaded(void) {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn provider_location_refuses_an_unregistered_claim_and_an_omitted_target() {
+    let rows: Arc<dyn PluginRows> = Arc::new(PluginRegistry::empty());
+    let missing = locate_provider_destination(&rows, "missing-foreign-claim://example.test:9443")
+        .expect_err("a URL alone never registers a transport");
+    assert!(
+        missing.contains("no admitted transport claims 'missing-foreign-claim'"),
+        "{missing}"
+    );
+    assert!(locate_provider_destination(&rows, "").is_err());
+    assert!(locate_provider_destination(&rows, "example.test:9443").is_err());
+}
+
+#[cfg(linked_every_transport)]
+#[test]
+fn actual_http_and_ws_locate_before_open_without_network_or_runtime_state() {
+    use crate::root::loader::dispatch::{Bind, ConnTable, DispatchConfig, Dispatcher, NoSink};
+    let on = Dispatcher::new(DispatchConfig::default());
+    let binding = || Bind {
+        instance: Arc::from("pure-config-locate"),
+        max_inflight_cap: 1,
+        sink: Arc::new(NoSink),
+        dispatcher: on.adopter(),
+        conns: ConnTable::NoNeeds,
+    };
+    for (door, target, secure) in [
+        (
+            busbar_transport_http::door::door as busbar_contract::abi::mechanism::door::DoorFn,
+            "https://unreachable.invalid:9443/path",
+            true,
+        ),
+        (
+            busbar_transport_http::door::door,
+            "http://127.0.0.1:9443/path",
+            false,
+        ),
+        (
+            busbar_transport_ws::door::door,
+            "wss://unreachable.invalid:9443/path",
+            true,
+        ),
+    ] {
+        let plugin = crate::root::test_plugins::linked_transport(door, binding());
+        assert!(!plugin.is_open());
+        let located =
+            crate::root::doors::locate_bound(&plugin, target).expect("pure pre-open locate");
+        assert_eq!(located.secure, secure);
+        assert!(located.authority.ends_with(":9443"));
+        assert!(
+            !plugin.is_open(),
+            "LOCATE must not transition lifecycle state"
+        );
+    }
+}
+
+#[test]
+fn registered_foreign_provider_claim_uses_its_declaration_and_duplicates_refuse() {
+    use busbar_contract::abi::mechanism::door::{Door, DoorFn, DoorParts};
+    use busbar_contract::abi::transport::ROLE_CARRIER;
+    // Restate one actual carrier's claim; keep its complete operation table and ABI tail.
+    // The ordinary admission/locator path must select the foreign declaration without OPEN.
+    #[allow(unsafe_code)]
+    extern "C" fn foreign() -> &'static Door {
+        static ONE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let address = *ONE.get_or_init(|| {
+            let actual = crate::LINKED_TRANSPORT_DOORS
+                .iter()
+                .find_map(|(_, door)| {
+                    let facts =
+                        crate::root::loader::dispatch::kinds::transport::linked_facts(*door)
+                            .ok()?;
+                    (facts.role == ROLE_CARRIER && facts.ported).then_some(*door)
+                })
+                .expect("the distribution declares an IP carrier")();
+            // SAFETY: the linked door retains its immutable declaration for the process.
+            let mut statement = unsafe { *actual.statement() };
+            let claims = Box::leak(
+                (0..statement.claims_len)
+                    .map(|index| {
+                        let name: &'static str = if index == 0 {
+                            "foreign-c6"
+                        } else {
+                            Box::leak(format!("foreign-c6-{index}").into_boxed_str())
+                        };
+                        busbar_contract::abi::sdk::door::abi_str(name)
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            );
+            assert!(!claims.is_empty());
+            statement.claims = claims.as_ptr();
+            let statement = Box::leak(Box::new(statement));
+            // SAFETY: only claim names change; the original typed table and tail stay retained.
+            let door = unsafe {
+                Door::__from_parts(DoorParts {
+                    statement,
+                    ..actual.parts()
+                })
+            };
+            Box::into_raw(Box::new(door)) as usize
+        });
+        // SAFETY: the immutable test declaration is process-lived.
+        unsafe { &*(address as *const Door) }
+    }
+    let rows: Arc<dyn PluginRows> = Arc::new(PluginRegistry::empty());
+    let door = foreign as DoorFn;
+    let target = "foreign-c6://127.0.0.1:9443";
+    let located = locate_provider_destination_with(&rows, target, &[("foreign", door)])
+        .expect("registered foreign claim selects the actual carrier declaration");
+    assert_eq!(located.authority, "127.0.0.1:9443");
+    assert!(
+        !located.secure,
+        "a carrier authority cannot invent transport security"
+    );
+    let refused = locate_provider_destination_with(&rows, target, &[("one", door), ("two", door)])
+        .expect_err("ambiguous declaration claims refuse before locate");
+    assert!(
+        refused.contains("multiple admitted transports claim 'foreign-c6'"),
+        "{refused}"
+    );
+}

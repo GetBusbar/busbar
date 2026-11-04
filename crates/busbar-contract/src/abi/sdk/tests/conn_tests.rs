@@ -225,6 +225,9 @@ fn establish_hands_the_host_the_set_its_dial_lands_within() {
 /// `close` never pends, so it is made on no ticket (an instance closing its kept connections as it
 #[test]
 fn close_is_made_on_no_ticket() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let h = host(&SLOTS);
     let mut c = h.connector(Ticket::NONE);
     assert_eq!(c.close(9), Poll::Ready(Ok(())));
@@ -310,6 +313,9 @@ extern "C" fn request_security(_: HostCtx, input: *const c_void, _: *mut Service
     if security == 2 {
         return RawOutcome::of(Outcome::Pending);
     }
+    if security == 3 {
+        return RawOutcome::of(Outcome::Ready);
+    }
     // SAFETY: the connector lends FactsIn and its writable facts slot for this call.
     unsafe {
         let input = &*input.cast::<FactsIn>();
@@ -343,6 +349,7 @@ fn a_sealed_framed_body_checks_security_before_sending_any_credential_bytes() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     SEALED_REQUESTS.lock().unwrap().clear();
+    CLOSED.lock().unwrap().clear();
     let slots = ConnectorSlots {
         facts: Some(request_security),
         write_request: Some(sealed_request),
@@ -353,9 +360,18 @@ fn a_sealed_framed_body_checks_security_before_sending_any_credential_bytes() {
         kind: REQUEST_BODY,
         ..RequestPiece::ZERO
     };
-    let required = Cred::captured(zeroize::Zeroizing::new(b"CANARY-request-body".to_vec()))
-        .secure_for("https://token.example/");
+    let required =
+        Cred::captured(zeroize::Zeroizing::new(b"CANARY-request-body".to_vec())).require_secure();
     let refused = Poll::Ready(Err(ConnFailure::Refused(NOT_SECURE.into())));
+
+    REQUEST_SECURITY.store(3, Ordering::SeqCst);
+    let mut unknown = SealedWrite::message(required.field());
+    assert_eq!(unknown.request(&mut h.connector(TICKET), 7, &body), refused);
+    assert!(
+        unknown.is_empty(),
+        "retained secret wiped when facts are unavailable"
+    );
+    assert!(SEALED_REQUESTS.lock().unwrap().is_empty());
 
     REQUEST_SECURITY.store(0, Ordering::SeqCst);
     let mut clear = SealedWrite::message(required.field());
@@ -368,6 +384,7 @@ fn a_sealed_framed_body_checks_security_before_sending_any_credential_bytes() {
         "a refused write stays refused after re-entry"
     );
     assert!(SEALED_REQUESTS.lock().unwrap().is_empty());
+    assert_eq!(*CLOSED.lock().unwrap(), vec![(7, false), (7, false)]);
 
     let mut waiting = SealedWrite::message(required.field());
     REQUEST_SECURITY.store(2, Ordering::SeqCst);
@@ -387,6 +404,15 @@ fn a_sealed_framed_body_checks_security_before_sending_any_credential_bytes() {
     );
 
     SEALED_REQUESTS.lock().unwrap().clear();
+    REQUEST_SECURITY.store(0, Ordering::SeqCst);
+    assert_eq!(
+        waiting.request(&mut h.connector(TICKET), 8, &body),
+        refused,
+        "security confirmed on one stream cannot authorize another stream"
+    );
+    assert!(SEALED_REQUESTS.lock().unwrap().is_empty());
+    assert!(waiting.is_empty());
+
     let no_facts = ConnectorSlots {
         facts: None,
         ..slots

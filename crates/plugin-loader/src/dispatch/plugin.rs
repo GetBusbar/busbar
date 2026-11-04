@@ -1313,7 +1313,10 @@ impl Instance {
     }
 
     fn instance_free(&self, s: u32) -> bool {
-        self.kind == KindCode::Secret && s == busbar_contract::abi::secret::slot::CHECK
+        (self.kind == KindCode::Secret && s == busbar_contract::abi::secret::slot::CHECK)
+            || (self.kind == KindCode::Transport
+                && s == busbar_contract::abi::transport::slot::LOCATE
+                && !self.is_open())
     }
 
     pub(crate) fn refuse(&self, s: u32, in_size: usize, out_size: usize) -> Option<Outcome> {
@@ -1328,8 +1331,18 @@ impl Instance {
             return Some(Outcome::Refused);
         }
         if self.instance_free(s) {
-            let fits = in_size >= size_of::<busbar_contract::abi::secret::CheckIn>()
-                && out_size >= size_of::<OutHead>();
+            let (input, output) = if self.kind == KindCode::Transport {
+                (
+                    size_of::<busbar_contract::abi::transport::LocateIn>(),
+                    size_of::<busbar_contract::abi::transport::LocateOut>(),
+                )
+            } else {
+                (
+                    size_of::<busbar_contract::abi::secret::CheckIn>(),
+                    size_of::<OutHead>(),
+                )
+            };
+            let fits = in_size >= input && out_size >= output;
             return (!fits).then_some(Outcome::Refused);
         }
         let open = self.is_open();
@@ -2678,6 +2691,15 @@ impl<K: Kind> Plugin<K> {
 
     pub fn is_faulted(&self) -> bool {
         self.inner.faulted.load(Ordering::Acquire)
+    }
+
+    /// The host exhausted a framing's bounded FINISH or rejected its output. Release the
+    /// instance through the same quarantine lifecycle as other broken plugin contracts.
+    pub fn incomplete_retirement(&self) {
+        quarantine(
+            self.inner.wake,
+            "a transport did not complete framing retirement",
+        );
     }
 
     pub fn targets_from_settings(&self) -> bool {

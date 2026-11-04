@@ -133,6 +133,7 @@ fn sdk_sink_keeps_deferred_final_reason_with_its_first_piece_after_an_interim() 
         },
     ]));
     let mut buffers = Buffers::new(1, 24, 4);
+    buffers.status_namespace = Some(Arc::from("test-numbering"));
     let mut yielded = Yielded::default();
     for call in 0..2 {
         let out = sink::fill(
@@ -611,6 +612,8 @@ fn a_ticketed_begin_whose_auth_pends_resumes_on_the_wake_with_one_auth_call() {
             composes_over: Vec::new(),
             ported: false,
             status_rows: Vec::new(),
+            status_namespaces: Vec::new(),
+            handoff_status: Vec::new(),
             duplex: Vec::new(),
             datagram: false,
         },
@@ -772,6 +775,8 @@ impl MuxDoor {
                 composes_over: Vec::new(),
                 ported: false,
                 status_rows: Vec::new(),
+                status_namespaces: Vec::new(),
+                handoff_status: Vec::new(),
                 duplex: Vec::new(),
                 datagram: false,
             },
@@ -1371,6 +1376,7 @@ fn a_resumed_ingest_preserves_its_stream_writable_signal() {
 
 fn reasoned_head_buffers(rows: &[(u64, u16, bool, &[u8])]) -> (Buffers, FramerOut) {
     let mut buffers = Buffers::default();
+    buffers.status_namespace = Some(Arc::from("test-numbering"));
     buffers.frame.clear();
     buffers.pieces.clear();
     buffers.heads.clear();
@@ -1540,5 +1546,49 @@ fn split_informational_fields_keep_their_stream_state_and_original_reason_across
     assert_eq!(
         yielded.pieces[0].reason.as_deref(),
         Some(b"Switching Protocols".as_slice())
+    );
+}
+
+#[test]
+fn numbered_pieces_keep_the_selected_claim_and_separate_opening_namespace() {
+    let mut facts = TestDoor::identity("first").facts().clone();
+    facts.claims = vec!["first", "second"];
+    facts.status_namespaces = vec![Some(Arc::from("alpha")), Some(Arc::from("beta"))];
+    facts.handoff_status = vec![None, Some(Arc::from("opening"))];
+    let read = |claim: &str, handoff: bool, facts: &DoorFacts| {
+        let mut bufs = Buffers::new(1, 1, 1);
+        bufs.set_status(facts, Some(claim))?;
+        bufs.pieces[0] = FramePiece {
+            code: 42,
+            flags: PIECE_END_OF_FRAME
+                | PIECE_HAS_CODE
+                | if handoff { PIECE_CODE_HANDOFF } else { 0 },
+            ..EMPTY_PIECE
+        };
+        let mut out: FramerOut = blank_out();
+        out.yielded.pieces_len = 1;
+        let mut yielded = Yielded::default();
+        bufs.take(&out, &mut yielded)?;
+        Ok::<_, Refused>(yielded.pieces[0].status_namespace.clone())
+    };
+    assert_eq!(
+        read("first", false, &facts).unwrap().as_deref(),
+        Some("alpha")
+    );
+    assert_eq!(
+        read("second", false, &facts).unwrap().as_deref(),
+        Some("beta")
+    );
+    assert_eq!(
+        read("second", true, &facts).unwrap().as_deref(),
+        Some("opening")
+    );
+    assert!(read("first", true, &facts).is_err());
+    assert!(read("unknown", false, &facts).is_err());
+    facts.status_namespaces[1] = None;
+    assert!(read("second", false, &facts).is_err());
+    assert_eq!(
+        read("second", true, &facts).unwrap().as_deref(),
+        Some("opening")
     );
 }

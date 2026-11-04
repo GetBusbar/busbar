@@ -897,3 +897,65 @@ fn red_a_null_upgrade_name_or_claim_fact_refuses_the_bind() {
         "a claim fact key counted over a NULL pointer bound"
     );
 }
+
+#[test]
+fn status_numberings_are_owned_by_the_claim_snapshot_without_interning() {
+    use crate::dispatch::kinds::transport::TransportFacts;
+    use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS};
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    use busbar_contract::abi::mechanism::extensions::encode;
+    use busbar_contract::abi::sdk::door::{abi_str, statement};
+    use busbar_contract::abi::transport::{status, Claim, TransportTail, ROLE_FRAMER};
+    let names = [abi_str("first"), abi_str("second")];
+    let rows = [
+        Claim {
+            status_namespace: abi_str("alpha-numbering"),
+            ..Claim::EMPTY
+        },
+        Claim {
+            status_namespace: abi_str("beta-numbering"),
+            ..Claim::EMPTY
+        },
+    ];
+    let mut tail = TransportTail::EMPTY;
+    tail.claim_rows = rows.as_ptr();
+    tail.claim_rows_len = rows.len();
+    tail.role = ROLE_FRAMER;
+    let extensions = encode(&[(
+        status::EXT_HANDOFF_STATUS,
+        br#"[{"claim":"second","namespace":"opening-numbering"}]"#,
+    )]);
+    let st = Statement {
+        kind_tail: std::ptr::from_ref(&tail).cast::<KindTailHead>(),
+        claims: names.as_ptr(),
+        claims_len: names.len(),
+        extensions: Blob {
+            ptr: extensions.as_ptr(),
+            len: extensions.len(),
+            fmt: BLOB_OCTETS,
+            flags: 0,
+        },
+        ..statement("numbering-test", "0", 1)
+    };
+    let context = Transport::context(&st).unwrap().unwrap();
+    let facts = context.downcast_ref::<TransportFacts>().unwrap();
+    assert_eq!(
+        facts.status_namespaces[0].as_deref(),
+        Some("alpha-numbering")
+    );
+    assert_eq!(
+        facts.status_namespaces[1].as_deref(),
+        Some("beta-numbering")
+    );
+    assert!(facts.handoff_status[0].is_none());
+    assert_eq!(
+        facts.handoff_status[1].as_deref(),
+        Some("opening-numbering")
+    );
+    let weak = std::sync::Arc::downgrade(facts.status_namespaces[1].as_ref().unwrap());
+    drop(context);
+    assert!(
+        weak.upgrade().is_none(),
+        "the namespace retires with its snapshot"
+    );
+}

@@ -1957,6 +1957,10 @@ impl busbar_kernel::appbuild::RootRules for Rules {
     }
 
     fn check(&self, cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
+        if let Some(url) = cfg.public_url.as_deref() {
+            busbar_core_admin::config::validate_public_url(url, &cfg.blocked_metadata_hosts)
+                .map_err(|errors| errors.join("\n"))?;
+        }
         let anchors = self
             .owned_anchors
             .lock()
@@ -2859,6 +2863,27 @@ impl busbar_contract::conn::DeclaredConns for PresentingConns {
 }
 
 impl OutboundAuths {
+    pub fn check_settings(
+        &self,
+        style: &str,
+        settings: &serde_json::Value,
+    ) -> Result<Vec<String>, String> {
+        use crate::root::loader::dispatch::{auth_outbound::check_settings, ConnTable};
+        for row in self.stating(style) {
+            let Some(plugin) = self.load_with(&row.name, row.door, ConnTable::Probe) else {
+                continue;
+            };
+            let bytes = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
+            return Ok(match check_settings(&plugin, style, &bytes) {
+                Ok(()) => Vec::new(),
+                Err(why) => why.lines().map(str::to_owned).collect(),
+            });
+        }
+        Err(format!(
+            "outbound style '{style}' has no settings-only validator"
+        ))
+    }
+
     pub fn check(
         &self,
         style: &str,
@@ -2879,8 +2904,11 @@ impl OutboundAuths {
                     Ok(_) => Vec::new(),
                     Err((_, why)) => why
                         .lines()
-                        .filter_map(|l| l.strip_prefix("credential: "))
-                        .map(str::to_string)
+                        .filter_map(|line| {
+                            line.strip_prefix("credential: ")
+                                .map(str::to_owned)
+                                .or_else(|| line.starts_with("settings: ").then(|| line.to_owned()))
+                        })
                         .collect(),
                 },
             );

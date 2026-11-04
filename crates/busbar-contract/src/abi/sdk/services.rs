@@ -43,6 +43,19 @@ use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticke
 use crate::redacted::{OwnerSeal, Secret};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
+/// A read-only observation of a durable work reference owned by this instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkStatus {
+    /// No retained owned reference. This is not evidence of settlement.
+    Absent,
+    /// Live work, including a failed settlement that may be retried.
+    Live,
+    /// A settlement write is in flight; it is not durable proof yet.
+    Settling,
+    /// The host confirmed durable settlement (or read its retained durable row).
+    Settled,
+}
+
 /// Why a service call has no value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceError {
@@ -273,8 +286,8 @@ pub struct AuthCalled<O: OwnerSeal> {
 /// refusal the transport frames verbatim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefusalCopy {
-    /// The status.
-    pub status: u16,
+    /// The opaque status in the selected transport claim's numbering.
+    pub status: u32,
     /// The head fields, in order, as `(name, value)`.
     pub fields: Vec<(String, Vec<u8>)>,
     /// The body.
@@ -1075,6 +1088,34 @@ impl Services {
         }))
     }
 
+    /// `work.status`: observe this instance's durable reference without a serving unit.
+    /// Only `WorkStatus::Settled` proves settlement. Older hosts return `Unserved`.
+    pub fn work_status(&self, handle: CompletionHandle, reference: &str) -> Pend<WorkStatus> {
+        use crate::abi::host::service::{
+            check_work_status, WorkStatusIn, WORK_STATUS_ABSENT, WORK_STATUS_LIVE,
+            WORK_STATUS_SETTLED, WORK_STATUS_SETTLING,
+        };
+        let input = WorkStatusIn {
+            head: head::<WorkStatusIn>(op::WORK_STATUS, handle),
+            reference: text(reference),
+        };
+        match verdict(self.cross(
+            op::WORK_STATUS,
+            |t| t.work_status,
+            &input,
+            check_work_status,
+        )) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => Poll::Ready(result.and_then(|value| match value {
+                WORK_STATUS_ABSENT => Ok(WorkStatus::Absent),
+                WORK_STATUS_LIVE => Ok(WorkStatus::Live),
+                WORK_STATUS_SETTLED => Ok(WorkStatus::Settled),
+                WORK_STATUS_SETTLING => Ok(WorkStatus::Settling),
+                _ => Err(ServiceError::Broken),
+            })),
+        }
+    }
+
     /// `work.settle`: settle this instance's live handle `work` with its final `record`. May pend.
     pub fn work_settle(&self, handle: CompletionHandle, work: u64, record: &[u8]) -> Pend<()> {
         let input = WorkSettleIn {
@@ -1489,7 +1530,6 @@ impl Services {
         let mut answer = RefusalAnswer {
             size: 0,
             status: 0,
-            _reserved: 0,
             fields: std::ptr::null(),
             fields_len: 0,
             body: NO_BLOB,

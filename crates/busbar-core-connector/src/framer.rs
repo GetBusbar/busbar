@@ -72,6 +72,10 @@ pub struct DoorFacts {
     /// Its status table, row by row: `(claim, lo, hi)`, the code ranges each claim's numbering
     /// has; a stream's final status is judged against its claim's ([`crate::framed_stream`]).
     pub status_rows: Vec<(u32, u32, u32)>,
+    /// Final numbering for each exact claim, owned by this declaration snapshot.
+    pub status_namespaces: Vec<Option<Arc<str>>>,
+    /// Separate opening numbering for each claim.
+    pub handoff_status: Vec<Option<Arc<str>>>,
     /// THE DUPLEX CLAIMS: the ones a stream rides, read off the claim rows of its Statement: each
     /// whose unit 0 opens at an UPGRADE (`UNIT0_UPGRADE`) or that carries a session (`session`). A
     /// claim that states neither is a request and its answer, which the listener it arrived on
@@ -85,6 +89,12 @@ pub struct DoorFacts {
 
 /// A transport entry's table, as the host reaches it: a framer's ops ([`FramerDoor::cross`]) and a
 pub trait FramerDoor: Send + Sync {
+    /// Configuration bind slots this entry declares, with their exact application claims.
+    fn listener_bindings(
+        &self,
+    ) -> &[busbar_contract::abi::transport::listener_bindings::ListenerBinding] {
+        &[]
+    }
     /// What the entry states.
     fn facts(&self) -> &DoorFacts;
     /// The entry renders sealed values (`abi::transport::EXT_SEALED_VALUES`): the host hands it
@@ -93,8 +103,21 @@ pub trait FramerDoor: Send + Sync {
     }
     /// One crossing: the op, answered into its `out`.
     fn cross(&self, call: Call<'_>) -> Crossed;
+    /// A bounded retirement failed to release plugin framing state. Production doors use their
+    /// existing instance fault lifecycle; contextless doubles may record the failure.
+    fn incomplete_retirement(&self, error: &Refused) {
+        let _ = error;
+    }
     /// Its tail states `FACT_ACCEPTS`: its framer begins on the accepting side, so a listener may
     fn accepts(&self) -> bool {
+        false
+    }
+    /// Its declaration permits releasing a framing for a host-authorized handoff.
+    fn detaches(&self) -> bool {
+        false
+    }
+    /// Its declaration permits taking custody of a detached framing.
+    fn adopts(&self) -> bool {
         false
     }
     /// The identity of the instance the host opened for it (the one its host service calls are
@@ -216,6 +239,8 @@ pub struct Got {
     pub end_of_frame: bool,
     /// The status number, where the piece carries one.
     pub status_code: Option<u32>,
+    /// The exact selected claim's numbering, or its separate opening numbering.
+    pub status_namespace: Option<Arc<str>>,
     /// `status_code` is in the numbering of the handshake the connection opened with, the
     /// status-line one (`PIECE_CODE_HANDOFF`), not the claim's own.
     pub handoff: bool,
@@ -399,6 +424,8 @@ impl Yielded {
 /// The host's buffers a framer op writes into.
 #[derive(Debug)]
 pub struct Buffers {
+    status_namespace: Option<Arc<str>>,
+    handoff_status: Option<Arc<str>>,
     wire: Vec<u8>,
     frame: Vec<u8>,
     pieces: Vec<FramePiece>,
@@ -413,6 +440,7 @@ pub struct Buffers {
 impl Drop for Buffers {
     fn drop(&mut self) {
         zeroize::Zeroize::zeroize(&mut self.wire);
+        zeroize::Zeroize::zeroize(&mut self.frame);
     }
 }
 
@@ -626,6 +654,8 @@ impl Buffers {
     #[must_use]
     pub fn new(wire: usize, frame: usize, pieces: usize) -> Self {
         Self {
+            status_namespace: None,
+            handoff_status: None,
             wire: vec![0; wire.max(1)],
             frame: vec![0; frame.max(1)],
             pieces: vec![EMPTY_PIECE; pieces.max(1)],
@@ -633,6 +663,28 @@ impl Buffers {
             side: SIDE_DIAL,
             lines: FieldLines::default(),
         }
+    }
+
+    /// Bind numbering to the exact selected claim; absent claim uses the declared primary claim.
+    pub(crate) fn set_status(
+        &mut self,
+        facts: &DoorFacts,
+        claim: Option<&str>,
+    ) -> Result<(), Refused> {
+        let index = match claim {
+            Some(claim) => facts
+                .claims
+                .iter()
+                .position(|value| *value == claim)
+                .ok_or_else(|| Refused {
+                    outcome: Outcome::Fault,
+                    error: "framing selected a claim outside its declaration".into(),
+                })?,
+            None => 0,
+        };
+        self.status_namespace = facts.status_namespaces.get(index).cloned().flatten();
+        self.handoff_status = facts.handoff_status.get(index).cloned().flatten();
+        Ok(())
     }
 
     /// The default buffers for a framing on `side`.
@@ -655,6 +707,43 @@ impl Buffers {
             heads: self.heads.as_mut_ptr(),
             heads_cap: self.heads.len(),
         }
+    }
+
+    /// Check borrowed sink output without copying it into a retained publication. Retirement
+    /// uses this even when abort/Drop must discard the answer.
+    pub(crate) fn validate(&self, outcome: Outcome, out: &FramerOut) -> Result<(), Refused> {
+        use busbar_contract::abi::transport::check::{
+            check_framer, check_framer_fields, check_head_slots_with_pieces,
+        };
+        let checked = || {
+            check_framer(
+                outcome,
+                out,
+                &self.pieces,
+                self.wire.len() as u64,
+                self.frame.len() as u64,
+                self.pieces.len() as u64,
+            )?;
+            let pieces = &self.pieces[..out.yielded.pieces_len as usize];
+            let frame = &self.frame[..out.yielded.frame_len as usize];
+            check_framer_fields(pieces, frame)?;
+            check_head_slots_with_pieces(out, &self.heads, self.heads.len() as u64, pieces)
+        };
+        checked().map_err(|f| Refused {
+            outcome: Outcome::Fault,
+            error: format!(
+                "the framer's sink answer breaks {:?} at {}",
+                f.rule, f.field
+            ),
+        })
+    }
+
+    /// Discard a retirement batch in place, including descriptions containing credentials.
+    pub(crate) fn wipe_output(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.wire[..]);
+        zeroize::Zeroize::zeroize(&mut self.frame[..]);
+        self.pieces.fill(EMPTY_PIECE);
+        self.heads.fill(HeadSlots::default());
     }
 
     /// The first `len` bytes the last answer wrote into the wire buffer; `None` = out of bounds.
@@ -723,6 +812,19 @@ impl Buffers {
                 bytes: bytes.to_vec(),
                 end_of_frame: p.flags & PIECE_END_OF_FRAME != 0,
                 status_code: (p.flags & PIECE_HAS_CODE != 0).then_some(p.code),
+                status_namespace: if p.flags & PIECE_HAS_CODE == 0 {
+                    None
+                } else {
+                    Some(
+                        if p.flags & PIECE_CODE_HANDOFF != 0 {
+                            self.handoff_status.as_ref()
+                        } else {
+                            self.status_namespace.as_ref()
+                        }
+                        .ok_or_else(|| bad("a numbered piece has no declared namespace"))?
+                        .clone(),
+                    )
+                },
                 handoff: p.flags & PIECE_CODE_HANDOFF != 0,
                 status_class: p.status_class,
                 fault: p.fault,
@@ -1649,11 +1751,13 @@ impl Framing {
             .and_then(|scope| scope.opening_policy())
             .map(|policy| Arc::new(GuestLines::published(policy)))
             .or(guests);
+        let mut bufs = Buffers::for_side(side);
+        bufs.set_status(door.facts(), established.claim.as_deref())?;
         let mut f = Self {
             door,
             context,
             token: 0,
-            bufs: Buffers::for_side(side),
+            bufs,
             ticketed: ticket.is_some(),
             idle: Vec::new(),
             parked: Vec::new(),
@@ -2141,11 +2245,13 @@ impl Framing {
             Some(context) => Some(context),
             None => door.framing_context(0, 0)?,
         };
+        let mut bufs = Buffers::for_side(side);
+        bufs.set_status(door.facts(), established.claim.as_deref())?;
         let mut framing = Self {
             door,
             context,
             token: 0,
-            bufs: Buffers::for_side(side),
+            bufs,
             ticketed: ticket.is_some(),
             idle: Vec::new(),
             parked: Vec::new(),

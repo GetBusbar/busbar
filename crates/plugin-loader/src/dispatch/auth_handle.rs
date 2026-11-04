@@ -306,8 +306,8 @@ pub struct RefuseAsk {
 /// The refusal the kernel owns: status, head fields and body, framed verbatim by the transport.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefusalBytes {
-    /// The status.
-    pub status: u16,
+    /// The opaque status in the selected transport claim's numbering.
+    pub status: u32,
     /// The head fields, in order.
     pub fields: Vec<(String, Vec<u8>)>,
     /// The body.

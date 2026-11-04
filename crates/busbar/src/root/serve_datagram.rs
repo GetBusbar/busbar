@@ -862,9 +862,9 @@ pub(super) struct Description {
 }
 
 impl Description {
-    pub(super) fn into_body(self) -> axum::body::Body {
+    pub(super) fn into_bytes(mut self) -> bytes::Bytes {
         struct Delivered {
-            bytes: Vec<u8>,
+            bytes: zeroize::Zeroizing<Vec<u8>>,
             _custody: busbar_core_connector::publication::ReaderCustody,
             _transfer: busbar_core_connector::publication::Transfer,
         }
@@ -876,11 +876,18 @@ impl Description {
 
         let custody = self._custody.reader();
         let transfer = custody.copying();
-        axum::body::Body::from(bytes::Bytes::from_owner(Delivered {
-            bytes: self.bytes,
+        bytes::Bytes::from_owner(Delivered {
+            bytes: zeroize::Zeroizing::new(std::mem::take(&mut self.bytes)),
             _custody: custody,
             _transfer: transfer,
-        }))
+        })
+    }
+}
+
+impl Drop for Description {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        self.bytes.zeroize();
     }
 }
 

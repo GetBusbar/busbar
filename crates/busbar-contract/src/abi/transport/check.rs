@@ -14,7 +14,7 @@ use super::{
     AcceptOut, ArrivalOut, Claim, ConnFacts, EmitIn, FaultRow, FinishIn, FramePiece, FrameSpan,
     FramerOut, HeadSlots, IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail,
     CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, FACT_ACCEPTS, FACT_ADOPTS, FACT_DECODES_PAYLOAD,
-    FACT_DETACHES, FACT_DIALS, FAULT_CALLER, FAULT_HEALTHY, FRAMING_DATAGRAM, FRAMING_STREAM,
+    FACT_DETACHES, FACT_DIALS, FAULT_CALLER, FAULT_RATE_LIMIT, FRAMING_DATAGRAM, FRAMING_STREAM,
     MAX_ADDR, PIECE_CODE_HANDOFF, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS,
     PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_INTERIM,
     PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG,
@@ -230,7 +230,7 @@ abi_op! {
         // does too.
         deny(((p.len == 0 && p.flags != PIECE_WRITABLE) || p.flags & PIECE_STREAM_FAILED != 0) && p.flags & PIECE_END_OF_FRAME == 0, Contradiction, "framer.piece.end_without_end_of_frame");
         code(status_class, 0u8, STATUS_OTHER);
-        code(fault, 0u8, FAULT_HEALTHY);
+        code(fault, 0u8, FAULT_RATE_LIMIT);
         // Unflagged values would silently lose their meaning at the host.
         deny(p.code != 0 && p.flags & PIECE_HAS_CODE == 0, Contradiction, "framer.piece.code_without_flag");
         deny(p.retry_after_secs != 0 && p.flags & PIECE_HAS_RETRY_AFTER == 0, Contradiction, "framer.piece.retry_after_without_flag");
@@ -658,7 +658,7 @@ abi_op! {
     fn check_fault_row(r: &FaultRow, claims_len: u64) as "fault_row", FAULT_ROW_RULES for r: FaultRow {
         index(claim, claims_len);
         deny(r.lo > r.hi, Contradiction, "fault_row.lo_hi");
-        code(fault, FAULT_CALLER, FAULT_HEALTHY);
+        code(fault, FAULT_CALLER, FAULT_RATE_LIMIT);
     }
 }
 

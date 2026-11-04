@@ -488,10 +488,7 @@ fn a_handshake_code_reaches_the_tables_head_piece_in_the_handshakes_numbering() 
     };
     let handshake = head(busbar_contract::abi::transport::PIECE_CODE_HANDOFF);
     assert_eq!(handshake.status_code, Some(403));
-    assert_eq!(
-        handshake.status_namespace.as_deref(),
-        Some(busbar_contract::transport::registry::status_ns::HTTP)
-    );
+    assert_eq!(handshake.status_namespace.as_deref(), Some("test-opening"));
     let own = head(0);
     assert_eq!(own.status_code, Some(403));
     assert_eq!(own.status_namespace, None);

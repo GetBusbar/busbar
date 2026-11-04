@@ -22,6 +22,7 @@ fn payload(stream: u64, bytes: &[u8]) -> Got {
         bytes: bytes.to_vec(),
         end_of_frame: true,
         status_code: None,
+        status_namespace: None,
         handoff: false,
         status_class: 0,
         fault: 0,

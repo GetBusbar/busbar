@@ -303,23 +303,6 @@ fn test_linked_source(manifest: &str) -> String {
         out.push_str(&format!("    ({id:?}, {module}::door),\n"));
     }
 
-    let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
-    out.push_str(
-        "];\nstatic TEST_LINKED_PROTOCOLS: &[&[&::busbar_contract::protocol::ProtocolDecl]] = &[\n",
-    );
-    for id in &doors {
-        let row = entries
-            .iter()
-            .find(|(_, module)| module.starts_with(&format!("{id}::")));
-        if let Some((key, module)) = row {
-            let fills = axes
-                .iter()
-                .any(|(f, list)| f == key && list.split_whitespace().any(|a| a == "protocols"));
-            if fills {
-                out.push_str(&format!("    {module}::PROTOCOLS,\n"));
-            }
-        }
-    }
     out.push_str("];\n");
     out
 }

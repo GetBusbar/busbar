@@ -13,6 +13,21 @@ pub struct Metadata<'a> {
 }
 
 pub fn metadata(m: &Metadata<'_>) -> Response {
+    let rendered = metadata_rendered(m);
+    let mut response = rendered.body.into_response();
+    for (name, value) in rendered.fields {
+        if let (Ok(name), Ok(value)) = (
+            axum::http::HeaderName::from_bytes(&name),
+            axum::http::HeaderValue::from_bytes(&value),
+        ) {
+            response.headers_mut().insert(name, value);
+        }
+    }
+    response
+}
+
+/// The fixed OAuth metadata document as neutral head/body output.
+pub fn metadata_rendered(m: &Metadata<'_>) -> crate::plane_driver::Rendered {
     let mut doc = serde_json::Map::new();
     doc.insert("resource".into(), Value::from(m.resource.as_ref()));
     if !m.authorization_servers.is_empty() {
@@ -28,17 +43,17 @@ pub fn metadata(m: &Metadata<'_>) -> Response {
         "bearer_methods_supported".into(),
         Value::from(vec!["header"]),
     );
-    (
-        [
-            (axum::http::header::CACHE_CONTROL, "public, max-age=3600"),
+    crate::plane_driver::Rendered {
+        status: 200,
+        fields: vec![
+            (b"cache-control".to_vec(), b"public, max-age=3600".to_vec()),
             (
-                axum::http::header::CONTENT_TYPE,
-                "application/json; charset=utf-8",
+                b"content-type".to_vec(),
+                b"application/json; charset=utf-8".to_vec(),
             ),
         ],
-        axum::Json(Value::Object(doc)),
-    )
-        .into_response()
+        body: serde_json::to_vec(&Value::Object(doc)).expect("metadata is a JSON value"),
+    }
 }
 
 #[cfg(test)]

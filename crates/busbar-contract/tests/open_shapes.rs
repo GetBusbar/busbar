@@ -3,7 +3,7 @@
 
 //! A fourth transport family costs no reader an edit.
 
-use busbar_contract::transport::registry::{facts, status_ns};
+use busbar_contract::transport::registry::facts;
 use busbar_contract::transport::wire::WireStatus;
 use busbar_contract::transport::UpstreamAddress;
 
@@ -14,51 +14,16 @@ const QUIC: &str = "quic";
 fn a_fourth_status_namespace_needs_no_reader_edit() {
     let quic = WireStatus::new(QUIC, 42);
 
-    assert_eq!(quic.namespace, QUIC);
+    assert_eq!(quic.namespace.as_ref(), QUIC);
     assert_eq!(quic.code, 42);
     assert_eq!(quic.in_namespace(QUIC), Some(42));
-
-    for &reserved in status_ns::RESERVED {
-        assert_eq!(quic.in_namespace(reserved), None, "{reserved}");
-
-        assert_eq!(
-            WireStatus::new(reserved, 503).in_namespace(reserved),
-            Some(503)
-        );
+    for one in ["alpha-status", "beta-status"] {
+        assert_eq!(quic.in_namespace(one), None);
+        assert_eq!(WireStatus::new(one, 42).in_namespace(one), Some(42));
     }
-
-    for &one in status_ns::RESERVED {
-        for &other in status_ns::RESERVED.iter().filter(|other| **other != one) {
-            assert_eq!(
-                WireStatus::new(one, 14).in_namespace(other),
-                None,
-                "{one} vs {other}"
-            );
-            assert_ne!(WireStatus::new(one, 14), WireStatus::new(other, 14));
-        }
-    }
-}
-
-#[test]
-fn the_reserved_status_namespaces_are_spelled_once() {
-    assert!(
-        status_ns::RESERVED.len() >= 2,
-        "the collision the namespace exists for needs two numberings"
-    );
-    for &reserved in status_ns::RESERVED {
-        assert!(status_ns::is_reserved(reserved), "{reserved}");
-    }
-    let mut seen = status_ns::RESERVED.to_vec();
-    seen.sort_unstable();
-    seen.dedup();
-    assert_eq!(
-        seen.len(),
-        status_ns::RESERVED.len(),
-        "one spelling per numbering"
-    );
-    assert!(
-        !status_ns::is_reserved(QUIC),
-        "a namespace the kernel does not reserve is a transport's own to name"
+    assert_ne!(
+        WireStatus::new("alpha-status", 42),
+        WireStatus::new("beta-status", 42)
     );
 }
 

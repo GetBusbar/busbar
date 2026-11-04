@@ -98,10 +98,13 @@ pub fn row_bind(row: &str) -> Result<Bind, String> {
 
 /// One transport door, opened, as the connector reaches it: on the dispatcher it was bound on,
 pub struct Dispatched {
+    listener_bindings: Vec<busbar_contract::abi::transport::listener_bindings::ListenerBinding>,
     live: Arc<Live>,
     facts: DoorFacts,
     /// Its tail states `FACT_ACCEPTS`.
     accepts: bool,
+    detaches: bool,
+    adopts: bool,
     /// Its Statement states it renders sealed values (TSEAL, `abi::transport::EXT_SEALED_VALUES`).
     seals: bool,
     /// Its Adopt consumes the host's admitted-session extension.
@@ -258,6 +261,8 @@ impl Dispatched {
             composes_over: stated.composes_over,
             ported: stated.ported,
             status_rows: stated.status_rows,
+            status_namespaces: stated.status_namespaces,
+            handoff_status: stated.handoff_status,
             datagram: stated.datagram,
             duplex: stated
                 .upgrades
@@ -277,9 +282,12 @@ impl Dispatched {
             .unwrap_or_else(PoisonError::into_inner)
             .push(Arc::downgrade(&live));
         Ok(Self {
+            listener_bindings: stated.listener_bindings,
             live,
             facts,
             accepts,
+            detaches: stated.detaches,
+            adopts: stated.adopts,
             seals: stated.seals,
             adopts_session: stated.adopts_session,
             on,
@@ -341,6 +349,17 @@ fn go_inline<I: InFrame, O: OutFrame>(
 }
 
 impl FramerDoor for Dispatched {
+    fn incomplete_retirement(&self, error: &crate::framer::Refused) {
+        if error.outcome == Outcome::Fault {
+            self.live.plugin.incomplete_retirement();
+        }
+    }
+
+    fn listener_bindings(
+        &self,
+    ) -> &[busbar_contract::abi::transport::listener_bindings::ListenerBinding] {
+        &self.listener_bindings
+    }
     fn adopting_context(
         &self,
         source: Arc<dyn busbar_contract::framing_scope::FramingScope>,
@@ -408,6 +427,14 @@ impl FramerDoor for Dispatched {
 
     fn accepts(&self) -> bool {
         self.accepts
+    }
+
+    fn detaches(&self) -> bool {
+        self.detaches
+    }
+
+    fn adopts(&self) -> bool {
+        self.adopts
     }
 
     fn instance(&self) -> Option<u64> {
@@ -598,6 +625,59 @@ pub fn lines_of(door: DoorFn) -> Vec<&'static str> {
     busbar_plugin_loader::dispatch::kinds::transport::linked_facts(door)
         .map(|facts| facts.lines)
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+}
+
+/// Locate an endpoint on an admitted, bound declaration without opening a transport instance.
+/// The adapter exposes only LOCATE; neither OPEN, READY, DNS nor a carrier is reached.
+pub fn locate_bound(
+    plugin: &Plugin<TransportKind>,
+    target: &str,
+) -> Result<crate::framer::Located, String> {
+    struct Locator<'a> {
+        plugin: &'a Plugin<TransportKind>,
+        facts: DoorFacts,
+    }
+    impl FramerDoor for Locator<'_> {
+        fn facts(&self) -> &DoorFacts {
+            &self.facts
+        }
+        fn cross(&self, call: Call<'_>) -> Crossed {
+            match call {
+                Call::Locate(i, o) => go(self.plugin, slot::LOCATE, i, o),
+                _ => Crossed {
+                    outcome: Outcome::Refused,
+                    error: None,
+                },
+            }
+        }
+    }
+    if plugin.is_open() {
+        return Err("configuration locate requires an unopened declaration".into());
+    }
+    let stated = plugin
+        .context::<TransportFacts>()
+        .ok_or("the admitted transport has no declaration")?;
+    let locator = Locator {
+        plugin,
+        facts: DoorFacts {
+            name: plugin.name().to_owned(),
+            claims: stated.claims.clone(),
+            role: stated.role,
+            composes_over: stated.composes_over.clone(),
+            ported: stated.ported,
+            status_rows: stated.status_rows.clone(),
+            status_namespaces: stated.status_namespaces.clone(),
+            handoff_status: stated.handoff_status.clone(),
+            duplex: stated
+                .upgrades
+                .iter()
+                .chain(&stated.sessions)
+                .copied()
+                .collect(),
+            datagram: stated.datagram,
+        },
+    };
+    crate::framer::locate(&locator, target).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

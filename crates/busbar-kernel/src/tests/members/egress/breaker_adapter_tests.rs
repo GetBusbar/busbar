@@ -95,8 +95,8 @@ impl Breaker for BreakerAdapter {
     fn classify(&self, _destination: DestinationId, status: UpstreamStatus) -> Classified {
         busbar_kernel_breaker::port::classify_upstream(
             busbar_kernel_breaker::port::UpstreamStatus {
-                reading: Self::reading(status),
                 retry_after: status.retry_after,
+                reading: Self::reading(status),
             },
         )
     }

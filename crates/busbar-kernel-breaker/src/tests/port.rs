@@ -124,3 +124,29 @@ fn a_healthy_reading_is_a_relayed_success() {
     assert_eq!(healthy.outcome, Outcome::Success);
     assert_eq!(healthy.label, label::HEALTHY);
 }
+
+#[test]
+fn rate_limit_keeps_transient_health_but_a_distinct_retry_cause() {
+    let classify = |fault| {
+        classify_upstream(UpstreamStatus {
+            reading: Reading::Answered(Some(fault)),
+            retry_after: Some(7),
+        })
+    };
+    let rate = classify(WireFault::RateLimit);
+    let transient = classify(WireFault::Transient);
+    assert_eq!(rate.disposition, transient.disposition);
+    assert_eq!(rate.label, transient.label);
+    assert_eq!(
+        rate.outcome,
+        Outcome::RateLimit {
+            retry_after: Some(7)
+        }
+    );
+    assert_eq!(
+        transient.outcome,
+        Outcome::Transient {
+            retry_after: Some(7)
+        }
+    );
+}

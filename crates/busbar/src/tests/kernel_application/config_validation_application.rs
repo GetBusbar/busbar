@@ -6,6 +6,21 @@ use busbar_kernel::config::{self, RootCfg};
 use busbar_kernel::config_validate::*;
 use std::collections::HashMap;
 
+// Ordinary distribution validation includes the transport-owned phase installed after registry
+// admission, so these endpoint cases exercise the same pure locator as --validate.
+fn validate(cfg: &RootCfg) -> Result<(), Vec<String>> {
+    validate_with_unset(cfg, &[])
+}
+
+fn validate_with_unset(cfg: &RootCfg, unset: &[String]) -> Result<(), Vec<String>> {
+    busbar_kernel::config_validate::validate_with_unset(cfg, unset)?;
+    let rows: std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows> =
+        std::sync::Arc::new(crate::root::boot::linked_registry());
+    validate_provider_destinations(cfg, unset, &|target| {
+        crate::root::boot::locate_provider_destination(&rows, target)
+    })
+}
+
 const MAX_DURATION_SECS: u64 = 30 * 365 * 86_400;
 const MAX_DURATION_MS: u64 = MAX_DURATION_SECS * 1_000;
 
@@ -20,6 +35,7 @@ fn make_root_cfg(
         plane_pools: Default::default(),
         plane_sections: Default::default(),
         listen: busbar_kernel::config::DEFAULT_LISTEN_ADDR.into(),
+        listen_explicit: false,
 
         endpoint_resources: Default::default(),
         oauth_as: None,
@@ -236,9 +252,12 @@ fn valid_maps() -> (
 #[test]
 fn test_validate_rejects_non_https_base_url() {
     for (bad, fragment) in [
-        ("http://api.example.com", "must use https for a public host"),
-        ("file:///etc/shadow", "must use http or https"),
-        ("", "must use http or https"),
+        (
+            "http://api.example.com",
+            "must use a secure connection for a public host",
+        ),
+        ("file:///etc/shadow", "no admitted transport claims"),
+        ("", "absolute registered transport claim"),
     ] {
         let mut providers = HashMap::new();
         providers.insert("p".to_string(), make_provider(proto_a(), bad, "API_KEY"));
@@ -2208,7 +2227,7 @@ fn test_validate_accepts_uppercase_url_scheme() {
 }
 
 #[test]
-fn a_base_url_userinfo_is_accepted_and_no_validation_error_repeats_it() {
+fn endpoint_userinfo_is_refused_without_echoing_credentials() {
     const PLANTED: &str = "svcuser:hunter2-P4ss@";
     let with_base = |base_url: String, path: Option<&str>, path_base: Option<&str>| {
         let (mut providers, models, _) = valid_maps();
@@ -2221,8 +2240,8 @@ fn a_base_url_userinfo_is_accepted_and_no_validation_error_repeats_it() {
 
     let accepted = with_base(format!("https://{PLANTED}api.example.com"), None, None);
     assert!(
-        accepted.is_ok(),
-        "a base_url spelling user:pass@ validates, as in 1.5.5: {accepted:?}"
+        accepted.is_err(),
+        "transport parsers do not accept endpoint userinfo: {accepted:?}"
     );
 
     let secure = format!("https://{PLANTED}api.example.com");
@@ -2257,7 +2276,9 @@ fn a_base_url_userinfo_is_accepted_and_no_validation_error_repeats_it() {
             );
         }
         assert!(
-            about.iter().all(|e| e.contains(host)),
+            about
+                .iter()
+                .all(|e| e.contains(host) || e.contains("userinfo")),
             "each refusal still names the host it is about: {about:?}"
         );
     }
@@ -2281,8 +2302,8 @@ fn a_base_url_userinfo_is_accepted_and_no_validation_error_repeats_it() {
     };
     let accepted = with_token_url(format!("https://{PLANTED}login.example.com/token"));
     assert!(
-        accepted.is_ok(),
-        "a token_url spelling user:pass@ validates, as in 1.5.5: {accepted:?}"
+        accepted.is_err(),
+        "the auth owner rejects endpoint userinfo before credential resolution: {accepted:?}"
     );
     let plaintext = format!("https://{PLANTED}login.example.com/token").replacen("s://", "://", 1);
     for (token_url, host) in [
@@ -2309,7 +2330,9 @@ fn a_base_url_userinfo_is_accepted_and_no_validation_error_repeats_it() {
             );
         }
         assert!(
-            about.iter().all(|e| e.contains(host)),
+            about
+                .iter()
+                .all(|e| e.contains(host) || e.contains("userinfo")),
             "each refusal still names the host it is about: {about:?}"
         );
     }
@@ -2809,7 +2832,7 @@ fn test_scheme_rule_public_http_rejected_https_allowed() {
     let errs = validate(&cfg).expect_err("public http base_url must be rejected");
     assert!(
         errs.iter()
-            .any(|e| e.contains("must use https for a public host")),
+            .any(|e| e.contains("must use a secure connection for a public host")),
         "expected the public-host https diagnostic; got: {errs:?}"
     );
 
@@ -4393,7 +4416,7 @@ fn test_http_container_name_base_url_is_rejected() {
         ));
         assert!(
             errs.iter()
-                .any(|e| e.contains("must use https for a public host")),
+                .any(|e| e.contains("must use a secure connection for a public host")),
             "'{base}': expected the https-for-public-host diagnostic; got: {errs:?}"
         );
     }
@@ -4496,5 +4519,47 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
             .lock()
             .expect("warning log lock")
             .push(fields.message);
+    }
+}
+
+#[test]
+fn deferred_oauth_credential_does_not_hide_invalid_endpoint_settings() {
+    const MISSING: &str = "BUSBAR_C6_DEFERRED_CREDENTIAL_ABSENT";
+    assert!(std::env::var_os(MISSING).is_none());
+    for (token_url, expected) in [
+        (None, Some("no `token_url`")),
+        (
+            Some("http://login.example.com/token"),
+            Some("must use https"),
+        ),
+        (
+            Some("foreign://login.example.com/token"),
+            Some("must use http or https"),
+        ),
+        (Some("https://unreachable.invalid/token"), None),
+    ] {
+        let mut provider = make_provider(proto_b(), "https://api.example.com", MISSING);
+        provider.auth = Some(serde_yaml::from_str(include_str!("../../../../busbar-kernel/src/config_validate/tests/fixtures/client_credentials_style.yaml")).unwrap());
+        provider.token_url = token_url.map(str::to_owned);
+        let cfg = make_root_cfg(
+            HashMap::from([("deferred".into(), provider)]),
+            HashMap::new(),
+            HashMap::new(),
+        );
+        let result = validate_with_unset(&cfg, &[MISSING.into()]);
+        if let Some(expected) = expected {
+            let errors =
+                result.expect_err("concrete settings are checked while the secret is deferred");
+            assert!(errors.iter().any(|e| e.contains(expected)), "{errors:?}");
+            assert!(
+                !errors.iter().any(|e| e.contains("credential (from")),
+                "the secret itself stays deferred: {errors:?}"
+            );
+        } else {
+            assert!(
+                result.is_ok(),
+                "valid settings need no fabricated credential: {result:?}"
+            );
+        }
     }
 }

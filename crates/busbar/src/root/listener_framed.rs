@@ -6,8 +6,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use axum::body::Body as AxumBody;
-use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Response, Uri, Version};
 use axum::Router;
 use busbar_contract::abi::transport::{
     fields, CLOSE_DRAIN, CLOSE_NORMAL, ROLE_FRAMER, SIDE_ACCEPT,
@@ -16,17 +14,14 @@ use busbar_core_connector::framer::{
     self, Established, FramerDoor, Framing, Got, GuestLines, Head, Yielded,
 };
 use bytes::Bytes;
-use http_body::{Body as _, Frame};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{mpsc, oneshot};
 
-pub const DATA_SCHEME: &str = "http";
-
-const UPGRADE_CLAIMS: [&str; 2] = ["ws", "wss"];
-
-pub(crate) fn upgrade_claim(secured: bool) -> &'static str {
-    UPGRADE_CLAIMS[usize::from(secured)]
-}
+#[cfg(test)]
+#[path = "tests/listener_framed_fixture.rs"]
+mod fixture;
+#[cfg(test)]
+pub use fixture::{data_framer, DATA_SCHEME};
 
 pub const DATA_LINE: u32 = 1;
 
@@ -38,11 +33,15 @@ const WRITE_ROOM: usize = 256 * 1024;
 
 pub const FIRST_BYTE_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
-const SWITCHING_PROTOCOLS: u16 = 101;
-
-const BODY_LIMIT_REFUSAL: u32 = axum::http::StatusCode::PAYLOAD_TOO_LARGE.as_u16() as u32;
+const BODY_LIMIT_REFUSAL: u32 =
+    busbar_kernel::plane_driver::class_status(busbar_contract::abi::plane::RefusalClass::TooLarge);
 
 pub type FramerFor = Arc<dyn Fn(&str) -> Option<Arc<dyn FramerDoor>> + Send + Sync>;
+pub type DispatchFor = Arc<
+    dyn Fn(&busbar_kernel::inbound::RequestAdmission) -> Option<Arc<crate::root::serve::DataRoutes>>
+        + Send
+        + Sync,
+>;
 
 /// THE DATA LISTENER'S FRAMER: the framer entry, its instance, and the protocols its accepting
 /// side offers (what its stated agreed position names).
@@ -52,7 +51,8 @@ pub struct DataFramer {
     owner: u64,
     scheme: String,
     listener: Arc<crate::root::inbound::ListenerRegistration>,
-    offer: Vec<Vec<u8>>,
+    dispatch: Option<DispatchFor>,
+    inbound_limit: Option<Arc<tokio::sync::Semaphore>>,
     upgrade: FramerFor,
 }
 
@@ -63,10 +63,6 @@ impl std::fmt::Debug for DataFramer {
             .field("owner", &self.owner)
             .finish_non_exhaustive()
     }
-}
-
-pub fn data_framer(framer_for: FramerFor) -> Option<DataFramer> {
-    configured_framer(framer_for, DATA_SCHEME, None)
 }
 
 pub fn listener_framer(
@@ -96,7 +92,6 @@ fn configured_framer(
             |n| n.checked_add(1),
         )
         .ok()?;
-    let offer = framer::accept_offer(door.as_ref()).unwrap_or_default();
     Some(DataFramer {
         door,
         owner,
@@ -109,7 +104,8 @@ fn configured_framer(
             ),
             None => crate::root::inbound::ListenerRegistration::new(owner, listener),
         },
-        offer,
+        dispatch: None,
+        inbound_limit: None,
         upgrade: framer_for,
     })
 }
@@ -128,12 +124,14 @@ impl DataFramer {
         self.listener.guests()
     }
 
-    fn is_h2(&self, position: u32) -> bool {
-        position != 0
-            && self
-                .offer
-                .get(position as usize - 1)
-                .is_some_and(|p| p.as_slice() == b"h2")
+    pub fn with_dispatch(mut self, dispatch: DispatchFor) -> Self {
+        self.dispatch = Some(dispatch);
+        self
+    }
+
+    pub fn with_inbound_limit(mut self, limit: usize) -> Self {
+        self.inbound_limit = (limit != 0).then(|| Arc::new(tokio::sync::Semaphore::new(limit)));
+        self
     }
 }
 
@@ -157,6 +155,7 @@ enum Op {
     },
 
     Admit {
+        permit: Option<busbar_kernel::inbound::UpgradePermit>,
         reply: oneshot::Sender<bool>,
     },
 
@@ -231,6 +230,7 @@ impl Drop for StreamEnd {
 type BodyError = Box<dyn std::error::Error + Send + Sync>;
 
 struct Inflow {
+    admission: Option<busbar_kernel::inbound::RequestAdmission>,
     body: Option<mpsc::UnboundedSender<Result<Bytes, BodyError>>>,
     task: tokio::task::AbortHandle,
     body_limit: u64,
@@ -243,44 +243,6 @@ struct Inflow {
 struct InboundBody {
     pieces: mpsc::UnboundedReceiver<Result<Bytes, BodyError>>,
     ended: bool,
-}
-
-impl http_body::Body for InboundBody {
-    type Data = Bytes;
-    type Error = BodyError;
-
-    fn poll_frame(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Bytes>, BodyError>>> {
-        if self.ended {
-            return Poll::Ready(None);
-        }
-        match self.pieces.poll_recv(cx) {
-            Poll::Ready(Some(Ok(bytes))) => Poll::Ready(Some(Ok(Frame::data(bytes)))),
-            Poll::Ready(Some(Err(e))) => {
-                self.ended = true;
-                Poll::Ready(Some(Err(e)))
-            }
-            Poll::Ready(None) => {
-                self.ended = true;
-                Poll::Ready(None)
-            }
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.ended
-    }
-
-    fn size_hint(&self) -> http_body::SizeHint {
-        if self.ended {
-            http_body::SizeHint::with_exact(0)
-        } else {
-            http_body::SizeHint::default()
-        }
-    }
 }
 
 type SessionSlot = busbar_kernel::plane_routes::FramedSession;
@@ -419,7 +381,6 @@ pub(super) async fn serve<I>(
         full: HashSet::new(),
         deadline: None,
         session: None,
-        agreed: 0,
         stopping: *stop.borrow(),
         failed: false,
         first_byte: Some(Box::pin(tokio::time::sleep(FIRST_BYTE_BOUND))),
@@ -466,7 +427,6 @@ struct Conn<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
     deadline: Option<Pin<Box<tokio::time::Sleep>>>,
     session: Option<Session>,
 
-    agreed: u32,
     stopping: bool,
 
     failed: bool,
@@ -486,6 +446,7 @@ struct StagedUpgrade {
     yielded: Vec<Yielded>,
     incoming: Vec<zeroize::Zeroizing<Vec<u8>>>,
     incoming_len: usize,
+    opening_status: Option<u32>,
     bound: Pin<Box<tokio::time::Sleep>>,
 }
 
@@ -523,6 +484,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 self.pending.push_back((
                     admission.stream,
                     Op::Admit {
+                        permit: admission.permit,
                         reply: admission.reply,
                     },
                 ));
@@ -613,9 +575,6 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         self.out.extend(y.wire.iter().copied());
         for head in std::mem::take(&mut y.heads) {
             self.heads.insert(head.stream, head);
-        }
-        if y.agreed != 0 {
-            self.agreed = y.agreed;
         }
         for flow in &y.flow {
             match flow {
@@ -948,97 +907,114 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         let stream = piece.stream;
         let mut body_limit = configured_body_limit();
         let head = self.heads.remove(&stream).unwrap_or_default();
-        let h2 = self.framer.is_h2(self.agreed);
         let (body_tx, body_rx) = mpsc::unbounded_channel();
-        let end = piece.end;
         let body = InboundBody {
             pieces: body_rx,
-            ended: end,
+            ended: piece.end,
         };
         let out = Emitter {
             stream,
             tx: self.tx.clone(),
         };
-        let slot = SessionSlot::with_admission(self.admission_tx.clone(), stream);
         let scope = self.framing.as_ref().and_then(Framing::scope).cloned();
-        let request = request_of(
-            &head,
-            &piece.bytes,
-            h2,
-            self.secured,
-            AxumBody::new(super::TimeoutBody::new(body, self.timeout)),
-        );
-        let task = match request {
-            Some(mut req) => {
-                if let Some(scope) = scope.as_ref().filter(|scope| scope.listener() != 0) {
-                    let request_head = busbar_kernel::inbound::Head {
-                        method: req.method().as_str().to_owned(),
-                        target: req.uri().path().to_owned(),
-                        authority: head
-                            .authority
-                            .as_deref()
-                            .and_then(|bytes| std::str::from_utf8(bytes).ok())
-                            .map(str::to_owned)
-                            .unwrap_or_else(|| {
-                                req.headers()
-                                    .get(axum::http::header::HOST)
-                                    .and_then(|value| value.to_str().ok())
-                                    .unwrap_or_default()
-                                    .to_owned()
-                            }),
-                        query: req.uri().query().map(str::to_owned),
-                        fields: req
-                            .headers()
-                            .iter()
-                            .map(|(name, value)| {
-                                (name.as_str().to_owned(), value.as_bytes().to_vec())
-                            })
-                            .collect(),
-                    };
-                    match crate::root::inbound::host().claim_request(
-                        scope.owner(),
-                        scope.leg(),
-                        stream,
-                        &request_head,
-                    ) {
-                        Ok(admission) => {
-                            body_limit = admission.body_limit();
-                            scope.admit_stream(stream);
-                            req.extensions_mut().insert(admission);
-                        }
-                        Err(_) => {
-                            out.send(Op::Refuse {
-                                status: 401,
-                                head_sent: false,
-                            });
-                            out.send(Op::Ended {
-                                scope: Some(Arc::clone(scope)),
-                            });
-                            return;
-                        }
-                    }
-                }
-                req.extensions_mut()
-                    .insert(super::listener_scheme(self.secured));
-                req.extensions_mut().insert(slot.clone());
-
-                let end = StreamEnd(out.clone(), scope);
-                self.tasks
-                    .spawn(serve_stream(self.router.clone(), req, slot, out, end))
-            }
-            None => {
+        let mut admission = None;
+        let mut slot = SessionSlot::default();
+        if let Some(scope) = scope.as_ref().filter(|scope| scope.listener() != 0) {
+            let claimed = decoded_head(&head, &piece.bytes).and_then(|head| {
+                crate::root::inbound::host()
+                    .claim_request(scope.owner(), scope.leg(), stream, &head)
+                    .ok()
+            });
+            let Some(request) = claimed else {
+                out.send(Op::Refuse {
+                    status: 401,
+                    head_sent: false,
+                });
+                out.send(Op::Ended {
+                    scope: Some(Arc::clone(scope)),
+                });
+                return;
+            };
+            body_limit = request.body_limit();
+            slot = SessionSlot::with_request_admission(self.admission_tx.clone(), stream, &request);
+            scope.admit_stream(stream);
+            admission = Some(request);
+        }
+        let ended = StreamEnd(out.clone(), scope);
+        let permit = self
+            .framer
+            .inbound_limit
+            .as_ref()
+            .map(|limit| Arc::clone(limit).try_acquire_owned());
+        if permit.as_ref().is_some_and(Result::is_err) {
+            metrics::counter!(busbar_kernel::snapshot::ADMISSION_DENIED_TOTAL, "gate" => "inbound")
+                .increment(1);
+            out.send(Op::Refuse {
+                status: 503,
+                head_sent: false,
+            });
+            return;
+        }
+        let task = if let Some(request) = admission.as_ref().filter(|request| {
+            matches!(
+                request.selected_line().claimant,
+                busbar_kernel::guest::Claimant::Plane(_)
+            )
+        }) {
+            let dispatcher = self
+                .framer
+                .dispatch
+                .as_ref()
+                .and_then(|dispatch| dispatch(request));
+            let Some(dispatcher) = dispatcher else {
+                // A plane admission can never fall through to the operator HTTP router.
+                out.send(Op::Refuse {
+                    status: 503,
+                    head_sent: false,
+                });
+                return;
+            };
+            self.tasks.spawn(serve_data(
+                dispatcher,
+                request.clone(),
+                body,
+                slot,
+                out,
+                ended,
+                Established::scheme_of(self.secured),
+                self.timeout,
+                permit.and_then(Result::ok),
+            ))
+        } else {
+            let request = operator::request(&head, &piece.bytes, self.secured, body, self.timeout);
+            let Some(mut request) = request else {
                 out.send(Op::Refuse {
                     status: 400,
                     head_sent: false,
                 });
-                out.send(Op::Ended { scope });
                 return;
+            };
+            if let Some(admission) = &admission {
+                request.extensions_mut().insert(admission.clone());
             }
+            request
+                .extensions_mut()
+                .insert(super::listener_scheme(self.secured));
+            request.extensions_mut().insert(slot.clone());
+            self.tasks.spawn(operator::serve(
+                self.router.clone(),
+                request,
+                slot,
+                out,
+                ended,
+                permit.and_then(Result::ok),
+            ))
         };
         self.inflows.insert(
             stream,
             Inflow {
-                body: (!end).then_some(body_tx),
+                admission,
+                body: (!piece.end).then_some(body_tx),
                 task,
                 body_limit,
                 received: 0,
@@ -1100,15 +1076,15 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                     return Step::Done;
                 }
                 Op::Switch { .. } => return Step::Done,
-                Op::Admit { reply } => {
+                Op::Admit { reply, .. } => {
                     let _ = reply.send(false);
                     return Step::Done;
                 }
                 _ => {}
             }
         }
-        if let Op::Admit { reply } = op {
-            self.stage_upgrade(stream, reply);
+        if let Op::Admit { reply, permit } = op {
+            self.stage_upgrade(stream, permit, reply);
             return Step::Done;
         }
         if matches!(op, Op::Head { .. } | Op::Refuse { .. }) {
@@ -1173,16 +1149,39 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         Step::Done
     }
 
-    fn stage_upgrade(&mut self, stream: u64, reply: oneshot::Sender<bool>) {
+    fn stage_upgrade(
+        &mut self,
+        stream: u64,
+        permit: Option<busbar_kernel::inbound::UpgradePermit>,
+        reply: oneshot::Sender<bool>,
+    ) {
+        if reply.is_closed() {
+            self.failed = true;
+            return;
+        }
         if self.staged.is_some() || self.session.is_some() {
             let _ = reply.send(false);
             return;
         }
-        let claim = upgrade_claim(self.secured);
-        let Some(door) = (self.framer.upgrade)(claim) else {
+        let claim = permit.as_ref().and_then(|permit| {
+            let admission = self.inflows.get(&stream)?.admission.as_ref()?;
+            let scope = self.framing.as_ref()?.scope()?;
+            permit
+                .consume(admission, scope.owner(), scope.leg(), stream)
+                .map(str::to_owned)
+        });
+        let Some(claim) = claim else {
             let _ = reply.send(false);
             return;
         };
+        let Some(door) = (self.framer.upgrade)(&claim) else {
+            let _ = reply.send(false);
+            return;
+        };
+        if !self.framer.door.detaches() || !door.adopts() {
+            let _ = reply.send(false);
+            return;
+        }
         let Some(framing) = self.framing.as_mut() else {
             let _ = reply.send(false);
             return;
@@ -1208,7 +1207,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             }
         };
         drop(self.framing.take());
-        self.established.claim = door.facts().claims.first().map(|c| (*c).to_owned());
+        self.established.claim = Some(claim);
         match Framing::adopt_detached_staged(door, SIDE_ACCEPT, leftover, &self.established) {
             Ok((framing, yielded)) => {
                 self.framing = Some(framing);
@@ -1220,6 +1219,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                     yielded: Vec::new(),
                     incoming: Vec::new(),
                     incoming_len: 0,
+                    opening_status: None,
                     bound: Box::pin(tokio::time::sleep(self.timeout)),
                 });
                 self.receive_stage(yielded);
@@ -1249,14 +1249,17 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             .yielded
             .iter()
             .flat_map(|batch| &batch.pieces)
-            .any(|piece| {
+            .find(|piece| {
                 piece.stream == stage.stream
                     && piece.fields
                     && piece.end_of_frame
-                    && piece.status_code == Some(u32::from(SWITCHING_PROTOCOLS))
                     && piece.status_class == busbar_contract::abi::transport::STATUS_SUCCESS
                     && !piece.failed
             });
+        if let Some(piece) = accepted {
+            stage.opening_status = piece.status_code;
+        }
+        let accepted = accepted.is_some();
         if stage.yielded.iter().any(|batch| batch.ended) {
             if matches!(stage.phase, UpgradePhase::Adopting(_)) && !accepted {
                 let Some(stage) = self.staged.take() else {
@@ -1329,11 +1332,12 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             return;
         };
         stage.phase = UpgradePhase::Committing(pipe);
+        let status = stage.opening_status.unwrap_or_default();
         let Some(framing) = self.framing.as_mut() else {
             self.abandon_stage();
             return;
         };
-        let committed = framing.emit_head(stream, &[], true, u32::from(SWITCHING_PROTOCOLS));
+        let committed = framing.emit_head(stream, &[], true, status);
         self.took(committed);
     }
 
@@ -1372,136 +1376,272 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
     }
 }
 
-fn request_of(
-    head: &Head,
-    block: &[u8],
-    h2: bool,
-    secured: bool,
-    body: AxumBody,
-) -> Option<Request<AxumBody>> {
-    let method = Method::from_bytes(head.method.as_deref()?).ok()?;
+/// Decode the shared transport head representation, without HTTP method, URI or field parsing.
+fn decoded_head(head: &Head, block: &[u8]) -> Option<busbar_kernel::inbound::Head> {
+    let method = std::str::from_utf8(head.method.as_deref()?)
+        .ok()?
+        .to_owned();
     let target = std::str::from_utf8(head.target.as_deref()?).ok()?;
-    let mut headers = HeaderMap::new();
-    for (name, value) in fields::lines(block) {
-        if let (Ok(name), Ok(value)) =
-            (HeaderName::from_bytes(name), HeaderValue::from_bytes(value))
-        {
-            headers.append(name, value);
-        }
-    }
-    let authority = head
-        .authority
-        .as_deref()
-        .and_then(|a| std::str::from_utf8(a).ok())
-        .filter(|a| !a.is_empty());
-    let uri = match authority {
-        Some(a) if h2 && !headers.contains_key(axum::http::header::HOST) => {
-            let scheme = if secured { "https" } else { "http" };
-            Uri::try_from(format!("{scheme}://{a}{target}")).ok()?
-        }
-        _ => Uri::try_from(target).ok()?,
-    };
-    let mut req = Request::builder()
-        .method(method)
-        .uri(uri)
-        .version(if h2 {
-            Version::HTTP_2
-        } else {
-            Version::HTTP_11
+    let (target, query) = target
+        .split_once('?')
+        .map_or((target, None), |(path, query)| {
+            (path, Some(query.to_owned()))
+        });
+    let mut read = 0;
+    let fields = fields::lines(block)
+        .map(|(name, value)| {
+            read += name.len() + fields::SEPARATOR.len() + value.len() + fields::LINE_END.len();
+            Some((std::str::from_utf8(name).ok()?.to_owned(), value.to_vec()))
         })
-        .body(body)
-        .ok()?;
-    *req.headers_mut() = headers;
-    Some(req)
+        .collect::<Option<Vec<_>>>()?;
+    if read != block.len() {
+        return None;
+    }
+    Some(busbar_kernel::inbound::Head {
+        method,
+        target: target.to_owned(),
+        query,
+        fields,
+        authority: head
+            .authority
+            .as_deref()
+            .map(std::str::from_utf8)
+            .transpose()
+            .ok()?
+            .unwrap_or_default()
+            .to_owned(),
+    })
 }
 
-async fn serve_stream(
-    router: Router,
-    req: Request<AxumBody>,
+fn neutral_fields(fields: &busbar_kernel::plane_driver::HeadFields) -> Vec<u8> {
+    let mut block = Vec::new();
+    for (name, value) in fields {
+        block.extend_from_slice(name);
+        block.extend_from_slice(fields::SEPARATOR);
+        block.extend_from_slice(value);
+        block.extend_from_slice(fields::LINE_END);
+    }
+    block
+}
+
+struct ActorCaller {
+    out: Emitter,
+    stated: std::sync::Mutex<Option<u32>>,
+    body: std::sync::Mutex<Option<Bytes>>,
+    ended: std::sync::atomic::AtomicBool,
+}
+
+impl busbar_kernel::plane_driver::CallerEnd for ActorCaller {
+    fn head(&self, status: u32, fields: busbar_kernel::plane_driver::HeadFields) {
+        let mut stated = self
+            .stated
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if stated.is_some() {
+            return;
+        }
+        *stated = Some(status);
+        let (done, _) = oneshot::channel();
+        self.out.send(Op::Head {
+            status,
+            fields: neutral_fields(&fields),
+            end: false,
+            done,
+        });
+    }
+    async fn write(&self, bytes: &[u8]) -> bool {
+        self.out.data(Bytes::copy_from_slice(bytes), false).await
+    }
+}
+
+impl busbar_kernel::plane_driver::SessionCaller for ActorCaller {
+    async fn read(&self) -> Option<Vec<u8>> {
+        self.body
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .map(|body| body.to_vec())
+    }
+}
+impl crate::root::serve::Stated for ActorCaller {
+    fn stated(&self) -> Option<u32> {
+        *self
+            .stated
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    fn ended(&self, outcome: Option<busbar_contract::caps::Outcome>) {
+        use busbar_contract::caps::{Abort, Outcome};
+        let reason = match outcome {
+            Some(
+                Outcome::Refused(_, reason)
+                | Outcome::Failed(_, reason)
+                | Outcome::Aborted(Abort::Kernel { reason }),
+            ) => Some(reason),
+            Some(Outcome::TimedOut(_)) => Some(busbar_contract::caps::ReasonCode::DeadlineExceeded),
+            Some(Outcome::Aborted(_)) => Some(busbar_contract::caps::ReasonCode::PlanePanic),
+            _ => None,
+        };
+        if let Some(reason) = reason.filter(|_| self.stated().is_some()) {
+            self.ended.store(true, std::sync::atomic::Ordering::Release);
+            self.out.send(Op::Refuse {
+                status: busbar_kernel::plane_driver::refusal_status(reason),
+                head_sent: true,
+            });
+        }
+    }
+}
+impl crate::root::serve::neutral::Output for ActorCaller {
+    async fn write_owned(&self, bytes: Bytes) -> bool {
+        self.out.data(bytes, false).await
+    }
+    fn trailers(&self, fields: busbar_kernel::plane_driver::HeadFields) {
+        if self.ended.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        let (done, _) = oneshot::channel();
+        self.out.send(Op::Trailers {
+            fields: neutral_fields(&fields),
+            done,
+        });
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+pub(in crate::root) async fn serve_governed_test<I>(
+    io: I,
+    framer: DataFramer,
+    secured: bool,
+    timeout: std::time::Duration,
+    stop: tokio::sync::watch::Receiver<bool>,
+) where
+    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    serve(io, framer, Router::new(), secured, timeout, stop).await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn serve_data(
+    routes: Arc<crate::root::serve::DataRoutes>,
+    admission: busbar_kernel::inbound::RequestAdmission,
+    mut body: InboundBody,
     slot: SessionSlot,
     out: Emitter,
     _end: StreamEnd,
+    scheme: u8,
+    timeout: std::time::Duration,
+    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
 ) {
-    let Ok(response) = {
-        use hyper::service::Service as _;
-        hyper_util::service::TowerToHyperService::new(router)
-            .call(req)
+    use crate::root::serve::Stated as _;
+    use busbar_contract::caps::ReasonCode;
+    let caller = Arc::new(ActorCaller {
+        out: out.clone(),
+        stated: std::sync::Mutex::new(None),
+        body: std::sync::Mutex::new(None),
+        ended: std::sync::atomic::AtomicBool::new(false),
+    });
+    let work = async {
+        let context = match busbar_kernel::auth::admitted_context(&admission).await {
+            Ok(context) => context,
+            Err(refused) => {
+                if let Some(rendered) = refused
+                    .challenge(&admission)
+                    .or_else(|| routes.refusal(&admission, ReasonCode::Unauthenticated))
+                {
+                    routes.auth_completion(&admission, rendered.status);
+                    crate::root::serve::neutral::render(&*caller, rendered).await;
+                }
+                return None;
+            }
+        };
+        let mut whole = Vec::new();
+        while !body.ended {
+            match tokio::time::timeout(timeout, body.pieces.recv()).await {
+                Ok(Some(Ok(bytes))) => {
+                    let oversized = whole.len().checked_add(bytes.len()).is_none_or(|size| {
+                        admission.body_limit() != 0 && size as u64 > admission.body_limit()
+                    });
+                    if oversized {
+                        refuse_data(&routes, &admission, &caller, ReasonCode::BodyTooLarge).await;
+                        return None;
+                    }
+                    whole.extend_from_slice(&bytes);
+                }
+                Ok(None) => body.ended = true,
+                Ok(Some(Err(_))) => {
+                    refuse_data(&routes, &admission, &caller, ReasonCode::DecodeFailed).await;
+                    return None;
+                }
+                Err(_) => {
+                    refuse_data(&routes, &admission, &caller, ReasonCode::DeadlineExceeded).await;
+                    return None;
+                }
+            }
+        }
+        let body = Bytes::from(whole);
+        *caller
+            .body
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(body.clone());
+        routes
+            .serve_admitted(&admission, context, body, scheme, slot, Arc::clone(&caller))
             .await
     };
-    if response.status().as_u16() == SWITCHING_PROTOCOLS {
-        if let Some(pipe) = slot.take() {
-            out.send(Op::Switch { pipe });
-            return;
+    let pipe = match admission.deadline() {
+        Some(deadline) => {
+            match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), work).await {
+                Ok(pipe) => pipe,
+                Err(_) => {
+                    out.send(Op::Refuse {
+                        status: busbar_kernel::plane_driver::refusal_status(
+                            ReasonCode::DeadlineExceeded,
+                        ),
+                        head_sent: caller.stated().is_some(),
+                    });
+                    return;
+                }
+            }
         }
-    }
-    respond(&out, response).await;
-}
-
-fn head_block(status: u16, headers: &HeaderMap, exact: Option<u64>) -> Vec<u8> {
-    let mut block = field_block(headers);
-    let bodyless = status < 200 || status == 204 || status == 304;
-    let stated = headers.contains_key(axum::http::header::CONTENT_LENGTH)
-        || headers.contains_key(axum::http::header::TRANSFER_ENCODING);
-    if let Some(len) =
-        exact.filter(|_| !bodyless && !stated && !headers.contains_key(axum::http::header::TRAILER))
-    {
-        block.extend_from_slice(b"content-length");
-        block.extend_from_slice(fields::SEPARATOR);
-        block.extend_from_slice(len.to_string().as_bytes());
-        block.extend_from_slice(fields::LINE_END);
-    }
-    block
-}
-
-fn field_block(headers: &HeaderMap) -> Vec<u8> {
-    let mut block = Vec::new();
-    for (name, value) in headers {
-        block.extend_from_slice(name.as_str().as_bytes());
-        block.extend_from_slice(fields::SEPARATOR);
-        block.extend_from_slice(value.as_bytes());
-        block.extend_from_slice(fields::LINE_END);
-    }
-    block
-}
-
-async fn respond(out: &Emitter, response: Response<AxumBody>) {
-    let (parts, mut body) = response.into_parts();
-    let status = parts.status.as_u16();
-    let block = head_block(status, &parts.headers, body.size_hint().exact());
-    let end = body.is_end_stream();
-    if !out.head(u32::from(status), block, end).await || end {
+        None => work.await,
+    };
+    if let Some(pipe) = pipe {
+        out.send(Op::Switch { pipe });
         return;
     }
-    loop {
-        match std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
-            None => {
-                let _ = out.data(Bytes::new(), true).await;
-                return;
-            }
-            Some(Ok(frame)) => match frame.into_data() {
-                Ok(data) => {
-                    if !data.is_empty() && !out.data(data, false).await {
-                        return;
-                    }
-                }
-                Err(frame) => {
-                    if let Ok(trailers) = frame.into_trailers() {
-                        let _ = out.trailers(field_block(&trailers)).await;
-                        return;
-                    }
-                }
-            },
-            Some(Err(e)) => {
-                tracing::debug!(error = %e, "data door: an answer's body failed after its head");
-                out.send(Op::Refuse {
-                    status: u32::from(status),
-                    head_sent: true,
-                });
-                return;
-            }
-        }
+    if caller.stated().is_none() {
+        out.send(Op::Refuse {
+            status: busbar_kernel::plane_driver::refusal_status(ReasonCode::PlanePanic),
+            head_sent: false,
+        });
+    } else if !caller.ended.load(std::sync::atomic::Ordering::Acquire) {
+        let _ = out.data(Bytes::new(), true).await;
     }
 }
+
+async fn refuse_data(
+    routes: &crate::root::serve::DataRoutes,
+    admission: &busbar_kernel::inbound::RequestAdmission,
+    caller: &ActorCaller,
+    reason: busbar_contract::caps::ReasonCode,
+) {
+    use busbar_kernel::plane_driver::CallerEnd;
+    if let Some(rendered) = routes.refusal(admission, reason) {
+        crate::root::serve::neutral::render(caller, rendered).await;
+    } else {
+        caller.head(
+            busbar_kernel::plane_driver::refusal_status(reason),
+            Vec::new(),
+        );
+    }
+}
+
+#[path = "listener_operator.rs"]
+mod operator;
+
+// These tests cover the explicitly retained operator response adapter.
+#[cfg(test)]
+use operator::{field_block, head_block, respond};
 
 #[cfg(test)]
 #[path = "tests/listener_framed_tests.rs"]

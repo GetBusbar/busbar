@@ -205,12 +205,14 @@ pub struct SessionPipe {
 /// The stream identifies the request on that connection; no callback or ABI loan is retained.
 #[derive(Debug)]
 pub struct SessionAdmission {
+    pub permit: Option<crate::inbound::UpgradePermit>,
     pub stream: u64,
     pub reply: tokio::sync::oneshot::Sender<bool>,
 }
 
 #[derive(Debug)]
 struct PendingAdmission {
+    permit: Option<crate::inbound::UpgradePermit>,
     sender: tokio::sync::mpsc::UnboundedSender<SessionAdmission>,
     stream: u64,
 }
@@ -224,16 +226,35 @@ pub struct FramedSession {
 }
 
 impl FramedSession {
+    #[cfg(test)]
     #[must_use]
-    pub fn with_admission(
+    fn with_admission(
         sender: tokio::sync::mpsc::UnboundedSender<SessionAdmission>,
         stream: u64,
     ) -> Self {
         Self {
             pipe: Default::default(),
             admission: Arc::new(std::sync::Mutex::new(Some(PendingAdmission {
+                permit: None,
                 sender,
                 stream,
+            }))),
+        }
+    }
+
+    /// A session slot whose upgrade authority comes from the exact host-admitted route.
+    #[must_use]
+    pub fn with_request_admission(
+        sender: tokio::sync::mpsc::UnboundedSender<SessionAdmission>,
+        stream: u64,
+        request: &crate::inbound::RequestAdmission,
+    ) -> Self {
+        Self {
+            pipe: Default::default(),
+            admission: Arc::new(std::sync::Mutex::new(Some(PendingAdmission {
+                sender,
+                stream,
+                permit: request.upgrade_permit(),
             }))),
         }
     }
@@ -244,11 +265,23 @@ impl FramedSession {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
-        let Some(PendingAdmission { sender, stream }) = pending else {
+        let Some(PendingAdmission {
+            sender,
+            stream,
+            permit,
+        }) = pending
+        else {
             return false;
         };
         let (reply, answer) = tokio::sync::oneshot::channel();
-        if sender.send(SessionAdmission { stream, reply }).is_err() {
+        if sender
+            .send(SessionAdmission {
+                stream,
+                reply,
+                permit,
+            })
+            .is_err()
+        {
             return false;
         }
         answer.await.unwrap_or(false)

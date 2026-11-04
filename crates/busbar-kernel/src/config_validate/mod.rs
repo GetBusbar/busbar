@@ -544,10 +544,6 @@ pub(super) fn validate_with_plugins(
         }
     }
 
-    if let Some(public_url) = cfg.public_url.as_deref() {
-        validate_public_url(public_url, &cfg.blocked_metadata_hosts, &mut errors);
-    }
-
     if let Some(auth) = cfg.auth.as_ref() {
         let chain_modules: std::collections::HashSet<&str> = auth
             .chain
@@ -1481,47 +1477,6 @@ fn resolve_fallback_target(cfg: &RootCfg, pool_name: &str) -> Option<String> {
     }
 }
 
-pub(crate) fn validate_public_url(url: &str, blocked: &[String], errors: &mut Vec<String>) {
-    let is_https = scheme_is(url, "https");
-    let is_http = scheme_is(url, "http");
-    if !is_https && !is_http {
-        errors.push(format!(
-            "public_url must be an absolute http(s) URL (got '{url}')"
-        ));
-        return;
-    }
-    let Some(host) = extract_normalized_host(url) else {
-        errors.push(format!("public_url '{url}' has no host"));
-        return;
-    };
-    if is_http && !host_is_private_or_loopback(&host) {
-        errors.push(format!(
-            "public_url must use https for a public host (got '{url}'); plaintext http is permitted \
-             only for a loopback/private base"
-        ));
-    }
-
-    if let Some((_, rest)) = url.split_once("://") {
-        let rest = rest.replace('\\', "/");
-        if let Some(pos) = rest.find(['/', '?', '#']) {
-            let delim = rest.as_bytes()[pos];
-            let tail = &rest[pos + 1..];
-            if delim != b'/' || !tail.is_empty() {
-                errors.push(format!(
-                    "public_url must be a bare origin (scheme://host[:port]) with no path, query, or \
-                     fragment (got '{url}'); BYOK clients append their own suffix"
-                ));
-            }
-        }
-    }
-
-    if let Some(bad) = ssrf_blocked_host(url, &[], false, blocked) {
-        errors.push(format!(
-            "public_url '{url}' targets a blocked cloud-metadata host '{bad}'"
-        ));
-    }
-}
-
 fn reject_cidr_metadata_entries(key: &str, entries: &[String], errors: &mut Vec<String>) {
     for entry in entries {
         if entry.contains('/') {
@@ -1698,6 +1653,8 @@ pub fn metadata_enforced_entries() -> Vec<String> {
 }
 
 pub mod deal;
+mod destinations;
+pub use destinations::{validate_provider_destinations, ProviderDestination};
 
 pub(crate) mod secret_refs;
 mod undeclared_secret_refs;
@@ -1710,85 +1667,43 @@ pub use check::{check, no_root_rules, Check, Refusal};
 fn validate_token_endpoint_fields(
     provider_name: &str,
     provider_cfg: &crate::config::providers::ResolvedProvider,
-    style: &str,
+    _style: &str,
     style_flags: u32,
     cfg: &RootCfg,
     unset_env_vars: &[String],
     errors: &mut Vec<String>,
 ) {
-    let is_env_placeholder = |v: &str| {
-        !v.contains("://")
-            && unset_env_vars
-                .iter()
-                .any(|u| !u.is_empty() && v.contains(u.as_str()))
+    if style_flags & busbar_contract::abi::auth::STYLE_ENDPOINT_TOKEN_URL == 0 {
+        return;
+    }
+    let Some(target) = provider_cfg.token_url.as_deref() else {
+        return;
     };
-    let allow_overrides: Vec<String> = provider_cfg
-        .allow_metadata_hosts
-        .iter()
-        .chain(cfg.allow_metadata_hosts.iter())
-        .cloned()
-        .collect();
-    if style_flags & busbar_contract::abi::auth::STYLE_ENDPOINT_TOKEN_URL != 0 {
-        if provider_cfg.api_key.is_none() {
-            errors.push(format!(
-                "provider '{provider_name}' uses auth: {style} but declares \
-                 `api_key: none`; that grant mints its token FROM the credential \
-                 (`client_id:client_secret`), so there is nothing to declare keyless"
-            ));
+    if !target.contains("://")
+        && unset_env_vars
+            .iter()
+            .any(|v| !v.is_empty() && target.contains(v))
+    {
+        return;
+    }
+    let posture = MetadataPosture::global(cfg).for_provider(provider_cfg);
+    // The metadata matcher accepts HTTP URLs or bare authorities. Read other declared endpoint
+    // families with the shared parser first; their spelling must not bypass the host policy.
+    let authority = busbar_contract::net::target_host(target).map(|host| {
+        if host.contains(':') {
+            format!("[{host}]")
+        } else {
+            host
         }
-        if provider_cfg
-            .token_url
-            .as_deref()
-            .unwrap_or("")
-            .trim()
-            .is_empty()
-        {
-            errors.push(format!(
-                "provider '{provider_name}' uses auth: {style} but has no `token_url` (the OAuth token endpoint the client credentials are POSTed to)"
-            ));
-        } else if let Some(tu) = &provider_cfg.token_url {
-            let host_private = extract_normalized_host(tu)
-                .as_deref()
-                .map(host_is_private_or_loopback)
-                .unwrap_or(false);
-            let tu_scheme_ok = is_env_placeholder(tu)
-                || scheme_is(tu, "https")
-                || (host_private && scheme_is(tu, "http"));
-            if !tu_scheme_ok {
-                let plaintext = scheme_is(tu, "http");
-                let tu = busbar_kernel_egress::trust::net::redact_userinfo(tu);
-                errors.push(if plaintext {
-                    format!(
-                        "provider '{provider_name}' token_url must use https for a public host (got '{tu}'); it carries the client secret, so plaintext http is permitted only for a private/loopback token endpoint"
-                    )
-                } else {
-                    format!(
-                        "provider '{provider_name}' token_url must use http or https (got '{tu}')"
-                    )
-                });
-            } else if let Some(host) = ssrf_blocked_host(
-                tu,
-                &allow_overrides,
-                cfg.allow_all_metadata,
-                &cfg.blocked_metadata_hosts,
-            ) {
-                let tu = busbar_kernel_egress::trust::net::redact_userinfo(tu);
-                errors.push(format!(
-                    "provider '{provider_name}' token_url '{tu}' targets a blocked cloud-metadata host '{host}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"
-                ));
-            }
-        }
-        if provider_cfg
-            .scope
-            .as_deref()
-            .unwrap_or("")
-            .trim()
-            .is_empty()
-        {
-            errors.push(format!(
-                "provider '{provider_name}' uses auth: {style} but has no `scope`"
-            ));
-        }
+    });
+    if let Some(host) = ssrf_blocked_host(
+        authority.as_deref().unwrap_or(target),
+        &posture.allow_overrides,
+        posture.allow_all,
+        &posture.blocked_hosts,
+    ) {
+        let target = busbar_kernel_egress::trust::net::redact_userinfo(target);
+        errors.push(format!("provider '{provider_name}' token_url '{target}' targets a blocked cloud-metadata host '{host}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"));
     }
 }
 
@@ -1871,35 +1786,18 @@ fn validate_providers_with(
             .collect();
 
         let base_url = &provider_cfg.base_url;
-        let host_for_scheme = extract_normalized_host(base_url);
-        let host_is_local = host_for_scheme
-            .as_deref()
-            .map(host_is_private_or_loopback)
-            .unwrap_or(false);
-
-        let scheme_ok = is_env_placeholder(base_url)
-            || scheme_is(base_url, "https")
-            || (host_is_local && scheme_is(base_url, "http"));
-        if !scheme_ok {
-            let plaintext = scheme_is(base_url, "http");
-            let base_url = busbar_kernel_egress::trust::net::redact_userinfo(base_url);
-            errors.push(if plaintext {
-
-
-                format!(
-                    "provider '{provider_name}' base_url must use https for a public host (got '{base_url}'); plaintext http is permitted only for a private/loopback local-model upstream"
+        let concrete_target = !is_env_placeholder(base_url);
+        if let Some(host) = concrete_target
+            .then(|| {
+                ssrf_blocked_host(
+                    base_url,
+                    &allow_overrides,
+                    cfg.allow_all_metadata,
+                    &cfg.blocked_metadata_hosts,
                 )
-            } else {
-                format!(
-                    "provider '{provider_name}' base_url must use http or https (got '{base_url}')"
-                )
-            });
-        } else if let Some(host) = ssrf_blocked_host(
-            base_url,
-            &allow_overrides,
-            cfg.allow_all_metadata,
-            &cfg.blocked_metadata_hosts,
-        ) {
+            })
+            .flatten()
+        {
             let base_url = busbar_kernel_egress::trust::net::redact_userinfo(base_url);
             errors.push(format!(
                 "provider '{provider_name}' base_url '{base_url}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts to unblock it for all providers, or set security.allow_all_metadata: true to disable the guard entirely — and security.blocked_metadata_hosts extends the denylist)"
@@ -1911,7 +1809,7 @@ fn validate_providers_with(
                 errors.push(format!(
                     "provider '{provider_name}' path '{path}' must begin with '/': a path override is appended to base_url verbatim, so a path that does not start with '/' fuses into the host (e.g. base_url + '{path}') and can redirect signed traffic to an attacker-controlled host"
                 ));
-            } else if scheme_ok {
+            } else if concrete_target {
                 let composed = format!("{}{}", provider_cfg.base_url, path);
                 if let Some(host) = ssrf_blocked_host(
                     &composed,
@@ -1932,7 +1830,7 @@ fn validate_providers_with(
                 errors.push(format!(
                     "provider '{provider_name}' path_base '{path_base}' must begin with '/': it is appended to base_url verbatim, so a value that does not start with '/' fuses into the host and can redirect signed traffic to an attacker-controlled host"
                 ));
-            } else if scheme_ok {
+            } else if concrete_target {
                 let composed = format!("{}{}", provider_cfg.base_url, path_base);
                 if let Some(host) = ssrf_blocked_host(
                     &composed,
@@ -1958,23 +1856,52 @@ fn validate_providers_with(
             errors,
         );
         if style_flags & busbar_contract::abi::auth::STYLE_ENDPOINT_TOKEN_URL != 0 {
+            let mut params = serde_json::Map::new();
+            if let Some(token_url) = provider_cfg.token_url.as_deref() {
+                params.insert(
+                    "token_url".into(),
+                    serde_json::Value::String(token_url.to_owned()),
+                );
+            }
+            if let Some(scope) = provider_cfg.scope.as_ref() {
+                params.insert("scope".into(), serde_json::Value::String(scope.clone()));
+            }
+            let params = serde_json::Value::Object(params);
+            let settings_concrete = !provider_cfg
+                .token_url
+                .as_deref()
+                .is_some_and(is_env_placeholder);
             let cred = crate::config::secret::resolve_linked_string_at_config(
                 &provider_cfg.api_key,
                 &busbar_contract::config_time::ConfigScope::config_time(),
             )
             .unwrap_or_default();
             let cred = cred.expose(&crate::seal::lend());
-            if !cred.trim().is_empty() {
-                let token_url = provider_cfg.token_url.as_deref().unwrap_or_default();
-                let params = serde_json::json!({
-                    "token_url": busbar_kernel_egress::trust::net::strip_userinfo(token_url),
-                    "scope": provider_cfg.scope.clone().unwrap_or_default(),
-                });
+            if settings_concrete && (!cred.trim().is_empty() || provider_cfg.api_key.is_none()) {
                 for e in outbound_credential_refusals(style, cred, &params) {
-                    errors.push(format!(
-                        "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
-                        provider_cfg.api_key.describe()
-                    ));
+                    if let Some(settings) = e.strip_prefix("settings: ") {
+                        let error = format!("provider '{provider_name}' {settings}");
+                        if !errors.contains(&error) {
+                            errors.push(error);
+                        }
+                    } else {
+                        errors.push(format!(
+                            "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
+                            provider_cfg.api_key.describe()
+                        ));
+                    }
+                }
+            } else if settings_concrete {
+                if let Some(axis) = crate::preflight::linked_auth_axis() {
+                    for error in axis
+                        .check_outbound_settings(style, &params)
+                        .unwrap_or_else(|e| vec![e])
+                    {
+                        errors.push(format!(
+                            "provider '{provider_name}' {}",
+                            error.strip_prefix("settings: ").unwrap_or(&error)
+                        ));
+                    }
                 }
             }
         }

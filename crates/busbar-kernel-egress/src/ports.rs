@@ -65,10 +65,8 @@ pub use busbar_kernel_breaker::{Admit, Outcome};
 /// that spelled it, and the wait the upstream asked for. THE BREAKER CLASSIFIES FROM THE FAULT
 /// READING ALONE and never reads `code` (the kernel names no protocol); what a given code means to
 /// the breaker is the transport's own declared table, read on the transport's side of the frame.
-/// `code` crosses for the composition root's model egress, which runs the previous release's 429
-/// rate-limit ladder and 4xx client-fault count on the number (the transport ABI carries the number
-/// beside the class, `FrameMeta`'s `status_code`, BUSBAR-1.6.0.md l.4036-4053).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// `code` crosses for provenance; retry policy reads the semantic fault instead of protocol numbers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UpstreamStatus {
     /// The transport's own class of the frame, where it carries one.
     pub class: Option<busbar_contract::transport::wire::WireStatusClass>,

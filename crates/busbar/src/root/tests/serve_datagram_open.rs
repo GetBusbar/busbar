@@ -69,7 +69,7 @@ impl FramerDoor for OpeningFramer {
     }
 }
 
-fn offer() -> Vec<u8> {
+fn offer() -> zeroize::Zeroizing<Vec<u8>> {
     use busbar_transport_webrtc::framing::{Framing, Opening, Side};
     let certificate = busbar_core_connector::dtls::SessionCert::mint().unwrap();
     let mut peer = Framing::begin(
@@ -83,7 +83,9 @@ fn offer() -> Vec<u8> {
         Instant::now(),
     )
     .expect("the real WebRTC peer offers a data channel");
-    peer.next_piece().expect("the real peer's SDP offer").bytes
+    peer.next_piece()
+        .expect("the real peer's SDP offer")
+        .into_bytes()
 }
 
 fn assert_description(bytes: &[u8]) {
@@ -397,6 +399,7 @@ fn routes(g: &mut Deployment) -> (Arc<serving::DataRoutes>, Arc<serve_datagram::
     }
     (
         Arc::new(serving::DataRoutes {
+            entries: serving::arrival_entries(&served),
             served,
             claim_doors: None,
             post: g.post.clone(),
@@ -418,7 +421,7 @@ fn arrival(
         method: axum::http::Method::POST,
         uri: target.parse().unwrap(),
         headers: Default::default(),
-        body: bytes::Bytes::from(offer()),
+        body: bytes::Bytes::from_owner(offer()),
         gov: Default::default(),
         credential: None,
         ticket: None,

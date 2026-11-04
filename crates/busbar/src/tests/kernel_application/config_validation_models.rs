@@ -17,6 +17,7 @@ fn make_root_cfg(
         plane_pools: Default::default(),
         plane_sections: Default::default(),
         listen: busbar_kernel::config::DEFAULT_LISTEN_ADDR.into(),
+        listen_explicit: false,
 
         endpoint_resources: Default::default(),
         oauth_as: None,

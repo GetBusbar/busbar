@@ -3,7 +3,7 @@
 
 //! The two closed lists this crate exists to pin: the fact keys the kernel reserves, and the codes
 
-use busbar_contract::transport::registry::{facts, status_ns};
+use busbar_contract::transport::registry::facts;
 use busbar_contract::transport::{
     CloseReason, CompositionError, Decode, Direction, DiscardCode, Encode, Framing, StatusAt,
     TransportError, Unit0Trigger, WireStatus, WireStatusClass,
@@ -318,10 +318,11 @@ fn the_frame_axes_a_transport_declares_are_each_closed() {
 
 #[test]
 fn a_wire_status_answers_only_in_the_numbering_that_spelled_it() {
-    for &one in status_ns::RESERVED {
+    const NUMBERINGS: &[&str] = &["alpha-numbering", "beta-numbering"];
+    for &one in NUMBERINGS {
         let status = WireStatus::new(one, 503);
         assert_eq!(status.in_namespace(one), Some(503), "{one}");
-        for &other in status_ns::RESERVED.iter().filter(|other| **other != one) {
+        for &other in NUMBERINGS.iter().filter(|other| **other != one) {
             assert_eq!(status.in_namespace(other), None, "{one} read as {other}");
 
             assert_ne!(WireStatus::new(one, 5), WireStatus::new(other, 5));

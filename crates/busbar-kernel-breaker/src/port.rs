@@ -70,6 +70,13 @@ pub fn classify_upstream(status: UpstreamStatus) -> Classified {
 
     let (outcome, label) = if status.reading == Reading::Answered(Some(WireFault::Healthy)) {
         (Outcome::Success, label::HEALTHY)
+    } else if status.reading == Reading::Answered(Some(WireFault::RateLimit)) {
+        (
+            Outcome::RateLimit {
+                retry_after: status.retry_after,
+            },
+            label::TRANSIENT_UPSTREAM,
+        )
     } else {
         outcome_and_label(disposition, status.retry_after)
     };

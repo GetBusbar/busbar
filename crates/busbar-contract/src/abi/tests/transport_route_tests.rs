@@ -164,3 +164,20 @@ fn an_interner_is_a_plain_value_its_holder_owns() {
     assert!(path_matches(PATH_PATTERN, "/m/{x}/{*rest}", "/m/1/a/b"));
     assert!(!path_matches(PATH_PATTERN, "/m/{x}", "/m/1/a"));
 }
+
+#[test]
+fn any_method_accepts_an_opaque_method_but_exact_masks_do_not() {
+    let mut route = RouteView {
+        methods: METHOD_ANY,
+        path_form: PATH_EXACT,
+        path: "opaque target",
+        fields: vec![],
+        rung: 0,
+    };
+    assert!(route.admits("READ OBJECT"));
+    assert!(route.admits("BREW"));
+    route.methods = METHOD_POST;
+    assert!(!route.admits("READ OBJECT"));
+    assert!(!route.admits("BREW"));
+    assert!(route.admits("POST"));
+}

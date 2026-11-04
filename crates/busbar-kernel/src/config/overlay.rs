@@ -187,6 +187,7 @@ impl RootSettings {
         } = self;
         if let Some(v) = listen {
             deploy.listen = v.clone();
+            deploy.listen_explicit = true;
         }
         if tls.is_some() {
             deploy.tls = tls.clone();

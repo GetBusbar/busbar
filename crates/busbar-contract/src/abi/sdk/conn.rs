@@ -210,7 +210,8 @@ snapshot_table!(
     unit_hand_in,
     unit_refuse,
     ticket_mint,
-    ticket_take
+    ticket_take,
+    work_status
 );
 
 snapshot_table!(

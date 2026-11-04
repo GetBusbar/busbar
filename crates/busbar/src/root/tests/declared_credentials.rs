@@ -3,10 +3,10 @@
 
 use std::sync::{Arc, OnceLock};
 
-use busbar_contract::config::UpstreamCreds;
-use busbar_contract::protocol::{
-    CredentialFamily, CredentialHeader, EgressScheme, ProtocolDecl, SigningContext,
+use busbar_contract::auth_egress::{
+    CredentialFamily, CredentialHeader, EgressScheme, SigningContext,
 };
+use busbar_contract::config::UpstreamCreds;
 use busbar_kernel::bound_credential::{bind, CredentialProvider, StyleBinding};
 
 fn fixture() -> &'static serde_json::Value {
@@ -74,7 +74,7 @@ fn present_bound(binding: &StyleBinding, key: &str, ctx: &SigningContext) -> Vec
     strings(&bound(binding, own).headers_for(key, ctx))
 }
 
-fn present(decl: &'static ProtocolDecl, key: &str, ctx: &SigningContext) -> Vec<(String, String)> {
+fn present(decl: &'static AuthWitness, key: &str, ctx: &SigningContext) -> Vec<(String, String)> {
     let dialect = decl
         .name
         .rsplit('-')
@@ -126,28 +126,46 @@ const GOOG: CredentialHeader = CredentialHeader::Raw {
     trim_start: false,
 };
 
-static TWINS: [ProtocolDecl; 6] = [
-    ProtocolDecl {
+// Only credential presentation belongs in this host witness. Dialect codec declarations live
+// in the LLM plane; the recorded product names below are fixture data.
+struct AuthWitness {
+    name: &'static str,
+    egress_scheme: Option<EgressScheme>,
+    static_headers: &'static [(&'static str, &'static str)],
+}
+
+impl AuthWitness {
+    const fn named(name: &'static str) -> Self {
+        Self {
+            name,
+            egress_scheme: None,
+            static_headers: &[],
+        }
+    }
+}
+
+static TWINS: [AuthWitness; 6] = [
+    AuthWitness {
         egress_scheme: Some(EgressScheme::bearer()),
-        ..ProtocolDecl::named("declared-twin-openai")
+        ..AuthWitness::named("declared-twin-openai")
     },
-    ProtocolDecl {
+    AuthWitness {
         egress_scheme: Some(EgressScheme::bearer()),
-        ..ProtocolDecl::named("declared-twin-responses")
+        ..AuthWitness::named("declared-twin-responses")
     },
-    ProtocolDecl {
+    AuthWitness {
         egress_scheme: Some(EgressScheme::bearer()),
-        ..ProtocolDecl::named("declared-twin-cohere")
+        ..AuthWitness::named("declared-twin-cohere")
     },
-    ProtocolDecl {
+    AuthWitness {
         egress_scheme: Some(EgressScheme::Static {
             families: &[],
             own: GOOG,
             passthrough: GOOG,
         }),
-        ..ProtocolDecl::named("declared-twin-gemini")
+        ..AuthWitness::named("declared-twin-gemini")
     },
-    ProtocolDecl {
+    AuthWitness {
         egress_scheme: Some(EgressScheme::Static {
             families: ANTHROPIC_FAMILIES,
             own: CredentialHeader::Raw {
@@ -156,20 +174,20 @@ static TWINS: [ProtocolDecl; 6] = [
             },
             passthrough: CredentialHeader::Bearer,
         }),
-        ..ProtocolDecl::named("declared-twin-anthropic")
+        ..AuthWitness::named("declared-twin-anthropic")
     },
-    ProtocolDecl {
+    AuthWitness {
         egress_scheme: Some(EgressScheme::SigV4 {
             service: "bedrock",
             region_of_host: recorded_region,
             default_region: "us-east-1",
             content_type: "application/json",
         }),
-        ..ProtocolDecl::named("declared-twin-bedrock")
+        ..AuthWitness::named("declared-twin-bedrock")
     },
 ];
 
-fn twin(dialect: &str) -> &'static ProtocolDecl {
+fn twin(dialect: &str) -> &'static AuthWitness {
     let name = format!("declared-twin-{dialect}");
     TWINS
         .iter()
@@ -679,24 +697,24 @@ const FAMILY_TABLE: EgressScheme = EgressScheme::Static {
     passthrough: CredentialHeader::Bearer,
 };
 
-static STATIC_TWINS: [ProtocolDecl; 3] = [
-    ProtocolDecl {
+static STATIC_TWINS: [AuthWitness; 3] = [
+    AuthWitness {
         egress_scheme: Some(FAMILY_TABLE),
         static_headers: &[("anthropic-version", "2023-06-01")],
-        ..ProtocolDecl::named("static-twin-versioned")
+        ..AuthWitness::named("static-twin-versioned")
     },
-    ProtocolDecl {
+    AuthWitness {
         egress_scheme: Some(FAMILY_TABLE),
-        ..ProtocolDecl::named("static-twin-unversioned")
+        ..AuthWitness::named("static-twin-unversioned")
     },
-    ProtocolDecl {
+    AuthWitness {
         egress_scheme: Some(EgressScheme::bearer()),
         static_headers: &[("x-static-one", "1"), ("x-static-two", "two")],
-        ..ProtocolDecl::named("static-twin-two-statics")
+        ..AuthWitness::named("static-twin-two-statics")
     },
 ];
 
-fn static_twin(name: &str) -> &'static ProtocolDecl {
+fn static_twin(name: &str) -> &'static AuthWitness {
     STATIC_TWINS
         .iter()
         .find(|d| d.name == name)

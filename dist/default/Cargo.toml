@@ -853,7 +853,7 @@ members = ["."]
 # THE LLM PLANE, pinned from its own repo like every other plane. da2ab5f (stuck3-1427-journal) is
 # e154678 plus its held-cell test reading the rig's node journal (busbar #1427: the node amendment
 # journal is an instance the node owns; `node_recent` is gone).
-busbar-plane-llm = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-llm", rev = "f5b3f7cd85a1fd2fcd9dfa6b0d0c6a207e2a365c" }
+busbar-plane-llm = { git = "https://git.getbusbar.dev/GetBusbar/busbar-plane-llm", rev = "1709f690f82e321c4c2740cbf1c7f6737aaa2a98" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-admin-tokens", rev = "df4f9e5549bb38a9074dccc60e8c2a85c0c68bd5" }
 busbar-auth-admin-tokens-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-auth-admin-tokens", rev = "df4f9e5549bb38a9074dccc60e8c2a85c0c68bd5" }
@@ -885,7 +885,7 @@ busbar-export-webhook = { git = "https://git.getbusbar.dev/GetBusbar/busbar-expo
 # failure is the system's words alone, no op prefix), moved past
 # 12b0783's behaviour in its own PR with its own oracle verdict (FLEET.md transport-http rule). The
 # door claims `https` again (the transport fold's row).
-busbar-transport-http = { git = "https://git.getbusbar.dev/GetBusbar/busbar-transport-http", rev = "e7b9fc49abce829af1ba8b071e6cd36b0b4298af" }
+busbar-transport-http = { git = "https://git.getbusbar.dev/GetBusbar/busbar-transport-http", rev = "5c815b16217a8aba628ba1fa81643e6c4bf61f5d" }
 # THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
 # links on the transport-door axis (the gRPC module left busbar-transport-http for it).
 busbar-transport-grpc = { git = "https://git.getbusbar.dev/GetBusbar/busbar-transport-grpc", rev = "bdf52a8f52f9d1d44a193c4e875550339e6d6be9" }

@@ -108,7 +108,7 @@ impl FramerDoor for OpeningFramer {
     }
 }
 
-pub(crate) fn offer() -> Vec<u8> {
+pub(crate) fn offer() -> zeroize::Zeroizing<Vec<u8>> {
     use busbar_transport_webrtc::framing::{Framing, Opening, Side};
     let certificate = busbar_core_connector::dtls::SessionCert::mint().unwrap();
     let mut peer = Framing::begin(
@@ -122,7 +122,9 @@ pub(crate) fn offer() -> Vec<u8> {
         Instant::now(),
     )
     .expect("the real WebRTC peer offers a data channel");
-    peer.next_piece().expect("the real peer's SDP offer").bytes
+    peer.next_piece()
+        .expect("the real peer's SDP offer")
+        .into_bytes()
 }
 
 pub(crate) fn assert_description(bytes: &[u8]) {
@@ -359,27 +361,31 @@ async fn a_duplicate_local_user_refuses_only_the_second_real_opening() {
     let first_framer = OpeningFramer::new();
     let first = open(&door, &first_framer).unwrap();
     let first_observed = Observed::new(&first);
-    let first_user = std::str::from_utf8(&first.description.bytes)
-        .unwrap()
-        .lines()
-        .find_map(|line| line.strip_prefix("a=ice-ufrag:"))
-        .unwrap()
-        .to_owned();
+    let first_user = zeroize::Zeroizing::new(
+        std::str::from_utf8(&first.description.bytes)
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("a=ice-ufrag:"))
+            .unwrap()
+            .to_owned(),
+    );
     only_joining(first).admit_into(1, &connector).unwrap();
 
     let second_framer = OpeningFramer::new();
     second_framer.fault.store(4, Ordering::SeqCst);
-    let offered = String::from_utf8(offer()).unwrap();
-    let offered = offered
-        .split_inclusive("\r\n")
-        .map(|line| {
-            if line.starts_with("a=ice-ufrag:") {
-                format!("a=ice-ufrag:{first_user}\r\n")
-            } else {
-                line.into()
-            }
-        })
-        .collect::<String>();
+    let offered = offer();
+    let offered = std::str::from_utf8(&offered).unwrap();
+    let mut rewritten =
+        zeroize::Zeroizing::new(String::with_capacity(offered.len() + first_user.len()));
+    for line in offered.split_inclusive("\r\n") {
+        if line.starts_with("a=ice-ufrag:") {
+            rewritten.push_str("a=ice-ufrag:");
+            rewritten.push_str(&first_user);
+            rewritten.push_str("\r\n");
+        } else {
+            rewritten.push_str(line);
+        }
+    }
     let limits = LimitsResolved {
         datagram_line_memory_bytes: Some(
             4 * busbar_core_connector::test_support::datagram_output_reservation_bytes(),
@@ -388,7 +394,7 @@ async fn a_duplicate_local_user_refuses_only_the_second_real_opening() {
     };
     let second = {
         let _scope = BuildScope::enter(&limits);
-        Opened::open(&door, second_framer.clone(), offered.as_bytes()).unwrap()
+        Opened::open(&door, second_framer.clone(), rewritten.as_bytes()).unwrap()
     };
     let second_observed = Observed::new(&second);
     let refusal = only_joining(second).admit_into(2, &connector).unwrap_err();
@@ -465,4 +471,97 @@ async fn successful_admission_keeps_serving_until_explicit_retirement_and_wakes_
     assert!(lock(&door.legs).is_empty());
     assert!(door.assocs.is_empty());
     door.close();
+}
+
+/// Leave the actual product's offer queued, then fail the host's opening continuation. FINISH
+/// must drain that real partial SDP through a small sink before the product forgets its token.
+struct RetiringDial {
+    inner: Arc<OpeningFramer>,
+    probed: AtomicBool,
+}
+
+impl FramerDoor for RetiringDial {
+    fn facts(&self) -> &DoorFacts {
+        self.inner.facts()
+    }
+
+    fn cross(&self, call: Call<'_>) -> Crossed {
+        use busbar_contract::abi::mechanism::call::Outcome;
+        use busbar_contract::abi::sdk::door::{blank_in, blank_out};
+        use busbar_contract::abi::transport::{FinishIn, FramerOut, YIELD_MORE};
+        match call {
+            Call::Begin(input, out) => {
+                let sink = input.sink;
+                input.sink.frame_cap = 0;
+                input.sink.pieces_cap = 0;
+                let crossed = self.inner.cross(Call::Begin(input, out));
+                input.sink = sink;
+                assert_eq!(crossed.outcome, Outcome::Ready);
+                assert_ne!(out.yielded.flags & YIELD_MORE, 0);
+                crossed
+            }
+            Call::Timer(..) => Crossed {
+                outcome: Outcome::Failed,
+                error: Some(b"host cancels before the queued offer is published".to_vec()),
+            },
+            Call::Finish(input, out) => {
+                let sink = input.sink;
+                input.sink.frame_cap = 32;
+                input.sink.pieces_cap = 1;
+                let crossed = self.inner.cross(Call::Finish(input, out));
+                if crossed.outcome == Outcome::Ready && out.yielded.flags & YIELD_MORE == 0 {
+                    let mut probe: FinishIn = blank_in();
+                    probe.framing = input.framing;
+                    probe.lane = input.lane;
+                    probe.sink = input.sink;
+                    let mut result: FramerOut = blank_out();
+                    let gone = self
+                        .inner
+                        .inner
+                        .cross(Call::Finish(&mut probe, &mut result));
+                    assert_eq!(gone.outcome, Outcome::Failed);
+                    assert_eq!(
+                        gone.error.as_deref(),
+                        Some(b"finish: no such framing".as_slice()),
+                        "the actual WebRTC framing table released its token after all batches"
+                    );
+                    self.probed.store(true, Ordering::SeqCst);
+                }
+                input.sink = sink;
+                crossed
+            }
+            call => self.inner.cross(call),
+        }
+    }
+}
+
+#[tokio::test]
+async fn actual_webrtc_finish_drains_multiple_partial_sdp_batches_and_releases_its_token() {
+    let inner = OpeningFramer::new();
+    let framer = Arc::new(RetiringDial {
+        inner: inner.clone(),
+        probed: AtomicBool::new(false),
+    });
+    let cert = Arc::new(busbar_core_connector::dtls::SessionCert::mint().unwrap());
+    let judge: Arc<dyn busbar_core_connector::DialJudge> =
+        Arc::new(|_: &str, _: u32, _: busbar_core_connector::Judged| None);
+    let error = busbar_core_connector::datagram::DatagramFraming::dial(
+        framer.clone(),
+        cert,
+        "127.0.0.1:40000".parse().unwrap(),
+        &[("channel".to_owned(), b"events".to_vec())],
+        judge,
+        0,
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.outcome,
+        busbar_contract::abi::mechanism::call::Outcome::Failed
+    );
+    assert!(inner.finish_attempts.load(Ordering::SeqCst) > 1);
+    assert_eq!(
+        inner.finishes.load(Ordering::SeqCst),
+        inner.finish_attempts.load(Ordering::SeqCst)
+    );
+    assert!(framer.probed.load(Ordering::SeqCst));
 }

@@ -413,6 +413,18 @@ pub trait AuthAxis: Send + Sync {
         Ok(None)
     }
 
+    /// Validate a declared outbound style's settings without resolving or inventing a credential.
+    fn check_outbound_settings(
+        &self,
+        style: &str,
+        settings: &serde_json::Value,
+    ) -> Result<Vec<String>, String> {
+        let _ = settings;
+        Err(format!(
+            "outbound style '{style}' has no settings-only validator"
+        ))
+    }
+
     /// CHECK, NEVER DIAL (the `--validate` dry run): bind `credential` under `settings` on a fresh
     fn check_outbound(
         &self,

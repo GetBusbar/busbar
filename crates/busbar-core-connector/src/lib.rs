@@ -88,6 +88,30 @@ pub const DEFAULT_CLASS: u32 = 0;
 
 /// THE KERNEL'S DESTINATION JUDGE, as a dial reaches it (`dest.judge`, R-K): every authority the
 pub trait DialJudge: Send + Sync {
+    /// Judge a transport-located authority with independent security intent and egress class.
+    fn judge_target_all(
+        &self,
+        target: busbar_kernel::host_services::Destination<'_>,
+        reach: bool,
+        done: JudgedAll,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        if !scheme_admits(target.egress_class, target.secure) {
+            return Some(Err(busbar_contract::abi::host::service::DEST_PLAINTEXT));
+        }
+        self.judge_dial_all(target.authority, target.egress_class, reach, done)
+    }
+
+    /// Static policy for an explicit transport destination.
+    fn judge_target_static(
+        &self,
+        target: busbar_kernel::host_services::Destination<'_>,
+    ) -> Option<Verdict> {
+        if !scheme_admits(target.egress_class, target.secure) {
+            return Some(busbar_contract::abi::host::service::DEST_PLAINTEXT);
+        }
+        self.judge_static(target.authority, target.egress_class)
+    }
+
     /// Replace the bootstrap listener-port metadata before the effective plugins open.
     fn own_ports_applied(&self, _ports: &[u16]) {}
 
@@ -389,7 +413,6 @@ struct Judging {
 /// A dial through a proxy, judged in two steps: the target (its name arm, and its own resolution
 struct Proxied {
     spec: Arc<proxy::ProxyHop>,
-    judged_class: u32,
     target_judged: bool,
 }
 
@@ -1092,6 +1115,7 @@ impl Connector {
     fn judge_into(
         &self,
         dest: &str,
+        secure: bool,
         class: u32,
         reach: bool,
         answer: &Answer,
@@ -1108,7 +1132,15 @@ impl Connector {
                 w.wake();
             }
         });
-        self.judge.judge_dial_all(dest, class, reach, done)
+        self.judge.judge_target_all(
+            busbar_kernel::host_services::Destination {
+                authority: dest,
+                secure,
+                egress_class: class,
+            },
+            reach,
+            done,
+        )
     }
 
     /// The same connector keeping dialled connections under `posture` (the deployment's
@@ -1255,16 +1287,25 @@ impl Connector {
         let judged_class = guard::judged_class(egress_class, true);
         if self
             .judge
-            .judge_static(&located.authority, judged_class)
+            .judge_target_static(busbar_kernel::host_services::Destination {
+                authority: &located.authority,
+                secure: located.secure,
+                egress_class: judged_class,
+            })
             .is_some()
         {
             return Err(ConnError::Refused);
         }
         if socket::address_of(&located.authority).is_some() {
-            match self
-                .judge
-                .judge_dial(&located.authority, judged_class, Box::new(|_| {}))
-            {
+            match self.judge.judge_target_all(
+                busbar_kernel::host_services::Destination {
+                    authority: &located.authority,
+                    secure: located.secure,
+                    egress_class: judged_class,
+                },
+                false,
+                Box::new(|_, _| {}),
+            ) {
                 Some(Ok(addr))
                     if class_admits(
                         egress_class,
@@ -1639,7 +1680,6 @@ impl Connector {
                 }
                 p.target_judged = true;
                 let spec = Arc::clone(&p.spec);
-                let class = p.judged_class;
                 let answer = Arc::clone(&j.answer);
                 let previous = {
                     let mut a = j.answer.lock().expect("judgement");
@@ -1656,7 +1696,15 @@ impl Connector {
                     if held.retired.load(Ordering::Acquire) {
                         return Err(ConnError::Closed);
                     }
-                    let proxy_judged = self.judge_into(&spec.endpoint(), class, true, &answer);
+                    // This hop comes only from the operator's parsed proxy configuration. The
+                    // application's target already passed its own class and security checks.
+                    let proxy_judged = self.judge_into(
+                        &spec.endpoint(),
+                        false,
+                        EGRESS_OPERATOR_INFRASTRUCTURE,
+                        true,
+                        &answer,
+                    );
                     if held.retired.load(Ordering::Acquire) {
                         return Err(ConnError::Closed);
                     }
@@ -1826,12 +1874,17 @@ impl Connector {
     ) -> Result<(Option<Connection>, Option<Judging>), ConnError> {
         let answer: Answer = Arc::new(Mutex::new((None, None, Vec::new())));
 
-        let judged = self.judge_into(planned.authority(), judged_class, reach, &answer);
+        let judged = self.judge_into(
+            planned.authority(),
+            planned.secure(),
+            judged_class,
+            reach,
+            &answer,
+        );
 
         if let Some(spec) = self.tunnel_for(&planned, within) {
             let mut proxied = Proxied {
                 spec,
-                judged_class,
                 target_judged: false,
             };
             match judged {
@@ -1866,7 +1919,15 @@ impl Connector {
             proxied.target_judged = true;
             let answer: Answer = Arc::new(Mutex::new((None, None, Vec::new())));
             let proxy_authority = proxied.spec.endpoint();
-            return match self.judge_into(&proxy_authority, judged_class, true, &answer) {
+            // The configured CONNECT hop is operator infrastructure; its plaintext socket does
+            // not change the separately judged application's TLS requirement.
+            return match self.judge_into(
+                &proxy_authority,
+                false,
+                EGRESS_OPERATOR_INFRASTRUCTURE,
+                true,
+                &answer,
+            ) {
                 None => Ok((
                     None,
                     Some(Judging {
@@ -2105,9 +2166,7 @@ impl Connector {
                         status: class(got.status_class),
                         status_code: got.status_code,
 
-                        status_namespace: got.handoff.then(|| {
-                            busbar_contract::transport::registry::status_ns::HTTP.to_owned()
-                        }),
+                        status_namespace: got.status_namespace.as_deref().map(str::to_owned),
                         retry_after_secs: got.retry_after_secs,
                         fault: WireFault::from_code(got.fault),
                         reason: None,

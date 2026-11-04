@@ -178,6 +178,7 @@ fn walk_secret_refs_with_boot_token<'a>(
         credentials,
 
         listen: _,
+        listen_explicit: _,
         public_url: _,
         admin_listen: _,
         admin_auth: _,

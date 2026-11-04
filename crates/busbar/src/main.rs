@@ -362,6 +362,23 @@ impl BootstrapDestJudge {
 }
 
 impl busbar_kernel::host_services::DestJudge for BootstrapDestJudge {
+    fn judge_target_name(
+        &self,
+        target: busbar_kernel::host_services::Destination<'_>,
+        refuse_private: bool,
+    ) -> Result<(), u64> {
+        self.snapshot().judge_target_name(target, refuse_private)
+    }
+    fn judge_target(
+        &self,
+        target: busbar_kernel::host_services::Destination<'_>,
+        refuse_private: bool,
+        reach: bool,
+        done: Box<dyn FnOnce(busbar_kernel::host_services::Admitted) + Send>,
+    ) -> Option<busbar_kernel::host_services::Admitted> {
+        self.snapshot()
+            .judge_target(target, refuse_private, reach, done)
+    }
     fn judge_name(&self, dest: &str, class: u32, refuse_private: bool) -> Result<(), u64> {
         self.snapshot().judge_name(dest, class, refuse_private)
     }
@@ -420,10 +437,17 @@ mod bootstrap_destination_tests {
         let holder = BootstrapDestJudge::new(root::connector::guard_for(&policy(false)).unwrap());
         let installed: Arc<dyn busbar_kernel::host_services::DestJudge> = holder.clone();
         let class = busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
+        let target = busbar_kernel::host_services::Destination {
+            authority: "10.2.3.4:443",
+            secure: true,
+            egress_class: class,
+        };
+        assert!(installed.judge_target_name(target, false).is_ok());
         assert!(installed
             .judge_name("https://10.2.3.4", class, false)
             .is_ok());
         holder.replace(root::connector::guard_for(&policy(true)).unwrap());
+        assert!(installed.judge_target_name(target, false).is_err());
         assert!(installed
             .judge_name("https://10.2.3.4", class, false)
             .is_err());
@@ -862,7 +886,7 @@ async fn run(
         &app_handle,
         "listen".into(),
         req_body_max,
-        max_inbound,
+        0, // The framed actor applies one physical cap to data and operator requests.
         response_headers_cfg.server_timing,
     );
     let mut physical_routers = std::collections::HashMap::new();
@@ -871,7 +895,7 @@ async fn run(
             &app_handle,
             bind.at.clone(),
             req_body_max,
-            max_inbound,
+            0, // The framed actor owns this listener's shared admission cap.
             response_headers_cfg.server_timing,
         );
         physical_routers.insert(bind.at.clone(), router);
@@ -886,7 +910,7 @@ async fn run(
     }
 
     let _ = root::inbound::install(root::doors::dispatcher());
-    {
+    if listener_plan.has_root_listener() {
         let app = app_handle.load();
         let guests = listener_plan.data_guests(&app).unwrap_or_else(|e| die(e));
         let refusals = listener_plan
@@ -900,6 +924,9 @@ async fn run(
     app_handle.on_apply(Box::new({
         let plan = Arc::clone(&listener_plan);
         move |app| {
+            if !plan.has_root_listener() {
+                return;
+            }
             let guests = plan.data_guests(app).expect(
                 "RootRules checked this candidate's physical listener lists before publication",
             );
@@ -1066,15 +1093,24 @@ async fn run(
         std::process::exit(code);
     }
 
-    let framer = listener_framer(
-        &listen,
-        root::listener::framed::DATA_SCHEME,
-        &listener_plan,
-        "listen",
-    );
+    let framer = listener_plan.has_root_listener().then(|| {
+        listener_framer(
+            &listen,
+            listener_plan.root_claim().unwrap_or_else(|e| die(e)),
+            &listener_plan,
+            "listen",
+            max_inbound,
+        )
+    });
     let mut plugin_listeners = Vec::new();
     for bind in listener_plan.stream_binds() {
-        let framer = listener_framer(&bind.at, &bind.transport, &listener_plan, &bind.at);
+        let framer = listener_framer(
+            &bind.at,
+            &bind.transport,
+            &listener_plan,
+            &bind.at,
+            max_inbound,
+        );
         let tls: Option<busbar_kernel::config::sections::TlsCfg> = bind
             .tls
             .clone()
@@ -1121,7 +1157,6 @@ async fn run(
                     ))
                 })
         };
-        let data_at = bound_at("listen", &listen);
         let admin_at = bound_at("admin_listen", &admin_listen);
 
         let admin_via = root::connector::the().address_via();
@@ -1129,17 +1164,19 @@ async fn run(
             Listening::bind_stream(admin_via.as_ref(), &admin_at, ROOT_BIND_LIMITS).unwrap_or_else(
                 |e| die(format!("cannot bind listen address '{admin_listen}': {e}")),
             );
-        let data_handles = serve_thread_per_core(
-            data_workers,
-            listen.clone(),
-            data_at,
-            data_router,
-            tls_cfg,
-            tls_secret_resolver.clone(),
-            &shutdown_tx,
-            worker_shutdown_rx,
-            framer,
-        );
+        let data_handles = framer.map_or_else(Vec::new, |framer| {
+            serve_thread_per_core(
+                data_workers,
+                listen.clone(),
+                bound_at("listen", &listen),
+                data_router,
+                tls_cfg,
+                tls_secret_resolver.clone(),
+                &shutdown_tx,
+                worker_shutdown_rx,
+                framer,
+            )
+        });
         tracing::debug!(
             listen = %admin_listen,
             carrier = %root::connector::carrier_name(admin_via.as_ref()),
@@ -1168,20 +1205,26 @@ async fn run(
     #[cfg(not(unix))]
     {
         let _ = data_workers;
-        let data_listener = root::listener::SocketAdmits::new(bind_listener(&listen).await);
         let admin_listener = root::listener::SocketAdmits::new(bind_listener(&admin_listen).await);
         tokio::join!(
-            serve_listener(
-                data_listener,
-                data_router,
-                tls_cfg,
-                tls_secret_resolver.clone(),
-                &listen,
-                recv_shutdown(shutdown_tx.subscribe()),
-                None,
-                true,
-                Some(framer),
-            ),
+            async {
+                if let Some(framer) = framer {
+                    let data_listener =
+                        root::listener::SocketAdmits::new(bind_listener(&listen).await);
+                    serve_listener(
+                        data_listener,
+                        data_router,
+                        tls_cfg,
+                        tls_secret_resolver.clone(),
+                        &listen,
+                        recv_shutdown(shutdown_tx.subscribe()),
+                        None,
+                        true,
+                        Some(framer),
+                    )
+                    .await;
+                }
+            },
             serve_listener(
                 admin_listener,
                 admin_router,
@@ -1225,6 +1268,7 @@ fn listener_framer(
     scheme: &str,
     plan: &Arc<root::serve::ListenerPlan>,
     at: &str,
+    max_inbound: usize,
 ) -> root::listener::framed::DataFramer {
     let framer = root::listener::framed::listener_framer(
         Arc::new(|scheme: &str| root::connector::the().framer_for(scheme)),
@@ -1242,7 +1286,16 @@ fn listener_framer(
         framer = %framer.door().facts().name,
         "data door served through its framer's accept side"
     );
+    let plan = Arc::clone(plan);
+    let at = at.to_string();
     framer
+        .with_dispatch(Arc::new(move |admission| {
+            plan.prepared(&admission.app(), &at)?
+                .data()?
+                .downcast()
+                .ok()
+        }))
+        .with_inbound_limit(max_inbound)
 }
 
 async fn recv_shutdown(mut rx: tokio::sync::broadcast::Receiver<()>) {

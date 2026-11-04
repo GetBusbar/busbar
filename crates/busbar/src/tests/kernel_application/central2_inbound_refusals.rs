@@ -345,6 +345,7 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
         for token in [None, Some("not-a-valid-signed-key")] {
             let mut scoped = listener.clone();
             scoped.scope = Some(ListenerScope {
+                neutral_refuse: None,
                 admission: Arc::new(|_, original| {
                     (original.target == "/v1/messages").then(|| {
                         busbar_kernel::plane_driver::dispatch::PlaneAdmission {
@@ -405,6 +406,7 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
     let mut private = listener;
     private.app = Arc::new(elsewhere_app);
     private.scope = Some(ListenerScope {
+        neutral_refuse: None,
         admission: Arc::new(|_, _| None),
         legacy_fallback: false,
         refuse: None,

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 pub mod admin_state;
+pub mod config;
 pub mod keys;
 pub mod restart;
 pub mod transport;

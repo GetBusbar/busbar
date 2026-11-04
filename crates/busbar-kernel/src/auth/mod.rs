@@ -23,6 +23,9 @@ use busbar_contract::auth_calls::{
 };
 use busbar_kernel_identity::operator::Judgement;
 
+mod admitted;
+pub use admitted::{admitted_context, AdmittedContext, AdmittedRefusal};
+
 const AUTH_SCHEME_BEARER: &str = "bearer";
 
 pub const HEALTHZ_PATH: &str = "/healthz";
@@ -315,6 +318,19 @@ fn strike_named(req: &mut Request<Body>, consumed: &mut ConsumedCredentials, str
 
 pub(crate) fn without_query_keys(uri: &axum::http::Uri, keys: &[&str]) -> Option<axum::http::Uri> {
     let query = uri.query()?;
+    let kept = without_query_keys_text(query, keys)?;
+    let path_and_query = if kept.is_empty() {
+        uri.path().to_string()
+    } else {
+        format!("{}?{kept}", uri.path())
+    };
+    let mut parts = uri.clone().into_parts();
+    parts.path_and_query = Some(path_and_query.parse().ok()?);
+    axum::http::Uri::from_parts(parts).ok()
+}
+
+/// Strip consumed query keys without requiring the enclosing target to be an HTTP URI.
+pub(crate) fn without_query_keys_text(query: &str, keys: &[&str]) -> Option<String> {
     let named = |pair: &&str| {
         let key = pair.split_once('=').map_or(*pair, |(k, _)| k);
         let decoded = url::form_urlencoded::parse(key.as_bytes())
@@ -327,13 +343,7 @@ pub(crate) fn without_query_keys(uri: &axum::http::Uri, keys: &[&str]) -> Option
         return None;
     }
     let kept: Vec<&str> = query.split('&').filter(|p| !named(p)).collect();
-    let path_and_query = match kept.is_empty() {
-        true => uri.path().to_string(),
-        false => format!("{}?{}", uri.path(), kept.join("&")),
-    };
-    let mut parts = uri.clone().into_parts();
-    parts.path_and_query = Some(path_and_query.parse().ok()?);
-    axum::http::Uri::from_parts(parts).ok()
+    Some(kept.join("&"))
 }
 
 const AUTH_ADMISSION_MAX_INFLIGHT: usize = 64;
@@ -1879,9 +1889,27 @@ pub(crate) fn scoped_unauthorized_with_completion_taps(
     client_token_present: bool,
 ) -> Response {
     let proto = crate::ingress::native::envelope_dialect(ingress_for_path(app, path));
+    auth_completion_taps(
+        app,
+        proto,
+        Some(auth_failure_status_and_kind(proto).0.as_u16()),
+    );
+    identity_refusal_response(
+        IdentityRefusal::Denied,
+        admission,
+        client_token_present,
+        || unauthorized_response(app, path, door),
+    )
+}
+
+/// Fire auth rejection completion taps using the selected plane's declared dialect.
+pub fn auth_completion_taps(
+    app: &std::sync::Arc<crate::state::App>,
+    proto: &str,
+    status: Option<u16>,
+) {
     if !app.tap_hooks_response.is_empty() {
         let shape = crate::hooks::taps::StageShape::zeroed(app.next_request_id(), "", proto, false);
-        let status = auth_failure_status_and_kind(proto).0.as_u16();
 
         let host = crate::plane_driver::engine_host_value(app);
         let host: &dyn crate::plane_driver::EngineHost = &host;
@@ -1895,18 +1923,12 @@ pub(crate) fn scoped_unauthorized_with_completion_taps(
                 remaining_candidates: None,
                 previous_failure: None,
                 outcome: Some("rejected_by_auth"),
-                status: Some(status),
+                status,
             },
             Default::default(),
             &|groups: &[String]| host.caller_in_hook_groups(None, groups),
         );
     }
-    identity_refusal_response(
-        IdentityRefusal::Denied,
-        admission,
-        client_token_present,
-        || unauthorized_response(app, path, door),
-    )
 }
 
 pub(crate) fn verifier_unavailable_response() -> Response {
@@ -2115,6 +2137,71 @@ pub(crate) async fn auth_middleware(
         .extensions()
         .get::<crate::inbound::RequestAdmission>()
         .cloned();
+    if let Some(inbound) = inbound.as_ref().filter(|request| {
+        matches!(
+            request.selected_line().claimant,
+            crate::guest::Claimant::Plane(_)
+        )
+    }) {
+        let path = req.uri().path().to_owned();
+        let door = core_routes.door_refusal(&path, req.method()).map(|refuse| {
+            (
+                refuse.clone(),
+                zeroize::Zeroizing::new(
+                    req.uri()
+                        .path_and_query()
+                        .map_or(path.as_str(), |target| target.as_str())
+                        .to_owned(),
+                ),
+            )
+        });
+        let mut context = match admitted_context(inbound).await {
+            Ok(context) => context,
+            Err(refused) => {
+                let admission = inbound.plane_admission();
+                let token = app
+                    .auth
+                    .extract_client_token(&crate::inbound::header_map(&inbound.inner.original));
+                return Err(match refused {
+                    AdmittedRefusal::Identity(refusal) => identity_refusal_response(
+                        refusal,
+                        admission.as_ref(),
+                        token.is_some(),
+                        || unauthorized_with_completion_taps(&app, &path, door.as_ref()),
+                    ),
+                    AdmittedRefusal::SenderConstraint | AdmittedRefusal::Audience(_) => {
+                        let description = match refused {
+                            AdmittedRefusal::Audience(description) => description,
+                            _ => "A DPoP-bound access token needs its DPoP proof (RFC 9449), and this one did not verify.",
+                        };
+                        match admission {
+                            Some(admission) => challenge::refuse(
+                                challenge::ChallengeError::InvalidToken,
+                                &admission.resource_metadata,
+                                description,
+                                None,
+                            ),
+                            None => unauthorized_response(&app, &path, door.as_ref()),
+                        }
+                    }
+                });
+            }
+        };
+        // The operator adapter alone converts the admitted neutral head back to HTTP.
+        *req.headers_mut() = crate::inbound::header_map(&context.head);
+        strike_named(&mut req, &mut context.consumed, &inbound.inner.strips);
+        let original = crate::inbound::header_map(&inbound.inner.original);
+        let token = app.auth.extract_client_token(&original).or_else(|| {
+            app.oauth_as
+                .as_ref()
+                .and_then(|_| dpop::dpop_credential(&original))
+        });
+        req.extensions_mut().insert(CallerToken(token));
+        req.extensions_mut().insert(context.principal);
+        req.extensions_mut().insert(context.gov);
+        req.extensions_mut().insert(context.consumed);
+        return Ok(next.run(req).await);
+    }
     let inbound_headers = inbound
         .as_ref()
         .map(|admission| crate::inbound::header_map(&admission.inner.original));

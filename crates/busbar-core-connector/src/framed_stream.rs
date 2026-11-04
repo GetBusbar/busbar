@@ -14,6 +14,17 @@ use crate::framer::{AuthBinding, Established, FramerDoor, Framing, Refused, Yiel
 /// The one stream a [`SIDE_ACCEPT_STREAM`] framing carries.
 pub const STREAM: u64 = 1;
 
+/// A stream framer's closing head. Status is producer metadata, never a parsed field.
+#[derive(Debug, Default)]
+pub struct Closing {
+    /// The producer's numeric code, when a closing head carries one.
+    pub status: Option<u32>,
+    /// The exact declared numbering of the producer's code.
+    pub status_namespace: Option<Arc<str>>,
+    /// Opaque closing fields in producer order.
+    pub fields: Vec<HeadWords>,
+}
+
 /// One accepted stream, framed by the framer that answers its claim.
 pub struct FramedStream {
     framing: Framing,
@@ -59,6 +70,30 @@ impl FramedStream {
         binding: &AuthBinding,
         scheme: u8,
     ) -> Result<Self, Refused> {
+        Self::open_bound_kind(door, claim, target, head, binding, scheme, false)
+    }
+
+    /// Open a stream over the transport field grammar without interpreting field names as HTTP.
+    pub fn open_neutral(
+        door: Arc<dyn FramerDoor>,
+        claim: &str,
+        target: &str,
+        head: &[(String, Vec<u8>)],
+        scheme: u8,
+    ) -> Result<Self, Refused> {
+        Self::open_bound_kind(door, claim, target, head, &AuthBinding::NONE, scheme, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn open_bound_kind(
+        door: Arc<dyn FramerDoor>,
+        claim: &str,
+        target: &str,
+        head: &[(String, Vec<u8>)],
+        binding: &AuthBinding,
+        scheme: u8,
+        neutral: bool,
+    ) -> Result<Self, Refused> {
         binding.ticket_less()?;
         let facts = door.facts();
         let index = facts
@@ -90,7 +125,11 @@ impl FramedStream {
             head,
             binding,
         )?;
-        let opening = opening_fields(&opened.wire)?;
+        let opening = if neutral {
+            neutral_opening_fields(&opened.wire)?
+        } else {
+            opening_fields(&opened.wire)?
+        };
         Ok(Self {
             framing,
             claim: index,
@@ -160,9 +199,62 @@ impl FramedStream {
             .finish_final(status, message, details, &self.rows, self.claim)?;
         closing(&y)
     }
+
+    /// Close normally when no final claim code was stated; the producer owns its normal ending.
+    pub fn close_response(self) -> Result<Closing, Refused> {
+        closing_response(
+            &self
+                .framing
+                .finish(busbar_contract::abi::transport::CLOSE_NORMAL),
+        )
+    }
+
+    /// Refuse the stream, retaining the producer's code and numbering separately from fields.
+    pub fn refuse_response(
+        &mut self,
+        bytes: &[u8],
+        status: u32,
+        head_sent: bool,
+    ) -> Result<Closing, Refused> {
+        let yielded = self
+            .framing
+            .refuse(Some(STREAM), bytes, status, head_sent)?;
+        closing_response(&yielded)
+    }
+
+    /// Finish the stream with a claim-native final code and retain its closing metadata.
+    pub fn finish_response(
+        &mut self,
+        status: u32,
+        message: &[u8],
+        details: &[u8],
+    ) -> Result<Closing, Refused> {
+        let yielded = self
+            .framing
+            .finish_final(status, message, details, &self.rows, self.claim)?;
+        closing_response(&yielded)
+    }
 }
 
-/// An initial field block must be wholly parsed and carry only valid ordinary field names and
+fn closing_response(yielded: &Yielded) -> Result<Closing, Refused> {
+    let mut closing = Closing {
+        fields: neutral_opening_fields(&yielded.wire)?,
+        ..Closing::default()
+    };
+    for piece in &yielded.pieces {
+        if piece.fields {
+            if let Some(status) = piece.status_code {
+                if closing.status.replace(status).is_some() {
+                    return Err(fault("the closing head states its status more than once"));
+                }
+                closing.status_namespace.clone_from(&piece.status_namespace);
+            }
+        }
+    }
+    Ok(closing)
+}
+
+/// The compatibility operator adapter validates ordinary HTTP field names and values.
 fn opening_fields(block: &[u8]) -> Result<Vec<HeadWords>, Refused> {
     use busbar_contract::abi::transport::fields;
     let mut read = 0;
@@ -185,6 +277,24 @@ fn opening_fields(block: &[u8]) -> Result<Vec<HeadWords>, Refused> {
         return Err(fault(
             "the opening field block has an incomplete or malformed line",
         ));
+    }
+    Ok(out)
+}
+
+/// A transport field block must be complete; field names and values belong to its producer.
+fn neutral_opening_fields(block: &[u8]) -> Result<Vec<HeadWords>, Refused> {
+    use busbar_contract::abi::transport::fields;
+    let mut read = 0;
+    let mut out = Vec::new();
+    for (name, value) in fields::lines(block) {
+        if name.is_empty() {
+            return Err(fault("the opening field block has an empty name"));
+        }
+        read += name.len() + fields::SEPARATOR.len() + value.len() + fields::LINE_END.len();
+        out.push((name.to_vec(), value.to_vec()));
+    }
+    if read != block.len() {
+        return Err(fault("the opening field block is incomplete"));
     }
     Ok(out)
 }

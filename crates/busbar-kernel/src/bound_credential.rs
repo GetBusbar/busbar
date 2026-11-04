@@ -5,12 +5,12 @@ use std::sync::Arc;
 
 use busbar_contract::abi::auth::{AuthPoint, AuthPoints, STYLE_NEEDS_HEADERS};
 use busbar_contract::auth_calls::{AuthAxis, Fields, FieldsRequest, OutboundAuth};
+use busbar_contract::auth_egress::EgressAuthHeaders;
 use busbar_contract::config::UpstreamCreds;
-use busbar_contract::protocol::EgressAuthHeaders;
 use busbar_contract::redacted::Secret;
 use http::{HeaderName, HeaderValue};
 
-use busbar_contract::protocol::SigningContext;
+use busbar_contract::auth_egress::SigningContext;
 
 pub trait CredentialProvider: Send + Sync {
     fn headers_for(&self, key: &str, ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)>;

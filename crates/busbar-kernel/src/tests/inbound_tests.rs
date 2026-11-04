@@ -1058,13 +1058,26 @@ fn an_active_unit_keeps_its_policy_after_three_reloads_without_reopening_the_old
 }
 
 fn transfer_request() -> (Kit, UnitRef, RequestAdmission, Arc<Script>) {
+    transfer_request_with_upgrade(None)
+}
+
+fn transfer_request_with_upgrade(
+    upgrade: Option<&str>,
+) -> (Kit, UnitRef, RequestAdmission, Arc<Script>) {
     let script = Script::new(
         AuthPoints::HEAD,
         identity("session-caller", "credential"),
         Vec::new(),
     );
     let k = kit(&[("a", Arc::clone(&script))]);
-    let listener = k.inbound.table(OWNER, GEN).unwrap().listener.clone();
+    let mut listener = k.inbound.table(OWNER, GEN).unwrap().listener.clone();
+    let mut lines = listener.guests.lines().to_vec();
+    for line in &mut lines {
+        if line.route.path == MESSAGES {
+            line.upgrade = upgrade.map(str::to_owned);
+        }
+    }
+    listener.guests = GuestList::seal(lines).unwrap();
     k.inbound.install_at(OWNER, 71, GEN, listener).unwrap();
     k.inbound.framing_started(OWNER, 71, 1, GEN).unwrap();
     k.inbound.grant_stream(OWNER, 1, 1, GEN).unwrap();
@@ -1079,6 +1092,50 @@ fn transfer_request() -> (Kit, UnitRef, RequestAdmission, Arc<Script>) {
     );
     let admission = k.inbound.claim_request(OWNER, 1, 1, &head).unwrap();
     (k, unit, admission, script)
+}
+
+#[test]
+fn upgrade_authority_uses_the_exact_admitted_route_and_is_consumed_once() {
+    let (_k, _, admission, _) = transfer_request_with_upgrade(Some("fixture-session"));
+    let permit = admission.upgrade_permit().unwrap();
+    let clone = permit.clone();
+    assert!(permit.consume(&admission, OWNER + 1, 1, 1).is_none());
+    assert!(permit.consume(&admission, OWNER, 2, 1).is_none());
+    assert!(permit.consume(&admission, OWNER, 1, 2).is_none());
+    assert_eq!(
+        permit.consume(&admission, OWNER, 1, 1),
+        Some("fixture-session")
+    );
+    assert!(clone.consume(&admission, OWNER, 1, 1).is_none());
+    let (_plain, _, ordinary, _) = transfer_request();
+    assert!(ordinary.upgrade_permit().is_none());
+}
+
+#[test]
+fn another_request_with_identical_numeric_handles_cannot_use_an_upgrade_permit() {
+    let (_a, _, first, _) = transfer_request_with_upgrade(Some("fixture-session"));
+    let (_b, _, second, _) = transfer_request_with_upgrade(Some("fixture-session"));
+    let permit = first.upgrade_permit().unwrap();
+    assert!(permit.consume(&second, OWNER, 1, 1).is_none());
+    assert_eq!(permit.consume(&first, OWNER, 1, 1), Some("fixture-session"));
+}
+
+#[test]
+fn expired_or_retired_request_cannot_authorize_an_upgrade() {
+    let (_k, _, mut expired, _) = transfer_request_with_upgrade(Some("fixture-session"));
+    Arc::get_mut(&mut expired.inner).unwrap().deadline = Some(std::time::Instant::now());
+    assert!(expired
+        .upgrade_permit()
+        .unwrap()
+        .consume(&expired, OWNER, 1, 1)
+        .is_none());
+    let (_k, _, retired, _) = transfer_request_with_upgrade(Some("fixture-session"));
+    retired.inner.alive.store(false, Ordering::Release);
+    assert!(retired
+        .upgrade_permit()
+        .unwrap()
+        .consume(&retired, OWNER, 1, 1)
+        .is_none());
 }
 
 fn transfer_source() -> busbar_contract::framing_scope::AdoptionSource {

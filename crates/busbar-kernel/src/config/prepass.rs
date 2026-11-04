@@ -119,6 +119,7 @@ const AUTH_LIFTS: &[(&str, Dest)] = &[(LIFTED_AUTH_KEYS[0], Dest::AuthPolicy)];
 /// [`DeployCfg`], each at its `Default` (an omitted section) until its key is read.
 #[derive(Default)]
 pub(crate) struct Lifted {
+    listen_explicit: bool,
     endpoint: EndpointSection,
     oauth_as: Option<serde_yaml::Value>,
     declared: DeclaredSections,
@@ -136,6 +137,7 @@ pub(crate) struct Lifted {
 
 impl Lifted {
     fn install(self, deploy: &mut DeployCfg) {
+        deploy.listen_explicit = self.listen_explicit;
         deploy.plane_rate_cards = self.plane_rate_cards;
         deploy.plane_fees = self.plane_fees;
         deploy.plane_raw = self.plane_raw;
@@ -226,6 +228,7 @@ struct KeySeed<'a, S> {
     inner: S,
     lift: &'a [(&'static str, Dest)],
     watch: &'a mut Vec<&'static str>,
+    listen_explicit: &'a mut bool,
 
     lifted: &'a mut Option<(&'static str, Dest)>,
 }
@@ -249,6 +252,9 @@ impl<'de, S: DeserializeSeed<'de>> Visitor<'de> for KeySeed<'_, S> {
         if let Some(entry) = self.lift.iter().find(|(k, _)| *k == v) {
             *self.lifted = Some(*entry);
             return Ok(KeyOutcome::Lift(self.inner));
+        }
+        if v == "listen" {
+            *self.listen_explicit = true;
         }
         self.watch.retain(|k| *k != v);
         self.inner
@@ -285,6 +291,7 @@ impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
                 inner: seed,
                 lift: self.lift,
                 watch: &mut self.lifted.watch,
+                listen_explicit: &mut self.lifted.listen_explicit,
                 lifted: &mut lifted,
             })?;
             match outcome {

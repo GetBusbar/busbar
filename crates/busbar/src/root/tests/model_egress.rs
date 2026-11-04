@@ -1345,3 +1345,123 @@ fn a_keyless_lane_is_not_probed() {
         "the keyed lane is probed and the keyless one is not"
     );
 }
+
+#[test]
+fn semantic_rate_limit_preserves_the_store_ladder_without_reading_protocol_numbers() {
+    let app = {
+        crate::dist_root_install::install();
+        crate::root::test_plane_registry::register();
+        let dialects: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+                .expect("the actual linked dialects are recorded");
+        let dialect = dialects["body_model"]
+            .as_object()
+            .and_then(|rows| rows.keys().next())
+            .expect("the distribution links a model dialect");
+        let models = "{m0: {provider: wire}}";
+        let pools = "{p: {members: [m0]}}";
+        let yaml = format!(
+        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+    );
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
+        let cfg =
+            busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
+        let store = crate::root::real_store::store();
+        let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+            Arc::new(crate::root::door_steps::Rules::default());
+        let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+            cfg,
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+            Some(busbar_contract::store_calls::OpenedStore {
+                records: store.clone(),
+                calls: Some(store),
+            }),
+            false,
+        )
+        .expect("the product builds the configured model generation");
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            limits.stage_boot();
+            crate::root::kernel::ROOT_CARD.keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the serving application has its configured governance Store")
+                    .store_calls()
+                    .expect("the configured Store exposes actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            );
+            crate::root::kernel::ROOT_CARD
+                .boot_in_store(None)
+                .expect("the actual configured Store boots its rate history");
+        }
+        limits
+            .keep()
+            .expect("the model generation commits its limits");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        Arc::new(app)
+    };
+    use busbar_contract::{WireFault, WireStatus, WireStatusClass};
+    let cells = cells_over(Arc::clone(&app), &["semantic", "reference", "generic"]);
+    let dest = DestinationId::new(0);
+    let token = busbar_kernel::test_hooks::tokens::pass();
+    let cfg = busbar_kernel::store::BreakerCfg::default();
+    let start = wall_secs();
+    for step in 0..8 {
+        let now = start + step * 60;
+        let (classified, tripped) = cells.judge(
+            "semantic",
+            dest,
+            UpstreamStatus {
+                class: Some(WireStatusClass::CallerFault),
+                fault: Some(WireFault::RateLimit),
+                code: Some(WireStatus::new("vendor-numbering", 42)),
+                retry_after: Some(7),
+            },
+            now,
+            &token,
+        );
+        let reference = app
+            .store
+            .record_rate_limit_in("reference", 0, now, &cfg, Some(7));
+        assert_eq!(
+            classified.outcome,
+            Outcome::RateLimit {
+                retry_after: Some(7)
+            }
+        );
+        assert_eq!(tripped, reference);
+        assert_eq!(
+            app.store.breaker_state_in("semantic", 0),
+            app.store.breaker_state_in("reference", 0)
+        );
+        assert_eq!(
+            app.store.error_rate_in("semantic", 0, now),
+            app.store.error_rate_in("reference", 0, now)
+        );
+    }
+    let (generic, _) = cells.judge(
+        "generic",
+        dest,
+        UpstreamStatus {
+            class: Some(WireStatusClass::FarEndFault),
+            fault: Some(WireFault::Transient),
+            code: Some(WireStatus::new("vendor-numbering", 429)),
+            retry_after: Some(7),
+        },
+        start,
+        &token,
+    );
+    assert_eq!(
+        generic.outcome,
+        Outcome::Transient {
+            retry_after: Some(7)
+        }
+    );
+}

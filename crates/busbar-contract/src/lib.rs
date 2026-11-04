@@ -18,6 +18,7 @@ mod alloc_counter;
 
 mod sdk_hyper;
 
+pub mod auth_egress;
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod billing;
 pub mod bounded;

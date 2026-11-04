@@ -58,6 +58,8 @@ pub struct AuthFacts {
     /// With `abi::auth::FACT_READS_CREDENTIALS`: the credential kinds `verify` reads through
     /// `records.secret`, the only kinds the host serves this instance.
     pub credential_kinds: Vec<String>,
+    /// The Statement advertises version 1 pure outbound settings validation.
+    pub outbound_settings_check: bool,
     /// With `abi::auth::CAP_OUTBOUND`: the outbound styles it serves, each judged at load.
     pub styles: Vec<OutboundStyle>,
     /// With `abi::auth::FACT_READS_CREDENTIALS`: the shape of the credential the host issues for
@@ -352,6 +354,10 @@ pub fn rendered_facts(rendering: &[u8]) -> Result<AuthFacts, String> {
         operator_principal: operator.then_some(principal),
         credential_kinds,
         styles,
+        outbound_settings_check: busbar_contract::abi::mechanism::extensions::get(
+            &r.extensions.bytes,
+            auth::EXT_OUTBOUND_SETTINGS_CHECK,
+        ) == Some(&[1][..]),
         issued,
     })
 }

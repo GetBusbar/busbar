@@ -391,6 +391,12 @@ pub trait Life: Send + Sync + Sized + 'static {
         settings_object(settings).map(|_| ())
     }
 
+    /// Validate with kind-owned call extensions. Ordinary lifecycle validation uses `validate`.
+    fn validate_with_extensions(settings: &[u8], extensions: &[u8]) -> Result<(), Refusal> {
+        let _ = extensions;
+        Self::validate(settings)
+    }
+
     /// `open`: the instance over `settings` and its resolved `secrets`, at `generation`.
     fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal>;
 
@@ -642,7 +648,10 @@ macro_rules! life_slot {
 life_slot!(
     /// `validate`: [`Life::validate`].
     Validate(ValidateIn => OutHead) |_, input, out| {
-        match L::validate(input.field(|i| &i.settings).bytes()) {
+        match L::validate_with_extensions(
+            input.field(|i| &i.settings).bytes(),
+            input.field(|i| &i.head.extensions).bytes(),
+        ) {
             Ok(()) => Outcome::Ready,
             Err(r) => out.fail(r),
         }

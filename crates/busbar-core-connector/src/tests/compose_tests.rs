@@ -1227,6 +1227,7 @@ fn duplex_pending_writes_survive_the_incoming_streams_clean_end() {
             bytes: Vec::new(),
             end_of_frame: true,
             status_code: None,
+            status_namespace: None,
             handoff: false,
             status_class: 0,
             fault: 0,

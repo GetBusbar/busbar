@@ -12,6 +12,7 @@ fn make_root_cfg(
         plane_pools: Default::default(),
         plane_sections: Default::default(),
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
+        listen_explicit: false,
 
         endpoint_resources: Default::default(),
         oauth_as: None,
@@ -82,41 +83,155 @@ fn proto_b() -> &'static str {
 }
 
 #[test]
-fn a_token_url_is_judged_for_any_style_declaring_it() {
-    let build = |word: &str| -> Vec<String> {
-        let provider: crate::config::providers::ResolvedProvider = make_provider(
-            "inert-dialect-metadata",
-            "https://api.example.com",
-            "API_KEY",
-        )
-        .into();
-        let cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
-        let flags = if word == "x-double-mint" {
-            busbar_contract::abi::auth::STYLE_ENDPOINT_TOKEN_URL
-        } else {
-            0
-        };
+fn a_declared_token_endpoint_keeps_host_metadata_policy() {
+    let mut provider: crate::config::providers::ResolvedProvider = make_provider(
+        "inert-dialect-metadata",
+        "foreign://api.example.com",
+        "API_KEY",
+    )
+    .into();
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    let check = |provider: &crate::config::providers::ResolvedProvider, cfg: &RootCfg| {
         let mut errors = Vec::new();
-        validate_token_endpoint_fields("mint", &provider, word, flags, &cfg, &[], &mut errors);
+        validate_token_endpoint_fields(
+            "mint",
+            provider,
+            "foreign-mint",
+            busbar_contract::abi::auth::STYLE_ENDPOINT_TOKEN_URL,
+            cfg,
+            &[],
+            &mut errors,
+        );
         errors
     };
-    let errs = build("x-double-mint");
-    for want in [
-        "provider 'mint' uses auth: x-double-mint but has no `token_url` (the OAuth token endpoint the client credentials are POSTed to)",
-        "provider 'mint' uses auth: x-double-mint but has no `scope`",
+    for target in [
+        "https://169.254.169.254/token",
+        "foreign://169.254.169.254:443/token",
+        "foreign://0xA9FEA9FE:443/token",
+        "foreign://[fd00:ec2::254]:443/token",
     ] {
+        provider.token_url = Some(target.into());
+        let errors = check(&provider, &cfg);
         assert!(
-            errs.iter().any(|e| e == want),
-            "a style declaring STYLE_ENDPOINT_TOKEN_URL is judged by the bit: want {want:?} in {errs:?}"
+            errors.iter().any(|e| e.contains("blocked cloud-metadata")),
+            "{target}: {errors:?}"
         );
-    }
-    let errs = build("bearer");
-    assert!(
-        !errs
+        assert!(!errors
             .iter()
-            .any(|e| e.contains("token_url") || e.contains("scope")),
-        "a style stating no endpoint is not judged for one: {errs:?}"
+            .any(|e| e.contains("scope") || e.contains("http or https")));
+    }
+    provider.token_url = Some("foreign://169.254.169.254:443/token".into());
+    provider.allow_metadata_hosts.push("169.254.169.254".into());
+    assert!(
+        check(&provider, &cfg).is_empty(),
+        "provider override remains authoritative"
     );
+    provider.allow_metadata_hosts.clear();
+    cfg.allow_metadata_hosts.push("169.254.169.254".into());
+    assert!(
+        check(&provider, &cfg).is_empty(),
+        "global override remains authoritative"
+    );
+    cfg.allow_metadata_hosts.clear();
+    cfg.allow_all_metadata = true;
+    assert!(check(&provider, &cfg).is_empty());
+    cfg.allow_all_metadata = false;
+    cfg.blocked_metadata_hosts.push("token.example.com".into());
+    provider.token_url = Some("foreign://token.example.com:443/token".into());
+    assert!(
+        check(&provider, &cfg)
+            .iter()
+            .any(|e| e.contains("blocked cloud-metadata")),
+        "operator additions apply to foreign endpoint hosts"
+    );
+}
+
+#[test]
+fn declared_provider_destinations_are_located_without_a_protocol_allowlist() {
+    let provider = make_provider(proto_a(), "foreign-secure://api.example:7443", "KEY");
+    let mut cfg = make_root_cfg(
+        HashMap::from([("foreign".into(), provider)]),
+        HashMap::new(),
+        HashMap::new(),
+    );
+    let locate = |target: &str| {
+        if target.starts_with("foreign-secure://") {
+            Ok(ProviderDestination {
+                authority: "api.example:7443".into(),
+                secure: true,
+                name: Some("api.example".into()),
+            })
+        } else {
+            Err("no admitted transport claims the target".into())
+        }
+    };
+    assert!(validate_provider_destinations(&cfg, &[], &locate).is_ok());
+    cfg.providers.get_mut("foreign").unwrap().base_url = "missing://api.example:7443".into();
+    let errors = validate_provider_destinations(&cfg, &[], &locate).unwrap_err();
+    assert!(errors
+        .iter()
+        .any(|e| e.contains("provider 'foreign'") && e.contains("claim 'missing'")));
+}
+
+#[test]
+fn provider_destination_intent_does_not_bypass_independent_host_policy() {
+    let provider = make_provider(proto_a(), "foreign://public.example:7443", "KEY");
+    let mut cfg = make_root_cfg(
+        HashMap::from([("foreign".into(), provider)]),
+        HashMap::new(),
+        HashMap::new(),
+    );
+    let destination = |authority: &str, secure| ProviderDestination {
+        authority: authority.into(),
+        secure,
+        name: None,
+    };
+    assert!(
+        validate_provider_destinations(&cfg, &[], &|_| Ok(destination(
+            "public.example:7443",
+            false
+        )))
+        .unwrap_err()
+        .iter()
+        .any(|e| e.contains("secure connection"))
+    );
+    assert!(
+        validate_provider_destinations(&cfg, &[], &|_| Ok(destination("127.0.0.1:7443", false)))
+            .is_ok()
+    );
+    assert!(
+        validate_provider_destinations(&cfg, &[], &|_| Ok(destination("0xa9fea9fe:7443", true)))
+            .unwrap_err()
+            .iter()
+            .any(|e| e.contains("metadata"))
+    );
+    cfg.providers
+        .get_mut("foreign")
+        .unwrap()
+        .allow_metadata_hosts
+        .push("169.254.169.254".into());
+    assert!(
+        validate_provider_destinations(&cfg, &[], &|_| Ok(destination("0xa9fea9fe:7443", true)))
+            .is_ok()
+    );
+}
+
+#[test]
+fn deferred_targets_never_call_the_locator_and_userinfo_is_refused_first() {
+    let provider = make_provider(proto_a(), "${TARGET}", "KEY");
+    let mut cfg = make_root_cfg(
+        HashMap::from([("foreign".into(), provider)]),
+        HashMap::new(),
+        HashMap::new(),
+    );
+    let never = |_: &str| -> Result<ProviderDestination, String> {
+        panic!("no lookup for deferred or invalid credentials")
+    };
+    assert!(validate_provider_destinations(&cfg, &["TARGET".into()], &never).is_ok());
+    cfg.providers.get_mut("foreign").unwrap().base_url = "foreign://secret@host:443".into();
+    let errors = validate_provider_destinations(&cfg, &[], &never).unwrap_err();
+    assert!(errors[0].contains("userinfo"));
+    assert!(!errors[0].contains("secret"));
 }
 
 #[test]
@@ -755,60 +870,6 @@ fn parse_auth(yaml: &str) -> config::AuthCfg {
         "auth yaml must resolve cleanly: {errors:?}"
     );
     out
-}
-
-#[test]
-fn test_public_url_requires_https() {
-    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
-    cfg.public_url = Some("http://api.busbar.example".to_string());
-    let errs = validate(&cfg).expect_err("public http host must fail");
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("public_url") && e.contains("https")),
-        "missing https error: {errs:?}"
-    );
-
-    cfg.public_url = Some("http://127.0.0.1:8080".to_string());
-    let res = validate(&cfg);
-    assert!(
-        res.as_ref()
-            .err()
-            .into_iter()
-            .flatten()
-            .all(|e| !e.contains("public_url")),
-        "loopback http must be accepted: {res:?}"
-    );
-
-    cfg.public_url = Some("https://api.busbar.example".to_string());
-    let res = validate(&cfg);
-    assert!(
-        res.as_ref()
-            .err()
-            .into_iter()
-            .flatten()
-            .all(|e| !e.contains("public_url")),
-        "public https must be accepted: {res:?}"
-    );
-}
-
-#[test]
-fn test_public_url_rejects_path_and_metadata() {
-    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
-    cfg.public_url = Some("https://api.busbar.example/x".to_string());
-    let errs = validate(&cfg).expect_err("public_url with a path must fail");
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("public_url") && (e.contains("path") || e.contains("bare origin"))),
-        "missing path error: {errs:?}"
-    );
-
-    cfg.public_url = Some("https://169.254.169.254".to_string());
-    let errs = validate(&cfg).expect_err("public_url at a metadata host must fail");
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("public_url") && e.contains("metadata")),
-        "missing metadata SSRF error: {errs:?}"
-    );
 }
 
 #[test]

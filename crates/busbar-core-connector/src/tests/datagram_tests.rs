@@ -34,6 +34,9 @@ mod emission_close_tests;
 #[path = "datagram_secure_credit_tests.rs"]
 mod secure_credit_tests;
 
+#[path = "datagram_finish_tests.rs"]
+mod finish_tests;
+
 fn p(s: &str) -> SocketAddr {
     s.parse().expect("addr")
 }
@@ -167,6 +170,8 @@ fn scripted_as(knobs: Knobs, local: (&'static str, &'static str)) -> Arc<Scripte
             composes_over: Vec::new(),
             ported: false,
             status_rows: Vec::new(),
+            status_namespaces: Vec::new(),
+            handoff_status: Vec::new(),
             duplex: Vec::new(),
             datagram: true,
         },
@@ -1103,6 +1108,7 @@ fn got(stream: u64, bytes: &[u8], fields: bool) -> crate::framer::Got {
         bytes: bytes.to_vec(),
         end_of_frame: true,
         status_code: None,
+        status_namespace: None,
         handoff: false,
         status_class: 0,
         fault: 0,

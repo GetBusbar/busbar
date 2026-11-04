@@ -203,6 +203,12 @@ pub trait HostServices: Send + Sync {
     /// `work.find`: the handle `reference` names, within `caller` and the principal of `unit`.
     fn work_find(&self, caller: &Caller, unit: Option<u64>, reference: &[u8], later: Later) -> Ran;
 
+    /// `work.status`: read only the status of a reference in the caller's instance namespace.
+    /// Requires no unit and discloses no principal, handle, or record. Only SETTLED proves success.
+    fn work_status(&self, _caller: &Caller, _reference: &[u8], _later: Later) -> Ran {
+        Ran::Now(Stored::refused(UNSERVED))
+    }
+
     /// `work.settle`: settle `caller`'s live handle `handle` with its final `record`, from a
     fn work_settle(
         &self,

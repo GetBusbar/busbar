@@ -71,6 +71,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
     DeployCfg {
         declared: Default::default(),
         listen: DEFAULT_LISTEN_ADDR.into(),
+        listen_explicit: false,
 
         endpoint: Default::default(),
         oauth_as: None,

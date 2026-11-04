@@ -13,7 +13,7 @@ use busbar_contract::abi::host::service::{
 use busbar_contract::net::url_host_to_ascii;
 use busbar_contract::transport::trust::EgressTrust;
 use busbar_kernel::config::Destinations;
-use busbar_kernel::host_services::{Admitted, DestJudge, DestRefusal, Refused};
+use busbar_kernel::host_services::{Admitted, DestJudge, DestRefusal, Destination, Refused};
 
 use crate::guard::{is_loopback, names_loopback, Guard, Resolve, SystemResolver};
 use crate::pool::PoolPosture;
@@ -67,19 +67,31 @@ impl GuardJudge {
         &self.guard
     }
 
-    /// The name and scheme arms: the host, port and scheme to dial, and the literal when the host
-    fn named(
+    /// Judge only the explicit authority and security intent supplied by the transport.
+    fn named_target(
         &self,
-        dest: &str,
-        class: u32,
+        target: Destination<'_>,
         strict: bool,
         reach: bool,
     ) -> Result<(String, u16, bool, Option<IpAddr>), u64> {
+        let class = target.egress_class;
         if class > EGRESS_LOOPBACK_ALLOWED {
             return Err(DEST_NO_HOST);
         }
-        let (host, port, https) = split(dest)?;
-        if !https && class == EGRESS_OPEN_WEB {
+        let located = busbar_kernel::config_validate::ProviderDestination {
+            authority: target.authority.to_owned(),
+            secure: target.secure,
+            name: None,
+        };
+        located.host().map_err(|_| DEST_NO_HOST)?;
+        // Preserve the original spelling until the guard has applied its obfuscated-address rule.
+        let (raw_host, raw_port) = target.authority.rsplit_once(':').ok_or(DEST_NO_HOST)?;
+        let host = raw_host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_owned();
+        let port = raw_port.parse().map_err(|_| DEST_NO_HOST)?;
+        if !target.secure && class == EGRESS_OPEN_WEB {
             return Err(DEST_PLAINTEXT);
         }
         let literal = self
@@ -87,14 +99,38 @@ impl GuardJudge {
             .judge_name_with(&host, class, strict, reach)
             .map_err(|r| r.verdict)?;
         if literal.is_some() {
-            plaintext_to_loopback(class, https, &host)?;
+            plaintext_to_loopback(class, target.secure, &host)?;
         }
+        let host = url_host_to_ascii(&host)
+            .map_err(|_| DEST_NO_HOST)?
+            .into_owned();
+        Ok((host, port, target.secure, literal))
+    }
 
-        let host = match url_host_to_ascii(&host) {
-            Ok(dialled) => dialled.into_owned(),
-            Err(_) => return Err(DEST_NO_HOST),
+    /// Compatibility input for operator HTTP destinations. Bare user input supplies no security
+    /// intent and is refused; connector dials use the explicit descriptor methods instead.
+    fn named(
+        &self,
+        dest: &str,
+        class: u32,
+        strict: bool,
+        reach: bool,
+    ) -> Result<(String, u16, bool, Option<IpAddr>), u64> {
+        let (host, port, secure) = split(dest)?;
+        let authority = if host.contains(':') {
+            format!("[{host}]:{port}")
+        } else {
+            format!("{host}:{port}")
         };
-        Ok((host, port, https, literal))
+        self.named_target(
+            Destination {
+                authority: &authority,
+                secure,
+                egress_class: class,
+            },
+            strict,
+            reach,
+        )
     }
 }
 
@@ -119,27 +155,34 @@ fn split(dest: &str) -> Result<(String, u16, bool), u64> {
             Err(_) => Err(DEST_NO_HOST),
         };
     }
-    if dest.is_empty() || dest.contains('@') {
-        return Err(DEST_NO_HOST);
-    }
-    let (host, port) = match dest.strip_prefix('[') {
-        Some(inner) => {
-            let (host, tail) = inner.split_once(']').ok_or(DEST_NO_HOST)?;
-            (host, tail.strip_prefix(':'))
-        }
-        None => match dest.rsplit_once(':') {
-            Some((h, p)) if !h.contains(':') => (h, Some(p)),
-            _ => (dest, None),
-        },
-    };
-    let port = port.map_or(Ok(443), |p| p.parse().map_err(|_| DEST_NO_HOST))?;
-    if host.is_empty() {
-        return Err(DEST_NO_HOST);
-    }
-    Ok((host.to_owned(), port, true))
+    Err(if dest.is_empty() {
+        DEST_NO_HOST
+    } else {
+        DEST_SCHEME
+    })
 }
 
 impl DestJudge for GuardJudge {
+    fn judge_target_name(&self, target: Destination<'_>, refuse_private: bool) -> Result<(), u64> {
+        self.named_target(target, refuse_private, false).map(|_| ())
+    }
+
+    fn judge_target(
+        &self,
+        target: Destination<'_>,
+        refuse_private: bool,
+        reach: bool,
+        done: Box<dyn FnOnce(Admitted) + Send>,
+    ) -> Option<Admitted> {
+        self.judged_named(
+            self.named_target(target, refuse_private, reach),
+            target.egress_class,
+            refuse_private,
+            reach,
+            done,
+        )
+    }
+
     fn judge_name(&self, dest: &str, class: u32, refuse_private: bool) -> Result<(), u64> {
         self.named(dest, class, refuse_private, false).map(|_| ())
     }
@@ -199,7 +242,24 @@ impl GuardJudge {
         reach: bool,
         done: Box<dyn FnOnce(Admitted) + Send>,
     ) -> Option<Admitted> {
-        let (host, port, https, literal) = match self.named(dest, class, refuse_private, reach) {
+        self.judged_named(
+            self.named(dest, class, refuse_private, reach),
+            class,
+            refuse_private,
+            reach,
+            done,
+        )
+    }
+
+    fn judged_named(
+        &self,
+        named: Result<(String, u16, bool, Option<IpAddr>), u64>,
+        class: u32,
+        refuse_private: bool,
+        reach: bool,
+        done: Box<dyn FnOnce(Admitted) + Send>,
+    ) -> Option<Admitted> {
+        let (host, port, https, literal) = match named {
             Err(v) => return Some(Err(v.into())),
             Ok(n) => n,
         };
@@ -291,6 +351,21 @@ impl OneJudge {
 }
 
 impl DialJudge for OneJudge {
+    fn judge_target_all(
+        &self,
+        target: Destination<'_>,
+        reach: bool,
+        done: JudgedAll,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        self.pinned_all(target.egress_class, done, |pended| {
+            self.dest.judge_target(target, false, reach, pended)
+        })
+    }
+
+    fn judge_target_static(&self, target: Destination<'_>) -> Option<Verdict> {
+        self.dest.judge_target_name(target, false).err()
+    }
+
     fn own_ports_applied(&self, ports: &[u16]) {
         let next: Arc<[u16]> = ports.into();
         let previous = std::mem::replace(&mut *self.own.write().expect("own ports"), next);
@@ -304,7 +379,20 @@ impl DialJudge for OneJudge {
         done: Judged,
     ) -> Option<Result<SocketAddr, Verdict>> {
         self.pinned(class, done, |pended| {
-            self.dest.judge(dest, class, false, pended)
+            if dest.contains("://") {
+                self.dest.judge(dest, class, false, pended)
+            } else {
+                self.dest.judge_target(
+                    Destination {
+                        authority: dest,
+                        secure: false,
+                        egress_class: class,
+                    },
+                    false,
+                    false,
+                    pended,
+                )
+            }
         })
     }
 
@@ -315,7 +403,20 @@ impl DialJudge for OneJudge {
         done: Judged,
     ) -> Option<Result<SocketAddr, Verdict>> {
         self.pinned(class, done, |pended| {
-            self.dest.judge_reaching(dest, class, pended)
+            if dest.contains("://") {
+                self.dest.judge_reaching(dest, class, pended)
+            } else {
+                self.dest.judge_target(
+                    Destination {
+                        authority: dest,
+                        secure: false,
+                        egress_class: class,
+                    },
+                    false,
+                    true,
+                    pended,
+                )
+            }
         })
     }
 
@@ -327,7 +428,18 @@ impl DialJudge for OneJudge {
         done: JudgedAll,
     ) -> Option<Result<SocketAddr, Verdict>> {
         self.pinned_all(class, done, |pended| {
-            if reach {
+            if !dest.contains("://") {
+                self.dest.judge_target(
+                    Destination {
+                        authority: dest,
+                        secure: false,
+                        egress_class: class,
+                    },
+                    false,
+                    reach,
+                    pended,
+                )
+            } else if reach {
                 self.dest.judge_reaching(dest, class, pended)
             } else {
                 self.dest.judge(dest, class, false, pended)
@@ -337,7 +449,20 @@ impl DialJudge for OneJudge {
 
     /// The guard's name arm, the one every dial's judgement opens with ([`DestJudge::judge_name`]).
     fn judge_static(&self, dest: &str, class: u32) -> Option<Verdict> {
-        self.dest.judge_name(dest, class, false).err()
+        if dest.contains("://") {
+            self.dest.judge_name(dest, class, false).err()
+        } else {
+            self.dest
+                .judge_target_name(
+                    Destination {
+                        authority: dest,
+                        secure: false,
+                        egress_class: class,
+                    },
+                    false,
+                )
+                .err()
+        }
     }
 }
 

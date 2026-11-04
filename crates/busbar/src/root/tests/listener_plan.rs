@@ -11,6 +11,12 @@ use super::ListenerPlan;
 use crate::root::boot::{ListenerNeed, ListenerNeeds};
 use crate::root::loader::boot::{BindOwner, InboundBind};
 
+#[path = "listener_upgrade_permits.rs"]
+mod upgrade_permit_tests;
+
+#[path = "listener_bindings_cases.rs"]
+mod binding_tests;
+
 struct Answer;
 impl PluginHttpDispatch for Answer {
     fn handle_http(&self, _: &EndpointRequest) -> EndpointResponse {
@@ -85,6 +91,7 @@ fn route(owner: &str, path: &str, auth: RouteAuth) -> RouteDecl {
 
 fn topology() -> ListenerNeeds {
     ListenerNeeds {
+        root_required: true,
         binds: vec![
             InboundBind {
                 owner: BindOwner::Root,
@@ -127,8 +134,14 @@ fn topology() -> ListenerNeeds {
     }
 }
 
-fn plan(topology: ListenerNeeds) -> Arc<ListenerPlan> {
+fn plan(mut topology: ListenerNeeds) -> Arc<ListenerPlan> {
+    for bind in &mut topology.binds {
+        if bind.owner == BindOwner::Root && bind.at == "listen" {
+            bind.transport = "http".into();
+        }
+    }
     Arc::new(ListenerPlan {
+        root_claim: Ok("http".into()),
         initial: topology,
         served: std::sync::OnceLock::new(),
         upgrades: std::sync::OnceLock::new(),
@@ -149,6 +162,13 @@ fn projection_boundary_app(
     routes: Vec<RouteDecl>,
     generation: u64,
 ) -> Arc<busbar_kernel::state::App> {
+    // These independent fixture Apps share the root's process-wide rate-card publisher.
+    static BUILDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static STORE: std::sync::OnceLock<Arc<crate::root::loader::store_v3::LoadedStore>> =
+        std::sync::OnceLock::new();
+    let _building = BUILDING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     crate::dist_root_install::install();
     crate::root::test_plane_registry::register();
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
@@ -157,7 +177,7 @@ fn projection_boundary_app(
     .expect("the listener deployment parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the listener deployment resolves");
-    let store = crate::root::real_store::store();
+    let store = Arc::clone(STORE.get_or_init(crate::root::real_store::store));
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
         Arc::new(crate::root::door_steps::Rules::default());
     let (mut candidate, rotate, limits) =
@@ -640,7 +660,10 @@ async fn physical_routers_share_publication_but_keep_handlers_and_refusals_separ
         Arc::new(move |refusal| {
             Some(
                 Response::builder()
-                    .status(refusal.status)
+                    .status(
+                        u16::try_from(refusal.status)
+                            .expect("the HTTP fixture renders an HTTP status"),
+                    )
                     .body(Body::from(label))
                     .unwrap(),
             )

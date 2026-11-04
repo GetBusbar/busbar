@@ -10662,3 +10662,76 @@ fn a_credential_endpoint_is_read_by_the_styles_bit_never_its_name() {
         "1.5.5's words over the style's own word: {refused}"
     );
 }
+
+#[test]
+fn oauth_settings_validate_before_open_with_no_credential_or_host_secrets() {
+    use crate::root::loader::dispatch::{
+        auth_outbound::check_settings, kinds::auth::Auth, load_linked, Bind, ConnTable,
+        DispatchConfig, Dispatcher, LinkedRow, NoSink,
+    };
+    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let row = LinkedRow::of(busbar_auth_oauth::door).expect("OAuth declaration");
+    let plugin = load_linked::<Auth>(
+        &row,
+        Bind {
+            instance: std::sync::Arc::from("pure-settings-check"),
+            max_inflight_cap: 1,
+            sink: std::sync::Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: ConnTable::NoNeeds,
+        },
+    )
+    .expect("bind without OPEN");
+    assert!(!plugin.is_open());
+    check_settings(
+        &plugin,
+        "oauth-client-credentials",
+        br#"{"token_url":"https://unreachable.invalid/token"}"#,
+    )
+    .expect("pure valid settings need no credential");
+    let bad = check_settings(
+        &plugin,
+        "oauth-client-credentials",
+        br#"{"token_url":"http://login.example.com/token"}"#,
+    )
+    .expect_err("known plaintext token endpoint is refused before resolving a credential");
+    assert!(bad.contains("must use https"), "{bad}");
+    let missing = check_settings(&plugin, "oauth-client-credentials", b"{}").unwrap_err();
+    assert!(missing.contains("no `token_url`"), "{missing}");
+    assert!(
+        !plugin.is_open(),
+        "validation never opens the auth instance"
+    );
+}
+
+#[test]
+fn settings_only_validation_requires_the_auth_declaration_capability() {
+    use crate::root::loader::dispatch::{
+        auth_outbound::check_settings,
+        kinds::auth::{stated_facts, Auth},
+        load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow, NoSink,
+    };
+    let door = crate::LINKED
+        .auths
+        .iter()
+        .find_map(|(_, _, door)| {
+            let facts = stated_facts(*door).ok()?;
+            (!facts.outbound_settings_check && !facts.styles.is_empty()).then_some(*door)
+        })
+        .expect("a conventional outbound auth row does not advertise settings-only validation");
+    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let plugin = load_linked::<Auth>(
+        &LinkedRow::of(door).unwrap(),
+        Bind {
+            instance: std::sync::Arc::from("missing-settings-check"),
+            max_inflight_cap: 1,
+            sink: std::sync::Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: ConnTable::NoNeeds,
+        },
+    )
+    .unwrap();
+    let error = check_settings(&plugin, "foreign-settings", b"{}").unwrap_err();
+    assert!(error.contains("no settings-only validator"), "{error}");
+    assert!(!plugin.is_open());
+}

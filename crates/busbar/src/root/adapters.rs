@@ -163,8 +163,8 @@ pub(crate) fn cooldown_remaining(
 
 pub(crate) fn classify(status: UpstreamStatus) -> Classified {
     busbar_kernel_breaker::port::classify_upstream(busbar_kernel_breaker::port::UpstreamStatus {
-        reading: reading(status),
         retry_after: status.retry_after,
+        reading: reading(status),
     })
 }
 

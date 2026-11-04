@@ -101,7 +101,7 @@ fn piece(kind: PieceKind, len: usize, status: Option<(u32, Option<u64>)>) -> Pie
             _ => WireStatusClass::FarEndFault,
         }),
         status_code: status.map(|(c, _)| c),
-        status_namespace: None,
+        status_namespace: status.map(|_| "test-status".to_owned()),
         retry_after_secs: status.and_then(|(_, r)| r),
 
         fault: status.and_then(|(c, _)| match c {
@@ -184,6 +184,7 @@ impl Conns for Table {
                 pieces.push_back(Piece {
                     status: Some(class),
                     status_code: Some(code),
+                    status_namespace: Some("another-test-status".into()),
                     fault,
                     ..piece(PieceKind::Fields, trailers.len(), None)
                 });
@@ -356,7 +357,7 @@ impl Breaker for Book {
                 Outcome::RecordNothing,
                 "context_length",
             ),
-            Some(WireFault::Transient) => (
+            Some(WireFault::Transient | WireFault::RateLimit) => (
                 Disposition::TransientUpstream,
                 Outcome::Transient {
                     retry_after: s.retry_after,
@@ -3310,4 +3311,18 @@ async fn protected_auth_never_uses_a_raw_connector_and_does_not_blame_the_destin
     }
     assert!(r.table.opened.lock().unwrap().is_empty());
     assert!(r.book.observed.lock().unwrap().is_empty());
+}
+
+#[test]
+fn opaque_status_namespace_survives_without_a_reserved_fallback() {
+    let mut answer = piece(PieceKind::Fields, 0, Some((0, None)));
+    answer.status_namespace = Some("vendor-unknown-numbering".to_owned());
+    let code = super::wire_code(&answer).expect("zero is a valid numbered status");
+    assert_eq!(code.namespace.as_ref(), "vendor-unknown-numbering");
+    assert_eq!(code.code, 0);
+    assert_eq!(code.in_namespace("other-vendor"), None);
+    answer.status_namespace = None;
+    assert!(super::wire_code(&answer).is_none());
+    answer.status_namespace = Some("".to_owned());
+    assert!(super::wire_code(&answer).is_none());
 }

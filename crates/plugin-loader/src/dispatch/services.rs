@@ -16,7 +16,7 @@ use busbar_contract::abi::host::service::{
     RecordsSecretIn, ServiceBufs, ServiceHead, ServiceOut, SessionEmitIn, SignIn, SnapshotReadIn,
     TicketMintIn, TicketTakeIn, TrustDecideIn, TrustDueIn, TrustServesIn, TrustSightIn,
     TrustSightItemIn, TrustStateIn, TrustVerifyIn, UnitNestIn, VerifyLookupIn, VerifyStoreIn,
-    WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, SERVICES,
+    WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, WorkStatusIn, SERVICES,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
@@ -739,6 +739,7 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     unit_refuse: Some(unit_refuse),
     ticket_mint: Some(ticket_mint),
     ticket_take: Some(ticket_take),
+    work_status: Some(work_status),
 };
 
 pub(crate) fn new_op(wake: &'static super::ticket::InstanceWake, ticket: Ticket) {
@@ -2012,7 +2013,6 @@ extern "C" fn unit_refuse(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
         let answer = svc::RefusalAnswer {
             size: size_of::<svc::RefusalAnswer>() as u32,
             status: held.bytes.status,
-            _reserved: 0,
             fields: if held.fields.is_empty() {
                 std::ptr::null()
             } else {
@@ -2178,6 +2178,22 @@ service! {
             let req = Fp::of(&[&reference]);
             pended(&served, &route, &head, req, Some(&i.into), |later| {
                 provider.work_find(caller, unit, &reference, later)
+            })
+        }
+    }
+}
+
+service! {
+    work_status, scoped, op::WORK_STATUS, WorkStatusIn, |served, route, head, caller, i| {
+        let Some(reference) = bytes_of(i.reference, "work_status.reference") else {
+            return Answered::fault();
+        };
+        let provider = served.provider;
+        // SAFETY: this observation has no output buffers.
+        unsafe {
+            let req = Fp::of(&[&reference]);
+            pended(&served, &route, &head, req, None, |later| {
+                provider.work_status(caller, &reference, later)
             })
         }
     }
