@@ -16,12 +16,20 @@ its signed DSSE form is what turns a row green there).
 
 ## Where the suites run
 
-Each suite runs in the repo that implements what it judges: a plugin's suites in that plugin's repo,
-core's (the OAuth2 authorization server, TLS, the supply chain) here. Every repo runs them the same
-way: the ModernCI `conformance` check runs `testing/conformance/run.sh` (rendered from the
-busbar-release template) over the repo's own `testing/conformance/suites.tsv`, on every move into dev
-and after every landing, without blocking the landing. A plugin's subject is built against busbar at
-the plugin's `.busbar-ref` pin; a core suite judges busbar's own commit.
+Each suite runs in the repo that implements what it judges. QA runs the product suites through
+`testing/conformance/run.sh` and each repo's `testing/conformance/suites.tsv`. Dev keeps fast
+checks; core's `certification-coverage` check verifies that every registered suite has an owner,
+source script and QA/main execution stage. `ci-coverage.json` records those bindings at the exact
+product pins; regenerate it with `scripts/conformance/ci_coverage.py --write --archive-root DIR`.
+
+The release-only Sigstore keyless check runs on main against the approved artifact, its bundle,
+and an exact certificate identity and OIDC issuer. Missing release evidence is `not-run`, never a
+passing certification. Its optional `--require` mode refuses missing evidence when a release policy
+requires that claim. Neither this check nor a coverage mapping grants company certification.
+
+Full QA and main promotion each require separate owner approval. Existing suite non-pass verdicts
+remain visible rather than being converted into passing claims. Company assurance work such as
+SOC 2 and ISO certification has an external issuer and owner; it is not a software CI result.
 
 ## Freshness
 
