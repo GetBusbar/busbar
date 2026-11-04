@@ -979,6 +979,8 @@ struct Scripted {
     parked: Mutex<Vec<(InstanceId, u64)>>,
     /// Armed, a close parks here until released: a transport door wedged in its close.
     close_gate: Gate,
+    /// Successful closes, including dials whose ESTABLISH never returned an id.
+    closed: Mutex<Vec<(InstanceId, ConnId)>>,
     /// Every dial is still connecting when its establish asks: `landed` answers PENDING.
     landing: bool,
     /// The independent dial and whole-request bounds every actual open received.
@@ -1185,9 +1187,13 @@ impl Conns for Scripted {
     }
     fn close(&self, c: InstanceId, id: ConnId) -> Result<(), ConnError> {
         self.close_gate.park();
-        self.slab.remove(c, id).map(|_| ())
+        self.slab.remove(c, id)?;
+        self.closed.lock().unwrap().push((c, id));
+        Ok(())
     }
 }
+
+const KEPT_X: [AbiStr; 1] = [abi_str("x")];
 
 const NAMED: [Need; 1] = [Need {
     direction: DIRECTION_OUTBOUND,
@@ -1197,8 +1203,8 @@ const NAMED: [Need; 1] = [Need {
     target_from: NONE,
     trust_from: NONE,
     details: NO_BLOB,
-    keep_response_headers: std::ptr::null(),
-    keep_response_headers_len: 0,
+    keep_response_headers: KEPT_X.as_ptr(),
+    keep_response_headers_len: KEPT_X.len(),
     timeout_ms: 0,
     keep_mode: KEEP_NAMED,
     _reserved: 0,
@@ -3746,6 +3752,138 @@ fn framed_opens_keep_the_serving_unit_through_sync_and_pending_auth() {
             } else {
                 vec![71, 93]
             }
+        );
+    }
+}
+
+#[test]
+fn response_headers_obey_the_original_need_on_raw_and_framed_streams() {
+    use busbar_contract::abi::host::conn::connector::KEEP_ALL_EXCEPT_DENIED;
+    const DENIED: [AbiStr; 1] = [abi_str("private")];
+    const EMPTY: [Need; 1] = [Need {
+        keep_response_headers: std::ptr::null(),
+        keep_response_headers_len: 0,
+        ..NAMED[0]
+    }];
+    const ALL: [Need; 1] = [Need {
+        keep_mode: KEEP_ALL_EXCEPT_DENIED,
+        keep_response_headers: std::ptr::null(),
+        keep_response_headers_len: 0,
+        deny_response_headers: DENIED.as_ptr(),
+        deny_response_headers_len: DENIED.len(),
+        ..NAMED[0]
+    }];
+    let block = b"X: first\r\nx: second\r\nprivate: secret\r\nconnection: x-hop\r\nx-hop: hidden\r\ncontent-length: 1\r\n";
+    const CASES: [(&[Need], &[u8]); 3] = [
+        (&NAMED, b"X: first\r\nx: second\r\n"),
+        (&EMPTY, b""),
+        (&ALL, b"X: first\r\nx: second\r\n"),
+    ];
+    for framed in [false, true] {
+        for (needs, expected) in CASES {
+            let table = Arc::new(Scripted {
+                framed,
+                ..Scripted::default()
+            });
+            let mut bytes = block.to_vec();
+            bytes.extend_from_slice(b"Fine By Me");
+            table.script.lock().unwrap().push_back((
+                piece(
+                    PieceKind::Fields,
+                    Some(201),
+                    Some(block.len()..bytes.len()),
+                    block.len(),
+                ),
+                bytes,
+            ));
+            let plugin = bound_over_needs(table, Adopter::unwatched(), needs);
+            let stream = if framed {
+                whole_request(&plugin, 0)
+            } else {
+                opened_stream(&plugin, 0).value
+            };
+            let mut buf = [0u8; 256];
+            let (out, head) = read_reply(&plugin, 3, stream, &mut buf);
+            assert!(ready(&out), "{}", error_text(&out));
+            assert_eq!(head.kind, REPLY_HEAD);
+            assert_eq!(head.code, 201);
+            assert_eq!(head.fields, span(0, expected.len()));
+            assert_eq!(&buf[..expected.len()], expected);
+            assert_eq!(head.reason, span(expected.len(), 10));
+            assert_eq!(&buf[expected.len()..expected.len() + 10], b"Fine By Me");
+            assert!(
+                !buf.windows(6).any(|bytes| bytes == b"secret"),
+                "removed fields must not remain readable outside the declared span"
+            );
+            assert!(!buf.windows(6).any(|bytes| bytes == b"hidden"));
+        }
+    }
+}
+
+#[test]
+fn a_response_reason_cannot_alias_a_removed_field() {
+    let mut buf = *b"private: secret\r\n";
+    let n = buf.len();
+    assert!(super::filter_reply_head(&mut buf, n, 9..15, None).is_err());
+}
+
+/// ESTABLISH may pend before its caller receives any stream id. Forgetting the
+/// ticket still closes that dial, exactly once, using its original authority.
+#[test]
+fn forgetting_a_pending_establish_reclaims_the_unpublished_connection() {
+    let table = Arc::new(Scripted {
+        landing: true,
+        ..Default::default()
+    });
+    let p = bound_over(&table);
+    let pending = opened_stream(&p, 0);
+    assert_eq!(pending.outcome, RawOutcome::of(Outcome::Pending));
+    assert!(table.closed.lock().unwrap().is_empty());
+    drop(super::forget(p.instance(), T));
+    let closed = table.closed.lock().unwrap().clone();
+    assert_eq!(closed.len(), 1);
+    assert_eq!(closed[0].0, p.instance());
+    assert!(table.slab.get(closed[0].0, closed[0].1).is_err());
+    drop(super::forget(p.instance(), T));
+    assert_eq!(*table.closed.lock().unwrap(), closed, "no double close");
+}
+
+/// The real host replays the FACTS payload, not just READY. Secure credentials
+/// never depend on the SDK's legacy missing-payload replay compatibility path.
+#[test]
+fn sdk_facts_replay_always_retains_the_observed_security_state() {
+    use std::task::Poll;
+    for secure in [false, true] {
+        let table = Arc::new(Scripted::default());
+        let p = bound_over(&table);
+        let stream = opened_stream(&p, 0).value;
+        *table.facts.lock().unwrap() = Some(ConnFacts {
+            peer_cert: secure.then(|| busbar_contract::transport::wire::CertFacts {
+                subject: String::new(),
+                issuer: String::new(),
+                fingerprint: "ab".repeat(32),
+            }),
+            ..Default::default()
+        });
+        let host = sdk_host(&p);
+        let observed = || {
+            let mut c = host.connector_from(T, 1);
+            let Poll::Ready(Ok(Some(facts))) = c.facts(stream) else {
+                panic!("a real host READY, including replay, must carry its FACTS");
+            };
+            facts.secure
+        };
+        assert_eq!(observed(), secure);
+        *table.facts.lock().unwrap() = None;
+        assert_eq!(
+            observed(),
+            secure,
+            "replay retains the original security decision"
+        );
+        let mut fresh = host.connector_from(T, 2);
+        assert!(
+            matches!(fresh.facts(stream), Poll::Ready(Err(_))),
+            "fresh missing facts fail closed"
         );
     }
 }
