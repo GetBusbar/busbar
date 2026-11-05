@@ -129,16 +129,7 @@ pub(super) async fn put(
             if providers_override.is_some() && request.document_patch.overlaps_path("/providers_file")
                 .map_err(|error| AdminError::Validation(error.to_string()))? {
                 return Err(AdminError::Conflict(format!(
-                    "providers_file is overridden by the process CLI/environment at config version {}; remove that explicit override and restart before editing providers_file",
-                    snapshot.config_version,
-                )));
-            }
-            if std::env::var("BUSBAR_WORKER_THREADS").ok()
-                .and_then(|value| value.trim().parse::<usize>().ok()).is_some_and(|value| value > 0)
-                && request.document_patch.overlaps_path("/advanced/worker_threads")
-                    .map_err(|error| AdminError::Validation(error.to_string()))? {
-                return Err(AdminError::Conflict(format!(
-                    "advanced.worker_threads is overridden by BUSBAR_WORKER_THREADS at config version {}; remove that explicit environment override and restart before editing the configured worker count",
+                    "providers_file is overridden by the process CLI at config version {}; remove that explicit override and restart before editing providers_file",
                     snapshot.config_version,
                 )));
             }

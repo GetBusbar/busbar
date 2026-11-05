@@ -460,12 +460,12 @@
     "number": 3021,
     "class": "config",
     "slug": "deprecated-env-var-honored",
-    "title": "A deprecated environment variable is set and still honored",
+    "title": "A deprecated environment variable is set and still honored — RETIRED",
     "severity": "actionable",
-    "summary": "One of the 1.5.x environment overrides (BUSBAR_PROVIDERS, BUSBAR_CONFIG_OVERLAY, BUSBAR_WORKER_THREADS, BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE, BUSBAR_UPSTREAM_HTTP1_ONLY) is set. It is honored exactly as before, and the warning names the config.yaml key that replaces it.",
-    "action": "Move the value to the named config.yaml key and unset the variable. Nothing changes until you do.",
+    "summary": "RETIRED. Serving no longer applies deprecated operational environment overrides. Use --migrate-config with the old deployment environment and working directory to capture provider, worker and upstream HTTP settings; old file-overlay selection is migration input only.",
+    "action": "Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md.",
     "since": "1.5.0",
-    "retired": false
+    "retired": true
   },
   {
     "code": "BUSBAR-3023",

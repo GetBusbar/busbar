@@ -429,15 +429,15 @@ A model has a `rate_card` entry present but every tier (input, output, cache_rea
 **What to do:** If the model is intentionally free, ignore this. Otherwise fill in the model's `rate_card` rates (micro-units per token) so its usage prices and counts against any `budget:` limit.
 
 <a id="deprecated-env-var-honored"></a>
-### BUSBAR-3021 — A deprecated environment variable is set and still honored
+### BUSBAR-3021 — A deprecated environment variable is set and still honored — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.5.0
 - **Slug:** `deprecated-env-var-honored`
 
-One of the 1.5.x environment overrides (BUSBAR_PROVIDERS, BUSBAR_CONFIG_OVERLAY, BUSBAR_WORKER_THREADS, BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE, BUSBAR_UPSTREAM_HTTP1_ONLY) is set. It is honored exactly as before, and the warning names the config.yaml key that replaces it.
+RETIRED. Serving no longer applies deprecated operational environment overrides. Use --migrate-config with the old deployment environment and working directory to capture provider, worker and upstream HTTP settings; old file-overlay selection is migration input only.
 
-**What to do:** Move the value to the named config.yaml key and unset the variable. Nothing changes until you do.
+**What to do:** Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md.
 
 <a id="config-overlay-rejected"></a>
 ### BUSBAR-3023 — Config overlay rejected at read (the reason, naming the key and the file) — RETIRED *(retired)*

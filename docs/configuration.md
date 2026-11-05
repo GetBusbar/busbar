@@ -75,7 +75,7 @@ Busbar at config.yaml, taking precedence over `BUSBAR_CONFIG`; `--providers <pat
 `--providers=<path>`) points it at the provider catalog, taking precedence over `providers_file:`.
 See [Operations → Process configuration](operations.md#process-configuration).
 
-**Operational env vars moved into `config.yaml` (1.5.3); the old names are deprecated but still honoured.** `BUSBAR_CONFIG_OVERLAY` → `config.overlay.file`, `BUSBAR_WORKER_THREADS` → `advanced.worker_threads`, `BUSBAR_UPSTREAM_HTTP1_ONLY` → `advanced.upstream_http1_only`, `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` → `advanced.upstream_h2_prior_knowledge`, and `BUSBAR_PROVIDERS` → `providers_file:` (or the `--providers` flag). These deprecated compatibility inputs warn at boot; the overlay selector no longer reads or writes a file, because 1.6.0 persists runtime config only through Store. Move the other operational inputs into config.yaml at your convenience. Only `BUSBAR_CONFIG` (bootstrap), secret `{ env: NAME }` references, and `RUST_LOG` are env-native by design (`TOKIO_WORKER_THREADS` is still a fallback for `advanced.worker_threads`). See the [`config`](#config) and [`advanced`](#advanced) sections and the [upgrade note](migration-1.5.md#153-config-consolidation).
+**Operational environment overrides are retired in 1.6.0.** `BUSBAR_PROVIDERS`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY` and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` are captured only by `--migrate-config`, using the old deployment's environment and working directory. Serving reads `providers_file:` (or `--providers`) and the corresponding `advanced` keys. The old `BUSBAR_CONFIG_OVERLAY` file selector is migration input; runtime config is persisted through Store. `BUSBAR_CONFIG` (bootstrap), explicit secret `{ env: NAME }` references, `RUST_LOG`, and the `TOKIO_WORKER_THREADS` fallback remain supported. See [the 1.6 upgrade instructions](migration-1.6.md#2-migrate-retired-operational-environment-variables-before-starting-16).
 
 ### `config`
 
@@ -1861,9 +1861,9 @@ Internal tuning knobs, normally omitted; each field defaults to its historical v
 advanced:
   rate_sweep_interval: 256          # rate-limiter stale-entry sweep amortization (every Nth check_rate)
   usage_flush_interval_ms: 100      # write-behind flush cadence for in-memory usage/budget counters
-  worker_threads: 4                 # data-plane worker count — one pinned runtime + listener each (was the tokio pool size pre-1.6.0; BUSBAR_WORKER_THREADS is deprecated but still honoured); omit ⇒ one per core
-  upstream_http1_only: false        # pin the upstream client to HTTP/1.1 (BUSBAR_UPSTREAM_HTTP1_ONLY is deprecated but still honoured)
-  upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams (BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE is deprecated but still honoured)
+  worker_threads: 4                 # data-plane worker count — one pinned runtime + listener each (was the tokio pool size pre-1.6.0; old BUSBAR_WORKER_THREADS values are captured by --migrate-config); omit ⇒ one per core
+  upstream_http1_only: false        # pin the upstream client to HTTP/1.1 (old BUSBAR_UPSTREAM_HTTP1_ONLY values are captured by --migrate-config)
+  upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams (old BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE values are captured by --migrate-config)
   response_headers:                 # every busbar-injected response header, opt-in, default OFF
     server_timing: false            # `Server-Timing: busbar;dur=<ms>` (formerly observability.emit_server_timing)
     route_policy: false             # `x-busbar-route-policy` / `x-busbar-route-target`

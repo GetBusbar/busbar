@@ -15,15 +15,16 @@
 
 [[diagnostic]]
 name = "DEPRECATED_ENV_VAR_HONORED"
-doc = "A deprecated 1.5.x environment variable is set; it is still honored, with this warning."
+doc = "RETIRED in 1.6.0: operational environment overrides are migration input only."
 code = 3021
 class = "Config"
 slug = "deprecated-env-var-honored"
-title = "A deprecated environment variable is set and still honored"
+title = "A deprecated environment variable is set and still honored — RETIRED"
 severity = "Actionable"
-summary = "One of the 1.5.x environment overrides (BUSBAR_PROVIDERS, BUSBAR_CONFIG_OVERLAY, BUSBAR_WORKER_THREADS, BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE, BUSBAR_UPSTREAM_HTTP1_ONLY) is set. It is honored exactly as before, and the warning names the config.yaml key that replaces it."
-action = "Move the value to the named config.yaml key and unset the variable. Nothing changes until you do."
+summary = "RETIRED. Serving no longer applies deprecated operational environment overrides. Use --migrate-config with the old deployment environment and working directory to capture provider, worker and upstream HTTP settings; old file-overlay selection is migration input only."
+action = "Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md."
 since = "1.5.0"
+retired = true
 
 [[diagnostic]]
 name = "DURABLE_WRITETHROUGH_BELOW_FLOOR"

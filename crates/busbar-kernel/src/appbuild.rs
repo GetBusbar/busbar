@@ -3,10 +3,9 @@ use std::sync::Arc;
 
 use crate::auth::{open_operator, AuthMiddleware};
 use crate::diagnostics::{
-    diag_error, diag_warn, DEPRECATED_ENV_VAR_HONORED, DURABLE_KEYS_INERT,
-    GOVERNANCE_STORE_EPHEMERAL, OPEN_RELAY_NO_AUTH, PLUGINS_FETCH_RELOAD_MISS,
-    PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED, STATEFUL_PLANE_EPHEMERAL_STORE,
-    STORE_SECRET_REF_UNRESOLVED,
+    diag_error, diag_warn, DURABLE_KEYS_INERT, GOVERNANCE_STORE_EPHEMERAL, OPEN_RELAY_NO_AUTH,
+    PLUGINS_FETCH_RELOAD_MISS, PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED,
+    STATEFUL_PLANE_EPHEMERAL_STORE, STORE_SECRET_REF_UNRESOLVED,
 };
 use crate::preflight::{
     build_secret_resolver, resolve_admin_token, resolve_at_rest_keys, resolve_signing_key,
@@ -317,7 +316,7 @@ pub fn load_config_from_disk_compacting_document_patches(
     };
     let raw_providers = std::fs::read_to_string(&providers_path).map_err(|e| {
         format!(
-            "cannot read providers file '{}': {e} (set `providers_file:` in config.yaml, or {ENV_PROVIDERS})",
+            "cannot read providers file '{}': {e} (set `providers_file:` in config.yaml, or --providers)",
             providers_path.display()
         )
     })?;
@@ -1195,21 +1194,6 @@ pub fn build_app_from_config_with_store(
             cfg.limits.max_honored_retry_after_secs,
         )),
     };
-
-    if std::env::var_os(ENV_UPSTREAM_H2_PRIOR_KNOWLEDGE).is_some() && prior.is_none() {
-        diag_warn!(
-            DEPRECATED_ENV_VAR_HONORED,
-            "{ENV_UPSTREAM_H2_PRIOR_KNOWLEDGE} is DEPRECATED; set \
-             `advanced.upstream_h2_prior_knowledge` in config.yaml (honored for now)."
-        );
-    }
-    if std::env::var_os(ENV_UPSTREAM_HTTP1_ONLY).is_some() && prior.is_none() {
-        diag_warn!(
-            DEPRECATED_ENV_VAR_HONORED,
-            "{ENV_UPSTREAM_HTTP1_ONLY} is DEPRECATED; set `advanced.upstream_http1_only` in \
-             config.yaml (honored for now)."
-        );
-    }
 
     let mut hook_env = hooks::HookEnv::new(plugin_registry.clone(), secret_resolver.clone())?;
 

@@ -28,22 +28,21 @@ never silent.
 | Provider key vars | n/a | Named by each provider's `api_key: { env: ... }` reference (e.g. `ANTHROPIC_KEY`). |
 | Token/secret vars | n/a | Anything referenced via `${VAR}` in either file (client tokens, admin token, …). |
 
-**Operational config moved into `config.yaml` (1.5.3).** Several knobs that used to be env vars now
-live in config.yaml, so they are reviewable, `--validate`-checked, and part of the deployment artifact.
-These env vars were deprecated in 1.5.3 and remain **deprecated but honoured** in 1.6.0 — each still
-takes effect exactly as it did in 1.5.5, with a boot warning (`BUSBAR-3021`) naming the config.yaml key
-that replaces it. Move each at your convenience; none has a removal date yet.
+**Operational environment overrides are retired in 1.6.0.** Run `--migrate-config` with the old
+deployment environment and working directory before starting the new binary. It writes the old
+effective provider, worker-count and upstream HTTP overrides into current config keys. Remove the
+retired variables from the launcher after conversion; see [the migration guide](migration-1.6.md#2-migrate-retired-operational-environment-variables-before-starting-16).
 
-| Deprecated env var (since 1.5.3, still honoured) | config.yaml key |
+| Retired env var | Migration destination |
 |---|---|
-| `BUSBAR_CONFIG_OVERLAY` | Deprecated compatibility selector; runtime state uses the configured Store (see [config mutability](#config-mutability-locked--overlay)) |
+| `BUSBAR_CONFIG_OVERLAY` | One-time old file-overlay import into Store |
 | `BUSBAR_WORKER_THREADS` | `advanced.worker_threads` |
 | `BUSBAR_UPSTREAM_HTTP1_ONLY` | `advanced.upstream_http1_only` |
 | `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` | `advanced.upstream_h2_prior_knowledge` |
-| `BUSBAR_PROVIDERS` | `providers_file:` (or the `--providers <path>` flag) |
+| `BUSBAR_PROVIDERS` | `providers_file:` (or use the current `--providers <path>` flag) |
 
-`TOKIO_WORKER_THREADS` is still honored, undeprecated, as a fallback for `advanced.worker_threads`.
-`BUSBAR_CONFIG` is unchanged.
+`TOKIO_WORKER_THREADS` remains a supported fallback for `advanced.worker_threads`.
+`BUSBAR_CONFIG`, `RUST_LOG`, and explicit secret environment references are unchanged.
 
 ### Config mutability (`locked` + `overlay`)
 

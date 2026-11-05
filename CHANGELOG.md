@@ -286,8 +286,7 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   it.
 - **Error and warning lines carry a diagnostic code.** `[error]`, `[warn]` and `warning:` lines on
   stderr are prefixed `BUSBAR-NNNN:`, and boot log lines carry `diag=BUSBAR-NNNN`. A few `[warn]`
-  lines are still printed without a code, among them the `BUSBAR_WORKER_THREADS` and
-  `BUSBAR_PROVIDERS` deprecation warnings and the jemalloc and memfd lines.
+  lines are still printed without a code, among them the jemalloc and memfd lines.
   The text after the code is byte-identical to 1.5.5; the code is a stable key into
   [the diagnostics reference](docs/diagnostics.md), which says what each one means and what to do.
 - **OTLP trace export works.** A `module: otlp` export instance delivered nothing in 1.5.5: every
@@ -724,17 +723,19 @@ and the `at` field on the hook view is joined by `fires_at`, which carries the r
   `credentials: { at_rest: { key: { file: /run/secrets/busbar-at-rest.key } } }` (create the file
   with `openssl rand -hex 32`).
 
-### Deprecated env vars still honoured
+### Retired operational environment overrides
 
-`BUSBAR_PROVIDERS`, `BUSBAR_CONFIG_OVERLAY`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY`
-and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` are read at the same points of the boot sequence as in
-1.5.5 and honoured exactly as before; each emits the 1.5.5 deprecation warning naming the
-config.yaml key that replaces it, under code BUSBAR-3021 except for `BUSBAR_PROVIDERS` and
-`BUSBAR_WORKER_THREADS`, whose warnings are still uncoded (`providers_file:` or `--providers`,
-`config.overlay.file`, `advanced.worker_threads`, `advanced.upstream_http1_only`,
-`advanced.upstream_h2_prior_knowledge`). `BUSBAR_PROVIDERS` pointing at a missing file refuses to
-boot, as it did in 1.5.5. `BUSBAR_CONFIG`, secret `{ env: NAME }` references, `RUST_LOG` and
-`TOKIO_WORKER_THREADS` are unchanged.
+**Breaking:** serving no longer applies `BUSBAR_PROVIDERS`, `BUSBAR_WORKER_THREADS`,
+`BUSBAR_UPSTREAM_HTTP1_ONLY` or `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE`. Run `--migrate-config`
+with the old deployment's environment and working directory before starting 1.6. It captures the
+old effective values into `providers_file:` and the corresponding `advanced` keys, preserving
+old precedence, false/empty upstream settings and worker-count fallback/capping. Launch-relative
+provider overrides become absolute paths. The `--providers` flag remains supported. Remove the
+retired variables from the launcher after conversion. Old file-overlay selection is migration input;
+runtime configuration is persisted through Store. See [the migration guide](docs/migration-1.6.md).
+`BUSBAR_CONFIG`, explicit secret `{ env: NAME }` references, `RUST_LOG`, and the
+`TOKIO_WORKER_THREADS` fallback remain supported. Migration reports the actual target version and
+no longer incorrectly tells 1.5.5 operators to replace their existing signed keys.
 
 ### Plugins
 

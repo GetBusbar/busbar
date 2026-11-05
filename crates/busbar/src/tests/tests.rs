@@ -57,6 +57,7 @@ fn worker_threads_from_config_reads_a_real_file() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", test_name])
             .env(CHILD, "1")
+            .env("BUSBAR_WORKER_THREADS", "19")
             .output()
             .expect("run the config environment case in a fresh process");
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -91,6 +92,11 @@ fn worker_threads_from_config_reads_a_real_file() {
         worker_threads_from_config(),
         Some(5),
         "a positive advanced.worker_threads must be read from config.yaml"
+    );
+    assert_eq!(
+        resolve_worker_threads().0,
+        5,
+        "retired BUSBAR_WORKER_THREADS cannot override configured workers"
     );
 
     std::fs::write(

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_kernel::{config, config_validate, diagnostics};
-use busbar_kernel::{load_config_from_disk, DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS};
+use busbar_kernel::{load_config_from_disk, DEFAULT_CONFIG_PATH, ENV_CONFIG};
 
 use crate::{build_info_line, safe_mode_requested};
 
@@ -83,8 +83,6 @@ CONFIG INPUTS:
 ENVIRONMENT:
     BUSBAR_CONFIG       path to config.yaml     (default: /etc/busbar/config.yaml; overridden by
                         -c/--config)
-    BUSBAR_PROVIDERS    path to providers.yaml  (DEPRECATED — set `providers_file:` in config.yaml;
-                        default: providers.yaml next to the resolved config.yaml)
     RUST_LOG            log level: error|warn|info|debug|trace  (default: info)
 
 Flags:
@@ -530,12 +528,38 @@ fn migrate_config_command(path: Option<String>) -> i32 {
         }
     };
 
+    let working_directory = match std::env::current_dir() {
+        Ok(directory) => directory,
+        Err(error) => {
+            eprintln!("busbar: cannot resolve migration launch directory: {error}");
+            return EXIT_FAILURE;
+        }
+    };
+    let providers_flag = value_flag(std::env::args().skip(1), OPTION_PROVIDERS, None);
+    let captured = match super::config_migrate::capture_environment(
+        &raw,
+        &working_directory,
+        providers_flag.as_deref(),
+        |name| std::env::var_os(name),
+    ) {
+        Ok(captured) => captured,
+        Err(error) => {
+            eprintln!("busbar: --migrate-config failed: {error}");
+            return EXIT_FAILURE;
+        }
+    };
+    let raw = captured.yaml;
     let host =
         crate::root::config_migrate::RootHost::for_document(&raw, std::path::Path::new(&path));
     match config::migrate::migrate_config_with(&raw, &host) {
-        Ok(out) => {
+        Ok(mut out) => {
+            out.changes.splice(0..0, captured.changes);
+            out.warnings.extend(captured.warnings);
             print!("{}", out.yaml);
-            eprintln!("migrated '{path}' to the 1.5.0 config shape.");
+            eprintln!(
+                "migrated '{path}' to the {} config shape.",
+                config::CONFIG_TARGET_VERSION
+            );
             if !out.changes.is_empty() {
                 eprintln!(
                     "
@@ -568,7 +592,7 @@ TODO ({}) - a human must decide:",
             }
             eprintln!(
                 "
-Review the output, then run `busbar --validate` on it before deploying.                  NOTE: 1.x virtual keys do not carry over - mint fresh signed keys (the 1.5.0                  security headline: keys now expire)."
+Review the output, then run `busbar --config <migrated.yaml> --validate` before deploying."
             );
             EXIT_SUCCESS
         }
@@ -626,20 +650,7 @@ pub(crate) fn config_path_flag() -> Option<String> {
 }
 
 pub(crate) fn providers_override() -> Option<std::path::PathBuf> {
-    value_flag(std::env::args().skip(1), OPTION_PROVIDERS, None)
-        .map(std::path::PathBuf::from)
-        .or_else(providers_override_from_env)
-}
-
-fn providers_override_from_env() -> Option<std::path::PathBuf> {
-    let v = std::env::var(ENV_PROVIDERS)
-        .ok()
-        .filter(|s| !s.is_empty())?;
-    eprintln!(
-        "[warn] {ENV_PROVIDERS} is DEPRECATED; set `providers_file:` in config.yaml instead (it is \
-         honored for now)."
-    );
-    Some(std::path::PathBuf::from(v))
+    value_flag(std::env::args().skip(1), OPTION_PROVIDERS, None).map(std::path::PathBuf::from)
 }
 
 pub(crate) fn config_override_notice(flag: Option<&str>, env: Option<&str>) -> Option<String> {

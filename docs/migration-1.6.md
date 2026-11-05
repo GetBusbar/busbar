@@ -131,28 +131,41 @@ What the migration changes for you, and the one edit it leaves to you:
   data-plane provider whose users 1.5.5 admitted that way, and warns: it keeps 1.5.5's access, and
   you should tighten it.
 
-## 2. Deprecated env vars keep working, with a warning
+## 2. Migrate retired operational environment variables before starting 1.6
 
-`BUSBAR_PROVIDERS`, `BUSBAR_CONFIG_OVERLAY`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY`
-and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` were deprecated in 1.5.3 in favour of config.yaml keys.
-1.6.0 reads each of them at the same point of the boot sequence as 1.5.5 and honours it exactly as
-before. The only difference is that the deprecation warning for `BUSBAR_CONFIG_OVERLAY`,
-`BUSBAR_UPSTREAM_HTTP1_ONLY` and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` now carries a diagnostic code,
-BUSBAR-3021, whose entry in [the diagnostics reference](diagnostics.md) names the replacement key.
-The `BUSBAR_PROVIDERS` and `BUSBAR_WORKER_THREADS` warnings are still printed without a code:
+**1.6.0 no longer applies `BUSBAR_PROVIDERS`, `BUSBAR_WORKER_THREADS`,
+`BUSBAR_UPSTREAM_HTTP1_ONLY` or `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` at runtime.**
+Run migration with the old deployment's environment and working directory, then deploy its output:
 
-| Deprecated env var (still honoured) | config.yaml key |
+```sh
+busbar --migrate-config /etc/busbar/config.yaml > /etc/busbar/config.migrated.yaml
+busbar --config /etc/busbar/config.migrated.yaml --validate
+```
+
+Keep the migrated file beside the original so existing config-relative catalog and secret paths
+continue to resolve. The migrator captures the old effective overrides into current configuration:
+
+| Retired env var | Current config key |
 |---|---|
-| `BUSBAR_PROVIDERS` | `providers_file:` (or the `--providers <path>` flag) |
-| `BUSBAR_CONFIG_OVERLAY` | `config.overlay.file` |
+| `BUSBAR_PROVIDERS` | `providers_file:` |
 | `BUSBAR_WORKER_THREADS` | `advanced.worker_threads` |
 | `BUSBAR_UPSTREAM_HTTP1_ONLY` | `advanced.upstream_http1_only` |
 | `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` | `advanced.upstream_h2_prior_knowledge` |
 
-`BUSBAR_PROVIDERS` pointing at a file that does not exist refuses to boot, as it did in 1.5.5,
-rather than silently using the `providers.yaml` beside the config. `BUSBAR_CONFIG`, secret
-`{ env: NAME }` references, `RUST_LOG` and `TOKIO_WORKER_THREADS` are not deprecated. Move each
-variable into config.yaml when convenient; the warning is the only consequence of not doing so.
+The old environment wins over configured values during this one-time conversion. A `--providers`
+flag wins over `BUSBAR_PROVIDERS`; both launch-relative paths become absolute `providers_file`
+paths. An empty provider override is ignored. Worker counts retain the old positive-integer parsing
+and 128-worker cap; invalid values are reported and leave the configured/Tokio fallback intact.
+For the upstream switches, empty or `0` becomes false and every other supplied value becomes true,
+including the old string `false`. These are migration rules; serving uses the configured booleans.
+Remove the retired variables from launchers after conversion. The current `--providers` flag remains
+supported. A missing selected catalog remains an error during normal validation/startup.
+
+`BUSBAR_CONFIG_OVERLAY` selects old file-overlay migration input only; 1.6 runtime configuration
+is persisted through Store. Follow the overlay import instructions below before serving old state.
+`BUSBAR_CONFIG`, explicit secret `{ env: NAME }` references, `RUST_LOG` and the
+`TOKIO_WORKER_THREADS` fallback are unchanged. Preserve existing signing-key material and Store
+records when upgrading 1.5.5: existing signed keys do not need to be reminted merely for this upgrade.
 
 ## 3. What you will notice after the upgrade
 

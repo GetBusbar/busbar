@@ -10,6 +10,10 @@ use busbar_kernel::config::PluginsCfg;
 
 use crate::root::loader::PluginRegistry;
 
+#[path = "migrate_environment.rs"]
+mod environment;
+pub(super) use environment::capture as capture_environment;
+
 mod index_field {
     pub const PLUGINS: &str = "plugins";
     pub const REPO: &str = "repo";
@@ -460,24 +464,11 @@ impl RootHost {
             .parent()
             .map(std::path::Path::to_path_buf)
             .unwrap_or_default();
-        let path = crate::root::cli::value_flag(
-            std::env::args().skip(1),
-            crate::root::cli::OPTION_PROVIDERS,
-            None,
-        )
-        .or_else(|| {
-            std::env::var(busbar_kernel::ENV_PROVIDERS)
-                .ok()
-                .filter(|v| !v.is_empty())
-        })
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            dir.join(
-                self.providers_file
-                    .as_deref()
-                    .unwrap_or(DEFAULT_PROVIDERS_CATALOG),
-            )
-        });
+        let path = dir.join(
+            self.providers_file
+                .as_deref()
+                .unwrap_or(DEFAULT_PROVIDERS_CATALOG),
+        );
         (dir, path)
     }
 }

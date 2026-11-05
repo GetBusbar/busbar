@@ -148,15 +148,7 @@ fn worker_threads_from_config_noting(warnings: &mut Vec<String>) -> Option<usize
 
 fn resolve_worker_threads() -> (usize, Vec<String>) {
     let mut warnings = Vec::new();
-    let n = worker_threads_from_env_noting("BUSBAR_WORKER_THREADS", &mut warnings)
-        .inspect(|_| {
-            warnings.push(
-                "[warn] BUSBAR_WORKER_THREADS is DEPRECATED; set `advanced.worker_threads` in \
-                 config.yaml instead (it is honored for now)."
-                    .to_string(),
-            )
-        })
-        .or_else(|| worker_threads_from_config_noting(&mut warnings))
+    let n = worker_threads_from_config_noting(&mut warnings)
         .or_else(|| worker_threads_from_env_noting("TOKIO_WORKER_THREADS", &mut warnings))
         .unwrap_or_else(|| {
             std::thread::available_parallelism()
@@ -167,15 +159,14 @@ fn resolve_worker_threads() -> (usize, Vec<String>) {
     (n, warnings)
 }
 
-/// The same precedence as the original selector, now with the effective recovered config value.
+/// Resolve the effective recovered config, then the supported Tokio fallback.
 fn recovered_data_workers(
     configured: Option<usize>,
-    primary_env: Option<usize>,
     fallback_env: Option<usize>,
     available: usize,
 ) -> usize {
-    primary_env
-        .or(configured.filter(|n| *n != 0))
+    configured
+        .filter(|n| *n != 0)
         .or(fallback_env)
         .unwrap_or(available)
         .clamp(1, MAX_WORKER_THREADS)
@@ -186,14 +177,13 @@ mod recovered_worker_tests {
     use super::*;
 
     #[test]
-    fn recovered_worker_count_honors_effective_config_and_existing_env_precedence() {
-        assert_eq!(recovered_data_workers(Some(7), None, Some(3), 2), 7);
-        assert_eq!(recovered_data_workers(Some(7), Some(5), Some(3), 2), 5);
-        assert_eq!(recovered_data_workers(None, None, Some(3), 2), 3);
-        assert_eq!(recovered_data_workers(None, None, None, 2), 2);
-        assert_eq!(recovered_data_workers(Some(0), None, None, 2), 2);
+    fn recovered_worker_count_honors_effective_config_and_tokio_fallback() {
+        assert_eq!(recovered_data_workers(Some(7), Some(3), 2), 7);
+        assert_eq!(recovered_data_workers(None, Some(3), 2), 3);
+        assert_eq!(recovered_data_workers(None, None, 2), 2);
+        assert_eq!(recovered_data_workers(Some(0), None, 2), 2);
         assert_eq!(
-            recovered_data_workers(Some(usize::MAX), None, None, 2),
+            recovered_data_workers(Some(usize::MAX), None, 2),
             MAX_WORKER_THREADS
         );
     }
@@ -807,7 +797,6 @@ async fn run(
         let mut ignored_warnings = Vec::new();
         let selected = recovered_data_workers(
             deploy.advanced.worker_threads,
-            worker_threads_from_env_noting("BUSBAR_WORKER_THREADS", &mut ignored_warnings),
             worker_threads_from_env_noting("TOKIO_WORKER_THREADS", &mut ignored_warnings),
             std::thread::available_parallelism()
                 .map(|n| n.get())

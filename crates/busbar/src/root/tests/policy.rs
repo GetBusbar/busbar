@@ -29,39 +29,6 @@ fn the_transport_client_reads_the_operators_limits_and_not_a_default() {
 }
 
 #[test]
-fn the_deprecated_upstream_env_pins_win_over_the_config() {
-    let limits = LimitsResolved::default();
-    assert!(!limits.upstream_h2_prior_knowledge && !limits.upstream_http1_only);
-    let under = |pairs: &'static [(&'static str, &'static str)], limits: &LimitsResolved| {
-        client_settings_under(limits, |name| {
-            pairs
-                .iter()
-                .find(|(n, _)| *n == name)
-                .map(|(_, v)| std::ffi::OsString::from(v))
-        })
-    };
-    let s = under(&[("BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE", "1")], &limits);
-    assert!(s.upstream_h2_prior_knowledge && !s.upstream_http1_only);
-    let s = under(&[("BUSBAR_UPSTREAM_HTTP1_ONLY", "true")], &limits);
-    assert!(s.upstream_http1_only && !s.upstream_h2_prior_knowledge);
-    let configured = LimitsResolved {
-        upstream_h2_prior_knowledge: true,
-        upstream_http1_only: true,
-        ..LimitsResolved::default()
-    };
-    let s = under(
-        &[
-            ("BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE", "0"),
-            ("BUSBAR_UPSTREAM_HTTP1_ONLY", ""),
-        ],
-        &configured,
-    );
-    assert!(!s.upstream_h2_prior_knowledge && !s.upstream_http1_only);
-    let s = under(&[], &configured);
-    assert!(s.upstream_h2_prior_knowledge && s.upstream_http1_only);
-}
-
-#[test]
 fn an_unset_body_cap_resolves_to_the_transport_default() {
     let settings = client_settings(&LimitsResolved::default());
     assert_eq!(
@@ -118,4 +85,30 @@ fn a_changed_upstream_timeout_changes_the_door_settings_an_unrelated_apply_does_
         blob["limits.upstream_request_timeout_secs"],
         serde_json::json!(prior.request_timeout_secs + 7)
     );
+}
+
+#[test]
+fn retired_upstream_environment_cannot_override_current_config() {
+    const CHILD: &str = "BUSBAR_RETIRED_UPSTREAM_POLICY_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = concat!(
+            module_path!(),
+            "::retired_upstream_environment_cannot_override_current_config"
+        );
+        let name = name.split_once("::").unwrap().1;
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name])
+            .env(CHILD, "1")
+            .env("BUSBAR_UPSTREAM_HTTP1_ONLY", "1")
+            .env("BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE", "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{stdout}");
+        assert!(stdout.contains(&format!("test {name} ... ok")), "{stdout}");
+        return;
+    }
+    let settings = client_settings(&LimitsResolved::default());
+    assert!(!settings.upstream_http1_only);
+    assert!(!settings.upstream_h2_prior_knowledge);
 }

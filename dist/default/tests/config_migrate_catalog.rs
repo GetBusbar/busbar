@@ -81,3 +81,70 @@ fn a_stray_catalog_key_is_removed_into_a_catalog_the_migrated_config_names() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn real_1_5_5_migration_captures_launch_overrides_and_preserves_signed_key_reference() {
+    let dir = workdir();
+    let launch = dir.join("launch");
+    std::fs::create_dir(&launch).unwrap();
+    std::fs::write(launch.join("from-env.yaml"), "{}\n").unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        "\
+store: { module: memory }
+providers_file: from-config.yaml
+providers: {}
+models: {}
+auth:
+  chain: [keys]
+  signing_key: { env: EXISTING_SIGNING_KEY }
+advanced:
+  worker_threads: 7
+  upstream_http1_only: true
+  upstream_h2_prior_knowledge: false
+",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+        .current_dir(&launch)
+        .arg("--migrate-config")
+        .arg(dir.join("config.yaml"))
+        .env("BUSBAR_PROVIDERS", "from-env.yaml")
+        .env("BUSBAR_WORKER_THREADS", "5")
+        .env("BUSBAR_UPSTREAM_HTTP1_ONLY", "0")
+        .env("BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE", "1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(stderr.contains("to the 1.6.0 config shape"), "{stderr}");
+    assert!(
+        !stderr.contains("1.x virtual keys do not carry over"),
+        "{stderr}"
+    );
+    let doc: serde_yaml::Value = serde_yaml::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        doc["providers_file"].as_str(),
+        launch.join("from-env.yaml").to_str()
+    );
+    assert_eq!(doc["advanced"]["worker_threads"], 5);
+    assert_eq!(doc["advanced"]["upstream_http1_only"], false);
+    assert_eq!(doc["advanced"]["upstream_h2_prior_knowledge"], true);
+    assert_eq!(doc["auth"]["signing_key"]["env"], "EXISTING_SIGNING_KEY");
+    std::fs::write(dir.join("config.migrated.yaml"), &out.stdout).unwrap();
+    // Retired runtime input cannot redirect a validated deployment back to another catalog.
+    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+        .arg("--validate")
+        .arg("--config")
+        .arg(dir.join("config.migrated.yaml"))
+        .env("BUSBAR_PROVIDERS", dir.join("does-not-exist.yaml"))
+        .env("EXISTING_SIGNING_KEY", "77".repeat(32))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

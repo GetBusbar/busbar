@@ -585,13 +585,13 @@ async fn h2c_prior_knowledge_two_requests_ride_one_connection() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn the_deprecated_env_pin_turns_prior_knowledge_on() {
+async fn the_configured_pin_turns_prior_knowledge_on() {
     let (port, far) = h2c_far_end().await;
-    let limits = busbar_kernel::config::LimitsResolved::default();
-    assert!(!limits.upstream_h2_prior_knowledge);
-    let settings = crate::root::policy::client_settings_under(&limits, |name| {
-        (name == "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE").then(|| "1".into())
-    });
+    let limits = busbar_kernel::config::LimitsResolved {
+        upstream_h2_prior_knowledge: true,
+        ..Default::default()
+    };
+    let settings = crate::root::policy::client_settings(&limits);
     let c = connector(&settings, &EgressTrust::default());
     let (status, body) = ask(&c, &format!("http://127.0.0.1:{port}/v1/chat/completions")).await;
     assert_eq!((status, body.as_slice()), (Some(200), &b"ok"[..]));
