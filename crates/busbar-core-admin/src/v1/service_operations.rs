@@ -44,6 +44,60 @@ impl AdminService {
         }
     }
 
+    pub(crate) fn telemetry(
+        &self,
+    ) -> Result<crate::v1::json::telemetry::TelemetryView, AdminError> {
+        use crate::v1::json::telemetry::{
+            Dropped, ExactU64, Identity, Phase, TelemetryView, MAX_IDENTITIES, UPPER_BOUNDS_MS,
+        };
+        let snapshot =
+            busbar_kernel::snapshot::request_snapshot(MAX_IDENTITIES).ok_or_else(|| {
+                AdminError::Unavailable("telemetry collection is disabled or unavailable".into())
+            })?;
+        let mut identities = Vec::with_capacity(snapshot.identities.len());
+        for row in snapshot.identities {
+            let phase = match row.phase.as_str() {
+                "LlmProducerDrive" => Phase::LlmProducerDrive,
+                "MountedResponseReady" => Phase::MountedResponseReady,
+                _ => {
+                    return Err(AdminError::Unavailable(
+                        "telemetry phase is not supported".into(),
+                    ))
+                }
+            };
+            identities.push(Identity {
+                plane: row.plane,
+                phase,
+                pool: row.pool,
+                ingress_protocol: row.ingress_protocol,
+                count: ExactU64(row.count),
+                errors: ExactU64(row.errors),
+                client_errors: ExactU64(row.client_errors),
+                sum_us: ExactU64(row.sum_us),
+                bins: row.bins.map(ExactU64),
+            });
+        }
+        let [invalid_duration, integer_overflow, series_capacity, boot_nonce_unavailable, histogram_capacity, unregistered_labels] =
+            snapshot.dropped.map(ExactU64);
+        Ok(TelemetryView {
+            process_boot_nonce: snapshot.process_boot_nonce,
+            uptime_since_start_ms: ExactU64(snapshot.uptime_ms),
+            captured_at_unix_ms: ExactU64(snapshot.captured_at_unix_ms),
+            upper_bounds_ms: UPPER_BOUNDS_MS,
+            identities,
+            omitted_identities: ExactU64(snapshot.omitted_identities),
+            truncated: snapshot.omitted_identities != 0,
+            dropped: Dropped {
+                invalid_duration,
+                integer_overflow,
+                series_capacity,
+                boot_nonce_unavailable,
+                histogram_capacity,
+                unregistered_labels,
+            },
+        })
+    }
+
     pub(crate) async fn info(&self) -> Result<InfoView, AdminError> {
         let auth_modules = auth_modules_compiled_in();
         let hook_plugins = hook_plugins_compiled_in();
@@ -62,6 +116,8 @@ impl AdminService {
             },
             uptime_seconds: PROCESS_START.get().map(|s| s.elapsed().as_secs()),
             started_at: PROCESS_START_EPOCH.get().copied(),
+            process_boot_nonce: busbar_kernel::snapshot::process_generation()
+                .map(|(nonce, _)| nonce.to_string()),
             topology: TopologyInfo {
                 pools: view.pools().len(),
                 models: view.model_indices().len(),
@@ -397,7 +453,25 @@ impl AdminService {
         })
     }
 
-    pub(crate) async fn list_plugins(&self, ptype: &str) -> Result<Page<PluginView>, AdminError> {
+    /// Called inside the config transaction: inventory and archive hashes share the mutation fence.
+    pub(crate) fn list_plugins_current(&self, ptype: &str) -> Result<Page<PluginView>, AdminError> {
+        plugin_query(ptype)?;
+        let mut catalog = linked_store_rows();
+        if let Ok(admission) = admission(&self.app) {
+            catalog.extend(Self::scan_store_plugin_rows(
+                &self.app.plugins_dir,
+                admission,
+                &self.app.plugins_cfg,
+            ));
+        }
+        self.list_plugins_from_catalog(ptype, catalog)
+    }
+
+    fn list_plugins_from_catalog(
+        &self,
+        ptype: &str,
+        catalog: Vec<PluginView>,
+    ) -> Result<Page<PluginView>, AdminError> {
         let mut plugins: Vec<PluginView> = Vec::new();
         match plugin_query(ptype)? {
             PluginQuery::Auth => {
@@ -433,12 +507,8 @@ impl AdminService {
                     }
                 }
 
-                let mut dynamic_auth: Vec<PluginView> = self
-                    .store_plugin_catalog_async()
-                    .await?
-                    .into_iter()
-                    .filter(|p| p.r#type == "auth")
-                    .collect();
+                let mut dynamic_auth: Vec<PluginView> =
+                    catalog.into_iter().filter(|p| p.r#type == "auth").collect();
                 plugins.append(&mut dynamic_auth);
             }
             PluginQuery::Hooks => {
@@ -470,13 +540,11 @@ impl AdminService {
                     .collect();
                 externals.sort_by(|a, b| a.name.cmp(&b.name));
                 plugins.append(&mut externals);
+                plugins.extend(catalog_rows_of_kind(catalog, "hook"));
             }
 
             PluginQuery::Store => {
-                plugins.extend(catalog_rows_of_kind(
-                    self.store_plugin_catalog_async().await?,
-                    "store",
-                ));
+                plugins.extend(catalog_rows_of_kind(catalog, "store"));
             }
 
             PluginQuery::Secret => {
@@ -489,10 +557,7 @@ impl AdminService {
                         .filter(|row| row.kind == "secret")
                         .map(|row| linked_plugin_view(row, "secret")),
                 );
-                plugins.extend(catalog_rows_of_kind(
-                    self.store_plugin_catalog_async().await?,
-                    "secret",
-                ));
+                plugins.extend(catalog_rows_of_kind(catalog, "secret"));
             }
             PluginQuery::Catalog(kind) => {
                 plugins.extend(
@@ -504,10 +569,7 @@ impl AdminService {
                         .filter(|row| row.kind == kind)
                         .map(|row| linked_plugin_view(row, kind)),
                 );
-                plugins.extend(catalog_rows_of_kind(
-                    self.store_plugin_catalog_async().await?,
-                    kind,
-                ));
+                plugins.extend(catalog_rows_of_kind(catalog, kind));
             }
         }
         for view in &mut plugins {
@@ -637,46 +699,27 @@ impl AdminService {
             return rows;
         };
         for row in inventory {
-            rows.push(plugin_inventory_view(row));
+            let archive_sha256 =
+                read_archive_bounded(&dir.join(&row.file), admission.max_tarball_bytes())
+                    .ok()
+                    .map(|bytes| busbar_contract::redacted::sha256_hex(&bytes));
+            let mut view = plugin_inventory_view(row);
+            if view.has_schema {
+                if let Some(digest) = archive_sha256.as_deref() {
+                    let file = archive_path_segment(
+                        view.file.as_deref().expect("inventory row has a file"),
+                    );
+                    view.schema_url = Some(format!("{}/plugins/{file}/schema?source=installed_archive&expected_archive_sha256={digest}", crate::v1::contract::ADMIN_PREFIX));
+                } else {
+                    view.schema_url = None;
+                    view.has_schema = false;
+                    view.schema_error = Some("installed archive schema is unavailable: archive could not be read within the admission cap".into());
+                }
+            }
+            view.archive_sha256 = archive_sha256;
+            rows.push(view);
         }
         rows
-    }
-
-    async fn store_plugin_catalog_async(&self) -> Result<Vec<PluginView>, AdminError> {
-        let _gate = match tokio::time::timeout(CATALOG_SCAN_GATE_WAIT, CATALOG_SCAN_GATE.lock())
-            .await
-        {
-            Ok(guard) => guard,
-            Err(_elapsed) => {
-                diag_warn!(
-                    PLUGIN_CATALOG_SCAN_GATE_TIMEOUT,
-                    operation = "list_plugins.store",
-                    wait = ?CATALOG_SCAN_GATE_WAIT,
-                    "catalog scan gate could not be acquired within the wait bound; a prior scan \
-                     is not returning (e.g. a stale/hung plugins_dir mount). Answering with a \
-                     retryable error rather than hanging this request too."
-                );
-                return Err(AdminError::Unavailable(
-                    "the plugin catalog scan is taking too long; try again shortly".to_string(),
-                ));
-            }
-        };
-        let app = self.app.clone();
-        match tokio::task::spawn_blocking(move || AdminService::new(app).store_plugin_catalog())
-            .await
-        {
-            Ok(rows) => Ok(rows),
-            Err(join_err) => {
-                diag_warn!(
-                    PLUGIN_CATALOG_BLOCKING_TASK_FAILED,
-                    operation = "list_plugins.store",
-                    error = %join_err,
-                    "admin blocking task failed"
-                );
-
-                Ok(linked_store_rows())
-            }
-        }
     }
 
     /// `POST /api/v1/admin/plugins` — INSTALL a plugin: the caller uploads a SIGNED plugin tarball
@@ -802,16 +845,61 @@ impl AdminService {
         }))
     }
 
-    pub(crate) fn remove_store_plugin(
+    /// Static inspection of the exact installed artifact named by a catalog URL. Caller holds
+    /// the config transaction throughout read, digest comparison, and admission inspection.
+    pub(crate) fn installed_plugin_schema(
         &self,
         file: &str,
+        expected: Option<&str>,
+    ) -> Result<serde_json::Value, AdminError> {
+        let file = validate_plugin_filename(&self.app, file)?;
+        let admission = admission(&self.app).map_err(AdminError::Validation)?;
+        let bytes = read_guarded_archive(
+            &self.app.plugins_dir.join(&file),
+            &file,
+            expected,
+            admission.max_tarball_bytes(),
+        )?;
+        check_archive_preimage(expected, &bytes)?;
+        let digest = busbar_contract::redacted::sha256_hex(&bytes);
+        let (manifest, judged) = admission
+            .inspect(&bytes, &self.app.plugins_cfg)
+            .map_err(refused)?;
+        let mut view =
+            inspect_plugin_view(manifest, judged, |kind| admission.restart_default(kind));
+        view["source"] = serde_json::json!("installed_archive");
+        view["file"] = serde_json::json!(file);
+        view["archive_sha256"] = serde_json::json!(digest);
+        view["schema_state"] = serde_json::json!(if !view["schema_error"].is_null() {
+            "invalid"
+        } else if view["schema"].is_null() {
+            "absent"
+        } else {
+            "present"
+        });
+        Ok(view)
+    }
+
+    pub(crate) fn remove_store_plugin_if_archive(
+        &self,
+        file: &str,
+        expected: Option<&str>,
     ) -> Result<crate::v1::contract::PluginRemoveView, AdminError> {
         let file = validate_plugin_filename(&self.app, file)?;
         let lib_path = self.app.plugins_dir.join(&file);
-        if !lib_path.is_file() {
+        if expected.is_some() {
+            let bytes = read_guarded_archive(
+                &lib_path,
+                &file,
+                expected,
+                admission(&self.app)
+                    .map_err(AdminError::Validation)?
+                    .max_tarball_bytes(),
+            )?;
+            check_archive_preimage(expected, &bytes)?;
+        } else if !lib_path.is_file() {
             return Err(AdminError::not_found(format!("plugin `{file}`")));
         }
-
         busbar_kernel::durable::remove(&lib_path)
             .map_err(|e| plugin_io_failed("plugins.remove", e))?;
         Ok(crate::v1::contract::PluginRemoveView {
@@ -838,18 +926,23 @@ impl AdminService {
         })
     }
 
-    pub(crate) fn resolve_plugin_rollback(
+    pub(crate) fn resolve_plugin_rollback_if_archive(
         &self,
         file: &str,
         prior_pins: &std::collections::BTreeMap<String, String>,
+        expected: Option<&str>,
     ) -> Result<(Stated, std::collections::BTreeMap<String, String>), AdminError> {
         let file = validate_plugin_filename(&self.app, file)?;
         let lib_path = self.app.plugins_dir.join(&file);
-        if !lib_path.is_file() {
-            return Err(AdminError::not_found(format!("plugin `{file}`")));
-        }
-        let bytes = std::fs::read(&lib_path)
-            .map_err(|e| AdminError::Validation(format!("cannot read plugin `{file}`: {e}")))?;
+        let bytes = read_guarded_archive(
+            &lib_path,
+            &file,
+            expected,
+            admission(&self.app)
+                .map_err(AdminError::Validation)?
+                .max_tarball_bytes(),
+        )?;
+        check_archive_preimage(expected, &bytes)?;
 
         let admission = admission(&self.app).map_err(AdminError::Validation)?;
         let manifest = admission
@@ -875,7 +968,7 @@ impl AdminService {
         };
         let loaded = busbar_kernel::load_config_from_disk_judged(
             config_path,
-            self.app.providers_path.as_deref(),
+            self.app.providers_override.as_deref(),
             false,
             busbar_kernel::config::EnvSubst::Strict,
             &*self.app.root_rules,
@@ -1487,4 +1580,73 @@ mod exact_usage_rollup_tests {
         };
         assert!(overflow.add(&row).is_err());
     }
+}
+
+fn read_guarded_archive(
+    path: &Path,
+    file: &str,
+    expected: Option<&str>,
+    cap: u64,
+) -> Result<Vec<u8>, AdminError> {
+    if !path.is_file() {
+        return if expected.is_some() {
+            Err(AdminError::Conflict(
+                "plugin archive preimage changed or is missing".into(),
+            ))
+        } else {
+            Err(AdminError::not_found(format!("plugin `{file}`")))
+        };
+    }
+    match read_archive_bounded(path, cap) {
+        Ok(bytes) => Ok(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if expected.is_some() {
+                Err(AdminError::Conflict(
+                    "plugin archive preimage changed or is missing".into(),
+                ))
+            } else {
+                Err(AdminError::not_found(format!("plugin `{file}`")))
+            }
+        }
+        Err(error) => Err(AdminError::Validation(format!(
+            "cannot read plugin `{file}`: {error}"
+        ))),
+    }
+}
+
+fn check_archive_preimage(expected: Option<&str>, bytes: &[u8]) -> Result<(), AdminError> {
+    if expected.is_some_and(|expected| expected != busbar_contract::redacted::sha256_hex(bytes)) {
+        return Err(AdminError::Conflict(
+            "plugin archive preimage changed or is missing".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn read_archive_bounded(path: &Path, cap: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(cap.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > cap {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "plugin archive exceeds the admission size cap",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn archive_path_segment(file: &str) -> String {
+    use std::fmt::Write as _;
+    let mut encoded = String::new();
+    for byte in file.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            write!(&mut encoded, "%{byte:02X}").expect("writing to String cannot fail");
+        }
+    }
+    encoded
 }

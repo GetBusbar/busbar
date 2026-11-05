@@ -31,6 +31,51 @@ pub fn serve_test_sink(
     Arc::new(scrape::Granted(plugin::served(sink)))
 }
 
+/// Host-owned user configuration capabilities, derived from the same producer tables used by
+/// export projection resolution. Module-specific carried streams remain an admission check.
+#[cfg(feature = "openapi-schema")]
+pub fn configuration_capabilities() -> Value {
+    serde_json::json!({
+        "durable": false,
+        "streams": projection::PRODUCED_STREAMS.iter().map(|stream| {
+            let produced = projection::produced_fields(*stream);
+            serde_json::json!({
+                "name": stream.as_token(),
+                "default_fields": if *stream == ExportStream::Traces {
+                    stream.default_fields()
+                } else { produced }.iter().map(|field| field.as_token()).collect::<Vec<_>>(),
+                "produced_fields": produced.iter().map(|field| field.as_token()).collect::<Vec<_>>(),
+                "pinned_fields": stream.pinned_fields().iter().map(|field| field.as_token()).collect::<Vec<_>>(),
+                "fields_override": !stream.default_fields().is_empty()
+                    && stream.pinned_fields().iter().all(|field| produced.contains(field))
+            })
+        }).collect::<Vec<_>>()
+    })
+}
+
+/// Exercise the owning projection resolver without loading an exporter in focused schema tests.
+#[cfg(all(feature = "openapi-schema", any(test, feature = "test-support")))]
+#[doc(hidden)]
+pub fn validate_configuration_projection(
+    def: &crate::config::ExportDefCfg,
+) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    projection::resolve_projection(
+        "schema-test",
+        &def.module,
+        None,
+        def.streams.as_deref(),
+        def.fields.as_deref(),
+        def.durable,
+        &mut errors,
+    );
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
 pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
     plugin::route_decls(cfg)
 }

@@ -9,8 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use busbar_kernel::diagnostics::{
     diag_debug, diag_error, diag_warn, ADMIN_STORE_OPERATION_FAILED, ADMIN_STORE_TASK_JOIN_FAILED,
-    GROUP_DELETE_KEY_READ_FAILED, PLUGINS_DIR_FINGERPRINT_FAILED,
-    PLUGIN_CATALOG_BLOCKING_TASK_FAILED, PLUGIN_CATALOG_SCAN_GATE_TIMEOUT,
+    GROUP_DELETE_KEY_READ_FAILED, PLUGINS_DIR_FINGERPRINT_FAILED, PLUGIN_CATALOG_SCAN_GATE_TIMEOUT,
     USAGE_BLOCKING_TASK_JOIN_FAILED,
 };
 use busbar_kernel::state::App;
@@ -905,6 +904,7 @@ fn plugin_inventory_view(row: busbar_kernel::admission::Inventoried) -> PluginVi
         active: None,
         target: Some(row.file.clone()),
         file: Some(row.file.clone()),
+        archive_sha256: None,
         has_schema: schema_url.is_some(),
         version: row.stated.as_ref().map(|m| m.version.clone()),
         publisher: row.stated.as_ref().map(|m| m.publisher.clone()),

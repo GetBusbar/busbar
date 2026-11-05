@@ -55,7 +55,7 @@ pub fn resolve_backend_with_env(
         enabled: true,
     })
 }
-pub const OVERLAY_VERSION: u32 = 1;
+pub const OVERLAY_VERSION: u32 = 2;
 fn default_overlay_version() -> u32 {
     1
 }
@@ -317,6 +317,14 @@ pub struct OverlayDoc {
     /// Overlay schema version (see `OVERLAY_VERSION`). Absent in a pre-versioning overlay -> `1`.
     #[serde(default = "default_overlay_version")]
     pub version: u32,
+    /// Lowest-precedence document edits, composed with the operator file before the boot parser.
+    /// Existing typed overlays continue to win. Version 2 refuses replay by an older reader rather
+    /// than allowing it to silently ignore persisted document edits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_patch: Option<super::document_patch::DocumentPatch>,
+    /// Catalog edits use the same guarded carrier and the providers.yaml boot grammar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub providers_patch: Option<super::document_patch::DocumentPatch>,
     #[serde(default)]
     pub hooks: HashMap<String, HookCfg>,
     #[serde(default)]
@@ -369,6 +377,8 @@ impl Default for OverlayDoc {
     fn default() -> Self {
         Self {
             version: default_overlay_version(),
+            document_patch: None,
+            providers_patch: None,
             hooks: HashMap::new(),
             global_hooks: Vec::new(),
             deleted: Vec::new(),
@@ -394,6 +404,8 @@ impl OverlayDoc {
             named_maps,
 
             version: _,
+            document_patch: _,
+            providers_patch: _,
         } = self;
         match section {
             OverlaySection::Hooks => {
@@ -445,11 +457,23 @@ pub enum OverlayReadState {
     VersionTooNew(u32),
 }
 pub fn read_state(store: &OverlayStore) -> OverlayReadState {
+    read_state_with_revision(store).1
+}
+
+/// A revision of the exact desired bytes read from Store, independent of the installed App version.
+/// The Store reader has already verified these bytes against its committed generation head.
+pub fn read_state_with_revision(store: &OverlayStore) -> (Option<String>, OverlayReadState) {
+    use sha2::Digest as _;
     match store.read_bytes() {
-        Ok(bytes) => classify_bytes(bytes),
+        Ok(bytes) => {
+            let revision = bytes
+                .as_ref()
+                .map(|bytes| hex::encode(sha2::Sha256::digest(bytes)));
+            (revision, classify_bytes(bytes))
+        }
         Err(error) => {
             tracing::error!(%error, "config overlay Store read failed");
-            OverlayReadState::Unreadable
+            (None, OverlayReadState::Unreadable)
         }
     }
 }

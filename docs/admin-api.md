@@ -88,6 +88,10 @@ Optimistic concurrency is **one mechanism across the whole surface**: the RFC-72
 
 Guarded mutations: `POST /hooks`, `PUT|DELETE /hooks/{name}`, `PATCH /hooks/{name}/settings`, `POST /groups`, `PUT|PATCH|DELETE /groups/{name}`, `PUT /admin-auth`, `POST /config/apply`, `POST /config/rollback`, `PUT /config/settings`, `PATCH|DELETE /keys/{id}`. Deliberately unguarded: `validate` (stateless), `reload` (returns to disk truth unconditionally), `cache/flush`, key create/rotate (no versioned resource).
 
+Plugin artifact preconditions are independent of the config generation: an install may replace an archive without incrementing `config_version`. A disk-backed `PluginView.archive_sha256` is the SHA-256 of the complete `.tar.gz` bytes read for that catalog response, not the digest of its library or the loaded generation. Rows without a readable archive omit it. Send `expected_archive_sha256` in the rollback JSON body, or as the query parameter on `DELETE /plugins/{file}`. It must be exactly 64 lowercase hexadecimal characters. Omission preserves unconditional behavior; explicit null in the rollback body is invalid. A changed or missing guarded archive returns `409 conflict` before deletion, pin persistence, rebuild, or publication. Install, inventory read, comparison, and mutation share the engine's config transaction; external filesystem writers are outside that process-local serialization.
+
+`POST /restart` accepts the same optional `If-Match` config-version header. The comparison and drain admission happen under the config mutation lock. A stale version returns `409 version_conflict` without requesting a drain; malformed headers return 400. Omission or `*` remains unconditional. The existing `confirm` and supervisor checks still apply. This fences the generation at admission, rather than promising that no later configuration request can arrive during draining.
+
 ## Discovery
 
 ```
@@ -95,6 +99,40 @@ GET /api/v1/admin/openapi.json
 ```
 
 The OpenAPI 3.1 schema of the whole surface: generate a client, or point tooling at it. Every path it lists resolves (a node serves it filtered to the planes it configured — see below); its error-code enum matches the envelope above exactly; every operation is annotated with `x-busbar-required-scope` from the same matrix the middleware enforces (all three are test-locked). Browse it rendered, endpoint by endpoint, in the [API reference](https://getbusbar.com/docs/api/).
+
+### Configuration form schemas
+
+The same document publishes `x-busbar-config-schemas` with `version: 1` and
+`context: "user_configuration"`. Its `schema` is a standalone JSON Schema 2020-12 document:
+extract that object before resolving its local `#/$defs/...` references. The document declares
+`x-busbar-settings-profile: "integer-token-v1"`; numeric fields marked
+`x-busbar-integer-token` require the original signed or unsigned integer token, not a decimal or
+exponent spelling of the same number. Preserve exact integer values when parsing and editing.
+
+| Configuration path | Definition under `schema.$defs` | Owning grammar |
+|---|---|---|
+| `auth` | `Auth`, `AuthPolicy`, `MintCeiling`, `RoleBinding` | Host auth input parser and policy prepass; role bindings are nested by provider, then role |
+| `identity-providers.<name>` | `IdentityProvider`, `BrowserLogin` | Host wrapper; the named module owns `settings` |
+| `export.<name>` | `Export` | Host wrapper and actual export projection resolver; the module owns `settings` |
+| `providers.<name>` | `ProviderDeployment` | Deployment override parser; `api_key` is a required SecretRef |
+| Separate provider catalog entry | `ProviderCatalogEntry` | Catalog parser; `protocol` and `base_url` are required |
+| `models.<name>` | `Model` | Shared typed model input parser |
+| `pools` / `pools.<name>` | `Pools` / `PoolDocument` | Owning section/pool grammar, including reserved section keys, member shorthand and the document parser’s null-to-empty collection behavior; `Pool` describes direct JSON input |
+| Host secret-reference fields | `SecretRef` | Actual core SecretRef grammar; never an inline credential |
+
+The export schema derives its producer capabilities from the resolver: supported streams are
+`metrics`, `logs`, `traces`, and `events`. `durable: true` is rejected because durable spooling is
+unimplemented. Explicit `fields` is an exhaustive replacement; currently only `events` supports
+it, and `seq`, `ts`, and `prev_hash` must remain. Module-specific carried streams and omitted-stream
+defaults are checked when the normal configuration resolver knows the selected module.
+
+This is a partial user-input document, explicitly marked `x-busbar-partial: true`, rather than a
+complete boot certificate. The extension's `ownership` map and each schema's
+`x-busbar-runtime-validation` identify checks that require installed modules, plane declarations,
+references, resolved secrets or cross-field policy. Other plane sections and protocol-specific
+provider options retain their declaring parser's ownership. An installed module's lifecycle
+`settings_schema` describes the settings after host secret resolution; it does not replace the
+user-input wrapper or authorize copying secret material into a form. Opaque options remain opaque.
 
 ### Pinning a released schema
 
@@ -115,8 +153,8 @@ from the path alone (the document explains them itself, under `info.x-busbar-mar
   answers `404 not_found`, exactly as a path the surface has never had, and the document that node
   serves leaves the operation out (with every schema only it references).
 - **`x-busbar-since: 1.6.0`** — one of the 22 operations 1.6.0 adds to the closed verb table, answered
-  by the node's administrative loop: the 14 kernel verbs (eleven money-governance verbs and three
-  trust verbs), the five ledger views and the three audit-chain reads.
+  by the node's administrative loop: the 14 kernel verbs (ten money-governance verbs, three
+  trust verbs and the telemetry read), the five ledger views and the three audit-chain reads.
 
 `GET /api/v1/admin/ledger/openapi.json` serves the full document, unfiltered.
 
@@ -125,6 +163,7 @@ The 1.6.0 kernel verbs (each is served; every mutation is audited and spends the
 | Operation | Path | Scope | Does |
 | --- | --- | --- | --- |
 | `verify` | `GET /api/v1/admin/verify` | `read-only` | Verify this node's ledger: every sealed checkpoint re-hashes to its body, no node sequence goes backwards, the book is measured against the last checkpoint, and postings reconcile with the previous release's rows. A failed verification is still `200`: `ok` is the answer and `findings` says why |
+| `get_telemetry` | `GET /api/v1/admin/telemetry` | `read-only` | Bounded snapshot of collected request-phase duration counts, sums and exclusive bins; no outbound connection |
 | `plane_facts` | `GET /api/v1/admin/plane-facts?plane=` | `read-only` | What a plane this node serves declares about itself (config sections, grant kinds, billable classes, record kinds, operation classes) |
 | `plane_record_write` | `POST /api/v1/admin/plane-record-write` | `full` | Upsert one record, by `(kind, id)`, of a kind the named plane declares. Honors `Idempotency-Key` |
 | `adjust` | `POST /api/v1/admin/adjust` | `full` | Correct a recorded unit's counts (below) |
@@ -252,7 +291,7 @@ operation exists elsewhere.
 | `GET /tools/{name}/health` | Whether one MCP server currently serves (`serving`), its derived `state`, whether it has ever been `contacted`, the last `failure`, and how many tools the last observation carried |
 | `POST /agents/{name}/connect` | **Fetch a registered A2A agent's card, verify it against the operator's out-of-band trust root, and report what it found.** This is the verb that captures a sighting for a human to approve. Answers the derived trust state, the changes queue, and the **canonical card fingerprint**: the one string the approval below must name. **Grants nothing and writes nothing**: it is a preview, and a preview never reports `approved`. A card that cannot be fetched or cannot be authenticated is still a `200` with `state: error` and the reason in `failure`; the request succeeded, and what it found is that the endpoint cannot be trusted. `full` scope, audited, config-class rate budget |
 | `POST /agents/{name}/approve` | **Lock a registered agent to the card fingerprint the operator has SEEN.** Body: `{"fingerprint": "…"}`, exactly as `connect` reported it. The card is re-fetched and re-verified on this call and the two must agree, so an approval is always a statement about a document a human actually read. An approve that adopted whatever the endpoint happened to be serving would be trust-on-first-use with a button on it. A registration whose `pin.mechanism` is `unpinned` has no authenticity root and is refused: registrable, inspectable, never approvable. The approval is the KERNEL's: the verb approves the agent's trust key `<instance>/<agent>` on the kernel's trust book, the same decision `POST /trust/approve` makes, and the book keeps it across a config apply and a restart. A fronted agent serves only while its key is approved. `full` scope, audited, config-class rate budget |
-| `GET /plugins?type=auth\|hooks\|store\|secret` | The plugin catalog for one type (required parameter: there is no unified cross-kind list, and a UI makes up to four calls to build a full picture). `hooks`: compiled-in ranking policies plus configured hook-registry entries (name/target only). `auth`: compiled-in auth modules plus every `kind: auth` plugin currently wired into the chain (`active: true`), PLUS a manifest-backed row for every `kind: auth` tarball installed in `plugins.dir` (the same rich shape `store`/`secret` carry). `store`: the compiled-in `memory` head plus every `kind: store` tarball in `plugins.dir`. `secret`: every `kind: secret` tarball in `plugins.dir` (no compiled-in default, since `env`/`file` are handled inline by the engine, not as plugins). Every dynamic-library row carries `name`, `file` (the artifact filename, the `{file}` key `DELETE /plugins/{file}` and `GET /plugins/{file}/schema` take; `null` for compiled-in/external rows, which have no backing artifact), `has_schema` (boolean, `true` iff `GET /plugins/{file}/schema` would return a non-null schema, equivalent to `schema_url != null`, and it spares a fetch-per-row when rendering a catalog), `version`, `publisher`, `interface_version`, a re-evaluated trust verdict (`trusted` / `unverified` / `rejected`), and `schema_url`/`schema_error` (below). MANIFEST-ONLY: listing never `dlopen`s anything, so an untrusted plugin's code cannot run from inspection |
+| `GET /plugins?type=auth\|hooks\|store\|secret\|export\|plane\|transport` | Catalog for one required type. `hooks` retains its configured hook/ranking summaries and adds installed hook artifacts; all seven types include their applicable linked or installed rows. Linked stores come from this distribution, without a hard-coded default. Artifact rows include `file`, optional `archive_sha256`, `version`, `publisher`, `interface_version`, validity/trust, and `schema_url`/`schema_error`. The archive digest identifies the complete current disk file; it does not assert that those bytes are already loaded. `has_schema` tracks a published schema reference, including a malformed legacy schema reported separately. Catalog inspection never executes a dropped artifact. The canonical Statement schema takes precedence over the legacy manifest field |
 | `POST /plugins/inspect` | STATELESS preview of a candidate plugin tarball (`read-only` scope, with its own `plugin-inspect` rate bucket, see above). Body: same shape as `POST /plugins` (`{file, tarball_b64}`; `file` unused, since nothing is written). Verifies the signature, parses the manifest, and returns the SAME response shape as `GET /plugins/{file}/schema` plus `name`/`version`: `{name, version, kind, schema, schema_error, trust, source: "manifest", restart_required_default}`. `trust` may be `"rejected"`. An untrusted candidate is REPORTED, not refused (the point is previewing what a not-yet-trusted plugin would need without ever installing or executing it). Never writes to `plugins.dir`, never conflict-checks against the installed set. Call this before `POST /plugins` to preview, or after downloading a candidate from a third-party release page before deciding whether to trust it |
 
 **Which stages a hook fires at: read `fires_at`, not `at`.** A hook's stage scoping has two config
@@ -289,12 +328,74 @@ Module names and modes only, never a token.
 | Endpoint | Returns |
 |---|---|
 | `GET /config` | The effective running config as one redacted snapshot (`version`, auth, pools, models, providers, hooks, `global_hooks`) for drift detection. Carries the config-plane `ETag`. **`global_hooks` here is an API RESPONSE field**, not the retired config key. It projects the resolved all-pools attach set (config-side, that is the reserved `pools.hooks:` list) |
-| `GET /config/settings` | The current overlay root-section overrides: only the fields the operator has set via API, with base `config.yaml` values for the rest. Shape: `{settings: {rate_card?, per_request_fee?, security?, limits?, advanced?, health?, routing?, listen?, admin_listen?, tls?, admin_tls?, admin_require_mtls?, store?, …}}`. Read-only scope. **Every opaque plugin `settings:` bag nested in that tree is REDACTED to `settings_keys`** (sorted key names, no values). For example, `store.settings.url`, which the docs themselves spell with a password, appears as `store.settings_keys: ["url"]`. Consequence: this body is not a verbatim `PUT` payload; a naive round-trip is rejected rather than silently rewriting a credential |
-| `PUT /config/settings` | Set any subset of the single-value top-level config sections durably. Body: any subset of the root config object (`rate_card`, `per_request_fee`, `security`, `limits`, `advanced`, `health`, `routing`, `listen`, `admin_listen`, `tls`, `admin_tls`, `admin_require_mtls`, `store`, …). 1.5.3: the `observability` and `metrics` sections are GONE from this surface. Telemetry egress is the `export:` NAMED map, edited in `config.yaml` and applied via plugin reload/restart, like every other exporter. Merged into the overlay, re-resolved, and swapped in. Returns `{settings, reload_to_apply}`. `settings` is redacted exactly as the GET redacts it (the echo is the whole merged root, not just what you sent). **Live (hot-applied, no restart):** `rate_card`, `per_request_fee`, `security`, `limits` (except the four boot-scoped fields below), `advanced` (except `response_headers`, see below), `health`, `routing`. **Restart-to-apply (stored durably; takes effect on next restart via [`POST /restart`](#post-apiv1adminrestart) or a supervisor restart):** `listen`, `admin_listen`, `tls`, `admin_tls`, `admin_require_mtls`, `store`, plus `limits.upstream_request_timeout_secs` / `limits.pool_max_idle_per_host` / `limits.pool_idle_timeout_secs` / `limits.max_inbound_concurrent` (`reload_to_apply` flags these individually, dotted, since the rest of `limits` stays live). Two independent freezing mechanisms are at work here. The first three: the upstream `reqwest::Client` is REUSED across an apply (warm connection pools are kept deliberately) and only rebuilt at process start, so these three fields are read once at boot and a live `PUT` changes the stored config but not the running client. `max_inbound_concurrent` is frozen a different way: it is captured once in `main()` and baked into a `tower::limit::GlobalConcurrencyLimitLayer` on the data router at process start; a config apply swaps only `Arc<App>`, never the router, so the semaphore's permit count cannot change without rebuilding the whole router. Also restart-to-apply: `advanced.response_headers` (formerly `observability.emit_server_timing`). `reload_to_apply` flags it dotted, since the rest of `advanced` stays live. `advanced.response_headers.server_timing` is baked into router middleware composition at boot (same "config apply swaps `Arc<App>`, never the router" reasoning as `max_inbound_concurrent`) and `advanced.response_headers.route_policy` seeds a process-global flag; `request_log_webhook_url` seeds a process-global `OnceLock` that silently no-ops on every call after the first `main()` call; `otlp_url` feeds a one-shot `tracing_subscriber::registry().try_init()` where a second call is also a structural no-op. Each has a reason, not just a limitation: `listen`/`admin_listen` are bound sockets, and rebinding is close-then-open. A failed bind would leave a plane with no listener, where a restart fails atomically and visibly at the process manager. `admin_require_mtls` gates a bind-time decision, so a live apply could not reach it. `tls`/`admin_tls` are read once when the acceptor is built; rotating `client_ca` live would not be revocation, because TLS session resumption restores a client's identity without re-consulting the verifier, so a revoked client would resume and be re-admitted. A restart clears that cache. `store` re-points budgets, keys and the audit chain at once, and every in-memory derivation of the old store (flush baselines, key caches, the audit watermark) would silently describe the new one; a restart discards them and rebuilds from the new store, and refuses to start if it does not validate. `config.yaml` is never written; persistence is the Busbar overlay (atomic temp+rename). **Durable by default (1.5.3):** a mutable config always stores the change in its overlay (survives restart), and a locked config (`config.locked: true`) refuses ANY change with `400`. There is no "apply in memory only" outcome. An optional top-level boolean `persist` in the body (stripped before the rest is parsed as `RootSettings`) is accepted for back-compat and boolean-validated (a non-boolean is a `400` naming the field), but its **value has no effect**: persistence is unconditional on a mutable config and refusal is unconditional on a locked one. Full scope |
+| `GET /config/settings` | `settings` contains only desired root-section Store overrides, never implied base-file values. `settings_source` is `desired_root_overlay`; `desired_revision` identifies the exact verified Store document, separately from the installed `config_version`. `desired_status` distinguishes loaded, absent, disabled, unreadable and newer-version overlays. The additive `configuration` field contains a sanitized view captured from the installed generation, with the same version as the response ETag. Opaque settings expose key names and explicitly public schema values only. Configured values do not acknowledge physical or asynchronous plugin activation; pending restart paths remain explicit. Hidden and unavailable fields are not empty/default values. Do not round-trip this read as a replacement body |
+| `PUT /config/settings` | Two mutually exclusive modes: the existing root-section body (`rate_card`, `per_request_fee`, `security`, `limits`, `advanced`, `health`, `routing`, `listen`, `admin_listen`, `tls`, `admin_tls`, `admin_require_mtls`, `store`) retains its merge semantics; `document_patch` edits the boot document using JSON pointers, as described below. Both use Store persistence and atomic generation publication, honor `If-Match`, and refuse locked configuration. The legacy response keeps `settings`; document mode returns `persisted` and `configuration`. `reload_to_apply` identifies boot-bound changes such as listeners, TLS, Store, upstream client settings and router limits. `config.yaml` is never written. The legacy optional boolean `persist` retains its previous no-op meaning; document mode is always durable and refuses `persist:false`. Full scope |
 | `GET /audit` | The admin audit log: every mutation *attempt* with its outcome (`applied`/`rejected`), newest first, attributed to the acting principal. Filters: `?action=hook.register`, `?resource=hook:x` (exact match). Paginated. No secrets. Each entry is hash-chained; its `scheme` names the recipe its `hash` was taken over. Scheme 1 is 1.5.5's `sha256(prev_hash\|seq\|ts\|action\|resource\|outcome\|principal)`. Scheme 2, used when `action`, `resource` or `outcome` holds a `\|`, is `prev_hash\|seq`, a zero byte, then `ts`, `action`, `resource`, `outcome` and `principal`, each as an 8-byte big-endian length and its bytes (`ts` as its 8-byte big-endian value). The OpenAPI `AuditEntry.hash` states the same recipe |
 | `GET /config/versions` | Version history metadata, newest first: `version`, `ts`, `principal`, `summary`. Paginated |
 | `GET /config/versions/{v}` | One retained version with its full hook-surface snapshot: `{version, ts, principal, summary, hooks, global_hooks}`, hooks projected through the same wire shape as `/hooks`, so one parser covers both. `404` if pruned or never recorded |
 | `GET /config/diff?from=&to=` | A structured diff between two retained versions: `{from, to, hooks: {added, removed, changed}}` + a `global_hooks: {from, to}` delta when the wiring changed. `400` for missing/non-numeric params; `404` names *which* version is missing |
+
+The configured public projection additionally includes `auth.role_bindings` (pool grants, group, admin scope, validated verb grants and declared plane grants), preserving absent versus empty grant lists. `pools.definitions` contains explicitly selected typed routing, member, timeout, breaker, failover and affinity values; free-form tag values remain hidden. Model entries expose the current typed model fields. Provider entries add typed health settings, auth-style and metadata-host policy, plus `protocol_override` captured from the authored deployment. `provider_catalog.public` carries the catalog's typed protocol/auth-style/health/policy fields. URLs, paths, credential references, OAuth scope/subject, error-map values and opaque option values remain presence/key-name projections. These are explicit allowlists, not serialization of the root config or the plane's opaque options. A hidden value must be retained by omission from partial edits; it is not an empty input or a removable default.
+
+### Durable document edits
+
+Use `PUT /config/settings` with `If-Match` from the current config ETag:
+
+```json
+{
+  "document_patch": {
+    "set": {"/limits/request_body_max_bytes": 5000123},
+    "remove": ["/providers/retired"]
+  }
+}
+```
+
+Paths use JSON Pointer escaping (`~1` for `/`, `~0` for `~`). Objects can be traversed and absent object parents are created. An array index is a canonical zero-based integer naming an existing element; `set` replaces that element or an addressed object leaf within it. Terminal `-` appends one element. Signed, leading-zero, missing and out-of-range indices are refused, as is traversal through `-`. An entire array can still be intentionally replaced. A missing `set` or `remove` means no edits of that kind. Setting null is different from removal. Omission preserves existing values, including hidden credentials. The composed document enters the same parser and validation path as boot; it introduces no plane-specific config vocabulary.
+
+All indices in one request refer to its input snapshot. Sets and appends run first; removals run in descending index order so removing one element cannot retarget another removal. For example, an edit to `/pools/west/members/0/weight` preserves that object's hidden tags; setting `/pools/west/members/-` adds a new complete member, and removing `/pools/west/members/1` removes the input snapshot's second member. A stale `If-Match` or any invalid later operation rejects the complete mutation. Subsequent requests use the current authored indices, not the original file's positions. The Store retains internal ordered stages when needed; clients continue to send only the public `set`/`remove` envelope and may not supply `$stages`.
+
+A persisted patch is bounded to 4096 operations, 1 MiB serialized bytes and pointer depth 128. Safe dominated replacements and source-equivalent edit cycles may compact internally; this does not change the authored result or expose hidden data.
+
+This Store layer sits below existing root, named-map, hook/group and plugin-version overrides. An edit shadowed by one of those overrides returns a conflict identifying the override and installed version. Use that section's existing mutation/reset route rather than assuming the new value took effect. Within one document edit, parent/child and set/remove overlap is refused. Object-only edits retain their existing merge behavior: exact-path edits supersede previous edits, while changing a prior parent edit to child edits requires explicitly resetting that parent. `reset_document_paths` removes every stored operation at each exact named path, including across ordered stages; the remaining stages must still replay and pass validation or the whole request is refused. Unrelated edits and typed overlays remain intact.
+
+The applied response describes an installed configuration generation. Boot-bound paths remain pending until restart; plugin settings are configured intent, not acknowledgement from an asynchronous refresh. A persisted `advanced.worker_threads` value selects data workers after Store recovery on restart, preserving the existing environment precedence. Unix uses pinned data runtimes; non-Unix uses a dedicated data scheduler while retaining the bootstrap/control runtime. The bootstrap plugin dispatcher keeps its own worker budget.
+
+The installed-generation readback also includes
+`configuration.values.sections.pools.authored`. When `state` is `available`, it records the
+current authored routing sequence, separately from the resolved values in `pools.definitions`:
+
+- `definitions.<pool>.members` has `state: absent|null|list`, a JSON Pointer `path`, and ordered
+  `entries`. Each entry carries its current `index`, escaped `path`, `model`, `form: bare|object`,
+  `declared_fields`, safe typed `values`, and `tags: {state: hidden|absent, count}`. Tag values never
+  leave the engine. The typed values are from the unresolved input parser, including its defaults;
+  `declared_fields` distinguishes an explicit member override from an omitted value.
+- `definitions.<pool>.hooks` preserves the authored list order and spelling: each entry is either
+  a bare hook/strategy name or `{strategy: name}`. `pools.authored.hooks` separately describes the
+  all-pools attach list. These lists contain public names only and may be used for intentional hook
+  ordering edits. Resolved `ordering_strategy`, `ordering_explicit`, and `gates` are not substitutes
+  for the authored list.
+- `state: unavailable` means there is no authoritative source projection, as with programmatically
+  constructed configurations. It does not mean the arrays are empty. The optional projection never
+  changes whether the normal boot parser accepts a configuration.
+
+Every authored index belongs to the response's `configuration.config_version` and ETag. Send that
+ETag in `If-Match` for a reviewed edit, then use fresh readback after a successful mutation; indices
+can change after a removal or reorder. Every nonempty document/catalog edit or reset also compares
+the relevant operator source with the exact preprocessed source consumed by the installed generation.
+This includes first-list initialization, whole-list replacement/null/removal, ancestor replacement and
+reset paths; it is not limited to numeric indices or a fixed list of schema fields. A changed source
+or unavailable binding returns `409` without changing the Store or installed generation until an
+explicit reload and fresh readback. An unchanged ETag alone cannot authorize editing an unseen
+external source change. This binding is private: no source digest or
+secret-bearing source text is returned. For an object-form member, editing its weight leaf preserves
+omitted fields and hidden tags. A bare member is a complete scalar name: changing it to a rich member
+is an intentional replacement of that one entry. Never reconstruct the complete `members` array
+from sanitized resolved readback. Missing and null lists remain explicit, so clients can distinguish
+creating a list from appending to an existing one.
+
+The same document-mode request can include `providers_patch` with `set`/`remove` paths rooted at catalog entry names, and `reset_providers_paths` to forget exact prior catalog edits. For example, `{"document_patch":{},"providers_patch":{"set":{"/example/base_url":"https://api.example.com"}}}` edits the provider catalog atomically with any config edits. The catalog uses the same parser as `providers.yaml`; neither operator file is written. Catalog edits shadowed by deployment values return a conflict. `providers_file` follows the effective config on reload unless the process has an explicit CLI/environment catalog override; edits shadowed by that override are refused.
+
+The overlay document format remains version 2. A reader that does not understand the internal ordered patch shape refuses it rather than silently ignoring sequence edits. The Store used to find the overlay remains the operator's base Store anchor; a Store change takes effect at restart after that anchor is recovered.
 
 ### Metering: `GET /usage`
 
@@ -461,9 +562,9 @@ mounted only on a node whose config carries that section.
 | Endpoint | Does |
 |---|---|
 | `GET /<map>` | Every definition in the map. Secrets are never projected (`read-only`) |
-| `GET /<map>/{name}` | One definition; `404` for an unknown name (`read-only`) |
+| `GET /<map>/{name}` | One definition; `404` for an unknown name (`read-only`). Core identity-provider/export definitions additionally expose `configuration` with schema-public settings values, bound to the same installed generation as the ETag. `configured` and `restart_pending` describe configuration, not a runtime refresh acknowledgement. Plane-owned summaries retain their own disclosure contract |
 | `PUT /<map>/{name}` | Create or replace one definition (upsert), persisted to the overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is `409` (edit config.yaml). On `identity-providers`, raising `max_admin_scope` is refused outright. Honors `If-Match` |
-| `PATCH /<map>/{name}/settings` | Replace only the opaque `settings:` bag; every other field is left byte-identical. Honors `If-Match` |
+| `PATCH /<map>/{name}/settings` | Supply exactly one mode: `{settings:{...}}` retains whole-bag replacement; `{edit:{set:{...},remove:[...]}}` replaces only named top-level setting values and explicitly removes named keys. Omitted settings, including hidden credentials, survive edit mode. Null remains a value; set/remove overlap is refused. Every other definition field is unchanged. The existing base-file and trust-ceiling restrictions remain. Honors `If-Match` |
 | `DELETE /<map>/{name}` | Remove one definition; refused `409` while another config section still references it by bare name. Honors `If-Match` |
 
 All of these mutations take the config-class rate budget (see above). The plane trust verbs
@@ -496,14 +597,9 @@ bypass the trust model:
 | `DELETE /plugins/{file}` | Remove a tarball from `plugins.dir` (`204`; `404` if absent). A currently-loaded store keeps running on its loaded handle; removal affects the NEXT load (folder = source of truth) |
 | `POST /plugins/reload` | **Live hot swap** (no restart): re-runs the fail-closed plugin pipeline from disk+overlay, rebuilds the registry and `kind: hook` transports, and old libraries drain then unmap. Fail-closed: a bad artifact leaves old plugins serving. Full scope, audited |
 | `POST /plugins/rollback` | Explicit, audited, If-Match-guarded rollback. Body: `{"file": "<tarball-filename>"}`. Pins a prior version and lowers the anti-downgrade floor **only for this operator action**. Automatic silent downgrade stays refused. Persists the version pin to the overlay. Full scope, audited |
-| `GET /plugins/{file}/schema` | The plugin's **self-described settings schema**, read from the SIGNED manifest's `settings_schema` field (a JSON Schema 2020-12 document). This works for every plugin `kind` (`store`/`secret`/`auth`/`hook`), not just hooks. Response: `{name, schema, schema_error, trust, source, kind, restart_required_default}`. `schema: null` with `schema_error: null` when the manifest carries none (most plugins today); a manifest that SET `settings_schema` but whose value fails to parse instead returns `schema: null` with `schema_error: "<reason>"`. These are distinct states, never collapsed. `trust` is `"trusted" \| "unverified" \| "rejected"` (same vocabulary as the plugin catalog, never `"verified"`). `source` is `"describe"` when a currently-loaded `kind: hook` answered live with a non-null schema, or `"manifest"` otherwise, including a loaded hook whose live `describe` answers `schema: null`: that is NOT evidence the plugin has no real settings shape, so the handler falls back to the manifest baseline server-side and returns it (`source: "manifest"`), rather than reporting `source: "describe"` with a bare null. `kind` is the manifest's plugin kind and `restart_required_default` is the KIND-DERIVED restart-scoping default (`store`/`secret` → `true`, `hook`/`auth` → `false`, see [plugins.md](plugins.md)'s `x-busbar-restart-required` section for the per-field override rule); both `null` only when the plugin cannot be resolved to any manifest at all. `404` if no such plugin is loaded. Resolved by name OR alias, manifest-only (no `dlopen`) |
+| `GET /plugins/{name}/schema` | Schema for a module resolved by name or alias in the current registry, or for a configured hook name. Response: `{name, schema, schema_error, trust, source, kind, restart_required_default}`. Supports every plugin kind. The loaded Statement schema takes precedence over the legacy manifest field; absence is `schema:null, schema_error:null`, while malformed legacy schema text is reported separately. Invalid Statement UTF-8/JSON is refused during admission/loading. `source` is `statement` for a linked row, `manifest` for a dropped row (including its Statement projection), or `describe` when a configured hook returns a non-null live schema; a null live reply falls back to the loaded schema. Artifact catalog URLs use `?source=installed_archive&expected_archive_sha256=<digest>` with the encoded archive filename. This authenticated read inspects the exact current archive bytes under the mutation lock, without loading code or falling back to an older loaded schema; it works before reload. The response adds `file`, `archive_sha256`, and `schema_state` (`present`, `absent`, or `invalid` legacy schema), with `source: installed_archive`. Changed or missing guarded bytes return 409; malformed requests/archive metadata return 400. The legacy query-free name/alias lookup still reads the current registry. Follow the catalog's relative `schema_url`; use `POST /plugins/inspect` for candidates before installation. Module settings schemas describe lifecycle inputs after host secret resolution; they do not replace the separate user SecretRef checks or the surrounding deployment schema |
 
-Every dynamic-library row in `GET /plugins?type=X` also carries `schema_url`: a nullable,
-server-resolved RELATIVE path to that plugin's `GET /plugins/{file}/schema` endpoint. Non-null whenever the manifest declared a `settings_schema` field at all, even when it
-fails to parse (following it then surfaces `schema_error`, the same distinction the detail endpoint
-makes). It is `null` only when no schema was ever declared, or the row has no manifest to carry one
-(compiled-in/external rows). **Always a relative path under this admin origin; a client MUST reject
-anything absolute or cross-origin rather than fetch it.**
+Catalog rows with a published schema carry a server-resolved relative `schema_url` under the admin origin. Artifact URLs identify the exact complete archive digest. An unreadable/oversized backing archive omits the URL and reports `schema_error`, instead of suggesting a loaded schema describes those unknown bytes. Linked rows can publish it too. When no Statement or legacy schema exists, the URL is omitted. A malformed legacy schema keeps a URL and reports `schema_error`; clients must display that error rather than infer an empty settings object. Module schema publication does not claim activation or expose hidden settings values.
 
 ```bash
 # Install a signed store plugin tarball (takes effect on the next plugin (re)load)
@@ -552,3 +648,50 @@ curl -s -X POST -H "x-admin-token: $TOK" -H "If-Match: $ETAG" -H 'content-type: 
 ## The freeze
 
 **v1 is frozen, additive-only.** New fields may appear in any view; no field is ever removed or repurposed; no error `code` ever changes meaning; the scope matrix and the mount prefix are pinned by tests. A breaking change would ship as `/admin/v2/` alongside v1, never in place. Build against v1 and it keeps working.
+
+### Bounded request telemetry
+
+`GET /api/v1/admin/telemetry` uses the existing admin read-only authority. It reads metrics already
+collected by the configured recorder; it neither enables collection nor forwards requests to a
+plugin or upstream. Disabled or unavailable collection returns `503 unavailable`, never invented
+zero measurements. Successful responses use `Cache-Control: no-store`.
+
+The response contains a random 128-bit hexadecimal `process_boot_nonce`, `uptime_since_start_ms`,
+`captured_at_unix_ms`, `upper_bounds_ms`, `identities`, `omitted_identities`, `truncated`, and `dropped`. The nonce is stable
+across scrapes and config reloads, and changes with a new process. Uptime is monotonic elapsed
+milliseconds since shared process-generation initialization (first use), not the operating system's
+process-creation time. Reading `GET /info` may establish that epoch before metrics are enabled.
+`captured_at_unix_ms` is engine wall-clock Unix milliseconds sampled during capture, separately from
+monotonic uptime or consumer receive time. Invalid or out-of-range engine wall time is unavailable.
+Counts, microsecond sums, bins, omission/drop counters and timestamps are unsigned decimal strings,
+including values above JavaScript's exact-number range.
+
+Each identity names `plane`, `phase`, `pool`, and `ingress_protocol`; its `count`, `errors`, `client_errors`, `sum_us`, and
+16 `bins` are cumulative in that process and read coherently. `errors` counts the existing
+`error` and `exhausted` outcomes (including HTTP 503); `client_errors` counts HTTP 4xx. They use
+the same observed phase event as count and duration, not a separate completion claim. Each bin is exclusive: values are
+at most its inclusive upper bound and greater than the preceding bound. The upper bounds in
+milliseconds are `[1,5,10,25,50,100,250,500,1000,2500,5000,10000,30000,60000,120000,null]`;
+the final null means positive infinity. The bins sum to count. These are not Prometheus cumulative
+buckets. Durations are individually truncated to whole microseconds before accumulation.
+
+`LlmProducerDrive` ends when the model producer drive returns; buffered body bytes can still be
+pending. `MountedResponseReady` ends when a mounted handler returns its response, before its
+body completes. Neither measures completed client delivery or proves a successful body transfer.
+Cancellation that bypasses those observation points contributes no completion measurement.
+
+At most 32 identities and 65536 JSON bytes are returned. This response-body cap is distinct from
+any transport frame cap or forwarding envelope; callers must account for their own framing. Selection is lexical and stable; labels
+over 256 UTF-8 bytes and identities beyond either limit are omitted. `omitted_identities` reports
+the number omitted and `truncated` says whether it is nonzero; missing identities are not zeroes.
+The fixed `dropped` fields are `invalid_duration`, `integer_overflow`, `series_capacity`,
+`boot_nonce_unavailable`, `histogram_capacity`, and `unregistered_labels`. Drop counters are
+cumulative diagnostics, not one atomic snapshot with every other counter. Clients should reset
+their delta baseline when the process nonce changes and must retain the measured phase labels.
+
+`GET /api/v1/admin/info` also returns the same `process_boot_nonce`, even when metrics are disabled.
+It initializes only the process generation, without creating a recorder or histogram buffers.
+The value is a 32-character lowercase hexadecimal string, or null if OS randomness failed.
+A caller can compare this nonce before and after an approved restart, including restarts within
+one wall-clock second. Existing `started_at`, `uptime_seconds`, and configuration fields retain
+their meanings; null nonce is unavailable identity, not proof of either a restart or continuity.

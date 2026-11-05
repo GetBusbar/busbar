@@ -2382,6 +2382,14 @@ async fn drive_admin_error_surface() {
             "not_found",
         ),
         (
+            "plugin_schema_unknown_source", "GET", "/plugins/ghost/schema?source=unknown",
+            None, None, 400, "invalid_request",
+        ),
+        (
+            "plugin_schema_guarded_missing", "GET", "/plugins/ghost.tar.gz/schema?source=installed_archive&expected_archive_sha256=0000000000000000000000000000000000000000000000000000000000000000",
+            None, None, 409, "conflict",
+        ),
+        (
             "plugins_missing_type",
             "GET",
             "/plugins",
@@ -2389,6 +2397,24 @@ async fn drive_admin_error_surface() {
             None,
             400,
             "invalid_request",
+        ),
+        (
+            "restart_malformed_if_match",
+            "POST",
+            "/restart",
+            Some(BAD_ETAG),
+            Some(r#"{"confirm":true}"#),
+            400,
+            "invalid_request",
+        ),
+        (
+            "restart_stale_if_match",
+            "POST",
+            "/restart",
+            Some(STALE),
+            Some(r#"{"confirm":true}"#),
+            409,
+            "version_conflict",
         ),
         (
             "restart_malformed_body",
@@ -2800,6 +2826,7 @@ async fn drive_plugin_rollback_errors() {
         busbar_kernel::config::overlay::OverlayStore::new(crate::root::real_store::store())
             .expect("the actual Store opens the overlay");
 
+    std::fs::write(dir.join("invalid-schema.tar.gz"), b"not an archive").unwrap();
     let tarball = admin_test_tarball("rollme", "rollme");
     let file = "rollme-1.0.0.tar.gz";
     std::fs::write(dir.join(file), &tarball).unwrap();
@@ -2905,6 +2932,18 @@ async fn drive_plugin_rollback_errors() {
     );
     assert_eq!(body["error"]["code"], "not_found");
 
+    let guarded = rollback(format!(
+        r#"{{"file":"{file}","expected_archive_sha256":"{}"}}"#,
+        "0".repeat(64)
+    ))
+    .await
+    .unwrap();
+    assert_eq!(guarded.status().as_u16(), 409);
+    assert_eq!(
+        guarded.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "conflict"
+    );
+
     let r = rollback(format!(r#"{{"file":"{file}"}}"#)).await.unwrap();
     let status = r.status().as_u16();
     let body: serde_json::Value = r.json().await.unwrap();
@@ -2952,6 +2991,22 @@ async fn drive_plugin_rollback_errors() {
             None,
             400,
             "invalid_request",
+        ),
+        (
+            "schema_invalid_archive", "/plugins/invalid-schema.tar.gz/schema?source=installed_archive", "GET", None, 400, "invalid_request",
+        ),
+        (
+            "schema_invalid_filename", "/plugins/not-an-archive/schema?source=installed_archive", "GET", None, 400, "invalid_request",
+        ),
+        (
+            "remove_bad_archive_digest",
+            "/plugins/ghost-1.0.0.tar.gz?expected_archive_sha256=bad",
+            "DELETE", None, 400, "invalid_request",
+        ),
+        (
+            "remove_guarded_missing",
+            "/plugins/ghost-1.0.0.tar.gz?expected_archive_sha256=0000000000000000000000000000000000000000000000000000000000000000",
+            "DELETE", None, 409, "conflict",
         ),
         (
             "remove_unknown",

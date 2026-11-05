@@ -134,8 +134,22 @@ pub(crate) async fn list_plugins(
     State(handle): State<Arc<AppHandle>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let ptype = q.get("type").map(String::as_str).unwrap_or("");
-    respond(StatusCode::OK, service(&handle).list_plugins(ptype).await)
+    let ptype = q.get("type").cloned().unwrap_or_default();
+    let scan = busbar_kernel::config::transaction::config_reload_transaction(&handle, move |txn| {
+        let snapshot = txn.app().clone();
+        Ok(txn.read_store(move || {
+            Ok(Outcome::Value(
+                AdminService::new(snapshot).list_plugins_current(&ptype)?,
+            ))
+        }))
+    });
+    let out = match tokio::time::timeout(std::time::Duration::from_secs(5), scan).await {
+        Ok(out) => out,
+        Err(_) => Err(AdminError::Unavailable(
+            "the plugin catalog scan is taking too long; try again shortly".into(),
+        )),
+    };
+    respond(StatusCode::OK, out)
 }
 
 /// The `POST /api/v1/admin/plugins` request body: install a SIGNED plugin tarball. The tarball
@@ -255,14 +269,24 @@ pub(crate) async fn remove_plugin(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(file): Path<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     let actor = principal.actor_id().to_string();
     let resource = format!("plugin:{file}");
+    let expected = query.get("expected_archive_sha256").cloned();
+    if let Some(value) = &expected {
+        if !valid_archive_sha256(value) {
+            return err_json(&AdminError::Validation(
+                "expected_archive_sha256 must be 64 lowercase hexadecimal characters".into(),
+            ));
+        }
+    }
 
     let out = config_transaction(&handle, move |txn| {
         let snapshot = txn.app().clone();
         Ok(txn.store_write(move || {
-            AdminService::new(snapshot).remove_store_plugin(&file)?;
+            AdminService::new(snapshot)
+                .remove_store_plugin_if_archive(&file, expected.as_deref())?;
             Ok(Outcome::Value(()))
         }))
     })
@@ -347,6 +371,32 @@ pub(crate) async fn reload_plugins(
 pub(crate) struct PluginRollbackReq {
     /// The plugin tarball FILENAME (in the plugins directory) carrying the prior version to pin to.
     file: String,
+    /// Optional exact SHA-256 of the complete archive reviewed by the caller. Stale/missing = 409.
+    #[serde(default, deserialize_with = "deserialize_archive_sha256")]
+    #[cfg_attr(
+        feature = "openapi-schema",
+        schemars(with = "String", regex(pattern = "^[0-9a-f]{64}$"))
+    )]
+    expected_archive_sha256: Option<String>,
+}
+
+fn valid_archive_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn deserialize_archive_sha256<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<String>, D::Error> {
+    let value = <String as serde::Deserialize>::deserialize(d)?;
+    if !valid_archive_sha256(&value) {
+        return Err(serde::de::Error::custom(
+            "expected_archive_sha256 must be 64 lowercase hexadecimal characters",
+        ));
+    }
+    Ok(Some(value))
 }
 
 struct UnpublishedPluginPin(Option<Arc<busbar_kernel::config::overlay::OverlayStore>>);
@@ -401,7 +451,7 @@ pub(crate) async fn rollback_plugin(
 
 
             let (manifest, pins) = AdminService::new(snapshot.clone())
-                .resolve_plugin_rollback(&file, &prior_pins)?;
+                .resolve_plugin_rollback_if_archive(&file, &prior_pins, req.expected_archive_sha256.as_deref())?;
 
 
 
@@ -1132,7 +1182,7 @@ pub(crate) async fn reset_overlay_section(
 
 
 
-            let (Some(config_path), Some(providers_path)) = (
+            let (Some(config_path), Some(_)) = (
                 snapshot.config_path.clone(),
                 snapshot.providers_path.clone(),
             ) else {
@@ -1144,7 +1194,7 @@ pub(crate) async fn reset_overlay_section(
             };
             let loaded_base = busbar_kernel::load_config_from_disk_with_store(
                 &config_path,
-                Some(&providers_path),
+                snapshot.providers_override.as_deref(),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
                 &*snapshot.root_rules,
@@ -1225,10 +1275,15 @@ pub(crate) async fn reset_overlay_section(
                     loaded.overlay_path,
                     base_hook_names,
                     base_group_names,
-                    (Some(config_path), Some(providers_path)),
+                    (Some(config_path), Some(loaded.providers_path)),
                     Some(&snapshot),
                     &snapshot.root_rules,
-                )
+                ).map(|(mut app, rotate, limits)| {
+                    busbar_kernel::config::readback::ConfiguredView::capture_documents(
+                        &mut app, &loaded.deploy, &loaded.defs,
+                    );
+                    (app, rotate, limits)
+                })
             })
             .map_err(AdminError::Validation)?;
             let (built, gov_rotate, limits) = built;
@@ -1781,7 +1836,7 @@ pub(crate) fn rebuild_app_from_disk(
     ),
     String,
 > {
-    let (Some(config_path), Some(providers_path)) =
+    let (Some(config_path), Some(_)) =
         (current.config_path.clone(), current.providers_path.clone())
     else {
         return Err(
@@ -1796,7 +1851,7 @@ pub(crate) fn rebuild_app_from_disk(
         None => {
             let base = busbar_kernel::load_config_from_disk_judged(
                 &config_path,
-                Some(&providers_path),
+                current.providers_override.as_deref(),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
                 &*current.root_rules,
@@ -1817,7 +1872,7 @@ pub(crate) fn rebuild_app_from_disk(
     };
     let mut loaded = busbar_kernel::load_config_from_disk_with_store(
         &config_path,
-        Some(&providers_path),
+        current.providers_override.as_deref(),
         false,
         busbar_kernel::config::EnvSubst::Strict,
         &*current.root_rules,
@@ -1842,10 +1897,18 @@ pub(crate) fn rebuild_app_from_disk(
         loaded.overlay_path,
         base_hook_names,
         base_group_names,
-        (Some(config_path), Some(providers_path)),
+        (Some(config_path), Some(loaded.providers_path)),
         Some(current.as_ref()),
         &current.root_rules,
     )
+    .map(|(mut app, rotate, limits)| {
+        busbar_kernel::config::readback::ConfiguredView::capture_documents(
+            &mut app,
+            &loaded.deploy,
+            &loaded.defs,
+        );
+        (app, rotate, limits)
+    })
 }
 
 pub(crate) async fn reload_config(
@@ -1914,10 +1977,13 @@ pub(crate) struct RestartReq {
 }
 
 pub(crate) async fn restart(
+    State(handle): State<Arc<AppHandle>>,
+    headers: axum::http::HeaderMap,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
+    let expected = ok_or_respond!(if_match_version(&headers));
     let req: RestartReq = if body.is_empty() {
         RestartReq::default()
     } else {
@@ -1933,28 +1999,36 @@ pub(crate) async fn restart(
         }
     };
 
-    let supervised = crate::restart::supervisor_detected();
-    if !supervised && !req.confirm {
-        audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_REJECTED, &actor);
-        return err_json_cond(
-            &AdminError::Conflict(
-                "no process supervisor was detected, so exiting would leave busbar down; re-send                  with `confirm: true` if a supervisor will restart it"
-                    .into(),
-            ),
-            Cond::NoSupervisor,
-        );
-    }
-
-    if !crate::restart::can_restart() {
-        audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_REJECTED, &actor);
-        return err_json_cond(
-            &AdminError::Conflict("this process cannot restart itself".into()),
-            Cond::NotRestartable,
-        );
-    }
-
-    audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_APPLIED, &actor);
-    crate::restart::begin_drain();
+    let out = busbar_kernel::config::transaction::config_reload_transaction(&handle, |txn| {
+        if let Some(error) = stale_if_match(expected, txn.app().config_version) {
+            return Err(error);
+        }
+        let supervised = crate::restart::supervisor_detected();
+        if !supervised && !req.confirm {
+            return Ok(Outcome::Value(Err(Cond::NoSupervisor)));
+        }
+        if !crate::restart::can_restart() {
+            return Ok(Outcome::Value(Err(Cond::NotRestartable)));
+        }
+        // This admission closure executes on the asking task while the config lock is held.
+        // Keep the task-local UnitDrain identity: moving this into store_write loses it.
+        audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_APPLIED, &actor);
+        crate::restart::begin_drain();
+        Ok(Outcome::Value(Ok(supervised)))
+    })
+    .await;
+    let supervised = match out {
+        Ok(Ok(supervised)) => supervised,
+        Ok(Err(condition)) => {
+            audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_REJECTED, &actor);
+            let message = match condition {
+                Cond::NoSupervisor => "no process supervisor was detected, so exiting would leave busbar down; re-send                  with `confirm: true` if a supervisor will restart it",
+                _ => "this process cannot restart itself",
+            };
+            return err_json_cond(&AdminError::Conflict(message.into()), condition);
+        }
+        Err(error) => return reject("admin.restart", "process", &actor, &error),
+    };
 
     ok_json(
         StatusCode::ACCEPTED,
@@ -2065,6 +2139,12 @@ pub(crate) async fn apply_config(
                         Some(&snapshot),
                         &snapshot.root_rules,
                     )
+                    .map(|(mut app, rotate, limits)| {
+                        busbar_kernel::config::readback::ConfiguredView::capture_documents(
+                            &mut app, &deploy, &providers,
+                        );
+                        (app, rotate, limits)
+                    })
                 })
                 .map_err(AdminError::Validation)?;
             let (next, gov_rotate, limits) = next;
@@ -2271,16 +2351,26 @@ fn reload_to_apply_fields(req: &busbar_kernel::config::overlay::RootSettings) ->
 fn current_root_settings(
     overlay_path: Option<&busbar_kernel::config::overlay::OverlayStore>,
     endpoint: &str,
-) -> busbar_kernel::config::overlay::RootSettings {
+) -> (
+    busbar_kernel::config::overlay::RootSettings,
+    Option<String>,
+    &'static str,
+) {
     let Some(p) = overlay_path else {
-        return busbar_kernel::config::overlay::RootSettings::default();
+        return (
+            busbar_kernel::config::overlay::RootSettings::default(),
+            None,
+            "disabled",
+        );
     };
-    match busbar_kernel::config::overlay::read_state(p) {
-        busbar_kernel::config::overlay::OverlayReadState::Absent => {
-            busbar_kernel::config::overlay::RootSettings::default()
-        }
+    let (revision, state) = busbar_kernel::config::overlay::read_state_with_revision(p);
+    let (root, status) = match state {
+        busbar_kernel::config::overlay::OverlayReadState::Absent => (
+            busbar_kernel::config::overlay::RootSettings::default(),
+            "absent",
+        ),
         busbar_kernel::config::overlay::OverlayReadState::Loaded(doc) => {
-            doc.root.unwrap_or_default()
+            (doc.root.unwrap_or_default(), "loaded")
         }
         busbar_kernel::config::overlay::OverlayReadState::Unreadable => {
             busbar_kernel::diagnostics::diag_warn!(
@@ -2290,7 +2380,10 @@ fn current_root_settings(
                 "{endpoint} read the config overlay while it was unreadable/corrupt; reporting NO \
                  root overrides, which may not reflect what is actually stored in the Store"
             );
-            busbar_kernel::config::overlay::RootSettings::default()
+            (
+                busbar_kernel::config::overlay::RootSettings::default(),
+                "unreadable",
+            )
         }
         busbar_kernel::config::overlay::OverlayReadState::VersionTooNew(v) => {
             busbar_kernel::diagnostics::diag_warn!(
@@ -2301,34 +2394,30 @@ fn current_root_settings(
                 "{endpoint} read the config overlay while it was from a NEWER busbar; reporting NO \
                  root overrides, which may not reflect what is actually stored in the Store"
             );
-            busbar_kernel::config::overlay::RootSettings::default()
+            (
+                busbar_kernel::config::overlay::RootSettings::default(),
+                "newer_version",
+            )
         }
-    }
+    };
+    (root, revision, status)
 }
 
 pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) -> Response {
-    let current = handle.load();
-
-    let overlay_path = current.overlay_path.clone();
-
     let dispatch = tracing::dispatcher::get_default(|d| d.clone());
-    let root = match tokio::task::spawn_blocking(move || {
-        tracing::dispatcher::with_default(&dispatch, || {
-            current_root_settings(overlay_path.as_deref(), "GET /config/settings")
-        })
+    let read = config_transaction(&handle, move |txn| {
+        let current = txn.app().clone();
+        Ok::<_, AdminError>(txn.read_store(move || {
+            let root = tracing::dispatcher::with_default(&dispatch, || {
+                current_root_settings(current.overlay_path.as_deref(), "GET /config/settings")
+            });
+            Ok(Outcome::Value((current, root)))
+        }))
     })
-    .await
-    {
-        Ok(root) => root,
-
-        Err(e) => {
-            busbar_kernel::diagnostics::diag_error!(
-                busbar_kernel::diagnostics::CONFIG_SETTINGS_READ_TASK_JOIN_FAILED,
-                error = %e,
-                "GET /config/settings overlay read task failed to join"
-            );
-            return err_json(&AdminError::Internal);
-        }
+    .await;
+    let (current, (root, desired_revision, desired_status)) = match read {
+        Ok(read) => read,
+        Err(error) => return err_json(&error),
     };
 
     let mut settings = serde_json::to_value(&root).unwrap_or_else(|_| json!({}));
@@ -2342,6 +2431,10 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
                 // settings-leak-lint: allow — the envelope member; `redact_settings_bags` above has
                 // already reduced every bag inside `settings` to its key names.
                 "settings": settings,
+                "settings_source": "desired_root_overlay",
+                "desired_revision": desired_revision,
+                "desired_status": desired_status,
+                "configuration": super::config_document::configuration(&current),
             }),
         ),
         current.config_version,
@@ -2356,6 +2449,9 @@ pub(crate) async fn put_config_settings(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    if super::config_document::is_document_request(&body) {
+        return super::config_document::put(handle, principal, headers, body).await;
+    }
     let actor = principal.actor_id().to_string();
     let card_origin = format!("config/settings by {actor}");
     let expected = ok_or_respond!(if_match_version(&headers));
@@ -2380,6 +2476,7 @@ pub(crate) async fn put_config_settings(
     };
     let reload_to_apply = reload_to_apply_fields(&req);
     let want = req.clone();
+    let pending = reload_to_apply.clone();
     let out = config_transaction(&handle, move |txn| {
         let current = txn.app();
         if let Some(e) = stale_if_match(expected, current.config_version) {
@@ -2395,7 +2492,7 @@ pub(crate) async fn put_config_settings(
 
         let snapshot = current.clone();
         Ok(txn.read_store(move || {
-            let (Some(config_path), Some(providers_path)) = (
+            let (Some(config_path), Some(_)) = (
                 snapshot.config_path.clone(),
                 snapshot.providers_path.clone(),
             ) else {
@@ -2421,7 +2518,7 @@ pub(crate) async fn put_config_settings(
 
             let next = busbar_kernel::load_config_from_disk_with_store(
                 &config_path,
-                Some(&providers_path),
+                snapshot.providers_override.as_deref(),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
                 &*snapshot.root_rules,
@@ -2451,13 +2548,24 @@ pub(crate) async fn put_config_settings(
                     loaded.overlay_path,
                     base_hook_names,
                     base_group_names,
-                    (Some(config_path), Some(providers_path)),
+                    (Some(config_path), Some(loaded.providers_path)),
                     Some(&snapshot),
                     &snapshot.root_rules,
                 )
+                .map(|(mut app, rotate, limits)| {
+                    busbar_kernel::config::readback::ConfiguredView::capture_documents(
+                        &mut app,
+                        &loaded.deploy,
+                        &loaded.defs,
+                    );
+                    (app, rotate, limits)
+                })
             })
             .map_err(AdminError::Validation)?;
-            let (next, gov_rotate, limits) = next;
+            let (mut next, gov_rotate, limits) = next;
+            next.config_pending_restart.extend(pending);
+            next.config_pending_restart.sort();
+            next.config_pending_restart.dedup();
             let installed = Arc::new(next);
 
             let persist_overlay = snapshot.overlay_path.clone();
@@ -2522,6 +2630,7 @@ pub(crate) async fn put_config_settings(
                         // settings-leak-lint: allow — the envelope member; `redact_settings_bags`
                         // above has already reduced every bag inside `settings` to its key names.
                         "settings": settings,
+                        "configuration": super::config_document::configuration(&installed),
                         "reload_to_apply": reload_to_apply,
                         "note": note,
                     }),
@@ -2661,7 +2770,41 @@ pub(crate) async fn patch_hook_settings(
 pub(crate) async fn plugin_schema(
     State(handle): State<Arc<AppHandle>>,
     Path(name): Path<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
+    if let Some(source) = query.get("source") {
+        if source != "installed_archive" {
+            return err_json(&AdminError::Validation(
+                "unknown schema source; expected installed_archive".into(),
+            ));
+        }
+        let expected = query.get("expected_archive_sha256").cloned();
+        if expected
+            .as_deref()
+            .is_some_and(|value| !valid_archive_sha256(value))
+        {
+            return err_json(&AdminError::Validation(
+                "expected_archive_sha256 must be 64 lowercase hexadecimal characters".into(),
+            ));
+        }
+        let out =
+            busbar_kernel::config::transaction::config_reload_transaction(&handle, move |txn| {
+                let snapshot = txn.app().clone();
+                Ok(txn.read_store(move || {
+                    Ok(Outcome::Value(
+                        AdminService::new(snapshot)
+                            .installed_plugin_schema(&name, expected.as_deref())?,
+                    ))
+                }))
+            })
+            .await;
+        return respond(StatusCode::OK, out);
+    }
+    if query.contains_key("expected_archive_sha256") {
+        return err_json(&AdminError::Validation(
+            "expected_archive_sha256 requires source=installed_archive".into(),
+        ));
+    }
     let current = handle.load();
 
     if let Some(hook) = current.hook_registry.get(&name) {
@@ -3010,6 +3153,10 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "parameters": [{
                     "name": "file", "in": "path", "required": true,
                     "schema": {"type": "string"}
+                }, {
+                    "name": "expected_archive_sha256", "in": "query", "required": false,
+                    "schema": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                    "description": "Exact complete archive SHA-256 from PluginView; stale or missing artifact is 409 with no deletion. Absent is unconditional."
                 }],
                 RESPONSES_KEY: {
                     "204": {"description": "Removed"},
@@ -3021,11 +3168,19 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ap("/plugins/{file}/schema"),
         json!({
             "get": {
-                "summary": "The plugin settings JSON Schema for every kind: canonical Statement first, legacy manifest field only when the Statement carries no schema. Dropped plugins are read from the signed manifest without opening the library; linked plugins publish their Statement. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)",
+                "summary": "The plugin settings JSON Schema for every kind. source=installed_archive reads the named disk artifact, optionally fenced by expected_archive_sha256; it never substitutes a loaded generation. Without source, resolve the loaded module by name or alias. Canonical Statement first, legacy manifest field only when the Statement carries no schema. Dropped plugins are read from the signed manifest without opening the library; linked plugins publish their Statement. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)",
                 "security": [{"adminToken": []}],
                 "parameters": [{
                     "name": "file", "in": "path", "required": true,
                     "schema": {"type": "string"}
+                }, {
+                    "name": "source", "in": "query", "required": false,
+                    "schema": {"type": "string", "enum": ["installed_archive"]},
+                    "description": "Read and validate the named disk archive instead of resolving a loaded module name/alias."
+                }, {
+                    "name": "expected_archive_sha256", "in": "query", "required": false,
+                    "schema": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                    "description": "Optional complete archive digest fence; requires source=installed_archive. Changed or missing archive returns409; never falls back to an old loaded schema."
                 }],
                 RESPONSES_KEY: {
                     "200": {"description": "`{name, schema, schema_error, trust, source}`: `schema` null (with `schema_error` null) when the manifest carries none; a manifest that SET `settings_schema` but failed to parse instead reports `schema_error` (never collapsed into the same null as \"no schema\"). `trust` is `trusted|unverified|rejected` (the catalog vocabulary). `source` is `describe` (a loaded hook answered live) or `statement` (linked plugin) or `manifest` (signed Statement or legacy manifest field)"},
@@ -3697,6 +3852,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ("/config/settings", "put"),
         ("/config/rollback", "post"),
         ("/plugins/rollback", "post"),
+        ("/restart", "post"),
         ("/overlay/{section}", "delete"),
         ("/keys/{id}", "patch"),
         ("/keys/{id}", "delete"),
@@ -3896,6 +4052,13 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     typed!("/config/apply", "post", "200", sview::ConfigApplyView);
     typed!("/config/settings", "get", "200", sview::ConfigSettingsView);
     typed!("/config/settings", "put", "200", sview::ConfigSettingsView);
+    if let Some(op) = op!("/config/settings", "put") {
+        let content =
+            &mut op[RESPONSES_KEY]["200"]["content"][busbar_contract::protocol::APPLICATION_JSON];
+        let legacy = content["schema"].clone();
+        content["schema"] = json!({"oneOf": [legacy, super::config_document::response_schema()]});
+    }
+
     typed!("/config/reload", "post", "200", sview::ConfigReloadView);
     typed!("/restart", "post", "202", sview::RestartView);
     typed!("/config/rollback", "post", "200", sview::ConfigRollbackView);
@@ -4022,7 +4185,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     body_raw!(
         "/config/settings",
         "put",
-        config_doc(
+        json!({"oneOf": [{"allOf": [config_doc(
             "The settings sections to replace, keyed by section name. Durable by default (1.5.3): a \
              mutable config always stores the change in its overlay (survives restart), and a locked \
              config (`config.locked: true`) refuses ANY change with `400`. There is no \"apply in \
@@ -4031,7 +4194,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
              value has NO effect: persistence is unconditional on a mutable config and refusal is \
              unconditional on a locked one. Every other top-level key must be a known settings \
              section; an unknown key is a 400."
-        )
+        ), {"not": {"required": ["document_patch"]}}]}, super::config_document::request_schema()]})
     );
     body_raw!(
         PATH_GROUPS,
@@ -4101,7 +4264,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         let item = format!("{root}/{{name}}");
         let settings = format!("{root}/{{name}}/settings");
         typed!(root.as_ref(), "get", "200", Page<NamedDefView>);
-        typed!(&item, "get", "200", NamedDefView);
+        typed!(&item, "get", "200", super::named_map::MutatedDefView);
         typed!(&item, "put", "200", super::named_map::MutatedDefView);
         typed!(&settings, "patch", "200", super::named_map::MutatedDefView);
         body_raw!(
@@ -4114,7 +4277,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 section.key()
             ))
         );
-        body!(&settings, "patch", super::named_map::NamedSettingsReq);
+        body_raw!(
+            &settings,
+            "patch",
+            super::named_map::settings_request_schema()
+        );
     }
 
     typed!(
@@ -4125,6 +4292,12 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     );
 
     let mut schemas = gen.definitions().clone();
+    if let Some(schema) = schemas.get_mut("ConfigSettingsView") {
+        schema["properties"]["configuration"] = json!({"type": "object", "description": "Sanitized values captured from the installed config generation, bound to the response ETag; configured does not mean physically active."});
+        schema["properties"]["settings_source"] = json!({"type": "string", "description": "desired_root_overlay on GET; settings never represents the full applied configuration."});
+        schema["properties"]["desired_revision"] = json!({"type": ["string", "null"], "description": "SHA256 content revision of the exact verified desired Store document; independent of the process-local config_version."});
+        schema["properties"]["desired_status"] = json!({"type": "string", "enum": ["disabled", "absent", "loaded", "unreadable", "newer_version"]});
+    }
 
     for (name, schema) in req_gen.definitions() {
         schemas.insert(name.clone(), schema.clone());
@@ -4191,6 +4364,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
 
     json!({
         "openapi": "3.1.0",
+        "x-busbar-config-schemas": super::config_forms::extension(),
         "info": {
             "title": "Busbar Admin API",
             "version": env!("CARGO_PKG_VERSION"),
@@ -4459,4 +4633,92 @@ pub fn credential_flush_response_for_test(
     actor: &str,
 ) -> Response {
     credential_flush_response(result, module, actor)
+}
+
+#[cfg(all(test, feature = "openapi-schema"))]
+mod archive_precondition_contract_tests {
+    use super::*;
+
+    #[test]
+    fn archive_preconditions_and_restart_fence_are_additive_and_typed() {
+        let digest = "a".repeat(64);
+        let parsed: PluginRollbackReq =
+            serde_json::from_value(json!({"file":"old.tar.gz","expected_archive_sha256":digest}))
+                .unwrap();
+        assert_eq!(
+            parsed.expected_archive_sha256.as_deref(),
+            Some(digest.as_str())
+        );
+        let absent: PluginRollbackReq =
+            serde_json::from_value(json!({"file":"old.tar.gz"})).unwrap();
+        assert_eq!(absent.expected_archive_sha256, None);
+        for invalid in [
+            json!(null),
+            json!(""),
+            json!("A".repeat(64)),
+            json!("a".repeat(63)),
+            json!(5),
+        ] {
+            assert!(serde_json::from_value::<PluginRollbackReq>(
+                json!({"file":"old.tar.gz","expected_archive_sha256":invalid})
+            )
+            .is_err());
+        }
+        let doc = openapi_doc();
+        let schema = &doc["components"]["schemas"]["PluginRollbackReq"];
+        assert_eq!(
+            schema["properties"]["expected_archive_sha256"]["type"],
+            "string"
+        );
+        assert!(!schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field == "expected_archive_sha256"));
+        let delete = &doc["paths"]["/api/v1/admin/plugins/{file}"]["delete"];
+        assert!(delete["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["name"] == "expected_archive_sha256"
+                && p["in"] == "query"
+                && p["required"] == false));
+        assert!(delete["responses"].get("409").is_some());
+        let restart = &doc["paths"]["/api/v1/admin/restart"]["post"];
+        assert!(restart["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["name"] == "If-Match"));
+        assert!(restart["responses"].get("409").is_some());
+        let plugin = &doc["components"]["schemas"]["PluginView"];
+        assert!(!plugin["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field == "archive_sha256"));
+    }
+    #[test]
+    fn installed_schema_lookup_contract_is_hash_bound_and_optional() {
+        let doc = openapi_doc();
+        let operation = &doc["paths"]["/api/v1/admin/plugins/{file}/schema"]["get"];
+        let parameters = operation["parameters"].as_array().unwrap();
+        assert!(parameters
+            .iter()
+            .any(|p| p["name"] == "source" && p["schema"]["enum"] == json!(["installed_archive"])));
+        assert!(parameters
+            .iter()
+            .any(|p| p["name"] == "expected_archive_sha256" && p["required"] == false));
+        assert!(operation["responses"].get("400").is_some());
+        assert!(operation["responses"].get("409").is_some());
+        let schema = &doc["components"]["schemas"]["PluginSchemaView"];
+        for field in ["file", "archive_sha256", "schema_state"] {
+            assert!(schema["properties"].get(field).is_some());
+            assert!(!schema["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p == field));
+        }
+    }
 }

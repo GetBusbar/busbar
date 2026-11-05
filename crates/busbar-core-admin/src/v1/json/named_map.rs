@@ -22,6 +22,10 @@ use busbar_kernel::audit_ring as audit;
 use busbar_kernel::config::named_map::NamedMapSection;
 use busbar_kernel::state::{App, AppHandle};
 
+#[path = "settings_edit.rs"]
+mod settings_edit;
+use settings_edit::SettingsEdit;
+
 pub(crate) fn routes() -> Router<Arc<AppHandle>> {
     let mut router = Router::new();
     for section in NamedMapSection::sections() {
@@ -60,11 +64,14 @@ async fn list(
     if let Some(resp) = plane_gate(&handle, section) {
         return resp;
     }
-    let version = handle.load().config_version;
+    let current = handle.load();
+    let version = current.config_version;
     with_config_etag(
         respond(
             StatusCode::OK,
-            super::service(&handle).list_named_defs(section).await,
+            crate::v1::service::AdminService::new(current)
+                .list_named_defs(section)
+                .await,
         ),
         version,
     )
@@ -110,10 +117,13 @@ async fn get_one(
     with_config_etag(
         respond(
             StatusCode::OK,
-            crate::v1::service::AdminService::new(current)
+            crate::v1::service::AdminService::new(current.clone())
                 .get_named_def(section, &name)
                 .await
-                .map(|def| MutatedDefView::new(def, paths, Vec::new(), exports)),
+                .map(|def| {
+                    MutatedDefView::new(def, paths, Vec::new(), exports)
+                        .with_configuration(&current, section, &name)
+                }),
         ),
         version,
     )
@@ -141,6 +151,8 @@ enum Mutation {
 
     Settings(serde_json::Map<String, serde_json::Value>),
 
+    EditSettings(SettingsEdit),
+
     Remove,
 }
 
@@ -148,7 +160,7 @@ impl Mutation {
     fn verb(&self) -> &'static str {
         match self {
             Mutation::Replace(_) => "replace",
-            Mutation::Settings(_) => "settings",
+            Mutation::Settings(_) | Mutation::EditSettings(_) => "settings",
             Mutation::Remove => "delete",
         }
     }
@@ -212,25 +224,43 @@ async fn patch_settings(
             );
         }
     };
-    apply(
-        handle,
-        principal,
-        section,
-        name,
-        headers,
-        Mutation::Settings(req.settings),
-    )
-    .await
+    let mutation = match req.into_mutation() {
+        Ok(mutation) => mutation,
+        Err(error) => return err_json_cond(&error, Cond::MalformedBody),
+    };
+    apply(handle, principal, section, name, headers, mutation).await
 }
 
-/// The `PATCH /api/v1/admin/<section>/{name}/settings` body: the whole replacement settings bag.
-/// A sibling of the hooks surface's `PatchSettingsReq` (same shape, same semantics: `settings:` is
-/// REPLACED, not deep-merged, so the stored bag is always exactly what the caller sent).
+/// Exactly one mode: `settings` retains the original whole-bag replacement semantics; `edit`
+/// changes only explicitly named keys and preserves every omitted setting.
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct NamedSettingsReq {
     // settings-leak-lint: allow — INBOUND request body (`Deserialize` only). This is the operator
-    pub(crate) settings: serde_json::Map<String, serde_json::Value>,
+    #[serde(default, deserialize_with = "present_mode")]
+    pub(crate) settings: Option<serde_json::Map<String, serde_json::Value>>,
+    #[serde(default, deserialize_with = "present_mode")]
+    pub(crate) edit: Option<SettingsEdit>,
+}
+
+fn present_mode<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+impl NamedSettingsReq {
+    fn into_mutation(self) -> Result<Mutation, AdminError> {
+        match (self.settings, self.edit) {
+            (Some(settings), None) => Ok(Mutation::Settings(settings)),
+            (None, Some(edit)) => Ok(Mutation::EditSettings(edit)),
+            _ => Err(AdminError::Validation(
+                "settings body must contain exactly one of `settings` or `edit`".into(),
+            )),
+        }
+    }
 }
 
 async fn delete(
@@ -274,7 +304,7 @@ async fn apply(
     };
     let current = handle.load();
 
-    let (Some(config_path), Some(providers_path)) =
+    let (Some(config_path), Some(_)) =
         (current.config_path.clone(), current.providers_path.clone())
     else {
         return reject(
@@ -312,6 +342,11 @@ async fn apply(
             return reject(&e, Cond::InvalidConfig, &actor);
         }
     }
+    if let Mutation::EditSettings(edit) = &mutation {
+        if let Err(e) = edit.validate() {
+            return reject(&e, Cond::InvalidConfig, &actor);
+        }
+    }
 
     let removes = matches!(mutation, Mutation::Remove);
     let txn_section = section;
@@ -327,7 +362,7 @@ async fn apply(
         Ok(txn.read_store(move || {
             let mut loaded = busbar_kernel::load_config_from_disk_with_store(
                 &config_path,
-                Some(&providers_path),
+                snapshot.providers_override.as_deref(),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
                 &*snapshot.root_rules,
@@ -352,7 +387,7 @@ async fn apply(
             let entries = doc.named_maps.entry(txn_section.key().to_string()).or_default();
             let next_def: Option<serde_json::Value> = match &mutation {
                 Mutation::Replace(def) => Some(def.clone()),
-                Mutation::Settings(settings) => {
+                Mutation::Settings(_) | Mutation::EditSettings(_) => {
 
 
 
@@ -368,9 +403,27 @@ async fn apply(
                     let mut def = existing.clone();
                     match def.as_object_mut() {
                         Some(obj) => {
+                            let settings = match &mutation {
+                                Mutation::Settings(settings) => settings.clone(),
+                                Mutation::EditSettings(edit) => {
+                                    let existing = match obj.remove(SETTINGS_KEY) {
+                                        None => serde_json::Map::new(),
+                                        Some(serde_json::Value::Object(settings)) => settings,
+                                        Some(_) => return Ok(Outcome::Value(Err((
+                                            AdminError::Validation("the stored settings bag is not an object".into()),
+                                            Cond::InvalidConfig,
+                                        )))),
+                                    };
+                                    match edit.apply(existing) {
+                                        Ok(settings) => settings,
+                                        Err(error) => return Ok(Outcome::Value(Err((error, Cond::InvalidConfig)))),
+                                    }
+                                }
+                                _ => unreachable!("only settings mutations enter this branch"),
+                            };
                             obj.insert(
                                 SETTINGS_KEY.to_string(),
-                                serde_json::Value::Object(settings.clone()),
+                                serde_json::Value::Object(settings),
                             );
                         }
                         None => {
@@ -459,12 +512,12 @@ async fn apply(
                     loaded.overlay_path,
                     base_hook_names,
                     base_group_names,
-                    (Some(config_path), Some(providers_path)),
+                    (Some(config_path), Some(loaded.providers_path.clone())),
                     Some(&snapshot),
                     &snapshot.root_rules,
                 )
             })();
-            let (built, gov_rotate, limits) = match built {
+            let (mut built, gov_rotate, limits) = match built {
                 Ok(v) => v,
 
                 Err(e) => {
@@ -474,6 +527,9 @@ async fn apply(
                     ))))
                 }
             };
+            busbar_kernel::config::readback::ConfiguredView::capture_documents(
+                &mut built, &loaded.deploy, &loaded.defs,
+            );
             let installed = Arc::new(built);
 
 
@@ -563,7 +619,7 @@ async fn apply(
     with_config_etag(
         respond(
             StatusCode::OK,
-            super::service(&handle)
+            crate::v1::service::AdminService::new(installed.clone())
                 .get_named_def(section, &name)
                 .await
                 .map(|def| {
@@ -573,6 +629,7 @@ async fn apply(
                         awaiting_restart.1,
                         awaiting_restart.2,
                     )
+                    .with_configuration(&installed, section, &name)
                 }),
         ),
         version,
@@ -583,8 +640,9 @@ async fn apply(
 /// restart-required signal for boot-bound routes, planes and export instances or projections.
 ///
 /// `#[serde(flatten)]` keeps the definition's own fields exactly where they have always been, so the
-/// signal is purely ADDITIVE — and both signal fields are omitted entirely when nothing is pending,
-/// so the ordinary body is byte-identical to what it was. This is the `export:` named map's sibling of
+/// signal is purely ADDITIVE. Configuration values, when available, are explicitly identified as
+/// belonging to the installed config generation, not an acknowledgement from a running plugin.
+/// This is the `export:` named map's sibling of
 /// `PUT /config/settings`'s `reload_to_apply`/`note` pair (`handlers::reload_to_apply_fields`), which
 /// reports the same class of boot-frozen change for the single-value settings surface.
 #[derive(serde::Serialize)]
@@ -603,6 +661,19 @@ pub(crate) struct MutatedDefView {
     /// The operator-facing sentence for [`Self::reload_to_apply`]; omitted with it.
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
+    /// Safe settings from the same installed configuration generation as the response ETag.
+    /// This is configured intent, not proof that an asynchronous plugin refresh completed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    configuration: Option<ConfiguredSettingsView>,
+}
+
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+struct ConfiguredSettingsView {
+    config_version: u64,
+    source: &'static str,
+    state: &'static str,
+    settings_public: serde_json::Map<String, serde_json::Value>,
 }
 
 impl MutatedDefView {
@@ -617,7 +688,49 @@ impl MutatedDefView {
             def,
             reload_to_apply,
             note,
+            configuration: None,
         }
+    }
+
+    fn with_configuration(mut self, app: &App, section: NamedMapSection, name: &str) -> Self {
+        let settings = match section {
+            NamedMapSection::IdentityProviders => {
+                app.identity_providers.get(name).map(|d| &d.settings)
+            }
+            NamedMapSection::Export => app.export_defs.get(name).map(|d| &d.settings),
+            // A plane owns its definition/readback grammar. Its summary does not authorize
+            // reading a raw plane blob or guessing which of its fields are public.
+            NamedMapSection::Plane(_) => None,
+        };
+        if let Some(settings) = settings {
+            self.configuration = Some(configured_settings(
+                app.config_version,
+                &self.def.module,
+                settings,
+                !self.reload_to_apply.is_empty(),
+                &busbar_kernel::config::settings_public::public,
+            ));
+        }
+        self
+    }
+}
+
+fn configured_settings(
+    config_version: u64,
+    module: &str,
+    settings: &serde_json::Map<String, serde_json::Value>,
+    pending_restart: bool,
+    public: &dyn Fn(&str) -> std::collections::BTreeSet<String>,
+) -> ConfiguredSettingsView {
+    ConfiguredSettingsView {
+        config_version,
+        source: "installed_configuration",
+        state: if pending_restart {
+            "restart_pending"
+        } else {
+            "configured"
+        },
+        settings_public: busbar_contract::settings_public::public_view(settings, &public(module)),
     }
 }
 
@@ -794,6 +907,28 @@ fn check_trust_ceiling(
 }
 
 #[cfg(feature = "openapi-schema")]
+pub(crate) fn settings_request_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "settings": {"type": "object", "additionalProperties": true},
+            "edit": {
+                "type": "object",
+                "properties": {
+                    "set": {"type": "object", "additionalProperties": true},
+                    "remove": {"type": "array", "items": {"type": "string"}}
+                },
+                "additionalProperties": false
+            }
+        },
+        "oneOf": [
+            {"required": ["settings"], "not": {"required": ["edit"]}},
+            {"required": ["edit"], "not": {"required": ["settings"]}}
+        ]
+    })
+}
+
+#[cfg(feature = "openapi-schema")]
 pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
     use super::RESPONSES_KEY;
     use serde_json::{json, Value};
@@ -890,8 +1025,11 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
             json!({
                 "patch": operation(
                     format!(
-                        "Replace ONLY the opaque `settings:` bag of one `{key}:` definition; every \
-                         other field is left byte-identical"
+                        "Change ONLY the opaque `settings:` bag of one `{key}:` definition. \
+                         Supply exactly one mode: `settings` replaces the whole bag (legacy); \
+                         `edit` has `set` complete top-level values and `remove` key names, \
+                         preserving omitted settings including secrets. A key cannot occur in \
+                         both set and remove; null is a value. Other definition fields are unchanged"
                     ),
                     name_param,
                     OK,

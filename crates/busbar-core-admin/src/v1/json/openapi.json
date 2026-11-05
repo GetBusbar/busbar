@@ -1002,6 +1002,27 @@
             "minimum": 0,
             "type": "integer"
           },
+          "configuration": {
+            "description": "Sanitized values captured from the installed config generation, bound to the response ETag; configured does not mean physically active.",
+            "type": "object"
+          },
+          "desired_revision": {
+            "description": "SHA256 content revision of the exact verified desired Store document; independent of the process-local config_version.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "desired_status": {
+            "enum": [
+              "disabled",
+              "absent",
+              "loaded",
+              "unreadable",
+              "newer_version"
+            ],
+            "type": "string"
+          },
           "note": {
             "description": "A human note describing the live-vs-reload split (absent on a GET).",
             "type": [
@@ -1018,6 +1039,10 @@
           },
           "settings": {
             "description": "The current effective root-section overlay (only the fields the operator has set; base\n`config.yaml` stands for the rest). An arbitrary JSON object (the `RootSettings` projection),\nREDACTED by `service::redact_settings_bags`: every opaque `settings:` bag inside it (today\n`store.settings`, whose `url` is a credential in busbar's own docs) appears as\n`settings_keys`: sorted key names, no values. Same on the GET and on the PUT echo.\n\nThis field NAME is frozen wire and is the response ENVELOPE member, not a plugin settings\nbag; the redaction applies to the bags nested INSIDE it."
+          },
+          "settings_source": {
+            "description": "desired_root_overlay on GET; settings never represents the full applied configuration.",
+            "type": "string"
           }
         },
         "required": [
@@ -1139,6 +1164,32 @@
         "required": [
           "items",
           "next_cursor"
+        ],
+        "type": "object"
+      },
+      "ConfiguredSettingsView": {
+        "properties": {
+          "config_version": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "settings_public": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "source": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "config_version",
+          "source",
+          "state",
+          "settings_public"
         ],
         "type": "object"
       },
@@ -1304,6 +1355,37 @@
           "token",
           "expires_at",
           "group_provisioned"
+        ],
+        "type": "object"
+      },
+      "Dropped": {
+        "properties": {
+          "boot_nonce_unavailable": {
+            "$ref": "#/components/schemas/TelemetryExactU64"
+          },
+          "histogram_capacity": {
+            "$ref": "#/components/schemas/TelemetryExactU64"
+          },
+          "integer_overflow": {
+            "$ref": "#/components/schemas/TelemetryExactU64"
+          },
+          "invalid_duration": {
+            "$ref": "#/components/schemas/TelemetryExactU64"
+          },
+          "series_capacity": {
+            "$ref": "#/components/schemas/TelemetryExactU64"
+          },
+          "unregistered_labels": {
+            "$ref": "#/components/schemas/TelemetryExactU64"
+          }
+        },
+        "required": [
+          "invalid_duration",
+          "integer_overflow",
+          "series_capacity",
+          "boot_nonce_unavailable",
+          "histogram_capacity",
+          "unregistered_labels"
         ],
         "type": "object"
       },
@@ -1885,6 +1967,58 @@
         ],
         "type": "object"
       },
+      "Identity": {
+        "properties": {
+          "bins": {
+            "description": "Exclusive bins corresponding to `upper_bounds_ms`; their sum equals `count`.",
+            "items": {
+              "$ref": "#/components/schemas/TelemetryExactU64"
+            },
+            "maxItems": 16,
+            "minItems": 16,
+            "type": "array"
+          },
+          "client_errors": {
+            "$ref": "#/components/schemas/TelemetryExactU64",
+            "description": "Observations whose existing outcome is `client_error` (HTTP 4xx)."
+          },
+          "count": {
+            "$ref": "#/components/schemas/TelemetryExactU64"
+          },
+          "errors": {
+            "$ref": "#/components/schemas/TelemetryExactU64",
+            "description": "Observations whose existing outcome is `error` or `exhausted` (including HTTP 503)."
+          },
+          "ingress_protocol": {
+            "type": "string"
+          },
+          "phase": {
+            "$ref": "#/components/schemas/Phase"
+          },
+          "plane": {
+            "type": "string"
+          },
+          "pool": {
+            "type": "string"
+          },
+          "sum_us": {
+            "$ref": "#/components/schemas/TelemetryExactU64",
+            "description": "Cumulative sum of individual durations truncated to whole microseconds."
+          }
+        },
+        "required": [
+          "plane",
+          "phase",
+          "pool",
+          "ingress_protocol",
+          "count",
+          "errors",
+          "client_errors",
+          "sum_us",
+          "bins"
+        ],
+        "type": "object"
+      },
       "InfoView": {
         "description": "The compiled-in plugin catalog + topology + uptime returned by `GET /api/v1/admin/info`. Powers\nversion negotiation for tooling AND the compliance-by-compilation proof: `auth_modules`/`hook_plugins` reflect\nthe ACTUAL binary (feature-gated at compile time), not config, so `--no-default-features` shows a\nprovably smaller surface. No LLM content, ever.",
         "properties": {
@@ -1900,6 +2034,14 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "process_boot_nonce": {
+            "description": "Random 128-bit process generation, shared with `GET /telemetry` and available even when\nmetrics are disabled. Stable across configuration reloads; a new process generates a new\nnonce. Null when OS randomness failed; clients must not fabricate a restart identity.",
+            "pattern": "^[0-9a-f]{32}$",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "started_at": {
             "description": "Epoch seconds of process start, the BOOT EPOCH marker: `config_version` (and any\nprocess-local counter) resets on restart, so a consumer that sees `started_at` change knows\nto read a counter reset as \"new epoch\", never as \"reverted\".",
@@ -1932,6 +2074,7 @@
           "build",
           "uptime_seconds",
           "started_at",
+          "process_boot_nonce",
           "topology",
           "config_persistence",
           "config_version"
@@ -3022,7 +3165,7 @@
         "type": "object"
       },
       "MutatedDefView": {
-        "description": "THE MUTATION RESPONSE for an upsert/settings write: the stored definition, PLUS the\nrestart-required signal for boot-bound routes, planes and export instances or projections.\n\n`#[serde(flatten)]` keeps the definition's own fields exactly where they have always been, so the\nsignal is purely ADDITIVE — and both signal fields are omitted entirely when nothing is pending,\nso the ordinary body is byte-identical to what it was. This is the `export:` named map's sibling of\n`PUT /config/settings`'s `reload_to_apply`/`note` pair (`handlers::reload_to_apply_fields`), which\nreports the same class of boot-frozen change for the single-value settings surface.",
+        "description": "THE MUTATION RESPONSE for an upsert/settings write: the stored definition, PLUS the\nrestart-required signal for boot-bound routes, planes and export instances or projections.\n\n`#[serde(flatten)]` keeps the definition's own fields exactly where they have always been, so the\nsignal is purely ADDITIVE. Configuration values, when available, are explicitly identified as\nbelonging to the installed config generation, not an acknowledgement from a running plugin.\nThis is the `export:` named map's sibling of\n`PUT /config/settings`'s `reload_to_apply`/`note` pair (`handlers::reload_to_apply_fields`), which\nreports the same class of boot-frozen change for the single-value settings surface.",
         "properties": {
           "browser_login_configured": {
             "description": "`identity-providers` ONLY: whether a `browser_login:` block is configured, the presence that\nputs a button on the hosted login page.",
@@ -3030,6 +3173,17 @@
               "boolean",
               "null"
             ]
+          },
+          "configuration": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConfiguredSettingsView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Safe settings from the same installed configuration generation as the response ETag.\nThis is configured intent, not proof that an asynchronous plugin refresh completed."
           },
           "fingerprint_pinned": {
             "description": "`agents` ONLY: whether an approved card FINGERPRINT is pinned yet. A registration with a\nroot but no fingerprint is the normal state of a fresh entry awaiting approval, and it is\nthe state an operator most needs to be able to see.",
@@ -3182,19 +3336,6 @@
           "name",
           "module",
           "settings_keys"
-        ],
-        "type": "object"
-      },
-      "NamedSettingsReq": {
-        "description": "The `PATCH /api/v1/admin/<section>/{name}/settings` body: the whole replacement settings bag.\nA sibling of the hooks surface's `PatchSettingsReq` (same shape, same semantics: `settings:` is\nREPLACED, not deep-merged, so the stored bag is always exactly what the caller sent).",
-        "properties": {
-          "settings": {
-            "additionalProperties": true,
-            "type": "object"
-          }
-        },
-        "required": [
-          "settings"
         ],
         "type": "object"
       },
@@ -3434,6 +3575,20 @@
           "reload_to_apply"
         ],
         "type": "object"
+      },
+      "Phase": {
+        "oneOf": [
+          {
+            "const": "LlmProducerDrive",
+            "description": "Producer drive returned; buffered response bytes may still be draining.",
+            "type": "string"
+          },
+          {
+            "const": "MountedResponseReady",
+            "description": "A mounted handler returned its response; its body may still be streaming.",
+            "type": "string"
+          }
+        ]
       },
       "PlaneFactsClass": {
         "description": "One billable class a plane ledgers.",
@@ -3729,6 +3884,12 @@
       "PluginRollbackReq": {
         "description": "The `POST /api/v1/admin/plugins/rollback` body: the target library FILENAME to roll DOWN to.",
         "properties": {
+          "expected_archive_sha256": {
+            "default": null,
+            "description": "Optional exact SHA-256 of the complete archive reviewed by the caller. Stale/missing = 409.",
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
           "file": {
             "description": "The plugin tarball FILENAME (in the plugins directory) carrying the prior version to pin to.",
             "type": "string"
@@ -3782,6 +3943,21 @@
       "PluginSchemaView": {
         "description": "`GET /plugins/{name}/schema`: the generalized, all-kinds sibling of [`HookSchemaView`].\nCarries `trust`/`source`/`schema_error` on top of\n`{name, schema}` so busbar-ui never has to infer trust state or the describe/manifest\nprecedence rule from context; the server always picks exactly one source and reports which.",
         "properties": {
+          "archive_sha256": {
+            "description": "Digest of the same complete archive bytes inspected for this schema.",
+            "pattern": "^[0-9a-f]{64}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "file": {
+            "description": "Present for explicit installed_archive lookup; a bare archive filename.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "kind": {
             "description": "The plugin's `kind` (`hook` | `secret` | …) from its manifest. Both `GET /plugins/{file}/schema`\nand `POST /plugins/inspect` emit it (`null` only when the plugin cannot be resolved to a\nmanifest). Declared so codegen'd clients keep it.",
             "type": [
@@ -3809,8 +3985,15 @@
               "null"
             ]
           },
+          "schema_state": {
+            "description": "installed_archive lookup: present, absent, or invalid legacy schema.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "source": {
-            "description": "`\"describe\"` when a currently-loaded `kind: hook` answered its live `describe` wire\nmessage; `\"statement\"` for a linked plugin; `\"manifest\"` for a dropped-in plugin\n(its signed Statement schema, or the legacy manifest fallback). Lets\nbusbar-ui explain \"why does this form look different from what I expected\" without\nimplementing the describe/manifest precedence rule itself.",
+            "description": "`\"describe\"` when a currently-loaded `kind: hook` answered its live `describe` wire\nmessage; `\"statement\"` for a linked plugin; `\"manifest\"` for a dropped-in plugin\n(its signed Statement schema, or the legacy manifest fallback); \"installed_archive\" for\nan explicit archive lookup bound to the returned archive_sha256. Lets\nbusbar-ui explain \"why does this form look different from what I expected\" without\nimplementing the describe/manifest precedence rule itself.",
             "type": "string"
           },
           "trust": {
@@ -3818,7 +4001,7 @@
             "type": "string"
           },
           "version": {
-            "description": "The plugin's semantic version from its manifest. Present on `POST /plugins/inspect` (which\npreviews an on-disk candidate's manifest); `null`/absent on `GET /plugins/{file}/schema`, which\ndoes not surface the version. Declared here so a codegen'd client keeps the field the inspect\nhandler always sends, rather than silently dropping it.",
+            "description": "The plugin's semantic version from its manifest. Present on `POST /plugins/inspect` (which\npreviews an on-disk candidate's manifest) and installed_archive schema reads; absent on\nlegacy loaded-registry schema reads. Declared here so a codegen'd client keeps the field the inspect\nhandler always sends, rather than silently dropping it.",
             "type": [
               "string",
               "null"
@@ -3844,6 +4027,14 @@
               "null"
             ]
           },
+          "archive_sha256": {
+            "description": "SHA-256 of the complete on-disk archive bytes, not the library inside it.\nAbsent for rows without a readable backing archive. Use as an optional mutation preimage.",
+            "pattern": "^[0-9a-f]{64}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "error": {
             "description": "Why a dynamic-library plugin did not validate (`valid: false`): a short, secret-free reason.",
             "type": [
@@ -3859,7 +4050,7 @@
             ]
           },
           "has_schema": {
-            "description": "Whether the plugin publishes a schema at `schema_url`. The canonical Statement schema\ntakes precedence over the legacy manifest field. Linked plugins can publish schemas too;\na malformed legacy schema keeps this true and reports `schema_error`.",
+            "description": "Whether the plugin publishes a schema at `schema_url`. The canonical Statement schema\ntakes precedence over the legacy manifest field. Linked plugins can publish schemas too.\nMalformed legacy schema text reports `schema_error`; an unreadable installed archive\ninstead reports unavailable and cannot publish a verifiable URL.",
             "type": "boolean"
           },
           "interface_version": {
@@ -3886,14 +4077,14 @@
             ]
           },
           "schema_error": {
-            "description": "A manifest that SET `settings_schema` but whose value fails to parse (carried onto the\nlist row too), distinct from a manifest that never set the\nfield at all (`schema_url: null`, this field also `None`). `schema_url` stays non-null in\nthis case; the operator sees the row is degraded from the list alone, before ever following\nthe URL.",
+            "description": "A malformed legacy schema, or an unavailable installed-archive schema. Distinct from\nan absent schema. Malformed legacy schema text keeps its URL; an unreadable archive\nomits the URL because the engine cannot bind a schema lookup to its bytes.",
             "type": [
               "string",
               "null"
             ]
           },
           "schema_url": {
-            "description": "Server-resolved path to this plugin's `GET /plugins/{name}/schema` endpoint: ALWAYS a\nrelative path under the admin origin\n(the client MUST reject an absolute/cross-origin value rather than fetch it; this endpoint\nonly ever emits the admin-prefixed relative form, never anything else). Non-null whenever the\nmanifest declared a `settings_schema` AT ALL, even if it's unparseable (following it then\nsurfaces `schema_error`: a present-but-corrupt schema is a worse, distinct\ncondition from \"no schema declared\", never folded into the same `null`).\nAbsent when neither the Statement nor the legacy manifest publishes a schema. Linked\nrows use their registered name in this path; they do not need a backing artifact file.",
+            "description": "Relative schema URL under the admin origin. Artifact URLs include source=installed_archive\nand expected_archive_sha256 to inspect the exact disk bytes, not an older loaded generation.\nA malformed legacy schema keeps a URL and reports schema_error. Absent when no schema\nis published, or the archive cannot be read within the admission cap (an unavailable error).\nLinked rows use their registered name and do not need a backing file.",
             "type": [
               "string",
               "null"
@@ -4365,6 +4556,73 @@
         ],
         "type": "object"
       },
+      "TelemetryExactU64": {
+        "description": "Unsigned 64-bit integer as an exact decimal string.",
+        "maxLength": 20,
+        "pattern": "^(0|[1-9][0-9]*)$",
+        "type": "string"
+      },
+      "TelemetryView": {
+        "description": "Cumulative metrics for one process generation, bounded to 32 identities and 64 KiB.\nThis is a process snapshot, not a time window or a history query.",
+        "properties": {
+          "captured_at_unix_ms": {
+            "$ref": "#/components/schemas/TelemetryExactU64",
+            "description": "Engine wall-clock Unix milliseconds sampled while this snapshot is captured. Distinct\nfrom monotonic uptime and from the consumer's receive time; wall time may move backwards."
+          },
+          "dropped": {
+            "$ref": "#/components/schemas/Dropped",
+            "description": "Cumulative losses. Each identity's count/sum/bins is coherent; these diagnostic counters\nare not a single atomic snapshot with one another or with every identity."
+          },
+          "identities": {
+            "items": {
+              "$ref": "#/components/schemas/Identity"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          "omitted_identities": {
+            "$ref": "#/components/schemas/TelemetryExactU64",
+            "description": "Identities omitted for the row cap, oversized labels, or the response byte cap."
+          },
+          "process_boot_nonce": {
+            "description": "Random 128-bit process nonce. Stable across scrapes and configuration reloads.",
+            "pattern": "^[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "upper_bounds_ms": {
+            "description": "Inclusive upper edge for each exclusive bin; final null means positive infinity.",
+            "items": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "maxItems": 16,
+            "minItems": 16,
+            "type": "array"
+          },
+          "uptime_since_start_ms": {
+            "$ref": "#/components/schemas/TelemetryExactU64",
+            "description": "Monotonic milliseconds since shared process-generation initialization (first use), not OS\nprocess creation. Reading `GET /info` may establish this epoch before metrics are enabled."
+          }
+        },
+        "required": [
+          "process_boot_nonce",
+          "uptime_since_start_ms",
+          "captured_at_unix_ms",
+          "upper_bounds_ms",
+          "identities",
+          "omitted_identities",
+          "truncated",
+          "dropped"
+        ],
+        "type": "object"
+      },
       "TopologyInfo": {
         "description": "Pool/model/provider counts (`InfoView.topology`).",
         "properties": {
@@ -4394,6 +4652,11 @@
       "TrustKeyReq": {
         "description": "`POST /trust/approve` and `/trust/revoke`: the trust key decided.",
         "properties": {
+          "expected_digest": {
+            "description": "Optional compare-and-set guard against this key's current `seen` digest, for both approve\nand revoke. Supply the exact digest reviewed from `GET /trust`, not `approved`. A changed\nor absent sighting returns 409 without changing the decision. Omission keeps key-only\nbehavior; an explicitly supplied null, empty string or non-string is invalid.",
+            "pattern": "\\S",
+            "type": "string"
+          },
           "key": {
             "description": "`<instance>/<counterparty>[/<item>]`, as `GET /trust` lists it.",
             "type": "string"
@@ -5211,7 +5474,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NamedDefView"
+                  "$ref": "#/components/schemas/MutatedDefView"
                 }
               }
             },
@@ -5610,7 +5873,51 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/NamedSettingsReq"
+                "oneOf": [
+                  {
+                    "not": {
+                      "required": [
+                        "edit"
+                      ]
+                    },
+                    "required": [
+                      "settings"
+                    ]
+                  },
+                  {
+                    "not": {
+                      "required": [
+                        "settings"
+                      ]
+                    },
+                    "required": [
+                      "edit"
+                    ]
+                  }
+                ],
+                "properties": {
+                  "edit": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "remove": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "set": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "settings": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  }
+                },
+                "type": "object"
               }
             }
           },
@@ -5706,7 +6013,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Replace ONLY the opaque `settings:` bag of one `agents:` definition; every other field is left byte-identical",
+        "summary": "Change ONLY the opaque `settings:` bag of one `agents:` definition. Supply exactly one mode: `settings` replaces the whole bag (legacy); `edit` has `set` complete top-level values and `remove` key names, preserving omitted settings including secrets. A key cannot occur in both set and remove; null is a value. Other definition fields are unchanged",
         "x-busbar-plane": "agents",
         "x-busbar-required-scope": "full"
       }
@@ -6955,9 +7262,85 @@
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": true,
-                "description": "The settings sections to replace, keyed by section name. Durable by default (1.5.3): a mutable config always stores the change in its overlay (survives restart), and a locked config (`config.locked: true`) refuses ANY change with `400`. There is no \"apply in memory only\" outcome. The optional top-level boolean `persist` is accepted for back-compat and boolean-validated (a non-boolean is a 400 naming the field), but its value has NO effect: persistence is unconditional on a mutable config and refusal is unconditional on a locked one. Every other top-level key must be a known settings section; an unknown key is a 400. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.",
-                "type": "object"
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "additionalProperties": true,
+                        "description": "The settings sections to replace, keyed by section name. Durable by default (1.5.3): a mutable config always stores the change in its overlay (survives restart), and a locked config (`config.locked: true`) refuses ANY change with `400`. There is no \"apply in memory only\" outcome. The optional top-level boolean `persist` is accepted for back-compat and boolean-validated (a non-boolean is a 400 naming the field), but its value has NO effect: persistence is unconditional on a mutable config and refusal is unconditional on a locked one. Every other top-level key must be a known settings section; an unknown key is a 400. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.",
+                        "type": "object"
+                      },
+                      {
+                        "not": {
+                          "required": [
+                            "document_patch"
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "document_patch": {
+                        "additionalProperties": false,
+                        "description": "Lowest-priority Store overlay over config.yaml, parsed with boot's schema. RFC6901 paths; strict sequence indices replace existing entries, terminal - appends. Within one request, indices name the input snapshot; sets precede descending removals. Each subsequent request addresses the current authored document. Null is a value, removal is explicit. Omitted values including secrets survive. Overlapping paths and edits shadowed by existing typed overlays are refused. Restart-only fields are reported. Patch history is bounded to 4096 total operations and 1 MiB; pointer depth is at most 128. Limit violations reject the transaction.",
+                        "properties": {
+                          "remove": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "set": {
+                            "additionalProperties": true,
+                            "type": "object"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "persist": {
+                        "const": true,
+                        "type": "boolean"
+                      },
+                      "providers_patch": {
+                        "additionalProperties": false,
+                        "description": "Edits providers.yaml through its boot grammar in the same Store transaction. Paths start with catalog entry names. Deployment overrides that shadow an edit are refused.",
+                        "properties": {
+                          "remove": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "set": {
+                            "additionalProperties": true,
+                            "type": "object"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "reset_document_paths": {
+                        "description": "Forget only these exact prior document edits before merging the new edit; typed overlays are never removed.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "reset_providers_paths": {
+                        "description": "Forget only these exact prior catalog edits before merging providers_patch.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "document_patch"
+                    ],
+                    "type": "object"
+                  }
+                ]
               }
             }
           },
@@ -6968,7 +7351,45 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ConfigSettingsView"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ConfigSettingsView"
+                    },
+                    {
+                      "properties": {
+                        "applied": {
+                          "type": "boolean"
+                        },
+                        "config_version": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "configuration": {
+                          "description": "Sanitized installed configuration, bound to config_version/ETag. Configured values are not an acknowledgement of physical listener, Store, or asynchronous plugin activation.",
+                          "type": "object"
+                        },
+                        "note": {
+                          "type": "string"
+                        },
+                        "persisted": {
+                          "type": "boolean"
+                        },
+                        "reload_to_apply": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "applied",
+                        "persisted",
+                        "config_version",
+                        "configuration"
+                      ],
+                      "type": "object"
+                    }
+                  ]
                 }
               }
             },
@@ -7577,7 +7998,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NamedDefView"
+                  "$ref": "#/components/schemas/MutatedDefView"
                 }
               }
             },
@@ -7798,7 +8219,51 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/NamedSettingsReq"
+                "oneOf": [
+                  {
+                    "not": {
+                      "required": [
+                        "edit"
+                      ]
+                    },
+                    "required": [
+                      "settings"
+                    ]
+                  },
+                  {
+                    "not": {
+                      "required": [
+                        "settings"
+                      ]
+                    },
+                    "required": [
+                      "edit"
+                    ]
+                  }
+                ],
+                "properties": {
+                  "edit": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "remove": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "set": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "settings": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  }
+                },
+                "type": "object"
               }
             }
           },
@@ -7904,7 +8369,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Replace ONLY the opaque `settings:` bag of one `export:` definition; every other field is left byte-identical",
+        "summary": "Change ONLY the opaque `settings:` bag of one `export:` definition. Supply exactly one mode: `settings` replaces the whole bag (legacy); `edit` has `set` complete top-level values and `remove` key names, preserving omitted settings including secrets. A key cannot occur in both set and remove; null is a value. Other definition fields are unchanged",
         "x-busbar-required-scope": "full"
       }
     },
@@ -9886,7 +10351,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NamedDefView"
+                  "$ref": "#/components/schemas/MutatedDefView"
                 }
               }
             },
@@ -10107,7 +10572,51 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/NamedSettingsReq"
+                "oneOf": [
+                  {
+                    "not": {
+                      "required": [
+                        "edit"
+                      ]
+                    },
+                    "required": [
+                      "settings"
+                    ]
+                  },
+                  {
+                    "not": {
+                      "required": [
+                        "settings"
+                      ]
+                    },
+                    "required": [
+                      "edit"
+                    ]
+                  }
+                ],
+                "properties": {
+                  "edit": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "remove": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "set": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "settings": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  }
+                },
+                "type": "object"
               }
             }
           },
@@ -10213,7 +10722,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Replace ONLY the opaque `settings:` bag of one `identity-providers:` definition; every other field is left byte-identical",
+        "summary": "Change ONLY the opaque `settings:` bag of one `identity-providers:` definition. Supply exactly one mode: `settings` replaces the whole bag (legacy); `edit` has `set` complete top-level values and `remove` key names, preserving omitted settings including secrets. A key cannot occur in both set and remove; null is a value. Other definition fields are unchanged",
         "x-busbar-required-scope": "full"
       }
     },
@@ -12614,7 +13123,7 @@
                 }
               }
             },
-            "description": "`conflict`: the artifact is not loadable: bad archive/manifest, or it fails structure/trust validation | `version_conflict`: stale `If-Match` (re-read and retry)"
+            "description": "`conflict`: the artifact is not loadable: bad archive/manifest, or it fails structure/trust validation, reviewed plugin archive changed or is missing | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -12670,6 +13179,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Exact complete archive SHA-256 from PluginView; stale or missing artifact is 409 with no deletion. Absent is unconditional.",
+            "in": "query",
+            "name": "expected_archive_sha256",
+            "required": false,
+            "schema": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -12684,7 +13203,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: invalid plugin filename"
+            "description": "`invalid_request`: invalid plugin filename, invalid query-parameter value"
           },
           "401": {
             "content": {
@@ -12715,6 +13234,16 @@
               }
             },
             "description": "`not_found`: unknown resource"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`conflict`: reviewed plugin archive changed or is missing"
           },
           "429": {
             "content": {
@@ -12770,6 +13299,28 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Read and validate the named disk archive instead of resolving a loaded module name/alias.",
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "enum": [
+                "installed_archive"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optional complete archive digest fence; requires source=installed_archive. Changed or missing archive returns409; never falls back to an old loaded schema.",
+            "in": "query",
+            "name": "expected_archive_sha256",
+            "required": false,
+            "schema": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -12782,6 +13333,16 @@
               }
             },
             "description": "`{name, schema, schema_error, trust, source}`: `schema` null (with `schema_error` null) when the manifest carries none; a manifest that SET `settings_schema` but failed to parse instead reports `schema_error` (never collapsed into the same null as \"no schema\"). `trust` is `trusted|unverified|rejected` (the catalog vocabulary). `source` is `describe` (a loaded hook answered live) or `statement` (linked plugin) or `manifest` (signed Statement or legacy manifest field)"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: invalid query-parameter value, invalid plugin filename, the artifact is not loadable: bad archive/manifest, or it fails structure/trust validation"
           },
           "401": {
             "content": {
@@ -12813,6 +13374,16 @@
             },
             "description": "`not_found`: unknown resource"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`conflict`: reviewed plugin archive changed or is missing"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -12842,7 +13413,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "The plugin settings JSON Schema for every kind: canonical Statement first, legacy manifest field only when the Statement carries no schema. Dropped plugins are read from the signed manifest without opening the library; linked plugins publish their Statement. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)",
+        "summary": "The plugin settings JSON Schema for every kind. source=installed_archive reads the named disk artifact, optionally fenced by expected_archive_sha256; it never substitutes a loaded generation. Without source, resolve the loaded module by name or alias. Canonical Statement first, legacy manifest field only when the Statement carries no schema. Dropped plugins are read from the signed manifest without opening the library; linked plugins publish their Statement. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)",
         "x-busbar-required-scope": "read-only"
       }
     },
@@ -13091,6 +13662,17 @@
     "/api/v1/admin/restart": {
       "post": {
         "operationId": "PostRestart",
+        "parameters": [
+          {
+            "description": "Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -13120,7 +13702,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: malformed body / unknown field"
+            "description": "`invalid_request`: malformed body / unknown field, malformed `If-Match` header"
           },
           "401": {
             "content": {
@@ -13150,7 +13732,7 @@
                 }
               }
             },
-            "description": "`conflict`: no process supervisor was detected, so exiting would leave busbar down; re-send with `confirm: true` if a supervisor will restart it, this process has no shutdown channel, so it cannot restart itself"
+            "description": "`version_conflict`: stale `If-Match` (re-read and retry) | `conflict`: no process supervisor was detected, so exiting would leave busbar down; re-send with `confirm: true` if a supervisor will restart it, this process has no shutdown channel, so it cannot restart itself"
           },
           "429": {
             "content": {
@@ -13364,6 +13946,55 @@
         "x-busbar-since": "1.6.0"
       }
     },
+    "/api/v1/admin/telemetry": {
+      "get": {
+        "description": "An admin read of already-collected request-phase metrics. At most 32 identities and 65536 JSON bytes; omitted identities are explicitly counted. Counts, microsecond sums, bins and uptime are exact decimal strings. Bins are exclusive, not Prometheus cumulative buckets. The process boot nonce survives config reloads and scrapes; uptime_since_start_ms is monotonic time since shared process generation initialization (first info read or recorder setup), not OS process creation. LlmProducerDrive ends at producer completion; MountedResponseReady ends when the response is returned, before its body completes. Neither phase measures completed client delivery. This opens no outbound connection.",
+        "operationId": "GetTelemetry",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelemetryView"
+                }
+              }
+            },
+            "description": "A bounded cumulative snapshot; no-store"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`unavailable`: telemetry collection is disabled, unavailable, or could not produce a bounded snapshot. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Bounded request-phase telemetry snapshot",
+        "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0"
+      }
+    },
     "/api/v1/admin/tools": {
       "get": {
         "operationId": "GetTools",
@@ -13548,7 +14179,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NamedDefView"
+                  "$ref": "#/components/schemas/MutatedDefView"
                 }
               }
             },
@@ -14005,7 +14636,51 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/NamedSettingsReq"
+                "oneOf": [
+                  {
+                    "not": {
+                      "required": [
+                        "edit"
+                      ]
+                    },
+                    "required": [
+                      "settings"
+                    ]
+                  },
+                  {
+                    "not": {
+                      "required": [
+                        "settings"
+                      ]
+                    },
+                    "required": [
+                      "edit"
+                    ]
+                  }
+                ],
+                "properties": {
+                  "edit": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "remove": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "set": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "settings": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  }
+                },
+                "type": "object"
               }
             }
           },
@@ -14101,7 +14776,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Replace ONLY the opaque `settings:` bag of one `tools:` definition; every other field is left byte-identical",
+        "summary": "Change ONLY the opaque `settings:` bag of one `tools:` definition. Supply exactly one mode: `settings` replaces the whole bag (legacy); `edit` has `set` complete top-level values and `remove` key names, preserving omitted settings including secrets. A key cannot occur in both set and remove; null is a value. Other definition fields are unchanged",
         "x-busbar-plane": "tools",
         "x-busbar-required-scope": "full"
       }
@@ -14157,7 +14832,7 @@
     },
     "/api/v1/admin/trust/approve": {
       "post": {
-        "description": "A counterparty is approved at the catalogue hash it last reported, which clears its quarantine; an item at the digest it was last sighted at. The decision is kept durably and outlives a restart. Idempotent: the same key twice answers the same row.",
+        "description": "A counterparty is approved at the catalogue hash it last reported, which clears its quarantine; an item at the digest it was last sighted at. The decision is kept durably and outlives a restart. Optional `expected_digest` compares the current `seen` digest atomically before writing; a stale review conflicts. Without it, the key is approved at execution-time sighting.",
         "operationId": "PostTrustApprove",
         "requestBody": {
           "content": {
@@ -14188,7 +14863,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: malformed body, `key is required`, or a request body that could not be read to the operator's size cap"
+            "description": "`invalid_request`: malformed body, `key is required`, invalid `expected_digest` (must be a non-empty string when supplied), or a request body that could not be read to the operator's size cap"
           },
           "401": {
             "content": {
@@ -14228,7 +14903,7 @@
                 }
               }
             },
-            "description": "`conflict`: ``trust key `<key>` was never sighted`` — nothing to approve it at — or ``trust key `<key>` has no authenticity root`` — its registration declares none, and nothing at it is approvable"
+            "description": "`conflict`: `expected_digest` differs from the current sighting, no sighting exists for the supplied guard, or another decision is in progress; or the key was never sighted, has no authenticity root, or its last sighting failed verification"
           },
           "503": {
             "content": {
@@ -14256,7 +14931,7 @@
     },
     "/api/v1/admin/trust/revoke": {
       "post": {
-        "description": "Refused until approved again: a counterparty revoked refuses everything at it, an item revoked refuses it over its configured approval. The decision is kept durably and outlives a restart. Idempotent: the same key twice answers the same row.",
+        "description": "Refused until approved again: a counterparty revoked refuses everything at it, an item revoked refuses it over its configured approval. The decision is kept durably and outlives a restart. Optional `expected_digest` compares the current `seen` digest, not `approved`, before writing. A stale review conflicts; omission keeps the unconditional revoke.",
         "operationId": "PostTrustRevoke",
         "requestBody": {
           "content": {
@@ -14287,7 +14962,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: malformed body, `key is required`, or a request body that could not be read to the operator's size cap"
+            "description": "`invalid_request`: malformed body, `key is required`, invalid `expected_digest` (must be a non-empty string when supplied), or a request body that could not be read to the operator's size cap"
           },
           "401": {
             "content": {
@@ -14318,6 +14993,16 @@
               }
             },
             "description": "`not_found`: ``trust key `<key>` not found`` — no plane instance this node serves has the key"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`conflict`: `expected_digest` differs from the current sighting, no sighting exists for the supplied guard, or another decision is in progress"
           },
           "503": {
             "content": {
@@ -14500,5 +15185,3085 @@
         "x-busbar-since": "1.6.0"
       }
     }
+  },
+  "x-busbar-config-schemas": {
+    "admin_verbs": [
+      {
+        "bound": true,
+        "name": "get_admin_auth",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "put_admin_auth",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "get_audit",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_auth",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "post_auth_cache_flush",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "get_config",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "post_config_apply",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "get_config_diff",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "post_config_reload",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "post_config_rollback",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "get_config_settings",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "put_config_settings",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "post_config_validate",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_config_versions",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_config_versions_v",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_export",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "delete_export_name",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "get_export_name",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "put_export_name",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "patch_export_name_settings",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "get_groups",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "post_groups",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "delete_groups_name",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "get_groups_name",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "patch_groups_name",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "put_groups_name",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "get_groups_name_usage",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_hooks",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "post_hooks",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "delete_hooks_name",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "get_hooks_name",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "put_hooks_name",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "get_hooks_name_health",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_hooks_name_schema",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "patch_hooks_name_settings",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "get_hooks_name_status",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_identity_providers",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "delete_identity_providers_name",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "get_identity_providers_name",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "put_identity_providers_name",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "patch_identity_providers_name_settings",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "get_info",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_keys",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "post_keys",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "delete_keys_id",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "get_keys_id",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "patch_keys_id",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "post_keys_id_revoke",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "post_keys_id_rotate",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "get_keys_id_usage",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_models",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_openapi_json",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "delete_overlay_section",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "get_plugins",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "post_plugins",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "post_plugins_inspect",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "post_plugins_reload",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "post_plugins_rollback",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "delete_plugins_file",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "get_plugins_file_schema",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_pools",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_pools_name",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_providers",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "post_restart",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "post_signing_key_rotate",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "get_usage",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "verify",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "plane_facts",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "plane_record_write",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "chain_break",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "store_restore",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "commit_upgrade",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "adjust",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "amend_rate_history",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "recovery_list",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "recovery_resolve",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "get_telemetry",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_trust",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "trust_approve",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "trust_revoke",
+        "scope": "full"
+      },
+      {
+        "bound": true,
+        "name": "get_ledger_totals",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_ledger_checkpoints",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_ledger_reconciliation",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_ledger_migration",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_ledger_openapi_json",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_audit_head",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_audit_range",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
+        "name": "get_audit_keys",
+        "scope": "read-only"
+      }
+    ],
+    "context": "user_configuration",
+    "declared_plane_scope_kinds": [
+      "agent",
+      "decision_provider",
+      "mcp_server",
+      "mcp_tool",
+      "pool",
+      "session"
+    ],
+    "ownership": {
+      "auth": "host AuthDeployCfg and policy prepass",
+      "export": "host ExportDefCfg and export projection resolver; module owns settings",
+      "identity-providers": "host IdentityProviderCfg wrapper; module owns settings",
+      "models": "host ModelCfg",
+      "other_plane_sections": "declaring plane owns its user-input grammar; lifecycle settings_schema is not a substitute",
+      "pools": "owning PoolsCfg/PoolCfg grammar; requires the installed pool plane",
+      "provider_catalog": "separate document: map of ProviderCatalogEntry",
+      "providers": "host ProviderDeploy grammar; protocol-specific remainder belongs to the plane"
+    },
+    "schema": {
+      "$defs": {
+        "Auth": {
+          "additionalProperties": false,
+          "properties": {
+            "admin_auth": {
+              "default": [
+                "admin-tokens"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "chain": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "key_ttl": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "policy": {
+              "$ref": "#/$defs/AuthPolicy"
+            },
+            "role_bindings": {
+              "additionalProperties": {
+                "additionalProperties": {
+                  "$ref": "#/$defs/RoleBinding"
+                },
+                "type": "object"
+              },
+              "type": "object"
+            },
+            "signing_key": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SecretRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "type": "object",
+          "x-busbar-runtime-validation": [
+            "provider names and signing key requirements",
+            "duration parsing and policy ceiling consistency",
+            "named role grants and plane declarations"
+          ]
+        },
+        "AuthPolicy": {
+          "additionalProperties": false,
+          "properties": {
+            "binding_modes": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "time-bound",
+                      "user-bound",
+                      "both"
+                    ]
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "default_ttl": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "max_ttl": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "mint_ceilings": {
+              "additionalProperties": {
+                "$ref": "#/$defs/MintCeiling"
+              },
+              "type": "object"
+            },
+            "self_mint": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "BrowserLogin": {
+          "additionalProperties": false,
+          "properties": {
+            "client_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "client_secret": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SecretRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "Export": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "streams": {
+                    "contains": {
+                      "const": "metrics"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "streams"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "fields": {
+                    "type": "null"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "streams": {
+                    "contains": {
+                      "const": "logs"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "streams"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "fields": {
+                    "type": "null"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "streams": {
+                    "contains": {
+                      "const": "traces"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "streams"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "fields": {
+                    "type": "null"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "streams": {
+                    "contains": {
+                      "const": "events"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "streams"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "fields": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "allOf": [
+                          {
+                            "contains": {
+                              "const": "seq"
+                            }
+                          },
+                          {
+                            "contains": {
+                              "const": "ts"
+                            }
+                          },
+                          {
+                            "contains": {
+                              "const": "prev_hash"
+                            }
+                          }
+                        ],
+                        "type": "array"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "streams": {
+                    "items": {
+                      "enum": [
+                        "metrics"
+                      ]
+                    },
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "streams"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "fields": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "items": {
+                          "not": {}
+                        },
+                        "type": "array"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "streams": {
+                    "items": {
+                      "enum": [
+                        "logs"
+                      ]
+                    },
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "streams"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "fields": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "items": {
+                          "enum": [
+                            "ingress_protocol",
+                            "latency_ms",
+                            "outcome",
+                            "pool",
+                            "ts"
+                          ]
+                        },
+                        "type": "array"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "streams": {
+                    "items": {
+                      "enum": [
+                        "metrics",
+                        "logs"
+                      ]
+                    },
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "streams"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "fields": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "items": {
+                          "enum": [
+                            "ingress_protocol",
+                            "latency_ms",
+                            "outcome",
+                            "pool",
+                            "ts"
+                          ]
+                        },
+                        "type": "array"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "streams": {
+                    "items": {
+                      "enum": [
+                        "traces"
+                      ]
+                    },
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "streams"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "fields": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "items": {
+                          "not": {}
+                        },
+                        "type": "array"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "streams": {
+                    "items": {
+                      "enum": [
+                        "metrics",
+                        "traces"
+                      ]
+                    },
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "streams"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "fields": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "items": {
+                          "not": {}
+                        },
+                        "type": "array"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "streams": {
+                    "items": {
+                      "enum": [
+                        "logs",
+                        "traces"
+                      ]
+                    },
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "streams"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "fields": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "items": {
+                          "enum": [
+                            "ingress_protocol",
+                            "latency_ms",
+                            "outcome",
+                            "pool",
+                            "ts"
+                          ]
+                        },
+                        "type": "array"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "streams": {
+                    "items": {
+                      "enum": [
+                        "metrics",
+                        "logs",
+                        "traces"
+                      ]
+                    },
+                    "maxItems": 3,
+                    "minItems": 3,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "streams"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "fields": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "items": {
+                          "enum": [
+                            "ingress_protocol",
+                            "latency_ms",
+                            "outcome",
+                            "pool",
+                            "ts"
+                          ]
+                        },
+                        "type": "array"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "streams": {
+                    "items": {
+                      "enum": [
+                        "events"
+                      ]
+                    },
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "streams"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "fields": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "items": {
+                          "enum": [
+                            "actor",
+                            "kind",
+                            "outcome",
+                            "prev_hash",
+                            "resource",
+                            "seq",
+                            "ts"
+                          ]
+                        },
+                        "type": "array"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "streams": {
+                    "items": {
+                      "enum": [
+                        "metrics",
+                        "events"
+                      ]
+                    },
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "streams"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "fields": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "items": {
+                          "enum": [
+                            "actor",
+                            "kind",
+                            "outcome",
+                            "prev_hash",
+                            "resource",
+                            "seq",
+                            "ts"
+                          ]
+                        },
+                        "type": "array"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "streams": {
+                    "items": {
+                      "enum": [
+                        "logs",
+                        "events"
+                      ]
+                    },
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "streams"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "fields": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "items": {
+                          "enum": [
+                            "actor",
+                            "ingress_protocol",
+                            "kind",
+                            "latency_ms",
+                            "outcome",
+                            "pool",
+                            "prev_hash",
+                            "resource",
+                            "seq",
+                            "ts"
+                          ]
+                        },
+                        "type": "array"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "streams": {
+                    "items": {
+                      "enum": [
+                        "metrics",
+                        "logs",
+                        "events"
+                      ]
+                    },
+                    "maxItems": 3,
+                    "minItems": 3,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "streams"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "fields": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "items": {
+                          "enum": [
+                            "actor",
+                            "ingress_protocol",
+                            "kind",
+                            "latency_ms",
+                            "outcome",
+                            "pool",
+                            "prev_hash",
+                            "resource",
+                            "seq",
+                            "ts"
+                          ]
+                        },
+                        "type": "array"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "streams": {
+                    "items": {
+                      "enum": [
+                        "traces",
+                        "events"
+                      ]
+                    },
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "streams"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "fields": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "items": {
+                          "enum": [
+                            "actor",
+                            "kind",
+                            "outcome",
+                            "prev_hash",
+                            "resource",
+                            "seq",
+                            "ts"
+                          ]
+                        },
+                        "type": "array"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "streams": {
+                    "items": {
+                      "enum": [
+                        "metrics",
+                        "traces",
+                        "events"
+                      ]
+                    },
+                    "maxItems": 3,
+                    "minItems": 3,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "streams"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "fields": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "items": {
+                          "enum": [
+                            "actor",
+                            "kind",
+                            "outcome",
+                            "prev_hash",
+                            "resource",
+                            "seq",
+                            "ts"
+                          ]
+                        },
+                        "type": "array"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "streams": {
+                    "items": {
+                      "enum": [
+                        "logs",
+                        "traces",
+                        "events"
+                      ]
+                    },
+                    "maxItems": 3,
+                    "minItems": 3,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "streams"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "fields": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "items": {
+                          "enum": [
+                            "actor",
+                            "ingress_protocol",
+                            "kind",
+                            "latency_ms",
+                            "outcome",
+                            "pool",
+                            "prev_hash",
+                            "resource",
+                            "seq",
+                            "ts"
+                          ]
+                        },
+                        "type": "array"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "streams": {
+                    "items": {
+                      "enum": [
+                        "metrics",
+                        "logs",
+                        "traces",
+                        "events"
+                      ]
+                    },
+                    "maxItems": 4,
+                    "minItems": 4,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "streams"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "fields": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "items": {
+                          "enum": [
+                            "actor",
+                            "ingress_protocol",
+                            "kind",
+                            "latency_ms",
+                            "outcome",
+                            "pool",
+                            "prev_hash",
+                            "resource",
+                            "seq",
+                            "ts"
+                          ]
+                        },
+                        "type": "array"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "properties": {
+            "durable": {
+              "const": false,
+              "default": false,
+              "description": "true is rejected by the owning resolver; durable spooling is not implemented."
+            },
+            "fields": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "actor",
+                      "ingress_protocol",
+                      "kind",
+                      "latency_ms",
+                      "outcome",
+                      "pool",
+                      "prev_hash",
+                      "resource",
+                      "seq",
+                      "ts"
+                    ]
+                  },
+                  "minItems": 1,
+                  "type": "array",
+                  "uniqueItems": true
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "module": {
+              "type": "string"
+            },
+            "settings": {
+              "default": {},
+              "type": "object",
+              "x-busbar-module-settings": true
+            },
+            "streams": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "metrics",
+                      "logs",
+                      "traces",
+                      "events"
+                    ]
+                  },
+                  "minItems": 1,
+                  "type": "array",
+                  "uniqueItems": true
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "module"
+          ],
+          "type": "object",
+          "x-busbar-capabilities": {
+            "durable": false,
+            "streams": [
+              {
+                "default_fields": [],
+                "fields_override": false,
+                "name": "metrics",
+                "pinned_fields": [],
+                "produced_fields": []
+              },
+              {
+                "default_fields": [
+                  "ts",
+                  "ingress_protocol",
+                  "pool",
+                  "outcome",
+                  "latency_ms"
+                ],
+                "fields_override": false,
+                "name": "logs",
+                "pinned_fields": [
+                  "correlation_id"
+                ],
+                "produced_fields": [
+                  "ts",
+                  "ingress_protocol",
+                  "pool",
+                  "outcome",
+                  "latency_ms"
+                ]
+              },
+              {
+                "default_fields": [
+                  "trace_id",
+                  "span_id",
+                  "parent_span_id",
+                  "name",
+                  "start",
+                  "duration_us",
+                  "pool",
+                  "ingress",
+                  "op",
+                  "lane",
+                  "provider",
+                  "model"
+                ],
+                "fields_override": false,
+                "name": "traces",
+                "pinned_fields": [
+                  "trace_id",
+                  "span_id"
+                ],
+                "produced_fields": []
+              },
+              {
+                "default_fields": [
+                  "seq",
+                  "ts",
+                  "prev_hash",
+                  "kind",
+                  "actor",
+                  "resource",
+                  "outcome"
+                ],
+                "fields_override": true,
+                "name": "events",
+                "pinned_fields": [
+                  "seq",
+                  "ts",
+                  "prev_hash"
+                ],
+                "produced_fields": [
+                  "seq",
+                  "ts",
+                  "prev_hash",
+                  "kind",
+                  "actor",
+                  "resource",
+                  "outcome"
+                ]
+              }
+            ]
+          },
+          "x-busbar-runtime-validation": [
+            "module exists and carries each selected stream",
+            "omitted streams use the module's carried streams; fields are checked against those defaults",
+            "module lifecycle settings after host secret resolution"
+          ]
+        },
+        "IdentityProvider": {
+          "additionalProperties": false,
+          "properties": {
+            "browser_login": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/BrowserLogin"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "max_admin_scope": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "read-only",
+                    "full"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "module": {
+              "type": "string"
+            },
+            "settings": {
+              "default": {},
+              "type": "object",
+              "x-busbar-module-settings": true
+            },
+            "token": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SecretRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "module"
+          ],
+          "type": "object",
+          "x-busbar-runtime-validation": [
+            "module resolution",
+            "operator token applicability",
+            "browser login kind and client-secret requirement",
+            "module lifecycle settings after host secret resolution"
+          ]
+        },
+        "MintCeiling": {
+          "additionalProperties": false,
+          "properties": {
+            "allowed_pools": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "binding_modes": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "time-bound",
+                      "user-bound",
+                      "both"
+                    ]
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "max_ttl": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "Model": {
+          "additionalProperties": false,
+          "properties": {
+            "attempt_timeout_ms": {
+              "anyOf": [
+                {
+                  "maximum": 18446744073709551615,
+                  "minimum": 0,
+                  "type": "integer",
+                  "x-busbar-integer-token": "unsigned"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "default_max_tokens": {
+              "anyOf": [
+                {
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer",
+                  "x-busbar-integer-token": "unsigned"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "max_concurrent": {
+              "anyOf": [
+                {
+                  "maximum": 18446744073709551615,
+                  "minimum": 0,
+                  "type": "integer",
+                  "x-busbar-integer-token": "unsigned"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "max_requests": {
+              "default": -1,
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer",
+              "x-busbar-integer-token": "signed"
+            },
+            "prompt_caching": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "protocol": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "provider": {
+              "type": "string"
+            },
+            "reasoning": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "upstream_model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "provider"
+          ],
+          "type": "object",
+          "x-busbar-runtime-validation": [
+            "Provider and protocol resolution",
+            "Positive concurrency/token limits and supported semaphore capacity"
+          ]
+        },
+        "Pool": {
+          "additionalProperties": false,
+          "properties": {
+            "affinity": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PoolAffinity"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "attempt_timeout_ms": {
+              "anyOf": [
+                {
+                  "maximum": 18446744073709551615,
+                  "minimum": 0,
+                  "type": "integer",
+                  "x-busbar-integer-token": "unsigned"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "breaker": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PoolBreaker"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "failover": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PoolFailover"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "hooks": {
+              "anyOf": [
+                {
+                  "contains": {
+                    "anyOf": [
+                      {
+                        "type": "object"
+                      },
+                      {
+                        "enum": [
+                          "weighted",
+                          "cheapest",
+                          "fastest",
+                          "least_busy",
+                          "usage"
+                        ]
+                      }
+                    ]
+                  },
+                  "items": {
+                    "oneOf": [
+                      {
+                        "pattern": "\\S",
+                        "type": "string"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "strategy": {
+                            "pattern": "\\S",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "strategy"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "maxContains": 1,
+                  "minContains": 0,
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "members": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/PoolMember"
+              },
+              "type": "array"
+            },
+            "on_exhausted": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PoolOnExhausted"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "repeatable": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "tier": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "upstream_credentials": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/UpstreamCredentials"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "weights": {
+              "additionalProperties": {
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer",
+                "x-busbar-integer-token": "unsigned"
+              },
+              "default": {},
+              "type": "object"
+            }
+          },
+          "required": [],
+          "type": "object",
+          "x-busbar-runtime-validation": [
+            "Member/hook/fallback references, admitted modules and trust scope",
+            "Breaker, timeout and queue constraints including resolved failover budget",
+            "Plane-specific member interchangeability and repeatable operation validation"
+          ]
+        },
+        "PoolAffinity": {
+          "additionalProperties": false,
+          "properties": {
+            "header_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "mode": {
+              "default": "session",
+              "enum": [
+                "session"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "PoolBreaker": {
+          "additionalProperties": false,
+          "properties": {
+            "base_cooldown_secs": {
+              "default": 15,
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer",
+              "x-busbar-integer-token": "unsigned"
+            },
+            "max_cooldown_secs": {
+              "default": 120,
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer",
+              "x-busbar-integer-token": "unsigned"
+            },
+            "trip": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PoolBreakerTrip"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "PoolBreakerTrip": {
+          "additionalProperties": false,
+          "properties": {
+            "consecutive_n": {
+              "default": 3,
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer",
+              "x-busbar-integer-token": "unsigned"
+            },
+            "min_requests": {
+              "default": 5,
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer",
+              "x-busbar-integer-token": "unsigned"
+            },
+            "mode": {
+              "default": "error_rate",
+              "enum": [
+                "error_rate",
+                "consecutive"
+              ],
+              "type": "string"
+            },
+            "threshold": {
+              "default": 0.5,
+              "type": "number"
+            },
+            "window_secs": {
+              "default": 30,
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer",
+              "x-busbar-integer-token": "unsigned"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "PoolDocument": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "affinity": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/PoolAffinity"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "attempt_timeout_ms": {
+                  "anyOf": [
+                    {
+                      "maximum": 18446744073709551615,
+                      "minimum": 0,
+                      "type": "integer",
+                      "x-busbar-integer-token": "unsigned"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "breaker": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/PoolBreaker"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "failover": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/PoolFailover"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "hooks": {
+                  "anyOf": [
+                    {
+                      "contains": {
+                        "anyOf": [
+                          {
+                            "type": "object"
+                          },
+                          {
+                            "enum": [
+                              "weighted",
+                              "cheapest",
+                              "fastest",
+                              "least_busy",
+                              "usage"
+                            ]
+                          }
+                        ]
+                      },
+                      "items": {
+                        "oneOf": [
+                          {
+                            "pattern": "\\S",
+                            "type": "string"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "strategy": {
+                                "pattern": "\\S",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "strategy"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      "maxContains": 1,
+                      "minContains": 0,
+                      "type": "array"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "members": {
+                  "anyOf": [
+                    {
+                      "default": [],
+                      "items": {
+                        "$ref": "#/$defs/PoolDocumentMember"
+                      },
+                      "type": "array"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "on_exhausted": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/PoolOnExhausted"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "repeatable": {
+                  "anyOf": [
+                    {
+                      "default": [],
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "tier": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "upstream_credentials": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/UpstreamCredentials"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "weights": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": {
+                        "maximum": 4294967295,
+                        "minimum": 0,
+                        "type": "integer",
+                        "x-busbar-integer-token": "unsigned"
+                      },
+                      "default": {},
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                }
+              },
+              "required": [],
+              "type": "object",
+              "x-busbar-runtime-validation": [
+                "Member/hook/fallback references, admitted modules and trust scope",
+                "Breaker, timeout and queue constraints including resolved failover budget",
+                "Plane-specific member interchangeability and repeatable operation validation"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "PoolDocumentMember": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/PoolDocumentRichMember"
+            }
+          ]
+        },
+        "PoolDocumentRichMember": {
+          "additionalProperties": false,
+          "properties": {
+            "attempt_timeout_ms": {
+              "anyOf": [
+                {
+                  "maximum": 18446744073709551615,
+                  "minimum": 0,
+                  "type": "integer",
+                  "x-busbar-integer-token": "unsigned"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "context_max": {
+              "anyOf": [
+                {
+                  "maximum": 18446744073709551615,
+                  "minimum": 0,
+                  "type": "integer",
+                  "x-busbar-integer-token": "unsigned"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "model": {
+              "type": "string"
+            },
+            "reasoning": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "tags": {
+              "anyOf": [
+                {
+                  "default": [],
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "tier": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "weight": {
+              "default": 1,
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer",
+              "x-busbar-integer-token": "unsigned"
+            }
+          },
+          "required": [
+            "model"
+          ],
+          "type": "object"
+        },
+        "PoolFailover": {
+          "additionalProperties": false,
+          "properties": {
+            "exclusions": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "max_hops": {
+              "default": 3,
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer",
+              "x-busbar-integer-token": "unsigned"
+            },
+            "timeout_secs": {
+              "default": 120,
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer",
+              "x-busbar-integer-token": "unsigned"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "PoolMember": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/PoolRichMember"
+            }
+          ]
+        },
+        "PoolOnExhausted": {
+          "oneOf": [
+            {
+              "enum": [
+                "reject",
+                "least_bad"
+              ],
+              "type": "string"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "fallback_pool": {
+                  "pattern": "\\S",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "fallback_pool"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "queue": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "max_ms": {
+                      "maximum": 18446744073709551615,
+                      "minimum": 0,
+                      "type": "integer",
+                      "x-busbar-integer-token": "unsigned"
+                    }
+                  },
+                  "required": [
+                    "max_ms"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "queue"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "PoolRichMember": {
+          "additionalProperties": false,
+          "properties": {
+            "attempt_timeout_ms": {
+              "anyOf": [
+                {
+                  "maximum": 18446744073709551615,
+                  "minimum": 0,
+                  "type": "integer",
+                  "x-busbar-integer-token": "unsigned"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "context_max": {
+              "anyOf": [
+                {
+                  "maximum": 18446744073709551615,
+                  "minimum": 0,
+                  "type": "integer",
+                  "x-busbar-integer-token": "unsigned"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "model": {
+              "type": "string"
+            },
+            "reasoning": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "tags": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "tier": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "weight": {
+              "default": 1,
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer",
+              "x-busbar-integer-token": "unsigned"
+            }
+          },
+          "required": [
+            "model"
+          ],
+          "type": "object"
+        },
+        "Pools": {
+          "additionalProperties": {
+            "$ref": "#/$defs/PoolDocument"
+          },
+          "properties": {
+            "hooks": {
+              "anyOf": [
+                {
+                  "default": [],
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "upstream_credentials": {
+              "$ref": "#/$defs/UpstreamCredentials"
+            }
+          },
+          "type": "object",
+          "x-busbar-reserved-keys": [
+            "hooks",
+            "upstream_credentials"
+          ],
+          "x-busbar-runtime-validation": "PoolsCfg requires a registered owning plane; reserved hooks are attached before per-pool hooks, and per-pool upstream_credentials replaces the section default (own when absent)."
+        },
+        "ProviderCatalogEntry": {
+          "additionalProperties": true,
+          "properties": {
+            "allow_metadata_hosts": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "auth": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "x-busbar-runtime-validation": "Must name an outbound style declared by an admitted auth plugin."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "base_url": {
+              "type": "string"
+            },
+            "error_map": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {},
+              "type": "object"
+            },
+            "health": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ProviderHealth"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "path": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "path_base": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "protocol": {
+              "type": "string"
+            },
+            "scope": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "subject": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "token_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "protocol",
+            "base_url"
+          ],
+          "type": "object",
+          "x-busbar-opaque-options": {
+            "owner": "speaking-plane",
+            "validation": "Additional keys are validated against the loaded plane's provider-key descriptor and protocol capabilities; this schema does not enumerate protocol options."
+          },
+          "x-busbar-runtime-validation": [
+            "Loaded auth styles and plane descriptors",
+            "Provider/catalog resolution and credential trust scope",
+            "Destination and protocol capability validation"
+          ]
+        },
+        "ProviderDeployment": {
+          "additionalProperties": true,
+          "properties": {
+            "allow_metadata_hosts": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "api_key": {
+              "$ref": "#/$defs/SecretRef"
+            },
+            "auth": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "x-busbar-runtime-validation": "Must name an outbound style declared by an admitted auth plugin."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "base_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "error_map": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "health": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ProviderHealth"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "path": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "path_base": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "protocol": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "scope": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "subject": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "token_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "api_key"
+          ],
+          "type": "object",
+          "x-busbar-opaque-options": {
+            "owner": "speaking-plane",
+            "validation": "Additional keys are validated against the loaded plane's provider-key descriptor and protocol capabilities; this schema does not enumerate protocol options."
+          },
+          "x-busbar-runtime-validation": [
+            "Loaded auth styles and plane descriptors",
+            "Provider/catalog resolution and credential trust scope",
+            "Destination and protocol capability validation"
+          ]
+        },
+        "ProviderHealth": {
+          "additionalProperties": false,
+          "properties": {
+            "interval_secs": {
+              "anyOf": [
+                {
+                  "maximum": 18446744073709551615,
+                  "minimum": 0,
+                  "type": "integer",
+                  "x-busbar-integer-token": "unsigned"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "mode": {
+              "default": "none",
+              "enum": [
+                "none",
+                "dead",
+                "active"
+              ],
+              "type": "string"
+            },
+            "timeout_secs": {
+              "anyOf": [
+                {
+                  "maximum": 18446744073709551615,
+                  "minimum": 0,
+                  "type": "integer",
+                  "x-busbar-integer-token": "unsigned"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "RoleBinding": {
+          "additionalProperties": false,
+          "patternProperties": {
+            "^allowed_(?!pools$)[\\s\\S]+s$": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "properties": {
+            "admin_scope": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "read-only",
+                    "full"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "allowed_pools": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "group": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "verbs": {
+              "anyOf": [
+                {
+                  "const": "*"
+                },
+                {
+                  "items": {
+                    "enum": [
+                      "get_admin_auth",
+                      "put_admin_auth",
+                      "get_audit",
+                      "get_auth",
+                      "post_auth_cache_flush",
+                      "get_config",
+                      "post_config_apply",
+                      "get_config_diff",
+                      "post_config_reload",
+                      "post_config_rollback",
+                      "get_config_settings",
+                      "put_config_settings",
+                      "post_config_validate",
+                      "get_config_versions",
+                      "get_config_versions_v",
+                      "get_export",
+                      "delete_export_name",
+                      "get_export_name",
+                      "put_export_name",
+                      "patch_export_name_settings",
+                      "get_groups",
+                      "post_groups",
+                      "delete_groups_name",
+                      "get_groups_name",
+                      "patch_groups_name",
+                      "put_groups_name",
+                      "get_groups_name_usage",
+                      "get_hooks",
+                      "post_hooks",
+                      "delete_hooks_name",
+                      "get_hooks_name",
+                      "put_hooks_name",
+                      "get_hooks_name_health",
+                      "get_hooks_name_schema",
+                      "patch_hooks_name_settings",
+                      "get_hooks_name_status",
+                      "get_identity_providers",
+                      "delete_identity_providers_name",
+                      "get_identity_providers_name",
+                      "put_identity_providers_name",
+                      "patch_identity_providers_name_settings",
+                      "get_info",
+                      "get_keys",
+                      "post_keys",
+                      "delete_keys_id",
+                      "get_keys_id",
+                      "patch_keys_id",
+                      "post_keys_id_revoke",
+                      "post_keys_id_rotate",
+                      "get_keys_id_usage",
+                      "get_models",
+                      "get_openapi_json",
+                      "delete_overlay_section",
+                      "get_plugins",
+                      "post_plugins",
+                      "post_plugins_inspect",
+                      "post_plugins_reload",
+                      "post_plugins_rollback",
+                      "delete_plugins_file",
+                      "get_plugins_file_schema",
+                      "get_pools",
+                      "get_pools_name",
+                      "get_providers",
+                      "post_restart",
+                      "post_signing_key_rotate",
+                      "get_usage",
+                      "verify",
+                      "plane_facts",
+                      "plane_record_write",
+                      "chain_break",
+                      "store_restore",
+                      "commit_upgrade",
+                      "adjust",
+                      "amend_rate_history",
+                      "recovery_list",
+                      "recovery_resolve",
+                      "get_telemetry",
+                      "get_trust",
+                      "trust_approve",
+                      "trust_revoke",
+                      "get_ledger_totals",
+                      "get_ledger_checkpoints",
+                      "get_ledger_reconciliation",
+                      "get_ledger_migration",
+                      "get_ledger_openapi_json",
+                      "get_audit_head",
+                      "get_audit_range",
+                      "get_audit_keys"
+                    ]
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "x-busbar-runtime-validation": "Names must be declared by this build's admin verb table."
+            }
+          },
+          "type": "object",
+          "x-busbar-runtime-validation": [
+            "plane grant kinds must be declared by an installed plane",
+            "verb names must exist in the closed admin table",
+            "group and pool references"
+          ]
+        },
+        "SecretRef": {
+          "description": "Core user-input SecretRef grammar. Plugin-declared shorthand is resolved separately; use explicit module/settings for portable forms. Never an inline credential.",
+          "oneOf": [
+            {
+              "const": "none"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "module": {
+                  "pattern": "\\S",
+                  "type": "string"
+                },
+                "settings": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "module"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "env": {
+                  "pattern": "\\S",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "env"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "file": {
+                  "pattern": "\\S",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "file"
+              ],
+              "type": "object"
+            }
+          ],
+          "writeOnly": true
+        },
+        "UpstreamCredentials": {
+          "enum": [
+            "own",
+            "passthrough"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": true,
+      "description": "User-input forms for the listed host-owned fields. Not a complete boot schema: other top-level blocks and plane-owned settings remain with their declaring parser. The provider catalog is a separate document using ProviderCatalogEntry.",
+      "properties": {
+        "auth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Auth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "export": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Export"
+          },
+          "type": "object"
+        },
+        "identity-providers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/IdentityProvider"
+          },
+          "type": "object"
+        },
+        "models": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Model"
+          },
+          "type": "object"
+        },
+        "pools": {
+          "$ref": "#/$defs/Pools"
+        },
+        "providers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ProviderDeployment"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object",
+      "x-busbar-partial": true,
+      "x-busbar-settings-profile": "integer-token-v1"
+    },
+    "validation": "This generated form contract does not certify boot. Resolve plugin and plane capabilities, references, secret material, duration/URL semantics and cross-field policy using the normal configuration validation path. Plugin lifecycle schemas describe the resolved settings crossing, not raw user SecretRef input.",
+    "version": 1
   }
 }

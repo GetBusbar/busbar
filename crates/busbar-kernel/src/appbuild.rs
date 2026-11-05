@@ -170,6 +170,84 @@ pub fn load_config_from_disk_judged(
     env_mode: config::EnvSubst,
     rules: &dyn RootRules,
 ) -> Result<LoadedConfig, String> {
+    load_config_from_disk_with_document_patch(
+        config_path,
+        providers_override,
+        safe_mode,
+        env_mode,
+        rules,
+        None,
+    )
+}
+
+/// Compose the durable document layer before the same parser boot uses. The Store anchor is
+/// selected from the base configuration before calling this for a persisted patch.
+pub fn load_config_from_disk_with_document_patch(
+    config_path: &std::path::Path,
+    providers_override: Option<&std::path::Path>,
+    safe_mode: bool,
+    env_mode: config::EnvSubst,
+    rules: &dyn RootRules,
+    patch: Option<&config::document_patch::DocumentPatch>,
+) -> Result<LoadedConfig, String> {
+    load_config_from_disk_with_document_patches(
+        config_path,
+        providers_override,
+        safe_mode,
+        env_mode,
+        rules,
+        patch,
+        None,
+    )
+}
+
+/// Compose both operator documents with their durable edits before the shared boot readers.
+pub fn load_config_from_disk_with_document_patches(
+    config_path: &std::path::Path,
+    providers_override: Option<&std::path::Path>,
+    safe_mode: bool,
+    env_mode: config::EnvSubst,
+    rules: &dyn RootRules,
+    patch: Option<&config::document_patch::DocumentPatch>,
+    providers_patch: Option<&config::document_patch::DocumentPatch>,
+) -> Result<LoadedConfig, String> {
+    let mut patch = patch.cloned();
+    let mut providers_patch = providers_patch.cloned();
+    load_config_from_disk_compacting_document_patches(
+        config_path,
+        providers_override,
+        safe_mode,
+        env_mode,
+        rules,
+        DocumentPatchLoad {
+            patch: patch.as_mut(),
+            providers_patch: providers_patch.as_mut(),
+            admission: None,
+        },
+    )
+}
+
+pub struct DocumentPatchLoad<'a> {
+    pub patch: Option<&'a mut config::document_patch::DocumentPatch>,
+    pub providers_patch: Option<&'a mut config::document_patch::DocumentPatch>,
+    pub admission: Option<&'a mut config::document_patch::SourceAdmission>,
+}
+
+/// Reuse the exact file/env preprocessing while returning a compacted guarded Store carrier.
+/// The admin caller persists these edits only after typed parsing and runtime validation succeed.
+pub fn load_config_from_disk_compacting_document_patches(
+    config_path: &std::path::Path,
+    providers_override: Option<&std::path::Path>,
+    safe_mode: bool,
+    env_mode: config::EnvSubst,
+    rules: &dyn RootRules,
+    edits: DocumentPatchLoad<'_>,
+) -> Result<LoadedConfig, String> {
+    let DocumentPatchLoad {
+        patch,
+        providers_patch,
+        mut admission,
+    } = edits;
     let mut unset_env_vars: Vec<String> = Vec::new();
 
     let raw_config = std::fs::read_to_string(config_path).map_err(|e| {
@@ -181,6 +259,10 @@ pub fn load_config_from_disk_judged(
     let interpolated_config =
         config::interpolate_env_with(&raw_config, env_mode, &mut unset_env_vars)
             .map_err(|e| format!("config.yaml: {e}"))?;
+
+    if let Some(admission) = admission.as_deref_mut() {
+        admission.check_config(&interpolated_config)?;
+    }
 
     if let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&interpolated_config) {
         let markers = config::migrate::detect_legacy_markers(&doc);
@@ -202,13 +284,19 @@ pub fn load_config_from_disk_judged(
         }
     }
 
-    let deploy: config::DeployCfg =
+    let mut deploy: config::DeployCfg = if let Some(patch) = patch.filter(|_| !safe_mode) {
+        *patch = patch.compacted_against_yaml(&interpolated_config)?;
+        patch.parse_deploy_yaml_checked(&interpolated_config, |keys| {
+            rules.unloaded_plane_refusal(keys).map_or(Ok(()), Err)
+        })?
+    } else {
         config::deploy_from_yaml_str(&interpolated_config).map_err(|e| {
             format!(
                 "config.yaml: invalid YAML: {}",
                 config::augment_config_error(e)
             )
-        })?;
+        })?
+    };
 
     let config_dir = config_path
         .parent()
@@ -236,9 +324,22 @@ pub fn load_config_from_disk_judged(
     let interpolated_providers =
         config::interpolate_env_with(&raw_providers, env_mode, &mut unset_env_vars)
             .map_err(|e| format!("providers.yaml: {e}"))?;
+    if let Some(admission) = admission {
+        admission.check_catalog(&interpolated_providers)?;
+    }
+    deploy.document_source_fingerprints =
+        Some(config::document_patch::SourceFingerprints::from_sources(
+            &interpolated_config,
+            &interpolated_providers,
+        ));
     let defs: HashMap<String, config::ProviderDef> =
-        config::providers::catalog_from_str(&interpolated_providers)
-            .map_err(|e| format!("providers.yaml: invalid YAML: {e}"))?;
+        if let Some(patch) = providers_patch.filter(|_| !safe_mode) {
+            *patch = patch.compacted_against_yaml(&interpolated_providers)?;
+            patch.parse_catalog_yaml(&interpolated_providers)?
+        } else {
+            config::providers::catalog_from_str(&interpolated_providers)
+                .map_err(|e| format!("providers.yaml: invalid YAML: {e}"))?
+        };
 
     let env_overlay = std::env::var(ENV_CONFIG_OVERLAY)
         .ok()
@@ -304,7 +405,23 @@ pub fn load_config_from_disk_with_store(
             loaded.overlay_path = Some(store);
         } else {
             let (reopened, doc) = store.reopen_for_reload()?;
-            loaded.overlay_path = Some(reopened);
+            let mut patched_locked = false;
+            if let Some(doc) = doc
+                .as_ref()
+                .filter(|doc| doc.document_patch.is_some() || doc.providers_patch.is_some())
+            {
+                loaded = load_config_from_disk_with_document_patches(
+                    config_path,
+                    providers_override,
+                    false,
+                    env_mode,
+                    rules,
+                    doc.document_patch.as_ref(),
+                    doc.providers_patch.as_ref(),
+                )?;
+                patched_locked = loaded.config_locked;
+            }
+            loaded.overlay_path = (!patched_locked).then_some(reopened);
             loaded.overlay_doc = doc;
         }
     }
@@ -766,6 +883,10 @@ pub fn build_app_from_config_with_store(
     recover_usage_before_hydration: bool,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
     let configured_card = config::card::CardFields::of_root(&cfg);
+    let configured_view = Arc::new(config::readback::ConfiguredView::from_root(
+        &cfg,
+        &plugins_cfg,
+    ));
 
     let planes_awaiting_restart = rules.planes_awaiting_restart(&cfg);
 
@@ -1694,6 +1815,15 @@ pub fn build_app_from_config_with_store(
         }
     }
 
+    app.configured_view = Some(configured_view);
+    // Existing direct builders pass an explicit providers path. The executable replaces this
+    // initial default with its actual CLI/env provenance; subsequent generations inherit it.
+    if let Some(prior) = prior {
+        app.providers_override = prior.providers_override.clone();
+    }
+    app.config_pending_restart = prior
+        .map(|app| app.config_pending_restart.clone())
+        .unwrap_or_default();
     Ok((
         app,
         rotate_gov_credentials,

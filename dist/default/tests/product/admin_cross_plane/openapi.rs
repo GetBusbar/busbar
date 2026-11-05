@@ -30,8 +30,12 @@ fn openapi_operations_carry_stable_operation_ids() {
     }
 
     assert_eq!(
-        checked, 102,
-        "expected the original 100 admin operations plus recovery list and resolve"
+        checked, 103,
+        "expected the 102 existing operations plus the process telemetry read"
+    );
+    assert_eq!(
+        doc["paths"]["/api/v1/admin/telemetry"]["get"]["operationId"],
+        "GetTelemetry"
     );
     assert_eq!(
         doc["paths"]["/api/v1/admin/ledger/recovery/list"]["post"]["operationId"],
@@ -192,22 +196,10 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
             });
             let schema = &body["content"]["application/json"]["schema"];
 
-            if let Some(reference) = schema["$ref"].as_str() {
-                let name = reference
-                    .strip_prefix("#/components/schemas/")
-                    .unwrap_or_else(|| {
-                        panic!("{method} {path} $ref is not a component: {reference}")
-                    });
-                assert!(
-                    schemas.contains_key(name),
-                    "{method} {path} references undefined component {name}"
-                );
-            } else {
-                assert_eq!(
-                    schema["type"], "object",
-                    "{method} {path} requestBody must be a $ref or an object schema"
-                );
-            }
+            assert!(
+                object_request_schema(schema, schemas, 0, false),
+                "{method} {path} requestBody must resolve to object schemas in every union branch: {schema}"
+            );
             declared += 1;
         }
     }
@@ -229,4 +221,55 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
          recovery operations (`recovery/list` and `recovery/resolve`), whose request bodies \
          name the namespace/cursor and the record/disposition respectively"
     );
+}
+
+/// Recognize object bodies, including the explicit legacy/document mode union. Resolve refs
+/// rather than allowing an undefined or scalar component to hide inside a union.
+#[cfg(feature = "openapi-schema")]
+fn object_request_schema(
+    schema: &serde_json::Value,
+    schemas: &serde_json::Map<String, serde_json::Value>,
+    depth: usize,
+    enclosing_object: bool,
+) -> bool {
+    if depth > 32 || !schema.is_object() {
+        return false;
+    }
+    // An enclosing object constraint also applies to required/not-only union branches.
+    // An explicit scalar type cannot satisfy that constraint.
+    if schema.get("type").is_some_and(|kind| kind != "object") {
+        return false;
+    }
+    let object = enclosing_object || schema["type"] == "object";
+    if let Some(reference) = schema.get("$ref") {
+        return reference
+            .as_str()
+            .and_then(|reference| reference.strip_prefix("#/components/schemas/"))
+            .and_then(|name| schemas.get(name))
+            .is_some_and(|target| object_request_schema(target, schemas, depth + 1, object));
+    }
+    if let Some(branches) = schema.get("oneOf") {
+        return branches.as_array().is_some_and(|branches| {
+            !branches.is_empty()
+                && branches
+                    .iter()
+                    .all(|branch| object_request_schema(branch, schemas, depth + 1, object))
+        });
+    }
+    if let Some(parts) = schema.get("allOf") {
+        return parts.as_array().is_some_and(|parts| {
+            // At least one part or the enclosing schema must constrain the result to objects;
+            // the other parts may narrow that object with required/not constraints.
+            let object = object
+                || parts
+                    .iter()
+                    .any(|part| object_request_schema(part, schemas, depth + 1, false));
+            !parts.is_empty()
+                && object
+                && parts
+                    .iter()
+                    .all(|part| object_request_schema(part, schemas, depth + 1, object))
+        });
+    }
+    object
 }

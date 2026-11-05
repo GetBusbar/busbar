@@ -419,7 +419,9 @@ fn read_document<'de, M: MapAccess<'de>, T: Deserialize<'de>>(
 }
 
 pub fn deploy_from_yaml_str(text: &str) -> Result<DeployCfg, serde_yaml::Error> {
-    deploy_from_deserializer(serde_yaml::Deserializer::from_str(text))
+    let mut deploy = deploy_from_deserializer(serde_yaml::Deserializer::from_str(text))?;
+    deploy.authored_routing = super::authored_routing::capture(text, &deploy.pools);
+    Ok(deploy)
 }
 
 pub fn deploy_from_deserializer<'de, D: Deserializer<'de>>(de: D) -> Result<DeployCfg, D::Error> {

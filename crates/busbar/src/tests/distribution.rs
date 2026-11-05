@@ -254,6 +254,8 @@ mod config_at_rest_recovery;
 #[path = "admin_application/config_key_transactions.rs"]
 mod config_key_transactions;
 
+#[path = "admin_application/config_document_patch.rs"]
+mod config_document_patch;
 #[path = "admin_application/config_price_activation.rs"]
 mod config_price_activation;
 
@@ -485,3 +487,12 @@ mod kernel_application_auth_verify_both_origins;
 
 #[path = "admin_application/credential_flush_response_actual.rs"]
 mod admin_application_credential_flush_response_actual;
+
+#[path = "admin_application/telemetry.rs"]
+mod admin_telemetry;
+
+#[path = "admin_application/plugin_artifact_cas.rs"]
+mod admin_plugin_artifact_cas;
+
+#[path = "admin_application/installed_schema.rs"]
+mod admin_installed_schema;

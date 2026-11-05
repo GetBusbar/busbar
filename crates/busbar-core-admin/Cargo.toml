@@ -30,6 +30,7 @@ test-support = []
 openapi-schema = ["dep:schemars", "busbar-kernel/openapi-schema"]
 
 [dev-dependencies]
+jsonschema = { workspace = true }
 http-body-util = { workspace = true }
 busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support"] }
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }

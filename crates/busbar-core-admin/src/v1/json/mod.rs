@@ -47,6 +47,7 @@ impl AdminTransport for JsonV1 {
         #[cfg_attr(not(test), allow(clippy::let_and_return))]
         let router = Router::new()
             .route("/info", get(info))
+            .route("/telemetry", get(telemetry::get))
             .route("/pools", get(list_pools))
             .route("/pools/{name}", get(get_pool))
             .route("/models", get(list_models))
@@ -430,7 +431,11 @@ fn with_config_etag(mut resp: Response, version: u64) -> Response {
     resp
 }
 
+mod config_document;
+#[cfg(feature = "openapi-schema")]
+mod config_forms;
 mod handlers;
+pub(super) mod telemetry;
 pub(crate) use handlers::*;
 
 mod kernel_verbs;

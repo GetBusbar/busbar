@@ -611,6 +611,13 @@ pub(crate) struct TrustListView {
 pub(crate) struct TrustKeyReq {
     /// `<instance>/<counterparty>[/<item>]`, as `GET /trust` lists it.
     key: String,
+    /// Optional compare-and-set guard against this key's current `seen` digest, for both approve
+    /// and revoke. Supply the exact digest reviewed from `GET /trust`, not `approved`. A changed
+    /// or absent sighting returns 409 without changing the decision. Omission keeps key-only
+    /// behavior; an explicitly supplied null, empty string or non-string is invalid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String", regex(pattern = r"\S"))]
+    expected_digest: Option<String>,
 }
 
 /// `POST /commit-upgrade`: the release the fleet commits to.
@@ -727,6 +734,26 @@ fn doc_for(
         ],
     };
     Some(match verb {
+        KernelVerb::GetTelemetry => VerbDoc {
+            summary: "Bounded request-phase telemetry snapshot",
+            description: "An admin read of already-collected request-phase metrics. At most 32 \
+                identities and 65536 JSON bytes; omitted identities are explicitly counted. \
+                Counts, microsecond sums, bins and uptime are exact decimal strings. Bins are \
+                exclusive, not Prometheus cumulative buckets. The process boot nonce survives \
+                config reloads and scrapes; uptime_since_start_ms is monotonic time since shared process \
+                generation initialization (first info read or recorder setup), not OS process creation. \
+                LlmProducerDrive ends at producer completion; \
+                MountedResponseReady ends when the response is returned, before its body completes. \
+                Neither phase measures completed client delivery. This opens no outbound connection."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<super::telemetry::TelemetryView>()),
+                "A bounded cumulative snapshot; no-store",
+            ),
+            request: None,
+            query: Vec::new(),
+            errors: vec![unavailable_503("telemetry collection is disabled, unavailable, or could not produce a bounded snapshot")],
+        },
 
         KernelVerb::ChainBreak => VerbDoc {
             summary: "Deliberately break the journal chain (disaster recovery)",
@@ -891,13 +918,15 @@ fn doc_for(
                 description: if approve {
                     "A counterparty is approved at the catalogue hash it last reported, which \
                      clears its quarantine; an item at the digest it was last sighted at. The \
-                     decision is kept durably and outlives a restart. Idempotent: the same key \
-                     twice answers the same row."
+                     decision is kept durably and outlives a restart. Optional `expected_digest` \
+                     compares the current `seen` digest atomically before writing; a stale \
+                     review conflicts. Without it, the key is approved at execution-time sighting."
                 } else {
                     "Refused until approved again: a counterparty revoked refuses everything at \
                      it, an item revoked refuses it over its configured approval. The decision \
-                     is kept durably and outlives a restart. Idempotent: the same key twice \
-                     answers the same row."
+                     is kept durably and outlives a restart. Optional `expected_digest` compares \
+                     the current `seen` digest, not `approved`, before writing. A stale review \
+                     conflicts; omission keeps the unconditional revoke."
                 }
                 .to_string(),
                 success: Success::Json(
@@ -911,7 +940,8 @@ fn doc_for(
                         (
                             "400",
                             format!(
-                                "`invalid_request`: malformed body, `key is required`, or \
+                                "`invalid_request`: malformed body, `key is required`, invalid \
+                                 `expected_digest` (must be a non-empty string when supplied), or \
                                  {BODY_UNREADABLE}"
                             ),
                         ),
@@ -923,15 +953,14 @@ fn doc_for(
                                 .to_string(),
                         ),
                     ];
+                    let mut conflict = "`conflict`: `expected_digest` differs from the current \
+                        sighting, no sighting exists for the supplied guard, or another decision \
+                        is in progress".to_string();
                     if approve {
-                        errors.push((
-                            "409",
-                            "`conflict`: ``trust key `<key>` was never sighted`` — nothing to \
-                             approve it at — or ``trust key `<key>` has no authenticity root`` — \
-                             its registration declares none, and nothing at it is approvable"
-                                .to_string(),
-                        ));
+                        conflict.push_str("; or the key was never sighted, has no authenticity \
+                            root, or its last sighting failed verification");
                     }
+                    errors.push(("409", conflict));
                     errors.push(unavailable_503(
                         "the node could not take the unit, or could not keep the decision",
                     ));
@@ -1292,4 +1321,13 @@ pub(crate) fn operations(
         out.push((path, method, op));
     }
     out
+}
+
+#[cfg(all(test, feature = "openapi-schema"))]
+#[test]
+fn trust_request_schema_has_an_optional_nonnullable_digest_guard() {
+    let schema = serde_json::to_value(schemars::schema_for!(TrustKeyReq)).unwrap();
+    assert_eq!(schema["required"], serde_json::json!(["key"]));
+    assert_eq!(schema["properties"]["expected_digest"]["type"], "string");
+    assert_eq!(schema["properties"]["expected_digest"]["pattern"], r"\S");
 }

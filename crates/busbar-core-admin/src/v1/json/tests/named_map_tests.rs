@@ -4,6 +4,96 @@
 use super::*;
 use busbar_kernel::config::named_map::NamedMapSection;
 
+#[test]
+fn named_settings_edit_preserves_omitted_secrets_and_distinguishes_removal_from_null() {
+    let req: NamedSettingsReq = serde_json::from_value(serde_json::json!({
+        "edit": {"set": {"timeout": 20, "nullable": null}, "remove": ["obsolete"]}
+    }))
+    .unwrap();
+    let Mutation::EditSettings(edit) = req.into_mutation().unwrap() else {
+        panic!("explicit edit mode must not become replacement");
+    };
+    let original = serde_json::json!({
+        "timeout": 10,
+        "credential": {"file": "/private/operator-token"},
+        "opaque": {"unknown_secret": "retained"},
+        "obsolete": true
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    let edited = edit.apply(original).unwrap();
+    assert_eq!(edited["timeout"], 20);
+    assert_eq!(
+        edited["credential"],
+        serde_json::json!({"file": "/private/operator-token"})
+    );
+    assert_eq!(
+        edited["opaque"],
+        serde_json::json!({"unknown_secret": "retained"})
+    );
+    assert_eq!(edited.get("nullable"), Some(&serde_json::Value::Null));
+    assert!(!edited.contains_key("obsolete"));
+}
+
+#[test]
+fn named_settings_modes_are_exclusive_and_legacy_replacement_stays_exact() {
+    for body in [
+        serde_json::json!({}),
+        serde_json::json!({"settings": {}, "edit": {}}),
+    ] {
+        let req: NamedSettingsReq = serde_json::from_value(body).unwrap();
+        assert!(req.into_mutation().is_err());
+    }
+    for body in [
+        serde_json::json!({"settings": null, "edit": {}}),
+        serde_json::json!({"settings": {}, "edit": null}),
+        serde_json::json!({"edit": {"sets": {"typo": 1}}}),
+    ] {
+        assert!(serde_json::from_value::<NamedSettingsReq>(body).is_err());
+    }
+    let req: NamedSettingsReq =
+        serde_json::from_value(serde_json::json!({"settings": {}})).unwrap();
+    assert!(
+        matches!(req.into_mutation().unwrap(), Mutation::Settings(settings) if settings.is_empty())
+    );
+    let req: NamedSettingsReq = serde_json::from_value(serde_json::json!({
+        "edit": {"set": {"secret": "do-not-report"}, "remove": ["secret"]}
+    }))
+    .unwrap();
+    let Mutation::EditSettings(edit) = req.into_mutation().unwrap() else {
+        unreachable!()
+    };
+    let error = edit.validate().unwrap_err();
+    assert!(!format!("{error:?}").contains("do-not-report"));
+}
+
+#[test]
+fn named_configured_settings_are_allowlisted_and_never_claim_runtime_acknowledgement() {
+    let settings = serde_json::json!({"timeout": 12, "credential": "never-return-this"})
+        .as_object()
+        .unwrap()
+        .clone();
+    let public = |_: &str| ["timeout".to_owned()].into_iter().collect();
+    for (pending, state) in [(false, "configured"), (true, "restart_pending")] {
+        let view = serde_json::to_value(configured_settings(
+            42, "module", &settings, pending, &public,
+        ))
+        .unwrap();
+        assert_eq!(view["config_version"], 42);
+        assert_eq!(view["source"], "installed_configuration");
+        assert_eq!(view["state"], state);
+        assert_eq!(view["settings_public"], serde_json::json!({"timeout": 12}));
+        assert!(!view.to_string().contains("never-return-this"));
+        assert!(view.get("applied").is_none());
+    }
+    let view = serde_json::to_value(configured_settings(7, "unknown", &settings, false, &|_| {
+        Default::default()
+    }))
+    .unwrap();
+    assert_eq!(view["settings_public"], serde_json::json!({}));
+}
+
 fn refusal(section: NamedMapSection) -> String {
     match validate_definition(section, "x", &serde_json::json!("not an object")) {
         Err(AdminError::Validation(m)) => m,

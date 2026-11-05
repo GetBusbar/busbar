@@ -56,6 +56,13 @@ pub struct App {
     /// The composition root's projection of the configuration this generation was built from
     /// ([`crate::appbuild::ConfigProjection`]); `None` when the root bound none.
     pub config_projection: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    /// Sanitized configuration captured when this generation was built. This contains no raw
+    /// settings backup and does not assert physical activation of boot-bound resources.
+    pub configured_view: Option<Arc<crate::config::readback::ConfiguredView>>,
+    /// Private exact consumed-source binding; contains no raw operator data.
+    pub document_source_fingerprints: Option<crate::config::document_patch::SourceFingerprints>,
+    /// Configured changes whose physical activation needs a restart. Cleared only at boot.
+    pub config_pending_restart: Vec<String>,
     /// The kernel's own tables over the `pools:`/`models:` sections this generation resolved: the
     /// read seam's answer when no plane contributed a runtime of its own (a door-served plane walks
     /// these sections through its door).
@@ -319,6 +326,9 @@ pub struct App {
     pub config_path: Option<std::path::PathBuf>,
     /// The providers.yaml path (same role as `config_path`).
     pub providers_path: Option<std::path::PathBuf>,
+    /// Original CLI/environment catalog override, distinct from the resolved catalog filename.
+    /// Without an explicit override, reload must honor the effective providers_file setting.
+    pub providers_override: Option<std::path::PathBuf>,
     /// The typed Store-backed runtime config anchor. The historical field name is retained for
     /// callers; it never contains a path. `None` is locked management. The base-config Store
     /// remains the anchor across applies, including changes to the effective governance Store.
@@ -691,6 +701,10 @@ impl App {
             serve_tables,
             root_rules,
             config_projection,
+            configured_view: None,
+            document_source_fingerprints: None,
+            providers_override: providers_path.clone(),
+            config_pending_restart: Vec::new(),
             config_tables,
             store,
             limits,

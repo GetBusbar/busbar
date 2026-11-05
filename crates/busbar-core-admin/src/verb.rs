@@ -123,6 +123,7 @@ pub enum KernelVerb {
     PostAuthCacheFlush,
     GetModels,
     GetInfo,
+    GetTelemetry,
     GetUsage,
     GetOpenapiJson,
 
@@ -299,6 +300,7 @@ pub const TABLE: &[VerbRow] = table! {
     New AmendRateHistory "POST" "/api/v1/admin/ledger/amend-rate-history" "amend_rate_history";
     New RecoveryList "POST" "/api/v1/admin/ledger/recovery/list" "recovery_list";
     New RecoveryResolve "POST" "/api/v1/admin/ledger/recovery/resolve" "recovery_resolve";
+    New GetTelemetry "GET" "/api/v1/admin/telemetry" "get_telemetry";
     New GetTrust "GET" "/api/v1/admin/trust" "get_trust";
     New TrustApprove "POST" "/api/v1/admin/trust/approve" "trust_approve";
     New TrustRevoke "POST" "/api/v1/admin/trust/revoke" "trust_revoke";

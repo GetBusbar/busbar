@@ -191,6 +191,14 @@ pub struct InfoView {
     /// process-local counter) resets on restart, so a consumer that sees `started_at` change knows
     /// to read a counter reset as "new epoch", never as "reverted".
     pub started_at: Option<u64>,
+    /// Random 128-bit process generation, shared with `GET /telemetry` and available even when
+    /// metrics are disabled. Stable across configuration reloads; a new process generates a new
+    /// nonce. Null when OS randomness failed; clients must not fabricate a restart identity.
+    #[cfg_attr(
+        feature = "openapi-schema",
+        schemars(regex(pattern = "^[0-9a-f]{32}$"))
+    )]
+    pub process_boot_nonce: Option<String>,
     pub topology: TopologyInfo,
     /// Whether config-overlay persistence is enabled, i.e. the config is MUTABLE with a writable
     /// `config.overlay` backend: `true` = API-applied config changes are durable across restarts;
@@ -596,9 +604,18 @@ pub struct PluginView {
     /// to name. Additive; existing consumers reading only the pre-1.5.1 fields are unaffected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
+    /// SHA-256 of the complete on-disk archive bytes, not the library inside it.
+    /// Absent for rows without a readable backing archive. Use as an optional mutation preimage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "openapi-schema",
+        schemars(regex(pattern = "^[0-9a-f]{64}$"))
+    )]
+    pub archive_sha256: Option<String>,
     /// Whether the plugin publishes a schema at `schema_url`. The canonical Statement schema
-    /// takes precedence over the legacy manifest field. Linked plugins can publish schemas too;
-    /// a malformed legacy schema keeps this true and reports `schema_error`.
+    /// takes precedence over the legacy manifest field. Linked plugins can publish schemas too.
+    /// Malformed legacy schema text reports `schema_error`; an unreadable installed archive
+    /// instead reports unavailable and cannot publish a verifiable URL.
     pub has_schema: bool,
     /// The registered plugin version, or the signed manifest version for a dropped-in artifact.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -623,22 +640,16 @@ pub struct PluginView {
     /// Why a dynamic-library plugin did not validate (`valid: false`): a short, secret-free reason.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// Server-resolved path to this plugin's `GET /plugins/{name}/schema` endpoint: ALWAYS a
-    /// relative path under the admin origin
-    /// (the client MUST reject an absolute/cross-origin value rather than fetch it; this endpoint
-    /// only ever emits the admin-prefixed relative form, never anything else). Non-null whenever the
-    /// manifest declared a `settings_schema` AT ALL, even if it's unparseable (following it then
-    /// surfaces `schema_error`: a present-but-corrupt schema is a worse, distinct
-    /// condition from "no schema declared", never folded into the same `null`).
-    /// Absent when neither the Statement nor the legacy manifest publishes a schema. Linked
-    /// rows use their registered name in this path; they do not need a backing artifact file.
+    /// Relative schema URL under the admin origin. Artifact URLs include source=installed_archive
+    /// and expected_archive_sha256 to inspect the exact disk bytes, not an older loaded generation.
+    /// A malformed legacy schema keeps a URL and reports schema_error. Absent when no schema
+    /// is published, or the archive cannot be read within the admission cap (an unavailable error).
+    /// Linked rows use their registered name and do not need a backing file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema_url: Option<String>,
-    /// A manifest that SET `settings_schema` but whose value fails to parse (carried onto the
-    /// list row too), distinct from a manifest that never set the
-    /// field at all (`schema_url: null`, this field also `None`). `schema_url` stays non-null in
-    /// this case; the operator sees the row is degraded from the list alone, before ever following
-    /// the URL.
+    /// A malformed legacy schema, or an unavailable installed-archive schema. Distinct from
+    /// an absent schema. Malformed legacy schema text keeps its URL; an unreadable archive
+    /// omits the URL because the engine cannot bind a schema lookup to its bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema_error: Option<String>,
 }
@@ -658,6 +669,7 @@ impl PluginView {
             active,
             target,
             file: None,
+            archive_sha256: None,
             has_schema: false,
             version: None,
             publisher: None,

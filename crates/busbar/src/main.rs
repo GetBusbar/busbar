@@ -167,6 +167,108 @@ fn resolve_worker_threads() -> (usize, Vec<String>) {
     (n, warnings)
 }
 
+/// The same precedence as the original selector, now with the effective recovered config value.
+fn recovered_data_workers(
+    configured: Option<usize>,
+    primary_env: Option<usize>,
+    fallback_env: Option<usize>,
+    available: usize,
+) -> usize {
+    primary_env
+        .or(configured.filter(|n| *n != 0))
+        .or(fallback_env)
+        .unwrap_or(available)
+        .clamp(1, MAX_WORKER_THREADS)
+}
+
+#[cfg(test)]
+mod recovered_worker_tests {
+    use super::*;
+
+    #[test]
+    fn recovered_worker_count_honors_effective_config_and_existing_env_precedence() {
+        assert_eq!(recovered_data_workers(Some(7), None, Some(3), 2), 7);
+        assert_eq!(recovered_data_workers(Some(7), Some(5), Some(3), 2), 5);
+        assert_eq!(recovered_data_workers(None, None, Some(3), 2), 3);
+        assert_eq!(recovered_data_workers(None, None, None, 2), 2);
+        assert_eq!(recovered_data_workers(Some(0), None, None, 2), 2);
+        assert_eq!(
+            recovered_data_workers(Some(usize::MAX), None, None, 2),
+            MAX_WORKER_THREADS
+        );
+    }
+
+    #[test]
+    fn recovered_data_runtime_keeps_control_alive_and_drains_registered_work() {
+        let control = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        control.block_on(async {
+            let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+            let (serving_done_tx, serving_done_rx) = tokio::sync::oneshot::channel();
+            let (shutdown_seen_tx, shutdown_seen_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let finished_work = finished.clone();
+            // The effective Store value replaces the bootstrap budget, on the actual scheduler.
+            let workers = recovered_data_workers(Some(3), None, None, 1);
+            let data = spawn_multithread_data(workers, shutdown_rx, async move {
+                assert_eq!(tokio::runtime::Handle::current().metrics().num_workers(), 3);
+                let tracker = busbar_kernel::detached::worker_detached().unwrap();
+                tokio::task::spawn_blocking(move || {
+                    assert!(Arc::ptr_eq(
+                        &tracker,
+                        &busbar_kernel::detached::worker_detached().unwrap()
+                    ));
+                    assert!(busbar_kernel::detached::worker_shutdown().is_some());
+                })
+                .await
+                .unwrap();
+                tokio::spawn(async move {
+                    let shutdown = busbar_kernel::detached::worker_shutdown();
+                    assert!(shutdown.is_some());
+                    assert!(busbar_kernel::detached::worker_detached().is_some());
+                    busbar_kernel::detached::spawn_detached(async move {
+                        busbar_kernel::detached::shutdown_fired(shutdown).await;
+                        shutdown_seen_tx.send(()).unwrap();
+                        release_rx.await.unwrap();
+                        finished_work.store(true, std::sync::atomic::Ordering::Release);
+                    });
+                })
+                .await
+                .unwrap();
+                serving_done_tx.send(()).unwrap();
+            });
+            tokio::time::timeout(Duration::from_secs(3), serving_done_rx)
+                .await
+                .unwrap()
+                .unwrap();
+            // Bootstrap/control tasks still run while data custody waits for detached work.
+            assert_eq!(
+                tokio::spawn(async { tokio::runtime::Handle::current().metrics().num_workers() })
+                    .await
+                    .unwrap(),
+                1
+            );
+            shutdown_tx.send(true).unwrap();
+            tokio::time::timeout(Duration::from_secs(3), shutdown_seen_rx)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(!data.is_finished());
+            release_tx.send(()).unwrap();
+            tokio::task::spawn_blocking(move || data.join())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(finished.load(std::sync::atomic::Ordering::Acquire));
+            assert_eq!(tokio::spawn(async { 42 }).await.unwrap(), 42);
+        });
+    }
+}
+
 fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, String> {
     match wt {
         Some(0) => Err(
@@ -280,13 +382,13 @@ fn main() {
         });
     }
 
-    let (worker_threads, warnings) = &*WORKERS;
+    let (_, warnings) = &*WORKERS;
     for w in warnings {
         eprintln!("{w}");
     }
-    let worker_threads = *worker_threads;
+    #[cfg(not(unix))]
+    let worker_threads = WORKERS.0;
 
-    busbar_kernel::topology::set_data_workers(worker_threads);
     let control_work = ControlWork::new();
     control_work.register();
     #[cfg(unix)]
@@ -295,7 +397,7 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio control runtime")
-            .block_on(run(worker_threads, late_services, catalogue, control_work));
+            .block_on(run(late_services, catalogue, control_work));
     }
     #[cfg(not(unix))]
     {
@@ -305,8 +407,8 @@ fn main() {
             .on_thread_start(move || worker_work.register())
             .enable_all()
             .build()
-            .expect("failed to build the tokio runtime")
-            .block_on(run(worker_threads, late_services, catalogue, control_work));
+            .expect("failed to build the tokio control runtime")
+            .block_on(run(late_services, catalogue, control_work));
     }
 }
 
@@ -456,7 +558,6 @@ mod bootstrap_destination_tests {
 }
 
 async fn run(
-    data_workers: usize,
     late_services: std::sync::Arc<root::serve::LateServices>,
     catalogue: busbar_kernel::diagnostics::Catalogue,
     control_work: ControlWork,
@@ -484,8 +585,8 @@ async fn run(
     .unwrap_or_else(|e| die(e));
     let LoadedConfig {
         mut deploy,
-        defs,
-        providers_path,
+        mut defs,
+        mut providers_path,
         overlay_path: _,
         config_locked,
         config_read_only: _,
@@ -526,7 +627,7 @@ async fn run(
         .unwrap_or_else(|| die("base Store has no typed plugin-floor calls"));
     root::boot::bind_plugin_floor(floor_calls)
         .unwrap_or_else(|error| die(format!("Store plugin-floor authority: {error}")));
-    let overlay_path = if config_locked {
+    let mut overlay_path = if config_locked {
         None
     } else {
         let calls = anchor_store
@@ -547,6 +648,30 @@ async fn run(
             .flatten()
     };
 
+    // The base Store remains the bootstrap anchor. Its durable document layer is parsed with
+    // boot's schema before the established typed overlays, never substituted for the anchor.
+    if let Some(doc) = overlay_doc
+        .as_ref()
+        .filter(|doc| doc.document_patch.is_some() || doc.providers_patch.is_some())
+    {
+        let patched = busbar_kernel::appbuild::load_config_from_disk_with_document_patches(
+            &config_path,
+            providers_override.as_deref(),
+            false,
+            config::EnvSubst::Strict,
+            &busbar_kernel::appbuild::AcceptAll,
+            doc.document_patch.as_ref(),
+            doc.providers_patch.as_ref(),
+        )
+        .unwrap_or_else(|error| die(format!("Store document overlay refused: {error}")));
+        if patched.config_locked {
+            overlay_path = None;
+        }
+        deploy = patched.deploy;
+        defs = patched.defs;
+        providers_path = patched.providers_path;
+    }
+
     if let Some(notice) = root::cli::providers_override_notice(
         root::cli::value_flag(std::env::args().skip(1), "--providers", None).as_deref(),
         deploy.providers_file(),
@@ -557,6 +682,22 @@ async fn run(
     if let Some(doc) = overlay_doc.as_ref() {
         config::overlay::apply_root_to_deploy(&mut deploy, doc);
     }
+
+    // Data workers are created after Store recovery, on their own runtimes. The
+    // control runtime and bootstrap plugin dispatcher already exist and keep their own budgets.
+    let data_workers = {
+        let mut ignored_warnings = Vec::new();
+        let selected = recovered_data_workers(
+            deploy.advanced.worker_threads,
+            worker_threads_from_env_noting("BUSBAR_WORKER_THREADS", &mut ignored_warnings),
+            worker_threads_from_env_noting("TOKIO_WORKER_THREADS", &mut ignored_warnings),
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1),
+        );
+        busbar_kernel::topology::set_data_workers(selected);
+        selected
+    };
 
     let response_headers_cfg = deploy.advanced.response_headers.clone();
 
@@ -705,7 +846,7 @@ async fn run(
         None
     };
 
-    let (boot_app, _boot_gov_rotate, boot_limits) =
+    let (mut boot_app, _boot_gov_rotate, boot_limits) =
         busbar_kernel::appbuild::build_app_from_config_with_store(
             cfg,
             plugins_cfg,
@@ -720,6 +861,8 @@ async fn run(
         )
         .unwrap_or_else(|e| die(e));
 
+    boot_app.providers_override = providers_override.clone();
+    config::readback::ConfiguredView::capture_documents(&mut boot_app, &deploy, &defs);
     boot_limits.stage_boot();
     let app = Arc::new(boot_app);
 
@@ -1204,39 +1347,44 @@ async fn run(
     }
     #[cfg(not(unix))]
     {
-        let _ = data_workers;
         let admin_listener = root::listener::SocketAdmits::new(bind_listener(&admin_listen).await);
-        tokio::join!(
-            async {
-                if let Some(framer) = framer {
-                    let data_listener =
-                        root::listener::SocketAdmits::new(bind_listener(&listen).await);
-                    serve_listener(
-                        data_listener,
-                        data_router,
-                        tls_cfg,
-                        tls_secret_resolver.clone(),
-                        &listen,
-                        recv_shutdown(shutdown_tx.subscribe()),
-                        None,
-                        true,
-                        Some(framer),
-                    )
-                    .await;
-                }
-            },
-            serve_listener(
-                admin_listener,
-                admin_router,
-                admin_tls_cfg,
-                tls_secret_resolver.clone(),
-                &admin_listen,
-                recv_shutdown(shutdown_tx.subscribe()),
-                None,
-                true,
-                None,
-            ),
-        );
+        let data_handle = framer.map(|framer| {
+            let resolver = tls_secret_resolver.clone();
+            let shutdown = shutdown_tx.subscribe();
+            spawn_multithread_data(data_workers, worker_shutdown_rx, async move {
+                let data_listener = root::listener::SocketAdmits::new(bind_listener(&listen).await);
+                serve_listener(
+                    data_listener,
+                    data_router,
+                    tls_cfg,
+                    resolver,
+                    &listen,
+                    recv_shutdown(shutdown),
+                    None,
+                    true,
+                    Some(framer),
+                )
+                .await;
+            })
+        });
+        serve_listener(
+            admin_listener,
+            admin_router,
+            admin_tls_cfg,
+            tls_secret_resolver.clone(),
+            &admin_listen,
+            recv_shutdown(shutdown_tx.subscribe()),
+            None,
+            true,
+            None,
+        )
+        .await;
+        if let Some(data_handle) = data_handle {
+            tokio::task::spawn_blocking(move || data_handle.join())
+                .await
+                .expect("data runtime join task panicked")
+                .expect("data runtime thread panicked");
+        }
     }
     let _ = tokio::task::spawn_blocking(move || {
         for task in plugin_tasks {
@@ -1304,6 +1452,45 @@ async fn recv_shutdown(mut rx: tokio::sync::broadcast::Receiver<()>) {
         _ = rx.recv() => {},
         () = busbar_kernel::detached::shutdown_fired(level) => {},
     }
+}
+
+/// Keep bootstrap services alive on the control runtime while the recovered data budget owns
+/// a separate scheduler. All scheduler and blocking threads share custody because tasks may
+/// migrate between them. Unlike pinned Unix workers, these threads have no stable worker id.
+#[cfg(any(not(unix), test))]
+fn spawn_multithread_data(
+    workers: usize,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+    serve: impl std::future::Future<Output = ()> + Send + 'static,
+) -> std::thread::JoinHandle<()> {
+    std::thread::Builder::new()
+        .name("busbar-data-runtime".into())
+        .spawn(move || {
+            let detached = busbar_kernel::detached::DetachedTasks::new();
+            let worker_detached = detached.clone();
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(workers)
+                .thread_name("busbar-data")
+                .on_thread_start(move || {
+                    busbar_kernel::detached::set_worker_detached(worker_detached.clone());
+                    busbar_kernel::detached::set_worker_shutdown(shutdown.clone());
+                })
+                .enable_all()
+                .build()
+                .unwrap_or_else(|e| die(format!("failed to build data runtime: {e}")));
+            runtime
+                .block_on(runtime.spawn(async move {
+                    serve.await;
+                    let _ = tokio::time::timeout(
+                        busbar_kernel::detached::DETACHED_DRAIN_GRACE,
+                        detached.drained(),
+                    )
+                    .await;
+                }))
+                .expect("data listener task panicked");
+            // The owning OS thread drops the runtime only after listener and detached drain.
+        })
+        .unwrap_or_else(|e| die(format!("cannot spawn data runtime thread: {e}")))
 }
 
 #[cfg(unix)]

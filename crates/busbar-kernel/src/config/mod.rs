@@ -20,7 +20,10 @@ pub mod migrate_plugins;
 
 pub mod migration_table;
 
+mod authored_routing;
+pub mod document_patch;
 pub mod named_map;
+pub mod readback;
 
 pub mod parse;
 
@@ -871,6 +874,12 @@ pub struct DeployCfg {
     /// Set by the document reader without changing the frozen configuration grammar.
     #[serde(skip)]
     pub listen_explicit: bool,
+    /// Optional public routing source projection; absent for programmatic inputs without source.
+    #[serde(skip)]
+    pub authored_routing: Option<readback::AuthoredRouting>,
+    /// Exact consumed operator-source binding for indexed admin writes; never wire config.
+    #[serde(skip)]
+    pub document_source_fingerprints: Option<document_patch::SourceFingerprints>,
     #[serde(default = "default_listen")]
     pub listen: String,
     /// busbar's PUBLIC base URL (top-level `public_url:`) — see [`RootCfg::public_url`]. Absent by

@@ -9,6 +9,8 @@ pub(crate) fn base_deploy() -> DeployCfg {
         declared: Default::default(),
         listen: DEFAULT_LISTEN_ADDR.into(),
         listen_explicit: false,
+        authored_routing: None,
+        document_source_fingerprints: None,
 
         endpoint: Default::default(),
         oauth_as: None,

@@ -315,8 +315,8 @@ pub struct HookSchemaView {
 pub struct PluginSchemaView {
     pub name: String,
     /// The plugin's semantic version from its manifest. Present on `POST /plugins/inspect` (which
-    /// previews an on-disk candidate's manifest); `null`/absent on `GET /plugins/{file}/schema`, which
-    /// does not surface the version. Declared here so a codegen'd client keeps the field the inspect
+    /// previews an on-disk candidate's manifest) and installed_archive schema reads; absent on
+    /// legacy loaded-registry schema reads. Declared here so a codegen'd client keeps the field the inspect
     /// handler always sends, rather than silently dropping it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
@@ -334,10 +334,21 @@ pub struct PluginSchemaView {
     pub trust: String,
     /// `"describe"` when a currently-loaded `kind: hook` answered its live `describe` wire
     /// message; `"statement"` for a linked plugin; `"manifest"` for a dropped-in plugin
-    /// (its signed Statement schema, or the legacy manifest fallback). Lets
+    /// (its signed Statement schema, or the legacy manifest fallback); "installed_archive" for
+    /// an explicit archive lookup bound to the returned archive_sha256. Lets
     /// busbar-ui explain "why does this form look different from what I expected" without
     /// implementing the describe/manifest precedence rule itself.
     pub source: String,
+    /// Present for explicit installed_archive lookup; a bare archive filename.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// Digest of the same complete archive bytes inspected for this schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(regex(pattern = "^[0-9a-f]{64}$"))]
+    pub archive_sha256: Option<String>,
+    /// installed_archive lookup: present, absent, or invalid legacy schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_state: Option<String>,
     /// The plugin's `kind` (`hook` | `secret` | …) from its manifest. Both `GET /plugins/{file}/schema`
     /// and `POST /plugins/inspect` emit it (`null` only when the plugin cannot be resolved to a
     /// manifest). Declared so codegen'd clients keep it.

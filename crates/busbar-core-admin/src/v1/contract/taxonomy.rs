@@ -81,6 +81,7 @@ pub use crate::test_support::err_kind_of;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Cond {
     StaleIfMatch,
+    ArchiveChanged,
     MalformedIfMatch,
     UnknownResource,
     MalformedBody,
@@ -133,6 +134,7 @@ impl Cond {
     #[cfg(feature = "openapi-schema")]
     pub fn phrase(self) -> &'static str {
         match self {
+            Cond::ArchiveChanged => "reviewed plugin archive changed or is missing",
             Cond::StaleIfMatch => "stale `If-Match` (re-read and retry)",
             Cond::MalformedIfMatch => "malformed `If-Match` header",
             Cond::UnknownResource => "unknown resource",
@@ -353,10 +355,16 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             Validation / NoDiskBase,
             NotFound / UnknownResource,
             Conflict / NotLoadable,
+            Conflict / ArchiveChanged,
             VersionConflict / StaleIfMatch,
         ],
         (Delete, "/plugins/{file}") => {
-            de![Validation / InvalidFilename, NotFound / UnknownResource,]
+            de![
+                Validation / InvalidFilename,
+                Validation / InvalidQueryValue,
+                NotFound / UnknownResource,
+                Conflict / ArchiveChanged,
+            ]
         }
 
         (Post, "/plugins/inspect") => de![Validation / MalformedBody],
@@ -411,6 +419,13 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
 
         (Get, "/audit") => de![Validation / MalformedCursor],
         (Get, "/config/versions") => de![Validation / MalformedCursor],
+        (Get, "/plugins/{file}/schema") => de![
+            Validation / InvalidQueryValue,
+            Validation / InvalidFilename,
+            Validation / NotLoadable,
+            NotFound / UnknownResource,
+            Conflict / ArchiveChanged,
+        ],
         (Get, "/plugins") => de![Validation / MissingRequiredQuery],
         (Get, "/pools") => de![Validation / InvalidQueryValue],
         (Get, "/usage") => de![Validation / InvalidQueryValue, UnpricedClass / Unpriced],
@@ -475,6 +490,8 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
         (Post, "/signing-key/rotate") => de![Conflict / GovernanceOff, Conflict / NothingToRotate,],
         (Post, "/restart") => de![
             Validation / MalformedBody,
+            Validation / MalformedIfMatch,
+            VersionConflict / StaleIfMatch,
             Conflict / NoSupervisor,
             Conflict / NotRestartable,
         ],
