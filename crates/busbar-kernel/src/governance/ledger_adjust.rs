@@ -62,7 +62,7 @@ pub struct PricedBucket {
     pub window_start: u64,
     /// Admitted requests in the window.
     pub requests: u64,
-    /// Billable requests in the window: the fee base.
+    /// Billable requests in the window: legacy flat requests plus named-plane request fees.
     pub billable_requests: u64,
     /// The cell's counts priced at the card each era was earned under, fee included, or the one
     /// function's refusal (a card silent about a lane or class, no card in force, out of range).
@@ -197,6 +197,25 @@ impl std::fmt::Display for AdjustRefused {
 
 impl std::error::Error for AdjustRefused {}
 
+// Named-plane admission records request fees on the plane's synthetic fee lane instead of
+// the legacy flat counter. Only that lane's per-request class belongs in this projection;
+// provider usage and session fees are separate facts, even when their class names overlap.
+fn billable_request_count(cell: &BudgetCell) -> Result<u64, busbar_contract::count::CountError> {
+    use busbar_kernel_ledger::cost::{split_plane_lane, PER_REQUEST};
+    cell.models
+        .iter()
+        .filter(|model| {
+            let (plane, lane) = split_plane_lane(&model.model);
+            !plane.is_empty() && lane.is_empty()
+        })
+        .try_fold(cell.billable_requests, |total, model| {
+            let requests = model.cur.get(PER_REQUEST).copied().unwrap_or_default();
+            total
+                .checked_add(requests.whole_u64()?)
+                .ok_or(busbar_contract::count::CountError::OutOfRange)
+        })
+}
+
 impl GovState {
     pub fn priced_bucket(
         &self,
@@ -210,7 +229,8 @@ impl GovState {
         Ok(PricedBucket {
             window_start: cell.window_start,
             requests: cell.requests,
-            billable_requests: cell.billable_requests,
+            billable_requests: billable_request_count(&cell)
+                .map_err(|e| RecordStoreError(format!("billable request count: {e}")))?,
             spend: cell.spend(cost, true),
         })
     }
@@ -432,3 +452,71 @@ fn moved(count: Count, delta: Count) -> Option<Count> {
 #[cfg(test)]
 #[path = "ledger_adjust_view_tests.rs"]
 mod view_tests;
+
+#[cfg(test)]
+mod billable_request_count_tests {
+    use super::*;
+    use busbar_contract::count::CountError;
+    use busbar_kernel_ledger::cost::{plane_fee_lane, PER_REQUEST, PER_SESSION};
+
+    #[test]
+    fn ledger_request_fees_include_only_legacy_and_named_request_fee_rows() {
+        let mut cell = BudgetCell::fresh(0);
+        cell.billable_requests = 2;
+        cell.accrue(
+            &plane_fee_lane("decisions"),
+            1,
+            &BTreeMap::from([(PER_REQUEST.into(), 3)]),
+        );
+        cell.accrue(
+            &plane_fee_lane("decisions"),
+            2,
+            &BTreeMap::from([(PER_REQUEST.into(), 4)]),
+        );
+        cell.accrue(
+            &plane_fee_lane("voice"),
+            2,
+            &BTreeMap::from([(PER_SESSION.into(), 9)]),
+        );
+        cell.accrue(
+            "decisions\u{1f}model",
+            2,
+            &BTreeMap::from([(PER_REQUEST.into(), 100)]),
+        );
+        cell.accrue(
+            "legacy-model",
+            2,
+            &BTreeMap::from([(PER_REQUEST.into(), 100)]),
+        );
+        assert_eq!(billable_request_count(&cell), Ok(9));
+    }
+
+    #[test]
+    fn ledger_request_fees_refuse_fraction_negative_and_overflow_without_rounding() {
+        for (count, error) in [
+            (Count::parse("0.5").unwrap(), CountError::NotWhole),
+            (Count::from_micros(-1_000_000), CountError::Negative),
+            (
+                Count::from_integer(i128::from(u64::MAX) + 1).unwrap(),
+                CountError::OutOfRange,
+            ),
+        ] {
+            let mut cell = BudgetCell::fresh(0);
+            cell.accrue(
+                &plane_fee_lane("decisions"),
+                0,
+                &BTreeMap::from([(PER_REQUEST.into(), 1)]),
+            );
+            cell.models[0].cur.insert(PER_REQUEST.into(), count);
+            assert_eq!(billable_request_count(&cell), Err(error));
+        }
+        let mut cell = BudgetCell::fresh(0);
+        cell.billable_requests = u64::MAX;
+        cell.accrue(
+            &plane_fee_lane("decisions"),
+            0,
+            &BTreeMap::from([(PER_REQUEST.into(), 1)]),
+        );
+        assert_eq!(billable_request_count(&cell), Err(CountError::OutOfRange));
+    }
+}

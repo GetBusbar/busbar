@@ -5834,6 +5834,12 @@ fn a_planes_request_fee_charges_its_requests_and_the_pools_fee_charges_the_pools
     }
 
     assert_eq!(spend(&gov, &cost), 19);
+    assert_eq!(
+        gov.priced_bucket(&cost, "k1", WINDOW_TOTAL, AT)
+            .unwrap()
+            .billable_requests,
+        5
+    );
     let u = gov.usage_for(&cost, "k1", AT).unwrap().unwrap();
     assert_eq!(
         u.requests, 5,
@@ -5860,6 +5866,13 @@ fn a_planes_request_fee_charges_its_requests_and_the_pools_fee_charges_the_pools
     let restarted = GovState::new(store, None).unwrap();
     restarted.hydrate_budgets(&cost, AT).unwrap();
     assert_eq!(spend(&restarted, &cost), 19);
+    assert_eq!(
+        restarted
+            .priced_bucket(&cost, "k1", WINDOW_TOTAL, AT)
+            .unwrap()
+            .billable_requests,
+        5
+    );
 }
 
 #[test]
@@ -5872,6 +5885,12 @@ fn a_planes_session_fee_charges_one_per_session() {
         gov.record_usage(&cost, &k, "", &plane_fee_lane("sp"), &one, AT);
     }
     assert_eq!(spend(&gov, &cost), 80, "2 sessions × 40");
+    assert_eq!(
+        gov.priced_bucket(&cost, "k1", WINDOW_TOTAL, AT)
+            .unwrap()
+            .billable_requests,
+        0
+    );
 }
 
 #[test]
@@ -5920,6 +5939,12 @@ fn a_planes_refund_returns_its_own_fee_unit_never_the_flat_base() {
 
     gov.refund_charge(charged[0].0.charge());
     assert_eq!(spend(&gov, &cost), 8);
+    assert_eq!(
+        gov.priced_bucket(&cost, "k1", WINDOW_TOTAL, AT)
+            .unwrap()
+            .billable_requests,
+        2
+    );
 }
 
 #[test]
@@ -6061,6 +6086,12 @@ fn a_plane_without_fees_bills_no_fee() {
 
     assert_eq!(spend(&gov, &cost), 0);
     assert_eq!(gov.usage_for(&cost, "k1", AT).unwrap().unwrap().requests, 4);
+    assert_eq!(
+        gov.priced_bucket(&cost, "k1", WINDOW_TOTAL, AT)
+            .unwrap()
+            .billable_requests,
+        4
+    );
 }
 
 #[test]
