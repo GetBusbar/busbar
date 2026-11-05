@@ -340,33 +340,14 @@ fn sanitized(s: &str, colon: bool) -> String {
 
 fn escaped(s: &str, quotes: bool) -> String {
     let capacity = s.len().checked_mul(2).expect("metric escape size overflow");
-    let (mut out, mut held) = (
-        zeroize::Zeroizing::new(String::with_capacity(capacity)),
-        false,
-    );
+    let mut out = zeroize::Zeroizing::new(String::with_capacity(capacity));
     for c in s.chars() {
         match c {
             '\n' => out.push_str("\\n"),
-            '"' if quotes => {
-                held = false;
-                out.push_str("\\\"");
-            }
-            '\\' => {
-                if held {
-                    out.push_str("\\\\");
-                }
-                held = !held;
-            }
-            c => {
-                if std::mem::take(&mut held) {
-                    out.push_str("\\\\");
-                }
-                out.push(c);
-            }
+            '"' if quotes => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c => out.push(c),
         }
-    }
-    if held {
-        out.push_str("\\\\");
     }
     std::mem::take(&mut *out)
 }

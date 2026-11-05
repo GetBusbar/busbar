@@ -32,7 +32,8 @@ fn workload() {
         metrics::Unit::Seconds,
         "latency"
     );
-    for (pool, n) in [("a\"b\\c\nd", 3), ("plain", 1), ("back\\\\slash", 2)] {
+    // Values affected by the historical sanitizer bug are covered by the protocol tests below.
+    for (pool, n) in [("a\"b\\c\nd", 3), ("plain", 1), ("back\\slash", 2)] {
         metrics::counter!("busbar_eq_requests_total", "pool" => pool, "outcome" => "ok")
             .increment(n);
     }
@@ -57,7 +58,7 @@ fn workload() {
 }
 
 #[test]
-fn the_source_holds_what_1_5_5s_recorder_held() {
+fn source_matches_historical_recorder_for_unaffected_values() {
     let width = Duration::from_secs(20);
     let old = metrics_exporter_prometheus::PrometheusBuilder::new()
         .set_bucket_duration(width)
@@ -100,33 +101,53 @@ fn the_source_holds_what_1_5_5s_recorder_held() {
     );
 }
 
-#[test]
-fn escapes_and_names_are_1_5_5s() {
-    for s in [
-        "",
-        "plain",
-        "a\"b",
-        "a\\b",
-        "a\\\\b",
-        "a\\\"b",
-        "a\\nb",
-        "line\nfeed",
-        "trailing\\",
-        "\\\\\\",
-        "\\\n",
-        "ünï\"cødé\\",
-    ] {
-        assert_eq!(
-            escaped(s, true),
-            reference::sanitize_label_value(s),
-            "{s:?}"
-        );
-        assert_eq!(
-            escaped(s, false),
-            reference::sanitize_description(s),
-            "{s:?}"
-        );
+// Decode the protocol grammar independently of either exporter sanitizer. Family label values
+// are already escaped; a Prometheus text consumer must recover the original recorder identity.
+fn decode_escaped(value: &str, quotes: bool) -> String {
+    let mut decoded = String::new();
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => decoded.push(match chars.next().expect("complete escape") {
+                '\\' => '\\',
+                'n' => '\n',
+                '"' if quotes => '"',
+                other => panic!("invalid escape: {other:?}"),
+            }),
+            '\n' => panic!("unescaped newline"),
+            '"' if quotes => panic!("unescaped label quote"),
+            other => decoded.push(other),
+        }
     }
+    decoded
+}
+
+#[test]
+fn raw_values_escape_once_and_roundtrip_through_the_protocol() {
+    // Explicit wire expectations cover slash runs, slash-before-quote/newline, and literal \\n.
+    for (raw, label, help) in [
+        ("", "", ""),
+        ("plain", "plain", "plain"),
+        ("a\"b", "a\\\"b", "a\"b"),
+        ("a\\b", "a\\\\b", "a\\\\b"),
+        ("a\\\\b", "a\\\\\\\\b", "a\\\\\\\\b"),
+        ("a\\\"b", "a\\\\\\\"b", "a\\\\\"b"),
+        ("a\\nb", "a\\\\nb", "a\\\\nb"),
+        ("line\nfeed", "line\\nfeed", "line\\nfeed"),
+        ("trailing\\", "trailing\\\\", "trailing\\\\"),
+        ("\\\\\\", "\\\\\\\\\\\\", "\\\\\\\\\\\\"),
+        ("\\\n", "\\\\\\n", "\\\\\\n"),
+        ("ünï\"cødé\\", "ünï\\\"cødé\\\\", "ünï\"cødé\\\\"),
+    ] {
+        assert_eq!(escaped(raw, true), label, "label: {raw:?}");
+        assert_eq!(escaped(raw, false), help, "help: {raw:?}");
+        assert_eq!(decode_escaped(label, true), raw);
+        assert_eq!(decode_escaped(help, false), raw);
+    }
+}
+
+#[test]
+fn metric_and_label_names_keep_existing_sanitization() {
     for s in [
         "busbar_ok",
         "busbar:ok",
@@ -190,7 +211,7 @@ fn identity_values(families: &[Family], sample_name: &str) -> Vec<String> {
 }
 
 #[test]
-fn raw_label_values_that_share_presentation_keep_both_series() {
+fn raw_label_values_keep_distinct_exported_series() {
     const COUNTER: &str = "busbar_identity_counter";
     const GAUGE: &str = "busbar_identity_gauge";
     const SUMMARY: &str = "busbar_identity_summary";
@@ -198,11 +219,6 @@ fn raw_label_values_that_share_presentation_keep_both_series() {
     const SUMMARY_COUNT: &str = "busbar_identity_summary_count";
     for (left, right) in [("\\", "\\\\"), ("\"", "\\\"")] {
         assert_ne!(left, right);
-        assert_eq!(
-            reference::sanitize_label_value(left),
-            reference::sanitize_label_value(right),
-            "the historical presentation collision is the fixture's premise"
-        );
         let source = identity_source();
         let (counters, gauges, histograms) = metrics::with_local_recorder(&source, || {
             let counters =
@@ -222,6 +238,30 @@ fn raw_label_values_that_share_presentation_keep_both_series() {
         assert_eq!(identity_values(&first, GAUGE), ["17", "23"]);
         assert_eq!(identity_values(&first, SUMMARY_SUM), ["17", "23"]);
         assert_eq!(identity_values(&first, SUMMARY_COUNT), ["1", "1"]);
+        for name in [COUNTER, GAUGE, SUMMARY_SUM, SUMMARY_COUNT] {
+            let mut identities: Vec<_> = first
+                .iter()
+                .flat_map(|family| &family.samples)
+                .filter(|sample| sample.name == name)
+                .map(|sample| {
+                    let label = sample
+                        .labels
+                        .iter()
+                        .find(|(key, _)| key == "identity")
+                        .unwrap();
+                    (decode_escaped(&label.1, true), sample.value.as_str())
+                })
+                .collect();
+            identities.sort();
+            let values = if name == SUMMARY_COUNT {
+                ["1", "1"]
+            } else {
+                ["17", "23"]
+            };
+            let mut expected = vec![(left.to_owned(), values[0]), (right.to_owned(), values[1])];
+            expected.sort();
+            assert_eq!(identities, expected, "exported identity and value: {name}");
+        }
         let summary = first.iter().find(|family| family.name == SUMMARY).unwrap();
 
         let expected_names: Vec<_> = [17, 23]
