@@ -695,6 +695,68 @@ fn pending_export_disk_append_keeps_old_path_and_cancelled_late_reply_cannot_rea
 }
 
 #[test]
+fn two_actual_file_instances_progress_independently_while_one_destination_is_blocked() {
+    use crate::host_disk::lane_tests::hold_destination;
+    use busbar_contract::services::{DiskDest, DiskRotate};
+
+    for dropped in [false, true] {
+        let dir = scratch(if dropped {
+            "isolated-dropped"
+        } else {
+            "isolated-linked"
+        });
+        let a = dir.join("a.jsonl");
+        let b = dir.join("b.jsonl");
+        let lane = Arc::new(DiskLane::default());
+        let held = hold_destination(
+            &lane,
+            DiskDest {
+                key: "path".into(),
+                path: a.display().to_string(),
+                rotate_at: None,
+                rotate: DiskRotate::Truncate,
+            },
+        );
+        let dispatcher = Arc::new(Dispatcher::with_services(
+            DispatchConfig::default(),
+            Arc::new(KernelServices::new().with_disk_lane(Arc::clone(&lane))),
+        ));
+        let sink_a = Arc::new(opened(
+            load_file(dropped, &dispatcher, Arc::new(Tape::default())),
+            Arc::clone(&dispatcher),
+            &file_settings(&a),
+        ));
+        let sink_b = Arc::new(opened(
+            load_file(dropped, &dispatcher, Arc::new(Tape::default())),
+            Arc::clone(&dispatcher),
+            &file_settings(&b),
+        ));
+        let mut pending_a =
+            PendingDiskDelivery::new(Arc::clone(&sink_a), &dispatcher, b"{\"n\":1}\n", 1);
+        let mut pending_b =
+            PendingDiskDelivery::new(Arc::clone(&sink_b), &dispatcher, b"{\"n\":2}\n", 2);
+        assert_eq!(pending_a.cross(false), Outcome::Pending);
+        // The guard releases A on any unwind; no filesystem syscall is deliberately hung.
+        match pending_b.cross(false) {
+            Outcome::Pending => pending_b.finish(),
+            Outcome::Ready => (),
+            outcome => panic!("healthy instance refused delivery: {outcome:?}"),
+        }
+        assert_eq!(ns(&b), Some(vec![2]));
+        assert_eq!(pending_a.cross(true), Outcome::Pending);
+        assert!(std::fs::read(&a).unwrap().is_empty());
+        drop(held);
+        pending_a.finish();
+        assert_eq!(ns(&a), Some(vec![1]));
+        drop(pending_a);
+        drop(pending_b);
+        drop(sink_a);
+        drop(sink_b);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
 fn accepted_event_json_reaches_the_actual_disk_lane_unchanged() {
     use busbar_contract::abi::export::ExportField as F;
     use busbar_contract::services::{DiskDest, DiskRotate, HostServices as _, Ran};
