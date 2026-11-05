@@ -40,6 +40,7 @@
 # their actual exit code. Importing PASS requires the job's green result and receipt exit zero.
 # Exit 0 only when every suite passed; an empty list exits 0 and says so. Each suite gets CONFORMANCE_TIMEOUT_SECONDS (default 1800,
 # valid range 1..86400); expiry refuses the verdict and terminates its complete process group.
+# Core fetches get CONFORMANCE_FETCH_TIMEOUT_SECONDS (default 300, valid range 1..3600).
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -147,38 +148,71 @@ sys.exit(0 if v["status"] == "pass" else 1)
 PY
 }
 
-# Each suite owns a process group so a timed-out judge cannot leave its subjects running.
-run_suite() {
-  python3 -I - "$1" "$SUITE_TIMEOUT" <<'PYTIMEOUT'
-import os, signal, subprocess, sys
-command, budget = sys.argv[1:3]
+# Each bounded command owns a process group; argv stays separate from shell syntax.
+run_bounded() {
+  python3 -I - "$@" <<'PYTIMEOUT'
+import ctypes, os, signal, subprocess, sys, time
+budget, label, *command = sys.argv[1:]
+# Linux can adopt and reap orphaned grandchildren after their process group is terminated.
+if sys.platform.startswith("linux"):
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
+        raise OSError(ctypes.get_errno(), "cannot supervise command descendants")
+process, pending_signal = None, 0
 def interrupted(signum, frame):
-    raise SystemExit(128 + signum)
+    global pending_signal
+    pending_signal = signum
+    if process is not None:
+        raise SystemExit(128 + signum)
 signal.signal(signal.SIGTERM, interrupted)
 signal.signal(signal.SIGINT, interrupted)
-process = subprocess.Popen(["bash", "-c", command], stdin=subprocess.DEVNULL, start_new_session=True)
 try:
+    if pending_signal:
+        sys.exit(128 + pending_signal)
+    process = subprocess.Popen(command, stdin=subprocess.DEVNULL, start_new_session=True)
+    if pending_signal:
+        sys.exit(128 + pending_signal)
     try:
         result = process.wait(timeout=int(budget))
     except subprocess.TimeoutExpired:
-        print("conformance: suite exceeded its time budget", file=sys.stderr)
+        print(f"conformance: {label} exceeded its time budget", file=sys.stderr)
         result = 124
     sys.exit(result)
 finally:
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
+    # A second cancellation cannot interrupt descendant cleanup.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    if process is not None:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         process.wait(timeout=1)
-    except subprocess.TimeoutExpired:
-        pass
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    process.wait()
+        deadline = time.monotonic() + 1
+        while True:
+            try:
+                child, _ = os.waitpid(-process.pid, os.WNOHANG)
+            except ChildProcessError:
+                break
+            if child:
+                continue
+            if time.monotonic() >= deadline:
+                print("conformance: command descendants could not be reaped", file=sys.stderr)
+                sys.exit(2)
+            time.sleep(0.01)
 PYTIMEOUT
+}
+
+run_suite() {
+  run_bounded "$SUITE_TIMEOUT" suite bash -c "$1"
 }
 
 # Bind a completed generation to this invocation, its exact control inputs and verdict bytes.
@@ -274,6 +308,10 @@ SUITE_TIMEOUT="${CONFORMANCE_TIMEOUT_SECONDS-1800}"
 [[ "$SUITE_TIMEOUT" =~ ^[1-9][0-9]{0,4}$ ]] && [ "$SUITE_TIMEOUT" -le 86400 ] \
   || { say "CONFORMANCE_TIMEOUT_SECONDS must be an integer from 1 to 86400"; exit 2; }
 
+FETCH_TIMEOUT="${CONFORMANCE_FETCH_TIMEOUT_SECONDS-300}"
+[[ "$FETCH_TIMEOUT" =~ ^[1-9][0-9]{0,3}$ ]] && [ "$FETCH_TIMEOUT" -le 3600 ] \
+  || { say "CONFORMANCE_FETCH_TIMEOUT_SECONDS must be an integer from 1 to 3600"; exit 2; }
+
 [ -f "$LIST" ] || { say "$LIST is missing"; exit 2; }
 if [ ! -s "$LIST" ] || ! grep -qvE '^[[:space:]]*(#|$)' "$LIST"; then
   say "this repo lists no suites ($LIST); nothing to judge"
@@ -361,7 +399,7 @@ else
   export BUSBAR_CHECKOUT="$W/busbar"
   mkdir -p "$BUSBAR_CHECKOUT" && git -C "$BUSBAR_CHECKOUT" init -q \
   && git -C "$BUSBAR_CHECKOUT" remote add origin https://github.com/GetBusbar/busbar.git \
-  && git -C "$BUSBAR_CHECKOUT" fetch -q --depth 1 --no-tags origin "$pin" \
+  && run_bounded "$FETCH_TIMEOUT" "core fetch" git -C "$BUSBAR_CHECKOUT" fetch -q --depth 1 --no-tags origin "$pin" \
   && git -C "$BUSBAR_CHECKOUT" -c advice.detachedHead=false checkout -q FETCH_HEAD \
   || { say "busbar $pin could not be fetched"; exit 2; }
 fi
