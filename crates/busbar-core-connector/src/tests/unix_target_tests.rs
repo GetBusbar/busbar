@@ -3,6 +3,8 @@
 
 //! UNIX-DOMAIN TARGETS (unix-socket URLs keep
 
+#![cfg(unix)]
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;

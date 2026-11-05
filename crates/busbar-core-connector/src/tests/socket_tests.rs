@@ -11,5 +11,6 @@ fn a_dialled_socket_has_1_5_5_s_options() {
     let r = socket2::SockRef::from(&s);
     assert!(r.tcp_nodelay().expect("nodelay"));
     assert!(r.keepalive().expect("keepalive"));
+    #[cfg(unix)]
     assert_eq!(r.tcp_keepalive_time().expect("its time"), KEEPALIVE_IDLE);
 }

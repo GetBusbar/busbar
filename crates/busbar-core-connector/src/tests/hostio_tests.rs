@@ -8,6 +8,7 @@ use std::task::Poll;
 
 use busbar_contract::abi::host::io::{DIR_READ, DIR_WRITE};
 use busbar_contract::abi::mechanism::ticket::Ticket;
+#[cfg(unix)]
 use busbar_contract::conn::Program;
 use busbar_contract::io_host::{IoHost, IoRefusal, Spawn};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -18,6 +19,7 @@ use super::*;
 
 const OWNER: u64 = 1;
 
+#[cfg(unix)]
 #[test]
 fn a_manually_constructed_program_cannot_bypass_the_working_directory_guard() {
     worker().block_on(async {
@@ -52,6 +54,7 @@ fn a_manually_constructed_program_cannot_bypass_the_working_directory_guard() {
     });
 }
 
+#[cfg(unix)]
 #[test]
 fn replacing_a_ticket_grant_does_not_lend_the_new_suppliers_program_to_the_old_owner() {
     worker().block_on(async {
@@ -76,6 +79,7 @@ fn replacing_a_ticket_grant_does_not_lend_the_new_suppliers_program_to_the_old_o
     });
 }
 
+#[cfg(unix)]
 #[test]
 fn an_omitted_program_directory_inherits_and_a_missing_directory_spawns_nothing() {
     worker().block_on(async {
@@ -181,6 +185,7 @@ fn an_omitted_program_directory_inherits_and_a_missing_directory_spawns_nothing(
     });
 }
 
+#[cfg(unix)]
 #[test]
 fn an_admitted_program_runs_in_its_configured_working_directory() {
     worker().block_on(async {
@@ -346,6 +351,7 @@ fn an_admitted_dial_moves_bytes_both_ways_and_a_handle_is_its_makers_alone() {
     });
 }
 
+#[cfg(unix)]
 #[test]
 fn an_admitted_program_is_spawned_bare_and_killed_with_its_handle() {
     worker().block_on(async {
@@ -388,6 +394,7 @@ fn an_admitted_program_is_spawned_bare_and_killed_with_its_handle() {
 }
 
 /// A program's own exit is answered by ends while a descendant holds its output.
+#[cfg(unix)]
 #[test]
 fn a_programs_own_exit_is_answered_by_ends_while_a_descendant_holds_its_output() {
     worker().block_on(async {
@@ -455,11 +462,13 @@ fn a_programs_own_exit_is_answered_by_ends_while_a_descendant_holds_its_output()
 }
 
 /// The config-time proof the cells' declarations hold.
+#[cfg(unix)]
 fn scope() -> busbar_contract::config_time::ConfigScope {
     busbar_contract::config_time::ConfigScope::config_time()
 }
 
 /// Spawn the admitted `/usr/bin/env` on `t` and read its whole output, sorted.
+#[cfg(unix)]
 async fn env_lines(io: &HostIo, t: u32) -> Result<Vec<String>, IoRefusal> {
     let h = io.spawn(
         OWNER,
@@ -492,6 +501,7 @@ async fn env_lines(io: &HostIo, t: u32) -> Result<Vec<String>, IoRefusal> {
 }
 
 /// THE HELD ENVIRONMENT: the carrier hands the host's `io.spawn` the program's WRITTEN environment
+#[cfg(unix)]
 #[test]
 fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
     const VAR: &str = "BUSBAR_HOSTIO_SPAWN_SECRET";
@@ -551,6 +561,7 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
 }
 
 /// A SPAWN RESOLVES NOTHING. A spawn serves a request (a member's first lease, a respawn, a program
+#[cfg(unix)]
 #[test]
 fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_refresh() {
     const VAR: &str = "BUSBAR_HOSTIO_SPAWN_ROTATED";

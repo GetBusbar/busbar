@@ -774,47 +774,45 @@ contract, cosign-signed/attested identically, and promoted in the same release s
 
 ## Running on Windows
 
-`x86_64-pc-windows-msvc` is a published release target (`busbar-x86_64-pc-windows-msvc.zip`), and
-CI builds, lints and tests the workspace on `windows-latest`. Busbar runs there. Five behaviours
-nevertheless **differ from unix**, and each one is a property an operator may have read as
-cross-platform. They are listed here rather than left to be discovered, because in every case the
-unix documentation states a guarantee that Windows does not carry.
+`x86_64-pc-windows-msvc` is a release target (`busbar-x86_64-pc-windows-msvc.zip`). The retained
+1.6.0 development evidence below comes from an actual Windows host; it is not final release or
+whole-workspace qualification. Account for these platform differences:
 
 | Area | On unix | On Windows |
 |---|---|---|
-| **Secret files** (config overlay, signing key) | Created `0600` at open — never briefly world-readable | **No mode bits.** The file inherits the ACL of the directory holding it. The overlay can carry credentials verbatim (e.g. a `postgres://user:pass@host/db` in `store.settings.url`), so its confidentiality is exactly the ACL you set on the config directory. **Set that ACL yourself; nothing in busbar narrows it.** |
+| **Operator-supplied config and secret files** (`config.yaml`, `file:` references) | Restrict access with file and directory permissions | Restrict access with filesystem ACLs; Unix mode bits do not apply. Runtime config overlays remain Store-owned, not a separate file in the config directory. |
 | **Plugin staging** (`docs/plugins.md`) | Per-process staging dir `0700`, file `0600`; boot sweep removes staging left by a crashed prior process | Directory and file inherit the `%TEMP%` ACL — per-user in a default setup, but not the `0700` guarantee. The **boot sweep is a no-op**: it decides "is the prior pid dead" with `kill(pid, 0)`, which has no Windows implementation, so an abandoned staging directory accumulates per crash under `%TEMP%`. This costs disk, not integrity — a staged file is regenerated from the verified in-memory bytes on every load and is never trusted input. |
 | **Durable write** (`fsync` of the holding directory after a rename) | The directory entry is fsynced, so a publish survives power loss | **Not performed** — a directory cannot be opened for `fsync` on Windows and `FlushFileBuffers` on a directory handle is not the same barrier. File CONTENTS are still fsynced before the rename on every platform, so a power loss can lose the *rename* (old file, or no file) but never yields a torn one. |
 | **Orderly shutdown** | `SIGINT` and `SIGTERM` both drain in-flight requests | `SIGTERM` does not exist. Busbar handles `CTRL_C`, `CTRL_CLOSE` and `CTRL_SHUTDOWN`, which covers an interactive Ctrl+C, a closing console, `docker stop` on a Windows container, and machine shutdown. A `TerminateProcess` (Task Manager "End task", `taskkill /F`) is not interceptable by any process and does **not** drain. |
 | **Data-plane topology** (1.6.0) | Thread-per-core: `worker_threads` pinned single-threaded runtimes, each with its own `SO_REUSEPORT` listener on the data port (threads `busbar-core-N`); admin + background on a control thread | **Classic single work-stealing tokio runtime** with one listener — `SO_REUSEPORT` load distribution has no Windows equivalent. This is a compile-time platform shape, not a knob; `worker_threads` sizes that one runtime's pool. Same behaviour as pre-1.6.0, so nothing to migrate. |
 
-**`BUSBAR_CONFIG` is required on Windows.** The default config path is `/etc/busbar/config.yaml`,
-which on Windows is *drive-relative* and not a usable location. There is deliberately no second
-Windows default: a platform-dependent answer to "which file is my config" is the one silent
-divergence you never want, so the miss is a loud startup error naming the path it looked for. Set
-`BUSBAR_CONFIG=C:\ProgramData\busbar\config.yaml` (or wherever you keep it) and set that
-directory's ACL — see the secret-files row above.
+**Select an explicit config path on Windows.** The default `/etc/busbar/config.yaml` is not an
+absolute Windows path. Use `-c C:\ProgramData\busbar\config.yaml` or set `BUSBAR_CONFIG` to that
+location; the flag takes precedence. Restrict the file and directory ACLs — see the row above.
 
-**`transport: stdio` MCP servers on Windows.** Two differences, both consequences of the platform:
+**`transport: stdio` MCP servers on Windows.** Configure the child explicitly:
 
-- **`command:` cannot be spelled on Windows in 1.6.0.** The boot check that requires an absolute
-  `command:` tests the unix spelling (a leading `/`), so a drive-qualified `C:\path\to\server.exe`
-  or a UNC `\\host\share\server.exe` is refused at boot along with a bare name or a relative path.
-  Until the check learns the Windows spelling, a `transport: stdio` server cannot be configured on
-  Windows.
+- **`command:` must be absolute for the host platform.** The connector uses the platform's
+  `Path::is_absolute` check, so a drive-qualified `C:\path\to\server.exe` or absolute UNC path
+  is not refused merely for lacking a leading `/`. Bare names and relative paths remain refused;
+  Busbar does not select the executable through a shell or `PATH`. A configured working directory
+  must also be absolute.
 - **The child's environment is cleared**, and on Windows that is a bigger deal than on unix. Busbar
   never hands its own environment to an operator-configured child (it holds provider keys, store
-  credentials and admin tokens), so the child gets **only** what `env:` names. On unix an empty
-  environment is a working one. On Windows the OS itself reads `SystemRoot`/`windir` during DLL
-  resolution and Winsock startup, and interpreter-based servers (Node, Python — most of the
-  installed stdio ecosystem) also want `PATH`, `TEMP`/`TMP` and often `APPDATA`. **Name them
-  explicitly in `env:`** or the child may fail to start, or start and fail on its first socket.
+  credentials and admin tokens), so the child gets **only explicitly admitted environment values**,
+  including resolved configured references. Windows applications may need `SystemRoot`/`windir`,
+  `PATH`, `TEMP`/`TMP` or `APPDATA` for DLL loading, networking or interpreter support. **Name the
+  values your child requires explicitly in `env:`**; Busbar does not inherit them wholesale.
 
-**Not verified on a Windows host.** The stdio transport's spawn/pipe/teardown tests use `/bin/sh`
-fixture children and are `#[cfg(unix)]`, so they compile to nothing on the Windows CI job: that job
-is green while the spawn half is *unexecuted*. The same is true of the plugin-staging lifecycle
-tests. Treat the stdio and plugin-loading behaviour above as reasoned from the platform's
-documented semantics, not as observed. If you run either on Windows, report what you see.
+**Scoped native Windows development proof, 2026-11-05.** On Windows Server 2022 with Rust 1.98
+MSVC, six host-I/O cases passed: child binary-byte half-close and exit status, admitted environment
+and working directory, child reap/handle invalidation, listener accept/rearm/live bytes, refused
+connect wakeup, and explicit Unix-target refusal. The selected connector set passed 20 unique
+cases (21 executions), with scoped connector clippy clean; the assembled default-schema compile
+also passed on the earlier production overlay. These are retained interim source-bound results:
+final combined-source qualification remains pending. They do not certify every stdio server,
+interpreter, plugin-staging lifecycle or the final release. Windows Unix-domain socket targets
+remain explicitly refused.
 
 ## Troubleshooting
 

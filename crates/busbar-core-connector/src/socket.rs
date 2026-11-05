@@ -5,13 +5,15 @@
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+#[cfg(unix)]
 use std::os::fd::{AsFd, BorrowedFd};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::task::{Context, Poll};
 
 use socket2::{Domain, Protocol, Socket, Type};
 
-use crate::io::{Direction, Registered};
+use crate::io::{Direction, Registered, Source};
 
 /// The listen backlog of one acceptor's socket.
 const BACKLOG: i32 = 1024;
@@ -48,14 +50,17 @@ pub enum Sock {
     /// A TCP stream.
     Tcp(TcpStream),
     /// A unix-domain stream.
+    #[cfg(unix)]
     Unix(UnixStream),
 }
 
 /// The stream's own descriptor, lent for the borrow: what [`crate::io::register`] watches.
+#[cfg(unix)]
 impl AsFd for Sock {
     fn as_fd(&self) -> BorrowedFd<'_> {
         match self {
             Self::Tcp(s) => s.as_fd(),
+            #[cfg(unix)]
             Self::Unix(s) => s.as_fd(),
         }
     }
@@ -65,6 +70,7 @@ impl Read for &Sock {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self {
             Sock::Tcp(s) => (&*s).read(buf),
+            #[cfg(unix)]
             Sock::Unix(s) => (&*s).read(buf),
         }
     }
@@ -74,12 +80,14 @@ impl Write for &Sock {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match self {
             Sock::Tcp(s) => (&*s).write(buf),
+            #[cfg(unix)]
             Sock::Unix(s) => (&*s).write(buf),
         }
     }
     fn flush(&mut self) -> io::Result<()> {
         match self {
             Sock::Tcp(s) => (&*s).flush(),
+            #[cfg(unix)]
             Sock::Unix(s) => (&*s).flush(),
         }
     }
@@ -90,13 +98,14 @@ impl Sock {
     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
         match self {
             Self::Tcp(s) => s.shutdown(how),
+            #[cfg(unix)]
             Self::Unix(s) => s.shutdown(how),
         }
     }
 }
 
 /// A connecting stream socket whose connect [`poll_connected`] can settle.
-pub trait Connecting: AsFd {
+pub trait Connecting: Source {
     /// The socket's pending error (`SO_ERROR`).
     fn pending_error(&self) -> io::Result<Option<io::Error>>;
     /// `Ok` once connected; `NotConnected` while the connect is in flight.
@@ -116,18 +125,21 @@ impl Connecting for Sock {
     fn pending_error(&self) -> io::Result<Option<io::Error>> {
         match self {
             Self::Tcp(s) => s.take_error(),
+            #[cfg(unix)]
             Self::Unix(s) => s.take_error(),
         }
     }
     fn connected(&self) -> io::Result<()> {
         match self {
             Self::Tcp(s) => s.peer_addr().map(|_| ()),
+            #[cfg(unix)]
             Self::Unix(s) => s.peer_addr().map(|_| ()),
         }
     }
 }
 
 /// Begin a non-blocking connect to the unix-domain socket at `path`: the socket comes back at once,
+#[cfg(unix)]
 pub fn connect_unix(path: &str) -> io::Result<UnixStream> {
     let socket = Socket::new(Domain::UNIX, Type::STREAM, None)?;
     socket.set_nonblocking(true)?;
@@ -155,7 +167,13 @@ pub fn connect(addr: SocketAddr) -> io::Result<TcpStream> {
 }
 
 fn in_progress(e: &io::Error) -> bool {
-    e.kind() == io::ErrorKind::WouldBlock || e.raw_os_error() == Some(libc::EINPROGRESS)
+    if e.kind() == io::ErrorKind::WouldBlock {
+        return true;
+    }
+    #[cfg(unix)]
+    return e.raw_os_error() == Some(libc::EINPROGRESS);
+    #[cfg(windows)]
+    false
 }
 
 /// Whether the connect [`connect`] began has completed: Ready(Ok) connected, Ready(Err) refused,
@@ -163,17 +181,17 @@ pub fn poll_connected<T: Connecting>(
     sock: &Registered<T>,
     cx: &mut Context<'_>,
 ) -> Poll<io::Result<()>> {
-    loop {
-        let ready = std::task::ready!(sock.poll_ready(Direction::Write, cx))?;
-        if let Some(e) = sock.get_ref().pending_error()? {
-            return Poll::Ready(Err(e));
+    sock.poll_io(Direction::Write, cx, |socket| {
+        if let Some(error) = socket.pending_error()? {
+            return Err(error);
         }
-        match sock.get_ref().connected() {
-            Ok(()) => return Poll::Ready(Ok(())),
-            Err(e) if e.kind() == io::ErrorKind::NotConnected => ready.clear_ready(),
-            Err(e) => return Poll::Ready(Err(e)),
+        match socket.connected() {
+            Err(error) if error.kind() == io::ErrorKind::NotConnected => {
+                Err(io::ErrorKind::WouldBlock.into())
+            }
+            other => other,
         }
-    }
+    })
 }
 
 /// A non-blocking listener on `bind`, with address and port reuse: every acceptor (one per worker)

@@ -19,6 +19,36 @@ use busbar_contract::io_host::{Ends, IoHost, IoRefusal, IoResult, Spawn};
 use crate::io::{self as reactor, Direction, Registered};
 use crate::socket::{self, Sock};
 
+#[cfg(unix)]
+use tokio::net::unix::pipe::{Receiver as PipeReceiver, Sender as PipeSender};
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::NamedPipeServer as PipeReceiver;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::NamedPipeServer as PipeSender;
+#[cfg(windows)]
+#[path = "hostio/pipe_windows.rs"]
+mod pipe_windows;
+#[cfg(windows)]
+use pipe_windows::pipe_ends;
+
+/// Create child-facing handles and register the two host-facing pipe ends.
+#[cfg(unix)]
+fn pipe_ends() -> io::Result<(
+    std::process::Stdio,
+    PipeSender,
+    PipeReceiver,
+    std::process::Stdio,
+)> {
+    let (child_reads, host_writes) = std::io::pipe()?;
+    let (host_reads, child_writes) = std::io::pipe()?;
+    Ok((
+        child_reads.into(),
+        PipeSender::from_owned_fd(host_writes.into())?,
+        PipeReceiver::from_owned_fd(host_reads.into())?,
+        child_writes.into(),
+    ))
+}
+
 /// What the connector admitted for one op's ticket: the one thing that op may reach.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Admission {
@@ -53,8 +83,8 @@ struct Admitted {
 /// A spawned program: the child the handle owns and the host's ends of its two pipes.
 struct Pipes {
     child: Mutex<tokio::process::Child>,
-    stdin: Mutex<Option<tokio::net::unix::pipe::Sender>>,
-    stdout: tokio::net::unix::pipe::Receiver,
+    stdin: Mutex<Option<PipeSender>>,
+    stdout: PipeReceiver,
 }
 
 enum Kind {
@@ -321,6 +351,7 @@ impl HostIo {
         match entry.kind {
             Kind::Stream { sock, .. } => match sock.deregister() {
                 Sock::Tcp(s) => Some(s),
+                #[cfg(unix)]
                 Sock::Unix(_) => None,
             },
             _ => None,
@@ -380,6 +411,7 @@ impl HostIo {
 
     /// Begin a connect to `addr`: a unix-domain path or an `ip:port`.
     fn connect(addr: &str) -> Result<Sock, OpenFailure> {
+        #[cfg(unix)]
         if let Some(path) = socket::unix_path(addr) {
             return socket::connect_unix(path)
                 .map(Sock::Unix)
@@ -389,6 +421,12 @@ impl HostIo {
                     }
                     _ => OpenFailure::Failed(e.to_string()),
                 });
+        }
+        #[cfg(windows)]
+        if socket::unix_path(addr).is_some() {
+            return Err(OpenFailure::Failed(
+                "Unix-domain targets are unavailable on Windows".into(),
+            ));
         }
         let at: SocketAddr = addr.parse().map_err(|_| {
             OpenFailure::Refused(format!(
@@ -433,7 +471,7 @@ impl HostListener {
         cx: &mut Context<'_>,
     ) -> Poll<io::Result<(TcpStream, SocketAddr)>> {
         loop {
-            match std::task::ready!(self.sock.poll_io(Direction::Read, cx, TcpListener::accept)) {
+            match std::task::ready!(self.sock.poll_accept(cx)) {
                 Err(e)
                     if matches!(
                         e.kind(),
@@ -540,7 +578,7 @@ impl IoHost for HostIo {
         };
         let mut cx = Context::from_waker(waker);
         loop {
-            match l.poll_io(Direction::Read, &mut cx, TcpListener::accept) {
+            match l.poll_accept(&mut cx) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Ok((stream, peer))) => {
                     if stream.set_nonblocking(true).is_err() {
@@ -746,8 +784,7 @@ impl IoHost for HostIo {
             .env()
             .map_err(|why| IoRefusal::Refused(why.to_owned()))?;
 
-        let (child_reads, host_writes) = std::io::pipe().map_err(|e| failed(&e))?;
-        let (host_reads, child_writes) = std::io::pipe().map_err(|e| failed(&e))?;
+        let (child_reads, stdin, stdout, child_writes) = pipe_ends().map_err(|e| failed(&e))?;
 
         let seal = busbar_kernel::seal::lend();
         let mut command = tokio::process::Command::new(spawn.program);
@@ -767,10 +804,6 @@ impl IoHost for HostIo {
             .stdout(child_writes)
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| failed(&e))?;
-        let stdin = tokio::net::unix::pipe::Sender::from_owned_fd(host_writes.into())
-            .map_err(|e| failed(&e))?;
-        let stdout = tokio::net::unix::pipe::Receiver::from_owned_fd(host_reads.into())
             .map_err(|e| failed(&e))?;
         let id = self.handles.make(
             owner,
@@ -793,6 +826,7 @@ impl IoHost for HostIo {
                     peer: s.peer_addr().map_err(|err| failed(&err))?.to_string(),
                     exit: None,
                 }),
+                #[cfg(unix)]
                 Sock::Unix(_) => Ok(Ends::default()),
             },
             Kind::Listener(l) => Ok(Ends {
@@ -815,6 +849,7 @@ impl IoHost for HostIo {
 }
 
 /// A program's exit as `io.ends` answers it: its code, or `128` plus the signal that ended it.
+#[cfg(unix)]
 fn exit_code(status: std::process::ExitStatus) -> u32 {
     use std::os::unix::process::ExitStatusExt;
     match (status.code(), status.signal()) {
@@ -822,6 +857,14 @@ fn exit_code(status: std::process::ExitStatus) -> u32 {
         (None, Some(signal)) => 128 + signal as u32,
         (None, None) => 0,
     }
+}
+
+/// Windows process exit codes preserve all 32 bits, including exception status codes.
+#[cfg(windows)]
+fn exit_code(status: std::process::ExitStatus) -> u32 {
+    status
+        .code()
+        .expect("Windows process status has an exit code") as u32
 }
 
 /// One taken place among the lookups in flight; dropping it gives the place back.
@@ -848,3 +891,7 @@ impl Drop for LookupPlace {
 #[cfg(test)]
 #[path = "tests/hostio_tests.rs"]
 mod tests;
+
+#[cfg(all(test, windows))]
+#[path = "tests/hostio_windows_tests.rs"]
+mod windows_tests;
