@@ -352,9 +352,6 @@ pub struct HookView {
     pub user: &'static str,
     /// Rewrite/reject ordering key (transform-chain order + reject tie-break).
     pub priority: u16,
-    /// The sole effective stage when this hook selects exactly one, otherwise `null`.
-    /// This single-stage projection is retained for clients; `fires_at` always exposes the full set.
-    pub at: Option<&'static str>,
     /// Gate fallback on timeout/error, a CLOSED, unambiguous string union: one of the
     /// reserved terminals (`"weighted"` | `"reject"` | `"first"` | `"nothing"`) or the NAME of the
     /// fallback hook the chain continues through. Unambiguous by construction: the terminal words

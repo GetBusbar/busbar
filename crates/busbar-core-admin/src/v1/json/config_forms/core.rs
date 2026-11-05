@@ -71,7 +71,6 @@ pub(super) fn definitions(defs: &mut Map<String, Value>) {
         "prompt":{"enum":["no","ro","rw"],"default":"no"},"user":{"enum":["no","ro"],"default":"no"},
         "priority":{"type":"integer","minimum":0,"maximum":65535,"x-busbar-integer-token":"unsigned","default":0},
         "on_empty":nullable(json!({"enum":["reject","weighted","first"]})),
-        "at":nullable(json!({"enum":["request","candidate","routing","response"]})),
         "settings":{"type":"object","default":{},"x-busbar-module-settings":true},
         "signals":{"type":"array","items":{"enum":busbar_contract::signal::Signal::ALL.iter().map(|signal|signal.name()).collect::<Vec<_>>()},"default":[]},
         "global":{"type":"boolean","default":false},"default":{"type":"boolean","default":false},
@@ -80,7 +79,7 @@ pub(super) fn definitions(defs: &mut Map<String, Value>) {
     runtime["properties"]["timeout_ms"]["default"] = json!(1);
     runtime["required"] = json!(["kind", "module"]);
     runtime["description"] = json!(
-        "Admin hook POST/PUT input. A single at stage is normalized into phase before storage; a non-empty phase takes precedence. module is required. This differs from the deploy HookDefinition wrapper. Settings may contain hidden values and must never be reconstructed from HookView."
+        "Admin hook POST/PUT input. module and phase are the canonical names; use phase:[stage] for a single stage. This differs from the deploy HookDefinition wrapper. Settings may contain hidden values and must never be reconstructed from HookView."
     );
     runtime["x-busbar-runtime-validation"] = json!([
         "module resolves to admitted hook",
@@ -99,7 +98,7 @@ pub(super) fn definitions(defs: &mut Map<String, Value>) {
     }));
     authored["required"] = json!(["module"]);
     authored["description"] = json!(
-        "Actual top-level hooks named-definition input (HookDefCfg). Admin POST/PUT consumes Hook instead. default, signals, global and single-stage at are accepted by admin writes, not by this deploy wrapper."
+        "Actual top-level hooks named-definition input (HookDefCfg). Admin POST/PUT consumes Hook instead. default, signals and global are accepted by admin writes, not by this deploy wrapper."
     );
     authored["x-busbar-runtime-validation"] = json!([
         "module resolution and settings after secret resolution",
@@ -215,8 +214,7 @@ mod tests {
         ] {
             assert_eq!(
                 runtime.is_valid(&case),
-                serde_json::from_value::<super::super::super::hook_input::HookInput>(case.clone())
-                    .is_ok(),
+                serde_json::from_value::<busbar_kernel::config::HookCfg>(case.clone()).is_ok(),
                 "runtime {case}"
             );
             assert_eq!(

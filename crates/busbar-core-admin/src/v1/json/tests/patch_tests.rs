@@ -174,3 +174,33 @@ fn group_budget_readback_preserves_all_authored_policy_and_exact_u64_wire() {
     assert_eq!(template[0].admission, Some("exact"));
     assert_eq!(template[0].on_exhaustion, Some("finish-unit"));
 }
+
+#[test]
+fn hook_admin_writes_require_canonical_module_and_phase() {
+    let canonical = serde_json::json!({"kind":"tap","module":"observer","phase":["response"]});
+    let register: super::RegisterHookReq = serde_json::from_value(serde_json::json!({
+        "name":"observer", "config":canonical,
+    }))
+    .unwrap();
+    assert_eq!(
+        register.config.resolved_stages(),
+        vec![busbar_kernel::config::HookStage::Response]
+    );
+    for retired in [
+        serde_json::json!({"kind":"tap","module":"observer","at":"response"}),
+        serde_json::json!({"kind":"tap","plugin":"observer","phase":["response"]}),
+    ] {
+        assert!(
+            serde_json::from_value::<super::RegisterHookReq>(serde_json::json!({
+                "name":"observer", "config":retired,
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<super::PutHookReq>(serde_json::json!({
+                "config":retired,
+            }))
+            .is_err()
+        );
+    }
+}

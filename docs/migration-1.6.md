@@ -247,24 +247,23 @@ needs to allow for the longer one.
 
 ## 5. Retired 1.5.x spellings, rewritten for you
 
-Four spellings that 1.5.x accepted as read-only back-compat, and that were never the documented
-form, are still accepted in 1.6.0, so no config, client or persisted state breaks. Prefer the
-documented form in anything new.
+Hook configuration and admin writes use one canonical spelling. Convert existing configuration
+once and update clients that submit or read retired fields.
 
-- **Hook `plugin:` → `module:`.** The `plugin:` key on a hook definition is a read-only alias of
-  `module:` (the documented spelling since 1.5.3). It is still accepted in config and in admin API
-  `POST`/`PUT /api/v1/admin/hooks` bodies. `busbar --migrate-config` rewrites it, and a persisted
-  config overlay that still spells it `plugin:` is rewritten at boot.
-- **Hook `at: <stage>` → `phase: [<stage>]`.** The single-stage tap key is still accepted, in config
-  and in admin bodies, and behaves as it did in 1.5.5. The documented form is the `phase:` list.
-  `busbar --migrate-config` rewrites it (behaviour-preserving) and a persisted overlay is rewritten
-  at boot. An omitted `phase:` still means the four core stages.
+- **Hook `plugin:` → `module:`.** Current configuration and `POST`/`PUT /api/v1/admin/hooks`
+  bodies require `module:`. `busbar --migrate-config` rewrites old YAML; explicit legacy overlay
+  import converts the old persisted field before committing it to the Store.
+- **Hook `at: <stage>` → `phase: [<stage>]`.** Current configuration and admin writes require the
+  phase list. One-shot YAML and overlay migration preserve the selected stage and an existing
+  non-empty phase list. For example, replace `at: response` with `phase: [response]`. An omitted
+  phase list still selects the four core stages. Ordinary Store reads do not rewrite retired keys.
 - **`persist:` on `PUT /api/v1/admin/config/settings`** is accepted and ignored, as it was since
   1.5.3 (config mutation is durable by default). It must still be a boolean; any other value gets a
   400. Drop the field when convenient; it never changed the outcome.
-- **The `at` field on `GET /api/v1/admin/hooks[/{name}]`** is still served. Beside it are
-  `fires_at` (the resolved stage set, in pipeline order) and `phase` (the literal config echo),
-  which are what to read in new tooling.
+- **Hook readback:** `GET /api/v1/admin/hooks[/{name}]` and hook-write responses no longer include
+  `at`. Read `fires_at` for the effective stages and `phase` for the configured list. Update clients
+  and dashboards that previously read `at`.
+
 
 ---
 

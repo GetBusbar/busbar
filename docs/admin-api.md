@@ -405,19 +405,16 @@ operation exists elsewhere.
 | `GET /plugins?type=auth\|hooks\|store\|secret\|export\|plane\|transport` | Catalog for one required type. `hooks` retains its configured hook/ranking summaries and adds installed hook artifacts; all seven types include their applicable linked or installed rows. Linked stores come from this distribution, without a hard-coded default. Artifact rows include `file`, optional `archive_sha256`, `version`, `publisher`, `interface_version`, validity/trust, and `schema_url`/`schema_error`. The archive digest identifies the complete current disk file; it does not assert that those bytes are already loaded. `has_schema` tracks a published schema reference, including a malformed legacy schema reported separately. Catalog inspection never executes a dropped artifact. The canonical Statement schema takes precedence over the legacy manifest field |
 | `POST /plugins/inspect` | STATELESS preview of a candidate plugin tarball (`read-only` scope, with its own `plugin-inspect` rate bucket, see above). Body: same shape as `POST /plugins` (`{file, tarball_b64}`; `file` unused, since nothing is written). Verifies the signature, parses the manifest, and returns the SAME response shape as `GET /plugins/{file}/schema` plus `name`/`version`: `{name, version, kind, schema, schema_error, trust, source: "manifest", restart_required_default}`. `trust` may be `"rejected"`. An untrusted candidate is REPORTED, not refused (the point is previewing what a not-yet-trusted plugin would need without ever installing or executing it). Never writes to `plugins.dir`, never conflict-checks against the installed set. Call this before `POST /plugins` to preview, or after downloading a candidate from a third-party release page before deciding whether to trust it |
 
-**Which stages a hook fires at: read `fires_at`, not `at`.** A hook's stage scoping has two config
-spellings and one meaning, so the read carries all three fields:
+**Hook stages:** write `phase: [response]` to select one stage, or list several stages.
+Admin hook writes require `module` and `phase`; retired `plugin` and `at` keys are refused.
 
-| Field | What it is |
+| Field | Meaning |
 |---|---|
-| `at` | The LEGACY single-valued tap stage. **`null` for essentially every hook a running deployment has**: a hook defined in the current top-level `hooks:` map never carries `at:`, and `--migrate-config` rewrites a legacy `at:` into `phase:`. `null` here does **not** mean "a gate" and does **not** mean "unscoped" |
-| `phase` | The `phase:` list exactly as configured, `[]` when unset. A literal echo for diffing what you wrote against what Busbar parsed. Ambiguous alone: `[]` means "fall back", and what it falls back TO depends on `at` |
-| `fires_at` | **The answer.** The resolved stage set, in pipeline order, never empty. Computed through the same predicate the firing path uses, so it cannot disagree with what Busbar actually does |
+| `phase` | The configured stage list. An empty list selects the four core stages. |
+| `fires_at` | The effective stage set in pipeline order, computed by the runtime firing predicate. |
 
-The precedence `fires_at` resolves, frozen: a non-empty `phase:` wins outright; otherwise the legacy
-single `at:`; otherwise the hook fires at the four core stages (`request`, `candidate`, `routing`,
-`response`) **and only those**, never "every stage that will ever exist", so a stage added by a later
-release can never retroactively widen a hook you already deployed.
+Hook readback no longer includes `at`. A non-empty phase list selects exactly those stages;
+an empty list selects `request`, `candidate`, `routing`, and `response`.
 
 No hook read ever includes a secret. A hook's `settings:` bag is a `SecretRef` carrier by design
 (Busbar resolves it before every `configure` push) and an operator may also write a literal

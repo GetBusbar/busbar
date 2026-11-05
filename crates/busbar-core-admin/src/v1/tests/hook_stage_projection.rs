@@ -14,11 +14,7 @@ fn a_phase_scoped_hook_reads_back_its_stages() {
     let view = project_hook_view("audit", &cfg, &[]);
 
     assert_eq!(view.phase, vec!["response"], "the `phase:` list, echoed");
-    assert_eq!(
-        view.at,
-        Some("response"),
-        "single-stage clients retain their projection"
-    );
+    assert!(serde_json::to_value(&view).unwrap().get("at").is_none());
     assert_eq!(
         view.fires_at,
         vec!["response"],
@@ -31,10 +27,6 @@ fn an_unscoped_hook_resolves_to_the_four_core_stages() {
     let view = project_hook_view("unscoped", &hook(HookKind::Tap, false), &[]);
 
     assert!(view.phase.is_empty());
-    assert_eq!(
-        view.at, None,
-        "several stages have no single-stage projection"
-    );
     assert_eq!(
         view.fires_at,
         CORE_HOOK_PHASES

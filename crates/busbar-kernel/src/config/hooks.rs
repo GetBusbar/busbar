@@ -359,7 +359,7 @@ pub struct HookCfg {
     #[serde(default)]
     pub groups: Vec<String>,
     /// The pipeline stages this hook observes. An empty list selects the fixed core stages.
-    /// Migration and admin input normalize a single-stage selection into this list.
+    /// One-shot migration normalizes an old single-stage selection into this list.
     #[serde(default)]
     pub phase: Vec<HookStage>,
 }

@@ -6,6 +6,10 @@ All notable changes to Busbar are documented here. The format is based on
 
 ## [1.6.0], unreleased
 
+- **Hook API change:** configuration and admin writes require `module` and `phase`; use
+  `phase: [response]` for a single stage. Hook responses omit `at`; clients read `fires_at`.
+  One-shot configuration and overlay migration convert old `plugin`/`at` fields.
+
 - Cross-dialect Bedrock document requests use a neutral attachment label when the source filename is not a valid native document name.
 - Cross-dialect Anthropic answers omit unrepresentable citations with a named warning and audit record instead of inventing source indices.
 - Cross-dialect Bedrock citations use source web locations without reinterpreting answer offsets as source-document coordinates.
@@ -571,14 +575,9 @@ minted secret carries over.
   itemized counts, busbar logs a WARN naming the gap and ledgers it under the open class
   `unitemized_tokens`, which the rate card prices (a pre-release build billed that gap as output). A translated response or stream reports the same
   itemized counts it ledgers. **Migration:** none.
-- 1.6.0 Changed: the hook view's `at` field is joined by `fires_at`. Every hook object served by
-  `GET /api/v1/admin/hooks[/{name}]`, and the follow-up read of a hook write, gains `fires_at` (the
-  resolved stage set), `groups` and `phase` beside `at`, which is still served exactly as in 1.5.5:
-  the hook's legacy `at:` key, or `null` for a hook written with `phase:`.
-  **Migration:** `busbar --migrate-config` rewrites the single-stage tap `at: <stage>` config key
-  for you, and a persisted overlay auto-migrates it at boot; a client or dashboard that wants a
-  hook's stages reads `fires_at`, since `at` is `null` once the key is migrated. See
-  [the 1.6.0 migration guide](docs/migration-1.6.md).
+- Hook views expose `fires_at` (effective stages), `phase` (configured stages), and `groups`.
+  The retired `at` field is removed. See [the migration guide](docs/migration-1.6.md) for client
+  changes and one-shot conversion of old hook definitions.
 - 1.6.0 Improvements: rotate refuses an overlong key id like its siblings. `POST
   /api/v1/admin/keys/{id}/rotate` was the one `/keys/{id}` handler that never enforced the 64-byte
   id bound the read/patch/delete/usage/revoke handlers already share, so an overlong id fell
@@ -671,13 +670,10 @@ minted secret carries over.
   insert `none` for you: whether an upstream needs a credential is a fact about your deployment,
   not something a migration can read off the config file.
 
-Four 1.5.x spellings that were never the documented form are still accepted, and the config ones
-are rewritten for you: the hook `plugin:` key (the read-only alias of `module:`) and the
-single-stage tap `at: <stage>` key are accepted in config and in admin hook bodies, rewritten by
-`busbar --migrate-config` and auto-migrated in a persisted overlay at boot; the `persist:` field on
-`PUT /api/v1/admin/config/settings` is still accepted and ignored (a non-boolean value is a `400`);
-and the `at` field on the hook view is joined by `fires_at`, which carries the resolved stages
-(`at` itself is still served, as in 1.5.5). Details in [the 1.6.0 migration guide](docs/migration-1.6.md).
+Hook `plugin:` and `at:` spellings are converted once by configuration/overlay migration.
+Current configuration and admin writes use `module:` and `phase:`, and clients read `fires_at`.
+The optional boolean `persist:` on `PUT /api/v1/admin/config/settings` remains accepted and ignored.
+Details are in [the 1.6.0 migration guide](docs/migration-1.6.md).
 - A hook with `on_error: reject` whose transform fails answers 503 (fail closed, as the docs always
   said); 1.5.5 passed the request through.
 - 1.6.0 Breaking: a published 1.5.5 JSON-contract plugin no longer loads; boot refuses it with a
