@@ -15,6 +15,10 @@ use super::op::{Checkout, Op, Step};
 use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::conn::{ConnFailure, Host, ProcessId};
 
+#[path = "wire_input.rs"]
+mod input;
+pub use input::{Drain, Input};
+
 /// How much one read asks the connector for.
 pub const READ_CHUNK: usize = 16 * 1024;
 
@@ -111,7 +115,7 @@ struct State {
     /// Bytes the body wrote that the connector has not taken yet.
     out: Output,
     /// Bytes read that the body has not consumed yet.
-    input: Vec<u8>,
+    input: Input,
     /// What [`Wire::os_user`] read off the host.
     identity: Option<ProcessId>,
     /// The pending write carries a credential that goes out only secured: the host connector
@@ -278,8 +282,10 @@ impl Wire {
         .map(|_| ())
     }
 
-    /// The bytes read and not yet consumed, to parse from and drain (a codec consumes a whole
-    pub fn input<R>(&self, f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
+    /// Borrow unread bytes for parsing and consumption. [`Input`] keeps erasure under its owner:
+    /// clearing, draining and growth cannot retire an unwiped vector allocation. Bytes yielded by
+    /// a drain become the caller's responsibility; a dropped drain erases its unconsumed bytes.
+    pub fn input<R>(&self, f: impl FnOnce(&mut Input) -> R) -> R {
         f(&mut self.state().input)
     }
 }
@@ -487,28 +493,29 @@ impl Drop for Lease {
 /// keeps it across a PENDING answer, and gives it back when it answers. The list holds at most as
 /// many as ran at once, and never more than [`READ_BUFS_KEPT`].
 #[derive(Debug, Default)]
-pub(crate) struct ReadBufs(Mutex<Vec<Vec<u8>>>);
+pub(crate) struct ReadBufs(Mutex<Vec<Zeroizing<Vec<u8>>>>);
 
 /// The most read buffers an instance keeps between ops.
 const READ_BUFS_KEPT: usize = 64;
 
 impl ReadBufs {
     /// A kept buffer, or a new one when none is free.
-    fn take(&self) -> Vec<u8> {
+    fn take(&self) -> Zeroizing<Vec<u8>> {
         self.0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .pop()
-            .unwrap_or_else(|| vec![0_u8; READ_CHUNK])
+            .unwrap_or_else(Self::fresh)
     }
 
     /// A buffer for an op with no instance to keep it (a detached op).
-    fn fresh() -> Vec<u8> {
-        vec![0_u8; READ_CHUNK]
+    fn fresh() -> Zeroizing<Vec<u8>> {
+        Zeroizing::new(vec![0_u8; READ_CHUNK])
     }
 
     /// Keep `buf` for the next op (dropped past [`READ_BUFS_KEPT`]).
-    fn give(&self, buf: Vec<u8>) {
+    fn give(&self, mut buf: Zeroizing<Vec<u8>>) {
+        buf.as_mut_slice().zeroize();
         let mut kept = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         if kept.len() < READ_BUFS_KEPT {
             kept.push(buf);
@@ -525,7 +532,7 @@ struct Running<T> {
     /// The op's claim on one of the set's connections.
     lease: Mutex<Option<Lease>>,
     /// The read buffer the op took on its first read, kept across a PENDING answer.
-    buf: Mutex<Option<Vec<u8>>>,
+    buf: Mutex<Option<Zeroizing<Vec<u8>>>>,
 }
 
 impl<T> Running<T> {
@@ -551,7 +558,11 @@ impl<T> Running<T> {
 
 impl<T> Drop for Running<T> {
     fn drop(&mut self) {
-        self.wire.state().out.clear();
+        {
+            let mut state = self.wire.state();
+            state.input.clear();
+            state.out.clear();
+        }
         self.unwait();
     }
 }
@@ -1070,17 +1081,24 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
                 }
             }
         },
-        Ask::Read => match services.read(stream, buf) {
-            Poll::Ready(Ok(n)) => {
-                wire.state().input.extend_from_slice(&buf[..n]);
-                Served::Answer(Ok(n))
-            }
-            Poll::Ready(Err(e)) => Served::Answer(Err(e)),
-            Poll::Pending => Served::Pending {
-                wake_at_ns: 0,
-                replay: true,
-            },
-        },
+        Ask::Read => {
+            let answer = services.read(stream, buf);
+            #[cfg(test)]
+            crate::abi::sdk::secret_bytes::watch(buf);
+            let served = match answer {
+                Poll::Ready(Ok(n)) => {
+                    wire.state().input.extend_from_slice(&buf[..n]);
+                    Served::Answer(Ok(n))
+                }
+                Poll::Ready(Err(e)) => Served::Answer(Err(e)),
+                Poll::Pending => Served::Pending {
+                    wake_at_ns: 0,
+                    replay: true,
+                },
+            };
+            buf.zeroize();
+            served
+        }
         Ask::Upgrade { name, verify_off } => match services.upgrade_secure_flagged(
             stream,
             name.as_deref(),

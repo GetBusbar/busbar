@@ -402,6 +402,8 @@ impl CredentialMeta {
 /// response. `secret` carries the versioned envelope format `"v1:<scheme>:<payload>"` (e.g.
 /// `"v1:plain:…"` today; a future `"v1:aead:<kid>:<nonce>:<ct>"` for at-rest encryption needs no
 /// schema change, just a new scheme tag) — never LOG it raw.
+/// The owned secret allocation is erased on drop, including hydrated rows and decoded mint
+/// requests. This does not erase copies made by a caller or a serializer's internal scratch.
 ///
 /// DOES carry `Serialize`/`Deserialize` — this is the successor to `AwsCredential` (which also
 /// carried the plaintext secret and also derived serde), not to the old `AwsKeyEntry` (a purely
@@ -417,6 +419,12 @@ pub struct CredentialSecret {
     /// SECRET-EQUIVALENT for a `Recoverable`-form credential — never log it. Format
     /// `"v1:<scheme>:<payload>"`.
     pub secret: String,
+}
+
+impl Drop for CredentialSecret {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.secret);
+    }
 }
 
 impl CredentialSecret {

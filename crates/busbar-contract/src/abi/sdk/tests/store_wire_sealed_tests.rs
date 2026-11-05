@@ -46,11 +46,18 @@ enum Write {
     Fail,
 }
 
+enum Read {
+    Reply(&'static [u8]),
+    Pending,
+    Fail,
+}
+
 #[derive(Default)]
 struct Script {
     security: Security,
     facts: usize,
     writes: VecDeque<Write>,
+    reads: VecDeque<Read>,
     offered: Vec<Vec<u8>>,
     accepted: Vec<u8>,
     established: u64,
@@ -150,6 +157,33 @@ extern "C" fn close(_: HostCtx, _: *const c_void, _: *mut ServiceOut) -> RawOutc
     RawOutcome::of(Outcome::Ready)
 }
 
+extern "C" fn read(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the SDK lends the initialized writable read buffer and result for this call.
+    let buf = unsafe {
+        let input = &*input.cast::<IoIn>();
+        std::slice::from_raw_parts_mut(input.buf, input.len)
+    };
+    let outcome = match script(|s| s.reads.pop_front().expect("scripted read")) {
+        Read::Reply(bytes) => {
+            assert!(bytes.len() <= buf.len());
+            buf[..bytes.len()].copy_from_slice(bytes);
+            // SAFETY: the SDK lends the writable result for this call.
+            unsafe { (*out).len = bytes.len() as u64 };
+            RawOutcome::of(Outcome::Ready)
+        }
+        Read::Pending => {
+            buf[..CANARY.len()].copy_from_slice(CANARY);
+            RawOutcome::of(Outcome::Pending)
+        }
+        Read::Fail => {
+            buf[..CANARY.len()].copy_from_slice(CANARY);
+            RawOutcome::of(Outcome::Failed)
+        }
+    };
+    watch(buf);
+    outcome
+}
+
 fn make_host(security: Security, has_facts: bool, writes: impl IntoIterator<Item = Write>) -> Host {
     static CONNS: OnceLock<ConnectorSlots> = OnceLock::new();
     static NO_FACTS: OnceLock<ConnectorSlots> = OnceLock::new();
@@ -162,6 +196,7 @@ fn make_host(security: Security, has_facts: bool, writes: impl IntoIterator<Item
         slots.facts = Some(facts);
         slots.upgrade_secure = Some(upgrade);
         slots.write = Some(write);
+        slots.read = Some(read);
         slots.close = Some(close);
         slots
     };
@@ -249,6 +284,185 @@ fn finish_probe(probe: InitializedPayloadProbe, minimum: usize) {
             assert_eq!(payload.read_error, Some(std::io::ErrorKind::Unsupported));
             assert!(!payload.complete_read);
         }
+    }
+}
+
+#[test]
+fn credential_record_originals_and_clones_wipe_when_their_owners_drop() {
+    let _serial = serial();
+    let meta = crate::records::CredentialMeta {
+        id: "cred".into(),
+        key_id: "key".into(),
+        kind: "sigv4".into(),
+        slot: 0,
+        public_id: "public".into(),
+        secret_form: crate::records::SecretForm::Recoverable,
+        created_at: 0,
+        updated_at: 0,
+        expires_at: None,
+        revoked_at: None,
+        revoke_reason: None,
+        revision: 1,
+    };
+    let original = crate::records::CredentialSecret {
+        meta,
+        secret: "v1:plain:owned-record-canary".into(),
+    };
+    let encoded = serde_json::to_vec(&original).unwrap();
+    let decoded: crate::records::CredentialSecret = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(original, decoded);
+    assert_eq!(serde_json::to_vec(&decoded).unwrap(), encoded);
+    assert!(!format!("{decoded:?}").contains("owned-record-canary"));
+    // SAFETY: watched strings retain their base allocations on this thread until drop below.
+    let probe = unsafe { InitializedPayloadProbe::start().expect("open memory observer") };
+    watch(original.secret.as_bytes());
+    watch(decoded.secret.as_bytes());
+    let cloned = original.clone();
+    watch(cloned.secret.as_bytes());
+    drop((original, decoded, cloned));
+    finish_probe(probe, 3);
+}
+
+#[test]
+fn read_input_growth_drain_clear_and_drop_wipe_every_owned_allocation() {
+    let _serial = serial();
+    // SAFETY: Input and its draining owner remain on this thread through every deallocation.
+    let probe = unsafe { InitializedPayloadProbe::start().expect("open memory observer") };
+    let mut input = super::Input::default();
+    input.extend_from_slice(CANARY);
+    input.extend_from_slice(&[b'x'; 4096]);
+    let mut drained = input.drain(2..=5);
+    assert_eq!(drained.next(), Some(CANARY[2]));
+    assert_eq!(drained.next_back(), Some(CANARY[5]));
+    drop(drained);
+    assert_eq!(&input[..2], &CANARY[..2]);
+    assert_eq!(&input[2..CANARY.len() - 4], &CANARY[6..]);
+    input.clear();
+    assert!(input.is_empty());
+    input.extend_from_slice(CANARY);
+    drop(input);
+    finish_probe(probe, 3);
+}
+
+#[test]
+fn read_buffer_pool_wipes_before_reuse_overflow_and_drop() {
+    let _serial = serial();
+    // SAFETY: every watched scratch buffer stays on this thread until the pool is dropped.
+    let probe = unsafe { InitializedPayloadProbe::start().expect("open memory observer") };
+    let reads = super::ReadBufs::default();
+    for _ in 0..=super::READ_BUFS_KEPT {
+        let mut buf = super::ReadBufs::fresh();
+        buf[..CANARY.len()].copy_from_slice(CANARY);
+        watch(&buf);
+        reads.give(buf);
+    }
+    let buf = reads.take();
+    assert_eq!(buf.len(), super::READ_CHUNK);
+    assert!(buf.iter().all(|&b| b == 0));
+    drop(buf);
+    drop(reads);
+    finish_probe(probe, super::READ_BUFS_KEPT + 1);
+}
+
+#[test]
+fn pending_read_cancellation_wipes_input_and_scratch_with_a_retained_wire() {
+    let _serial = serial();
+    let pool = Pool::new(1);
+    let host = make_host(Security::Clear, false, []);
+    script(|s| s.reads = [Read::Reply(CANARY), Read::Pending].into());
+    let retained = Retained::default();
+    let keep = retained.clone();
+    // SAFETY: parked scratch and retained input are dropped here on the observing thread.
+    let probe = unsafe { InitializedPayloadProbe::start().expect("open memory observer") };
+    let (step, parked) = enter(&pool, &host, None, move |wire| {
+        Box::pin(async move {
+            *keep.lock().unwrap() = Some(wire.clone());
+            wire.connect(0, None).await?;
+            assert_eq!(wire.fill().await?, CANARY.len());
+            wire.input(|input| {
+                watch(input);
+                assert_eq!(input.as_slice(), CANARY);
+            });
+            wire.fill().await?;
+            Ok(())
+        })
+    });
+    assert!(matches!(step, Step::Pending { .. }));
+    drop(parked);
+    let wire = retained.lock().unwrap().take().unwrap();
+    wire.input(|input| assert!(input.is_empty()));
+    drop(wire);
+    drop(pool);
+    finish_probe(probe, 2);
+}
+
+#[test]
+fn failed_reads_and_successful_pool_returns_wipe_connector_scratch() {
+    let _serial = serial();
+    for fail in [false, true] {
+        let pool = Pool::new(1);
+        let host = make_host(Security::Clear, false, []);
+        script(|s| {
+            s.reads = [if fail {
+                Read::Fail
+            } else {
+                Read::Reply(CANARY)
+            }]
+            .into()
+        });
+        let reads = super::ReadBufs::default();
+        // SAFETY: all read allocations are freed here before ending the observation.
+        let probe = unsafe { InitializedPayloadProbe::start().expect("open memory observer") };
+        let mut op = Op::enter(TICKET, Some(&host), None, Some(&reads));
+        let step = drive_kept(&mut op, &pool, |wire| {
+            Box::pin(async move {
+                wire.connect(0, None).await?;
+                wire.fill().await?;
+                Ok::<_, ConnFailure>(())
+            })
+        });
+        assert!(matches!(&step, Step::Ready(result) if result.is_err() == fail));
+        drop(op.into_parked());
+        let buf = reads.take();
+        assert_eq!(buf.len(), super::READ_CHUNK);
+        assert!(buf.iter().all(|&b| b == 0));
+        drop(buf);
+        drop(reads);
+        drop(pool);
+        finish_probe(probe, if fail { 1 } else { 2 });
+    }
+}
+
+#[test]
+fn close_and_reconnect_clear_unread_input_through_the_real_wire() {
+    let _serial = serial();
+    for reconnect in [false, true] {
+        let pool = Pool::new(1);
+        let host = make_host(Security::Clear, false, []);
+        script(|s| s.reads = [Read::Reply(CANARY)].into());
+        // SAFETY: input and scratch owners stay on this thread until the op is dropped.
+        let probe = unsafe { InitializedPayloadProbe::start().expect("open memory observer") };
+        let (step, parked) = enter(&pool, &host, None, move |wire| {
+            Box::pin(async move {
+                wire.connect(0, None).await?;
+                wire.fill().await?;
+                wire.input(|input| {
+                    watch(input);
+                    assert_eq!(input.as_slice(), CANARY);
+                });
+                if reconnect {
+                    wire.reconnect().await?;
+                } else {
+                    wire.close().await;
+                }
+                wire.input(|input| assert!(input.is_empty()));
+                Ok(())
+            })
+        });
+        assert_eq!(step, Step::Ready(Ok(())));
+        drop(parked);
+        drop(pool);
+        finish_probe(probe, 2);
     }
 }
 

@@ -388,7 +388,7 @@ mod replay_handles {
             wire.write_all(b"A").await?;
             wire.write_all(b"B").await?;
             assert_eq!(wire.fill().await?, b"reply".len());
-            wire.input(|bytes| assert_eq!(bytes, b"reply"));
+            wire.input(|bytes| assert_eq!(bytes.as_slice(), b"reply"));
             wire.close().await;
             Ok(())
         })

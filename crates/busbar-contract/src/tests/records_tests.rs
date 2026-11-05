@@ -350,7 +350,7 @@ fn virtual_key_minimal_json_defaults_optionals() {
 /// `CredentialMeta::is_live` is the exact predicate the signed-request admit path consults (in
 #[test]
 fn credential_meta_is_live_checks_revocation_and_expiry() {
-    let mut m = sample_credential().meta;
+    let mut m = sample_credential().meta.clone();
     assert!(m.is_live(100), "fresh credential, no expiry: live");
     m.expires_at = Some(200);
     assert!(m.is_live(100), "before expiry: live");
