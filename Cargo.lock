@@ -286,6 +286,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "idna_adapter",
+ "libc",
  "metrics",
  "ring",
  "serde",
