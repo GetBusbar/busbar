@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 pub mod wire;
+use crate::release_crypto::{standard_result, ReleaseCrypto, StandardCrypto, WithCryptoError};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -95,14 +96,14 @@ pub struct Role {
 }
 
 /// A keys document, decoded.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct KeysDoc {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeysDocument<K> {
     /// Only ever increases; a verifier refuses one below the highest it has accepted.
     pub version: u64,
     /// Unix seconds; refused at or after.
     pub expires: u64,
     /// Every signer key, by key id ([`wire::key_id`]).
-    pub keys: BTreeMap<String, ReleaseKey>,
+    pub keys: BTreeMap<String, K>,
     /// Each product role's signers and threshold.
     pub roles: BTreeMap<String, Role>,
     /// Signer key ids that no longer count toward any threshold.
@@ -110,6 +111,11 @@ pub struct KeysDoc {
     /// Artefact digests (canonical-manifest or library sha256) that never load, with why.
     pub revoked_digests: BTreeMap<String, String>,
 }
+
+/// Decoded keys document for Standard consumers; existing struct literals remain concrete.
+pub type KeysDoc = KeysDocument<ReleaseKey>;
+/// Decoded keys document containing only provider-validated raw bytes.
+pub type RawKeysDoc = KeysDocument<crate::release_crypto::RawReleaseKey>;
 
 /// One artefact a release manifest lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -377,28 +383,7 @@ impl std::fmt::Display for SealRefusal {
 }
 
 pub fn check_fresh(seal: Seal<'_>, now: u64) -> Result<(), SealRefusal> {
-    let malformed = |doc: &'static str| move |why: String| SealRefusal::Malformed { doc, why };
-    let keys = wire::read_keys(seal.keys)
-        .map_err(malformed("keys document"))?
-        .doc;
-    if keys.expires <= now {
-        return Err(SealRefusal::KeysExpired {
-            version: keys.version,
-            expires: keys.expires,
-            now,
-        });
-    }
-    let targets = wire::read_targets(seal.targets)
-        .map_err(malformed("release manifest"))?
-        .doc;
-    if targets.expires <= now {
-        return Err(SealRefusal::TargetsExpired {
-            version: targets.version,
-            expires: targets.expires,
-            now,
-        });
-    }
-    Ok(())
+    standard_result(check_fresh_with_crypto(seal, now, &StandardCrypto))
 }
 
 pub fn verify_release(
@@ -407,14 +392,90 @@ pub fn verify_release(
     subject: Subject<'_>,
     checks: Checks,
 ) -> Result<Verified, SealRefusal> {
+    let roots: Vec<_> = roots
+        .iter()
+        .map(crate::sign::FirstPartyKey::to_raw)
+        .collect();
+    standard_result(verify_release_inner(
+        &roots,
+        seal,
+        subject,
+        checks,
+        &StandardCrypto,
+    ))
+}
+
+pub fn check_fresh_with_crypto(
+    seal: Seal<'_>,
+    now: u64,
+    crypto: &dyn ReleaseCrypto,
+) -> Result<(), WithCryptoError<SealRefusal>> {
+    let malformed = |doc: &'static str| move |why: String| SealRefusal::Malformed { doc, why };
+    let keys = wire::read_keys_with_crypto(seal.keys, crypto)
+        .map_err(|e| e.map_rejection(malformed("keys document")))?
+        .doc;
+    if keys.expires <= now {
+        return Err((SealRefusal::KeysExpired {
+            version: keys.version,
+            expires: keys.expires,
+            now,
+        })
+        .into());
+    }
+    let targets = wire::read_targets(seal.targets)
+        .map_err(malformed("release manifest"))?
+        .doc;
+    if targets.expires <= now {
+        return Err((SealRefusal::TargetsExpired {
+            version: targets.version,
+            expires: targets.expires,
+            now,
+        })
+        .into());
+    }
+    Ok(())
+}
+
+pub fn verify_release_with_crypto(
+    roots: &[crate::sign::RawFirstPartyKey],
+    seal: Seal<'_>,
+    subject: Subject<'_>,
+    checks: Checks,
+    crypto: &dyn ReleaseCrypto,
+) -> Result<Verified, WithCryptoError<SealRefusal>> {
+    crate::sign::validate_roots_with_crypto(roots, crypto).map_err(|e| {
+        e.map_rejection(|why| SealRefusal::Malformed {
+            doc: "root key",
+            why,
+        })
+    })?;
+    verify_release_inner(roots, seal, subject, checks, crypto)
+}
+
+pub(crate) fn verify_release_inner(
+    roots: &[crate::sign::RawFirstPartyKey],
+    seal: Seal<'_>,
+    subject: Subject<'_>,
+    checks: Checks,
+    crypto: &dyn ReleaseCrypto,
+) -> Result<Verified, WithCryptoError<SealRefusal>> {
     let malformed = |doc: &'static str| move |why: String| SealRefusal::Malformed { doc, why };
 
-    let keys = wire::read_keys(seal.keys).map_err(malformed("keys document"))?;
+    let keys = wire::read_keys_with_crypto(seal.keys, crypto)
+        .map_err(|e| e.map_rejection(malformed("keys document")))?;
     let mut vouching: Vec<&str> = Vec::new();
     let mut retired = None;
     for (keyid, sig) in &keys.signatures {
-        if let Some(root) = roots.iter().find(|r| wire::key_id(&r.key) == *keyid) {
-            if wire::verify(&root.key, &keys.signed_bytes, sig) {
+        // A service failure must stop root iteration; it is not a nonmatching root.
+        let mut matching = None;
+        for root in roots {
+            if wire::key_id_with_crypto(&root.key, crypto)? == *keyid {
+                matching = Some(root);
+                break;
+            }
+        }
+        if let Some(root) = matching {
+            if wire::verify_with_crypto(&root.key, &keys.signed_bytes, sig, crypto)? {
                 if let Some(why) = root.retired_reason() {
                     retired.get_or_insert_with(|| SealRefusal::RetiredRoot {
                         id: root.id.clone(),
@@ -427,39 +488,44 @@ pub fn verify_release(
         }
     }
     if vouching.len() < ROOT_THRESHOLD {
-        return Err(retired.unwrap_or_else(|| SealRefusal::KeysSignature {
+        return Err((retired.unwrap_or_else(|| SealRefusal::KeysSignature {
             roots: roots.iter().map(|r| r.id.clone()).collect(),
-        }));
+        }))
+        .into());
     }
     let kd = &keys.doc;
     if checks.enforce_expiry && kd.expires <= checks.now {
-        return Err(SealRefusal::KeysExpired {
+        return Err((SealRefusal::KeysExpired {
             version: kd.version,
             expires: kd.expires,
             now: checks.now,
-        });
+        })
+        .into());
     }
     if kd.version < checks.keys_floor {
-        return Err(SealRefusal::KeysRollback {
+        return Err((SealRefusal::KeysRollback {
             version: kd.version,
             floor: checks.keys_floor,
-        });
+        })
+        .into());
     }
     let role = match kd.roles.get(PLUGINS_ROLE) {
         Some(r) if r.threshold > 0 && !r.keyids.is_empty() => r,
         _ => {
-            return Err(SealRefusal::NoRole {
+            return Err((SealRefusal::NoRole {
                 role: PLUGINS_ROLE.to_string(),
-            });
+            })
+            .into());
         }
     };
 
     let targets = wire::read_targets(seal.targets).map_err(malformed("release manifest"))?;
     if targets.doc.role != PLUGINS_ROLE {
-        return Err(SealRefusal::Malformed {
+        return Err((SealRefusal::Malformed {
             doc: "release manifest",
             why: format!("it names role '{}', not '{PLUGINS_ROLE}'", targets.doc.role),
-        });
+        })
+        .into());
     }
     let (mut signers, mut revoked): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
     let mut retired_signer = None;
@@ -470,7 +536,7 @@ pub fn verify_release(
         let Some(key) = kd.keys.get(keyid) else {
             continue;
         };
-        if wire::verify(key, &targets.signed_bytes, sig) {
+        if wire::verify_with_crypto(key, &targets.signed_bytes, sig, crypto)? {
             if let Some(why) = key.retired_reason() {
                 retired_signer.get_or_insert_with(|| SealRefusal::RetiredSigner {
                     id: keyid.clone(),
@@ -485,9 +551,9 @@ pub fn verify_release(
     }
     if (signers.len() as u64) < role.threshold {
         if let Some(retired) = retired_signer {
-            return Err(retired);
+            return Err((retired).into());
         }
-        return Err(if revoked.is_empty() {
+        return Err((if revoked.is_empty() {
             SealRefusal::TargetsSignature {
                 role: PLUGINS_ROLE.to_string(),
                 threshold: role.threshold,
@@ -495,23 +561,26 @@ pub fn verify_release(
             }
         } else {
             SealRefusal::SignerRevoked { keyids: revoked }
-        });
+        })
+        .into());
     }
     let td = &targets.doc;
     if checks.enforce_expiry && td.expires <= checks.now {
-        return Err(SealRefusal::TargetsExpired {
+        return Err((SealRefusal::TargetsExpired {
             version: td.version,
             expires: td.expires,
             now: checks.now,
-        });
+        })
+        .into());
     }
 
     for digest in [subject.sha256, subject.lib_sha256] {
         if let Some(why) = kd.revoked_digests.get(&digest.to_ascii_lowercase()) {
-            return Err(SealRefusal::DigestRevoked {
+            return Err((SealRefusal::DigestRevoked {
                 digest: digest.to_ascii_lowercase(),
                 why: why.clone(),
-            });
+            })
+            .into());
         }
     }
     let same_release: Vec<&Target> = td
@@ -520,27 +589,30 @@ pub fn verify_release(
         .filter(|t| t.name == subject.name && t.version == subject.version)
         .collect();
     if same_release.is_empty() {
-        return Err(SealRefusal::Unlisted {
+        return Err((SealRefusal::Unlisted {
             name: subject.name.to_string(),
             version: subject.version.to_string(),
-        });
+        })
+        .into());
     }
     let Some(entry) = same_release.iter().find(|t| t.target == subject.target) else {
-        return Err(SealRefusal::WrongTarget {
+        return Err((SealRefusal::WrongTarget {
             name: subject.name.to_string(),
             version: subject.version.to_string(),
             target: subject.target.to_string(),
             listed: same_release.iter().map(|t| t.target.clone()).collect(),
-        });
+        })
+        .into());
     };
     if entry.sha256 != subject.sha256.to_ascii_lowercase() {
-        return Err(SealRefusal::HashMismatch {
+        return Err((SealRefusal::HashMismatch {
             name: subject.name.to_string(),
             version: subject.version.to_string(),
             target: subject.target.to_string(),
             listed: entry.sha256.clone(),
             actual: subject.sha256.to_ascii_lowercase(),
-        });
+        })
+        .into());
     }
     Ok(Verified {
         root: vouching[0].to_string(),
@@ -553,3 +625,21 @@ pub fn verify_release(
 #[cfg(test)]
 #[path = "../tests/release_trust_tests.rs"]
 pub(crate) mod tests;
+
+impl<K> Default for KeysDocument<K> {
+    fn default() -> Self {
+        Self {
+            version: 0,
+            expires: 0,
+            keys: BTreeMap::new(),
+            roles: BTreeMap::new(),
+            revoked_keyids: BTreeSet::new(),
+            revoked_digests: BTreeMap::new(),
+        }
+    }
+}
+impl From<SealRefusal> for WithCryptoError<SealRefusal> {
+    fn from(error: SealRefusal) -> Self {
+        Self::Rejected(error)
+    }
+}

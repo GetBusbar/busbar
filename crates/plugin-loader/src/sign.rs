@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::release_crypto::{
+    policy_result, standard_result, CryptoUnavailable, PublicKey, RawReleaseKey, ReleaseCrypto,
+    StandardCrypto, WithCryptoError,
+};
+#[cfg(test)]
 use ed25519_dalek::Signature;
 pub use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -21,13 +26,16 @@ pub const HOST_IDENTITY: &str = "busbar";
 /// A root key vouches for keys documents ([`crate::release_trust`]); an ed25519 root key also
 /// verifies a per-plugin `signature` directly (the pre-1.6.0 shape, kept for run keys and tests).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FirstPartyKey {
+pub struct FirstPartyKeyData<K> {
     /// The key's name (`busbar-plugins-root`), stated beside it in the key list. A bare-hex entry
     /// (a run key, a test key) is named `ed25519:<first 16 hex digits>` ([`FirstPartyKey::unnamed`]).
     pub id: String,
     /// The public key.
-    pub key: ReleaseKey,
+    pub key: K,
 }
+
+/// First-party roots for the existing Standard entrypoints.
+pub type FirstPartyKey = FirstPartyKeyData<ReleaseKey>;
 
 pub use crate::release_trust::ReleaseKey;
 
@@ -49,62 +57,86 @@ impl FirstPartyKey {
 pub const RELEASE_KEYS_ENV: &str = "BUSBAR_RELEASE_PUBKEY";
 
 pub fn parse_release_keys(spec: &str) -> Result<Vec<FirstPartyKey>, String> {
-    let mut keys: Vec<FirstPartyKey> = Vec::new();
+    standard_result(parse_release_keys_with_crypto(spec, &StandardCrypto)).map(|keys| {
+        keys.into_iter()
+            .map(|k| FirstPartyKey {
+                id: k.id,
+                key: k.key.into_standard(),
+            })
+            .collect()
+    })
+}
+
+pub fn parse_release_keys_with_crypto(
+    spec: &str,
+    crypto: &dyn ReleaseCrypto,
+) -> Result<Vec<RawFirstPartyKey>, WithCryptoError<String>> {
+    let mut keys: Vec<RawFirstPartyKey> = Vec::new();
     for (i, entry) in spec.split(',').map(str::trim).enumerate() {
         let n = i + 1;
         if entry.is_empty() {
-            return Err(format!("{RELEASE_KEYS_ENV} entry {n} is empty"));
+            return Err((format!("{RELEASE_KEYS_ENV} entry {n} is empty")).into());
         }
         let parts: Vec<&str> = entry.split(':').map(str::trim).collect();
         let (id, key) = match parts.as_slice() {
-            [hex_key] => (None, public_key_from_hex(hex_key).map(ReleaseKey::Ed25519)),
+            [hex_key] => (
+                None,
+                public_key_from_hex_with_crypto(hex_key, crypto).map(RawReleaseKey::Ed25519),
+            ),
             [id, hex_key] => (
                 Some(*id),
-                public_key_from_hex(hex_key).map(ReleaseKey::Ed25519),
+                public_key_from_hex_with_crypto(hex_key, crypto).map(RawReleaseKey::Ed25519),
             ),
             [id, "ed25519", hex_key] => (
                 Some(*id),
-                public_key_from_hex(hex_key).map(ReleaseKey::Ed25519),
+                public_key_from_hex_with_crypto(hex_key, crypto).map(RawReleaseKey::Ed25519),
             ),
-            [id, "p256", hex_key] => (Some(*id), ReleaseKey::p256_from_hex(hex_key)),
+            [id, "p256", hex_key] => (
+                Some(*id),
+                crate::release_trust::wire::p256_from_hex_with_crypto(hex_key, crypto),
+            ),
             [_, alg, _] => (
                 None,
-                Err(format!("algorithm '{alg}' is not one of ed25519, p256")),
+                Err(format!("algorithm '{alg}' is not one of ed25519, p256").into()),
             ),
             _ => (
                 None,
-                Err("is not <id>:<algorithm>:<hex>, <id>:<hex> or <hex>".to_string()),
+                Err("is not <id>:<algorithm>:<hex>, <id>:<hex> or <hex>".into()),
             ),
         };
-        let key = key.map_err(|e| format!("{RELEASE_KEYS_ENV} entry {n}: {e}"))?;
+        let key =
+            key.map_err(|e| e.map_rejection(|e| format!("{RELEASE_KEYS_ENV} entry {n}: {e}")))?;
         let key = match (id, key) {
             (Some(id), _) if !valid_name(id) => {
-                return Err(format!(
+                return Err((format!(
                     "{RELEASE_KEYS_ENV} entry {n}: key id '{id}' is not lowercase [a-z0-9-]+"
-                ));
+                ))
+                .into());
             }
-            (Some(id), key) => FirstPartyKey {
+            (Some(id), key) => RawFirstPartyKey {
                 id: id.to_string(),
                 key,
             },
-            (None, ReleaseKey::Ed25519(k)) => FirstPartyKey::unnamed(k),
-            (None, ReleaseKey::P256(_)) => {
-                return Err(format!(
-                    "{RELEASE_KEYS_ENV} entry {n}: a p256 key must be named"
-                ));
+            (None, RawReleaseKey::Ed25519(k)) => RawFirstPartyKey::unnamed_raw(k),
+            (None, RawReleaseKey::P256(_)) => {
+                return Err(
+                    (format!("{RELEASE_KEYS_ENV} entry {n}: a p256 key must be named")).into(),
+                );
             }
         };
         if let Some(why) = key.retired_reason() {
-            return Err(format!(
+            return Err((format!(
                 "{RELEASE_KEYS_ENV} entry {n}: root '{}' is retired: {why}",
                 key.id
-            ));
+            ))
+            .into());
         }
         if let Some(dup) = keys.iter().find(|k| k.id == key.id || k.key == key.key) {
-            return Err(format!(
+            return Err((format!(
                 "{RELEASE_KEYS_ENV} entry {n} ('{}') repeats the id or key of '{}'",
                 key.id, dup.id
-            ));
+            ))
+            .into());
         }
         keys.push(key);
     }
@@ -134,23 +166,30 @@ pub const RETIRED_RELEASE_KEYS: &[(&str, &str)] = &[(
      signature no longer proves busbar made the plugin",
 )];
 
-fn retired_signer<'a>(
+type RetiredSigner<'a> = ([u8; 32], &'a str, &'a str);
+
+fn retired_signer_with_crypto<'a>(
     manifest: &Manifest,
     list: &[(&'a str, &'a str)],
-) -> Option<(VerifyingKey, &'a str, &'a str)> {
-    let sig: [u8; 64] = hex::decode(manifest.signature.trim())
-        .ok()?
-        .as_slice()
-        .try_into()
-        .ok()?;
-    let sig = Signature::from_bytes(&sig);
+    crypto: &dyn ReleaseCrypto,
+) -> Result<Option<RetiredSigner<'a>>, CryptoUnavailable> {
+    let Some(sig) = hex::decode(manifest.signature.trim())
+        .ok()
+        .and_then(|s| <[u8; 64]>::try_from(s.as_slice()).ok())
+    else {
+        return Ok(None);
+    };
     let canonical = canonical_manifest_bytes(manifest);
-    list.iter().find_map(|&(hex_key, why)| {
-        let key = public_key_from_hex(hex_key).ok()?;
-        key.verify_strict(&canonical, &sig)
-            .is_ok()
-            .then_some((key, hex_key, why))
-    })
+    for &(hex_key, why) in list {
+        let Some(key) = policy_result(public_key_from_hex_with_crypto(hex_key, crypto))?.ok()
+        else {
+            continue;
+        };
+        if crypto.verify_ed25519_strict(&key, &canonical, &sig)? {
+            return Ok(Some((key, hex_key, why)));
+        }
+    }
+    Ok(None)
 }
 
 pub const REVOKED_DIGESTS: &[(&str, &str)] = &[];
@@ -531,13 +570,13 @@ pub enum AllowReason {
 ///
 /// DEFAULT posture (both flags `false`): an untrusted plugin (unsigned OR signed by a
 /// non-allowlisted publisher) is REJECTED - logged and skipped, never `dlopen`ed.
-#[derive(Clone, Default)]
-pub struct TrustPolicy {
+#[derive(Clone)]
+pub struct TrustPolicyData<E, K> {
     /// The embedded busbar release public key ([`embedded_release_pubkey`]). `None` in a build with
     /// no embedded key: first-party plugins then cannot verify (they are treated as unsigned).
-    pub first_party_key: Option<VerifyingKey>,
+    pub first_party_key: Option<E>,
     /// Named release roots. When nonempty these replace the compatibility single-key field.
-    pub first_party_keys: Vec<FirstPartyKey>,
+    pub first_party_keys: Vec<FirstPartyKeyData<K>>,
     /// Permanently revoked library SHA-256 digests, with their operator-facing reason.
     pub revoked: BTreeMap<String, String>,
     /// Highest authenticated keys-document version accepted by this deployment's Store.
@@ -582,7 +621,7 @@ pub struct TrustPolicy {
     pub first_party_high_water: BTreeMap<String, String>,
     /// THIRD-PARTY allowlist: publisher name -> ed25519 public key. The first-party publisher
     /// (`busbar`) never resolves here.
-    pub publishers: BTreeMap<String, VerifyingKey>,
+    pub publishers: BTreeMap<String, E>,
     /// Opt-in: load plugins that carry NO valid signature (unsigned / tampered). Default `false`.
     pub allow_unsigned: bool,
     /// Opt-in: load plugins validly signed by a publisher NOT in `publishers`. Default `false`.
@@ -592,6 +631,82 @@ pub struct TrustPolicy {
     /// anything else is a hard reject no opt-in flag can relax. Applies to first- and third-party
     /// alike (first-party has no automatic floor).
     pub min_versions: BTreeMap<String, String>,
+}
+
+/// Opt-in policy whose public keys remain raw bytes throughout verification.
+pub type RawTrustPolicy = TrustPolicyData<[u8; 32], RawReleaseKey>;
+pub type RawFirstPartyKey = FirstPartyKeyData<RawReleaseKey>;
+
+/// The existing concrete policy type, retaining uncontextualized Default and struct literals.
+pub type TrustPolicy = TrustPolicyData<VerifyingKey, ReleaseKey>;
+
+impl<E, K> Default for TrustPolicyData<E, K> {
+    fn default() -> Self {
+        Self {
+            first_party_key: Default::default(),
+            first_party_keys: Default::default(),
+            revoked: Default::default(),
+            release_keys_floor: Default::default(),
+            release_clock: Default::default(),
+            release_enforce_expiry: Default::default(),
+            binary_version: Default::default(),
+            first_party_floors: Default::default(),
+            first_party_high_water: Default::default(),
+            publishers: Default::default(),
+            allow_unsigned: Default::default(),
+            allow_third_party: Default::default(),
+            min_versions: Default::default(),
+        }
+    }
+}
+impl TrustPolicy {
+    /// Copy policy data without invoking cryptography. For a native-only path construct a
+    /// RawTrustPolicy directly, parsing roots with `parse_release_keys_with_crypto` and
+    /// publisher keys with `public_key_from_hex_with_crypto`.
+    pub fn to_raw(&self) -> RawTrustPolicy {
+        RawTrustPolicy {
+            first_party_key: self.first_party_key.map(|k| *k.as_bytes()),
+            first_party_keys: self
+                .first_party_keys
+                .iter()
+                .map(FirstPartyKey::to_raw)
+                .collect(),
+            revoked: self.revoked.clone(),
+            release_keys_floor: self.release_keys_floor,
+            release_clock: self.release_clock,
+            release_enforce_expiry: self.release_enforce_expiry,
+            binary_version: self.binary_version.clone(),
+            first_party_floors: self.first_party_floors.clone(),
+            first_party_high_water: self.first_party_high_water.clone(),
+            publishers: self
+                .publishers
+                .iter()
+                .map(|(n, k)| (n.clone(), *k.as_bytes()))
+                .collect(),
+            allow_unsigned: self.allow_unsigned,
+            allow_third_party: self.allow_third_party,
+            min_versions: self.min_versions.clone(),
+        }
+    }
+}
+impl FirstPartyKey {
+    pub fn to_raw(&self) -> RawFirstPartyKey {
+        RawFirstPartyKey {
+            id: self.id.clone(),
+            key: RawReleaseKey::from(&self.key),
+        }
+    }
+}
+impl RawFirstPartyKey {
+    pub fn unnamed_raw(key: [u8; 32]) -> Self {
+        Self {
+            id: format!("ed25519:{}", &hex::encode(key)[..16]),
+            key: RawReleaseKey::Ed25519(key),
+        }
+    }
+    pub fn retired_reason(&self) -> Option<&'static str> {
+        self.key.retired_reason()
+    }
 }
 
 /// A `plugins:` block's trust facts, as plain data: what [`TrustPolicy::from_config`] resolves.
@@ -830,6 +945,28 @@ pub fn sign(key: &SigningKey, mut manifest: Manifest, artifact: &[u8]) -> Manife
     manifest
 }
 
+pub fn sha256_hex_with_crypto(
+    bytes: &[u8],
+    crypto: &dyn ReleaseCrypto,
+) -> Result<String, CryptoUnavailable> {
+    crypto.sha256(bytes).map(hex::encode)
+}
+
+pub fn public_key_from_hex_with_crypto(
+    s: &str,
+    crypto: &dyn ReleaseCrypto,
+) -> Result<[u8; 32], WithCryptoError<String>> {
+    let bytes = hex::decode(s.trim()).map_err(|e| format!("public key not valid hex: {e}"))?;
+    let arr: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| format!("public key must be 32 bytes, got {}", bytes.len()))?;
+    if !crypto.validate_public_key(PublicKey::Ed25519(&arr))? {
+        return Err("invalid or weak ed25519 public key".into());
+    }
+    Ok(arr)
+}
+
 pub fn public_key_from_hex(s: &str) -> Result<VerifyingKey, String> {
     let bytes = hex::decode(s.trim()).map_err(|e| format!("public key not valid hex: {e}"))?;
     let arr: [u8; 32] = bytes
@@ -919,44 +1056,81 @@ pub fn first_party_signer_for<'k>(
     checks: crate::release_trust::Checks,
     target: &str,
 ) -> Result<&'k FirstPartyKey, FirstPartyUnverified> {
-    first_party_signer_evidence(manifest, bytes, keys, checks, target).map(|(root, _)| root)
+    let raw: Vec<_> = keys.iter().map(FirstPartyKey::to_raw).collect();
+    let (root, _) = standard_result(first_party_signer_evidence_with_crypto(
+        manifest,
+        bytes,
+        &raw,
+        checks,
+        target,
+        &StandardCrypto,
+    ))?;
+    let index = raw
+        .iter()
+        .position(|k| std::ptr::eq(k, root))
+        .expect("returned root belongs to input");
+    Ok(&keys[index])
 }
 
-fn first_party_signer_evidence<'k>(
+pub fn first_party_signer_for_with_crypto<'k>(
     manifest: &Manifest,
     bytes: &[u8],
-    keys: &'k [FirstPartyKey],
+    keys: &'k [RawFirstPartyKey],
     checks: crate::release_trust::Checks,
     target: &str,
-) -> Result<(&'k FirstPartyKey, Option<u64>), FirstPartyUnverified> {
-    if let Some(seal) = crate::release_trust::wire::read_seal(&manifest.signature) {
-        return first_party_sealed(manifest, bytes, keys, checks, seal, target);
-    }
-    let sig = bound_signature(manifest, bytes).map_err(FirstPartyUnverified::Malformed)?;
-    let canonical = canonical_manifest_bytes(manifest);
-    keys.iter()
-        .find(|k| k.retired_reason().is_none() && matches!(&k.key, ReleaseKey::Ed25519(key) if key.verify_strict(&canonical, &sig).is_ok()))
-        .map(|root| (root, None))
-        .ok_or_else(|| FirstPartyUnverified::NoKey {
-            trusted_keys: keys.iter().map(|k| k.id.clone()).collect(),
-        })
+    crypto: &dyn ReleaseCrypto,
+) -> Result<&'k RawFirstPartyKey, WithCryptoError<FirstPartyUnverified>> {
+    validate_roots_with_crypto(keys, crypto)
+        .map_err(|e| e.map_rejection(FirstPartyUnverified::Malformed))?;
+    first_party_signer_evidence_with_crypto(manifest, bytes, keys, checks, target, crypto)
+        .map(|(key, _)| key)
 }
 
-fn first_party_sealed<'k>(
+fn first_party_signer_evidence_with_crypto<'k>(
     manifest: &Manifest,
     bytes: &[u8],
-    keys: &'k [FirstPartyKey],
+    keys: &'k [RawFirstPartyKey],
+    checks: crate::release_trust::Checks,
+    target: &str,
+    crypto: &dyn ReleaseCrypto,
+) -> Result<(&'k RawFirstPartyKey, Option<u64>), WithCryptoError<FirstPartyUnverified>> {
+    if let Some(seal) = crate::release_trust::wire::read_seal(&manifest.signature) {
+        return first_party_sealed_with_crypto(manifest, bytes, keys, checks, seal, target, crypto);
+    }
+    let sig = bound_signature_with_crypto(manifest, bytes, crypto)
+        .map_err(|e| e.map_rejection(FirstPartyUnverified::Malformed))?;
+    let canonical = canonical_manifest_bytes(manifest);
+    for root in keys {
+        if root.retired_reason().is_none()
+            && matches!(root.key, RawReleaseKey::Ed25519(_))
+            && crate::release_trust::wire::verify_with_crypto(&root.key, &canonical, &sig, crypto)?
+        {
+            return Ok((root, None));
+        }
+    }
+    Err(FirstPartyUnverified::NoKey {
+        trusted_keys: keys.iter().map(|k| k.id.clone()).collect(),
+    }
+    .into())
+}
+
+fn first_party_sealed_with_crypto<'k>(
+    manifest: &Manifest,
+    bytes: &[u8],
+    keys: &'k [RawFirstPartyKey],
     checks: crate::release_trust::Checks,
     seal: Result<crate::release_trust::wire::SealBytes, String>,
     target: &str,
-) -> Result<(&'k FirstPartyKey, Option<u64>), FirstPartyUnverified> {
-    use crate::release_trust::{verify_release, Seal, SealRefusal, Subject};
+    crypto: &dyn ReleaseCrypto,
+) -> Result<(&'k RawFirstPartyKey, Option<u64>), WithCryptoError<FirstPartyUnverified>> {
+    use crate::release_trust::{verify_release_inner, Seal, SealRefusal, Subject};
     let trusted_keys = || keys.iter().map(|k| k.id.clone()).collect::<Vec<_>>();
-    let lib_sha256 = sha256_hex(bytes);
+    let lib_sha256 = sha256_hex_with_crypto(bytes, crypto)?;
     if lib_sha256 != manifest.sha256.to_ascii_lowercase() {
         return Err(FirstPartyUnverified::Malformed(
             "library hash does not match the manifest".to_string(),
-        ));
+        )
+        .into());
     }
     let (keys_doc, targets_doc) = seal.map_err(|why| FirstPartyUnverified::Release {
         refusal: Box::new(SealRefusal::Malformed {
@@ -965,8 +1139,8 @@ fn first_party_sealed<'k>(
         }),
         trusted_keys: trusted_keys(),
     })?;
-    let canonical = sha256_hex(&canonical_manifest_bytes(manifest));
-    let verified = verify_release(
+    let canonical = sha256_hex_with_crypto(&canonical_manifest_bytes(manifest), crypto)?;
+    let verified = verify_release_inner(
         keys,
         Seal {
             keys: &keys_doc,
@@ -980,10 +1154,13 @@ fn first_party_sealed<'k>(
             lib_sha256: &lib_sha256,
         },
         checks,
+        crypto,
     )
-    .map_err(|refusal| FirstPartyUnverified::Release {
-        refusal: Box::new(refusal),
-        trusted_keys: trusted_keys(),
+    .map_err(|e| {
+        e.map_rejection(|refusal| FirstPartyUnverified::Release {
+            refusal: Box::new(refusal),
+            trusted_keys: trusted_keys(),
+        })
     })?;
     Ok((
         keys.iter()
@@ -993,33 +1170,49 @@ fn first_party_sealed<'k>(
     ))
 }
 
-fn bound_signature(manifest: &Manifest, bytes: &[u8]) -> Result<Signature, String> {
-    if sha256_hex(bytes) != manifest.sha256.to_ascii_lowercase() {
-        return Err("library hash does not match the manifest".to_string());
+fn bound_signature_with_crypto(
+    manifest: &Manifest,
+    bytes: &[u8],
+    crypto: &dyn ReleaseCrypto,
+) -> Result<[u8; 64], WithCryptoError<String>> {
+    if sha256_hex_with_crypto(bytes, crypto)? != manifest.sha256.to_ascii_lowercase() {
+        return Err("library hash does not match the manifest".into());
     }
     let sig_bytes =
         hex::decode(&manifest.signature).map_err(|e| format!("signature not hex: {e}"))?;
-    let sig_arr: [u8; 64] = sig_bytes
+    sig_bytes
         .as_slice()
         .try_into()
-        .map_err(|_| "signature must be 64 bytes".to_string())?;
-    Ok(Signature::from_bytes(&sig_arr))
+        .map_err(|_| "signature must be 64 bytes".into())
 }
 
-fn signature_ok(manifest: &Manifest, bytes: &[u8], key: &VerifyingKey) -> Result<(), String> {
-    if sha256_hex(bytes) != manifest.sha256.to_ascii_lowercase() {
-        return Err("library hash does not match the manifest".to_string());
+fn signature_ok_with_crypto(
+    manifest: &Manifest,
+    bytes: &[u8],
+    key: &[u8; 32],
+    crypto: &dyn ReleaseCrypto,
+) -> Result<(), WithCryptoError<String>> {
+    let sig = bound_signature_with_crypto(manifest, bytes, crypto)?;
+    if crate::release_trust::wire::verify_with_crypto(
+        &RawReleaseKey::Ed25519(*key),
+        &canonical_manifest_bytes(manifest),
+        &sig,
+        crypto,
+    )? {
+        Ok(())
+    } else {
+        Err("signature does not verify".into())
     }
-    let sig_bytes =
-        hex::decode(&manifest.signature).map_err(|e| format!("signature not hex: {e}"))?;
-    let sig_arr: [u8; 64] = sig_bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| "signature must be 64 bytes".to_string())?;
-    let sig = Signature::from_bytes(&sig_arr);
+}
 
-    key.verify_strict(&canonical_manifest_bytes(manifest), &sig)
-        .map_err(|_| "signature does not verify".to_string())
+#[cfg(test)]
+fn signature_ok(manifest: &Manifest, bytes: &[u8], key: &VerifyingKey) -> Result<(), String> {
+    standard_result(signature_ok_with_crypto(
+        manifest,
+        bytes,
+        key.as_bytes(),
+        &StandardCrypto,
+    ))
 }
 
 fn version_components(v: &str) -> Option<[&str; 3]> {
@@ -1081,19 +1274,33 @@ pub fn validate_structure(
     supported_abi: &dyn Fn(&str) -> &'static [u32],
     host_identity: &str,
 ) -> Result<(), String> {
+    standard_result(validate_structure_with_crypto(
+        m,
+        lib_bytes,
+        supported_abi,
+        host_identity,
+        &StandardCrypto,
+    ))
+}
+
+pub fn validate_structure_with_crypto(
+    m: &Manifest,
+    lib_bytes: &[u8],
+    supported_abi: &dyn Fn(&str) -> &'static [u32],
+    host_identity: &str,
+    crypto: &dyn ReleaseCrypto,
+) -> Result<(), WithCryptoError<String>> {
     validate_identity(m, host_identity)?;
     if m.sha256.len() != 64 || !m.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(format!(
-            "manifest sha256 '{}' is not a 64-char hex digest",
-            m.sha256
-        ));
+        return Err((format!("manifest sha256 '{}' is not a 64-char hex digest", m.sha256)).into());
     }
-    if sha256_hex(lib_bytes) != m.sha256.to_ascii_lowercase() {
+    if sha256_hex_with_crypto(lib_bytes, crypto)? != m.sha256.to_ascii_lowercase() {
         return Err(
-            "library bytes do not match the manifest sha256 (integrity failure)".to_string(),
+            ("library bytes do not match the manifest sha256 (integrity failure)".to_string())
+                .into(),
         );
     }
-    validate_abi(m, supported_abi)
+    validate_abi(m, supported_abi).map_err(Into::into)
 }
 
 pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String> {
@@ -1264,21 +1471,57 @@ fn evaluate_against_with_evidence(
     policy: &TrustPolicy,
     retired: &[(&str, &str)],
 ) -> Result<(Verdict, Option<u64>), Rejected> {
-    let digest = sha256_hex(bytes);
+    standard_result(evaluate_against_with_crypto(
+        bytes,
+        manifest,
+        &policy.to_raw(),
+        retired,
+        &StandardCrypto,
+    ))
+}
+
+pub fn evaluate_with_crypto(
+    bytes: &[u8],
+    manifest: &Manifest,
+    policy: &RawTrustPolicy,
+    crypto: &dyn ReleaseCrypto,
+) -> Result<Verdict, WithCryptoError<Rejected>> {
+    evaluate_with_evidence_with_crypto(bytes, manifest, policy, crypto).map(|(verdict, _)| verdict)
+}
+
+pub fn evaluate_with_evidence_with_crypto(
+    bytes: &[u8],
+    manifest: &Manifest,
+    policy: &RawTrustPolicy,
+    crypto: &dyn ReleaseCrypto,
+) -> Result<(Verdict, Option<u64>), WithCryptoError<Rejected>> {
+    validate_policy_keys_with_crypto(policy, crypto)
+        .map_err(|e| e.map_rejection(|why| Rejected::new(RejectKind::Tampered, why)))?;
+    evaluate_against_with_crypto(bytes, manifest, policy, RETIRED_RELEASE_KEYS, crypto)
+}
+
+fn evaluate_against_with_crypto(
+    bytes: &[u8],
+    manifest: &Manifest,
+    policy: &RawTrustPolicy,
+    retired: &[(&str, &str)],
+    crypto: &dyn ReleaseCrypto,
+) -> Result<(Verdict, Option<u64>), WithCryptoError<Rejected>> {
+    let digest = sha256_hex_with_crypto(bytes, crypto)?;
     if let Some(why) = policy.revoked.get(&digest) {
-        return Err(Rejected::new(
+        return Err((Rejected::new(
             RejectKind::Revoked,
             format!(
                 "plugin '{}' version {} (library sha256 {digest}) is REVOKED: {why}; no trust opt-in admits it",
                 manifest.name, manifest.version
             ),
-        ));
+        )).into());
     }
     let roots = if policy.first_party_keys.is_empty() {
         std::borrow::Cow::Owned(
             policy
                 .first_party_key
-                .map(FirstPartyKey::unnamed)
+                .map(RawFirstPartyKey::unnamed_raw)
                 .into_iter()
                 .collect::<Vec<_>>(),
         )
@@ -1294,14 +1537,17 @@ fn evaluate_against_with_evidence(
     };
     let stale = if policy.release_enforce_expiry {
         match crate::release_trust::wire::read_seal(&manifest.signature) {
-            Some(Ok((keys, targets))) => crate::release_trust::check_fresh(
-                crate::release_trust::Seal {
-                    keys: &keys,
-                    targets: &targets,
-                },
-                checks.now,
-            )
-            .err(),
+            Some(Ok((keys, targets))) => {
+                policy_result(crate::release_trust::check_fresh_with_crypto(
+                    crate::release_trust::Seal {
+                        keys: &keys,
+                        targets: &targets,
+                    },
+                    checks.now,
+                    crypto,
+                ))?
+                .err()
+            }
             _ => None,
         }
     } else {
@@ -1315,15 +1561,16 @@ fn evaluate_against_with_evidence(
         if let Err(FirstPartyUnverified::Release {
             refusal,
             trusted_keys,
-        }) = first_party_signer_evidence(
+        }) = policy_result(first_party_signer_evidence_with_crypto(
             manifest,
             bytes,
             &roots,
             boot_checks,
             crate::release_trust::PLUGIN_TARGET,
-        ) {
+            crypto,
+        ))? {
             if let Some(kind) = hard_seal_refusal(&refusal) {
-                return Err(Rejected {
+                return Err((Rejected {
                     trusted_keys,
                     ..Rejected::new(
                         kind,
@@ -1334,16 +1581,18 @@ fn evaluate_against_with_evidence(
                             refusal.code()
                         ),
                     )
-                });
+                }).into());
             }
         }
     }
     let mut authenticated_keys_version = None;
     let mut trusted_keys = Vec::new();
 
-    let by_retired = (manifest.publisher == FIRST_PARTY_PUBLISHER)
-        .then(|| retired_signer(manifest, retired))
-        .flatten();
+    let by_retired = if manifest.publisher == FIRST_PARTY_PUBLISHER {
+        retired_signer_with_crypto(manifest, retired, crypto)?
+    } else {
+        None
+    };
     let trusted_or_untrusted: Result<bool, Untrusted> = if let Some(refusal) = stale {
         trusted_keys = roots.iter().map(|root| root.id.clone()).collect();
         Err(Untrusted::Unsigned {
@@ -1365,20 +1614,22 @@ fn evaluate_against_with_evidence(
                 why: why.to_string(),
                 trusted_as: None,
             }),
-            Some((name, _)) => match signature_ok(manifest, bytes, &key) {
-                Ok(()) => Err(Untrusted::Retired {
-                    key: hex_key.to_string(),
-                    why: why.to_string(),
-                    trusted_as: Some(name.clone()),
-                }),
-                Err(reason) => Err(Untrusted::Unsigned {
-                    reason: format!(
-                        "first-party signature by the retired release key {hex_key} failed: \
+            Some((name, _)) => {
+                match policy_result(signature_ok_with_crypto(manifest, bytes, &key, crypto))? {
+                    Ok(()) => Err(Untrusted::Retired {
+                        key: hex_key.to_string(),
+                        why: why.to_string(),
+                        trusted_as: Some(name.clone()),
+                    }),
+                    Err(reason) => Err(Untrusted::Unsigned {
+                        reason: format!(
+                            "first-party signature by the retired release key {hex_key} failed: \
                          {reason}"
-                    ),
-                    tampered: true,
-                }),
-            },
+                        ),
+                        tampered: true,
+                    }),
+                }
+            }
         }
     } else if manifest.publisher == FIRST_PARTY_PUBLISHER {
         if roots.is_empty() {
@@ -1389,13 +1640,14 @@ fn evaluate_against_with_evidence(
                 tampered: false,
             })
         } else {
-            match first_party_signer_evidence(
+            match policy_result(first_party_signer_evidence_with_crypto(
                 manifest,
                 bytes,
                 &roots,
                 checks,
                 crate::release_trust::PLUGIN_TARGET,
-            ) {
+                crypto,
+            ))? {
                 Ok((_, version)) => {
                     authenticated_keys_version = version;
                     Ok(true)
@@ -1404,7 +1656,7 @@ fn evaluate_against_with_evidence(
                     refusal,
                     trusted_keys,
                 }) if hard_seal_refusal(&refusal).is_some() => {
-                    return Err(Rejected {
+                    return Err((Rejected {
                         trusted_keys,
                         ..Rejected::new(
                             hard_seal_refusal(&refusal).expect("matched"),
@@ -1415,7 +1667,7 @@ fn evaluate_against_with_evidence(
                                 refusal.code()
                             ),
                         )
-                    });
+                    }).into());
                 }
                 Err(unverified) => {
                     trusted_keys = unverified.trusted_keys().to_vec();
@@ -1431,16 +1683,18 @@ fn evaluate_against_with_evidence(
             None => Err(Untrusted::ThirdParty {
                 publisher: manifest.publisher.clone(),
             }),
-            Some(key) => match signature_ok(manifest, bytes, key) {
-                Ok(()) => Ok(false),
-                Err(reason) => Err(Untrusted::Unsigned {
-                    reason: format!(
-                        "signature from allowlisted publisher '{}' failed: {reason}",
-                        manifest.publisher
-                    ),
-                    tampered: true,
-                }),
-            },
+            Some(key) => {
+                match policy_result(signature_ok_with_crypto(manifest, bytes, key, crypto))? {
+                    Ok(()) => Ok(false),
+                    Err(reason) => Err(Untrusted::Unsigned {
+                        reason: format!(
+                            "signature from allowlisted publisher '{}' failed: {reason}",
+                            manifest.publisher
+                        ),
+                        tampered: true,
+                    }),
+                }
+            }
         }
     };
 
@@ -1456,7 +1710,7 @@ fn evaluate_against_with_evidence(
             } else {
                 "the highest version of this plugin this deployment has seen and loaded"
             };
-            return Err(Rejected::new(
+            return Err((Rejected::new(
                 RejectKind::AntiDowngrade,
                 format!(
                     "first-party plugin '{}' version {} is below the required first-party floor {} \
@@ -1470,7 +1724,8 @@ fn evaluate_against_with_evidence(
                     floor,
                     floor_note(floor)
                 ),
-            ));
+            ))
+            .into());
         }
     }
 
@@ -1478,7 +1733,7 @@ fn evaluate_against_with_evidence(
         match &trusted_or_untrusted {
             Ok(_) if version_at_least(&manifest.version, floor) => {}
             Ok(_) => {
-                return Err(Rejected::new(
+                return Err((Rejected::new(
                     RejectKind::AntiDowngrade,
                     format!(
                         "plugin '{}' version {} is below the pinned minimum {floor} \
@@ -1487,10 +1742,11 @@ fn evaluate_against_with_evidence(
                         manifest.version,
                         floor_note(floor)
                     ),
-                ));
+                ))
+                .into());
             }
             Err(_) => {
-                return Err(Rejected::new(
+                return Err((Rejected::new(
                     RejectKind::UntrustedFloored,
                     format!(
                         "plugin '{}' has a pinned minimum version {floor} but the load could not \
@@ -1499,7 +1755,7 @@ fn evaluate_against_with_evidence(
                         manifest.name,
                         floor_note(floor)
                     ),
-                ));
+                )).into());
             }
         }
     }
@@ -1586,7 +1842,7 @@ fn evaluate_against_with_evidence(
             ))
         }
     };
-    verdict.map(|verdict| {
+    verdict.map_err(WithCryptoError::Rejected).map(|verdict| {
         let version = matches!(
             verdict,
             Verdict::Trusted {
@@ -1612,3 +1868,47 @@ mod declares_reader_tests;
 #[cfg(test)]
 #[path = "tests/release_seal_tests.rs"]
 mod release_seal_tests;
+
+impl From<Rejected> for WithCryptoError<Rejected> {
+    fn from(error: Rejected) -> Self {
+        Self::Rejected(error)
+    }
+}
+
+impl From<FirstPartyUnverified> for WithCryptoError<FirstPartyUnverified> {
+    fn from(error: FirstPartyUnverified) -> Self {
+        Self::Rejected(error)
+    }
+}
+
+/// Validate all configured keys at native entry boundaries, including unused policy entries.
+/// Standard entrypoints preserve their established policy-key construction/acceptance behavior.
+pub(crate) fn validate_roots_with_crypto(
+    roots: &[RawFirstPartyKey],
+    crypto: &dyn ReleaseCrypto,
+) -> Result<(), WithCryptoError<String>> {
+    for root in roots {
+        if !crypto.validate_public_key(root.key.public_key())? {
+            return Err(format!("invalid release root public key '{}'", root.id).into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_policy_keys_with_crypto(
+    policy: &RawTrustPolicy,
+    crypto: &dyn ReleaseCrypto,
+) -> Result<(), WithCryptoError<String>> {
+    validate_roots_with_crypto(&policy.first_party_keys, crypto)?;
+    if let Some(key) = &policy.first_party_key {
+        if !crypto.validate_public_key(PublicKey::Ed25519(key))? {
+            return Err("invalid first-party public key".into());
+        }
+    }
+    for (name, key) in &policy.publishers {
+        if !crypto.validate_public_key(PublicKey::Ed25519(key))? {
+            return Err(format!("invalid publisher public key '{name}'").into());
+        }
+    }
+    Ok(())
+}
