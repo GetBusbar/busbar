@@ -6,7 +6,7 @@ use super::{nullable, object, reference, strings};
 use serde_json::{json, Map, Value};
 
 fn unsigned() -> Value {
-    json!({"type":"integer","minimum":0,"maximum":u64::MAX,
+    json!({"type":"integer","format":"uint64","minimum":0,"maximum":u64::MAX,
         "x-busbar-integer-token":"unsigned","x-busbar-exact-number":{"representation":"json-integer-token","bits":64,"signed":false}})
 }
 

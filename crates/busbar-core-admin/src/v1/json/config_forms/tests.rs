@@ -160,6 +160,15 @@ fn openapi_publishes_separate_user_input_forms_with_local_references() {
     let extension = &document["x-busbar-config-schemas"];
     assert_eq!(extension["context"], "user_configuration");
     assert_eq!(extension["version"], 1);
+    // Conventional generators need the numeric format as well as the lossless-token metadata.
+    for schema in [
+        &extension["schema"]["$defs"]["Limit"]["oneOf"][0]["properties"]["requests"],
+        &document["components"]["schemas"]["ConfigInputHook"]["properties"]["timeout_ms"],
+    ] {
+        assert_eq!(schema["format"], "uint64");
+        assert_eq!(schema["maximum"], u64::MAX);
+        assert_eq!(schema["x-busbar-exact-number"]["signed"], false);
+    }
     let validator = super::validator(&extension["schema"]);
     assert!(validator.is_valid(&json!({"auth":{"admin_auth":[],"role_bindings":{"idp":{"reader":{"admin_scope":"read-only"}}}}})));
     assert!(extension["schema"]["$defs"]["SecretRef"]["writeOnly"]

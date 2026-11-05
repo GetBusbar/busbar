@@ -273,7 +273,9 @@ fn a_legacy_refusal_cannot_hide_its_pending_successor_during_migration() {
 #[test]
 fn credential_body_binding_survives_process_cache_loss() {
     let store = durable_store();
-    let now = busbar_kernel::store::now();
+    // The actual store judges spent-token expiry by its own wall clock. Backdate
+    // this claim so the replay window ends shortly without advancing that clock.
+    let now = busbar_kernel::store::now() - IDEMPOTENCY_TTL_SECS + 5;
     let key = key("credential-binding-actor", "create:bound-action");
     let a = busbar_contract::abi::sdk::digest::sha256(br#"{"name":"a"}"#);
     let b = busbar_contract::abi::sdk::digest::sha256(br#"{"name":"b"}"#);
@@ -297,9 +299,17 @@ fn credential_body_binding_survives_process_cache_loss() {
     assert!(durable::claim_bound(store.as_ref(), &other, b, now + 1)
         .unwrap()
         .is_ok());
-    assert!(
-        durable::claim_bound(store.as_ref(), &key, b, now + IDEMPOTENCY_TTL_SECS)
-            .unwrap()
-            .is_ok()
+    assert_eq!(
+        durable::claim_bound(store.as_ref(), &key, b, now + IDEMPOTENCY_TTL_SECS),
+        Ok(Err(Refused::InFlight)),
+        "a caller timestamp cannot expire the store's still-live claim"
     );
+    // Tokens remain live through their deadline second; cross it in real time.
+    std::thread::sleep(std::time::Duration::from_secs(6));
+    let after_expiry = busbar_kernel::store::now();
+    assert!(after_expiry > now + IDEMPOTENCY_TTL_SECS);
+    assert!(durable::claim_bound(store.as_ref(), &key, b, after_expiry)
+        .unwrap()
+        .is_ok());
+    assert!(durable::claim_bound(store.as_ref(), &key, a, after_expiry).is_err());
 }

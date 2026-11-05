@@ -20,8 +20,19 @@ async fn actual_admin_doors_refuse_sender_downgrade_and_preserve_service_and_sco
     let (app, _config, _book) = app_with_admin_reader(false, true);
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::clone(&app)));
     let router = busbar_kernel::router::build_admin_router_on(&handle, 32 * 1024 * 1024, false);
-    // Seal a neutral admin line over the same actual opened auth products. The normal admin
-    // HTTP adapter is exercised above; this separately covers its receipt projection boundary.
+    // Seal a neutral line over the same actual opened auth products. The admin HTTP adapter
+    // below covers both admin carriers; the generic neutral listener uses the default inbound
+    // carriers and separately covers the receipt projection boundary with Authorization.
+    assert!(app
+        .auth
+        .carriers()
+        .iter()
+        .any(|name| name == "authorization"));
+    assert!(!app
+        .auth
+        .carriers()
+        .iter()
+        .any(|name| name == "x-admin-token"));
     let line = |methods| Line {
         route: Route {
             methods,
@@ -118,7 +129,7 @@ async fn actual_admin_doors_refuse_sender_downgrade_and_preserve_service_and_sco
     ];
     let mut stream = 0;
     for carrier in ["authorization", "x-admin-token"] {
-        for (method, token, expected, proof) in cases {
+        for (case, (method, token, expected, proof)) in cases.into_iter().enumerate() {
             stream += 1;
             let value = if carrier == "authorization" {
                 format!("Bearer {token}")
@@ -160,11 +171,17 @@ async fn actual_admin_doors_refuse_sender_downgrade_and_preserve_service_and_sco
             assert_eq!(
                 response.status().as_u16(),
                 expected,
-                "HTTP: {method} {carrier}, proof={proof}"
+                "HTTP: case={case}, {method} {carrier}, proof={proof}"
             );
             axum::body::to_bytes(response.into_body(), 64 * 1024)
                 .await
                 .unwrap();
+
+            // x-admin-token belongs to the HTTP admin adapter, not the generic listener's
+            // declared inbound carriers. Its HTTP assertion above is still required.
+            if carrier == "x-admin-token" {
+                continue;
+            }
 
             // The neutral transport has its own verified receipt projection. Exercise that real
             // path with the same loaded auth products and the sealed listener's lines.
@@ -203,7 +220,7 @@ async fn actual_admin_doors_refuse_sender_downgrade_and_preserve_service_and_sco
             if answer.flow == FLOW_STOP {
                 assert_eq!(
                     expected, 401,
-                    "only invalid credentials stop before admin projection"
+                    "only invalid credentials stop before admin projection: case={case}, {method} {carrier}, proof={proof}"
                 );
             } else {
                 assert_eq!(answer.flow, FLOW_CONTINUE);
@@ -241,7 +258,7 @@ async fn actual_admin_doors_refuse_sender_downgrade_and_preserve_service_and_sco
                 };
                 assert_eq!(
                     status, expected,
-                    "neutral receipt: {method} {carrier}, proof={proof}"
+                    "neutral receipt: case={case}, {method} {carrier}, proof={proof}"
                 );
             }
             inbound.stream_ended(OWNER, FRAMING, stream);

@@ -267,9 +267,23 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
     .await;
     assert_eq!(malformed["error"]["code"], "invalid_request");
     assert!(!malformed.to_string().contains("PRIVATE_REQUEST_SENTINEL"));
-    let too_large = checked(
+    // Registered legacy operations retain their frozen oversized-body response.
+    // New operations expose the typed 413 contract without changing those bytes.
+    let legacy_large = checked(
         client
             .post(format!("{root}/groups"))
+            .bearer_auth("admintok")
+            .body("x".repeat(4096))
+            .send()
+            .await
+            .unwrap(),
+        404,
+    )
+    .await;
+    assert_eq!(legacy_large["error"]["code"], "not_found");
+    let too_large = checked(
+        client
+            .post(format!("{root}/ledger/recovery/list"))
             .bearer_auth("admintok")
             .body("x".repeat(4096))
             .send()
