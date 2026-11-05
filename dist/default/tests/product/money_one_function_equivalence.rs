@@ -819,7 +819,14 @@ fn accrued_on_the_book(
             row.usage_units
                 .iter()
                 .filter(|(_, count)| **count > 0)
-                .map(|(class, count)| (class.clone(), *count))
+                .map(|(class, count)| {
+                    (
+                        class.clone(),
+                        busbar_contract::count::Count::from_stored(*count, row.scale)
+                            .and_then(busbar_contract::count::Count::whole_u64)
+                            .expect("the fixture records exact nonnegative whole units"),
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default();

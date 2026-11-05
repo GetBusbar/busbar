@@ -1292,7 +1292,14 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
                 .models
                 .iter()
                 .filter(|row| row.model == fee_lane)
-                .map(|row| row.tier(busbar_contract::plane::PER_REQUEST))
+                .map(|row| {
+                    busbar_contract::count::Count::from_stored(
+                        row.tier(busbar_contract::plane::PER_REQUEST),
+                        row.scale,
+                    )
+                    .and_then(busbar_contract::count::Count::whole_u64)
+                    .expect("the fixture fee quantity is an exact nonnegative whole count")
+                })
                 .sum::<u64>()
         };
         let before_ledger = gov
