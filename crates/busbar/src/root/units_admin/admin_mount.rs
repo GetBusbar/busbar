@@ -471,14 +471,61 @@ pub(crate) fn http_response(answer: AdminAnswer) -> axum::http::Response<axum::b
     for (name, value) in &answer.headers {
         response = response.header(name.as_str(), value.as_str());
     }
-    response
+    let mut response = response
         .body(axum::body::Body::from(answer.body))
         .unwrap_or_else(|_| {
             axum::http::Response::builder()
                 .status(500)
                 .body(axum::body::Body::empty())
                 .expect("an empty 500 always builds")
-        })
+        });
+    // Root-owned verbs and admission refusals bypass the inner admin router's boundary.
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
+#[cfg(all(test, feature = "root-admin"))]
+#[tokio::test]
+async fn root_admin_answers_are_never_stored() {
+    for (status, effect) in [
+        (200, "applied"),
+        (400, "not_applied"),
+        (409, "unknown"),
+        (503, "unknown"),
+    ] {
+        for existing in [None, Some("public, max-age=60")] {
+            let body = format!("{{\"effect\":\"{effect}\"}}").into_bytes();
+            let mut headers = vec![
+                ("content-type".into(), "application/json".into()),
+                ("x-busbar-adjust-effect".into(), effect.into()),
+            ];
+            if let Some(value) = existing {
+                headers.push(("cache-control".into(), value.into()));
+            }
+            let response = http_response(AdminAnswer {
+                status,
+                headers,
+                body: body.clone(),
+            });
+            assert_eq!(response.status().as_u16(), status);
+            assert_eq!(response.headers()["cache-control"], "no-store");
+            assert_eq!(
+                response.headers().get_all("cache-control").iter().count(),
+                1
+            );
+            assert_eq!(response.headers()["x-busbar-adjust-effect"], effect);
+            assert_eq!(
+                axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap()
+                    .as_ref(),
+                body.as_slice()
+            );
+        }
+    }
 }
 
 #[cfg(feature = "root-admin")]
