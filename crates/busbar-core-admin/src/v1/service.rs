@@ -1049,9 +1049,16 @@ pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[Strin
                 .map(HookStage::as_str)
                 .collect(),
             on_error: cfg.on_error.clone(),
+            on_empty: cfg.on_empty.as_ref().map(|fallback| match fallback {
+                busbar_kernel::config::PolicyOnError::Weighted => "weighted",
+                busbar_kernel::config::PolicyOnError::Reject => "reject",
+                busbar_kernel::config::PolicyOnError::First => "first",
+            }),
+            signals: cfg.signals.iter().map(|signal| signal.name()).collect(),
             timeout_ms: cfg.timeout_ms,
             settings_keys: settings_keys(&cfg.settings),
             global: cfg.global || global_hooks.iter().any(|n| n == name),
+            default: cfg.default,
             groups: cfg.groups.clone(),
         }
     }

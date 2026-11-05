@@ -83,6 +83,49 @@ fn a_group_scoped_hook_reads_back_its_caller_scope() {
 }
 
 #[test]
+fn hook_replacement_fields_read_back_authored_values() {
+    use busbar_contract::signal::Signal;
+    use busbar_kernel::config::PolicyOnError;
+
+    for fallback in [
+        None,
+        Some(PolicyOnError::Weighted),
+        Some(PolicyOnError::Reject),
+        Some(PolicyOnError::First),
+    ] {
+        for default in [false, true] {
+            let cfg = HookCfg {
+                on_empty: fallback.clone(),
+                signals: vec![
+                    Signal::CandidateErrorRate,
+                    Signal::RequestedModel,
+                    Signal::CandidateErrorRate,
+                ],
+                default,
+                ..hook(HookKind::Gate, false)
+            };
+            let authored = serde_json::to_value(&cfg).unwrap();
+            let read = serde_json::to_value(project_hook_view("ranking", &cfg, &[])).unwrap();
+            for field in ["on_empty", "signals", "default"] {
+                assert_eq!(read[field], authored[field], "replacement loses {field}");
+            }
+            assert!(read.get("at").is_none());
+            assert!(read.get("plugin").is_none());
+        }
+    }
+
+    let read = serde_json::to_value(project_hook_view(
+        "default-values",
+        &hook(HookKind::Gate, false),
+        &[],
+    ))
+    .unwrap();
+    assert!(read["on_empty"].is_null());
+    assert_eq!(read["signals"], serde_json::json!([]));
+    assert_eq!(read["default"], false);
+}
+
+#[test]
 fn all_hook_stages_lists_every_stage_variant() {
     for stage in ALL_HOOK_STAGES {
         let named = match stage {

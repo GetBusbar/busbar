@@ -358,6 +358,11 @@ pub struct HookView {
     /// are ILLEGAL hook names on every write path (`config::RESERVED_HOOK_NAMES`), so a value in
     /// the terminal set is always a terminal and anything else is always a hook reference.
     pub on_error: String,
+    /// Configured empty-intersection fallback: `"weighted"` | `"reject"` | `"first"`.
+    /// `null` preserves an omitted override, whose runtime default is fail-closed.
+    pub on_empty: Option<&'static str>,
+    /// Requested signal catalog names, in configured order.
+    pub signals: Vec<&'static str>,
     /// Gate decision deadline in milliseconds.
     pub timeout_ms: u64,
     /// The KEY NAMES of the hook's opaque settings bag, sorted, WITHOUT their values, the same
@@ -373,6 +378,8 @@ pub struct HookView {
     pub settings_keys: Vec<String>,
     /// Whether this hook fires on every request (globally wired).
     pub global: bool,
+    /// Whether this hook replaces the default ordering hook for pools with no named base.
+    pub default: bool,
     /// The canonical configured stage list. Empty selects the fixed core stages.
     pub phase: Vec<&'static str>,
     /// The effective stage set in pipeline order, computed by the runtime firing predicate.
