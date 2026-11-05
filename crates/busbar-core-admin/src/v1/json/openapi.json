@@ -1195,6 +1195,7 @@
               "properties": {
                 "requests": {
                   "type": "integer",
+                  "format": "uint64",
                   "minimum": 0,
                   "maximum": 18446744073709551615,
                   "x-busbar-integer-token": "unsigned",
@@ -1228,6 +1229,7 @@
               "properties": {
                 "tokens": {
                   "type": "integer",
+                  "format": "uint64",
                   "minimum": 0,
                   "maximum": 18446744073709551615,
                   "x-busbar-integer-token": "unsigned",
@@ -1261,6 +1263,7 @@
               "properties": {
                 "tokens_input": {
                   "type": "integer",
+                  "format": "uint64",
                   "minimum": 0,
                   "maximum": 18446744073709551615,
                   "x-busbar-integer-token": "unsigned",
@@ -1294,6 +1297,7 @@
               "properties": {
                 "tokens_output": {
                   "type": "integer",
+                  "format": "uint64",
                   "minimum": 0,
                   "maximum": 18446744073709551615,
                   "x-busbar-integer-token": "unsigned",
@@ -1327,6 +1331,7 @@
               "properties": {
                 "tokens_cache_read": {
                   "type": "integer",
+                  "format": "uint64",
                   "minimum": 0,
                   "maximum": 18446744073709551615,
                   "x-busbar-integer-token": "unsigned",
@@ -1360,6 +1365,7 @@
               "properties": {
                 "tokens_cache_write": {
                   "type": "integer",
+                  "format": "uint64",
                   "minimum": 0,
                   "maximum": 18446744073709551615,
                   "x-busbar-integer-token": "unsigned",
@@ -1393,6 +1399,7 @@
               "properties": {
                 "budget": {
                   "type": "integer",
+                  "format": "uint64",
                   "minimum": 0,
                   "maximum": 18446744073709551615,
                   "x-busbar-integer-token": "unsigned",
@@ -1486,6 +1493,7 @@
               "properties": {
                 "concurrent": {
                   "type": "integer",
+                  "format": "uint64",
                   "minimum": 0,
                   "maximum": 18446744073709551615,
                   "x-busbar-integer-token": "unsigned",
@@ -1583,6 +1591,7 @@
             },
             "timeout_ms": {
               "type": "integer",
+              "format": "uint64",
               "minimum": 0,
               "maximum": 18446744073709551615,
               "x-busbar-integer-token": "unsigned",
@@ -1779,6 +1788,7 @@
               "anyOf": [
                 {
                   "type": "integer",
+                  "format": "uint64",
                   "minimum": 0,
                   "maximum": 18446744073709551615,
                   "x-busbar-integer-token": "unsigned",
@@ -10001,7 +10011,13 @@
           },
           "config_version": {
             "type": "integer",
-            "minimum": 0
+            "format": "uint64",
+            "minimum": 0,
+            "x-busbar-exact-number": {
+              "representation": "json-integer-token",
+              "integer_format": "uint64",
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion"
+            }
           },
           "configuration": {
             "type": "object",
@@ -10608,6 +10624,7 @@
             "properties": {
               "requests": {
                 "type": "integer",
+                "format": "uint64",
                 "minimum": 0,
                 "maximum": 18446744073709551615,
                 "x-busbar-integer-token": "unsigned",
@@ -10641,6 +10658,7 @@
             "properties": {
               "tokens": {
                 "type": "integer",
+                "format": "uint64",
                 "minimum": 0,
                 "maximum": 18446744073709551615,
                 "x-busbar-integer-token": "unsigned",
@@ -10674,6 +10692,7 @@
             "properties": {
               "tokens_input": {
                 "type": "integer",
+                "format": "uint64",
                 "minimum": 0,
                 "maximum": 18446744073709551615,
                 "x-busbar-integer-token": "unsigned",
@@ -10707,6 +10726,7 @@
             "properties": {
               "tokens_output": {
                 "type": "integer",
+                "format": "uint64",
                 "minimum": 0,
                 "maximum": 18446744073709551615,
                 "x-busbar-integer-token": "unsigned",
@@ -10740,6 +10760,7 @@
             "properties": {
               "tokens_cache_read": {
                 "type": "integer",
+                "format": "uint64",
                 "minimum": 0,
                 "maximum": 18446744073709551615,
                 "x-busbar-integer-token": "unsigned",
@@ -10773,6 +10794,7 @@
             "properties": {
               "tokens_cache_write": {
                 "type": "integer",
+                "format": "uint64",
                 "minimum": 0,
                 "maximum": 18446744073709551615,
                 "x-busbar-integer-token": "unsigned",
@@ -10806,6 +10828,7 @@
             "properties": {
               "budget": {
                 "type": "integer",
+                "format": "uint64",
                 "minimum": 0,
                 "maximum": 18446744073709551615,
                 "x-busbar-integer-token": "unsigned",
@@ -10899,6 +10922,7 @@
             "properties": {
               "concurrent": {
                 "type": "integer",
+                "format": "uint64",
                 "minimum": 0,
                 "maximum": 18446744073709551615,
                 "x-busbar-integer-token": "unsigned",
@@ -10996,6 +11020,7 @@
           },
           "timeout_ms": {
             "type": "integer",
+            "format": "uint64",
             "minimum": 0,
             "maximum": 18446744073709551615,
             "x-busbar-integer-token": "unsigned",
@@ -11192,6 +11217,7 @@
             "anyOf": [
               {
                 "type": "integer",
+                "format": "uint64",
                 "minimum": 0,
                 "maximum": 18446744073709551615,
                 "x-busbar-integer-token": "unsigned",
