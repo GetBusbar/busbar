@@ -88,10 +88,10 @@ pub(super) fn complete(paths: &mut Map<String, Value>, schemas: &mut Map<String,
         adjust["requestBody"]["content"]["application/json"]["schema"] = json!({"anyOf":[reference("AdjustReq"),reference("ExactAdjustReq")],"description":"Header-selective profiles: AdjustReq without Idempotency-Key, ExactAdjustReq with it. OpenAPI body union alone cannot validate the cross-header condition."});
         adjust[RESPONSES_KEY]["200"]["content"]["application/json"]["schema"] =
             reference("AdjustmentResponse");
-        for status in ["400", "409"] {
+        for status in ["400", "409", "503"] {
             adjust[RESPONSES_KEY][status] = json!({"description":"Typed refusal or durable action outcome. An action outcome body carries effect and reconciliation identity; unknown effect requires recovery, never a new automatic delta.","content":{"application/json":{"schema":{"anyOf":[reference("Error"),reference("AdjustmentActionView"),reference("AdjustmentActionInFlightError")]}}}});
         }
-        for status in ["200", "400", "409"] {
+        for status in ["200", "400", "409", "503"] {
             adjust[RESPONSES_KEY][status]["headers"]["x-busbar-adjust-effect"] = json!({"description":"Host-created applied/not_applied/unknown effect classification when an action outcome is available; not derived from a request header.","schema":{"enum":["applied","not_applied","unknown"]}});
             adjust[RESPONSES_KEY][status]["headers"]["x-busbar-receipt-durable"] = json!({"description":"false when the effect is known in this process but final receipt persistence was not confirmed. After restart the retained pre-effect receipt may remain unknown; reconcile before any new action.","schema":{"const":"false"}});
         }
