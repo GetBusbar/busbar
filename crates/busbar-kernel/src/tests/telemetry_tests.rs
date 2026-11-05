@@ -905,3 +905,176 @@ fn test_finish_outcome_mapping_503_is_exhausted() {
     assert_eq!(outcome_of(429), "client_error");
     assert_eq!(outcome_of(200), "ok");
 }
+
+#[test]
+fn phase_observations_follow_callsites_and_survive_reload_without_off_metrics_buffers() {
+    const CHILD: &str = "BUSBAR_TEST_REQUEST_PHASE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let full = concat!(
+            module_path!(),
+            "::phase_observations_follow_callsites_and_survive_reload_without_off_metrics_buffers"
+        );
+        let (_, name) = full.split_once("::").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    crate::plane_driver::registry::publish_planes(&[&TELEMETRY_PLANE, &TELEMETRY_MOUNTED_PHASE]);
+    let build = || AppSlots::build(&[("phase-pool", vec![])], &[], |_| None, model_plane_key());
+    let first = build();
+    let protocol = shipped_protocols().0;
+    let producer = first
+        .request_family(model_plane_key(), protocol, "phase-pool")
+        .unwrap()
+        .producer_duration[0];
+    let mounted = first.mounted_duration["telemetry-mounted-phase"][0][0];
+    assert!(!crate::snapshot::retaining());
+    // Warm the legacy request counter bank; the new phase observation adds no allocation or
+    // histogram-buffer lock/materialization while metrics are off.
+    model_request_finished_in(&first, protocol, "phase-pool", 200, 0.001);
+    assert!(!bank_internals::hist_chunk_materialized(producer));
+    assert!(!bank_internals::hist_chunk_materialized(mounted));
+    #[cfg(not(target_env = "msvc"))]
+    let allocation = tikv_jemalloc_ctl::thread::allocatedp::read().unwrap();
+    #[cfg(not(target_env = "msvc"))]
+    let before_allocated = allocation.get();
+    for _ in 0..1000 {
+        model_request_finished_in(&first, protocol, "phase-pool", 200, 0.001);
+    }
+    #[cfg(not(target_env = "msvc"))]
+    assert_eq!(allocation.get(), before_allocated);
+    assert!(!bank_internals::hist_chunk_materialized(producer));
+
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+    let generation = crate::snapshot::process_generation().unwrap();
+    model_request_finished_in(&first, protocol, "phase-pool", 200, 0.001);
+    // Legacy response-ready fallback events are not mislabeled as producer completion.
+    request_finished_in(&first, model_plane_key(), protocol, "phase-pool", "ok", 0.5);
+    request_finished_in(
+        &first,
+        "telemetry-mounted-phase",
+        protocol,
+        POOL_LABEL_UNRESOLVED,
+        "ok",
+        0.005,
+    );
+    let second = build();
+    model_request_finished_in(&second, protocol, "phase-pool", 200, 0.002);
+    model_request_finished_in(
+        &second,
+        "unregistered-secret-wire",
+        "secret-unregistered-pool",
+        200,
+        0.001,
+    );
+    for status in [400, 429, 500, 503] {
+        model_request_finished_in(&second, protocol, "phase-pool", status, 0.001);
+    }
+    for status in [400, 429, 500, 503] {
+        request_finished_in(
+            &second,
+            "telemetry-mounted-phase",
+            protocol,
+            POOL_LABEL_UNRESOLVED,
+            outcome_of(status),
+            0.001,
+        );
+    }
+    let projection = crate::snapshot::request_snapshot(32).unwrap();
+    assert_eq!(projection.identities.len(), 2);
+    for identity in &projection.identities {
+        assert_eq!(identity.errors, 2);
+        assert_eq!(identity.client_errors, 2);
+    }
+    let snapshot = crate::snapshot::snapshot().unwrap();
+    let phase_samples: Vec<_> = snapshot
+        .iter()
+        .flat_map(|f| &f.samples)
+        .filter(|s| s.name.starts_with("busbar_request_phase_duration_"))
+        .collect();
+    for (phase, count, sum) in [(PRODUCER_DRIVE, 6u64, 7000u64), (RESPONSE_READY, 5, 9000)] {
+        let total = |suffix: &str| -> u64 {
+            phase_samples
+                .iter()
+                .filter(|s| {
+                    s.name.ends_with(suffix)
+                        && s.labels.iter().any(|(k, v)| k == "phase" && v == phase)
+                })
+                .map(|s| s.value.parse::<u64>().unwrap())
+                .sum()
+        };
+        assert_eq!(total("count_total"), count);
+        assert_eq!(total("sum_us_total"), sum);
+        assert_eq!(total("bin_total"), count);
+    }
+    assert!(phase_samples.iter().all(|s| s
+        .labels
+        .iter()
+        .all(|(_, value)| !value.contains("secret-unregistered"))));
+    assert_eq!(
+        metric_sum(REQUEST_PHASE_DROPPED, &[("reason", "unregistered_labels")]),
+        1.0
+    );
+    let later = crate::snapshot::process_generation().unwrap();
+    assert_eq!(generation.0, later.0);
+    assert!(later.1 >= generation.1);
+}
+
+static TELEMETRY_MOUNTED_PHASE: crate::plane_driver::registry::PlaneDecl =
+    crate::plane_driver::registry::PlaneDecl {
+        declaration: crate::plane_driver::registry::PlaneDeclaration {
+            key: "telemetry-mounted-phase",
+            fallback: false,
+            config_section: "streams",
+            scope_kinds: &[],
+            subject_noun: "stream",
+            admin_noun: "stream",
+            audit_kind: "stream",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+            metric_families: &[],
+            record_kinds: &[],
+            required_config_sections: &[],
+            trust_keys: &[],
+            served_op_classes: &[],
+            caller_credential_refusal: None,
+        },
+        wire_format_names: |_| &["telemetry-a", "telemetry-b"],
+        provider_dialects: |_| &[],
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_, _| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
+        door: None,
+    };

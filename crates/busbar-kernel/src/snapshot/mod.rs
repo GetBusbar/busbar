@@ -12,6 +12,8 @@ pub(crate) mod hooks;
 
 mod source;
 
+pub use source::{process_generation, RequestIdentity, RequestSnapshot};
+
 #[cfg(test)]
 pub use source::Source;
 
@@ -568,4 +570,14 @@ pub fn snapshot() -> Option<Vec<Family>> {
     let source = (*HANDLE.get()?)?;
     crate::telemetry::flush_to_recorder();
     Some(source.snapshot())
+}
+
+/// Bounded request-phase telemetry for an authorized internal reader. Missing/failed recorder
+/// initialization is unavailable, never an invented zero snapshot.
+pub fn request_snapshot(limit: usize) -> Option<RequestSnapshot> {
+    #[cfg(any(test, feature = "test-support"))]
+    let _serial = crate::telemetry::drain_serial::lock();
+    let source = (*HANDLE.get()?)?;
+    crate::telemetry::flush_to_recorder();
+    source.request_snapshot(limit)
 }

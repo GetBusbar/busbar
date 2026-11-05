@@ -13,6 +13,7 @@ use crate::state::App;
 struct RequestFamily {
     requests: [CounterSlot; OUTCOMES.len()],
     duration: HistogramSlot,
+    producer_duration: [HistogramSlot; OUTCOMES.len()],
 }
 
 /// The banked slots for one `(pool label, lane)` pair on the upstream walk:
@@ -49,6 +50,7 @@ pub(crate) struct AppSlots {
     lane: HashMap<Box<str>, HashMap<usize, LaneFamily>>,
     /// engine pool label → failover-reason slots, indexed by position in [`REASONS`].
     failover: HashMap<Box<str>, [CounterSlot; REASONS.len()]>,
+    mounted_duration: HashMap<&'static str, Box<[[HistogramSlot; OUTCOMES.len()]]>>,
 }
 
 impl AppSlots {
@@ -84,6 +86,7 @@ impl AppSlots {
                             ],
                         )
                     }),
+                    producer_duration: phase_duration_slot(plane, PRODUCER_DRIVE, proto, pool),
                     duration: histogram_slot(
                         REQUEST_DURATION_SECONDS,
                         &[("ingress_protocol", proto), ("pool", pool)],
@@ -142,7 +145,23 @@ impl AppSlots {
             });
         }
 
+        // Mounted ingress currently observes response-ready at its middleware boundary, before
+        // body consumption, with the fixed unresolved pool label. Never infer producer completion.
+        let mounted_duration = crate::plane_driver::dispatch::plane_keys()
+            .filter(|key| !crate::plane_driver::dispatch::is_fallback(key))
+            .map(|key| {
+                let slots = declared_dialects(key)
+                    .iter()
+                    .map(|protocol| {
+                        phase_duration_slot(key, RESPONSE_READY, protocol, POOL_LABEL_UNRESOLVED)
+                    })
+                    .collect();
+                (key, slots)
+            })
+            .collect();
+
         AppSlots {
+            mounted_duration,
             banked_plane: plane,
             request,
             lane: lane_map,
@@ -190,6 +209,18 @@ fn request_finished_in(
     seconds: f64,
 ) {
     if !crate::plane_driver::dispatch::is_fallback(plane) {
+        if crate::snapshot::retaining() {
+            let slot = (pool == POOL_LABEL_UNRESOLVED)
+                .then(|| slots.mounted_duration.get(plane))
+                .flatten()
+                .and_then(|slots| {
+                    declared_dialects(plane)
+                        .iter()
+                        .position(|p| *p == ingress_protocol)
+                        .map(|i| slots[i])
+                });
+            record_phase_duration(slot, outcome, seconds);
+        }
         crate::snapshot::incr_plane_requests_total(plane, ingress_protocol, pool, outcome);
         crate::snapshot::record_plane_request_duration(plane, ingress_protocol, pool, seconds);
         return;
@@ -239,6 +270,19 @@ fn model_request_finished_in(
     seconds: f64,
 ) -> &'static str {
     let outcome = outcome_of(status);
+    if crate::snapshot::retaining() {
+        record_phase_duration(
+            slots
+                .request_family(
+                    crate::plane_driver::dispatch::fallback_key(),
+                    ingress_protocol,
+                    pool,
+                )
+                .map(|family| family.producer_duration),
+            outcome,
+            seconds,
+        );
+    }
     request_finished_in(
         slots,
         crate::plane_driver::dispatch::fallback_key(),
@@ -389,6 +433,66 @@ pub fn translation(from: &str, to: &str) {
             "to" => to.to_string()
         )
         .increment(1),
+    }
+}
+
+// Internal observation stream: Source exports exact cumulative integer samples, not a summary.
+pub(crate) const REQUEST_PHASE_DURATION: &str = "busbar_request_phase_duration_seconds";
+pub(crate) const REQUEST_PHASE_DROPPED: &str = "busbar_request_phase_observations_dropped_total";
+const PRODUCER_DRIVE: &str = "LlmProducerDrive";
+const RESPONSE_READY: &str = "MountedResponseReady";
+
+fn phase_duration_slot(
+    plane: &str,
+    phase: &str,
+    protocol: &str,
+    pool: &str,
+) -> [HistogramSlot; OUTCOMES.len()] {
+    std::array::from_fn(|i| {
+        histogram_slot(
+            REQUEST_PHASE_DURATION,
+            &[
+                ("plane", plane),
+                ("phase", phase),
+                ("pool", pool),
+                ("ingress_protocol", protocol),
+                ("outcome", OUTCOMES[i]),
+            ],
+        )
+    })
+}
+
+static PHASE_DROPPED: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+
+pub(crate) fn request_phase_dropped() -> [u64; 2] {
+    std::array::from_fn(|i| PHASE_DROPPED[i].load(Ordering::Relaxed))
+}
+
+fn record_phase_duration(
+    slots: Option<[HistogramSlot; OUTCOMES.len()]>,
+    outcome: &str,
+    seconds: f64,
+) {
+    let slot = slots.and_then(|slots| {
+        OUTCOMES
+            .iter()
+            .position(|held| *held == outcome)
+            .map(|i| slots[i])
+    });
+    match slot {
+        Some(slot) if slot.is_valid() => slot.record(seconds),
+        Some(_) => {
+            let _ = PHASE_DROPPED[0].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                Some(n.saturating_add(1))
+            });
+            metrics::counter!(REQUEST_PHASE_DROPPED, "reason" => "histogram_capacity").increment(1)
+        }
+        None => {
+            let _ = PHASE_DROPPED[1].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                Some(n.saturating_add(1))
+            });
+            metrics::counter!(REQUEST_PHASE_DROPPED, "reason" => "unregistered_labels").increment(1)
+        }
     }
 }
 
