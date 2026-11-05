@@ -764,8 +764,10 @@ now names the Valkey store's manifest as `busbar-store-valkey`.
 
 **The Headroom hook plugin is no longer a first-party Busbar plugin** (owner ruling, 2026-09-30).
 Busbar no longer lists, builds, tests, bundles or release-notifies it; its repository
-(`GetBusbar/busbar-hook-headroom`) stays where it is. A tarball you already installed is an ordinary
-`kind: hook` plugin and loads under the same trust rules as any other.
+(`GetBusbar/busbar-hook-headroom`) stays where it is. Existing Headroom tarballs use the retired
+plugin ABI and cannot load into 1.6.0. **Migration:** remove the Headroom hook from your configuration
+and plugin directory before upgrading, or install a separately maintained Headroom release ported
+to the 1.6.0 SDK. Such a release must meet the current ABI and plugin trust requirements.
 
 **A store plugin refuses an `op_id` replayed with different value fields** with the diagnostic
 `STORE_OPID_CONFLICT` (new in the 1.6.0 store ABI, owner ruling 2026-09-28): nothing is applied, and

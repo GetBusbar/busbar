@@ -298,15 +298,22 @@ author must know:
   `{}`), and may attach extra fields to its own replies (they are ignored).
 - **Optional fields are absent, not `null`.** Key your parser on field **presence** (e.g.
   `"tier" in candidate`), never on null-ness, and never on key order.
-- **Abstain is `{}`.** A sidecar failure on `decide` or `transform` (a transport error, a 4xx/5xx
-  status, a reply over 64 KiB or nested deeper than 128 levels, or a body that is not JSON) is also
-  read as abstain, and the forwarder logs a warning in its own plugin log. A reject must ride a
-  2xx response body; a 4xx/5xx status is a failed call, not a rejection. Redirects are never
-  followed: a 3xx body is read as the reply.
-- **Deadlines.** The gate's `on_error` resolves what Busbar itself observes about the call: the
-  gate's `timeout_ms` deadline (default 1 ms; raise it for a network hop), a plugin fault or a
-  refusal. The forwarder's own per-call timeout is `settings.timeout_ms` (default 5000, clamped to
-  1-5000).
+- **Abstain is `{}`.** A valid deliberate abstain is distinct from a failed sidecar call. A
+  transport error, timeout, non-2xx status, empty reply (including a `204`), reply over 64 KiB,
+  excessive nesting, or invalid JSON fails `decide` or `transform`, so the hook's `on_error`
+  applies. The forwarder logs forwarding failures in its own plugin log. A reject or rewrite
+  must ride a 2xx response body. Redirects are never followed and a 3xx body is not a verdict.
+  A `notify` acknowledges a 2xx/3xx response head without interpreting its body; any other final
+  status logs a dropped notification and never fails the served request.
+- **Deadlines.** The gate's `timeout_ms` deadline (default 1 ms; raise it for a network hop)
+  caps the call. The forwarder's own per-call timeout is `settings.timeout_ms` (default 5000,
+  clamped to 1-5000). Either timeout is a failed call handled by `on_error`.
+- **Upgrading from 1.5.5.** Released `webrequest-hook` v1.0.6 converted forwarding errors to
+  abstain and could read redirect or 600–999 response bodies as verdicts. These behaviors are
+  not retained in 1.6: return a deliberate 2xx JSON abstain when that is your intent, and set
+  `on_error` for actual failures. URL userinfo that is invalid UTF-8 after percent decoding is
+  refused at open/configure instead of silently dropping the username or password. A refused
+  settings push keeps the complete live target; valid credentials remain unchanged.
 - **Transform precedence.** A `transform` reply is read as **reject > rewrite > abstain**: a
   rewrite gate that also screens (a compressor with a PII check) returns `{"reject": ...}` and the
   request stops, exactly as on the decide path. `restrict`/`order` are decide-path verbs and are
