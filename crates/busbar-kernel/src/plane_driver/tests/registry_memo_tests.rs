@@ -83,3 +83,15 @@ fn a_re_read_of_one_set_returns_the_one_leaked_fold() {
     let b = plane_decls();
     assert!(std::ptr::eq(a, b), "one set folds and leaks once");
 }
+
+#[test]
+fn current_core_sections_cannot_be_claimed_by_a_plane() {
+    const CLAIMS: &[&[&str]] = &[&["oauth_as"], &["credentials"]];
+    for &owned in CLAIMS {
+        let mut declaration = ONE.declaration;
+        declaration.owned_config_sections = owned;
+        let error = check_owned_config_claims(&[&declaration], CORE_OWNED_CONCRETE_SECTIONS)
+            .expect_err("a core section cannot be diverted into a plane parser");
+        assert!(error.contains(owned[0]), "{error}");
+    }
+}

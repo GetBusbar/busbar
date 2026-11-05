@@ -147,8 +147,15 @@ pub fn merged_boot_plane_decls(
     decls
 }
 
-pub const CORE_OWNED_CONCRETE_SECTIONS: &[&str] =
-    &["providers", "models", "pools", "rate_card", "limits"];
+pub const CORE_OWNED_CONCRETE_SECTIONS: &[&str] = &[
+    "providers",
+    "models",
+    "pools",
+    "rate_card",
+    "limits",
+    "oauth_as",
+    "credentials",
+];
 
 fn canonical_key_order(
     installed: &[&'static PlaneDecl],
