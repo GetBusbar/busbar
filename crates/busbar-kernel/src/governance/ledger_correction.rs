@@ -1479,7 +1479,9 @@ impl GovState {
                 return Ok(Err(refused));
             }
             if !self.store.supports_usage_correction() {
-                return Err(unresolved("usage corrections are unsupported"));
+                return Ok(Err(AdjustRefused::Preparation {
+                    reason: "usage corrections are unsupported".into(),
+                }));
             }
             if let Some(history) = crate::rate_apply::dated_history() {
                 if history.current().entry_at(adj.card_epoch_ms).is_none() {
@@ -1510,7 +1512,7 @@ impl GovState {
             };
         }
         loop {
-            let Some(key) = self.store.get_key(adj.key_id)? else {
+            let Some(key) = prepare!(self.store.get_key(adj.key_id)) else {
                 return Ok(Err(AdjustRefused::UnknownKey));
             };
             if key.deleted_at.is_some() {
@@ -1542,19 +1544,17 @@ impl GovState {
             let mut snapshots = BTreeMap::new();
             for (bucket, window) in &targets {
                 for name in [bucket.clone(), era_bucket(bucket)] {
-                    let mut row = self.store.get_usage(&name, *window)?;
+                    let mut row = prepare!(self.store.get_usage(&name, *window));
                     prepare!(correction::canonical_ledger(&mut row));
                     snapshots.insert(address(&name, *window), row);
                 }
             }
             for bucket in [ADJUST_UP_BUCKET, ADJUST_DOWN_BUCKET] {
-                let mut row = self.store.get_usage(bucket, day)?;
+                let mut row = prepare!(self.store.get_usage(bucket, day));
                 prepare!(correction::canonical_ledger(&mut row));
                 snapshots.insert(address(bucket, day), row);
             }
-            let mut metering: Vec<_> = self
-                .store
-                .list_metering(day)?
+            let mut metering: Vec<_> = prepare!(self.store.list_metering(day))
                 .into_iter()
                 .filter(|row| row.key_id == adj.key_id)
                 .collect();

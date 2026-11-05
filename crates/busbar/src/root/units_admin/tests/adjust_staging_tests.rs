@@ -2,12 +2,17 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::records::{MeteringDelta, VirtualKey};
+use busbar_contract::abi::store::OpId;
+use busbar_contract::records::{
+    correction::{Decision, Request},
+    MeteringDelta, MeteringRow, RecordStoreError, RecordStoreResult, UsageDelta, UsageLedger,
+    VirtualKey,
+};
 use busbar_contract::Count;
 use busbar_kernel::cost::{CostModel, RawRateEra};
 use busbar_kernel::governance::recovery::{RecoveryError, RecoveryEvent, RecoverySink};
 use busbar_kernel::governance::{Adjustment, GovState};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, RwLock};
 
 type RequestUnit = super::super::super::AdminRequest;
@@ -28,8 +33,90 @@ impl RecoverySink for Journal {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReadPoint {
+    Key,
+    Usage,
+    Metering,
+}
+
+struct FaultStore {
+    inner: Arc<dyn RecordStore>,
+    read_failure: Mutex<Option<(ReadPoint, usize)>>,
+    unsupported: AtomicBool,
+    lose_reply: AtomicBool,
+    submissions: AtomicUsize,
+}
+impl FaultStore {
+    fn read(&self, point: ReadPoint) -> RecordStoreResult<()> {
+        let mut failure = self.read_failure.lock().unwrap();
+        if let Some((target, remaining)) = failure.as_mut() {
+            if *target == point {
+                *remaining -= 1;
+                if *remaining == 0 {
+                    *failure = None;
+                    return Err(RecordStoreError("planted read failure".into()));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+impl RecordStore for FaultStore {
+    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
+        self.inner.put_key(key)
+    }
+    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
+        self.read(ReadPoint::Key)?;
+        self.inner.get_key(id)
+    }
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
+        self.inner.list_keys()
+    }
+    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
+        self.inner.delete_key(id)
+    }
+    fn get_usage(&self, bucket: &str, window: u64) -> RecordStoreResult<UsageLedger> {
+        self.read(ReadPoint::Usage)?;
+        self.inner.get_usage(bucket, window)
+    }
+    fn put_usage(&self, bucket: &str, window: u64, row: &UsageLedger) -> RecordStoreResult<()> {
+        self.inner.put_usage(bucket, window, row)
+    }
+    fn supports_usage_batch_deduped(&self) -> bool {
+        self.inner.supports_usage_batch_deduped()
+    }
+    fn add_usage_batch_deduped(
+        &self,
+        op: OpId,
+        cells: &[(&str, u64, UsageDelta)],
+    ) -> RecordStoreResult<()> {
+        self.inner.add_usage_batch_deduped(op, cells)
+    }
+    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
+        self.inner.add_metering(delta)
+    }
+    fn list_metering(&self, day: u64) -> RecordStoreResult<Vec<MeteringRow>> {
+        self.read(ReadPoint::Metering)?;
+        self.inner.list_metering(day)
+    }
+    fn supports_usage_correction(&self) -> bool {
+        !self.unsupported.load(Ordering::SeqCst) && self.inner.supports_usage_correction()
+    }
+    fn apply_usage_correction(&self, request: &Request) -> RecordStoreResult<Decision> {
+        self.submissions.fetch_add(1, Ordering::SeqCst);
+        let decision = self.inner.apply_usage_correction(request)?;
+        if self.lose_reply.swap(false, Ordering::SeqCst) {
+            assert_eq!(decision, Decision::Applied, "fault follows a real commit");
+            return Err(RecordStoreError("planted lost committed reply".into()));
+        }
+        Ok(decision)
+    }
+}
+
 struct Fixture {
     store: Arc<dyn RecordStore>,
+    faults: Arc<FaultStore>,
     active: Arc<RwLock<Arc<GovState>>>,
     journal: Arc<Journal>,
     cost: Arc<CostModel>,
@@ -42,7 +129,14 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let store = crate::root::real_store::records();
-        let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
+        let faults = Arc::new(FaultStore {
+            inner: store.clone(),
+            read_failure: Mutex::new(None),
+            unsupported: AtomicBool::new(false),
+            lose_reply: AtomicBool::new(false),
+            submissions: AtomicUsize::new(0),
+        });
+        let gov = Arc::new(GovState::new(faults.clone(), None).unwrap());
         let journal = Arc::new(Journal::default());
         gov.attach_recovery_sink(journal.clone()).unwrap();
         let key = VirtualKey {
@@ -127,6 +221,7 @@ impl Fixture {
         };
         Self {
             store,
+            faults,
             active,
             journal,
             cost,
@@ -178,7 +273,7 @@ impl Fixture {
         Count::from_stored(lane.usage_units["search_units"], lane.scale).unwrap()
     }
     fn restart(&self) {
-        let restarted = Arc::new(GovState::new(self.store.clone(), None).unwrap());
+        let restarted = Arc::new(GovState::new(self.faults.clone(), None).unwrap());
         restarted
             .attach_recovery_sink(self.journal.clone())
             .unwrap();
@@ -285,6 +380,107 @@ fn exhausted_gross_adjustment_counter_is_known_not_applied_without_reservation()
         200,
         "applied",
     );
+    assert_eq!(
+        fixture.count(),
+        Count::ONE.checked_add(Count::EPSILON).unwrap()
+    );
+}
+
+#[test]
+fn preparation_reads_and_capability_refuse_without_submission_and_replay_not_applied() {
+    for failure in [
+        None,
+        Some((ReadPoint::Key, 1)),
+        Some((ReadPoint::Key, 2)),
+        Some((ReadPoint::Usage, 1)),
+        Some((ReadPoint::Usage, 2)),
+        Some((ReadPoint::Usage, 3)),
+        Some((ReadPoint::Usage, 4)),
+        Some((ReadPoint::Metering, 1)),
+    ] {
+        let fixture = Fixture::new();
+        let day = busbar_kernel::governance::metering_bucket(fixture.now);
+        let buckets = [
+            ("exact-staging-key", 0),
+            (busbar_kernel::governance::ADJUST_UP_BUCKET, day),
+            (busbar_kernel::governance::ADJUST_DOWN_BUCKET, day),
+        ];
+        let before: Vec<_> = buckets
+            .iter()
+            .map(|(bucket, window)| fixture.store.get_usage(bucket, *window).unwrap())
+            .collect();
+        let metered = fixture.store.list_metering(day).unwrap();
+        *fixture.faults.read_failure.lock().unwrap() = failure;
+        fixture
+            .faults
+            .unsupported
+            .store(failure.is_none(), Ordering::SeqCst);
+        let unit = fixture.unit("pre-submit-failure", "0.000001");
+        let first = fixture.ask(&unit);
+        assert_effect(&first, 503, "not_applied");
+        assert_eq!(fixture.ask(&unit).body, first.body);
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fixture.faults.submissions.load(Ordering::SeqCst), 0);
+        assert!(
+            fixture.faults.read_failure.lock().unwrap().is_none(),
+            "the requested read failed"
+        );
+        for ((bucket, window), previous) in buckets.iter().zip(before) {
+            assert_eq!(fixture.store.get_usage(bucket, *window).unwrap(), previous);
+        }
+        assert_eq!(fixture.store.list_metering(day).unwrap(), metered);
+        assert!(fixture.journal.0.lock().unwrap().is_empty());
+        fixture.assert_clear();
+        fixture.faults.unsupported.store(false, Ordering::SeqCst);
+        assert_effect(
+            &fixture.ask(&fixture.unit("fresh-action", "0.000001")),
+            200,
+            "applied",
+        );
+        assert_eq!(
+            fixture.count(),
+            Count::ONE.checked_add(Count::EPSILON).unwrap()
+        );
+    }
+}
+
+#[test]
+fn committed_correction_lost_reply_stays_unknown_and_replay_does_not_resubmit() {
+    let fixture = Fixture::new();
+    fixture.faults.lose_reply.store(true, Ordering::SeqCst);
+    let unit = fixture.unit("lost-committed-reply", "0.000001");
+    let first = fixture.ask(&unit);
+    assert_eq!(first.status, 409);
+    let receipt: serde_json::Value = serde_json::from_slice(&first.body).unwrap();
+    assert_eq!(receipt["effect"], "unknown");
+    assert_eq!(receipt["recovery"], "reconcile_ledger_recovery");
+    assert_eq!(
+        fixture.count(),
+        Count::ONE.checked_add(Count::EPSILON).unwrap()
+    );
+    assert_eq!(fixture.faults.submissions.load(Ordering::SeqCst), 1);
+    assert!(!fixture.journal.0.lock().unwrap().is_empty());
+    assert!(!fixture
+        .active
+        .read()
+        .unwrap()
+        .recovery()
+        .list(None, 10)
+        .unwrap()
+        .is_empty());
+    assert_eq!(fixture.ask(&unit).body, first.body);
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.faults.submissions.load(Ordering::SeqCst), 1);
+
+    // A new action must reconcile existing custody before checking its own capability.
+    // Losing that reconciliation reply is still unknown, even while capability is unavailable.
+    fixture.faults.unsupported.store(true, Ordering::SeqCst);
+    fixture.faults.lose_reply.store(true, Ordering::SeqCst);
+    let blocked = fixture.ask(&fixture.unit("new-action-during-custody", "0.000001"));
+    let blocked_receipt: serde_json::Value = serde_json::from_slice(&blocked.body).unwrap();
+    assert_eq!(blocked.status, 409);
+    assert_eq!(blocked_receipt["effect"], "unknown");
+    assert_eq!(fixture.faults.submissions.load(Ordering::SeqCst), 2);
     assert_eq!(
         fixture.count(),
         Count::ONE.checked_add(Count::EPSILON).unwrap()

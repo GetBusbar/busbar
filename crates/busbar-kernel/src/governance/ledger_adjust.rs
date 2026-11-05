@@ -298,7 +298,9 @@ impl GovState {
             return Ok(Err(refused));
         }
         if !self.store.supports_usage_correction() {
-            return Err(RecordStoreError("usage corrections unsupported".into()));
+            return Ok(Err(AdjustRefused::Preparation {
+                reason: "usage corrections unsupported".into(),
+            }));
         }
         let delta: BTreeMap<&str, Count> = adj
             .delta
@@ -309,8 +311,14 @@ impl GovState {
         if delta.is_empty() {
             return Ok(Err(AdjustRefused::Empty));
         }
-        if self.store.get_key(adj.key_id)?.is_none() {
-            return Ok(Err(AdjustRefused::UnknownKey));
+        match self.store.get_key(adj.key_id) {
+            Ok(Some(_)) => {}
+            Ok(None) => return Ok(Err(AdjustRefused::UnknownKey)),
+            Err(error) => {
+                return Ok(Err(AdjustRefused::Preparation {
+                    reason: error.to_string(),
+                }));
+            }
         }
 
         let at = adj.card_epoch_ms;
