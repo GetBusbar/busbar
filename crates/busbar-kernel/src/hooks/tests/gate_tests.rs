@@ -301,7 +301,7 @@ impl RoutingPolicy for ReplyGate {
     ) -> PolicyResult {
         use busbar_contract::abi::sdk::hook::{lower_decide_reply, Verdict};
         match lower_decide_reply(Ok(self.0.clone())) {
-            Verdict::Failed(message) => Err(message),
+            Verdict::Failed(message) => Err(message.into()),
             Verdict::Abstain => Ok(RoutingDecision::Abstain),
             Verdict::Restrict(tags_any) => Ok(RoutingDecision::Restrict { tags_any }),
             Verdict::Reject { status, message } => Ok(RoutingDecision::Reject {
