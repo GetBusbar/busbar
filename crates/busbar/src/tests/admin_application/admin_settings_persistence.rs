@@ -810,7 +810,7 @@ async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
 }
 
 #[tokio::test]
-async fn test_admin_v1_config_settings_put_with_persist_true_still_persists_when_overlay_exists() {
+async fn test_admin_v1_config_settings_put_refuses_retired_persist_without_store_effect() {
     const CHILD: &str = "BUSBAR_ADMIN_SETTINGS_PERSISTENCE_CHILD";
     const WITNESS: &str = "actual root settings persistence assertions completed";
     if std::env::var_os(CHILD).is_none() {
@@ -878,7 +878,7 @@ async fn test_admin_v1_config_settings_put_with_persist_true_still_persists_when
     );
     manifest.statement = Some(hex::encode(statement));
     let directory =
-        plugins::scratch("test_admin_v1_config_settings_put_with_persist_true_still_persists_when_overlay_exists-actual-store");
+        plugins::scratch("test_admin_v1_config_settings_put_refuses_retired_persist_without_store_effect-actual-store");
     let archive = plugins::signed(
         &crate::dist_root_install::release_key(),
         manifest,
@@ -988,21 +988,30 @@ async fn test_admin_v1_config_settings_put_with_persist_true_still_persists_when
 
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
-    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
-        .header("content-type", "application/json")
-        .body(serde_json::json!({ "per_request_fee": 7, "persist": true }).to_string())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
-    let stored = busbar_kernel::config::overlay::read(&overlay)
-        .and_then(|d| d.root)
-        .expect("root section persisted");
-    assert_eq!(
-        stored.per_request_fee,
-        Some(7),
-        "persist:true with an overlay present stores the value in the Store"
-    );
+    let before = serde_json::to_value(busbar_kernel::config::overlay::read(&overlay)).unwrap();
+    for value in [
+        serde_json::json!(true),
+        serde_json::json!(false),
+        serde_json::json!(null),
+        serde_json::json!("yes"),
+    ] {
+        for body in [
+            serde_json::json!({"per_request_fee": 7, "persist": value}),
+            serde_json::json!({"document_patch": {"set": {"/per_request_fee": 7}}, "persist": value}),
+        ] {
+            let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(put.status().as_u16(), 400, "{:?}", put.text().await);
+            assert_eq!(
+                serde_json::to_value(busbar_kernel::config::overlay::read(&overlay)).unwrap(),
+                before,
+                "a retired request field must be refused before any Store mutation"
+            );
+        }
+    }
 
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);

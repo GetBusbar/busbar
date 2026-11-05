@@ -259,9 +259,10 @@ once and update clients that submit or read retired fields.
   phase list. One-shot YAML and overlay migration preserve the selected stage and an existing
   non-empty phase list. For example, replace `at: response` with `phase: [response]`. An omitted
   phase list still selects the four core stages. Ordinary Store reads do not rewrite retired keys.
-- **`persist:` on `PUT /api/v1/admin/config/settings`** is accepted and ignored, as it was since
-  1.5.3 (config mutation is durable by default). It must still be a boolean; any other value gets a
-  400. Drop the field when convenient; it never changed the outcome.
+- **Remove `persist` from `PUT /api/v1/admin/config/settings` clients.** Both settings-section
+  writes and `document_patch` requests reject this retired field with 400, regardless of its value.
+  Successful mutations are durable through the configured Store; locked deployments refuse them.
+  No replacement flag is needed, and this client request change does not alter stored configuration.
 - **Hook readback:** `GET /api/v1/admin/hooks[/{name}]` and hook-write responses no longer include
   `at`. Read `fires_at` for the effective stages and `phase` for the configured list. Update clients
   and dashboards that previously read `at`.

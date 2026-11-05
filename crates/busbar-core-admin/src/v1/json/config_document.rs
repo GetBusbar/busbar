@@ -36,9 +36,6 @@ struct DocumentRequest {
     reset_document_paths: Vec<String>,
     #[serde(default)]
     reset_providers_paths: Vec<String>,
-    /// Explicit acknowledgement of the existing durable settings semantics.
-    #[serde(default)]
-    persist: Option<bool>,
 }
 
 /// Inspect just the mode key. IgnoredAny skips values without retaining a second raw secret tree.
@@ -94,15 +91,10 @@ pub(super) async fn put(
         // A malformed value may itself contain a credential. Do not echo serde's input excerpts.
         Err(_) => {
             return err_json(&AdminError::Validation(
-                "invalid document_patch body; use document_patch, optional providers_patch, reset_document_paths, reset_providers_paths and persist".into(),
+                "invalid document_patch body; use document_patch, optional providers_patch, reset_document_paths and reset_providers_paths".into(),
             ))
         }
     };
-    if request.persist == Some(false) {
-        return err_json(&AdminError::Validation(
-            "document_patch is always durable".into(),
-        ));
-    }
     let actor = principal.actor_id().to_owned();
     let origin = format!("config/settings document patch by {actor}");
     let changed: Vec<String> = request
@@ -295,8 +287,7 @@ pub(super) fn request_schema() -> serde_json::Value {
                 "properties": {"set": {"type": "object", "additionalProperties": true}, "remove": {"type": "array", "items": {"type": "string"}}},
                 "description": "Edits providers.yaml through its boot grammar in the same Store transaction. Paths start with catalog entry names. Deployment overrides that shadow an edit are refused."},
             "reset_providers_paths": {"type": "array", "items": {"type": "string"}, "description": "Forget only these exact prior catalog edits before merging providers_patch."},
-            "reset_document_paths": {"type": "array", "items": {"type": "string"}, "description": "Forget only these exact prior document edits before merging the new edit; typed overlays are never removed."},
-            "persist": {"type": "boolean", "const": true}
+            "reset_document_paths": {"type": "array", "items": {"type": "string"}, "description": "Forget only these exact prior document edits before merging the new edit; typed overlays are never removed."}
         }
     })
 }
@@ -406,6 +397,17 @@ fn restart_paths(paths: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn document_request_refuses_retired_persist_in_every_form() {
+        for value in [json!(true), json!(false), json!(null), json!("yes")] {
+            assert!(serde_json::from_value::<DocumentRequest>(json!({
+                "document_patch": {}, "persist": value,
+            }))
+            .is_err());
+        }
+        assert!(serde_json::from_value::<DocumentRequest>(json!({"document_patch": {}})).is_ok());
+    }
 
     #[test]
     fn source_binding_covers_sequence_roots_ancestors_null_and_resets() {
@@ -530,6 +532,11 @@ mod tests {
             [busbar_contract::protocol::APPLICATION_JSON]["schema"];
         assert!(body.to_string().contains("document_patch"));
         assert!(body.to_string().contains("reset_document_paths"));
+        assert!(request_schema()["properties"].get("persist").is_none());
+        assert_eq!(
+            body["oneOf"][0]["allOf"][1]["not"]["anyOf"][1],
+            json!({"required": ["persist"]})
+        );
         assert!(
             schema["components"]["schemas"]["ConfigSettingsView"]["properties"]
                 .get("configuration")

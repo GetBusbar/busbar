@@ -559,10 +559,9 @@ async fn test_admin_v1_config_settings_put_on_locked_config_is_refused() {
 }
 
 #[tokio::test]
-async fn test_admin_v1_config_settings_put_refuses_when_persistence_is_explicitly_requested_and_unavailable(
-) {
+async fn test_admin_v1_config_settings_put_refuses_locked_store_mutation() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_92F73C87AB48";
-    const WITNESS: &str = "actual root case test_admin_v1_config_settings_put_refuses_when_persistence_is_explicitly_requested_and_unavailable completed";
+    const WITNESS: &str = "actual root case test_admin_v1_config_settings_put_refuses_locked_store_mutation completed";
     if std::env::var_os(CHILD).is_none() {
         struct Child(std::process::Child);
         impl Drop for Child {
@@ -627,8 +626,9 @@ async fn test_admin_v1_config_settings_put_refuses_when_persistence_is_explicitl
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
-    let directory =
-        plugins::scratch("test_admin_v1_config_settings_put_refuses_when_persistence_is_explicitly_requested_and_unavailable-actual-store");
+    let directory = plugins::scratch(
+        "test_admin_v1_config_settings_put_refuses_locked_store_mutation-actual-store",
+    );
     let archive = plugins::signed(
         &crate::dist_root_install::release_key(),
         manifest,
@@ -711,7 +711,7 @@ async fn test_admin_v1_config_settings_put_refuses_when_persistence_is_explicitl
 
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "listen": "127.0.0.1:0", "persist": true }).to_string())
+        .body(serde_json::json!({ "listen": "127.0.0.1:0" }).to_string())
         .send()
         .await
         .unwrap();
@@ -735,9 +735,10 @@ async fn test_admin_v1_config_settings_put_refuses_when_persistence_is_explicitl
 }
 
 #[tokio::test]
-async fn test_admin_v1_config_settings_put_rejects_a_non_boolean_persist() {
+async fn test_admin_v1_config_settings_put_rejects_retired_persist() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_2EAD9009DC44";
-    const WITNESS: &str = "actual root case test_admin_v1_config_settings_put_rejects_a_non_boolean_persist completed";
+    const WITNESS: &str =
+        "actual root case test_admin_v1_config_settings_put_rejects_retired_persist completed";
     if std::env::var_os(CHILD).is_none() {
         struct Child(std::process::Child);
         impl Drop for Child {
@@ -802,9 +803,8 @@ async fn test_admin_v1_config_settings_put_rejects_a_non_boolean_persist() {
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
-    let directory = plugins::scratch(
-        "test_admin_v1_config_settings_put_rejects_a_non_boolean_persist-actual-store",
-    );
+    let directory =
+        plugins::scratch("test_admin_v1_config_settings_put_rejects_retired_persist-actual-store");
     let archive = plugins::signed(
         &crate::dist_root_install::release_key(),
         manifest,
@@ -895,8 +895,8 @@ async fn test_admin_v1_config_settings_put_rejects_a_non_boolean_persist() {
     let body: serde_json::Value = put.json().await.unwrap();
     let msg = body["error"]["message"].as_str().unwrap_or_default();
     assert!(
-        msg.contains("persist") && msg.contains("boolean"),
-        "the refusal must name `persist` as needing a boolean: {body}"
+        msg.contains("persist") && msg.contains("unknown field"),
+        "the refusal must name `persist` as an unknown field: {body}"
     );
 
     handle.abort();

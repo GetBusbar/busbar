@@ -2514,8 +2514,6 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
     )
 }
 
-const PERSIST_FIELD: &str = "persist";
-
 pub(crate) async fn put_config_settings(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
@@ -2528,17 +2526,7 @@ pub(crate) async fn put_config_settings(
     let actor = principal.actor_id().to_string();
     let card_origin = format!("config/settings by {actor}");
     let expected = ok_or_respond!(if_match_version(&headers));
-    let mut raw: serde_json::Value = ok_or_respond!(boxed json_body(&body, "config settings"));
-    let requested_persist = match raw.as_object_mut().and_then(|o| o.remove(PERSIST_FIELD)) {
-        None => false,
-        Some(serde_json::Value::Bool(b)) => b,
-        Some(other) => {
-            return err_json(&AdminError::Validation(format!(
-                "config settings '{PERSIST_FIELD}' must be a boolean (got {other}); it asserts the \
-                 change must be stored in the config overlay"
-            )))
-        }
-    };
+    let raw: serde_json::Value = ok_or_respond!(boxed json_body(&body, "config settings"));
     let req: busbar_kernel::config::overlay::RootSettings = match serde_json::from_value(raw) {
         Ok(r) => r,
         Err(e) => {
@@ -2556,7 +2544,6 @@ pub(crate) async fn put_config_settings(
             return Err(e);
         }
 
-        let _ = requested_persist;
         if current.overlay_path.is_none() {
             return Err(AdminError::Validation(
                 busbar_kernel::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
@@ -4359,15 +4346,12 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         "/config/settings",
         "put",
         json!({"oneOf": [{"allOf": [config_doc(
-            "The settings sections to replace, keyed by section name. Durable by default (1.5.3): a \
-             mutable config always stores the change in its overlay (survives restart), and a locked \
-             config (`config.locked: true`) refuses ANY change with `400`. There is no \"apply in \
-             memory only\" outcome. The optional top-level boolean `persist` is accepted for \
-             back-compat and boolean-validated (a non-boolean is a 400 naming the field), but its \
-             value has NO effect: persistence is unconditional on a mutable config and refusal is \
-             unconditional on a locked one. Every other top-level key must be a known settings \
-             section; an unknown key is a 400."
-        ), {"not": {"required": ["document_patch"]}}]}, super::config_document::request_schema()]})
+            "The settings sections to replace, keyed by section name. A mutable config always \
+             stores the change through its configured Store. A locked config \
+             (`config.locked: true`) refuses changes with `400`. There is no apply-in-memory-only \
+             outcome. Every top-level key must be a known settings section; unknown or retired \
+             fields, including `persist`, are refused with `400`."
+        ), {"not": {"anyOf": [{"required": ["document_patch"]}, {"required": ["persist"]}]}}]}, super::config_document::request_schema()]})
     );
     body_raw!(
         PATH_GROUPS,
