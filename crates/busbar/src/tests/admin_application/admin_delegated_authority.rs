@@ -645,3 +645,232 @@ async fn test_admin_v1_put_auth_accepts_a_renamed_operator_provider() {
     handle.abort();
     println!("{WITNESS}");
 }
+
+#[tokio::test]
+async fn test_admin_v1_equal_subjects_from_distinct_issuers_cannot_replay_secrets() {
+    const CHILD: &str = "BUSBAR_ADMIN_ISSUER_A14_20261105";
+    const WITNESS: &str =
+        "actual root case test_admin_v1_equal_subjects_from_distinct_issuers_cannot_replay_secrets completed";
+    if std::env::var_os(CHILD).is_none() {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let name = std::thread::current()
+            .name()
+            .expect("the test runner names its exact test thread")
+            .to_string();
+        let mut child = Child(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--nocapture"])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("start the isolated actual-root case"),
+        );
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                use std::io::Read;
+                let mut output = String::new();
+                child
+                    .0
+                    .stdout
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut output)
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "the actual-root child failed: {status}: {output}"
+                );
+                assert!(
+                    output.contains(WITNESS),
+                    "the exact child did not complete its assertions: {output}"
+                );
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "the actual-root child timed out"
+            );
+            std::thread::park_timeout(std::time::Duration::from_millis(5));
+        }
+    }
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+    crate::dist_root_install::install();
+    let store_library = crate::root::test_plugins::application_store_library();
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
+        .expect("the actual Store statement reads")
+        .expect("the actual Store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the Store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let directory = plugins::scratch(
+        "test_admin_v1_equal_subjects_from_distinct_issuers_cannot_replay_secrets-actual-store",
+    );
+    let archive = plugins::signed(
+        &crate::dist_root_install::release_key(),
+        manifest,
+        &std::fs::read(store_library).expect("the actual Store artifact reads"),
+    );
+    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
+    assert!(
+        settings.is_object(),
+        "the actual Store settings are an object"
+    );
+    let oidc_path = common::plugins::token_verifier_cdylib_path()
+        .expect("the freshly built actual OIDC product is required");
+    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
+        .expect("the actual OIDC statement reads")
+        .expect("the actual OIDC exports its statement");
+    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+        .expect("the actual OIDC statement is valid")
+        .name;
+    common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
+    let token_a = common::credentials::token_for("same-subject", &["admins"], AUDIENCE);
+    let issuer_b = "https://issuer-b.e2e.invalid";
+    let token_b = common::credentials::token_with_claims(
+        "same-subject",
+        &["admins"],
+        AUDIENCE,
+        serde_json::json!({"iss": issuer_b}),
+    );
+    let signing_key = directory.join("signing-key");
+    let operator_token = directory.join("operator-token");
+    std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
+    std::fs::write(&operator_token, "admintok").expect("write the test operator input");
+    let operator = busbar_kernel::config::operator_provider();
+    let mut document = serde_json::json!({
+        "providers": {},
+        "models": {},
+        "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "identity-providers": {},
+    });
+    document["identity-providers"][operator] = serde_json::json!({
+        "module": operator, "token": { "file": operator_token },
+    });
+    document["identity-providers"]["test-scope-module"] = serde_json::json!({
+        "module": oidc_module,
+        "settings": common::credentials::settings(AUDIENCE),
+        "max_admin_scope": "full",
+    });
+    let mut settings_b = common::credentials::settings(AUDIENCE);
+    settings_b.insert("issuer".into(), serde_json::json!(issuer_b));
+    document["identity-providers"]["second-issuer"] = serde_json::json!({
+        "module": oidc_module, "settings": settings_b, "max_admin_scope": "full",
+    });
+    document["auth"]["admin_auth"] =
+        serde_json::json!(["test-scope-module", "second-issuer", operator]);
+    document["auth"]["role_bindings"] = serde_json::json!({
+        "test-scope-module": { "admins": { "admin_scope": "full" } },
+        "second-issuer": { "admins": { "admin_scope": "full" } },
+    });
+    let deploy = busbar_kernel::config::deploy_from_deserializer(document)
+        .expect("the actual admin deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the actual admin deployment resolves");
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
+    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .expect("the actual Store opens the configuration authority");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
+        anchor
+            .calls
+            .as_ref()
+            .cloned()
+            .expect("the actual Store exposes typed calls"),
+    )
+    .expect("the actual Store supports conditional configuration records");
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+        config,
+        plugin_config,
+        Some(overlay),
+        HashSet::new(),
+        HashSet::new(),
+        (None, None),
+        None,
+        &rules,
+        Some(anchor),
+        true,
+    )
+    .expect("the real root composes the configured Store and admin application");
+    limits.stage_boot();
+    let _book = crate::root::boot::book(&app, &module)
+        .expect("the actual Store binds rate-card history and usage recovery before activation");
+    limits.keep().expect("the actual limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    // These are separately configured instances of the actual loaded OIDC module.
+    let identify = |token: &str| {
+        let headers = axum::http::HeaderMap::from_iter([(
+            axum::http::HeaderName::from_static("x-admin-token"),
+            token.parse().unwrap(),
+        )]);
+        let door =
+            busbar_kernel::auth::admin_verdict(&app, "POST", "/api/v1/admin/keys", &headers).door;
+        assert!(busbar_kernel::auth::admin_door_admits(
+            &door,
+            "POST",
+            "/api/v1/admin/keys"
+        ));
+        busbar_kernel::auth::effect::actor(&door)
+            .unwrap()
+            .to_owned()
+    };
+    let actor_a = identify(&token_a);
+    let actor_b = identify(&token_b);
+    let router = busbar_kernel::build_router(Arc::new(app));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let mint = |tok: &str| {
+        client
+            .post(format!("http://{addr}/api/v1/admin/keys"))
+            .header("x-admin-token", tok)
+            .header("content-type", "application/json")
+            .header("idempotency-key", "shared-value")
+            .body(serde_json::json!({"name": "k"}).to_string())
+            .send()
+    };
+
+    let a: serde_json::Value = mint(&token_a).await.unwrap().json().await.unwrap();
+
+    let b: serde_json::Value = mint(&token_b).await.unwrap().json().await.unwrap();
+
+    assert!(a["id"].is_string() && b["id"].is_string());
+    assert_ne!(
+        a["id"], b["id"],
+        "a second principal's identical Idempotency-Key must mint a NEW key, not replay A's"
+    );
+    assert_ne!(
+        a["token"], b["token"],
+        "B must never receive A's once-shown token via a cross-principal replay"
+    );
+
+    let a2: serde_json::Value = mint(&token_a).await.unwrap().json().await.unwrap();
+    assert_eq!(a2["id"], a["id"], "A's own retry replays A's response");
+
+    assert_ne!(
+        actor_a, actor_b,
+        "separate verified issuers must retain different durable actor identities"
+    );
+    handle.abort();
+    println!("{WITNESS}");
+}

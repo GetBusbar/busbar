@@ -418,14 +418,16 @@ async fn admit_key_effect(
         busbar_kernel::config::transaction::EffectGuard,
         Option<busbar_kernel::auth::effect::Context>,
     ),
-    Response,
+    Box<Response>,
 > {
     let context = busbar_kernel::auth::effect::current();
     match busbar_kernel::config::transaction::admit_effect(handle, context.as_ref()).await {
         Ok(guard) => Ok((guard, context)),
         Err(error) => {
             record_key_refusal(who);
-            Err(crate::v1::json::err_json(&AdminError::from(error)))
+            Err(Box::new(crate::v1::json::err_json(&AdminError::from(
+                error,
+            ))))
         }
     }
 }
@@ -1504,7 +1506,7 @@ async fn rotate_key_owned(
     }
     let (effect_guard, effect_context) = match admit_key_effect(&handle, who).await {
         Ok(admitted) => admitted,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let app = handle.load();
     let Some(gov) = &app.governance else {
@@ -1678,7 +1680,7 @@ async fn revoke_key_owned(
     };
     let (effect_guard, effect_context) = match admit_key_effect(&handle, who).await {
         Ok(admitted) => admitted,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let app = handle.load();
     let Some(gov) = &app.governance else {
@@ -1912,7 +1914,7 @@ async fn delete_key_owned(
     };
     let (effect_guard, effect_context) = match admit_key_effect(&handle, who).await {
         Ok(admitted) => admitted,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let app = handle.load();
     let Some(gov) = &app.governance else {

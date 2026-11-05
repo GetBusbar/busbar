@@ -188,7 +188,8 @@ fn check_public(
 ///      This schema does not replace config-time `SecretRef` validation.
 ///   3. An UNMARKED field (at any depth) whose name matches [`SECRET_NAME_HINTS`] is a hard
 ///      error too — the mitigation against a third-party plugin silently shipping a plaintext-
-///      credential field with no marker at all.
+///      credential field with no marker at all. The exact provider endpoint names `token_url`
+///      and `token_uri` are destinations rather than credential payloads; they remain sensitive.
 pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
     let empty = serde_json::Map::new();
     let defs = root
@@ -260,7 +261,10 @@ pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
                 )?;
                 if !marked {
                     let lower = name.to_ascii_lowercase();
-                    if SECRET_NAME_HINTS.iter().any(|hint| lower.contains(hint)) {
+                    // Provider token endpoints name destinations, not credential payloads.
+                    // They remain sensitive: check_public above still rejects a public marker.
+                    let endpoint = matches!(name.as_str(), "token_url" | "token_uri");
+                    if !endpoint && SECRET_NAME_HINTS.iter().any(|hint| lower.contains(hint)) {
                         return Err(format!(
                             "field '{name}' looks like a secret (matches one of {SECRET_NAME_HINTS:?}, \
                              case-insensitive) but is not marked `x-busbar-secret: true` — mark it \

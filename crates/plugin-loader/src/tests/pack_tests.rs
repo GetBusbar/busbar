@@ -1559,3 +1559,65 @@ fn pack_checks_the_settings_profile_in_the_actual_statement() {
         assert_eq!(read_rendering(&rendering).is_ok(), accepted);
     }
 }
+
+#[test]
+fn token_endpoint_settings_remain_sensitive_without_becoming_secret_references() {
+    use busbar_plugin_loader::settings_schema::{
+        public_settings_of_schema, validate_secret_fields,
+    };
+
+    for name in ["token_url", "token_uri"] {
+        // Header auth accepts arbitrary values for these forwarded, ignored provider fields.
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {(name): {}},
+            "additionalProperties": false
+        });
+        validate_secret_fields(&schema).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for value in [
+            serde_json::Value::Null,
+            serde_json::json!(false),
+            serde_json::json!([]),
+            serde_json::json!({}),
+            serde_json::json!(42),
+            serde_json::json!("https://issuer.example/token"),
+        ] {
+            assert!(validator.is_valid(&serde_json::json!({(name): value})));
+        }
+        assert!(
+            public_settings_of_schema(&serde_json::to_vec(&schema).unwrap())
+                .unwrap()
+                .is_empty()
+        );
+        schema["properties"][name]["type"] = "string".into();
+        validate_secret_fields(&schema).unwrap();
+        schema["properties"][name]["x-busbar-public"] = true.into();
+        assert!(validate_secret_fields(&schema)
+            .unwrap_err()
+            .contains("always sensitive"));
+        schema["properties"][name] = serde_json::json!({"x-busbar-secret": true});
+        assert!(
+            validate_secret_fields(&schema).is_err(),
+            "explicit markers still validate"
+        );
+    }
+
+    // The exception is exact, never a suffix/prefix rule for secret-bearing fields.
+    for name in [
+        "token",
+        "api_token",
+        "token_url_secret",
+        "access_token_uri",
+        "TOKEN_URL",
+    ] {
+        let schema = serde_json::json!({"properties": {(name): {}}});
+        assert!(validate_secret_fields(&schema).is_err(), "{name}");
+    }
+    assert!(
+        serde_json::from_value::<busbar_contract::secret_ref::SecretRef>(serde_json::json!(
+            "https://issuer.example/token"
+        ))
+        .is_err()
+    );
+}
