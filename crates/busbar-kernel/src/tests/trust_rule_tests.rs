@@ -108,3 +108,98 @@ fn generic_approve_never_pins_an_unverified_sighting() {
     assert_eq!(pinned(&k).as_deref(), Some("fp"), "the pin stands");
     assert_eq!(served(&k), Err(Distrust::Quarantined));
 }
+
+#[test]
+fn guarded_trust_rulings_compare_the_current_sighting_for_both_decisions() {
+    use super::TrustRefused;
+    let k = kernel();
+    for ruling in [Ruling::Approve, Ruling::Revoke] {
+        assert_eq!(
+            k.trust_rule_if_seen("inst/cp", ruling, Some("old")),
+            Err(TrustRefused::NothingSighted)
+        );
+    }
+    sight(&k, "old");
+    let approved = k
+        .trust_rule_if_seen("inst/cp", Ruling::Approve, Some("old"))
+        .unwrap();
+    assert_eq!(approved.approved.as_deref(), Some("old"));
+    sight(&k, "new");
+    let before = k.trust_rows();
+    for ruling in [Ruling::Approve, Ruling::Revoke] {
+        assert_eq!(
+            k.trust_rule_if_seen("inst/cp", ruling, Some("old")),
+            Err(TrustRefused::Stale)
+        );
+        assert_eq!(
+            k.trust_rows(),
+            before,
+            "a stale review changes no trust row"
+        );
+    }
+    let revoked = k
+        .trust_rule_if_seen("inst/cp", Ruling::Revoke, Some("new"))
+        .unwrap();
+    // A whole-key revoke retains its historical pin; its serving state carries the refusal.
+    assert_eq!(revoked.approved.as_deref(), Some("old"));
+    assert_eq!(revoked.seen.as_deref(), Some("new"));
+    assert_eq!(served(&k), Err(Distrust::Quarantined));
+    let approved = k.trust_rule("inst/cp", Ruling::Approve).unwrap();
+    assert_eq!(
+        approved.approved.as_deref(),
+        Some("new"),
+        "key-only approval remains compatible"
+    );
+    let revoked = k.trust_rule("inst/cp", Ruling::Revoke).unwrap();
+    assert_eq!(revoked.approved.as_deref(), Some("new"));
+    assert_eq!(revoked.state, crate::trust::book::KeyState::New);
+    assert_eq!(served(&k), Err(Distrust::NotApproved));
+}
+
+#[test]
+fn guarded_item_rulings_compare_the_item_digest() {
+    use super::TrustRefused;
+    let k = kernel();
+    sight(&k, "catalogue");
+    k.trust_rule("inst/cp", Ruling::Approve).unwrap();
+    k.trust_sight_item(&caller(), "cp", "tool", "old");
+    k.trust_rule_if_seen("inst/cp/tool", Ruling::Approve, Some("old"))
+        .unwrap();
+    k.trust_sight_item(&caller(), "cp", "tool", "new");
+    let before = k.trust_rows();
+    for ruling in [Ruling::Approve, Ruling::Revoke] {
+        for wrong in ["old", "catalogue"] {
+            assert_eq!(
+                k.trust_rule_if_seen("inst/cp/tool", ruling, Some(wrong)),
+                Err(TrustRefused::Stale)
+            );
+            assert_eq!(k.trust_rows(), before);
+        }
+    }
+    let row = k
+        .trust_rule_if_seen("inst/cp/tool", Ruling::Approve, Some("new"))
+        .unwrap();
+    assert_eq!(row.approved.as_deref(), Some("new"));
+    assert_eq!(row.seen.as_deref(), Some("new"));
+    assert_eq!(
+        k.trust_rule_if_seen("inst/cp/tool", Ruling::Revoke, Some("new"))
+            .unwrap()
+            .approved,
+        None
+    );
+}
+
+#[test]
+fn plugin_revoke_retains_its_existing_expected_digest_semantics() {
+    let k = kernel();
+    sight(&k, "current");
+    k.trust_rule("inst/cp", Ruling::Approve).unwrap();
+    let key = TrustKeyRef {
+        counterparty: "cp",
+        item: None,
+    };
+    let decided = k.trust_decide(&caller(), key, Some("obsolete"), false);
+    assert_eq!(decided.value, svc::TRUST_DECIDED_PENDING);
+    assert_eq!(pinned(&k).as_deref(), Some("current"));
+    assert_eq!(served(&k), Err(Distrust::NotApproved));
+}

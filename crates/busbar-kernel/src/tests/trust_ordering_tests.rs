@@ -118,8 +118,10 @@ fn a_kept_approval_cannot_apply_after_a_newer_same_key_revoke() {
     let probe = Arc::new(Probe::default());
     let (at_store, release) = park_first_write(&probe, &r);
     let node = node(&r, &probe, Arc::new(Inline));
+    run(|later| node.trust_sight(&caller(INSTANCE), COUNTERPARTY, ORIGINAL, later));
     std::thread::scope(|scope| {
-        let approval = scope.spawn(|| node.trust_rule(WHOLE_KEY, Ruling::Approve));
+        let approval =
+            scope.spawn(|| node.trust_rule_if_seen(WHOLE_KEY, Ruling::Approve, Some(ORIGINAL)));
         at_store.recv_timeout(CROSSING_TIMEOUT).unwrap();
 
         let overlapping = node.trust_rule(WHOLE_KEY, Ruling::Revoke);
@@ -567,4 +569,39 @@ fn ordinary_sightings_do_not_defer_a_fresh_remote_revoke() {
     remote.trust_rule(WHOLE_KEY, Ruling::Revoke).unwrap();
     node.trust_resync_tick();
     assert_eq!(judged(&node, None), Err(Distrust::NotApproved));
+}
+
+#[test]
+fn guarded_trust_conflict_preserves_the_durable_decision() {
+    let r = rig();
+    let probe = Arc::new(Probe::default());
+    let node = node(&r, &probe, Arc::new(Inline));
+    run(|later| node.trust_sight(&caller(INSTANCE), COUNTERPARTY, ORIGINAL, later));
+    node.trust_rule_if_seen(WHOLE_KEY, Ruling::Approve, Some(ORIGINAL))
+        .unwrap();
+    run(|later| node.trust_sight(&caller(INSTANCE), COUNTERPARTY, CHANGED, later));
+    let before = node.trust_rows();
+    let kept_before =
+        RecordStore::list_plane_records(&*r.store, KIND_TRUST_DECISION, &PlaneSelector::All)
+            .unwrap();
+    for ruling in [Ruling::Approve, Ruling::Revoke] {
+        assert_eq!(
+            node.trust_rule_if_seen(WHOLE_KEY, ruling, Some(ORIGINAL)),
+            Err(TrustRefused::Stale)
+        );
+        assert_eq!(node.trust_rows(), before);
+        assert_eq!(
+            RecordStore::list_plane_records(&*r.store, KIND_TRUST_DECISION, &PlaneSelector::All)
+                .unwrap(),
+            kept_before
+        );
+    }
+    assert_eq!(
+        node.trust_rule_if_seen(WHOLE_KEY, Ruling::Approve, Some(CHANGED))
+            .unwrap()
+            .approved
+            .as_deref(),
+        Some(CHANGED)
+    );
+    assert_eq!(kept(&r, None).approved.as_deref(), Some(CHANGED));
 }

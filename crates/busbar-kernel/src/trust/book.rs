@@ -254,7 +254,7 @@ pub enum Undecided {
     NothingSighted,
     /// The counterparty declares no authenticity root: nothing at it can be approved.
     Rootless,
-    /// The fingerprint the caller approves is not the key's current sighting, or another local
+    /// The fingerprint the caller reviewed is not the key's current sighting, or another local
     /// mutation currently owns its durable decision key.
     Stale,
     /// The key's current sighting is a document that failed its verification
@@ -652,7 +652,7 @@ impl TrustBook {
             return Err(Undecided::Rootless);
         }
 
-        if let (Ruling::Approve, Some(expected)) = (decision, expected) {
+        if let Some(expected) = expected {
             let current = match item {
                 None => s.last_seen.as_deref(),
                 Some(item) => s.items.get(item).map(String::as_str),

@@ -479,6 +479,19 @@ pub(crate) fn trust_decide_effect(
     else {
         return Ok(refused(400, "invalid_request", "key is required"));
     };
+    let expected_digest = match obj.get("expected_digest") {
+        None => None,
+        Some(serde_json::Value::String(digest)) if !digest.trim().is_empty() => {
+            Some(digest.as_str())
+        }
+        Some(_) => {
+            return Ok(refused(
+                400,
+                "invalid_request",
+                "expected_digest must be a non-empty string when supplied",
+            ));
+        }
+    };
     let not_found = || {
         Ok(refused(
             404,
@@ -489,7 +502,7 @@ pub(crate) fn trust_decide_effect(
     let Some(kernel) = desk() else {
         return not_found();
     };
-    match kernel.trust_rule(key, ruling) {
+    match kernel.trust_rule_if_seen(key, ruling, expected_digest) {
         Ok(row) => answer(&trust_row(&row)),
         Err(TrustRefused::NoSuchKey) => not_found(),
         Err(TrustRefused::NothingSighted) => Ok(refused(

@@ -322,3 +322,108 @@ fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_upsert() 
     );
     assert_eq!(submitted.lock().unwrap().len(), 1);
 }
+
+#[test]
+fn trust_digest_guard_rejects_stale_and_malformed_reviews_at_the_admin_boundary() {
+    use super::{trust_decide_effect, trust_list_effect, TrustDesk};
+    use busbar_contract::services::{Caller, HostServices, Ran};
+    use busbar_kernel::host_services::{InstanceFacts, KernelServices};
+    use busbar_kernel::trust::book::Ruling;
+    use busbar_kernel::trust::reverify::Policy;
+    use busbar_kernel::trust::section::TrustEntry;
+    let kernel = Arc::new(KernelServices::new());
+    kernel
+        .admit(
+            "inst",
+            InstanceFacts {
+                trust: vec![(
+                    "cp".into(),
+                    TrustEntry {
+                        pin: None,
+                        policy: Policy {
+                            ttl_ms: 0,
+                            recovery_backoff_ms: 0,
+                        },
+                        approved: Default::default(),
+                    },
+                )],
+                ..InstanceFacts::default()
+            },
+        )
+        .unwrap();
+    let desk: TrustDesk = {
+        let kernel = Arc::clone(&kernel);
+        Arc::new(move || Some(Arc::clone(&kernel)))
+    };
+    let caller = Caller {
+        instance: Arc::from("inst"),
+        plugin: Arc::from("plane"),
+        kind: busbar_contract::abi::mechanism::KindCode::Plane,
+    };
+    let sight = |digest| {
+        assert!(matches!(
+            kernel.trust_sight(&caller, "cp", digest, Box::new(|_| {})),
+            Ran::Now(_)
+        ))
+    };
+    let decide = |ruling, body| {
+        trust_decide_effect(&serde_json::to_vec(&body).unwrap(), ruling, &desk).unwrap()
+    };
+    sight("reviewed");
+    assert_eq!(
+        decide(
+            Ruling::Approve,
+            serde_json::json!({"key":"inst/cp","expected_digest":"reviewed"})
+        )
+        .status,
+        200
+    );
+    sight("changed");
+    let before = kernel.trust_rows();
+    for ruling in [Ruling::Approve, Ruling::Revoke] {
+        let stale = decide(
+            ruling,
+            serde_json::json!({"key":"inst/cp","expected_digest":"reviewed"}),
+        );
+        assert_eq!(stale.status, 409);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&stale.body).unwrap()["error"]["code"],
+            "conflict"
+        );
+        for guard in [
+            serde_json::Value::Null,
+            serde_json::json!(7),
+            serde_json::json!(""),
+            serde_json::json!(" "),
+        ] {
+            assert_eq!(
+                decide(
+                    ruling,
+                    serde_json::json!({"key":"inst/cp","expected_digest":guard})
+                )
+                .status,
+                400
+            );
+        }
+        assert_eq!(kernel.trust_rows(), before);
+    }
+    let listed: serde_json::Value =
+        serde_json::from_slice(&trust_list_effect(&desk).unwrap().body).unwrap();
+    assert_eq!(listed["keys"][0]["approved"], "reviewed");
+    assert_eq!(listed["keys"][0]["seen"], "changed");
+    let revoked = decide(
+        Ruling::Revoke,
+        serde_json::json!({"key":"inst/cp","expected_digest":"changed"}),
+    );
+    assert_eq!(revoked.status, 200);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&revoked.body).unwrap()["seen"],
+        "changed"
+    );
+    let legacy = decide(Ruling::Approve, serde_json::json!({"key":"inst/cp"}));
+    assert_eq!(legacy.status, 200);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&legacy.body).unwrap()["approved"],
+        "changed"
+    );
+}

@@ -1142,6 +1142,18 @@ impl KernelServices {
     }
 
     pub fn trust_rule(&self, key: &str, ruling: Ruling) -> Result<KeyRow, TrustRefused> {
+        self.trust_rule_if_seen(key, ruling, None)
+    }
+
+    /// Decide only if the current sighting equals the digest the operator reviewed. The check
+    /// runs inside the existing decision permit, before any durable write, for both rulings.
+    /// Absence retains the key-only operation's behavior.
+    pub fn trust_rule_if_seen(
+        &self,
+        key: &str,
+        ruling: Ruling,
+        expected_digest: Option<&str>,
+    ) -> Result<KeyRow, TrustRefused> {
         let found = self
             .trust
             .rows()
@@ -1153,7 +1165,7 @@ impl KernelServices {
             &found.counterparty,
             found.item.as_deref(),
             ruling,
-            None,
+            expected_digest,
         )
     }
 
@@ -1845,7 +1857,7 @@ pub enum TrustRefused {
     NothingSighted,
     /// The counterparty declares no authenticity root: nothing at it can be approved.
     Rootless,
-    /// The fingerprint the caller approves is not the key's current sighting, or another local
+    /// The fingerprint the caller reviewed is not the key's current sighting, or another local
     /// mutation currently owns its durable decision key.
     Stale,
     /// The key's current sighting failed its verification
@@ -2344,7 +2356,9 @@ impl HostServices for KernelServices {
                 key.counterparty,
                 key.item,
                 ruling,
-                expected,
+                // The existing plugin ABI applies `expected` to approval only. The admin
+                // digest guard is additive and uses `trust_rule_if_seen` for either ruling.
+                expected.filter(|_| approve),
             ) {
                 Ok(row) => decided_code(row.state),
                 Err(TrustRefused::NoSuchKey) => svc::UNDECIDED_UNKNOWN,
