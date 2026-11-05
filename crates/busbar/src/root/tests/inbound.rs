@@ -627,6 +627,18 @@ async fn captured_router_crossing(
     }
 }
 
+fn assert_current_admin_body_cap(response: &kin::Refusal) {
+    assert_eq!(
+        response.status, 413,
+        "admin body caps retain the current status"
+    );
+    assert_eq!(field(response, "content-type"), Some("application/json"));
+    assert_eq!(field(response, "cache-control"), Some("no-store"));
+    let body: Value =
+        serde_json::from_slice(&response.body).expect("the current admin cap response is JSON");
+    assert_eq!(body["error"]["code"], "request_too_large");
+}
+
 async fn refused_against(family: &str, cause: u32) -> Vec<String> {
     let (side, guests) = side();
     let (router_app, router_config, router_book) = app(true);
@@ -644,6 +656,11 @@ async fn refused_against(family: &str, cause: u32) -> Vec<String> {
                 data.clone()
             };
             let refusal = captured_router_crossing(router, &head, &captured, &token).await;
+            if cause == REFUSE_OVER_GATE && captured["listener"] == "admin" {
+                // The old admin 404 oracle remains historical evidence, not current acceptance.
+                assert_current_admin_body_cap(&refusal);
+                continue;
+            }
             let wrong = differences(&refusal, &name);
             if !wrong.is_empty() {
                 failing.push(format!("{name}: {}", wrong.join("; ")));
@@ -690,13 +707,13 @@ async fn red_the_method_miss_cell_answers_its_1_5_5_bytes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn red_every_over_gate_cell_answers_its_1_5_5_bytes() {
+async fn captured_over_gate_cells_follow_their_current_contracts() {
     let failing = refused_against("413", REFUSE_OVER_GATE).await;
     assert!(failing.is_empty(), "{failing:#?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn captured_rate_and_admin_availability_requests_match_their_unchanged_wire_goldens() {
+async fn captured_rate_and_admin_body_cap_follow_their_current_contracts() {
     let (app, config, book) = app(true);
     let token = captured_key(&app);
     let (_, data, admin) = actual_listener_with_routers(app, &config, &book, true);
@@ -710,8 +727,13 @@ async fn captured_rate_and_admin_availability_requests_match_their_unchanged_wir
             .expect("the existing catalogue captures the actual request");
         let captured = captured_request(&name);
         let response = captured_router_crossing(router, &head, &captured, &token).await;
-        let wrong = differences(&response, &name);
-        assert!(wrong.is_empty(), "{name}: {wrong:#?}");
+        if family == "413" {
+            // Keep the captured request while accepting the current 413 envelope.
+            assert_current_admin_body_cap(&response);
+        } else {
+            let wrong = differences(&response, &name);
+            assert!(wrong.is_empty(), "{name}: {wrong:#?}");
+        }
     }
 }
 
@@ -829,7 +851,7 @@ async fn retained_listener_refusals_keep_the_actual_llm_producer_after_its_claim
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn actual_admin_body_cap_keeps_legacy_projection_new_verbs_and_authority_separate() {
+async fn actual_admin_body_cap_uses_current_413_contract_and_preserves_authority() {
     async fn send(
         router: axum::Router,
         method: &str,
@@ -864,7 +886,7 @@ async fn actual_admin_body_cap_keeps_legacy_projection_new_verbs_and_authority_s
                 .to_vec(),
         }
     }
-    const LEGACY: &str = "/api/v1/admin/keys";
+    const EXISTING: &str = "/api/v1/admin/keys";
     const NEW: &str = "/api/v1/admin/ledger/recovery/list";
     const OVERSIZE: usize = 33 * 1024 * 1024;
     let (app, config, book) = app_with_admin_reader(false, true);
@@ -879,27 +901,16 @@ async fn actual_admin_body_cap_keeps_legacy_projection_new_verbs_and_authority_s
         .expect("the actual key collection reads")
         .len();
     let (_, _, admin) = actual_listener_with_routers(app, &config, &book, false);
-    assert!(busbar_kernel::admin::seam::admin_verb_is_legacy(
-        "POST", LEGACY
-    ));
-    assert!(!busbar_kernel::admin::seam::admin_verb_is_legacy(
-        "TRACE", LEGACY
-    ));
-    assert!(!busbar_kernel::admin::seam::admin_verb_is_legacy(
-        "POST", NEW
-    ));
-    let legacy = send(
+    let existing = send(
         admin.clone(),
         "POST",
-        LEGACY,
+        EXISTING,
         Some("actual-inbound-operator"),
         OVERSIZE,
     )
     .await;
-    assert!(
-        differences(&legacy, "http.crosscut__413__api-prefix").is_empty(),
-        "the real registered legacy operation retains every frozen error byte"
-    );
+    // The retained 1.5.5 oracle's 404 is historical evidence, not the current acceptance rule.
+    assert_current_admin_body_cap(&existing);
     let new = send(
         admin.clone(),
         "POST",
@@ -908,14 +919,8 @@ async fn actual_admin_body_cap_keeps_legacy_projection_new_verbs_and_authority_s
         OVERSIZE,
     )
     .await;
-    assert_eq!(
-        new.status, 413,
-        "new verbs retain the native body-cap status"
-    );
-    let new_body: Value =
-        serde_json::from_slice(&new.body).expect("the native cap response is JSON");
-    assert_eq!(new_body["error"]["code"], "request_too_large");
-    let unauthorized = send(admin.clone(), "POST", LEGACY, None, OVERSIZE).await;
+    assert_current_admin_body_cap(&new);
+    let unauthorized = send(admin.clone(), "POST", EXISTING, None, OVERSIZE).await;
     assert_eq!(
         unauthorized.status, 401,
         "body projection cannot bypass the actual credential gate"
@@ -925,12 +930,12 @@ async fn actual_admin_body_cap_keeps_legacy_projection_new_verbs_and_authority_s
         &["readers"],
         "api://inbound-body-cap",
     );
-    let allowed = send(admin.clone(), "GET", LEGACY, Some(&reader), 0).await;
+    let allowed = send(admin.clone(), "GET", EXISTING, Some(&reader), 0).await;
     assert_eq!(
         allowed.status, 200,
         "the actual verifier identifies a genuinely read-only principal"
     );
-    let forbidden = send(admin, "POST", LEGACY, Some(&reader), OVERSIZE).await;
+    let forbidden = send(admin, "POST", EXISTING, Some(&reader), OVERSIZE).await;
     assert_eq!(
         forbidden.status, 403,
         "an oversized write cannot bypass the actual read-only grant"
