@@ -86,6 +86,57 @@ pub(crate) fn openapi_doc_seamed() -> serde_json::Value {
 
 #[cfg(feature = "openapi-schema")]
 #[test]
+fn openapi_config_forms_include_declared_plane_input_schemas() {
+    let doc = openapi_doc_seamed();
+    let host = &doc["x-busbar-config-schemas"]["schema"];
+    fn resolve<'a>(
+        document: &'a serde_json::Value,
+        mut schema: &'a serde_json::Value,
+    ) -> &'a serde_json::Value {
+        loop {
+            if let Some(reference) = schema["$ref"].as_str() {
+                schema = document
+                    .pointer(reference.strip_prefix('#').expect("local schema reference"))
+                    .expect("declared owner reference resolves");
+            } else if let Some(branches) = schema["anyOf"].as_array() {
+                schema = branches
+                    .iter()
+                    .find(|branch| branch["type"] != "null")
+                    .unwrap();
+            } else {
+                return schema;
+            }
+        }
+    }
+    for section in ["tools", "agents"] {
+        let map = resolve(host, &host["properties"][section]);
+        assert_eq!(map["type"], "object", "{section} declared map");
+        let member = resolve(host, &map["additionalProperties"]);
+        assert_eq!(
+            member["additionalProperties"], false,
+            "{section} closed owner grammar"
+        );
+        for reserved in ["hooks", "upstream_credentials", "pools"] {
+            assert!(
+                map["properties"].get(reserved).is_some(),
+                "{section}.{reserved} reserved control"
+            );
+        }
+        assert_eq!(
+            map["properties"]["pools"], false,
+            "host-injected pools cannot be authored"
+        );
+        assert!(member["properties"].get("url").is_some());
+        assert!(member["properties"].get("pin").is_some());
+        assert!(
+            member["properties"].get("module").is_none(),
+            "a registration is not a plugin wrapper"
+        );
+    }
+}
+
+#[cfg(feature = "openapi-schema")]
+#[test]
 fn openapi_json_matches_committed_file() {
     crate::distribution::admin_cross_plane::ensure_seam();
     let fresh = render_committed_openapi();

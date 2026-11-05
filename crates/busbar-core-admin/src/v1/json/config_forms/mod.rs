@@ -150,7 +150,7 @@ pub(super) fn schema_document() -> Value {
     ]);
     definitions.insert("Auth".into(), auth);
     definitions.insert("Export".into(), export_schema());
-    json!({
+    let mut document = json!({
         "$schema":"https://json-schema.org/draft/2020-12/schema",
         "x-busbar-settings-profile":"integer-token-v1",
         "$defs":definitions,
@@ -171,8 +171,10 @@ pub(super) fn schema_document() -> Value {
         },
         "additionalProperties":true,
         "x-busbar-partial":true,
-        "description":"User-input forms for the listed host-owned fields. Not a complete boot schema: other top-level blocks and plane-owned settings remain with their declaring parser. The provider catalog is a separate document using ProviderCatalogEntry."
-    })
+        "description":"User-input forms for host-owned fields and installed planes that explicitly declare raw user-configuration schemas. Not a complete boot schema: undeclared top-level blocks remain with their owning parser. The provider catalog is a separate document using ProviderCatalogEntry."
+    });
+    super::plane_input_schemas::extend(&mut document);
+    document
 }
 
 fn export_schema() -> Value {

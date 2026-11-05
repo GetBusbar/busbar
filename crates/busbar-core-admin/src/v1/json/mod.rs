@@ -453,6 +453,8 @@ fn with_config_etag(mut resp: Response, version: u64) -> Response {
 }
 
 mod config_document;
+mod plane_input_schemas;
+pub use plane_input_schemas::install_plane_input_schemas;
 #[cfg(feature = "openapi-schema")]
 mod config_forms;
 #[cfg(feature = "openapi-schema")]

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_kernel::admission::Stated;
 use std::collections::BTreeSet;
 
 use busbar_contract::abi::mechanism::door::DoorFn;
@@ -41,7 +42,7 @@ fn table(
     linked: &Linked,
     dropped: Option<&PluginRegistry>,
     transports: &[(&str, DoorFn)],
-) -> Result<(Table, Vec<busbar_kernel::admission::Stated>), String> {
+) -> Result<(Table, Vec<Stated>, Vec<Stated>), String> {
     let mut doors: Vec<(DoorFn, Vec<&str>)> = Vec::new();
     doors.extend(linked.secrets.iter().map(|d| (*d, Vec::new())));
     doors.extend(linked.hook_doors.iter().map(|d| (*d, Vec::new())));
@@ -89,8 +90,12 @@ fn table(
             }
         }
     }
+    let mut schema_configuration = configuration.clone();
     if let Some(registry) = dropped {
         for c in super::boot::discover(registry)? {
+            schema_configuration.push(super::admission::linked_configuration_from_statement(
+                &c.stated,
+            )?);
             let words: Vec<&str> = c.aliases.iter().map(String::as_str).collect();
             if let Some(r) = public_settings(&c.stated, &words)? {
                 if seen.insert(r.name.clone()) {
@@ -102,7 +107,7 @@ fn table(
             }
         }
     }
-    Ok((Table(rows), configuration))
+    Ok((Table(rows), configuration, schema_configuration))
 }
 
 pub fn install(linked: &Linked, dropped: Option<&'static PluginRegistry>) {
@@ -115,7 +120,8 @@ pub(crate) fn install_with_transports(
     transports: &[(&str, DoorFn)],
 ) {
     match table(linked, dropped, transports) {
-        Ok((t, configuration)) => {
+        Ok((t, configuration, schema_configuration)) => {
+            busbar_core_admin::v1::json::install_plane_input_schemas(&schema_configuration);
             let _ = LINKED_CONFIGURATION.set(configuration);
             busbar_kernel::config::settings_public::install(Box::leak(Box::new(t)));
         }
