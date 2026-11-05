@@ -2661,34 +2661,63 @@ fn test_auth_policy_rejects_bad_input_at_parse() {
 }
 
 #[test]
-fn the_auth_block_refusals_are_pinned() {
+fn auth_refusals_describe_the_current_schema_and_source_location() {
     let refusal = |auth: &str| {
         crate::config::deploy_from_yaml_str(&format!("providers: {{}}\nmodels: {{}}\n{auth}"))
             .expect_err("refused")
-            .to_string()
     };
-    let frozen = "unknown field `bogus_key`, expected one of `signing_key`, `chain`, \
-                  `admin_auth`, `role_bindings`, `key_ttl`";
-    assert_eq!(
-        refusal("auth:\n  bogus_key: 1\n"),
-        format!("auth: {frozen} at line 4 column 3")
-    );
-    assert_eq!(
-        refusal("auth:\n  policy: {}\n  bogus_key: 1\n"),
-        format!("auth: {frozen} at line 5 column 3")
-    );
-    assert_eq!(
-        refusal("auth:\n  policy:\n    slef_mint: true\n"),
-        "auth.policy: unknown field `slef_mint`, expected one of `self_mint`, `binding_modes`, \
-         `default_ttl`, `max_ttl`, `mint_ceilings` at line 5 column 5"
-    );
-    assert_eq!(
-        refusal("auth: 5\n"),
-        "auth: invalid type: integer `5`, expected a configuration section at line 3 column 7"
-    );
+    for (auth, line) in [
+        ("auth:\n  bogus_key: 1\n", 4),
+        ("auth:\n  policy: {}\n  bogus_key: 1\n", 5),
+    ] {
+        let error = refusal(auth);
+        let message = error.to_string();
+        assert!(message.contains("unknown field `bogus_key`"), "{message}");
+        assert!(
+            message.contains("`policy`"),
+            "current policy field must be advertised: {message}"
+        );
+        assert_eq!(error.location().unwrap().line(), line);
+    }
+    let typo = refusal("auth:\n  policy:\n    slef_mint: true\n");
+    assert!(typo
+        .to_string()
+        .contains("auth.policy: unknown field `slef_mint`"));
+    assert_eq!(typo.location().unwrap().line(), 5);
+    assert!(refusal("auth: 5\n").to_string().contains("invalid type"));
+    assert!(refusal("auth:\n  policy: {}\n  policy: {}\n")
+        .to_string()
+        .contains("duplicate field `policy`"));
     let empty = crate::config::deploy_from_yaml_str("providers: {}\nmodels: {}\nauth:\n")
         .expect("an empty auth block parses");
     assert!(empty.auth.is_none());
+}
+
+#[test]
+fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
+    let parse = |tail: &str| {
+        crate::config::deploy_from_yaml_str(&format!("providers: {{}}\nmodels: {{}}\n{tail}"))
+    };
+    let error = parse("bogus_key: true\n").expect_err("unknown field");
+    let message = error.to_string();
+    for field in ["oauth_as", "credentials"] {
+        assert!(message.contains(&format!("`{field}`")), "{message}");
+        let duplicate =
+            parse(&format!("{field}: {{}}\n{field}: {{}}\n")).expect_err("duplicate core section");
+        assert!(
+            duplicate.to_string().contains("duplicate field"),
+            "{duplicate}"
+        );
+    }
+    let empty = parse("oauth_as: null\ncredentials: null\n").expect("null optional sections");
+    assert!(empty.oauth_as.is_none());
+    assert!(empty.credentials.at_rest.is_none());
+    let credentials = parse("credentials:\n  at_rest:\n    key: { env: TEST_KEY }\n")
+        .expect("current credential schema");
+    assert!(credentials.credentials.at_rest.is_some());
+    let typo = parse("credentials:\n  unknowable: true\n").expect_err("strict credential schema");
+    assert!(typo.to_string().contains("unknown field `unknowable`"));
+    assert_eq!(typo.location().unwrap().line(), 4);
 }
 
 #[test]

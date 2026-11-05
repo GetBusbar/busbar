@@ -1,49 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 //
-//! The 1.6.0-only config PRE-PASS: lift the 1.6.0-additive keys out of the document BEFORE the
-//! frozen 1.5.5-shaped structs ever see them.
+//! Route registered plane sections to their owning parser while reading the original document.
 //!
-//! The config grammar is frozen: every `deny_unknown_fields` struct must produce the SAME
-//! `expected one of` key list the published 1.5.5 binary produces, byte for byte. A 1.6.0-additive
-//! key declared as a plain field on one of those structs breaks that, because serde builds the
-//! list from the struct's own field set — the key would be named in a refusal a 1.5.5 operator
-//! never saw.
-//!
-//! So the additive keys are NOT fields of the frozen structs. They are `#[serde(skip)]` carriers,
-//! filled in by this module: the document's map is walked once, the additive keys are pulled out
-//! and deserialized into their own types, and the REMAINDER — structurally unchanged — is what the
-//! frozen structs parse. The refusal a 1.5.5-shaped document gets is therefore the 1.5.5 refusal,
-//! including its key list.
-//!
-//! The lift happens INSIDE the live deserializer rather than on a rebuilt document, which is what
-//! keeps the refusal byte-identical rather than merely equivalent: a document rebuilt from a
-//! `serde_yaml::Value` has lost every source position, so the `at line N column M` suffix (and the
-//! `section:` path prefix) would be dropped from every parse error in the file. Walking the real
-//! event stream keeps both.
-//!
-//! Two levels are lifted today:
-//!   * the TOP-LEVEL sections — the kernel's own 1.6.0 additions ([`LIFTED_TOP_LEVEL_KEYS`]) and
-//!     every section a REGISTERED plane declares (#49: the kernel spells no plane section, it reads
-//!     them off the plane registry), and
-//!   * the token-mint policy block nested under `auth:`, by that field's own reader
-//!     ([`auth_section`]).
-//!
-//! A plane that is not registered declares nothing, so its section is not lifted: it reaches the
-//! frozen struct and is refused with serde's own unknown-field message — exactly what 1.5.5 said
-//! for any key it did not know (Option A, S11b (c) / Q67).
-//!
-//! The mirror image holds for a section a registered plane REQUIRES
-//! (`PlaneDeclaration::required_config_sections`, Law 7): the pass watches for it, and a document
-//! that does not carry it is refused with serde's own missing-field message for it — 1.5.5's bytes
-//! for `providers`/`models` in a build that links a plane requiring them. A section no registered
-//! plane requires may be omitted (the frozen struct defaults it).
-//!
-//! The remaining fleet-scalar keys named in the design (a data directory, peers, a keyset
-//! reference, a WAL capacity, and the per-bucket tier/currency pair) are NOT part of the parse
-//! surface yet — no frozen struct declares them — so there is nothing for this module to lift for
-//! them. They join [`LIFTED_TOP_LEVEL_KEYS`] (or the per-bucket list) on the commit that first
-//! parses them, and the frozen key lists stay unmoved because they never became fields.
+//! Core configuration fields are parsed directly by their current schema. The document adapter
+//! extracts dynamic plane sections, separates their rate cards and fees, and enforces each
+//! registered plane's required sections. Unregistered sections remain unknown fields.
+//! Reading the original event stream preserves source locations and duplicate-field errors.
 
 use std::fmt;
 
@@ -51,26 +14,19 @@ use serde::de::value::MapAccessDeserializer;
 use serde::de::{DeserializeSeed, Deserializer, Error as _, IntoDeserializer, MapAccess, Visitor};
 use serde::Deserialize;
 
-use super::{AuthDeployCfg, DeployCfg};
+use super::DeployCfg;
 
 use crate::config::plane_sections::{DeclaredSections, EndpointSection};
 use crate::plane_driver::registry::{PlaneDeclaration, CORE_OWNED_CONCRETE_SECTIONS};
-
-pub(crate) const LIFTED_TOP_LEVEL_KEYS: &[&str] = &["oauth_as", "credentials"];
-
-pub(crate) const LIFTED_AUTH_KEYS: &[&str] = &["policy"];
 
 /// Where one lifted key's value lands: one [`Lifted`] carrier each.
 #[derive(Clone, Copy)]
 enum Dest {
     Endpoint,
-    OauthAs,
     /// A declaring section its plane owns the grammar of: parsed by that plane into the map carrier.
     Declared(PlaneMetadata),
     /// A declaring section no carrier holds: carried RAW, for its plane to read over the ABI.
     Raw(PlaneMetadata),
-    AuthPolicy,
-    Credentials,
 }
 
 #[derive(Clone, Copy)]
@@ -97,10 +53,7 @@ impl Dest {
 }
 
 fn lift_table() -> Vec<(&'static str, Dest)> {
-    let mut table: Vec<(&'static str, Dest)> = vec![
-        (LIFTED_TOP_LEVEL_KEYS[0], Dest::OauthAs),
-        (LIFTED_TOP_LEVEL_KEYS[1], Dest::Credentials),
-    ];
+    let mut table: Vec<(&'static str, Dest)> = Vec::new();
     for decl in crate::plane_driver::registry::plane_decls() {
         let decl: &PlaneDeclaration = &decl.declaration;
         for &key in std::iter::once(&decl.config_section).chain(decl.owned_config_sections) {
@@ -113,18 +66,13 @@ fn lift_table() -> Vec<(&'static str, Dest)> {
     table
 }
 
-const AUTH_LIFTS: &[(&str, Dest)] = &[(LIFTED_AUTH_KEYS[0], Dest::AuthPolicy)];
-
 /// Everything the pre-pass pulled out of one document: the `#[serde(skip)]` carriers of
 /// [`DeployCfg`], each at its `Default` (an omitted section) until its key is read.
 #[derive(Default)]
 pub(crate) struct Lifted {
     listen_explicit: bool,
     endpoint: EndpointSection,
-    oauth_as: Option<serde_yaml::Value>,
     declared: DeclaredSections,
-    auth_policy: Option<crate::config::AuthPolicyCfg>,
-    credentials: crate::config::CredentialsCfg,
     plane_rate_cards: super::PlaneRateCards,
     plane_fees: super::PlaneFeesMap,
     plane_raw: std::collections::BTreeMap<&'static str, serde_yaml::Value>,
@@ -144,8 +92,6 @@ impl Lifted {
         deploy.declared_raw = self.declared_raw;
         deploy.declared = self.declared;
         deploy.endpoint = self.endpoint;
-        deploy.oauth_as = self.oauth_as;
-        deploy.credentials = self.credentials;
     }
 }
 
@@ -169,7 +115,6 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
                 lifted.endpoint =
                     EndpointSection::deserialize(section).map_err(D::Error::custom)?;
             }
-            Dest::OauthAs => lifted.oauth_as = Option::deserialize(de)?,
             Dest::Declared(metadata) => {
                 let section = plane_remainder_in(key, metadata.key, metadata.noun, de, lifted)?;
                 lifted.declared_raw.insert(key, section.clone());
@@ -180,9 +125,6 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
                 let section = plane_remainder_in(key, metadata.key, metadata.noun, de, lifted)?;
                 lifted.plane_raw.insert(key, section);
             }
-            Dest::AuthPolicy => lifted.auth_policy = Some(Deserialize::deserialize(de)?),
-
-            Dest::Credentials => lifted.credentials = Option::deserialize(de)?.unwrap_or_default(),
         }
         Ok(())
     }
@@ -326,48 +268,6 @@ impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
     }
 }
 
-pub(crate) fn auth_section<'de, D: Deserializer<'de>>(
-    de: D,
-) -> Result<Option<AuthDeployCfg>, D::Error> {
-    de.deserialize_any(AuthVisitor)
-}
-
-struct AuthVisitor;
-
-impl<'de> Visitor<'de> for AuthVisitor {
-    type Value = Option<AuthDeployCfg>;
-
-    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str("a configuration section")
-    }
-
-    fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
-        let mut lifted = Lifted::default();
-        let mut auth = AuthDeployCfg::deserialize(MapAccessDeserializer::new(LiftingMap {
-            inner: map,
-            lift: AUTH_LIFTS,
-            lifted: &mut lifted,
-            seen_lifted: Vec::new(),
-        }))?;
-        if let Some(policy) = lifted.auth_policy {
-            auth.policy = policy;
-        }
-        Ok(Some(auth))
-    }
-
-    fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
-        Ok(None)
-    }
-
-    fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
-        Ok(None)
-    }
-
-    fn visit_some<D: Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
-        de.deserialize_any(self)
-    }
-}
-
 struct SplitDocument(DeployCfg);
 
 impl<'de> Deserialize<'de> for SplitDocument {
@@ -412,7 +312,7 @@ fn read_document<'de, M: MapAccess<'de>, T: Deserialize<'de>>(
         lifted: &mut lifted,
         seen_lifted: Vec::new(),
     }))?;
-    if let Some(s) = lifted.watch.iter().find(|k| **k != "auth") {
+    if let Some(s) = lifted.watch.first() {
         return Err(M::Error::missing_field(s));
     }
     Ok((deploy, lifted))

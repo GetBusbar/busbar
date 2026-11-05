@@ -872,7 +872,7 @@ pub struct PlaneFeesCfg {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeployCfg {
-    /// Set by the document reader without changing the frozen configuration grammar.
+    /// Set by the document reader when the operator supplies a listen address.
     #[serde(skip)]
     pub listen_explicit: bool,
     /// Optional public routing source projection; absent for programmatic inputs without source.
@@ -913,24 +913,18 @@ pub struct DeployCfg {
     /// carries no ingress for it and no `.well-known` document, and nothing joins the route table.
     /// See that plane's own endpoint config type.
     ///
-    /// A CARRIER, not a parsed field: the key is lifted off the document by
-    /// [`crate::config::prepass`] before this struct parses, so it is never in this struct's
-    /// accepted key set and never named in its unknown-key refusal. See that module for why. The
-    /// field is named for what it carries, not for its wire key: the pre-pass ties the key to its
-    /// owner's endpoint door (`EndpointSection::OWNER`).
+    /// The document reader routes the registered plane's section into this carrier. Its wire
+    /// key comes from the plane registry (`EndpointSection::OWNER`).
     #[serde(skip)]
     pub endpoint: EndpointSection,
     /// `oauth_as:` — busbar AS an OAuth 2.1 authorization server, for the deployment that has no
     /// identity provider (or has one that will not do dynamic registration). ABSENT BY DEFAULT, and
     /// absent means nothing is built: see `crate::oauth_as`.
-    ///
-    /// A lifted CARRIER, exactly as `mcp:` above is.
-    #[serde(skip)]
+    #[serde(default)]
     pub oauth_as: Option<serde_yaml::Value>,
     /// `credentials:` — how a recoverable credential is kept at rest ([`CredentialsCfg`]): the
-    /// `at_rest` key it is sealed under, and the `previous` one a rotation still opens. A lifted
-    /// CARRIER, exactly as `oauth_as:` above is: 1.5.5 refuses the key as unknown.
-    #[serde(skip)]
+    /// `at_rest` key it is sealed under, and the `previous` one a rotation still opens.
+    #[serde(default, deserialize_with = "credentials::deserialize_section")]
     pub credentials: CredentialsCfg,
     /// TLS/mTLS for the management-surface listener (only meaningful with `admin_listen`). Its own
     /// cert + optional `client_ca_file`, so the management surface can require client certificates
@@ -950,8 +944,8 @@ pub struct DeployCfg {
     /// `admin_tls.client_ca`: that says "here is the CA", this says "an exposed plane must have one".
     #[serde(default = "default_admin_require_mtls")]
     pub admin_require_mtls: bool,
-    /// Read by [`prepass::auth_section`], which lifts the 1.6.0 `policy:` off it first.
-    #[serde(default, deserialize_with = "prepass::auth_section")]
+    /// Authentication providers and token minting policy.
+    #[serde(default)]
     pub auth: Option<AuthDeployCfg>,
     /// The top-level `identity-providers:` NAMED-DEFINITION map (1.5.3): provider NAME →
     /// [`IdentityProviderCfg`]. An IdP is DEFINED here once and REFERENCED by bare name from

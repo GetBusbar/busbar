@@ -1041,11 +1041,6 @@ mod tests {
             }
         }
         fields.extend(
-            super::super::prepass::LIFTED_TOP_LEVEL_KEYS
-                .iter()
-                .map(|key| (*key).to_owned()),
-        );
-        fields.extend(
             super::super::plane_sections::config_sections()
                 .into_iter()
                 .map(str::to_owned),

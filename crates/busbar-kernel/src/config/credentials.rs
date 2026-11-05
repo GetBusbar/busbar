@@ -11,9 +11,7 @@
 //!     previous: { file: /run/secrets/busbar-at-rest.old }   # optional: opens only
 //! ```
 //!
-//! A 1.6.0 key that 1.5.5 refuses as unknown, so it is lifted off the document by the config
-//! pre-pass (`prepass::LIFTED_TOP_LEVEL_KEYS`) and never becomes a field of the frozen top-level
-//! struct.
+//! An omitted or null section leaves at-rest keys unconfigured.
 
 use busbar_contract::secret_ref::SecretRef;
 use serde::Deserialize;
@@ -40,4 +38,11 @@ pub struct AtRestCfg {
     /// opens, and the node re-seals it under `key` at boot and at reload.
     #[serde(default)]
     pub previous: Option<SecretRef>,
+}
+
+/// An explicit null section has the same meaning as an omitted section.
+pub(super) fn deserialize_section<'de, D: serde::Deserializer<'de>>(
+    de: D,
+) -> Result<CredentialsCfg, D::Error> {
+    Option::<CredentialsCfg>::deserialize(de).map(Option::unwrap_or_default)
 }
