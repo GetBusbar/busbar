@@ -238,6 +238,40 @@ fn check_references(bindings: &[transition::Binding], cfg: &config::RootCfg) -> 
     Ok(())
 }
 
+fn check_roles(
+    spec: &transition::Specification,
+    cfg: &config::RootCfg,
+    allow_after: bool,
+) -> Result<(), String> {
+    let empty = config::RoleBindings::default();
+    let actual = cfg
+        .auth
+        .as_ref()
+        .map(|auth| &auth.role_bindings)
+        .unwrap_or(&empty);
+    let after = transition::role_bindings_after(spec)?;
+    if actual != &spec.role_bindings_before && !(allow_after && actual == &after) {
+        return Err("effective role policy differs from the exact transition inventory".into());
+    }
+    Ok(())
+}
+
+fn plan_effective_fingerprint(
+    source: &str,
+    overlay: Option<&OverlayDoc>,
+    plan: &transition::Plan,
+) -> Result<String, String> {
+    let actual = transition::digest(&overlay)?;
+    if actual != transition::digest(&plan.overlay_before)?
+        && actual != transition::digest(&Some(transition::after_overlay(plan)?))?
+    {
+        return Err("effective overlay differs from exact transition preimage/postimage".into());
+    }
+    // The transition itself changes the document role policy. Bind the original source and
+    // original overlay only after checking the current overlay is its exact pre/postimage.
+    effective_fingerprint(source, plan.overlay_before.as_ref())
+}
+
 fn check_groups(plan: &transition::Plan, cfg: &config::RootCfg) -> Result<(), String> {
     if cfg.groups == plan.groups_before {
         return Ok(());
@@ -355,6 +389,7 @@ pub fn execute(
             .collect::<Result<Vec<serde_json::Value>, String>>()?;
         return Ok(serde_json::json!({
             "retained_key_preimages": key_preimages,
+            "role_bindings_before": cfg.auth.as_ref().map(|auth| &auth.role_bindings).cloned().unwrap_or_default(),
             "retained_group_preimages": group_preimages,
             "absent_group_sha256": transition::digest(&Option::<config::GroupCfg>::None)?,
             "principal_receipt_head_sha256": transition::receipt_head_digest(calls.clone())?,
@@ -404,20 +439,21 @@ pub fn execute(
         transition::reauthorize(&receipt, calls, &store_sha256, &required)?;
         return Ok(serde_json::json!({"ok": true, "action": "reauthorize"}));
     }
-    let check_binding = |spec: &transition::Specification| -> Result<(), String> {
+    let check_binding = |spec: &transition::Specification, effective: &str| -> Result<(), String> {
         if spec.store_config_sha256 != store_sha256 || spec.requirements != required {
             return Err(
                 "transition Store or admitted auth artifact/settings binding changed".into(),
             );
         }
-        if spec.effective_config_sha256 != effective_sha256 {
+        if spec.effective_config_sha256 != effective {
             return Err("effective configuration changed".into());
         }
         Ok(())
     };
     if command.action == Action::Prepare {
         let spec: transition::Specification = input(&command.input)?;
-        check_binding(&spec)?;
+        check_binding(&spec, &effective_sha256)?;
+        check_roles(&spec, cfg, false)?;
         check_references(&spec.bindings, cfg)?;
         let plan = transition::prepare(
             spec,
@@ -430,7 +466,9 @@ pub fn execute(
             .map_err(|_| "cannot encode principal transition plan".into());
     }
     let plan: transition::Plan = input(&command.input)?;
-    check_binding(&plan.specification)?;
+    let effective_sha256 = plan_effective_fingerprint(source_sha256, overlay, &plan)?;
+    check_binding(&plan.specification, &effective_sha256)?;
+    check_roles(&plan.specification, cfg, true)?;
     check_references(&plan.specification.bindings, cfg)?;
     check_groups(&plan, cfg)?;
     let action = match command.action {

@@ -95,10 +95,26 @@ pub struct PreviousReceipt {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RoleDisposition {
+    pub provider: String,
+    pub old_role: String,
+    /// None retires an unprovable or historically unasserted grant. Equal names affirm continuity.
+    pub new_role: Option<String>,
+    pub historical_provenance_sha256: String,
+    pub old_product_sha256: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Specification {
     pub version: u32,
     pub id: String,
     pub bindings: Vec<Binding>,
+    /// Exact effective policy inventory; never infer historical role ownership from current names.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub role_bindings_before: crate::config::RoleBindings,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub role_dispositions: Vec<RoleDisposition>,
     #[serde(default)]
     pub rotations: Vec<RotationDisposition>,
     #[serde(default)]
@@ -344,8 +360,9 @@ fn validate_spec(spec: &Specification) -> Result<(), String> {
         || spec.id.is_empty()
         || spec.id.len() > 128
         || spec.id.chars().any(char::is_control)
-        || spec.bindings.is_empty()
+        || (spec.bindings.is_empty() && spec.role_dispositions.is_empty())
         || spec.bindings.len() > 256
+        || spec.role_dispositions.len() > 256
         || spec.unaffected.len() > 256
         || !hash(&spec.complete_legacy_inventory_sha256)
         || !hash(&spec.store_config_sha256)
@@ -390,6 +407,7 @@ fn validate_spec(spec: &Specification) -> Result<(), String> {
             return Err("invalid or duplicate principal format requirement".into());
         }
     }
+    role_bindings_after(spec)?;
     let witness = &spec.witness;
     if witness.schema.is_empty()
         || witness.schema == SCHEMA.as_str()
@@ -399,6 +417,68 @@ fn validate_spec(spec: &Specification) -> Result<(), String> {
         return Err("invalid external Store namespace witness".into());
     }
     Ok(())
+}
+
+/// Validate exact, operator-proven role dispositions and preserve every grant field.
+/// Role names are opaque: the historical plugin evidence, not a present-day name lookup,
+/// establishes whether a rename, unchanged assertion, or retirement is authorized.
+pub fn role_bindings_after(spec: &Specification) -> Result<crate::config::RoleBindings, String> {
+    let mut after = spec.role_bindings_before.clone();
+    let mut sources = BTreeSet::new();
+    let mut destinations = BTreeSet::new();
+    for disposition in &spec.role_dispositions {
+        let source = (disposition.provider.clone(), disposition.old_role.clone());
+        if disposition.old_role.is_empty()
+            || disposition.old_role.chars().any(char::is_control)
+            || !hash(&disposition.historical_provenance_sha256)
+            || !hash(&disposition.old_product_sha256)
+            || !sources.insert(source)
+            || !spec
+                .requirements
+                .iter()
+                .any(|r| r.provider == disposition.provider && !r.format.is_empty())
+        {
+            return Err("duplicate, unproven or untracked role disposition".into());
+        }
+        let before = spec
+            .role_bindings_before
+            .get(&disposition.provider)
+            .ok_or("role disposition provider is absent from exact policy inventory")?;
+        let grant = before
+            .get(&disposition.old_role)
+            .ok_or("role disposition source is absent from exact policy inventory")?;
+        if let Some(new) = &disposition.new_role {
+            if new.is_empty()
+                || new.chars().any(char::is_control)
+                || !destinations.insert((disposition.provider.clone(), new.clone()))
+                || (new != &disposition.old_role && before.contains_key(new))
+            {
+                return Err("invalid or colliding role disposition destination".into());
+            }
+        }
+        let roles = after
+            .get_mut(&disposition.provider)
+            .expect("checked provider");
+        roles.remove(&disposition.old_role);
+        if let Some(new) = &disposition.new_role {
+            roles.insert(new.clone(), grant.clone());
+        }
+    }
+    // Format declarations do not promise unchanged role output. Every configured role of a
+    // tracked provider needs explicit evidence, including an assertion that its spelling stays.
+    for requirement in spec.requirements.iter().filter(|r| !r.format.is_empty()) {
+        if let Some(roles) = spec.role_bindings_before.get(&requirement.provider) {
+            if roles
+                .keys()
+                .any(|role| !sources.contains(&(requirement.provider.clone(), role.clone())))
+            {
+                return Err(
+                    "tracked provider role policy lacks an explicit historical disposition".into(),
+                );
+            }
+        }
+    }
+    Ok(after)
 }
 
 fn compare_witness(calls: &dyn StoreCalls, spec: &Specification) -> Result<(), String> {
@@ -560,7 +640,7 @@ fn carried_denials(plan: &Plan) -> BTreeSet<String> {
         .collect()
 }
 
-fn after_overlay(plan: &Plan) -> Result<OverlayDoc, String> {
+pub fn after_overlay(plan: &Plan) -> Result<OverlayDoc, String> {
     let mut after = plan.overlay_before.clone().unwrap_or_default();
     for b in &plan.specification.bindings {
         if let Some(original) = plan.groups_before.get(&group(&b.old_principal)) {
@@ -570,6 +650,29 @@ fn after_overlay(plan: &Plan) -> Result<OverlayDoc, String> {
             }
             after.groups.insert(name, original.clone());
         }
+    }
+    if !plan.specification.role_dispositions.is_empty() {
+        let roles = role_bindings_after(&plan.specification)?;
+        let patch = crate::config::document_patch::DocumentPatch::from_value(
+            serde_json::json!({"set": {"/auth/role_bindings": roles}}),
+        )
+        .map_err(|e| e.to_string())?;
+        // Ordered composition also handles a preceding whole-auth edit without losing it.
+        after.document_patch = Some(match after.document_patch.take() {
+            Some(previous) if previous.paths().next().is_none() => patch,
+            Some(previous) => {
+                let mut value = serde_json::to_value(previous).map_err(|e| e.to_string())?;
+                let mut stages = value
+                    .get_mut("$stages")
+                    .and_then(serde_json::Value::as_array_mut)
+                    .map(std::mem::take)
+                    .unwrap_or_else(|| vec![value]);
+                stages.push(serde_json::to_value(patch).map_err(|e| e.to_string())?);
+                serde_json::from_value(serde_json::json!({"$stages": stages}))
+                    .map_err(|e| e.to_string())?
+            }
+            None => patch,
+        });
     }
     after.version = crate::config::overlay::OVERLAY_VERSION;
     Ok(after)

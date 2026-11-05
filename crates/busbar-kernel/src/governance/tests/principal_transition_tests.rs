@@ -90,6 +90,8 @@ impl Fixture {
                 historical_provenance_sha256: sha(),
                 old_product_sha256: sha(),
             }],
+            role_bindings_before: Default::default(),
+            role_dispositions: Vec::new(),
             rotations: Vec::new(),
             unaffected: Vec::new(),
             complete_legacy_inventory_sha256: sha(),
@@ -1568,4 +1570,114 @@ fn successor_rejects_unaffected_tombstone_as_automatically_migrated_history() {
     assert!(gov
         .issue_self("opaque-static-v2:b", "operator-token", None, NOW + 60, NOW)
         .is_err());
+}
+
+fn role_inventory(spec: &mut Specification) {
+    spec.role_bindings_before = serde_json::from_value(serde_json::json!({
+        "identity": {
+            "github:org/old-name": {"allowed_pools": [], "group": "shared",
+                "admin_scope": "read-only", "verbs": ["get_keys"], "allowed_tools": []},
+            "github:never-asserted-user": {"admin_scope": "full"}
+        },
+        "operator-token": {"operator": {"allowed_pools": null, "admin_scope": "full"}}
+    }))
+    .unwrap();
+    spec.role_dispositions = vec![
+        super::RoleDisposition {
+            provider: "identity".into(),
+            old_role: "github:org/old-name".into(),
+            new_role: Some("github-v2:aHR0cHM6Ly9hcGkuZ2l0aHViLmNvbQ:org:42".into()),
+            historical_provenance_sha256: sha(),
+            old_product_sha256: sha(),
+        },
+        super::RoleDisposition {
+            provider: "identity".into(),
+            old_role: "github:never-asserted-user".into(),
+            new_role: None,
+            historical_provenance_sha256: sha(),
+            old_product_sha256: sha(),
+        },
+    ];
+}
+
+#[test]
+fn cold_principal_transition_role_policy_is_lossless_fenced_and_restart_replayable() {
+    let f = Fixture::new();
+    let mut spec = f.spec();
+    role_inventory(&mut spec);
+    let before = spec.role_bindings_before.clone();
+    let new = spec.role_dispositions[0].new_role.clone().unwrap();
+    let prior_patch = serde_json::json!({"$stages": [
+        {"set": {"/auth": {"role_bindings": before, "default": "none"}}},
+        {"set": {"/listen": "127.0.0.1:8080"}}
+    ]});
+    let mut overlay = crate::config::overlay::OverlayDoc::default();
+    overlay.version = crate::config::overlay::OVERLAY_VERSION;
+    overlay.document_patch = Some(serde_json::from_value(prior_patch).unwrap());
+    f.overlay.update(|doc| *doc = overlay.clone()).unwrap();
+    let plan = prepare(
+        spec,
+        f.store.as_ref(),
+        f.store.clone(),
+        f.groups.clone(),
+        Some(overlay),
+    )
+    .unwrap();
+    f.apply(&plan);
+    // A completed retry verifies rather than duplicating the policy/usage carry.
+    f.apply(&plan);
+    verify(&plan, f.store.as_ref(), f.store.clone(), &f.overlay, NOW).unwrap();
+    let after = f.overlay.read_required().unwrap().unwrap();
+    let mut document = serde_yaml::from_str("auth: {}\nlisten: old\n").unwrap();
+    after
+        .document_patch
+        .as_ref()
+        .unwrap()
+        .apply_to(&mut document)
+        .unwrap();
+    let document = serde_json::to_value(document).unwrap();
+    let roles: crate::config::RoleBindings =
+        serde_json::from_value(document["auth"]["role_bindings"].clone()).unwrap();
+    assert_eq!(
+        roles["identity"][&new],
+        before["identity"]["github:org/old-name"]
+    );
+    assert!(!roles["identity"].contains_key("github:org/old-name"));
+    assert!(!roles["identity"].contains_key("github:never-asserted-user"));
+    assert_eq!(roles["operator-token"], before["operator-token"]);
+    assert_eq!(document["listen"], "127.0.0.1:8080");
+    assert_eq!(document["auth"]["default"], "none");
+    for cell in &plan.carry {
+        assert_eq!(
+            f.store.get_usage(&cell.destination, cell.window).unwrap(),
+            cell.raw
+        );
+    }
+}
+
+#[test]
+fn cold_principal_transition_role_policy_refuses_missing_proof_and_collisions_before_write() {
+    let f = Fixture::new();
+    let mut spec = f.spec();
+    role_inventory(&mut spec);
+    assert!(super::role_bindings_after(&spec).is_ok());
+    let second = spec.role_dispositions.pop().unwrap();
+    assert!(super::role_bindings_after(&spec).is_err());
+    spec.role_dispositions.push(second);
+    spec.role_dispositions[0]
+        .historical_provenance_sha256
+        .clear();
+    assert!(super::role_bindings_after(&spec).is_err());
+    spec.role_dispositions[0].historical_provenance_sha256 = sha();
+    spec.role_dispositions[1].new_role = spec.role_dispositions[0].new_role.clone();
+    assert!(super::role_bindings_after(&spec).is_err());
+    spec.role_dispositions[1].new_role = None;
+    let destination = spec.role_dispositions[0].new_role.clone().unwrap();
+    spec.role_bindings_before
+        .get_mut("identity")
+        .unwrap()
+        .insert(destination, Default::default());
+    assert!(super::role_bindings_after(&spec).is_err());
+    assert!(f.overlay.read_required().unwrap().is_none());
+    assert!(read_head(&StoreRows(f.store.clone())).unwrap().is_none());
 }

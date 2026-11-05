@@ -269,3 +269,64 @@ fn source_binding_rejects_changed_consumed_text_and_input_is_bounded() {
     assert!(bounded_bytes(&deploy).is_err());
     assert!(bounded_bytes(&dir).is_err());
 }
+
+#[test]
+fn cold_role_inventory_cannot_be_omitted_or_changed_and_own_overlay_remains_bound() {
+    let deploy = config::deploy_from_yaml_str("store: { module: memory }\n").unwrap();
+    let mut cfg = config::resolve(&deploy, &Default::default()).unwrap();
+    let mut plan: transition::Plan = serde_json::from_value(serde_json::json!({
+        "specification": {
+            "version": 1, "id": "role-binding-test", "bindings": [],
+            "complete_legacy_inventory_sha256": "a".repeat(64),
+            "requirements": [{"provider": "identity", "plugin": "test.auth", "format": "v2",
+                "domain_sha256": "a".repeat(64), "settings_sha256": "a".repeat(64), "product_sha256": "a".repeat(64)}],
+            "store_config_sha256": "a".repeat(64), "effective_config_sha256": "a".repeat(64),
+            "witness": {"schema": "test", "key_hex": "00", "value_hex": "01"}, "cutover": 1,
+            "role_bindings_before": {"identity": {"old-role": {"allowed_pools": [], "admin_scope": "read-only"}}},
+            "role_dispositions": [{"provider": "identity", "old_role": "old-role", "new_role": "new-role",
+                "historical_provenance_sha256": "a".repeat(64), "old_product_sha256": "a".repeat(64)}]
+        },
+        "keys_before": [], "denylist_before": [], "groups_before": {}, "overlay_before": null, "carry": []
+    })).unwrap();
+    let mut auth = config::AuthCfg::default_none();
+    auth.role_bindings = plan.specification.role_bindings_before.clone();
+    cfg.auth = Some(auth);
+    check_roles(&plan.specification, &cfg, false).unwrap();
+    let after = transition::after_overlay(&plan).unwrap();
+    assert_eq!(
+        plan_effective_fingerprint("source", Some(&after), &plan).unwrap(),
+        effective_fingerprint("source", None).unwrap()
+    );
+    assert_ne!(
+        plan_effective_fingerprint("changed source", Some(&after), &plan).unwrap(),
+        effective_fingerprint("source", None).unwrap()
+    );
+    cfg.auth.as_mut().unwrap().role_bindings =
+        transition::role_bindings_after(&plan.specification).unwrap();
+    check_roles(&plan.specification, &cfg, true).unwrap();
+    assert!(check_roles(&plan.specification, &cfg, false).is_err());
+    cfg.auth
+        .as_mut()
+        .unwrap()
+        .role_bindings
+        .get_mut("identity")
+        .unwrap()
+        .get_mut("new-role")
+        .unwrap()
+        .admin_scope = Some("full".into());
+    assert!(check_roles(&plan.specification, &cfg, true).is_err());
+    let mut changed_overlay = after.clone();
+    changed_overlay
+        .plugin_versions
+        .insert("other".into(), "1.0.0".into());
+    assert!(plan_effective_fingerprint("source", Some(&changed_overlay), &plan).is_err());
+    let mut empty_overlay = OverlayDoc::default();
+    empty_overlay.document_patch = Some(
+        config::document_patch::DocumentPatch::from_value(serde_json::json!({"set": {}})).unwrap(),
+    );
+    plan.overlay_before = Some(empty_overlay);
+    assert!(transition::after_overlay(&plan).is_ok());
+    plan.specification.role_bindings_before.clear();
+    plan.specification.role_dispositions.clear();
+    assert!(check_roles(&plan.specification, &cfg, true).is_err());
+}

@@ -1,6 +1,6 @@
 # Principal continuity when upgrading identity formats
 
-An auth plugin that declares a changed principal format, including OIDC-v2, requires an explicit
+An auth plugin that declares a changed principal format, including OIDC-v2 and GitHub-v2, requires an explicit
 Store-backed continuity receipt before ordinary serving starts. A retained 1.5.5 Store needs a
 cold operator transition. A genuinely new namespace needs a creation receipt. An empty key scan,
 an ephemeral Store, or a successful `--migrate-config` is not creation evidence.
@@ -69,6 +69,67 @@ and disjoint. Inventory all affected retained keys, tombstones, personal groups 
 including held principals with no remaining key or group. Unknown/orphan groups, ambiguous
 historical issuers, destination collisions and static role/hook references requiring a policy
 decision refuse the operation. Resolve the policy disposition explicitly before preparing a plan.
+
+### Role policy is part of the cold plan
+
+Copy `inspect.role_bindings_before` into the specification as `role_bindings_before`. This is
+an exact inventory of the effective `auth.role_bindings` map, including unrelated providers.
+Supply `role_dispositions` for **every configured role of every format-tracked provider**.
+Each disposition contains `provider`, `old_role`, `new_role`,
+`historical_provenance_sha256` and `old_product_sha256`. A different `new_role` moves the
+complete existing grant; the same value explicitly attests unchanged role output. A JSON `null`
+destination retires a dormant or unprovable grant. Such retirement does not establish identity
+continuity for retained SELF keys, budgets or subject holds: those still require principal bindings.
+Never silently discard an active grant because ownership evidence is unavailable.
+
+For example, a proved GitHub organization mapping can use this disposition (the digests must
+identify your actual historical evidence and artifact):
+
+```json
+{
+  "provider": "work-github",
+  "old_role": "github:org/historical-org-name",
+  "new_role": "github-v2:aHR0cHM6Ly9hcGkuZ2l0aHViLmNvbQ:org:42",
+  "historical_provenance_sha256": "<64 lowercase hexadecimal characters>",
+  "old_product_sha256": "<64 lowercase hexadecimal characters>"
+}
+```
+
+The transition preserves the grant object, including pool restrictions, group, admin scope,
+verb grants and plane grants. Omitted pool restrictions and an explicit empty list remain distinct.
+It rejects missing source roles, duplicate source/target mappings, occupied destinations,
+missing evidence digests and incomplete role inventories before writing. Unrelated provider
+policy remains unchanged. Role changes use the existing Store document overlay under the same
+pending fence, plan hash, quiescence requirements and retry rules as principal and usage changes.
+A role-only deployment may supply empty `bindings` with nonempty `role_dispositions`.
+The host treats role names as opaque; operator evidence establishes their actual meaning.
+
+### GitHub historical ownership evidence is required
+
+Released 1.5.5 stored `github:<login>` subjects and asserted organization roles as
+`github:org/<slug>`. It did not retain the GitHub numeric user or organization ID needed to prove
+ownership after a rename or name reuse. Its role output did **not** assert username-shaped
+`github:<login>` or invented `github:id/...` grants. Converting those dormant configuration keys
+into new user grants would create authority and is not an upgrade. Explicitly retire them or
+resolve their intended policy separately; do not relabel them as proven historical grants.
+
+For each retained subject, archived trusted provider/provisioning records must establish the
+historical login's **positive unsigned 64-bit user ID**, exact provider and API domain. For each
+organization grant, they must establish the historical slug's **positive unsigned 64-bit org ID**
+and the same domain. A successful lookup of today's login/slug is insufficient: that name may
+belong to a different account. A current OAuth login alone cannot recover missing historical ID
+proof. The transition does not manufacture it. Keep the namespace cold until missing evidence
+or a deliberate policy disposition is resolved.
+
+The new principal/user role is
+`github-v2:<base64url-without-padding(canonical-API-base)>:user:<numeric-ID>`;
+organization roles use `:org:<numeric-ID>`. The domain is the plugin's canonical configured
+API URL (including a GHES API path), with normalized URL spelling and no trailing slash,
+credentials, query, fragment, whitespace or control characters. Bind the evidence to the exact
+inspected provider, admitted product/settings and identity-domain fingerprints. Obtain the new
+strings from the intended plugin's actual output and compare them to the archived IDs/domain;
+do not construct a destination merely from the old name. A rename retains the numeric identity;
+a different account acquiring the old login or slug receives none of its old grants or state.
 
 An unrelated retained SELF principal requires an explicit `unaffected` entry naming `principal`,
 `provider`, `requirement_sha256`, `keys_sha256`, `group_sha256` and `provenance_sha256`. Inspection
