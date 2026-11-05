@@ -134,9 +134,7 @@ fn a_close_beside_a_hung_framer_emit_never_waits_and_the_write_makes_it() {
 
 #[tokio::test]
 async fn an_idle_framed_stream_drives_its_timer_and_wakes_the_unit() {
-    use busbar_contract::abi::transport::{
-        FramePiece, PIECE_END, PIECE_STREAM_FAILED, YIELD_HAS_DEADLINE,
-    };
+    use busbar_contract::abi::transport::YIELD_HAS_DEADLINE;
     struct Timed(DoorFacts);
     impl FramerDoor for Timed {
         fn facts(&self) -> &DoorFacts {
@@ -149,22 +147,11 @@ async fn an_idle_framed_stream_drives_its_timer_and_wakes_the_unit() {
                     output.yielded.flags = YIELD_HAS_DEADLINE;
                     output.yielded.next_deadline_ns = input.sink.now_monotonic_ns + 1_000_000;
                 }
-                Call::Timer(input, output) => {
-                    // SAFETY: the host lends a writable piece slot for the timer result.
-                    unsafe {
-                        input.sink.pieces.write(FramePiece {
-                            stream: 1,
-                            offset: 0,
-                            len: 0,
-                            code: 0,
-                            status_class: 0,
-                            fault: 0,
-                            flags: PIECE_STREAM_FAILED | PIECE_END,
-                            retry_after_secs: 0,
-                            declared_len: 0,
-                        });
-                    }
-                    output.yielded.pieces_len = 1;
+                Call::Timer(_, _) => {
+                    return Crossed {
+                        outcome: Outcome::Failed,
+                        error: Some(b"stream expired".to_vec()),
+                    };
                 }
                 _ => {}
             }
