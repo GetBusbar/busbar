@@ -50,6 +50,9 @@ USAGE:
                         mechanically convert a 1.4.x config to the 1.5.0 shape: prints the new
                         YAML to stdout (with TODO/WARNING comments where a human must decide)
                         and a change summary to stderr; ZERO side effects, nothing is written
+    busbar --config <migrated.yaml> --migrate-overlay <old-config.yaml>
+                        offline import of the actual 1.5.5 overlay into the configured durable Store;
+                        source files remain unchanged; matching retries are safe; exits without serving
     busbar --principal-transition <spec-or-plan.json>
            --transition-action inspect|prepare|check|apply|verify|initialize-fresh|
                                initialize-fresh-and-serve|reauthorize
@@ -177,6 +180,14 @@ pub(crate) fn is_plane_flag(planes: &[&[super::linked::CliHelpRow]], arg: &str) 
 
 pub(crate) fn handle_cli_flags() -> Option<i32> {
     let supplied: Vec<String> = std::env::args().skip(1).collect();
+    match super::overlay_migrate::command(supplied.iter().cloned()) {
+        Ok(Some(_)) => return None,
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("busbar: {error}. Try 'busbar --help'.");
+            return Some(EXIT_USAGE);
+        }
+    }
     match super::principal_transition::command(supplied.iter().cloned()) {
         Ok(Some(_)) => return None,
         Ok(None) => {}
@@ -549,12 +560,23 @@ fn migrate_config_command(path: Option<String>) -> i32 {
         }
     };
     let raw = captured.yaml;
+    let (raw, captured_overlay_store) =
+        match super::overlay_migrate::capture_store(&raw, std::path::Path::new(&path)) {
+            Ok(captured) => captured,
+            Err(error) => {
+                eprintln!("busbar: --migrate-config failed: {error}");
+                return EXIT_FAILURE;
+            }
+        };
     let host =
         crate::root::config_migrate::RootHost::for_document(&raw, std::path::Path::new(&path));
     match config::migrate::migrate_config_with(&raw, &host) {
         Ok(mut out) => {
             out.changes.splice(0..0, captured.changes);
             out.warnings.extend(captured.warnings);
+            if captured_overlay_store {
+                out.changes.insert(0, "store: captured the actual 1.5.5 overlay Store selection in the new base YAML; original configuration and overlay preserved".into());
+            }
             print!("{}", out.yaml);
             eprintln!(
                 "migrated '{path}' to the {} config shape.",

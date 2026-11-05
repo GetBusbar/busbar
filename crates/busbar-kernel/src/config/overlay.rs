@@ -556,6 +556,39 @@ pub fn unparseable_named_map_entries(
     Ok(out)
 }
 pub fn apply_pre_resolve_sections(deploy: &mut DeployCfg, doc: &OverlayDoc) {
+    // Plane/config references must see overlay-owned hooks during resolution, just as they
+    // already see overlay-owned named definitions. The full HookCfg (including runtime-only
+    // signal/global/default fields) is installed by merge_into after resolution.
+    for name in &doc.deleted {
+        deploy.hooks.shift_remove(name);
+    }
+    for (name, hook) in &doc.hooks {
+        if doc.deleted.contains(name) {
+            continue;
+        }
+        deploy.hooks.insert(
+            name.clone(),
+            super::HookDefCfg {
+                module: hook.plugin.clone(),
+                settings: hook.settings.clone(),
+                groups: hook.groups.clone(),
+                phase: hook.phase.clone(),
+                kind: Some(hook.kind),
+                timeout_ms: Some(hook.timeout_ms),
+                on_error: Some(
+                    if super::hooks::on_error_terminal(&hook.on_error).is_some() {
+                        super::OnErrorCfg::Terminal(hook.on_error.clone())
+                    } else {
+                        super::OnErrorCfg::Hook(hook.on_error.clone())
+                    },
+                ),
+                on_empty: hook.on_empty.clone(),
+                prompt: Some(hook.prompt),
+                user: Some(hook.user),
+                priority: Some(hook.priority),
+            },
+        );
+    }
     apply_plugin_versions_to_deploy(deploy, doc);
     apply_named_maps_to_deploy(deploy, doc);
 }

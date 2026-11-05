@@ -33,6 +33,7 @@ pub mod migration_secrets;
 pub mod migration_table;
 pub mod model_egress;
 pub mod observe;
+pub mod overlay_migrate;
 
 pub mod plane_node;
 pub mod plugin_fetch;

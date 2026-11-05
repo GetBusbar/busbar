@@ -566,6 +566,8 @@ async fn run(
     let config_path =
         std::path::PathBuf::from(root::cli::resolve_config_path(cli_config.as_deref()));
     let safe_mode = safe_mode_requested(std::env::args());
+    let overlay_migration =
+        root::overlay_migrate::command(std::env::args().skip(1)).unwrap_or_else(|error| die(error));
     let principal_transition = root::principal_transition::command(std::env::args().skip(1))
         .unwrap_or_else(|error| die(error));
     let boot_error = |context: &str, detail: String| {
@@ -598,16 +600,13 @@ async fn run(
         unset_env_vars: _,
     } = loaded;
 
-    let base_cfg = config::resolve(&deploy, &defs).unwrap_or_else(|errors| {
+    let base_cfg = config::bootstrap::resolve_store_bootstrap(&deploy).unwrap_or_else(|errors| {
         die(boot_error(
-            "principal transition base configuration refused",
-            format!("base config errors: {}", errors.join("; ")),
-        ))
-    });
-    config_validate::validate(&base_cfg).unwrap_or_else(|errors| {
-        die(boot_error(
-            "principal transition base configuration refused",
-            format!("base config errors: {}", errors.join("; ")),
+            "Store bootstrap configuration refused",
+            format!(
+                "Store bootstrap configuration errors: {}",
+                errors.join("; ")
+            ),
         ))
     });
     let base_store_settings = serde_json::to_value(&base_cfg.store).unwrap_or_else(|error| {
@@ -655,6 +654,18 @@ async fn run(
                 .unwrap_or_else(|| die("base Store has no typed principal transition calls")),
         )
         .unwrap_or_else(|error| die(error));
+    }
+    if let Some(old_config) = overlay_migration.as_ref() {
+        root::overlay_migrate::run(
+            old_config,
+            &config_path,
+            deploy,
+            &defs,
+            &anchor_store,
+            config_locked,
+        )
+        .unwrap_or_else(|error| die(error));
+        return;
     }
     let floor_calls = anchor_store
         .calls
@@ -736,6 +747,9 @@ async fn run(
         eprintln!("[info] {notice}");
     }
 
+    let base_hook_names: std::collections::HashSet<String> = deploy.hooks.keys().cloned().collect();
+    let base_group_names: std::collections::HashSet<String> =
+        deploy.groups.keys().cloned().collect();
     if let Some(doc) = overlay_doc.as_ref() {
         config::overlay::apply_root_to_deploy(&mut deploy, doc);
     }
@@ -864,12 +878,16 @@ async fn run(
     )
     .unwrap_or_else(|error| die(format!("effective connector boot configuration: {error}")));
 
-    let base_hook_names: std::collections::HashSet<String> = cfg.hooks.keys().cloned().collect();
-    let base_group_names: std::collections::HashSet<String> = cfg.groups.keys().cloned().collect();
-
     if let Some(doc) = overlay_doc {
         config::overlay::merge_into(&mut cfg, doc);
     }
+
+    config_validate::validate(&cfg).unwrap_or_else(|errors| {
+        die(format!(
+            "effective configuration errors: {}",
+            errors.join("; ")
+        ))
+    });
 
     if cfg.allow_all_metadata {
         tracing::warn!(

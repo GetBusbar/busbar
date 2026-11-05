@@ -484,3 +484,7 @@ require an explicit file reference from the operator.
 This historical conversion lives in the one-shot configuration migrator because the current
 OAuth plugin has no outbound-binding migration entry; its generic auth migration surface
 receives identity-provider settings, not deployment credential references.
+
+## Released 1.5.5 persistent configuration
+
+Run the explicit [file-overlay import](migration-overlay-1.6.md) after configuration migration and before first startup. The original files remain unchanged, the effective Store selection is captured in the new YAML, and the overlay plus digest receipt commit atomically. Current startup never reads the old file or its retired environment selector.

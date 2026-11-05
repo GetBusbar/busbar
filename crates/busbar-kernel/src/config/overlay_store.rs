@@ -19,6 +19,9 @@ use super::overlay::OverlayDoc;
 const SCHEMA: &str = "busbar.config.overlay.v1";
 const HEAD: &[u8] = b"head";
 
+#[path = "overlay_import.rs"]
+mod import;
+
 type OverlaySnapshot = (Option<Vec<u8>>, Option<Vec<u8>>);
 
 #[derive(Serialize, Deserialize)]

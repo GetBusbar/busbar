@@ -14,10 +14,12 @@ pub mod filled;
 
 pub mod groups;
 
+pub mod bootstrap;
 pub mod migrate;
 pub mod migrate_catalog;
 mod migrate_credentials;
 pub mod migrate_export;
+pub mod migrate_overlay;
 pub mod migrate_plugins;
 
 pub mod migration_table;
