@@ -26,7 +26,7 @@ fn zero_cost() -> CostModel {
     CostModel::resolve_parts(Some(&rates), 0, &BTreeMap::new())
 }
 
-fn row(model: &str, era: u64, count: u64) -> MeteringRow {
+fn row(model: &str, era: u64, count: i128) -> MeteringRow {
     MeteringRow {
         scale: 0,
         key_id: KEY.into(),
@@ -94,16 +94,11 @@ fn negative_fold_spans_rows_and_keeps_other_eras_unchanged() {
 #[test]
 fn empty_model_fold_keeps_scaled_counts_and_rejects_out_of_range_magnitudes() {
     let mut rows = vec![row("", 0, 0)];
-    let maximum_whole = i64::MAX / 1_000_000;
-    fold_adjustments(&mut rows, &[adjustment("", i128::from(maximum_whole))])
-        .expect("empty model lane");
-    assert_eq!(rows[0].tokens_input, maximum_whole as u64 * 1_000_000);
+    let maximum_whole = i128::MAX / 1_000_000;
+    fold_adjustments(&mut rows, &[adjustment("", maximum_whole)]).expect("empty model lane");
+    assert_eq!(rows[0].tokens_input, maximum_whole * 1_000_000);
     let unchanged = rows.clone();
-    for invalid in [
-        i128::from(u64::MAX) + 1,
-        -(i128::from(u64::MAX) + 1),
-        i128::MIN,
-    ] {
+    for invalid in [maximum_whole + 1, -(maximum_whole + 1), i128::MIN] {
         assert!(fold_adjustments(&mut rows, &[adjustment("", invalid)]).is_err());
         assert_eq!(
             rows, unchanged,
@@ -145,4 +140,64 @@ fn fractional_adjustments_project_without_whole_unit_rounding() {
     super::super::fold_adjustments_exact(&mut rows, &[exact]).unwrap();
     assert_eq!(rows[0].scale, 6);
     assert_eq!(rows[0].tokens_input, 999_999);
+}
+
+#[test]
+fn exact_full_range_adjustments_preserve_wide_fractional_columns() {
+    use busbar_contract::Count;
+    let quantity = Count::parse("9007199254740993.000001").unwrap();
+    let mut rows = vec![row(LANE, 0, 0)];
+    let adjustment = |delta| UsageAdjustment {
+        key_id: KEY.into(),
+        lane: LANE.into(),
+        era: 0,
+        entry_id: None,
+        delta: BTreeMap::from([(UNIT_INPUT.into(), delta), ("seconds".into(), delta)]),
+    };
+    super::super::fold_adjustments_exact(&mut rows, &[adjustment(quantity)]).unwrap();
+    assert_eq!(rows[0].tokens_input, quantity.micros());
+    assert_eq!(rows[0].usage_units["seconds"], quantity.micros());
+    super::super::fold_adjustments_exact(&mut rows, &[adjustment(Count::from_micros(-1))]).unwrap();
+    assert_eq!(rows[0].tokens_input, quantity.micros() - 1);
+    assert_eq!(rows[0].usage_units["seconds"], quantity.micros() - 1);
+}
+
+#[test]
+fn minimum_signed_adjustment_spans_rows_without_magnitude_narrowing() {
+    use busbar_contract::Count;
+    let mut first = row(LANE, 0, i128::MAX);
+    first.scale = 6;
+    let mut second = row(LANE, 0, 1);
+    second.scale = 6;
+    let mut rows = vec![first, second];
+    let adjustment = UsageAdjustment {
+        key_id: KEY.into(),
+        lane: LANE.into(),
+        era: 0,
+        entry_id: None,
+        delta: BTreeMap::from([(UNIT_INPUT.into(), Count::from_micros(i128::MIN))]),
+    };
+    super::super::fold_adjustments_exact(&mut rows, &[adjustment]).unwrap();
+    assert_eq!(
+        rows.iter().map(|row| row.tokens_input).collect::<Vec<_>>(),
+        [0, 0]
+    );
+}
+
+#[test]
+fn exact_positive_overflow_leaves_all_columns_unchanged() {
+    use busbar_contract::Count;
+    let mut measured = row(LANE, 0, i128::MAX);
+    measured.scale = 6;
+    let mut rows = vec![measured];
+    let before = rows.clone();
+    let adjustment = UsageAdjustment {
+        key_id: KEY.into(),
+        lane: LANE.into(),
+        era: 0,
+        entry_id: None,
+        delta: BTreeMap::from([(UNIT_INPUT.into(), Count::from_micros(1))]),
+    };
+    assert!(super::super::fold_adjustments_exact(&mut rows, &[adjustment]).is_err());
+    assert_eq!(rows, before);
 }

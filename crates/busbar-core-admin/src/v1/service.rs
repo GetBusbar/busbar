@@ -127,13 +127,6 @@ fn metered_row<'a, C: Copy + Into<Count>>(
     )
 }
 
-pub(crate) fn row_carries_classes(provider: &str) -> bool {
-    matches!(
-        busbar_kernel::plane_driver::registry::plane_decl_for(provider),
-        Some(decl) if !decl.fallback
-    )
-}
-
 pub fn row_lane<'a>(model: &'a str, provider: &str) -> std::borrow::Cow<'a, str> {
     busbar_kernel::governance::metering_lane(model, provider)
 }
@@ -181,7 +174,10 @@ fn fold_adjustments_inner(
     rows: &mut [busbar_kernel::governance::MeteringRow],
     adjustments: &[busbar_kernel::governance::UsageAdjustment<Count>],
 ) -> Result<(), String> {
-    fn column<'r>(row: &'r mut busbar_kernel::governance::MeteringRow, class: &str) -> &'r mut u64 {
+    fn column<'r>(
+        row: &'r mut busbar_kernel::governance::MeteringRow,
+        class: &str,
+    ) -> &'r mut i128 {
         match class {
             busbar_contract::records::UNIT_INPUT => &mut row.tokens_input,
             busbar_contract::records::UNIT_OUTPUT => &mut row.tokens_output,
@@ -219,22 +215,26 @@ fn fold_adjustments_inner(
             ));
         };
         for (class, d) in &adj.delta {
-            let magnitude = d.micros().unsigned_abs();
-            let magnitude = u64::try_from(magnitude)
-                .map_err(|_| format!("an adjustment of {class} leaves the range"))?;
             if *d >= Count::ZERO {
                 let c = column(&mut rows[first], class);
                 *c = c
-                    .checked_add(magnitude)
-                    .filter(|n| *n <= i64::MAX as u64)
+                    .checked_add(d.micros())
                     .ok_or_else(|| format!("an adjustment of {class} leaves the range"))?;
                 continue;
             }
-            let mut owed = magnitude;
+            // Keep the negative magnitude unsigned: i128::MIN is a valid Count
+            // delta and can be paid by several individually representable rows.
+            let mut owed = d.micros().unsigned_abs();
             for &i in &slot {
                 let c = column(&mut rows[i], class);
-                let take = owed.min(*c);
-                *c -= take;
+                let available = u128::try_from(*c)
+                    .map_err(|_| format!("an adjustment of {class} has a negative row"))?;
+                let take = owed.min(available);
+                let signed_take = i128::try_from(take)
+                    .map_err(|_| format!("an adjustment of {class} leaves the range"))?;
+                *c = c
+                    .checked_sub(signed_take)
+                    .ok_or_else(|| format!("an adjustment of {class} leaves the range"))?;
                 owed -= take;
             }
             if owed != 0 {

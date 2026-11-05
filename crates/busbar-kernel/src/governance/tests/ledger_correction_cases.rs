@@ -60,7 +60,7 @@ fn metered_entry(store: &dyn RecordStore, key: &VirtualKey, era: RawRateEra, now
             bucket: super::super::metering_bucket(now),
             model: MODEL.into(),
             provider: String::new(),
-            tokens_input: INITIAL_INPUT,
+            tokens_input: i128::from(INITIAL_INPUT),
             tokens_output: 0,
             tokens_cache_read: 0,
             tokens_cache_write: 0,
@@ -736,7 +736,7 @@ fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_
                     model: MODEL.into(),
                     usage_units: BTreeMap::from([(
                         busbar_contract::records::UNIT_INPUT.into(),
-                        FOREIGN_INPUT as i64,
+                        i128::from(FOREIGN_INPUT),
                     )]),
                 }],
             },
@@ -891,7 +891,7 @@ fn restarted_landed_correction_keeps_foreign_basis_and_does_not_reapply_the_old_
                     model: MODEL.into(),
                     usage_units: BTreeMap::from([(
                         busbar_contract::records::UNIT_INPUT.into(),
-                        CONCURRENT_INPUT as i64,
+                        i128::from(CONCURRENT_INPUT),
                     )]),
                 }],
                 ..Default::default()
@@ -1061,7 +1061,7 @@ fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_before_
                     model: MODEL.into(),
                     usage_units: BTreeMap::from([(
                         busbar_contract::records::UNIT_INPUT.into(),
-                        FOREIGN_INPUT as i64,
+                        i128::from(FOREIGN_INPUT),
                     )]),
                 }],
                 ..Default::default()
@@ -1188,7 +1188,10 @@ fn independent_entry_refund_posts_while_only_the_matching_entry_negative_is_quar
             key_group_at_use: String::new(),
             pricing_version: entry_b.entry_id.unwrap().metering_version(),
             priced_from_ms: 0,
-            usage_units: one.clone(),
+            usage_units: one
+                .iter()
+                .map(|(unit, count)| (unit.clone(), i128::from(*count)))
+                .collect(),
         })
         .unwrap();
     let increase = BTreeMap::from([(PER_SESSION.to_string(), 1)]);

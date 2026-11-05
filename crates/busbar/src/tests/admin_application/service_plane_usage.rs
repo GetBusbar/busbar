@@ -351,7 +351,7 @@ async fn an_old_served_entry_prices_both_the_row_and_its_itemized_classes() {
             key_group_at_use: String::new(),
             pricing_version: old_version,
             priced_from_ms: old_era,
-            usage_units: BTreeMap::from([(TOOL_CLASS.to_string(), CALLS)]),
+            usage_units: BTreeMap::from([(TOOL_CLASS.to_string(), i128::from(CALLS))]),
         })
         .unwrap();
     let view = read(app, Some(bucket)).await;
@@ -711,7 +711,7 @@ async fn a_pools_open_class_prices_on_admin_usage() {
 }
 
 #[tokio::test]
-async fn a_pools_open_class_is_priced_but_never_itemized_on_the_usage_read() {
+async fn a_pools_open_class_is_priced_and_itemized_on_every_usage_read() {
     if !isolated() {
         return;
     }
@@ -755,9 +755,15 @@ async fn a_pools_open_class_is_priced_but_never_itemized_on_the_usage_read() {
         "a total, a model row and a key row: {wires:?}"
     );
     for (what, wire) in wires {
-        assert!(
-            wire.get("classes").is_none(),
-            "a pools {what} keeps 1.5.5's usage shape: {wire}"
+        assert_eq!(
+            wire["classes"]["search_units"]["count"],
+            serde_json::json!(2_000_000),
+            "the {what} includes every open class: {wire}"
+        );
+        assert_eq!(
+            wire["classes"]["search_units"]["cost"],
+            serde_json::json!(600 * MICROS_PER_MINOR),
+            "the {what} itemizes the class price separately from request fees: {wire}"
         );
     }
 }

@@ -124,7 +124,7 @@ fn test_scrape_gauges_key_spend_and_remaining() {
                     model: "m".to_string(),
                     usage_units: std::collections::BTreeMap::from([(
                         busbar_contract::records::UNIT_INPUT.to_string(),
-                        5000u64,
+                        5000i128,
                     )]),
                 }],
             },
@@ -394,7 +394,7 @@ fn test_key_gauge_limit_truncation() {
                         model: "m".to_string(),
                         usage_units: std::collections::BTreeMap::from([(
                             busbar_contract::records::UNIT_INPUT.to_string(),
-                            10u64,
+                            10i128,
                         )]),
                     }],
                 },
@@ -461,7 +461,7 @@ fn gov_with_n_keys(n: usize) -> Arc<GovState> {
                         model: "m".to_string(),
                         usage_units: std::collections::BTreeMap::from([(
                             busbar_contract::records::UNIT_INPUT.to_string(),
-                            1u64,
+                            1i128,
                         )]),
                     }],
                 },
@@ -727,7 +727,7 @@ fn seed_viewed_key(store: &dyn RecordStore, id: &str, input: u64) -> VirtualKey 
             model: "m".to_string(),
             usage_units: std::collections::BTreeMap::from([(
                 busbar_contract::records::UNIT_INPUT.to_string(),
-                input,
+                i128::from(input),
             )]),
         }],
     };

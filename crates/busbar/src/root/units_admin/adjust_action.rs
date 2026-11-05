@@ -179,3 +179,7 @@ pub(crate) fn adjust_request(
 #[cfg(test)]
 #[path = "tests/adjust_action_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/adjust_staging_tests.rs"]
+mod staging_tests;

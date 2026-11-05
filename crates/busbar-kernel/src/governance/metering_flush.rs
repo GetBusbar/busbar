@@ -46,15 +46,15 @@ impl MeteringWrite {
         let mut counts = self.remainder.clone();
         counts.merge(MeterCounts {
             requests: self.delta.requests,
-            tokens_input: Count::from_micros(i128::from(self.delta.tokens_input)),
-            tokens_output: Count::from_micros(i128::from(self.delta.tokens_output)),
-            tokens_cache_read: Count::from_micros(i128::from(self.delta.tokens_cache_read)),
-            tokens_cache_write: Count::from_micros(i128::from(self.delta.tokens_cache_write)),
+            tokens_input: Count::from_micros(self.delta.tokens_input),
+            tokens_output: Count::from_micros(self.delta.tokens_output),
+            tokens_cache_read: Count::from_micros(self.delta.tokens_cache_read),
+            tokens_cache_write: Count::from_micros(self.delta.tokens_cache_write),
             usage_units: self
                 .delta
                 .usage_units
                 .iter()
-                .map(|(k, n)| (k.clone(), Count::from_micros(i128::from(*n))))
+                .map(|(k, n)| (k.clone(), Count::from_micros(*n)))
                 .collect(),
         });
         counts
@@ -63,13 +63,9 @@ impl MeteringWrite {
 
 /// One representable store operation; the untouched remainder keeps its exact Count range.
 pub(super) fn metering_chunk(key: &MeterKey, counts: &MeterCounts) -> (MeteringDelta, MeterCounts) {
-    fn take(count: Count) -> (u64, Count) {
+    fn take(count: Count) -> (i128, Count) {
         assert!(!count.is_negative(), "negative metering count");
-        let raw = count.micros().min(i128::from(i64::MAX));
-        (
-            u64::try_from(raw).expect("nonnegative bounded metering chunk"),
-            Count::from_micros(count.micros() - raw),
-        )
+        (count.micros(), Count::ZERO)
     }
     let (input, input_left) = take(counts.tokens_input);
     let (output, output_left) = take(counts.tokens_output);

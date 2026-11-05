@@ -1319,7 +1319,7 @@ pub(super) fn project_usage_rows(
     )
 }
 
-fn project_usage_rows_exact(
+pub(super) fn project_usage_rows_exact(
     cost: Arc<busbar_kernel::cost::CostModel>,
     history: Option<Arc<busbar_kernel::cost::History>>,
     snapshot: Option<busbar_kernel::cost::EntryKey>,
@@ -1354,10 +1354,10 @@ fn project_usage_rows_exact(
         let lane = row_lane(&r.model, &r.provider);
         let mut row = UsageRollup {
             usage: UsageBreakdown {
-                tokens_input: Count::from_micros(i128::from(r.tokens_input)),
-                tokens_output: Count::from_micros(i128::from(r.tokens_output)),
-                tokens_cache_read: Count::from_micros(i128::from(r.tokens_cache_read)),
-                tokens_cache_creation: Count::from_micros(i128::from(r.tokens_cache_write)),
+                tokens_input: Count::from_micros(r.tokens_input),
+                tokens_output: Count::from_micros(r.tokens_output),
+                tokens_cache_read: Count::from_micros(r.tokens_cache_read),
+                tokens_cache_creation: Count::from_micros(r.tokens_cache_write),
                 requests: r.requests,
                 ..Default::default()
             },
@@ -1375,7 +1375,7 @@ fn project_usage_rows_exact(
         let classes: std::collections::BTreeMap<String, Count> = r
             .usage_units
             .iter()
-            .map(|(class, n)| (class.clone(), Count::from_micros(i128::from(*n))))
+            .map(|(class, n)| (class.clone(), Count::from_micros(*n)))
             .collect();
         let price = |usage: &UsageBreakdown,
                      classes: &std::collections::BTreeMap<String, Count>| {
@@ -1387,8 +1387,8 @@ fn project_usage_rows_exact(
             .map_err(|e| usage_refusal("usage.price", &e))
         };
         row.exact = price(&row.usage, &classes)?;
-        if row_carries_classes(&r.provider) {
-            for (class, count) in &classes {
+        for (class, count) in &classes {
+            if !busbar_contract::records::RESERVED_UNITS.contains(&class.as_str()) {
                 let one = std::collections::BTreeMap::from([(class.clone(), *count)]);
                 row.class_exact
                     .insert(class.clone(), price(&UsageBreakdown::default(), &one)?);

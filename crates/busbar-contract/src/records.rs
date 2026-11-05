@@ -475,21 +475,22 @@ pub struct ModelTokens {
     #[serde(default, skip_serializing_if = "count_scale::is_whole")]
     pub scale: u32,
     pub model: String,
+    /// Nonnegative mantissas across the complete Count range, interpreted at `scale`.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub usage_units: std::collections::BTreeMap<String, u64>,
+    pub usage_units: std::collections::BTreeMap<String, i128>,
 }
 
 impl ModelTokens {
     /// This model's count for one reserved tier (0 if absent).
-    pub fn tier(&self, unit: &str) -> u64 {
+    pub fn tier(&self, unit: &str) -> i128 {
         self.usage_units.get(unit).copied().unwrap_or(0)
     }
 
     /// Total units across every key (saturating — counts are upstream-controlled).
-    pub fn total(&self) -> u64 {
+    pub fn total(&self) -> i128 {
         self.usage_units
             .values()
-            .fold(0u64, |acc, v| acc.saturating_add(*v))
+            .fold(0i128, |acc, v| acc.saturating_add(*v))
     }
 
     /// All four tiers zero AND no open units (nothing to persist / flush).
@@ -522,7 +523,7 @@ pub struct UsageLedger {
 
 impl UsageLedger {
     /// This model's summed billable units (across every unit key), if the model is present.
-    pub fn tokens_for(&self, model: &str) -> Option<u64> {
+    pub fn tokens_for(&self, model: &str) -> Option<i128> {
         self.models
             .iter()
             .find(|m| m.model == model)
@@ -530,62 +531,32 @@ impl UsageLedger {
     }
 
     /// Total TOKENS across every model — the reserved token classes only (the scalar `tokens`
-    pub fn total_tokens(&self) -> u64 {
+    pub fn total_tokens(&self) -> i128 {
         RESERVED_UNITS
             .iter()
-            .fold(0u64, |acc, u| acc.saturating_add(self.total_tier(u)))
+            .fold(0i128, |acc, u| acc.saturating_add(self.total_tier(u)))
     }
 
     /// Summed count of one reserved tier across every model — the durable counterpart of the
-    fn total_tier(&self, unit: &str) -> u64 {
+    fn total_tier(&self, unit: &str) -> i128 {
         self.models
             .iter()
-            .fold(0u64, |acc, m| acc.saturating_add(m.tier(unit)))
+            .fold(0i128, |acc, m| acc.saturating_add(m.tier(unit)))
     }
 
     /// UNCACHED-INPUT tokens across every model — the durable counterpart of the `tokens_input`
-    pub fn total_input(&self) -> u64 {
+    pub fn total_input(&self) -> i128 {
         self.total_tier(UNIT_INPUT)
     }
 
     /// OUTPUT tokens across every model — the durable counterpart of the `tokens_output` cap.
-    pub fn total_output(&self) -> u64 {
+    pub fn total_output(&self) -> i128 {
         self.total_tier(UNIT_OUTPUT)
     }
 
     /// CACHE-READ tokens across every model — the durable counterpart of the `tokens_cache_read`
-    pub fn total_cache_read(&self) -> u64 {
+    pub fn total_cache_read(&self) -> i128 {
         self.total_tier(UNIT_CACHE_READ)
-    }
-
-    /// Apply one signed per-model unit delta, flooring every counter at 0 (a refund can never
-    pub fn apply_model_delta(&mut self, delta: &ModelTokensDelta) {
-        let entry = match self.models.iter_mut().find(|m| m.model == delta.model) {
-            Some(m) => m,
-            None => {
-                self.models.push(ModelTokens {
-                    model: delta.model.clone(),
-                    ..Default::default()
-                });
-                self.models.last_mut().expect("just pushed")
-            }
-        };
-
-        for (key, d) in &delta.usage_units {
-            let cur = entry.usage_units.entry(key.clone()).or_insert(0);
-            *cur = cur.saturating_add_signed(*d);
-        }
-    }
-
-    /// Apply a whole [`UsageDelta`] (admission requests + billable requests + every model row),
-    pub fn apply_delta(&mut self, delta: &UsageDelta) {
-        self.requests = self.requests.saturating_add_signed(delta.requests);
-        self.billable_requests = self
-            .billable_requests
-            .saturating_add_signed(delta.billable_requests);
-        for m in &delta.models {
-            self.apply_model_delta(m);
-        }
     }
 }
 
@@ -599,8 +570,9 @@ pub struct ModelTokensDelta {
     #[serde(default, skip_serializing_if = "count_scale::is_whole")]
     pub scale: u32,
     pub model: String,
+    /// Signed mantissas across the complete Count range, interpreted at `scale`.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub usage_units: std::collections::BTreeMap<String, i64>,
+    pub usage_units: std::collections::BTreeMap<String, i128>,
 }
 
 impl ModelTokensDelta {
@@ -649,13 +621,13 @@ pub struct MeteringDelta {
     /// The serving lane's provider name.
     pub provider: String,
     /// Uncached input tokens (the normalized additive-cache convention, per `billing::TokenUsage`).
-    pub tokens_input: u64,
-    pub tokens_output: u64,
-    pub tokens_cache_read: u64,
+    pub tokens_input: i128,
+    pub tokens_output: i128,
+    pub tokens_cache_read: i128,
     /// Renamed from `tokens_cache_creation`: the identical concept as `TierTokens::cache_write`
     /// above, just named differently because this type was added later without matching its
     /// sibling. Renamed to match while everything on this seam is still unreleased.
-    pub tokens_cache_write: u64,
+    pub tokens_cache_write: i128,
     /// The number of completed responses this delta accumulates. On the wire (not derivable by the
     /// store) because a delta produced by a write-behind flush can coalesce more than one response
     /// under the same (key, bucket, model, provider) key — the store cannot infer that count from
@@ -709,7 +681,7 @@ pub struct MeteringDelta {
     /// prices. Additive, like every counter here. `#[serde(default, skip_serializing_if = empty)]`: a
     /// row that carries none (every 1.5.5 row, all pools-only token traffic) is byte-identical.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub usage_units: std::collections::BTreeMap<String, u64>,
+    pub usage_units: std::collections::BTreeMap<String, i128>,
 }
 
 /// One accumulated metering row read back for a bucket (the raw material of `GET usage` by_model /
@@ -722,11 +694,11 @@ pub struct MeteringRow {
     pub key_id: String,
     pub model: String,
     pub provider: String,
-    pub tokens_input: u64,
-    pub tokens_output: u64,
-    pub tokens_cache_read: u64,
+    pub tokens_input: i128,
+    pub tokens_output: i128,
+    pub tokens_cache_read: i128,
     /// Renamed from `tokens_cache_creation` — see [`MeteringDelta::tokens_cache_write`].
-    pub tokens_cache_write: u64,
+    pub tokens_cache_write: i128,
     pub requests: u64,
     #[serde(default)]
     pub billable_requests: u64,
@@ -741,7 +713,7 @@ pub struct MeteringRow {
     pub priced_from_ms: u64,
     /// Every ledgered class the token columns do not hold — see [`MeteringDelta::usage_units`].
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub usage_units: std::collections::BTreeMap<String, u64>,
+    pub usage_units: std::collections::BTreeMap<String, i128>,
 }
 
 /// One admin AUDIT record, as it crosses the store seam for DURABLE persistence. Mirrors the engine's
@@ -1033,7 +1005,8 @@ pub trait RecordStore: Send + Sync + 'static {
         delta: &UsageDelta,
     ) -> RecordStoreResult<()> {
         let mut cur = self.get_usage(bucket_id, window_start)?;
-        cur.apply_delta(delta);
+        cur.checked_apply_delta(delta)
+            .map_err(|error| RecordStoreError(error.to_string()))?;
         self.put_usage(bucket_id, window_start, &cur)
     }
 

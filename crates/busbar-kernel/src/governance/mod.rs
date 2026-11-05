@@ -406,7 +406,7 @@ fn dated_delta(delta: &UsageDelta, era: RawRateEra) -> UsageDelta {
             scale: 0,
             usage_units: std::collections::BTreeMap::from([(
                 ERA_FEE_UNIT.to_string(),
-                delta.billable_requests,
+                i128::from(delta.billable_requests),
             )]),
         });
     }
@@ -1702,7 +1702,7 @@ impl TestLedgerCounts for busbar_contract::records::UsageLedger {
                 Count::total(
                     row.usage_units
                         .values()
-                        .map(|n| Count::from_stored(i128::from(*n), row.scale).unwrap()),
+                        .map(|n| Count::from_stored(*n, row.scale).unwrap()),
                 )
                 .unwrap()
                 .whole_for_test()
@@ -1715,7 +1715,7 @@ impl TestLedgerCounts for busbar_contract::records::UsageLedger {
                 .filter(|(name, _)| {
                     busbar_contract::records::RESERVED_UNITS.contains(&name.as_str())
                 })
-                .map(|(_, n)| Count::from_stored(i128::from(*n), row.scale).unwrap())
+                .map(|(_, n)| Count::from_stored(*n, row.scale).unwrap())
         }))
         .unwrap()
         .whole_for_test()
@@ -1723,8 +1723,6 @@ impl TestLedgerCounts for busbar_contract::records::UsageLedger {
 }
 
 #[cfg(test)]
-fn stored_whole_for_test(raw: u64, scale: u32) -> u64 {
-    Count::from_stored(i128::from(raw), scale)
-        .unwrap()
-        .whole_for_test()
+fn stored_whole_for_test(raw: i128, scale: u32) -> u64 {
+    Count::from_stored(raw, scale).unwrap().whole_for_test()
 }

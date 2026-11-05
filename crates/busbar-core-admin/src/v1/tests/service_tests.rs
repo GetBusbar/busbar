@@ -545,7 +545,7 @@ mod dated_rate_card_history {
                         key_id: KEY.to_string(),
                         model: LANE.to_string(),
                         provider: PROVIDER.to_string(),
-                        tokens_input: TOKENS,
+                        tokens_input: i128::from(TOKENS),
                         tokens_output: 0,
                         tokens_cache_read: 0,
                         tokens_cache_write: 0,
@@ -1330,7 +1330,7 @@ fn submicro_metering_rows_project_once_per_final_usage_view() {
         &BTreeMap::new(),
     ));
     let history = Arc::new(History::opening(cost.card().clone(), 0));
-    let row = |key: String, micros: u64| MeteringRow {
+    let row = |key: String, micros: i128| MeteringRow {
         scale: 6,
         key_id: key,
         model: "fractional-model".into(),
@@ -1356,7 +1356,7 @@ fn submicro_metering_rows_project_once_per_final_usage_view() {
                         "fractional-model",
                         0,
                         STANDARD_TIER_BP,
-                        [(UNIT_INPUT, Count::from_micros(i128::from(r.tokens_input)))],
+                        [(UNIT_INPUT, Count::from_micros(r.tokens_input))],
                         Count::ZERO,
                     )
                     .unwrap();
@@ -1468,5 +1468,106 @@ fn plugin_configuration_corrupt_and_unknown_inventory_have_no_store_ownership() 
         assert_eq!(configuration.root_source, "unavailable");
         assert_eq!(configuration.declaration_availability, "unavailable");
         assert_eq!(catalog_rows_of_kind(vec![row], "store").count(), 0);
+    }
+}
+
+#[test]
+fn full_range_free_usage_projects_all_classes_and_exact_inverse() {
+    use busbar_contract::{records::MeteringRow, Count};
+    use busbar_kernel::cost::CostModel;
+    use busbar_kernel::governance::UsageAdjustment;
+    use std::collections::BTreeMap;
+
+    let cost = Arc::new(CostModel::resolve_parts(
+        Some(&BTreeMap::from([(
+            "wide-model".into(),
+            busbar_kernel::config::RateEntryCfg {
+                input_utok: 0.0,
+                output_utok: 0.0,
+                cache_read_utok: 0.0,
+                cache_write_utok: 0.0,
+                units: BTreeMap::from([("seconds".into(), Default::default())]),
+                ..Default::default()
+            },
+        )])),
+        0,
+        &BTreeMap::new(),
+    ));
+    for decimal in [
+        "9007199254740993.000001",
+        "170141183460469231731687303715884.105727",
+    ] {
+        let quantity = Count::parse(decimal).unwrap();
+        let row = MeteringRow {
+            scale: 6,
+            key_id: "wide-key".into(),
+            model: "wide-model".into(),
+            provider: "wide-provider".into(),
+            tokens_input: 0,
+            tokens_output: 0,
+            tokens_cache_read: 0,
+            tokens_cache_write: 0,
+            requests: 0,
+            billable_requests: 0,
+            key_group_at_use: String::new(),
+            pricing_version: String::new(),
+            priced_from_ms: 0,
+            usage_units: BTreeMap::new(),
+        };
+        let adjustment = |delta| UsageAdjustment {
+            key_id: row.key_id.clone(),
+            lane: row.model.clone(),
+            era: 0,
+            entry_id: None,
+            delta: BTreeMap::from([("input".into(), delta), ("seconds".into(), delta)]),
+        };
+        let project = |adjustments| {
+            super::operations::project_usage_rows_exact(
+                Arc::clone(&cost),
+                None,
+                None,
+                UsageWindow {
+                    start: 0,
+                    end: 86_400,
+                },
+                0,
+                (vec![row.clone()], HashMap::new(), adjustments),
+            )
+            .unwrap()
+        };
+        let view = project(vec![adjustment(quantity)]);
+        for usage in [&view.total, &view.by_model[0].usage, &view.by_key[0].usage] {
+            assert_eq!(usage.tokens_input, quantity);
+            assert_eq!(
+                usage.classes.len(),
+                1,
+                "reserved token classes stay in their fields"
+            );
+            assert_eq!(usage.classes["seconds"].count, quantity);
+            assert_eq!(usage.classes["seconds"].cost, 0);
+            assert_eq!(usage.spend_micros, 0);
+            assert_eq!(serde_json::to_string(&usage.tokens_input).unwrap(), decimal);
+            assert_eq!(
+                serde_json::to_string(&usage.classes["seconds"].count).unwrap(),
+                decimal
+            );
+        }
+        let restored = project(vec![
+            adjustment(quantity),
+            adjustment(Count::from_micros(-quantity.micros())),
+        ]);
+        for usage in [
+            &restored.total,
+            &restored.by_model[0].usage,
+            &restored.by_key[0].usage,
+        ] {
+            assert_eq!(usage.tokens_input, Count::ZERO);
+            assert!(usage.classes.is_empty());
+            assert!(serde_json::to_value(usage)
+                .unwrap()
+                .get("classes")
+                .is_none());
+            assert_eq!(usage.spend_micros, 0);
+        }
     }
 }

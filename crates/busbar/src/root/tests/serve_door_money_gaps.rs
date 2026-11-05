@@ -62,14 +62,10 @@ fn metering_rows(rig: &DoorRig, at: u64) -> Vec<String> {
                 "{}/{} in={} out={} cr={} cw={} req={} billable={}",
                 row.model,
                 row.provider,
-                busbar_contract::Count::from_stored(i128::from(row.tokens_input), row.scale)
-                    .unwrap(),
-                busbar_contract::Count::from_stored(i128::from(row.tokens_output), row.scale)
-                    .unwrap(),
-                busbar_contract::Count::from_stored(i128::from(row.tokens_cache_read), row.scale)
-                    .unwrap(),
-                busbar_contract::Count::from_stored(i128::from(row.tokens_cache_write), row.scale)
-                    .unwrap(),
+                busbar_contract::Count::from_stored(row.tokens_input, row.scale).unwrap(),
+                busbar_contract::Count::from_stored(row.tokens_output, row.scale).unwrap(),
+                busbar_contract::Count::from_stored(row.tokens_cache_read, row.scale).unwrap(),
+                busbar_contract::Count::from_stored(row.tokens_cache_write, row.scale).unwrap(),
                 row.requests,
                 row.billable_requests
             )
@@ -835,10 +831,7 @@ async fn exact_provider_counts_reach_real_store_and_the_same_priced_view() {
             .find(|row| row.model == "m0")
             .expect("raw model row");
         assert_eq!(model.scale, 6);
-        assert_eq!(
-            model.usage_units["input"],
-            u64::try_from(expected.micros()).unwrap()
-        );
+        assert_eq!(model.usage_units["input"], expected.micros());
         let counts = model.counts().unwrap();
         assert_eq!(counts["input"], expected);
         let nanos = rig.app.cost.price_counts_nanos("m0", &counts).unwrap();
@@ -863,7 +856,7 @@ async fn exact_provider_counts_reach_real_store_and_the_same_priced_view() {
             .unwrap();
         assert_eq!(measured.scale, 6);
         assert_eq!(
-            Count::from_stored(i128::from(measured.tokens_input), measured.scale).unwrap(),
+            Count::from_stored(measured.tokens_input, measured.scale).unwrap(),
             expected
         );
         let reopened =

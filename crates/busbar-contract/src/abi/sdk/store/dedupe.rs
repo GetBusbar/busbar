@@ -77,14 +77,10 @@ impl Dedupe {
 
     fn of(values: Values<'_>) -> Self {
         let mut f = Feed(Sha256::new());
-        let scaled = match values {
-            Values::Usage(cells) => cells
-                .iter()
-                .any(|(_, _, d)| d.models.iter().any(|m| m.scale != 0)),
-            Values::Metering(rows) => rows.iter().any(|r| r.scale != 0),
-            _ => false,
-        };
-        f.text(if scaled { "busbar.store.op/2" } else { TAG });
+        let quantities = matches!(values, Values::Usage(_) | Values::Metering(_));
+        // Quantity receipts use a distinct domain and signed 16-byte mantissas.
+        // A narrow-format receipt cannot prove this operation and must conflict.
+        f.text(if quantities { "busbar.store.op/3" } else { TAG });
         match values {
             Values::UsageCorrection(request) => {
                 f.text(super::correction::INTENT);
@@ -96,14 +92,14 @@ impl Dedupe {
                 for (bucket, window, delta) in cells {
                     f.text(bucket);
                     f.u64(*window);
-                    f.usage(delta, scaled);
+                    f.usage(delta);
                 }
             }
             Values::Metering(deltas) => {
                 f.text("add_metering_batch");
                 f.count(deltas.len());
                 for d in deltas {
-                    f.metering(d, scaled);
+                    f.metering(d);
                 }
             }
             Values::Append(record) => {
@@ -229,6 +225,10 @@ impl Feed {
         self.0.update(v.to_le_bytes());
     }
 
+    fn i128(&mut self, v: i128) {
+        self.0.update(v.to_le_bytes());
+    }
+
     fn count(&mut self, n: usize) {
         self.u64(n as u64);
     }
@@ -242,7 +242,7 @@ impl Feed {
         self.bytes(s.as_bytes());
     }
 
-    fn usage(&mut self, d: &UsageDelta, scaled: bool) {
+    fn usage(&mut self, d: &UsageDelta) {
         let UsageDelta {
             requests,
             billable_requests,
@@ -257,19 +257,17 @@ impl Feed {
             scale,
         } in models
         {
-            if scaled {
-                self.u64(u64::from(*scale));
-            }
+            self.u64(u64::from(*scale));
             self.text(model);
             self.count(usage_units.len());
             for (unit, n) in usage_units {
                 self.text(unit);
-                self.i64(*n);
+                self.i128(*n);
             }
         }
     }
 
-    fn metering(&mut self, d: &MeteringDelta, scaled: bool) {
+    fn metering(&mut self, d: &MeteringDelta) {
         let MeteringDelta {
             scale,
             key_id,
@@ -287,9 +285,7 @@ impl Feed {
             priced_from_ms,
             usage_units,
         } = d;
-        if scaled {
-            self.u64(u64::from(*scale));
-        }
+        self.u64(u64::from(*scale));
         self.text(key_id);
         self.u64(*bucket);
         self.text(model);
@@ -299,18 +295,18 @@ impl Feed {
             tokens_output,
             tokens_cache_read,
             tokens_cache_write,
-            requests,
-            billable_requests,
         ] {
-            self.u64(*n);
+            self.i128(*n);
         }
+        self.u64(*requests);
+        self.u64(*billable_requests);
         self.text(key_group_at_use);
         self.text(pricing_version);
         self.u64(*priced_from_ms);
         self.count(usage_units.len());
         for (unit, n) in usage_units {
             self.text(unit);
-            self.u64(*n);
+            self.i128(*n);
         }
     }
 

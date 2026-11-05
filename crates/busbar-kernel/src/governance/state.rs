@@ -2611,6 +2611,13 @@ pub(super) fn durable_cell(
     cell.models = durable_segments(row.models)?;
     let (mut fees, mut undated_fees) = (Vec::new(), row.billable_requests);
     for e in eras.models {
+        for raw in e.usage_units.values() {
+            let count =
+                Count::from_stored(*raw, e.scale).map_err(|e| RecordStoreError(e.to_string()))?;
+            if count.is_negative() {
+                return Err(RecordStoreError("negative durable era usage total".into()));
+            }
+        }
         let (era, model) = match e.model.split_once(ERA_MODEL_SEP) {
             Some((era, model)) => (era, Some(model)),
             None => (e.model.as_str(), None),
@@ -2623,7 +2630,7 @@ pub(super) fn durable_cell(
         }
         let Some(model) = model else {
             let count = Count::from_stored(
-                i128::from(e.usage_units.get(ERA_FEE_UNIT).copied().unwrap_or(0)),
+                e.usage_units.get(ERA_FEE_UNIT).copied().unwrap_or(0),
                 e.scale,
             )
             .map_err(|e| RecordStoreError(e.to_string()))?;
@@ -2645,9 +2652,8 @@ pub(super) fn durable_cell(
         let mut cur = BTreeMap::new();
         for (unit, n) in e.usage_units {
             let left = rest.cur.get(&unit).copied().unwrap_or_default();
-            let n = Count::from_stored(i128::from(n), e.scale)
-                .map_err(|e| RecordStoreError(e.to_string()))?
-                .min(left);
+            let n = Count::from_stored(n, e.scale).map_err(|e| RecordStoreError(e.to_string()))?;
+            let n = n.min(left);
             if n.is_zero() {
                 continue;
             }
@@ -2693,9 +2699,12 @@ fn durable_segments(
                     .usage_units
                     .into_iter()
                     .map(|(unit, n)| {
-                        Count::from_stored(i128::from(n), m.scale)
-                            .map(|n| (unit, n))
-                            .map_err(|e| RecordStoreError(e.to_string()))
+                        let count = Count::from_stored(n, m.scale)
+                            .map_err(|e| RecordStoreError(e.to_string()))?;
+                        if count.is_negative() {
+                            return Err(RecordStoreError("negative durable usage total".into()));
+                        }
+                        Ok((unit, count))
                     })
                     .collect::<RecordStoreResult<_>>()?,
                 flushed: BTreeMap::new(),

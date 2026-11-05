@@ -1057,11 +1057,11 @@ impl Custody {
                         &mut capacity,
                         &model.model,
                         unit,
-                        Count::from_stored(i128::from(*count), model.scale)
+                        Count::from_stored(*count, model.scale)
                             .map_err(|e| unresolved(&e.to_string()))?
                             .checked_sub(
                                 Count::from_stored(
-                                    i128::from(previous),
+                                    previous,
                                     before.map_or(COUNT_SCALE, |m| m.scale),
                                 )
                                 .map_err(|e| unresolved(&e.to_string()))?,
@@ -1083,7 +1083,7 @@ impl Custody {
                             &mut capacity,
                             &model.model,
                             unit,
-                            -Count::from_stored(i128::from(*count), model.scale)
+                            -Count::from_stored(*count, model.scale)
                                 .map_err(|e| unresolved(&e.to_string()))?
                                 .micros(),
                         );

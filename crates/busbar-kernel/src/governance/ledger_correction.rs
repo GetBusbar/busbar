@@ -1495,6 +1495,20 @@ impl GovState {
                 }));
             }
         }
+        // Only use this while building private candidate rows. Once raw-cell custody is
+        // installed below, failures must retain the existing unknown/recovery semantics.
+        macro_rules! prepare {
+            ($result:expr) => {
+                match $result {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return Ok(Err(AdjustRefused::Preparation {
+                            reason: error.to_string(),
+                        }));
+                    }
+                }
+            };
+        }
         loop {
             let Some(key) = self.store.get_key(adj.key_id)? else {
                 return Ok(Err(AdjustRefused::UnknownKey));
@@ -1529,13 +1543,13 @@ impl GovState {
             for (bucket, window) in &targets {
                 for name in [bucket.clone(), era_bucket(bucket)] {
                     let mut row = self.store.get_usage(&name, *window)?;
-                    exact(correction::canonical_ledger(&mut row))?;
+                    prepare!(correction::canonical_ledger(&mut row));
                     snapshots.insert(address(&name, *window), row);
                 }
             }
             for bucket in [ADJUST_UP_BUCKET, ADJUST_DOWN_BUCKET] {
                 let mut row = self.store.get_usage(bucket, day)?;
-                exact(correction::canonical_ledger(&mut row))?;
+                prepare!(correction::canonical_ledger(&mut row));
                 snapshots.insert(address(bucket, day), row);
             }
             let mut metering: Vec<_> = self
@@ -1545,7 +1559,7 @@ impl GovState {
                 .filter(|row| row.key_id == adj.key_id)
                 .collect();
             correction::canonical_metering(&mut metering);
-            let metered_era = unique_metered_era(adj, &metering)?;
+            let metered_era = prepare!(unique_metered_era(adj, &metering));
             if let Some(history) = crate::rate_apply::dated_history() {
                 if metered_era.entry_id.is_some()
                     && history
@@ -1606,11 +1620,15 @@ impl GovState {
                 let plain = &snapshots[&plain_address];
                 let dated = &snapshots[&dated_address];
                 let (mut before, mut plain_after, mut dated_after) =
-                    capture_target(live, plain, dated, *window)?;
+                    prepare!(capture_target(live, plain, dated, *window));
                 if let Some(names) = owners.get(bucket) {
                     before.group_owners.extend(names.iter().cloned());
                 }
-                let target = durable_cell(plain_after.clone(), dated_after.clone(), *window)?;
+                let target = prepare!(durable_cell(
+                    plain_after.clone(),
+                    dated_after.clone(),
+                    *window
+                ));
                 let segment = if metered_era.entry_id.is_some() {
                     target
                         .models
@@ -1648,24 +1666,27 @@ impl GovState {
                             delta: *change,
                         }));
                     }
-                    exact(move_unit(
+                    prepare!(move_unit(
                         &mut plain_after,
                         adj.model,
                         class,
                         change.micros(),
-                    ))?;
+                    ));
                     if era != RawRateEra::legacy(0) {
-                        exact(move_unit(
+                        prepare!(move_unit(
                             &mut dated_after,
                             &era_model(era, adj.model),
                             class,
                             change.micros(),
-                        ))?;
+                        ));
                     }
                 }
                 let mut accepted = if before.window_start == *window {
-                    let mut accepted =
-                        durable_cell(plain_after.clone(), dated_after.clone(), *window)?;
+                    let mut accepted = prepare!(durable_cell(
+                        plain_after.clone(),
+                        dated_after.clone(),
+                        *window
+                    ));
                     copy_custody(&before, &mut accepted);
                     accepted
                 } else {
@@ -1688,17 +1709,17 @@ impl GovState {
                 } else {
                     ADJUST_DOWN_BUCKET
                 };
-                exact(move_unit(
+                prepare!(move_unit(
                     replacements
                         .get_mut(&address(bucket, day))
                         .expect("adjustment row read"),
                     &slot,
                     class,
-                    change
+                    prepare!(change
                         .micros()
                         .checked_abs()
-                        .ok_or_else(|| RecordStoreError("adjustment magnitude overflow".into()))?,
-                ))?;
+                        .ok_or("adjustment magnitude overflow")),
+                ));
             }
             let request = Request {
                 version: correction::VERSION,
@@ -1706,23 +1727,22 @@ impl GovState {
                 key_id: adj.key_id.into(),
                 day_start: day,
                 metering,
-                usage: snapshots
+                usage: prepare!(snapshots
                     .into_iter()
                     .map(|(address, expected)| {
                         let mut replacement =
                             replacements.remove(&address).expect("same raw row set");
 
-                        correction::canonical_ledger(&mut replacement)
-                            .expect("unique planned model identities");
-                        UsageChange {
+                        correction::canonical_ledger(&mut replacement)?;
+                        Ok::<_, &'static str>(UsageChange {
                             address,
                             expected,
                             replacement,
-                        }
+                        })
                     })
-                    .collect(),
+                    .collect::<Result<Vec<_>, _>>()),
             };
-            exact(request.encode())?;
+            prepare!(request.encode());
             for (bucket, window, mut before, accepted) in branches {
                 let index = order
                     .binary_search(&self.budget.shard_index(&bucket))
@@ -1849,11 +1869,10 @@ fn check_metered(
     for (class, change) in delta {
         let adjusted = |ledger: &UsageLedger| -> Option<Count> {
             match ledger.models.iter().find(|row| row.model == slot) {
-                Some(row) => Count::from_stored(
-                    i128::from(row.usage_units.get(*class).copied().unwrap_or(0)),
-                    row.scale,
-                )
-                .ok(),
+                Some(row) => {
+                    Count::from_stored(row.usage_units.get(*class).copied().unwrap_or(0), row.scale)
+                        .ok()
+                }
                 None => Some(Count::ZERO),
             }
         };
@@ -2067,11 +2086,12 @@ fn move_unit(
             .usage_units
             .iter()
             .map(|(k, n)| {
-                let count = Count::from_stored(i128::from(*n), model.scale)
+                let count = Count::from_stored(*n, model.scale)
                     .map_err(|_| "invalid stored count scale")?;
-                u64::try_from(count.micros())
-                    .map(|n| (k.clone(), n))
-                    .map_err(|_| "raw usage correction count out of range")
+                if count.is_negative() {
+                    return Err("negative stored usage count");
+                }
+                Ok((k.clone(), count.micros()))
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         model.usage_units = normalized;
@@ -2081,7 +2101,12 @@ fn move_unit(
         .and_then(|i| row.models[i].usage_units.get(unit))
         .copied()
         .unwrap_or(0);
-    let next = checked_move(count, change)?;
+    let next = count
+        .checked_add(change)
+        .ok_or("raw usage correction count overflow")?;
+    if next < 0 {
+        return Err("raw usage correction count out of range");
+    }
     if let Some(position) = position {
         if next == 0 {
             row.models[position].usage_units.remove(unit);

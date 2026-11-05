@@ -1270,7 +1270,7 @@ fn metered(g: &GovState, key_id: &str, model: &str, n: u64, now: u64) {
             bucket: crate::governance::metering_bucket(now),
             model: model.to_string(),
             provider: String::new(),
-            tokens_input: n,
+            tokens_input: i128::from(n),
             tokens_output: 0,
             tokens_cache_read: 0,
             tokens_cache_write: 0,

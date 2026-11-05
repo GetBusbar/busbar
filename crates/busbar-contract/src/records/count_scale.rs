@@ -8,13 +8,16 @@ pub(super) fn is_whole(scale: &u32) -> bool {
     *scale == 0
 }
 
-fn signed(value: i128, scale: u32) -> Result<i64, CountError> {
-    let count = Count::from_stored(value, scale)?;
-    i64::try_from(count.micros()).map_err(|_| CountError::OutOfRange)
+fn signed(value: i128, scale: u32) -> Result<i128, CountError> {
+    Count::from_stored(value, scale).map(Count::micros)
 }
 
-fn unsigned(value: u64, scale: u32) -> Result<u64, CountError> {
-    u64::try_from(signed(i128::from(value), scale)?).map_err(|_| CountError::Negative)
+fn nonnegative(value: i128, scale: u32) -> Result<i128, CountError> {
+    let value = signed(value, scale)?;
+    if value < 0 {
+        return Err(CountError::Negative);
+    }
+    Ok(value)
 }
 
 impl ModelTokens {
@@ -23,7 +26,7 @@ impl ModelTokens {
         let values = self
             .usage_units
             .iter()
-            .map(|(key, value)| unsigned(*value, self.scale).map(|v| (key.clone(), v)))
+            .map(|(key, value)| nonnegative(*value, self.scale).map(|v| (key.clone(), v)))
             .collect::<Result<_, _>>()?;
         // Validate an empty row's discriminator too.
         signed(0, self.scale)?;
@@ -38,7 +41,9 @@ impl ModelTokens {
         self.usage_units
             .iter()
             .map(|(key, value)| {
-                Count::from_stored(i128::from(*value), self.scale).map(|count| (key.clone(), count))
+                nonnegative(*value, self.scale)
+                    .map(Count::from_micros)
+                    .map(|count| (key.clone(), count))
             })
             .collect()
     }
@@ -50,7 +55,7 @@ impl ModelTokensDelta {
         let values = self
             .usage_units
             .iter()
-            .map(|(key, value)| signed(i128::from(*value), self.scale).map(|v| (key.clone(), v)))
+            .map(|(key, value)| signed(*value, self.scale).map(|v| (key.clone(), v)))
             .collect::<Result<_, _>>()?;
         signed(0, self.scale)?;
         self.usage_units = values;
@@ -61,6 +66,7 @@ impl ModelTokensDelta {
 
 impl UsageLedger {
     /// Apply a signed delta atomically at scale six, refusing aggregate overflow.
+    /// Ordinary refunds preserve the established floor at zero, including `i128::MIN`.
     pub fn checked_apply_delta(&mut self, delta: &UsageDelta) -> Result<(), CountError> {
         let mut row = self.clone();
         let mut delta = delta.clone();
@@ -84,11 +90,10 @@ impl UsageLedger {
             };
             for (class, change) in change.usage_units {
                 let count = model.usage_units.entry(class).or_default();
-                let total = (i128::from(*count) + i128::from(change)).max(0);
-                *count = unsigned(
-                    u64::try_from(total).map_err(|_| CountError::Overflow)?,
-                    COUNT_SCALE,
-                )?;
+                *count = count
+                    .checked_add(change)
+                    .ok_or(CountError::Overflow)?
+                    .max(0);
             }
         }
         row.requests = row.requests.saturating_add_signed(delta.requests);
@@ -128,12 +133,12 @@ macro_rules! metering {
             /// Normalize quantity columns and open counts atomically; request counters are unscaled.
             pub fn normalize_scale6(&mut self) -> Result<(), CountError> {
                 let mut row = self.clone();
-                row.tokens_input = unsigned(row.tokens_input, row.scale)?;
-                row.tokens_output = unsigned(row.tokens_output, row.scale)?;
-                row.tokens_cache_read = unsigned(row.tokens_cache_read, row.scale)?;
-                row.tokens_cache_write = unsigned(row.tokens_cache_write, row.scale)?;
+                row.tokens_input = nonnegative(row.tokens_input, row.scale)?;
+                row.tokens_output = nonnegative(row.tokens_output, row.scale)?;
+                row.tokens_cache_read = nonnegative(row.tokens_cache_read, row.scale)?;
+                row.tokens_cache_write = nonnegative(row.tokens_cache_write, row.scale)?;
                 for value in row.usage_units.values_mut() {
-                    *value = unsigned(*value, row.scale)?;
+                    *value = nonnegative(*value, row.scale)?;
                 }
                 row.scale = COUNT_SCALE;
                 *self = row;
@@ -152,8 +157,9 @@ impl MeteringRow {
         let mut delta = delta.clone();
         row.normalize_scale6()?;
         delta.normalize_scale6()?;
-        let add =
-            |a: u64, b: u64| unsigned(a.checked_add(b).ok_or(CountError::Overflow)?, COUNT_SCALE);
+        let add = |a: i128, b: i128| {
+            nonnegative(a.checked_add(b).ok_or(CountError::Overflow)?, COUNT_SCALE)
+        };
         row.tokens_input = add(row.tokens_input, delta.tokens_input)?;
         row.tokens_output = add(row.tokens_output, delta.tokens_output)?;
         row.tokens_cache_read = add(row.tokens_cache_read, delta.tokens_cache_read)?;
@@ -191,7 +197,7 @@ mod tests {
         ledger.models.push(ModelTokens {
             scale: 0,
             model: "overflow".into(),
-            usage_units: BTreeMap::from([("input".into(), i64::MAX as u64)]),
+            usage_units: BTreeMap::from([("input".into(), i128::MAX)]),
         });
         let before = ledger.clone();
         assert_eq!(ledger.normalize_scale6(), Err(CountError::OutOfRange));
@@ -231,7 +237,7 @@ mod tests {
                 models: vec![ModelTokensDelta {
                     scale: 6,
                     model: "m".into(),
-                    usage_units: BTreeMap::from([("input".into(), i64::MAX)])
+                    usage_units: BTreeMap::from([("input".into(), i128::MAX)])
                 }],
                 ..Default::default()
             })

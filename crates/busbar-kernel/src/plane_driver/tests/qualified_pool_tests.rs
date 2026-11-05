@@ -193,7 +193,13 @@ fn admitted_qualified_pool_accrues_and_refunds_the_same_scope_as_a_bare_pool() {
                 .find(|m| m.model == lane)
                 .expect("stored serving lane");
             assert_eq!(model.scale, 6);
-            assert_eq!(model.usage_units, units(10_000_000_000, 3_000_000));
+            assert_eq!(
+                model.usage_units,
+                units(10_000_000_000, 3_000_000)
+                    .into_iter()
+                    .map(|(unit, count)| (unit, i128::from(count)))
+                    .collect()
+            );
             if lane.contains('\u{1f}') {
                 assert!(
                     row.models.iter().all(|m| m.model != "m"),
@@ -360,7 +366,13 @@ fn scoped_headroom(session: bool, pool: &str, lane: &str, other: &str) {
             .expect("served plane row");
         assert_eq!((row.provider.as_str(), row.requests), ("tp", 1));
         assert_eq!(row.scale, 6);
-        assert_eq!(row.usage_units, units(49_988_000_000, 3_000_000));
+        assert_eq!(
+            row.usage_units,
+            units(49_988_000_000, 3_000_000)
+                .into_iter()
+                .map(|(unit, count)| (unit, i128::from(count)))
+                .collect()
+        );
         assert!(rows.iter().all(|row| !row.model.contains('\u{1f}')));
     }
 }

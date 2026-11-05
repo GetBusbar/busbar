@@ -164,8 +164,8 @@ fn exact_count_overflow_refuses_without_partial_model_update() {
 }
 
 #[test]
-fn metering_chunks_keep_fraction_and_full_count_remainder() {
-    let n = Count::from_micros(i128::from(i64::MAX) + 1);
+fn metering_chunk_preserves_full_count_range() {
+    let n = Count::from_micros(i128::MAX);
     let key = (
         "key".into(),
         0,
@@ -182,11 +182,42 @@ fn metering_chunks_keep_fraction_and_full_count_remainder() {
     };
     let (first, rest) = super::metering_flush::metering_chunk(&key, &counts);
     assert_eq!(first.scale, COUNT_SCALE);
-    assert_eq!(first.tokens_input, i64::MAX as u64);
-    assert_eq!(rest.tokens_input, Count::EPSILON);
-    assert_eq!(rest.requests, 0);
-    let (last, empty) = super::metering_flush::metering_chunk(&key, &rest);
-    assert_eq!(last.tokens_input, 1);
-    assert_eq!(last.requests, 0);
-    assert!(empty.is_zero());
+    assert_eq!(first.tokens_input, i128::MAX);
+    assert_eq!(first.requests, 1);
+    assert!(rest.is_zero());
+}
+
+#[test]
+fn durable_usage_hydration_preserves_full_range_and_refuses_negative_totals() {
+    use std::collections::BTreeMap;
+    for raw in [i128::MAX, -1] {
+        let row = busbar_contract::records::UsageLedger {
+            models: vec![busbar_contract::records::ModelTokens {
+                model: "wide".into(),
+                scale: COUNT_SCALE,
+                usage_units: BTreeMap::from([("input".into(), raw)]),
+            }],
+            ..Default::default()
+        };
+        let hydrated = durable_cell(row, Default::default(), 0);
+        if raw < 0 {
+            assert!(hydrated.is_err());
+        } else {
+            assert_eq!(hydrated.unwrap().models[0].cur["input"].micros(), raw);
+        }
+    }
+}
+
+#[test]
+fn durable_usage_hydration_refuses_negative_dated_totals() {
+    use std::collections::BTreeMap;
+    let era = busbar_contract::records::UsageLedger {
+        models: vec![busbar_contract::records::ModelTokens {
+            model: era_model(RawRateEra::legacy(1), "wide"),
+            scale: COUNT_SCALE,
+            usage_units: BTreeMap::from([("input".into(), -1)]),
+        }],
+        ..Default::default()
+    };
+    assert!(durable_cell(Default::default(), era, 0).is_err());
 }

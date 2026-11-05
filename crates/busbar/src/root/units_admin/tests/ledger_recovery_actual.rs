@@ -211,7 +211,7 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
     let operation_id = observed_backend_operations[0].0;
     assert_eq!(
         inner.get_usage(&key.id, 0).unwrap().tokens_for(MODEL),
-        Some(INPUT)
+        Some(i128::from(INPUT))
     );
     let initial = first
         .recovery()
@@ -372,7 +372,7 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
     assert_eq!(boundary.committed.lock().unwrap().len(), 1);
     assert_eq!(
         inner.get_usage(&key.id, 0).unwrap().tokens_for(MODEL),
-        Some(INPUT)
+        Some(i128::from(INPUT))
     );
 
     let durable = if compatibility_history {

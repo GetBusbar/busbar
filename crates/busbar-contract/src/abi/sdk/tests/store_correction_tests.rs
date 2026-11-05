@@ -14,13 +14,13 @@ fn candidate() -> Request {
         models: vec![ModelTokens {
             scale: 0,
             model: "historical-model".into(),
-            usage_units: [(UNIT_INPUT.into(), u64::MAX)].into(),
+            usage_units: [(UNIT_INPUT.into(), i128::from(u64::MAX))].into(),
         }],
     };
     let mut replacement = expected.clone();
     replacement.models[0]
         .usage_units
-        .insert(UNIT_INPUT.into(), u64::MAX - 1);
+        .insert(UNIT_INPUT.into(), i128::from(u64::MAX) - 1);
     Request {
         version: VERSION,
         op_id: OpId::from_parts(4, 7),
@@ -52,7 +52,7 @@ fn exact_unsigned_rows_roundtrip_and_bind_the_dedupe_body() {
     let mut changed = request.clone();
     changed.usage[0].replacement.models[0]
         .usage_units
-        .insert(UNIT_INPUT.into(), u64::MAX - 2);
+        .insert(UNIT_INPUT.into(), i128::from(u64::MAX) - 2);
     assert_eq!(
         Dedupe::usage_correction(&changed).seen(Some(dedupe.body())),
         Seen::Conflict

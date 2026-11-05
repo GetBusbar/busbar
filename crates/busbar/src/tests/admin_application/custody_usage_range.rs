@@ -131,7 +131,7 @@ impl Fixture {
                 bucket: day,
                 model: LANE.into(),
                 provider: PROVIDER.into(),
-                tokens_input: initial,
+                tokens_input: i128::from(initial),
                 tokens_output: 0,
                 tokens_cache_read: 0,
                 tokens_cache_write: 0,

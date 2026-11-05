@@ -67,7 +67,7 @@ fn count_scale_is_part_of_operation_identity_and_never_matches_a_legacy_receipt(
     assert_eq!(legacy.seen(Some(older)), Seen::Conflict);
 }
 
-fn metering(tokens_input: u64) -> MeteringDelta {
+fn metering(tokens_input: i128) -> MeteringDelta {
     MeteringDelta {
         scale: 0,
         key_id: "k".into(),
@@ -308,7 +308,7 @@ fn the_body_is_the_documented_encoding() {
     }
 
     let mut h = Sha256::new();
-    text(&mut h, "busbar.store.op/1");
+    text(&mut h, "busbar.store.op/3");
     text(&mut h, "add_usage_batch");
     h.update(1_u64.to_le_bytes());
     text(&mut h, "b");
@@ -316,10 +316,11 @@ fn the_body_is_the_documented_encoding() {
     h.update(1_i64.to_le_bytes());
     h.update(1_i64.to_le_bytes());
     h.update(1_u64.to_le_bytes());
+    h.update(0_u64.to_le_bytes());
     text(&mut h, "m");
     h.update(1_u64.to_le_bytes());
     text(&mut h, "input");
-    h.update(7_i64.to_le_bytes());
+    h.update(7_i128.to_le_bytes());
     let want: [u8; 32] = h.finalize().into();
     assert_eq!(Dedupe::usage(&[("b", 60, delta(1))]).body(), &want);
 
@@ -395,4 +396,60 @@ fn development_debug_receipts_cannot_prove_signed_or_terminal_operations() {
         Dedupe::append(changed).seen(Some(legacy.as_bytes())),
         Seen::Conflict
     );
+}
+
+#[test]
+fn quantity_identity_uses_all_sixteen_bytes_and_signedness() {
+    let mut cells = [("b", 60, delta(1))];
+    let mut bodies = std::collections::HashSet::new();
+    for n in [0, 1, -1, (1_i128 << 64) + 1, i128::MAX, i128::MIN] {
+        cells[0].2.models[0].usage_units.insert("input".into(), n);
+        let d = Dedupe::usage(&cells);
+        assert!(bodies.insert(*d.body()));
+        assert_eq!(d.seen(Some(d.body())), Seen::Replay);
+        assert_eq!(d.seen(Some(d.body_hex().as_bytes())), Seen::Replay);
+    }
+    let mut bodies = std::collections::HashSet::new();
+    for n in [0, 1, (1_i128 << 64) + 1, i128::MAX] {
+        let d = Dedupe::metering(&[metering(n)]);
+        assert!(bodies.insert(*d.body()));
+    }
+}
+
+#[test]
+fn narrow_quantity_receipts_conflict_without_applying() {
+    fn text(h: &mut Sha256, s: &str) {
+        h.update((s.len() as u64).to_le_bytes());
+        h.update(s.as_bytes());
+    }
+    for (tag, scale) in [("busbar.store.op/1", 0), ("busbar.store.op/2", 6)] {
+        let mut h = Sha256::new();
+        text(&mut h, tag);
+        text(&mut h, "add_usage_batch");
+        h.update(1_u64.to_le_bytes());
+        text(&mut h, "b");
+        h.update(60_u64.to_le_bytes());
+        h.update(1_i64.to_le_bytes());
+        h.update(1_i64.to_le_bytes());
+        h.update(1_u64.to_le_bytes());
+        if scale != 0 {
+            h.update(6_u64.to_le_bytes());
+        }
+        text(&mut h, "m");
+        h.update(1_u64.to_le_bytes());
+        text(&mut h, "input");
+        h.update(7_i64.to_le_bytes());
+        let old: Body = h.finalize().into();
+        let mut cells = [("b", 60, delta(1))];
+        cells[0].2.models[0].scale = scale;
+        for receipt in [old.to_vec(), hex::encode(old).into_bytes()] {
+            let mut log = Log::default();
+            log.ops.insert(id(1), receipt);
+            assert_eq!(
+                log.raw(id(1), &Dedupe::usage(&cells)),
+                Err(OpRefused::Conflict)
+            );
+            assert_eq!(log.applied, 0);
+        }
+    }
 }

@@ -406,11 +406,11 @@ fn key_deletion_reconciles_small_unknown_commit_before_purging_usage() {
 #[test]
 fn ordinary_large_positive_debt_flushes_all_chunks_with_historical_counts() {
     let (store, gov, key, now) = setup("vk_large_positive_chunks");
-    accrue_exact_dated(&gov, &key, Count::from_micros(i128::from(u64::MAX)), now);
+    accrue_exact_dated(&gov, &key, Count::from_micros(i128::MAX), now);
     gov.flush_budgets();
     assert_eq!(
         input_count(store.as_ref(), &key.id, 0),
-        Count::from_micros(i128::from(u64::MAX))
+        Count::from_micros(i128::MAX)
     );
     let era = store
         .get_usage(&super::super::era_bucket(&key.id), 0)
@@ -422,13 +422,13 @@ fn ordinary_large_positive_debt_flushes_all_chunks_with_historical_counts() {
             .find(|row| row.model == dated_model)
             .unwrap()
             .usage_units[busbar_contract::records::UNIT_INPUT],
-        u64::MAX
+        i128::MAX
     );
     let batches = store.batches.lock().unwrap();
     assert_eq!(
         batches.len(),
-        3,
-        "u64::MAX uses the signed wire range without a new counter limit"
+        1,
+        "the full Count range fits one signed wire operation"
     );
     assert!(batches.windows(2).all(|pair| pair[0].0 != pair[1].0));
     assert!(gov.budget_flushes.lock().unwrap().is_empty());
@@ -439,7 +439,7 @@ fn ordinary_large_positive_debt_flushes_all_chunks_with_historical_counts() {
 #[test]
 fn ordinary_large_negative_debt_uses_the_full_signed_range() {
     let (store, gov, key, now) = setup("vk_large_negative_chunks");
-    accrue_exact_dated(&gov, &key, Count::from_micros(i128::from(u64::MAX)), now);
+    accrue_exact_dated(&gov, &key, Count::from_micros(i128::MAX), now);
     gov.flush_budgets();
     store.batches.lock().unwrap().clear();
 
@@ -454,20 +454,16 @@ fn ordinary_large_negative_debt_uses_the_full_signed_range() {
     gov.flush_budgets();
     assert_eq!(input(store.as_ref(), &key.id, 0), 0);
     let batches = store.batches.lock().unwrap();
-    assert_eq!(batches.len(), 2);
+    assert_eq!(batches.len(), 1);
     assert_eq!(
         batches[0].1[0].2.models[0].usage_units[busbar_contract::records::UNIT_INPUT],
-        i64::MIN
-    );
-    assert_eq!(
-        batches[1].1[0].2.models[0].usage_units[busbar_contract::records::UNIT_INPUT],
-        -i64::MAX
+        -i128::MAX
     );
     assert!(gov.budget_flushes.lock().unwrap().is_empty());
 }
 
 #[test]
-fn confirmed_chunk_is_not_repeated_when_a_later_chunk_fails() {
+fn confirmed_large_operation_is_not_repeated_when_a_later_operation_fails() {
     let (store, gov, key, now) = setup("vk_large_partial_chunks");
     accrue_dated(&gov, &key, LARGE_INPUT, now);
     store
@@ -476,13 +472,14 @@ fn confirmed_chunk_is_not_repeated_when_a_later_chunk_fails() {
         .unwrap()
         .extend([Reply::Confirm, Reply::FailBefore]);
     gov.flush_budgets();
+    accrue_dated(&gov, &key, CONCURRENT_INPUT, now);
+    gov.flush_budgets();
     assert_eq!(
         input_count(store.as_ref(), &key.id, 0),
-        Count::from_micros(i128::from(i64::MAX))
+        whole_count(LARGE_INPUT)
     );
     let first = store.batches.lock().unwrap().clone();
     assert_eq!(first.len(), 2);
-    accrue_dated(&gov, &key, CONCURRENT_INPUT, now);
     gov.flush_budgets();
     assert_eq!(
         input(store.as_ref(), &key.id, 0),
@@ -504,7 +501,7 @@ fn lost_chunk_commit_reply_keeps_exact_identity_and_later_accrual() {
     gov.flush_budgets();
     assert_eq!(
         input_count(store.as_ref(), &key.id, 0),
-        Count::from_micros(i128::from(i64::MAX))
+        whole_count(LARGE_INPUT)
     );
     accrue_dated(&gov, &key, CONCURRENT_INPUT, now);
     assert!(gov.hydrate_budgets(&model(&[]), now).is_err());

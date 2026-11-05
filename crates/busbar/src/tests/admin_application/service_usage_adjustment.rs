@@ -219,7 +219,7 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
             bucket: day,
             model: LANE.into(),
             provider: PROVIDER.into(),
-            tokens_input: TOKENS,
+            tokens_input: i128::from(TOKENS),
             tokens_output: 0,
             tokens_cache_read: 0,
             tokens_cache_write: 0,

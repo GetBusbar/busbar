@@ -1433,7 +1433,7 @@ async fn far_end_with_the_split_streamed() -> FarEnd {
 struct Accrued {
     requests: u64,
     tokens: u64,
-    durable: BTreeMap<String, u64>,
+    durable: BTreeMap<String, i128>,
     metering: Vec<String>,
 }
 
@@ -1559,8 +1559,8 @@ async fn a_served_units_usage_is_accrued_exactly_once() {
     assert_eq!(status, 200, "the live lane serves the request");
     let books = accrued(&rig).await;
     let split = BTreeMap::from([
-        ("input".to_string(), SPLIT_INPUT),
-        ("output".to_string(), SPLIT_OUTPUT),
+        ("input".to_string(), i128::from(SPLIT_INPUT)),
+        ("output".to_string(), i128::from(SPLIT_OUTPUT)),
     ]);
     assert_eq!(
         books.tokens,

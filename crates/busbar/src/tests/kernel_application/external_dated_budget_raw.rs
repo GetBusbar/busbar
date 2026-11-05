@@ -156,7 +156,7 @@ fn exact_opening_and_same_timestamp_cards_survive_later_day_and_restart() {
             .find(|row| row.pricing_version == era.entry_id.unwrap().metering_version())
             .unwrap();
         assert_eq!(row.priced_from_ms, era.effective_from);
-        assert_eq!(row.tokens_input, RAW_COUNT);
+        assert_eq!(row.tokens_input, i128::from(RAW_COUNT));
         assert_eq!(row.requests, 1);
     }
     let delta = BTreeMap::from([(UNIT_INPUT.to_string(), -1)]);
@@ -261,7 +261,10 @@ fn malformed_versioned_budget_provenance_refuses_instead_of_repricing_as_legacy(
                 models: vec![ModelTokens {
                     scale: 0,
                     model: RAW_MODEL.into(),
-                    usage_units: input(RAW_COUNT),
+                    usage_units: input(RAW_COUNT)
+                        .into_iter()
+                        .map(|(class, count)| (class, i128::from(count)))
+                        .collect(),
                 }],
                 ..Default::default()
             },
@@ -277,7 +280,10 @@ fn malformed_versioned_budget_provenance_refuses_instead_of_repricing_as_legacy(
                 models: vec![ModelTokens {
                     scale: 0,
                     model: "busbar.raw-era.v1:0:invalid\u{1f}m".into(),
-                    usage_units: input(RAW_COUNT),
+                    usage_units: input(RAW_COUNT)
+                        .into_iter()
+                        .map(|(class, count)| (class, i128::from(count)))
+                        .collect(),
                 }],
                 ..Default::default()
             },
@@ -399,7 +405,7 @@ fn open_route_cancel_and_session_cleanup_keep_the_admissions_original_entry() {
             .find(|row| row.pricing_version == era.entry_id.unwrap().metering_version())
             .unwrap();
         assert_eq!(row.requests, requests);
-        assert_eq!(row.tokens_input, requests * RAW_COUNT);
+        assert_eq!(row.tokens_input, i128::from(requests * RAW_COUNT));
     }
 }
 
@@ -477,7 +483,10 @@ fn scoped_pool_and_ancestor_buckets_keep_exact_raw_counts_and_partial_correction
     gov.flush_metering_final();
     let metered = gov.metering_for(metering_bucket(now)).unwrap();
     assert_eq!(metered.len(), 1);
-    assert_eq!(metered[0].usage_units.get(OPEN_UNIT), Some(&OPEN_COUNT));
+    assert_eq!(
+        metered[0].usage_units.get(OPEN_UNIT),
+        Some(&i128::from(OPEN_COUNT))
+    );
     assert_eq!(
         metered[0].pricing_version,
         era.entry_id.unwrap().metering_version()

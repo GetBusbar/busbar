@@ -351,9 +351,11 @@ const TAIL: StoreTail = StoreTail {
 // correction payloads are validated without transforming their exact counts or fingerprint.
 busbar_contract::statement_extensions!(EXACT_COUNTS_ONLY: [
     ("busbar.store.count-scale", b"6"),
+    ("busbar.store.count-range", b"i128"),
 ]);
 busbar_contract::statement_extensions!(CAP: [
     ("busbar.store.count-scale", b"6"),
+    ("busbar.store.count-range", b"i128"),
     (conditional::CAPABILITY, b"1"),
     (correction::CAPABILITY, correction::CAPABILITY_VALUE),
 ]);

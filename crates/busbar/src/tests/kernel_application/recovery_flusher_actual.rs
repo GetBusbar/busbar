@@ -89,7 +89,7 @@ impl RecordStore for ChunkStore {
         Ok(())
     }
 }
-fn input(store: &dyn RecordStore, bucket: &str, window: u64) -> u64 {
+fn input(store: &dyn RecordStore, bucket: &str, window: u64) -> i128 {
     store
         .get_usage(bucket, window)
         .unwrap()
@@ -219,7 +219,7 @@ fn metered(store: &dyn RecordStore, key_id: &str, model: &str, n: u64, now: u64)
             bucket: busbar_kernel::governance::metering_bucket(now),
             model: model.into(),
             provider: String::new(),
-            tokens_input: n,
+            tokens_input: i128::from(n),
             tokens_output: 0,
             tokens_cache_read: 0,
             tokens_cache_write: 0,

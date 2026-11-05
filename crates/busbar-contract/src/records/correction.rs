@@ -120,7 +120,7 @@ impl Request {
         Ok(bytes)
     }
 
-    /// Decode one complete bounded request; integer counters remain exact `u64` values.
+    /// Decode one complete bounded request; quantity mantissas remain exact `i128` values.
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         if bytes.len() as u64 > crate::abi::mechanism::check::HARD_MAX_BYTES {
             return Err("usage correction exceeds ABI byte bound");
@@ -218,7 +218,7 @@ mod exact_count_validation_tests {
     use crate::records::ModelTokens;
     use std::collections::BTreeMap;
 
-    fn request(scale: u32, quantity: u64) -> Request {
+    fn request(scale: u32, quantity: i128) -> Request {
         let ledger = UsageLedger {
             requests: u64::MAX,
             billable_requests: u64::MAX,
@@ -262,7 +262,7 @@ mod exact_count_validation_tests {
 
     #[test]
     fn exact_count_validation_preserves_legacy_and_scaled_wire_fingerprints() {
-        for (scale, quantity) in [(0, 2), (6, 123_456), (6, i64::MAX as u64)] {
+        for (scale, quantity) in [(0, 2), (6, 123_456), (6, i128::MAX)] {
             let original = request(scale, quantity);
             let bytes = serde_json::to_vec(&original).unwrap();
             let fingerprint = original.fingerprint();
@@ -281,11 +281,7 @@ mod exact_count_validation_tests {
 
     #[test]
     fn exact_count_validation_checks_both_ledger_sides_and_metering_quantities() {
-        for (scale, quantity) in [
-            (3, 1),
-            (6, i64::MAX as u64 + 1),
-            (0, i64::MAX as u64 / 1_000_000 + 1),
-        ] {
+        for (scale, quantity) in [(3, 1), (6, -1), (0, i128::MAX / 1_000_000 + 1)] {
             for field in 0..4 {
                 let mut invalid = request(6, 1);
                 match field {

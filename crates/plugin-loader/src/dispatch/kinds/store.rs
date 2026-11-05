@@ -65,7 +65,8 @@ pub struct StoreFacts {
     pub record_transaction: bool,
     /// Negotiated version-one atomic raw-usage correction support.
     pub usage_correction: bool,
-    /// Quantity records and aggregate persistence use checked six-decimal counts.
+    /// Quantity records and aggregate persistence use checked six-decimal counts across the full
+    /// signed `i128` mantissa range.
     pub exact_counts: bool,
     /// The settings paths the Statement declares secret (`secret_refs`): taken out of the settings
     /// and lent to `open` as `OpenIn.secrets`, as every other kind's are.
@@ -118,7 +119,11 @@ fn store_facts(st: &Statement) -> Result<StoreFacts, String> {
             && st.extensions.len as u64 <= busbar_contract::abi::mechanism::check::HARD_MAX_BYTES
             // SAFETY: bounded static Statement bytes; `lent` also validates the pointer.
             && unsafe { crate::dispatch::validate::lent(st.extensions.ptr, st.extensions.len) }
-                .is_some_and(|bytes| busbar_contract::abi::mechanism::extensions::get(bytes, "busbar.store.count-scale") == Some(b"6".as_slice())),
+                .is_some_and(|bytes| {
+                    use busbar_contract::abi::mechanism::extensions::get;
+                    get(bytes, "busbar.store.count-scale") == Some(b"6".as_slice())
+                        && get(bytes, "busbar.store.count-range") == Some(b"i128".as_slice())
+                }),
         secret_refs,
         credential_rewrap: {
             // SAFETY: the checked Statement owns its static extension bytes.
@@ -139,7 +144,7 @@ impl Kind for Store {
     fn context(st: &Statement) -> Result<Option<Box<crate::dispatch::Context>>, String> {
         let facts = store_facts(st)?;
         if !facts.exact_counts {
-            return Err("the Store does not declare busbar.store.count-scale=6; upgrade the Store before writing exact quantities".into());
+            return Err("the Store must declare busbar.store.count-scale=6 and busbar.store.count-range=i128; upgrade the Store before writing exact quantities".into());
         }
         Ok(Some(Box::new(facts)))
     }
@@ -184,9 +189,28 @@ mod exact_count_gate_tests {
         // SAFETY: the actual product helper validates and retains the image and its Statement.
         let mut statement = unsafe { *crate::store_memory_facts_actual::door().statement() };
         assert!(Store::context(&statement).is_ok());
-        for entries in [
-            Vec::new(),
-            vec![("busbar.store.count-scale", b"0".as_slice())],
+        let scale = ("busbar.store.count-scale", b"6".as_slice());
+        let range = ("busbar.store.count-range", b"i128".as_slice());
+        for (case, entries) in [
+            ("no capabilities", Vec::new()),
+            ("absent scale", vec![range]),
+            (
+                "wrong scale",
+                vec![("busbar.store.count-scale", b"0".as_slice()), range],
+            ),
+            ("absent range", vec![scale]),
+            (
+                "wrong range",
+                vec![scale, ("busbar.store.count-range", b"128".as_slice())],
+            ),
+            (
+                "unsigned narrow range",
+                vec![scale, ("busbar.store.count-range", b"u64".as_slice())],
+            ),
+            (
+                "signed narrow range",
+                vec![scale, ("busbar.store.count-range", b"i64".as_slice())],
+            ),
         ] {
             let bytes = busbar_contract::abi::mechanism::extensions::encode(&entries);
             statement.extensions = busbar_contract::abi::mechanism::call::Blob {
@@ -195,10 +219,10 @@ mod exact_count_gate_tests {
                 fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
                 flags: 0,
             };
-            let error = Store::context(&statement)
-                .err()
-                .expect("incompatible Store refused before open");
-            assert!(error.contains("count-scale=6"), "{error}");
+            let error =
+                Store::context(&statement).expect_err("incompatible Store refused before open");
+            assert!(error.contains("count-scale=6"), "{case}: {error}");
+            assert!(error.contains("count-range=i128"), "{case}: {error}");
         }
     }
 }

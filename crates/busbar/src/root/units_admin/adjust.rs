@@ -185,6 +185,14 @@ fn apply_correction(
             tracing::error!(why = %why, "an adjustment could not reach the ledger");
             Err(GovernanceError::Store)
         }
+        Ok(Err(Refused::Ledger(AdjustRefused::Preparation { reason }))) => {
+            tracing::error!(why = %reason, "an adjustment failed before any ledger effect");
+            Ok(super::error_answer_with_message(
+                503,
+                "unavailable",
+                "The engine could not prepare this correction; no adjustment was applied",
+            ))
+        }
         Ok(Err(Refused::Ledger(AdjustRefused::UnknownKey))) => Err(GovernanceError::NotFound),
         Ok(Err(Refused::UnknownEntry)) => Ok(refused(&format!(
             "`entry` names {entry}, which is not a known rate-card history key"

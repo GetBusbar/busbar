@@ -40,7 +40,7 @@ pub struct UsageAdjustment<T = i128> {
     pub era: u64,
     /// The exact entry identity where it was captured, absent for historical timestamp rows.
     pub entry_id: Option<EntryId>,
-    /// The exact signed difference of two raw `u64` counters per class. Zero nets are left off.
+    /// The exact signed difference of two nonnegative `i128` quantity counters per class. Zero nets are left off.
     pub delta: BTreeMap<String, T>,
 }
 
@@ -52,7 +52,7 @@ fn metered_count(row: &MeteringRow, class: &str) -> RecordStoreResult<Count> {
         busbar_contract::records::UNIT_CACHE_WRITE => row.tokens_cache_write,
         other => row.usage_units.get(other).copied().unwrap_or(0),
     };
-    Count::from_stored(i128::from(raw), row.scale).map_err(|e| RecordStoreError(e.to_string()))
+    Count::from_stored(raw, row.scale).map_err(|e| RecordStoreError(e.to_string()))
 }
 
 /// One bucket's current window, priced by the one function: what the admin ledger views serve.
@@ -99,6 +99,9 @@ pub struct Adjustment<'a, T = i64> {
 /// Why an adjustment was refused. Nothing was applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdjustRefused {
+    /// The engine could not prepare a complete correction before claiming any raw cells or
+    /// submitting a conditional store mutation. The effect is definitively not applied.
+    Preparation { reason: String },
     /// The corrected unit has not arrived.
     FutureEpoch { at: u64, now: u64 },
     /// No key by that id.
@@ -110,7 +113,7 @@ pub enum AdjustRefused {
         /// The metering day (its UTC-day start, unix seconds).
         day: u64,
     },
-    /// The delta would take a count of its segment below zero (or past `u64`).
+    /// The delta would take a count of its segment below zero (or past the signed-i128 Count range).
     Exceeds {
         /// The bucket it would have landed on.
         bucket: String,
@@ -151,6 +154,12 @@ pub enum AdjustRefused {
 impl std::fmt::Display for AdjustRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            AdjustRefused::Preparation { reason } => {
+                write!(
+                    f,
+                    "correction preparation failed before any effect: {reason}"
+                )
+            }
             AdjustRefused::FutureEpoch { at, now } => write!(
                 f,
                 "the corrected unit epoch {at} is later than the current instant {now}"
@@ -370,8 +379,11 @@ impl GovState {
         for (bucket, sign) in [(ADJUST_UP_BUCKET, 1i128), (ADJUST_DOWN_BUCKET, -1i128)] {
             for model in self.store.get_usage(bucket, day)?.models {
                 for (class, count) in model.usage_units {
-                    let count = Count::from_stored(i128::from(count), model.scale)
+                    let count = Count::from_stored(count, model.scale)
                         .map_err(|e| RecordStoreError(e.to_string()))?;
+                    if count.is_negative() {
+                        return Err(RecordStoreError("negative adjustment magnitude".into()));
+                    }
                     let slot = net
                         .entry(model.model.clone())
                         .or_default()

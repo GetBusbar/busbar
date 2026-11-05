@@ -358,12 +358,12 @@ async fn shutdown_flushes_allow_runtime_progress_and_wait_for_each_store_write()
             .get_usage(SHUTDOWN_KEY, 0)
             .expect("usage reads")
             .total_input(),
-        INPUT_USED
+        i128::from(INPUT_USED)
     );
     let rows = store.list_metering(bucket).expect("metering reads");
     assert_eq!(
-        rows.iter().map(|row| row.tokens_input).sum::<u64>(),
-        INPUT_USED
+        rows.iter().map(|row| row.tokens_input).sum::<i128>(),
+        i128::from(INPUT_USED)
     );
     assert!(!budget.timed_out.load(std::sync::atomic::Ordering::Acquire));
     assert!(!metering
@@ -458,8 +458,8 @@ fn a_panicking_budget_flush_is_logged_and_metering_and_journal_still_drain() {
             .expect("metering reads")
             .iter()
             .map(|row| row.tokens_input)
-            .sum::<u64>(),
-        INPUT_USED
+            .sum::<i128>(),
+        i128::from(INPUT_USED)
     );
     assert_eq!(
         lane.pending(),

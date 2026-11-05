@@ -268,7 +268,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
             bucket,
             model: LANE.into(),
             provider: PROVIDER.into(),
-            tokens_input: TOKENS,
+            tokens_input: i128::from(TOKENS),
             tokens_output: 0,
             tokens_cache_read: 0,
             tokens_cache_write: 0,

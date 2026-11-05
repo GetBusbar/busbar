@@ -51,15 +51,21 @@ pub(super) struct ExactUsageDelta {
 }
 impl ExactUsageDelta {
     pub(super) fn subtract(&mut self, chunk: &UsageDelta) {
-        let mut acknowledged = Self::from_signed(chunk);
-        acknowledged.requests = -acknowledged.requests;
-        acknowledged.billable_requests = -acknowledged.billable_requests;
-        for model in &mut acknowledged.models {
-            for count in model.usage_units.values_mut() {
-                *count = -*count;
+        let acknowledged = Self::from_signed(chunk);
+        self.requests = self
+            .requests
+            .checked_sub(acknowledged.requests)
+            .expect("acknowledged request debt overflow");
+        self.billable_requests = self
+            .billable_requests
+            .checked_sub(acknowledged.billable_requests)
+            .expect("acknowledged fee debt overflow");
+        for model in &acknowledged.models {
+            for (unit, count) in &model.usage_units {
+                self.subtract_unit(&model.model, unit, *count)
+                    .expect("acknowledged raw debt overflow");
             }
         }
-        self.merge(&acknowledged);
     }
 
     pub(super) fn is_zero(&self) -> bool {
@@ -90,6 +96,15 @@ impl ExactUsageDelta {
         *slot = slot
             .checked_add(change)
             .expect("raw debt exceeds Count range");
+    }
+    fn subtract_unit(&mut self, model: &str, unit: &str, count: i128) -> Option<()> {
+        if let Some(row) = self.models.iter_mut().find(|row| row.model == model) {
+            let slot = row.usage_units.entry(unit.into()).or_default();
+            *slot = slot.checked_sub(count)?;
+        } else {
+            self.unit(model, unit, count.checked_neg()?);
+        }
+        Some(())
     }
     pub(super) fn merge(&mut self, other: &Self) {
         self.requests = self
@@ -131,7 +146,7 @@ impl ExactUsageDelta {
                             .usage_units
                             .iter()
                             .map(|(unit, count)| {
-                                Count::from_stored(i128::from(*count), model.scale)
+                                Count::from_stored(*count, model.scale)
                                     .map(|n| (unit.clone(), n.micros()))
                             })
                             .collect::<Result<_, _>>()?,
@@ -156,11 +171,9 @@ impl ExactUsageDelta {
                             .iter()
                             .filter(|(_, count)| **count != 0)
                             .map(|(unit, count)| {
-                                i64::try_from(
-                                    Count::from_stored(*count, model.scale).ok()?.micros(),
-                                )
-                                .ok()
-                                .map(|count| (unit.clone(), count))
+                                Count::from_stored(*count, model.scale)
+                                    .ok()
+                                    .map(|count| (unit.clone(), count.micros()))
                             })
                             .collect::<Option<_>>()?,
                     })
@@ -312,7 +325,9 @@ impl SegmentedUsage {
                         },
                         *count,
                     );
-                    legacy.unit(name, unit, count.checked_neg().ok_or_else(invalid)?);
+                    legacy
+                        .subtract_unit(name, unit, *count)
+                        .ok_or_else(invalid)?;
                 }
             } else {
                 if parse_era_tag(&model.model)?.is_none() {
@@ -437,8 +452,12 @@ impl SegmentedUsage {
             let bound = capacity.map_or(i128::MAX, |capacity| {
                 capacity.0.get(segment).copied().unwrap_or(0).max(0)
             });
-            let amount = count.unsigned_abs().min(bound as u128) as i128;
-            *count += amount;
+            let bound = u128::try_from(bound).expect("nonnegative raw segment capacity");
+            let amount = i128::try_from(count.unsigned_abs().min(bound))
+                .expect("raw segment capacity fits signed Count");
+            *count = count
+                .checked_add(amount)
+                .expect("bounded raw segment refund");
             if amount != 0 {
                 taken.0.insert(segment.clone(), -amount);
             }
@@ -464,16 +483,17 @@ impl SegmentedUsage {
                     .copied()
                     .unwrap_or(0),
             };
-            let (minimum, maximum) = if matches!(segment, UsageSegment::Fee(Some(_))) {
-                let bound = i128::from(i64::MAX) / 1_000_000;
-                (-bound, bound)
-            } else {
-                (i128::from(i64::MIN), i128::from(i64::MAX))
+            let count = match segment {
+                UsageSegment::Requests | UsageSegment::Fee(_) => (*count).clamp(
+                    i128::from(i64::MIN) - current,
+                    i128::from(i64::MAX) - current,
+                ),
+                UsageSegment::Unit { .. } => match current.checked_add(*count) {
+                    Some(_) => *count,
+                    None if *count > 0 => i128::MAX - current,
+                    None => i128::MIN - current,
+                },
             };
-            let count = (*count).clamp(minimum, maximum).clamp(
-                i128::from(i64::MIN) - current,
-                i128::from(i64::MAX) - current,
-            );
             Self::add(&mut plain, &mut dated, segment, count);
         }
         (
@@ -974,6 +994,29 @@ mod recovery_math_tests {
         assert_eq!(input(&posted_plain, "model"), 2);
         assert_eq!(input(&posted_dated, &a), -i128::from(i64::MAX) - 7);
         assert_eq!(input(&posted_dated, &b), i128::from(i64::MAX) + 9);
+    }
+
+    #[test]
+    fn signed_wire_preserves_full_range_and_acknowledges_minimum() {
+        for count in [i128::MIN, i128::MAX] {
+            let mut debt = unit("model", count);
+            let signed = debt.signed().expect("full signed Count fits wire");
+            assert_eq!(signed.models[0].usage_units["input"], count);
+            debt.subtract(&signed);
+            assert!(debt.is_zero());
+        }
+    }
+
+    #[test]
+    fn full_range_era_segments_stay_paired_in_one_operation() {
+        let era = era_model(RawRateEra::legacy(1), "model");
+        for count in [i128::MIN, i128::MAX] {
+            let plain = unit("model", count);
+            let dated = unit(&era, count);
+            let (sent_plain, sent_dated) = SegmentedUsage::of(&plain, &dated).unwrap().chunk();
+            assert_eq!(sent_plain.models[0].usage_units["input"], count);
+            assert_eq!(sent_dated.models[0].usage_units["input"], count);
+        }
     }
 
     #[test]

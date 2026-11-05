@@ -151,7 +151,7 @@ fn total(store: &dyn RecordStore, unit: &UnitCheckpoint) -> Count {
         .fold(Count::ZERO, |sum, model| {
             sum.checked_add(
                 Count::from_stored(
-                    i128::from(model.usage_units.get("work").copied().unwrap_or(0)),
+                    model.usage_units.get("work").copied().unwrap_or(0),
                     model.scale,
                 )
                 .unwrap(),

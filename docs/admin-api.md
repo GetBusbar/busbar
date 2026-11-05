@@ -510,6 +510,11 @@ The overlay document format remains version 2. A reader that does not understand
 
 ### Metering: `GET /usage`
 
+Usage totals, model rows, key rows, and the optional `others` rollup itemize every ledgered open
+class in `classes`, including classes such as pools `search_units`. Reserved token quantities
+remain in their existing token fields. Empty `classes` maps are omitted. Counts are exact JSON
+decimal numbers with up to six fractional digits, including quantities beyond 64-bit mantissas.
+
 The fleet FinOps read. Design principle: Busbar exposes the **raw inputs of cost**, not just its own number: every row carries the full token split (input / output / cache-read / cache-creation, each of which prices differently), so a consumer with its own negotiated price catalog reconstructs cost independently.
 
 ```json

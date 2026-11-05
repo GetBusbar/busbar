@@ -368,7 +368,7 @@ fn credential_meta_is_live_checks_revocation_and_expiry() {
 #[test]
 fn usage_ledger_applies_deltas_and_floors_at_zero() {
     let mut l = UsageLedger::default();
-    l.apply_delta(&UsageDelta {
+    l.checked_apply_delta(&UsageDelta {
         requests: 2,
         billable_requests: 2,
         models: vec![ModelTokensDelta {
@@ -376,7 +376,8 @@ fn usage_ledger_applies_deltas_and_floors_at_zero() {
             model: "gpt-5".to_string(),
             usage_units: units(100, 50, 10, 5),
         }],
-    });
+    })
+    .unwrap();
     assert_eq!(l.requests, 2);
     let m = &l.models[0];
     assert_eq!(
@@ -386,11 +387,11 @@ fn usage_ledger_applies_deltas_and_floors_at_zero() {
             m.tier(UNIT_CACHE_READ),
             m.tier(UNIT_CACHE_WRITE)
         ),
-        (100, 50, 10, 5)
+        (100_000_000, 50_000_000, 10_000_000, 5_000_000)
     );
-    assert_eq!(l.total_tokens(), 165);
+    assert_eq!(l.total_tokens(), 165_000_000);
 
-    l.apply_delta(&UsageDelta {
+    l.checked_apply_delta(&UsageDelta {
         requests: 1,
         billable_requests: 1,
         models: vec![ModelTokensDelta {
@@ -398,11 +399,12 @@ fn usage_ledger_applies_deltas_and_floors_at_zero() {
             model: "haiku".to_string(),
             usage_units: units(7, 3, 0, 0),
         }],
-    });
+    })
+    .unwrap();
     assert_eq!(l.models.len(), 2);
-    assert_eq!(l.total_input(), 107);
+    assert_eq!(l.total_input(), 107_000_000);
 
-    l.apply_delta(&UsageDelta {
+    l.checked_apply_delta(&UsageDelta {
         requests: -10,
         billable_requests: -10,
         models: vec![ModelTokensDelta {
@@ -410,10 +412,11 @@ fn usage_ledger_applies_deltas_and_floors_at_zero() {
             model: "haiku".to_string(),
             usage_units: units(-1000, -1, 0, 0),
         }],
-    });
+    })
+    .unwrap();
     assert_eq!(l.requests, 0);
     let h = l.models.iter().find(|m| m.model == "haiku").unwrap();
-    assert_eq!((h.tier(UNIT_INPUT), h.tier(UNIT_OUTPUT)), (0, 2));
+    assert_eq!((h.tier(UNIT_INPUT), h.tier(UNIT_OUTPUT)), (0, 2_000_000));
 }
 
 /// The default trait `add_usage` (read-modify-write fallback) accumulates through
@@ -469,8 +472,8 @@ fn default_add_usage_accumulates_via_get_put() {
     s.add_usage("bucket", 0, &d).unwrap();
     let l = s.get_usage("bucket", 0).unwrap();
     assert_eq!(l.requests, 2);
-    assert_eq!(l.total_input(), 10);
-    assert_eq!(l.tokens_for("m"), Some(20));
+    assert_eq!(l.total_input(), 10_000_000);
+    assert_eq!(l.tokens_for("m"), Some(20_000_000));
 }
 
 #[test]
@@ -502,7 +505,7 @@ fn model_tokens_is_zero_requires_every_unit_zero() {
         let m = ModelTokens {
             scale: 0,
             model: "m".into(),
-            usage_units: std::collections::BTreeMap::from([(u.to_string(), 1u64)]),
+            usage_units: std::collections::BTreeMap::from([(u.to_string(), 1i128)]),
         };
         assert!(!m.is_zero(), "a nonzero {u} tier is not zero");
     }
@@ -510,7 +513,7 @@ fn model_tokens_is_zero_requires_every_unit_zero() {
     let m = ModelTokens {
         scale: 0,
         model: "m".into(),
-        usage_units: std::collections::BTreeMap::from([("audio".to_string(), 1u64)]),
+        usage_units: std::collections::BTreeMap::from([("audio".to_string(), 1i128)]),
     };
     assert!(!m.is_zero());
 }
@@ -812,9 +815,9 @@ fn model_tokens_usage_units_is_the_sole_representation() {
     assert_eq!(rt2, mixed);
 }
 
-/// `apply_model_delta` folds every signed unit delta (reserved four AND opens, one map) flooring each
+/// Checked application folds every signed unit delta and floors ordinary refunds at zero.
 #[test]
-fn apply_model_delta_folds_usage_units_flooring_at_zero() {
+fn checked_model_delta_folds_usage_units_flooring_at_zero() {
     let mut ledger = UsageLedger::default();
     let mut d1 = ModelTokensDelta {
         scale: 0,
@@ -822,8 +825,13 @@ fn apply_model_delta_folds_usage_units_flooring_at_zero() {
         usage_units: units(0, 0, 0, 0),
     };
     d1.usage_units.insert("search".into(), 5);
-    ledger.apply_model_delta(&d1);
-    assert_eq!(ledger.models[0].usage_units.get("search"), Some(&5));
+    ledger
+        .checked_apply_delta(&UsageDelta {
+            models: vec![d1],
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(ledger.models[0].usage_units.get("search"), Some(&5_000_000));
 
     let mut d2 = ModelTokensDelta {
         scale: 0,
@@ -831,7 +839,12 @@ fn apply_model_delta_folds_usage_units_flooring_at_zero() {
         usage_units: std::collections::BTreeMap::new(),
     };
     d2.usage_units.insert("search".into(), -9);
-    ledger.apply_model_delta(&d2);
+    ledger
+        .checked_apply_delta(&UsageDelta {
+            models: vec![d2],
+            ..Default::default()
+        })
+        .unwrap();
     assert_eq!(ledger.models[0].usage_units.get("search"), Some(&0));
 }
 
