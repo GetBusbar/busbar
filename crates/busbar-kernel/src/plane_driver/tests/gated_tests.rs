@@ -204,3 +204,69 @@ fn a_scope_unit_binds_the_entry_its_scope_resolved_to_inside_the_recorded_candid
         Some(None)
     );
 }
+
+#[test]
+fn unavailable_projection_cannot_clear_a_configured_gate_even_when_advisory() {
+    use crate::config::PolicyOnError;
+    use crate::hooks::ResolvedPolicy;
+    use busbar_contract::hooks::{
+        Candidate, PolicyResult, RoutingContext, RoutingPolicy, RoutingRequest,
+    };
+    use std::sync::Arc;
+
+    struct MustSeeRealFacts;
+    #[async_trait::async_trait]
+    impl RoutingPolicy for MustSeeRealFacts {
+        async fn decide(
+            &self,
+            _: &RoutingRequest<'_>,
+            _: &[Candidate<'_>],
+            _: &RoutingContext<'_>,
+            _: std::time::Duration,
+        ) -> PolicyResult {
+            panic!("an unreadable projection must not be submitted as an empty request")
+        }
+        fn name(&self) -> &'static str {
+            "requires-real-facts"
+        }
+    }
+    let policy: Arc<dyn RoutingPolicy> = Arc::new(MustSeeRealFacts);
+    let mut hooks = super::GatedHooks {
+        request_id: 1,
+        gates: vec![(
+            0,
+            ResolvedPolicy::Policy {
+                policy: Arc::clone(&policy),
+                on_error: PolicyOnError::Weighted,
+                on_error_chain: Vec::new(),
+                timeout: std::time::Duration::from_secs(1),
+                send_prompt: true,
+                send_user: false,
+                on_empty: PolicyOnError::Reject,
+            },
+        )],
+        rewrites: Vec::new(),
+        key: None,
+        scan: None,
+        reads: Arc::new(|_, _, _, _| {}),
+    };
+    for marked in [true, false] {
+        assert!(matches!(
+            super::unparseable_stage(Some(&hooks), marked),
+            Err(super::Stopped::Unreadable)
+        ));
+    }
+    hooks.gates.clear();
+    assert!(super::unparseable_stage(Some(&hooks), true).is_ok());
+    assert!(super::unparseable_stage(None, true).is_ok());
+    assert!(matches!(
+        super::unparseable_stage(None, false),
+        Err(super::Stopped::Unreadable)
+    ));
+    hooks
+        .rewrites
+        .push((std::time::Duration::from_secs(1), policy));
+    assert!(
+        matches!(super::unparseable_stage(Some(&hooks), true), Err(super::Stopped::Veto(v)) if v.status == u32::from(busbar_contract::abi::plane::PROJECT_FAULT_STATUS))
+    );
+}

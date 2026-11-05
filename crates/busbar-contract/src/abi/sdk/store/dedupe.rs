@@ -3,9 +3,6 @@
 
 //! THE `op_id` DEDUPE, ONCE FOR EVERY STORE (`abi::store` S1-S5). A store keeps, per `op_id` it
 
-#[path = "legacy_receipt.rs"]
-mod legacy;
-
 use sha2::{Digest as _, Sha256};
 
 use super::{OpRefused, OpResult};
@@ -40,46 +37,45 @@ pub enum Seen {
     Conflict,
 }
 
-/// ONE `op_id`-CARRYING WRITE'S DEDUPE: its values and their [`Body`], made once when the slot is
-/// entered.
+/// One operation's owned digest. Only the current raw or hexadecimal SHA-256 receipt
+/// formats can prove a replay; malformed or development-format receipts conflict.
 #[derive(Debug, Clone, Copy)]
-pub struct Dedupe<'a> {
-    values: Values<'a>,
+pub struct Dedupe {
     body: Body,
 }
 
-impl<'a> Dedupe<'a> {
+impl Dedupe {
     /// `add_usage_batch`'s cells `(bucket, window, delta)`.
     #[must_use]
-    pub fn usage(cells: &'a [(&'a str, u64, UsageDelta)]) -> Self {
+    pub fn usage(cells: &[(&str, u64, UsageDelta)]) -> Self {
         Self::of(Values::Usage(cells))
     }
 
     /// `add_metering_batch`'s deltas.
     #[must_use]
-    pub fn metering(deltas: &'a [MeteringDelta]) -> Self {
+    pub fn metering(deltas: &[MeteringDelta]) -> Self {
         Self::of(Values::Metering(deltas))
     }
 
     /// `append_plane_record`'s record.
     #[must_use]
-    pub fn append(record: PlaneRecordRef<'a>) -> Self {
+    pub fn append(record: PlaneRecordRef<'_>) -> Self {
         Self::of(Values::Append(record))
     }
 
     /// Atomic conditional-record request; version, predicates and all mutations form its body.
     #[must_use]
-    pub fn record_transaction(request: &'a super::conditional::Request) -> Self {
+    pub fn record_transaction(request: &super::conditional::Request) -> Self {
         Self::of(Values::RecordTransaction(request))
     }
 
     /// Complete raw-usage correction, including every precondition and replacement.
     #[must_use]
-    pub fn usage_correction(request: &'a super::correction::Request) -> Self {
+    pub fn usage_correction(request: &super::correction::Request) -> Self {
         Self::of(Values::UsageCorrection(request))
     }
 
-    fn of(values: Values<'a>) -> Self {
+    fn of(values: Values<'_>) -> Self {
         let mut f = Feed(Sha256::new());
         let scaled = match values {
             Values::Usage(cells) => cells
@@ -157,7 +153,6 @@ impl<'a> Dedupe<'a> {
             }
         }
         Self {
-            values,
             body: f.0.finalize().into(),
         }
     }
@@ -188,7 +183,7 @@ impl<'a> Dedupe<'a> {
             {
                 hex::decode(recorded).is_ok_and(|r| r == self.body)
             }
-            _ => self.older_form_is(recorded),
+            _ => false,
         };
         if same {
             Seen::Replay
@@ -219,38 +214,6 @@ impl<'a> Dedupe<'a> {
             Seen::Replay => Ok(()),
             Seen::Conflict => Err(OpRefused::Conflict),
         }
-    }
-
-    /// Whether `recorded` is this op's body in the form builds before this one recorded: the slot's
-    fn older_form_is(&self, recorded: &[u8]) -> bool {
-        let mut older = String::new();
-        match self.values {
-            Values::RecordTransaction(_) | Values::UsageCorrection(_) => return false,
-            Values::Usage(cells) => {
-                if cells
-                    .iter()
-                    .any(|(_, _, delta)| delta.models.iter().any(|m| m.scale != 0))
-                {
-                    return false;
-                }
-                legacy::usage(&mut older, cells);
-            }
-            Values::Metering(deltas) => {
-                if deltas.iter().any(|delta| delta.scale != 0) {
-                    return false;
-                }
-                legacy::metering(&mut older, deltas);
-            }
-            Values::Append(record) => {
-                legacy::append(&mut older, record, false);
-                if recorded == older.as_bytes() {
-                    return true;
-                }
-                older.clear();
-                legacy::append(&mut older, record, true);
-            }
-        }
-        recorded == older.as_bytes()
     }
 }
 

@@ -354,9 +354,9 @@ fn an_explicit_false_or_null_verb_is_absent_and_a_bad_detail_still_rejects() {
     );
 }
 
-/// `decide`: each reply shape → 1.5.5's verdict.
+/// Current decisions distinguish invalid replies from deliberate no-opinion replies.
 #[test]
-fn a_decide_reply_lowers_to_the_verdict_1_5_5s_host_read() {
+fn decision_replies_preserve_refusals_and_report_malformed_fields() {
     let reject = |status: Option<u16>, message: &str| Verdict::Reject {
         status,
         message: message.into(),
@@ -366,32 +366,62 @@ fn a_decide_reply_lowers_to_the_verdict_1_5_5s_host_read() {
         (json!({"order": [1, 0]}), Verdict::Prefer(vec![1, 0])),
         (json!({"order": [1], "note": "x"}), Verdict::Prefer(vec![1])),
         (json!({"order": null}), Verdict::Abstain),
-        (json!({"order": "x"}), Verdict::Abstain),
-        (json!({"order": [-1]}), Verdict::Abstain),
-        (json!({"order": [1.5]}), Verdict::Abstain),
-        (json!({"abstain": "yes"}), Verdict::Abstain),
-        (json!({"abstain": 1}), Verdict::Abstain),
+        (
+            json!({"order": "x"}),
+            Verdict::Failed("hook decision reply has invalid order or abstain fields".into()),
+        ),
+        (
+            json!({"order": [-1]}),
+            Verdict::Failed("hook decision reply has invalid order or abstain fields".into()),
+        ),
+        (
+            json!({"order": [1.5]}),
+            Verdict::Failed("hook decision reply has invalid order or abstain fields".into()),
+        ),
+        (
+            json!({"abstain": "yes"}),
+            Verdict::Failed("hook decision reply has invalid order or abstain fields".into()),
+        ),
+        (
+            json!({"abstain": 1}),
+            Verdict::Failed("hook decision reply has invalid order or abstain fields".into()),
+        ),
         (json!({"abstain": true, "order": [1]}), Verdict::Abstain),
         (
             json!({"abstain": false, "order": [1]}),
             Verdict::Prefer(vec![1]),
         ),
-        (json!(null), Verdict::Abstain),
-        (json!([1]), Verdict::Abstain),
-        (json!("garbage"), Verdict::Abstain),
-        (json!(42), Verdict::Abstain),
-        (json!(true), Verdict::Abstain),
+        (
+            json!(null),
+            Verdict::Failed("hook reply must be a JSON object".into()),
+        ),
+        (
+            json!([1]),
+            Verdict::Failed("hook reply must be a JSON object".into()),
+        ),
+        (
+            json!("garbage"),
+            Verdict::Failed("hook reply must be a JSON object".into()),
+        ),
+        (
+            json!(42),
+            Verdict::Failed("hook reply must be a JSON object".into()),
+        ),
+        (
+            json!(true),
+            Verdict::Failed("hook reply must be a JSON object".into()),
+        ),
         (
             json!({"reject": {"status": 403, "message": "no"}, "order": "x"}),
-            Verdict::Abstain,
+            reject(Some(403), "no"),
         ),
         (
             json!({"reject": {"status": 403}, "abstain": "yes"}),
-            Verdict::Abstain,
+            reject(Some(403), ""),
         ),
         (
             json!({"restrict": {"tags_any": ["a"]}, "abstain": "yes"}),
-            Verdict::Abstain,
+            Verdict::Restrict(vec!["a".into()]),
         ),
         (
             json!({"reject": {"status": 451, "message": "no"}, "order": [1]}),
@@ -411,8 +441,22 @@ fn a_decide_reply_lowers_to_the_verdict_1_5_5s_host_read() {
             json!({"restrict": {"tags_any": [" a ", ""]}, "order": [0]}),
             Verdict::Restrict(vec!["a".into()]),
         ),
-        (json!({"restrict": {}}), Verdict::Restrict(Vec::new())),
-        (json!({"restrict": "a"}), Verdict::Restrict(Vec::new())),
+        (
+            json!({"restrict": {}}),
+            Verdict::Failed("hook restriction must contain a tags_any array of strings".into()),
+        ),
+        (
+            json!({"restrict": {"tags_any": "a"}}),
+            Verdict::Failed("hook restriction must contain a tags_any array of strings".into()),
+        ),
+        (
+            json!({"restrict": {"tags_any": ["a", 7]}}),
+            Verdict::Failed("hook restriction must contain a tags_any array of strings".into()),
+        ),
+        (
+            json!({"restrict": "a"}),
+            Verdict::Failed("hook restriction must contain a tags_any array of strings".into()),
+        ),
         (
             json!({"restrict": false, "order": [0]}),
             Verdict::Prefer(vec![0]),
@@ -426,7 +470,7 @@ fn a_decide_reply_lowers_to_the_verdict_1_5_5s_host_read() {
         assert_eq!(
             lower_decide_reply(Ok(reply.clone())),
             want,
-            "1.5.5's host read the decide reply {reply} as {want:?}"
+            "current decision reply {reply} must produce {want:?}"
         );
     }
 
@@ -436,9 +480,9 @@ fn a_decide_reply_lowers_to_the_verdict_1_5_5s_host_read() {
     );
 }
 
-/// `transform`: each reply shape → 1.5.5's verdict.
+/// Current transforms preserve valid rewrites and report malformed requests.
 #[test]
-fn a_transform_reply_lowers_to_the_verdict_1_5_5s_host_read() {
+fn transform_replies_preserve_refusals_and_report_malformed_fields() {
     let rw = json!({"messages": [{"role": "user", "content": "x"}]});
     let rewrite = |v: &serde_json::Value| RewriteVerdict::Rewrite(serde_json::to_vec(v).unwrap());
     let reject = |status: Option<u16>, message: &str| RewriteVerdict::Reject {
@@ -455,27 +499,41 @@ fn a_transform_reply_lowers_to_the_verdict_1_5_5s_host_read() {
         ),
         (json!({"rewrite": null}), RewriteVerdict::Abstain),
         (json!({"rewrite": false}), RewriteVerdict::Abstain),
-        (json!({"rewrite": {}}), RewriteVerdict::Abstain),
+        (
+            json!({"rewrite": {}}),
+            RewriteVerdict::Failed("hook rewrite must be an object with a messages array".into()),
+        ),
         (
             json!({"rewrite": {"messages": []}}),
             RewriteVerdict::Abstain,
         ),
         (
             json!({"rewrite": {"messages": "hi"}}),
-            RewriteVerdict::Abstain,
+            RewriteVerdict::Failed("hook rewrite must be an object with a messages array".into()),
         ),
-        (json!({"abstain": 1}), RewriteVerdict::Abstain),
         (
-            json!({"rewrite": rw, "order": "x"}),
-            RewriteVerdict::Abstain,
+            json!({"abstain": 1}),
+            RewriteVerdict::Failed(
+                "hook decision reply has invalid order or abstain fields".into(),
+            ),
         ),
+        (json!({"rewrite": rw, "order": "x"}), rewrite(&rw)),
         (
             json!({"reject": {"status": 451}, "abstain": "yes"}),
-            RewriteVerdict::Abstain,
+            reject(Some(451), ""),
         ),
-        (json!(null), RewriteVerdict::Abstain),
-        (json!([1]), RewriteVerdict::Abstain),
-        (json!("garbage"), RewriteVerdict::Abstain),
+        (
+            json!(null),
+            RewriteVerdict::Failed("hook reply must be a JSON object".into()),
+        ),
+        (
+            json!([1]),
+            RewriteVerdict::Failed("hook reply must be a JSON object".into()),
+        ),
+        (
+            json!("garbage"),
+            RewriteVerdict::Failed("hook reply must be a JSON object".into()),
+        ),
         (
             json!({"reject": {"status": 451, "message": "s"}, "rewrite": rw}),
             reject(Some(451), "s"),
@@ -487,7 +545,7 @@ fn a_transform_reply_lowers_to_the_verdict_1_5_5s_host_read() {
         assert_eq!(
             lower_transform_reply(Ok(reply.clone())),
             want,
-            "1.5.5's host read the transform reply {reply} as {want:?}"
+            "current transform reply {reply} must produce {want:?}"
         );
     }
 

@@ -2553,12 +2553,11 @@ pub const PROJECT_FAULT_MESSAGE: &str = "request rewrite could not be applied";
 ///   [`PROJECT_FAULT_STATUS`] with [`PROJECT_FAULT_MESSAGE`], whatever the hook's `on_error` says,
 ///   and the body is never forwarded: the request fails closed, as 1.5.5's did.
 ///
-/// A FAULT the plane marked unparseable ([`project_fault_unparseable`]) on a `project` where no
-/// rewrite hook is configured and no rewrite was carried (`faultable` false) is no 500: the kernel's
-/// hooks judge the request as 1.5.5's judged a body it could not parse, a Null body, and the request
-/// proceeds (v1.5.5 `proxy/engine/mod.rs:957-961`). Every other FAULT there (a slot panic, a frame
-/// refused before the crossing, a quarantined instance, an answer that broke its kind's rule, or a
-/// FAULT without the mark) is a broken plane: the unit fails closed, unreadable.
+/// A FAULT on a projection required by a configured gate or routing policy fails the unit
+/// closed, unreadable. A parse-failure mark ([`project_fault_unparseable`]) never permits
+/// screening fabricated empty facts. When no enforcement hook needs a projection, a plane's
+/// own marked parse failure may leave the unit to its ordinary protocol handling. An unmarked
+/// FAULT is a broken plane and fails closed.
 ///
 /// This is the one home of the mapping; the kernel holds no status or words of its own for it.
 #[must_use]

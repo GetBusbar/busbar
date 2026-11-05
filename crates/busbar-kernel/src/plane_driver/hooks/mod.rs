@@ -711,14 +711,9 @@ pub(crate) enum Stopped {
     Veto(Veto),
     /// The plane could not read the request a hook had to see.
     Unreadable,
-    /// The plane answered FAULT to a `project` where no rewrite hook was known to be configured
-    /// (the unit's first `project`; the gate-first stage's is made before its entry is bound): the
-    /// caller decides whether a configured rewrite hook makes it the shared 500 ([`fault_veto`]) or
-    /// the hooks judge the body as 1.5.5 judged one it could not parse, a Null body, and the
-    /// request proceeds. `marked`: the plane marked the FAULT as its own word on an unparseable
-    /// body (`abi::plane::project_fault_unparseable`); an unmarked FAULT (a panic, no crossing, a
-    /// quarantined or broken plane) never takes the Null view, and is the shared 500 where a
-    /// rewrite is configured or unreadable otherwise.
+    /// The plane answered FAULT before the hook configuration was bound. A marked parse
+    /// failure may pass only when no enforcement hook requires a projection; gates and
+    /// routing policies must never judge fabricated empty facts.
     Unparseable {
         /// The plane's unparseable-body mark was on the FAULT.
         marked: bool,
@@ -1490,15 +1485,11 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         let faultable = !hooks.rewrites.is_empty();
 
         let first = self.project(None, faultable).map_err(|e| match e {
-            Stopped::Unparseable { marked: false } => Stopped::Unreadable,
+            Stopped::Unparseable { .. } => Stopped::Unreadable,
             other => other,
         });
         let mut view = match first {
             Ok(view) => view,
-
-            Err(Stopped::Unparseable { .. }) => {
-                Projection::empty(walk_pool.clone(), hooks.dialect.clone())
-            }
 
             Err(Stopped::Unreadable)
                 if hooks.rewrites.is_empty()

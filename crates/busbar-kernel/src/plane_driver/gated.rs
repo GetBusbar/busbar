@@ -125,6 +125,18 @@ impl HookBinder for HostGatedHooks {
     }
 }
 
+/// No enforcement hook may be evaluated against invented empty facts. A plane may
+/// handle its own unreadable body only when no configured gate or rewrite depends on it.
+fn unparseable_stage(hooks: Option<&GatedHooks>, marked: bool) -> Result<(), Stopped> {
+    if hooks.is_some_and(|h| !h.rewrites.is_empty()) {
+        return Err(super::fault_veto());
+    }
+    if !marked || hooks.is_some_and(|h| !h.gates.is_empty()) {
+        return Err(Stopped::Unreadable);
+    }
+    Ok(())
+}
+
 impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     pub(crate) async fn gated_stage(&self, binder: &dyn HookBinder) -> Result<(), Stopped> {
         let mut ran = Vec::new();
@@ -168,21 +180,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     .to_string();
                 let hooks = binder.bind_gated(&entry, principal.as_deref());
 
-                if hooks.as_ref().is_some_and(|h| !h.rewrites.is_empty()) {
-                    return Err(super::fault_veto());
-                }
-
-                if !marked {
-                    return Err(Stopped::Unreadable);
-                }
-                let Some(hooks) = hooks else {
-                    return Ok(());
-                };
-                let null = Projection::empty(
-                    entry,
-                    binder.dialect(self.lock().decoded.as_ref().map_or(0, |d| d.dialect)),
-                );
-                return self.screen_gates(&hooks, &null, ran).await;
+                return unparseable_stage(hooks.as_ref(), marked);
             }
             Err(other) => return Err(other),
         };

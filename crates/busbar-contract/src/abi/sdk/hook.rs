@@ -644,24 +644,20 @@ impl Drop for JsonValue {
     }
 }
 
-/// The 1.5.5 reply, field for field 1.5.5's `HookResponse` (v1.5.5
-/// `crates/busbar/src/hooks/wire.rs:428-461`: the same fields, types, order and defaults, unknown
-/// keys ignored). A wrong type in any typed field fails the whole parse, and 1.5.5's host read a
-/// failed parse as ABSTAIN (v1.5.5 `crates/busbar/src/hooks/plugin.rs:51-56` for `decide`, `:59-62`
-/// for `transform`): a hook that answered, but answered out of shape, has no opinion.
+/// The decision fields consumed after reject and restrict have taken precedence.
+/// Other operations' fields and extensions cannot erase an explicit refusal.
 #[derive(serde::Deserialize, Default)]
-struct Reply155 {
+struct DecisionReply {
     #[serde(default)]
     order: Option<Vec<usize>>,
     #[serde(default)]
     abstain: bool,
-    #[serde(default)]
-    reject: Option<JsonValue>,
-    #[serde(default)]
-    restrict: Option<JsonValue>,
-    #[serde(default)]
-    rewrite: Option<JsonValue>,
 }
+
+const INVALID_REPLY: &str = "hook reply must be a JSON object";
+const INVALID_DECISION: &str = "hook decision reply has invalid order or abstain fields";
+const INVALID_RESTRICTION: &str = "hook restriction must contain a tags_any array of strings";
+const INVALID_REWRITE: &str = "hook rewrite must be an object with a messages array";
 
 /// A reject's status as the hook stated it: an integer that fits a `u16`, else none (the host then
 fn reject_of(r: &serde_json::Value) -> (Option<u16>, String) {
@@ -677,34 +673,46 @@ fn reject_of(r: &serde_json::Value) -> (Option<u16>, String) {
     (status, message)
 }
 
-/// A present reply verb: anything but an explicit `false` (JSON `null` reads as absent).
-fn verb(v: &Option<JsonValue>) -> Option<&serde_json::Value> {
-    v.as_ref()
-        .map(|v| &v.0)
-        .filter(|v| **v != serde_json::Value::Bool(false))
+/// A present reply verb: anything but explicit false or null. Refusal verbs remain
+/// conservative: malformed details cannot turn an expressed refusal into permission.
+fn verb(v: Option<&serde_json::Value>) -> Option<&serde_json::Value> {
+    v.filter(|v| !v.is_null() && **v != serde_json::Value::Bool(false))
 }
 
-/// LOWER A 1.5.5 `decide` REPLY exactly as 1.5.5's host normalized it (v1.5.5
+/// Read a current decision response. Malformed decision fields fail the call so the
+/// configured failure policy applies; a reject or restrict always takes precedence.
 #[must_use]
 pub fn lower_decide_reply(reply: Result<serde_json::Value, String>) -> Verdict {
     let v = match reply {
         Ok(v) => JsonValue(v),
         Err(message) => return Verdict::Failed(message),
     };
-    let Ok(parsed) = <Reply155 as serde::Deserialize>::deserialize(&v.0) else {
-        return Verdict::Abstain;
+    let Some(fields) = v.0.as_object() else {
+        return Verdict::Failed(INVALID_REPLY.into());
     };
-    if let Some(r) = verb(&parsed.reject) {
+    if let Some(r) = verb(fields.get("reject")) {
         let (status, message) = reject_of(r);
         return Verdict::Reject { status, message };
     }
-    if let Some(r) = verb(&parsed.restrict) {
+    if let Some(r) = verb(fields.get("restrict")) {
+        let Some(tags) = r.get("tags_any").and_then(serde_json::Value::as_array) else {
+            return Verdict::Failed(INVALID_RESTRICTION.into());
+        };
+        if tags.iter().any(|tag| !tag.is_string()) {
+            return Verdict::Failed(INVALID_RESTRICTION.into());
+        }
         return Verdict::Restrict(
-            crate::hook_wire::parse_restrict(r)
-                .map(|r| r.tags_any)
-                .unwrap_or_default(),
+            tags.iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|tag| !tag.is_empty())
+                .map(str::to_owned)
+                .collect(),
         );
     }
+    let Ok(parsed) = <DecisionReply as serde::Deserialize>::deserialize(&v.0) else {
+        return Verdict::Failed(INVALID_DECISION.into());
+    };
     if parsed.abstain {
         return Verdict::Abstain;
     }
@@ -714,28 +722,34 @@ pub fn lower_decide_reply(reply: Result<serde_json::Value, String>) -> Verdict {
     }
 }
 
-/// LOWER A 1.5.5 `transform` REPLY exactly as 1.5.5's host normalized it (v1.5.5
+/// Read a current transform response. A malformed requested rewrite fails the call;
+/// decision-only fields cannot discard a valid rewrite or an explicit rejection.
 #[must_use]
 pub fn lower_transform_reply(reply: Result<serde_json::Value, String>) -> RewriteVerdict {
     let v = match reply {
         Ok(v) => JsonValue(v),
         Err(message) => return RewriteVerdict::Failed(message),
     };
-    let Ok(parsed) = <Reply155 as serde::Deserialize>::deserialize(&v.0) else {
-        return RewriteVerdict::Abstain;
+    let Some(fields) = v.0.as_object() else {
+        return RewriteVerdict::Failed(INVALID_REPLY.into());
     };
-    if let Some(r) = verb(&parsed.reject) {
+    if let Some(r) = verb(fields.get("reject")) {
         let (status, message) = reject_of(r);
         return RewriteVerdict::Reject { status, message };
     }
-    match parsed.rewrite.filter(|rw| {
-        rw.0.get("messages")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|items| !items.is_empty())
-    }) {
-        Some(rw) => RewriteVerdict::Rewrite(serde_json::to_vec(&rw.0).unwrap_or_default()),
-        None => RewriteVerdict::Abstain,
+    let Some(rw) = verb(fields.get("rewrite")) else {
+        if fields.get("abstain").is_some_and(|v| !v.is_boolean()) {
+            return RewriteVerdict::Failed(INVALID_DECISION.into());
+        }
+        return RewriteVerdict::Abstain;
+    };
+    let Some(messages) = rw.get("messages").and_then(serde_json::Value::as_array) else {
+        return RewriteVerdict::Failed(INVALID_REWRITE.into());
+    };
+    if messages.is_empty() {
+        return RewriteVerdict::Abstain;
     }
+    RewriteVerdict::Rewrite(serde_json::to_vec(rw).expect("a JSON value serializes"))
 }
 
 /// A hook plugin, over typed views: the SDK reads the host's `in` (after the kind's own checks on

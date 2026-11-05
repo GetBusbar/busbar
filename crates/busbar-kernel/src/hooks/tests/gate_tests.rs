@@ -288,8 +288,37 @@ fn tool_subject(facts: &InvokeReq) -> GateSubject<'_> {
     }
 }
 
+struct ReplyGate(serde_json::Value);
+
+#[async_trait::async_trait]
+impl RoutingPolicy for ReplyGate {
+    async fn decide(
+        &self,
+        _: &RoutingRequest<'_>,
+        _: &[Candidate<'_>],
+        _: &RoutingContext<'_>,
+        _: std::time::Duration,
+    ) -> PolicyResult {
+        use busbar_contract::abi::sdk::hook::{lower_decide_reply, Verdict};
+        match lower_decide_reply(Ok(self.0.clone())) {
+            Verdict::Failed(message) => Err(message),
+            Verdict::Abstain => Ok(RoutingDecision::Abstain),
+            Verdict::Restrict(tags_any) => Ok(RoutingDecision::Restrict { tags_any }),
+            Verdict::Reject { status, message } => Ok(RoutingDecision::Reject {
+                status: status.unwrap_or(403),
+                message,
+            }),
+            other => panic!("unexpected test reply: {other:?}"),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "reply-gate"
+    }
+}
+
 #[tokio::test]
-async fn a_reply_the_hook_got_wrong_abstains_as_1_5_5_read_it_even_under_on_error_reject() {
+async fn malformed_hook_replies_apply_on_error_and_never_erase_a_reject() {
     let facts = tool_call();
     for reply in [
         serde_json::json!({ "reject": { "status": 403, "message": "screened" }, "order": "x" }),
@@ -300,22 +329,60 @@ async fn a_reply_the_hook_got_wrong_abstains_as_1_5_5_read_it_even_under_on_erro
         serde_json::json!(null),
         serde_json::json!([1]),
     ] {
-        assert_eq!(
-            busbar_contract::abi::sdk::hook::lower_decide_reply(Ok(reply.clone())),
-            busbar_contract::abi::sdk::hook::Verdict::Abstain,
-            "the actual wire reader treats this document as no opinion"
+        let gates = gate(
+            Arc::new(ReplyGate(reply.clone())),
+            crate::config::PolicyOnError::Reject,
+            true,
+            false,
         );
-        let verdict = super::verdict_of(
-            RoutingDecision::Abstain,
-            "reply-gate",
-            &tool_subject(&facts),
-        )
-        .unwrap_or(GateVerdict::Proceed);
         assert!(
-            matches!(verdict, GateVerdict::Proceed),
-            "1.5.5's host read the out-of-shape reply {reply} as abstain: the request proceeds"
+            matches!(
+                decide(&gates, &tool_subject(&facts)).await,
+                GateVerdict::Reject { .. }
+            ),
+            "an invalid reply cannot bypass on_error: reject: {reply}"
         );
     }
+    let mut invalid_restriction = gate(
+        Arc::new(ReplyGate(
+            serde_json::json!({ "restrict": { "tags_any": "x" } }),
+        )),
+        crate::config::PolicyOnError::Reject,
+        true,
+        false,
+    );
+    if let ResolvedPolicy::Policy { on_empty, .. } = &mut invalid_restriction[0].1 {
+        *on_empty = crate::config::PolicyOnError::Weighted;
+    }
+    assert!(
+        matches!(
+            decide(&invalid_restriction, &tool_subject(&facts)).await,
+            GateVerdict::Reject { .. }
+        ),
+        "a malformed restriction is a failed reply, not a valid empty restriction"
+    );
+    let advisory = gate(
+        Arc::new(ReplyGate(serde_json::json!({ "order": "x" }))),
+        crate::config::PolicyOnError::Weighted,
+        true,
+        false,
+    );
+    assert!(matches!(
+        decide(&advisory, &tool_subject(&facts)).await,
+        GateVerdict::Proceed
+    ));
+    let refusal = gate(
+        Arc::new(ReplyGate(
+            serde_json::json!({ "reject": {"status": 451}, "order": "x" }),
+        )),
+        crate::config::PolicyOnError::Weighted,
+        true,
+        false,
+    );
+    assert!(matches!(
+        decide(&refusal, &tool_subject(&facts)).await,
+        GateVerdict::Reject { status: 451, .. }
+    ));
 }
 
 #[tokio::test]

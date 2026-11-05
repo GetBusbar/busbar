@@ -20,7 +20,7 @@ struct Log {
 
 impl Log {
     /// One op through [`Dedupe::run`], recording the body as the bytes `store` makes of it.
-    fn op(&mut self, op: OpId, d: &Dedupe<'_>, store: fn(&Body) -> Vec<u8>) -> OpResult<()> {
+    fn op(&mut self, op: OpId, d: &Dedupe, store: fn(&Body) -> Vec<u8>) -> OpResult<()> {
         d.run(
             self,
             |log| Ok(log.ops.get(&op).cloned()),
@@ -32,7 +32,7 @@ impl Log {
         )
     }
 
-    fn raw(&mut self, op: OpId, d: &Dedupe<'_>) -> OpResult<()> {
+    fn raw(&mut self, op: OpId, d: &Dedupe) -> OpResult<()> {
         self.op(op, d, |b| b.to_vec())
     }
 }
@@ -64,7 +64,7 @@ fn count_scale_is_part_of_operation_identity_and_never_matches_a_legacy_receipt(
     assert_eq!(exact.seen(Some(legacy.body())), Seen::Conflict);
     let older = br#"add_usage_batch:[("b", 60, UsageDelta { requests: 1, billable_requests: 1, models: [ModelTokensDelta { model: "m", usage_units: {"input": 7} }] })]"#;
     assert_eq!(exact.seen(Some(older)), Seen::Conflict);
-    assert_eq!(legacy.seen(Some(older)), Seen::Replay);
+    assert_eq!(legacy.seen(Some(older)), Seen::Conflict);
 }
 
 fn metering(tokens_input: u64) -> MeteringDelta {
@@ -227,12 +227,15 @@ fn a_body_kept_as_hex_text_replays_and_conflicts_as_the_raw_one() {
 }
 
 #[test]
-fn an_older_builds_usage_row_replays_the_same_batch_and_conflicts_with_another() {
+fn development_debug_usage_receipts_conflict_without_applying() {
     let cells = [("b", 60, delta(1))];
     let older = r#"add_usage_batch:[("b", 60, UsageDelta { requests: 1, billable_requests: 1, models: [ModelTokensDelta { model: "m", usage_units: {"input": 7} }] })]"#;
     let mut log = Log::default();
     log.ops.insert(id(1), older.as_bytes().to_vec());
-    assert_eq!(log.raw(id(1), &Dedupe::usage(&cells)), Ok(()));
+    assert_eq!(
+        log.raw(id(1), &Dedupe::usage(&cells)),
+        Err(OpRefused::Conflict)
+    );
     assert_eq!(
         log.raw(id(1), &Dedupe::usage(&[("b", 60, delta(2))])),
         Err(OpRefused::Conflict)
@@ -241,12 +244,15 @@ fn an_older_builds_usage_row_replays_the_same_batch_and_conflicts_with_another()
 }
 
 #[test]
-fn an_older_builds_metering_row_replays_the_same_batch() {
+fn development_debug_metering_receipts_conflict_without_applying() {
     let deltas = vec![metering(10)];
     let mut log = Log::default();
     log.ops
         .insert(id(1), r#"add_metering_batch:[MeteringDelta { key_id: "k", bucket: 20000, model: "m", provider: "p", tokens_input: 10, tokens_output: 2, tokens_cache_read: 3, tokens_cache_write: 4, requests: 1, billable_requests: 1, key_group_at_use: "", pricing_version: "", priced_from_ms: 0, usage_units: {} }]"#.as_bytes().to_vec());
-    assert_eq!(log.raw(id(1), &Dedupe::metering(&deltas)), Ok(()));
+    assert_eq!(
+        log.raw(id(1), &Dedupe::metering(&deltas)),
+        Err(OpRefused::Conflict)
+    );
     assert_eq!(
         log.raw(id(1), &Dedupe::metering(&[metering(11)])),
         Err(OpRefused::Conflict)
@@ -255,7 +261,7 @@ fn an_older_builds_metering_row_replays_the_same_batch() {
 }
 
 #[test]
-fn an_older_builds_append_row_replays_in_the_borrowed_and_the_owned_form() {
+fn development_debug_append_receipts_conflict_in_both_forms() {
     let r = record(b"x");
     for older in [
         r#"append_plane_record:PlaneRecordRef { kind: "task_event", id: "e-1", parent: Some("t-1"), seq: 3, ts: 1700000000, disposition: Active, body: [120] }"#,
@@ -263,7 +269,7 @@ fn an_older_builds_append_row_replays_in_the_borrowed_and_the_owned_form() {
     ] {
         let mut log = Log::default();
         log.ops.insert(id(1), older.as_bytes().to_vec());
-        assert_eq!(log.raw(id(1), &Dedupe::append(r)), Ok(()));
+        assert_eq!(log.raw(id(1), &Dedupe::append(r)), Err(OpRefused::Conflict));
         assert_eq!(
             log.raw(id(1), &Dedupe::append(record(b"y"))),
             Err(OpRefused::Conflict)
@@ -282,7 +288,7 @@ fn an_async_bodys_answer_is_done_replay_or_conflict() {
     assert_eq!(d.answer(Ok(Some(d.body_hex()))), Ok(()));
     assert_eq!(
         d.answer(Ok(Some(r#"add_usage_batch:[("b", 60, UsageDelta { requests: 1, billable_requests: 1, models: [ModelTokensDelta { model: "m", usage_units: {"input": 7} }] })]"#))),
-        Ok(())
+        Err(OpRefused::Conflict)
     );
     assert_eq!(
         d.answer(Ok(Some(other.body().to_vec()))),
@@ -347,7 +353,7 @@ fn length_prefixes_keep_neighbouring_fields_apart() {
 }
 
 #[test]
-fn frozen_legacy_receipts_keep_quoting_order_signed_units_and_terminal_rows() {
+fn development_debug_receipts_cannot_prove_signed_or_terminal_operations() {
     let cells = [(
         "b\n\"",
         u64::MAX,
@@ -364,7 +370,7 @@ fn frozen_legacy_receipts_keep_quoting_order_signed_units_and_terminal_rows() {
     let legacy = r#"add_usage_batch:[("b\n\"", 18446744073709551615, UsageDelta { requests: -9223372036854775808, billable_requests: 0, models: [ModelTokensDelta { model: "\tπ", usage_units: {"a": 0, "z": -1} }] })]"#;
     assert_eq!(
         Dedupe::usage(&cells).seen(Some(legacy.as_bytes())),
-        Seen::Replay
+        Seen::Conflict
     );
     assert_eq!(
         Dedupe::usage(&[]).seen(Some(legacy.as_bytes())),
@@ -379,7 +385,7 @@ fn frozen_legacy_receipts_keep_quoting_order_signed_units_and_terminal_rows() {
     let legacy = r#"append_plane_record:PlaneRecordRef { kind: "task_event", id: "e-1", parent: None, seq: 3, ts: 1700000000, disposition: Terminal, body: [0, 255, 10] }"#;
     assert_eq!(
         Dedupe::append(row).seen(Some(legacy.as_bytes())),
-        Seen::Replay
+        Seen::Conflict
     );
     let changed = PlaneRecordRef {
         parent: Some(""),
