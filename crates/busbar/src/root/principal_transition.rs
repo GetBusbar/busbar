@@ -43,6 +43,16 @@ impl Command {
         self.action == Action::InitializeFreshAndServe
     }
 
+    pub fn validate_record_bootstrap_input(
+        &self,
+        cold_receipt_present: bool,
+    ) -> Result<(), &'static str> {
+        if self.record_bootstrap.is_some() && cold_receipt_present {
+            return Err("fresh record bootstrap and a cold receipt file are mutually exclusive");
+        }
+        Ok(())
+    }
+
     pub fn validate_overlay_mode(
         &self,
         locked: bool,

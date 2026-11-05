@@ -570,6 +570,13 @@ async fn run(
         root::overlay_migrate::command(std::env::args().skip(1)).unwrap_or_else(|error| die(error));
     let principal_transition = root::principal_transition::command(std::env::args().skip(1))
         .unwrap_or_else(|error| die(error));
+    if let Some(command) = principal_transition.as_ref() {
+        command
+            .validate_record_bootstrap_input(
+                std::env::var_os(busbar_kernel::host_record_bootstrap::RECEIPT_ENV).is_some(),
+            )
+            .unwrap_or_else(|error| die(error));
+    }
     let boot_error = |context: &str, detail: String| {
         if principal_transition.is_some() {
             context.to_owned()

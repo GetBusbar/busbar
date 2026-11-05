@@ -343,6 +343,18 @@ fn record_bootstrap_is_explicit_and_only_allowed_on_same_open_fresh_start() {
     ];
     let parsed = parse(&args).unwrap().unwrap();
     assert_eq!(parsed.record_bootstrap.as_deref(), Some("a2a"));
+    assert!(parsed.validate_record_bootstrap_input(false).is_ok());
+    assert!(parsed.validate_record_bootstrap_input(true).is_err());
+    let ordinary = parse(&[
+        INPUT_FLAG,
+        "fresh.json",
+        ACTION_FLAG,
+        "initialize-fresh-and-serve",
+    ])
+    .unwrap()
+    .unwrap();
+    assert!(ordinary.record_bootstrap.is_none());
+    assert!(ordinary.validate_record_bootstrap_input(true).is_ok());
     assert!(parse(&[RECORD_BOOTSTRAP_FLAG, "a2a"]).is_err());
     for action in [
         "inspect",
