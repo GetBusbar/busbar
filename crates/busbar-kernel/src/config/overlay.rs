@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+pub use super::overlay_legacy::{decode_legacy_overlay, parse_legacy_overlay};
 pub use super::overlay_store::OverlayStore;
 use super::{
     ConfigMgmtCfg, DeployCfg, GroupCfg, HookCfg, OverlayCfg, RateEntryCfg, RootCfg, StoreCfg,
@@ -481,7 +482,7 @@ pub(super) fn classify_bytes(bytes: Option<Vec<u8>>) -> OverlayReadState {
     let Some(bytes) = bytes else {
         return OverlayReadState::Absent;
     };
-    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
         return OverlayReadState::Unreadable;
     };
     if let Some(version) = value.get("version").and_then(serde_json::Value::as_u64) {
@@ -489,63 +490,11 @@ pub(super) fn classify_bytes(bytes: Option<Vec<u8>>) -> OverlayReadState {
             return OverlayReadState::VersionTooNew(u32::try_from(version).unwrap_or(u32::MAX));
         }
     }
-    migrate_legacy_hook_keys(&mut value);
     match serde_json::from_value(value) {
         Ok(doc) => OverlayReadState::Loaded(Box::new(doc)),
         Err(_) => OverlayReadState::Unreadable,
     }
 }
-/// Rewrite the RETIRED hook-key spellings in a raw overlay document IN PLACE so a pre-1.6.0 overlay
-/// still loads after the 1.6.0 clean slate removed the `plugin` alias and the single-stage `at:` key
-/// from [`HookCfg`]:
-///   * a hook entry's `plugin:` → `module:` (the one wire spelling), unless `module:` is already set;
-///   * a hook entry's `at: <stage>` → `phase: [<stage>]` (stage-renamed via the shared
-///     [`crate::config::RENAMED_HOOK_STAGES`] table, matching `--migrate-config`), unless a non-empty
-///     `phase:` is already present, in which case `at:` is simply dropped (the list wins, exactly as
-///     the old `fires_at_stage` precedence resolved it).
-///
-/// A no-op on an overlay already in the 1.6.0 spelling, so it is safe to run on every read. Only the
-/// `hooks` section carries [`HookCfg`] entries; every other section is left untouched.
-fn migrate_legacy_hook_keys(value: &mut serde_json::Value) {
-    let Some(hooks) = value
-        .get_mut(Kind::Hook.root())
-        .and_then(serde_json::Value::as_object_mut)
-    else {
-        return;
-    };
-    for entry in hooks.values_mut() {
-        let Some(obj) = entry.as_object_mut() else {
-            continue;
-        };
-
-        if let Some(plugin) = obj.remove("plugin") {
-            obj.entry("module".to_string()).or_insert(plugin);
-        }
-
-        if let Some(at) = obj.remove("at") {
-            let phase_present = obj
-                .get("phase")
-                .and_then(serde_json::Value::as_array)
-                .is_some_and(|a| !a.is_empty());
-            if !phase_present {
-                if let Some(stage) = at.as_str() {
-                    let renamed = crate::config::RENAMED_HOOK_STAGES
-                        .iter()
-                        .find(|(old, _)| *old == stage)
-                        .map(|(_, new)| *new)
-                        .unwrap_or(stage);
-                    obj.insert(
-                        "phase".to_string(),
-                        serde_json::Value::Array(vec![serde_json::Value::String(
-                            renamed.to_string(),
-                        )]),
-                    );
-                }
-            }
-        }
-    }
-}
-
 pub fn write(store: &OverlayStore, doc: &OverlayDoc) -> Result<(), String> {
     store.update(|current| *current = doc.clone())
 }

@@ -48,7 +48,7 @@ fn corrupt_overlay_refuses_reads_and_all_mutations_without_clobbering() {
 }
 
 #[test]
-fn legacy_hook_spelling_is_migrated_from_store_bytes() {
+fn store_reader_refuses_legacy_hook_spellings_without_rewriting() {
     let store = crate::real_store::store();
     let bytes =
         br#"{"hooks":{"legacy":{"kind":"gate","plugin":"test-hook","at":"request"}}}"#.to_vec();
@@ -64,6 +64,6 @@ fn legacy_hook_spelling_is_migrated_from_store_bytes() {
     let head = RecordBytes::new(serde_json::to_vec(&head).unwrap()).unwrap();
     wait(store.record_put(SCHEMA, HEAD, &head)).unwrap();
     let backend = OverlayStore::new(store).unwrap();
-    let doc = backend.read_required().unwrap().unwrap();
-    assert_eq!(doc.hooks["legacy"].plugin, "test-hook");
+    assert!(backend.read_required().is_err());
+    assert_eq!(backend.read_bytes().unwrap().unwrap(), bytes);
 }

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod card;
 pub mod overlay;
+mod overlay_legacy;
 mod overlay_store;
 
 pub mod filled;
