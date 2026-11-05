@@ -1205,17 +1205,27 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         }
     }
 
+    async fn stage_before_stop(
+        &self,
+        stage: impl std::future::Future<Output = Result<(), hooks::Stopped>> + Send,
+    ) -> Result<(), ReasonCode> {
+        tokio::select! {
+            biased;
+            cause = self.caller.stopped() => Err(cause),
+            result = stage => result.map_err(|stopped| self.stopped(stopped)),
+        }
+    }
+
     pub async fn open_hooks(&self, token: &Pass<Route>, ctx: &UnitCtx) -> Result<(), ReasonCode> {
         if self.lock().open_hooks_ran {
             return Ok(());
         }
-        match self.request_stage(token).await {
+        match self.stage_before_stop(self.request_stage(token)).await {
             Ok(()) => {
                 self.lock().open_hooks_ran = true;
                 Ok(())
             }
-            Err(stopped) => {
-                let reason = self.stopped(stopped);
+            Err(reason) => {
                 self.driver.money.finished(ctx);
                 Err(reason)
             }
@@ -1226,8 +1236,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         let d = self.driver;
         d.sweep();
         self.state_stage(token);
-        if let Err(stopped) = self.request_stage(token).await {
-            let reason = self.stopped(stopped);
+        if let Err(reason) = self.stage_before_stop(self.request_stage(token)).await {
             d.money.finished(ctx);
             return StepAnswer::refuse(token, Refusal::new(reason));
         }
@@ -1265,13 +1274,19 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
             .decoded
             .as_ref()
             .is_some_and(|d| d.route == ROUTE_SCOPE_LOCAL);
-        let end = if scope_local {
-            if let Some(entry) = self.steps.resolved(ctx) {
-                run.lend_resolved(&entry);
-            }
-            self.answered_here(&mut run).await
-        } else {
-            self.attempts(&mut run, None).await
+        let end = tokio::select! {
+            biased;
+            cause = self.caller.stopped() => route::End::Cancel(cause, None),
+            end = async {
+                if scope_local {
+                    if let Some(entry) = self.steps.resolved(ctx) {
+                        run.lend_resolved(&entry);
+                    }
+                    self.answered_here(&mut run).await
+                } else {
+                    self.attempts(&mut run, None).await
+                }
+            } => end,
         };
 
         match &end {
@@ -1606,20 +1621,14 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: SessionCaller> RouteAwait for PlaneUni
             {
                 return Ok(());
             }
-            match self.gated_stage(&**binder).await {
+            match self.stage_before_stop(self.gated_stage(&**binder)).await {
                 Ok(()) => {
                     self.lock().screened = true;
                     Ok(())
                 }
-                Err(stopped) => {
-                    let reason = self.stopped(stopped);
+                Err(reason) => {
                     self.driver.money.finished(ctx);
-
-                    Err(if reason == ReasonCode::HookVeto {
-                        Refusal::new(ReasonCode::HookVeto)
-                    } else {
-                        Refusal::new(ReasonCode::DecodeFailed)
-                    })
+                    Err(Refusal::new(reason))
                 }
             }
         })

@@ -1055,7 +1055,13 @@ impl Connector {
     }
 
     /// The framer `owner`'s `need` rides, located at `target` (empty = the need's own, as an open
-    fn framer_head(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
+    fn framer_head(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        target: &str,
+        timeout_ms: u64,
+    ) -> Result<HeadDefaults, ConnError> {
         let need = self
             .over
             .lock()
@@ -1067,12 +1073,20 @@ impl Connector {
                     n.declared_target.clone().filter(|_| target.is_empty()),
                 )
             });
-        need.and_then(|(door, declared)| self.located(&door, declared.as_deref().unwrap_or(target)))
+        need.ok_or(ConnError::Refused)
+            .and_then(|(door, declared)| {
+                let target = declared.as_deref().unwrap_or(target);
+                if door.facts().role == ROLE_CARRIER {
+                    self.located(&door, target).ok_or(ConnError::Refused)
+                } else {
+                    framer::locate_request(door.as_ref(), target, timeout_ms)
+                        .map_err(|_| ConnError::Refused)
+                }
+            })
             .map(|located| HeadDefaults {
                 lines: located.defaults,
                 states_length: located.states_length,
             })
-            .unwrap_or_default()
     }
 
     /// Where `target` goes, per the entry `door` serves: its authority, security and name.
@@ -2589,8 +2603,14 @@ impl DeclaredConns for Connector {
     }
 
     /// A need is framed when the entry serving its transport is a FRAMER (http's kind, over the
-    fn request_head(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
-        self.framer_head(owner, need, target)
+    fn request_head(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        target: &str,
+        timeout_ms: u64,
+    ) -> Result<HeadDefaults, ConnError> {
+        self.framer_head(owner, need, target, timeout_ms)
     }
 
     fn framed(&self, owner: InstanceId, need: NeedId) -> bool {
@@ -3485,8 +3505,14 @@ impl Conns for Connector {
 
 impl PollConns for Connector {
     /// The framer the need rides, located at `target`: its own head lines, and whether its head
-    fn head_defaults(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
-        self.framer_head(owner, need, target)
+    fn head_defaults(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        target: &str,
+        timeout_ms: u64,
+    ) -> Result<HeadDefaults, ConnError> {
+        self.framer_head(owner, need, target, timeout_ms)
     }
 
     fn poll_read(

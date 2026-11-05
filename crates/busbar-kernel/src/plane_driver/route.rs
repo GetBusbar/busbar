@@ -248,6 +248,11 @@ pub trait FarEnd: Sync {
 }
 
 pub trait CallerEnd: Sync {
+    /// A terminal caller transport failure, including an expired accepted-stream deadline.
+    fn stopped(&self) -> impl Future<Output = ReasonCode> + Send {
+        std::future::pending()
+    }
+
     fn head(&self, status: u32, fields: HeadFields);
 
     fn write<'a>(&'a self, bytes: &'a [u8]) -> impl Future<Output = bool> + Send + 'a;

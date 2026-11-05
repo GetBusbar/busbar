@@ -932,8 +932,9 @@ impl busbar_contract::conn::PollConns for BoundConns {
         owner: busbar_contract::conn::InstanceId,
         need: busbar_contract::conn::NeedId,
         target: &str,
-    ) -> busbar_contract::conn::HeadDefaults {
-        self.inner.head_defaults(owner, need, target)
+        timeout_ms: u64,
+    ) -> Result<busbar_contract::conn::HeadDefaults, busbar_contract::conn::ConnError> {
+        self.inner.head_defaults(owner, need, target, timeout_ms)
     }
     fn seal_reach(
         &self,

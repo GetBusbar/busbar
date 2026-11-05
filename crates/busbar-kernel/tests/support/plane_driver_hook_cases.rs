@@ -1289,3 +1289,74 @@ async fn the_stage_reports_a_hook_that_failed_as_failed() {
         }],
     );
 }
+
+#[tokio::test]
+async fn caller_transport_deadline_bounds_pending_routed_and_gated_hooks() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct PendingGate(Arc<AtomicBool>);
+    #[async_trait::async_trait]
+    impl RoutingPolicy for PendingGate {
+        async fn decide(
+            &self,
+            _: &RoutingRequest<'_>,
+            _: &[Candidate<'_>],
+            _: &RoutingContext<'_>,
+            _: Duration,
+        ) -> PolicyResult {
+            self.0.store(true, Ordering::SeqCst);
+            std::future::pending().await
+        }
+        fn name(&self) -> &'static str {
+            "pending-deadline-gate"
+        }
+    }
+    for gated in [false, true] {
+        let entered = Arc::new(AtomicBool::new(false));
+        let gate = ResolvedPolicy::Policy {
+            policy: Arc::new(PendingGate(Arc::clone(&entered))),
+            on_error: PolicyOnError::Reject,
+            on_error_chain: Vec::new(),
+            timeout: Duration::from_secs(30),
+            send_prompt: false,
+            send_user: false,
+            on_empty: PolicyOnError::Reject,
+        };
+        let mut r = rig_with_hooks(
+            Way::Double,
+            BufferCaps::default(),
+            Book::default(),
+            Some(bound(Vec::new(), vec![(0, gate.clone())])),
+        );
+        if gated {
+            r.driver = r.driver.with_hooks(Arc::new(GatedBinder {
+                gates: vec![(0, gate)],
+                rewrites: Vec::new(),
+            }));
+        }
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]),
+            Caller::stopping_after(Duration::from_millis(20)),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/call", b"user:hello"), 0);
+        let outcome = tokio::time::timeout(Duration::from_secs(2), drive(&units))
+            .await
+            .expect("transport expiry bounds a hook with a much longer own timeout");
+        assert!(
+            entered.load(Ordering::SeqCst),
+            "gated={gated}: fixture entered hook"
+        );
+        assert!(
+            matches!(
+                outcome,
+                Outcome::Failed(_, ReasonCode::DeadlineExceeded)
+                    | Outcome::Refused(_, ReasonCode::DeadlineExceeded)
+            ),
+            "{outcome:?}"
+        );
+        assert!(far.sent().is_empty());
+        assert_eq!(r.book.finished.load(Ordering::SeqCst), 1);
+    }
+}

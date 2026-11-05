@@ -1380,18 +1380,37 @@ fn protocol_names(mut b: &[u8]) -> Option<Vec<Vec<u8>>> {
 
 /// `locate`: where `target` is, per the entry, and its protocol offer. One re-call with the sizes a
 pub fn locate(door: &dyn FramerDoor, target: &str) -> Result<Located, Refused> {
-    locate_as(door, target, false)
+    locate_as(door, target, false, 0)
 }
 
 /// THE OFFER A LISTENER FRAMED BY `door` MAKES in the handshake (ALPN, most preferred first):
 pub fn accept_offer(door: &dyn FramerDoor) -> Result<Vec<Vec<u8>>, Refused> {
-    locate_as(door, "", true).map(|l| l.offer)
+    locate_as(door, "", true, 0).map(|l| l.offer)
 }
 
 /// THE MOST ROOM THE HOST GIVES ONE `locate` ANSWER, per buffer: a short answer naming more is the
 const LOCATE_CAP: usize = 64 * 1024;
 
-fn locate_as(door: &dyn FramerDoor, target: &str, accept: bool) -> Result<Located, Refused> {
+/// Locate the complete request head before authentication, with its remaining attempt budget.
+pub fn locate_request(
+    door: &dyn FramerDoor,
+    target: &str,
+    timeout_ms: u64,
+) -> Result<Located, Refused> {
+    let deadline_ns = if timeout_ms == 0 {
+        0
+    } else {
+        now_ns().saturating_add(timeout_ms.saturating_mul(1_000_000))
+    };
+    locate_as(door, target, false, deadline_ns)
+}
+
+fn locate_as(
+    door: &dyn FramerDoor,
+    target: &str,
+    accept: bool,
+    deadline_ns: u64,
+) -> Result<Located, Refused> {
     let (mut auth_cap, mut name_cap, mut alpn_cap) = (256_usize, 256_usize, 256_usize);
     let mut defaults_cap = 256_usize;
     for _ in 0..2 {
@@ -1400,6 +1419,7 @@ fn locate_as(door: &dyn FramerDoor, target: &str, accept: bool) -> Result<Locate
         let mut alpn = vec![0_u8; alpn_cap];
         let mut defaults = vec![0_u8; defaults_cap];
         let mut i: LocateIn = blank_in();
+        i.head.deadline_ns = deadline_ns;
         i.target = abi(target.as_bytes());
         i.authority_buf = authority.as_mut_ptr();
         i.authority_cap = authority.len();

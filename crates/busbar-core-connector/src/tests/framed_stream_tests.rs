@@ -399,3 +399,112 @@ fn neutral_closing_uses_producer_metadata_and_preserves_an_unknown_namespace() {
     );
     assert_eq!(closing.fields, pairs(&[("opaque field", "opaque value")]));
 }
+
+struct TimedDoor {
+    inner: Arc<LengthDoor>,
+    fail_emit: bool,
+    fail_begin: bool,
+}
+
+impl FramerDoor for TimedDoor {
+    fn facts(&self) -> &DoorFacts {
+        self.inner.facts()
+    }
+
+    fn cross(&self, call: Call<'_>) -> Crossed {
+        use busbar_contract::abi::transport::{PIECE_END, PIECE_STREAM_FAILED, YIELD_HAS_DEADLINE};
+        let fail = |sink: &FramerSink, output: &mut FramerOut| {
+            // SAFETY: the host lends a writable piece slot for this framing call.
+            unsafe {
+                sink.pieces.write(FramePiece {
+                    stream: super::STREAM,
+                    offset: 0,
+                    len: 0,
+                    code: 0,
+                    status_class: 0,
+                    fault: 0,
+                    flags: PIECE_STREAM_FAILED | PIECE_END,
+                    retry_after_secs: 0,
+                    declared_len: 0,
+                });
+            }
+            output.yielded.pieces_len = 1;
+            Crossed {
+                outcome: Outcome::Ready,
+                error: None,
+            }
+        };
+        match call {
+            Call::Begin(input, output) => {
+                let crossed = self.inner.cross(Call::Begin(input, output));
+                if self.fail_begin {
+                    return fail(&input.sink, output);
+                }
+                output.yielded.flags |= YIELD_HAS_DEADLINE;
+                output.yielded.next_deadline_ns = input.sink.now_monotonic_ns + 1_000_000_000;
+                crossed
+            }
+            Call::Ingest(input, output) => {
+                let crossed = self.inner.cross(Call::Ingest(input, output));
+                output.yielded.flags |= YIELD_HAS_DEADLINE;
+                output.yielded.next_deadline_ns = input.sink.now_monotonic_ns + 2_000_000_000;
+                crossed
+            }
+            Call::Timer(input, output) => fail(&input.sink, output),
+            Call::Emit(input, output) if self.fail_emit => fail(&input.sink, output),
+            other => self.inner.cross(other),
+        }
+    }
+}
+
+#[test]
+fn accepted_stream_retains_replaces_and_clears_its_framers_deadline() {
+    let door = Arc::new(TimedDoor {
+        inner: door(),
+        fail_emit: false,
+        fail_begin: false,
+    });
+    let mut stream = FramedStream::open(door, "lp", "/", &[], SCHEME_PLAIN).unwrap();
+    let opened = stream
+        .deadline()
+        .expect("Begin's deadline must be scheduled");
+    stream.ingest(b"\x01q", true).unwrap();
+    assert!(
+        stream.deadline().unwrap() > opened,
+        "Ingest replaces the timer"
+    );
+    assert_eq!(stream.timer().unwrap_err().outcome, Outcome::Failed);
+    assert!(
+        stream.deadline().is_none(),
+        "the terminal yield clears its timer"
+    );
+}
+
+#[test]
+fn accepted_stream_emit_failure_is_not_an_empty_success() {
+    let door = Arc::new(TimedDoor {
+        inner: door(),
+        fail_emit: true,
+        fail_begin: false,
+    });
+    let mut stream = FramedStream::open(door, "lp", "/", &[], SCHEME_PLAIN).unwrap();
+    assert_eq!(
+        stream.emit(b"late", true).unwrap_err().outcome,
+        Outcome::Failed
+    );
+}
+
+#[test]
+fn accepted_stream_begin_failure_never_admits_a_unit() {
+    let door = Arc::new(TimedDoor {
+        inner: door(),
+        fail_emit: false,
+        fail_begin: true,
+    });
+    assert_eq!(
+        FramedStream::open(door, "lp", "/", &[], SCHEME_PLAIN)
+            .unwrap_err()
+            .outcome,
+        Outcome::Failed
+    );
+}

@@ -393,10 +393,17 @@ pub trait DeclaredConns: Conns {
         let _ = owner;
     }
 
-    /// THE FRAMER'S OWN HEAD on a request `owner`'s `need` opens to `target` (empty = the need's
-    fn request_head(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
-        let _ = (owner, need, target);
-        HeadDefaults::default()
+    /// The framer's complete defaults before auth signs the request. `timeout_ms` is the
+    /// remaining attempt budget; zero means no deadline. Empty `target` uses the need's target.
+    fn request_head(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        target: &str,
+        timeout_ms: u64,
+    ) -> Result<HeadDefaults, ConnError> {
+        let _ = (owner, need, target, timeout_ms);
+        Ok(HeadDefaults::default())
     }
 
     /// Hold `binding` as the auth binding of `owner`'s requests on `need` that name the
@@ -761,10 +768,17 @@ pub trait PollConns: Conns {
         }
     }
 
-    /// THE FRAMER'S OWN HEAD on a request `owner`'s `need` opens to `target` (the transport ABI's
-    fn head_defaults(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
-        let _ = (owner, need, target);
-        HeadDefaults::default()
+    /// The framer's complete defaults before auth signs the request. `timeout_ms` is the
+    /// remaining attempt budget; zero means no deadline.
+    fn head_defaults(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        target: &str,
+        timeout_ms: u64,
+    ) -> Result<HeadDefaults, ConnError> {
+        let _ = (owner, need, target, timeout_ms);
+        Ok(HeadDefaults::default())
     }
 
     /// SEAL ONE REGISTRATION'S PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`, SEAM-4k: keyed

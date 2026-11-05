@@ -131,3 +131,77 @@ fn a_close_beside_a_hung_framer_emit_never_waits_and_the_write_makes_it() {
         "the write closed the stream as it put it back, on its own thread: {crossed:?}"
     );
 }
+
+#[tokio::test]
+async fn an_idle_framed_stream_drives_its_timer_and_wakes_the_unit() {
+    use busbar_contract::abi::transport::{
+        FramePiece, PIECE_END, PIECE_STREAM_FAILED, YIELD_HAS_DEADLINE,
+    };
+    struct Timed(DoorFacts);
+    impl FramerDoor for Timed {
+        fn facts(&self) -> &DoorFacts {
+            &self.0
+        }
+        fn cross(&self, call: Call<'_>) -> Crossed {
+            match call {
+                Call::Begin(input, output) => {
+                    output.framing = 1;
+                    output.yielded.flags = YIELD_HAS_DEADLINE;
+                    output.yielded.next_deadline_ns = input.sink.now_monotonic_ns + 1_000_000;
+                }
+                Call::Timer(input, output) => {
+                    // SAFETY: the host lends a writable piece slot for the timer result.
+                    unsafe {
+                        input.sink.pieces.write(FramePiece {
+                            stream: 1,
+                            offset: 0,
+                            len: 0,
+                            code: 0,
+                            status_class: 0,
+                            fault: 0,
+                            flags: PIECE_STREAM_FAILED | PIECE_END,
+                            retry_after_secs: 0,
+                            declared_len: 0,
+                        });
+                    }
+                    output.yielded.pieces_len = 1;
+                }
+                _ => {}
+            }
+            Crossed {
+                outcome: Outcome::Ready,
+                error: None,
+            }
+        }
+    }
+    let door = Arc::new(Timed(DoorFacts {
+        name: "lp".into(),
+        claims: vec!["lp"],
+        role: busbar_contract::abi::transport::ROLE_FRAMER,
+        composes_over: Vec::new(),
+        ported: false,
+        status_rows: Vec::new(),
+        status_namespaces: Vec::new(),
+        handoff_status: Vec::new(),
+        duplex: vec!["lp"],
+        datagram: false,
+    }));
+    let stream = shared(
+        FramedStream::open(
+            door,
+            "lp",
+            "/",
+            &[],
+            busbar_contract::abi::host::service::SCHEME_PLAIN,
+        )
+        .unwrap(),
+    );
+    let reason = tokio::time::timeout(Duration::from_secs(1), super::stopped(&stream))
+        .await
+        .expect("an idle unit receives its stream timer failure without emitting");
+    assert_eq!(reason, busbar_contract::caps::ReasonCode::DeadlineExceeded);
+    assert!(
+        super::lock(&stream).stream.is_some(),
+        "the producer still owns its closing fields"
+    );
+}

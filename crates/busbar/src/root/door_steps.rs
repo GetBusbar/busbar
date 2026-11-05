@@ -2888,9 +2888,10 @@ impl busbar_contract::conn::DeclaredConns for PresentingConns {
         owner: busbar_contract::conn::InstanceId,
         need: busbar_contract::conn::NeedId,
         target: &str,
-    ) -> busbar_contract::conn::HeadDefaults {
+        timeout_ms: u64,
+    ) -> Result<busbar_contract::conn::HeadDefaults, busbar_contract::conn::ConnError> {
         let target = busbar_kernel_egress::trust::net::strip_userinfo(target);
-        self.inner.request_head(owner, need, &target)
+        self.inner.request_head(owner, need, &target, timeout_ms)
     }
 
     fn bind_auth(

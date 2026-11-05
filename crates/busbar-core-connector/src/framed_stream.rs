@@ -32,6 +32,7 @@ pub struct FramedStream {
     rows: Vec<StatusRow>,
     partial: Vec<u8>,
     opening: Vec<HeadWords>,
+    deadline_ns: Option<u64>,
 }
 
 impl std::fmt::Debug for FramedStream {
@@ -130,13 +131,16 @@ impl FramedStream {
         } else {
             opening_fields(&opened.wire)?
         };
-        Ok(Self {
+        let mut stream = Self {
             framing,
             claim: index,
             rows,
             partial: Vec::new(),
             opening,
-        })
+            deadline_ns: opened.deadline_ns,
+        };
+        stream.observe(&opened)?;
+        Ok(stream)
     }
 
     /// Initial response fields supplied by the stream's framer at Begin, before any body or
@@ -145,17 +149,35 @@ impl FramedStream {
         &self.opening
     }
 
+    /// The next host-clock instant at which this stream's framer must be called.
+    #[must_use]
+    pub fn deadline(&self) -> Option<std::time::Instant> {
+        self.deadline_ns.map(crate::framer::instant_of)
+    }
+
+    /// Drive the requested timer, retaining its next deadline and terminal stream failure.
+    pub fn timer(&mut self) -> Result<(), Refused> {
+        let yielded = self.framing.timer()?;
+        self.observe(&yielded)
+    }
+
+    fn observe(&mut self, yielded: &Yielded) -> Result<(), Refused> {
+        self.deadline_ns = yielded.deadline_ns;
+        if let Some(piece) = yielded.pieces.iter().find(|piece| piece.failed) {
+            return Err(Refused {
+                outcome: Outcome::Failed,
+                error: String::from_utf8_lossy(&piece.bytes).into_owned(),
+            });
+        }
+        Ok(())
+    }
+
     /// The stream's body bytes (`end` = its last); the messages they complete, in order.
     pub fn ingest(&mut self, body: &[u8], end: bool) -> Result<Vec<Vec<u8>>, Refused> {
         let mut y = self.framing.ingest(body, end)?;
+        self.observe(&y)?;
         let mut messages = Vec::new();
         for piece in std::mem::take(&mut y.pieces) {
-            if piece.failed {
-                return Err(Refused {
-                    outcome: Outcome::Failed,
-                    error: String::from_utf8_lossy(&piece.bytes).into_owned(),
-                });
-            }
             if piece.fields {
                 continue;
             }
@@ -169,9 +191,9 @@ impl FramedStream {
 
     /// One reply message's bytes (`ends` = they complete it); the stream's body bytes.
     pub fn emit(&mut self, message: &[u8], ends: bool) -> Result<Vec<u8>, Refused> {
-        self.framing
-            .emit(STREAM, message, ends, false)
-            .map(|mut y| std::mem::take(&mut y.wire))
+        let mut yielded = self.framing.emit(STREAM, message, ends, false)?;
+        self.observe(&yielded)?;
+        Ok(std::mem::take(&mut yielded.wire))
     }
 
     /// End the stream refused: `bytes` and the refusal's neutral `status`; the closing field block.

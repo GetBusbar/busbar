@@ -85,6 +85,8 @@ struct Table {
     failing: Mutex<Vec<u64>>,
     /// The head lines the framer states for every target (`PollConns::head_defaults`).
     defaults: Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
+    budget_defaults: std::sync::atomic::AtomicBool,
+    fail_defaults: std::sync::atomic::AtomicBool,
     /// Whether the framer's head states the body's length (`HeadDefaults::states_length`).
     states_length: std::sync::atomic::AtomicBool,
 }
@@ -257,11 +259,28 @@ impl Conns for Table {
 }
 
 impl PollConns for Table {
-    fn head_defaults(&self, _: InstanceId, _: NeedId, _: &str) -> HeadDefaults {
-        HeadDefaults {
-            lines: self.defaults.lock().unwrap().clone(),
-            states_length: self.states_length.load(std::sync::atomic::Ordering::SeqCst),
+    fn head_defaults(
+        &self,
+        _: InstanceId,
+        _: NeedId,
+        _: &str,
+        timeout_ms: u64,
+    ) -> Result<HeadDefaults, ConnError> {
+        if self.fail_defaults.load(Ordering::SeqCst) {
+            return Err(ConnError::Refused);
         }
+        let mut lines = self.defaults.lock().unwrap().clone();
+        if self.budget_defaults.load(Ordering::SeqCst) {
+            assert_ne!(timeout_ms, 0);
+            lines.push((
+                b"grpc-timeout".to_vec(),
+                format!("{timeout_ms}m").into_bytes(),
+            ));
+        }
+        Ok(HeadDefaults {
+            lines,
+            states_length: self.states_length.load(std::sync::atomic::Ordering::SeqCst),
+        })
     }
 
     fn poll_read(
@@ -3325,4 +3344,71 @@ fn opaque_status_namespace_survives_without_a_reserved_fallback() {
     assert!(super::wire_code(&answer).is_none());
     answer.status_namespace = Some("".to_owned());
     assert!(super::wire_code(&answer).is_none());
+}
+
+#[tokio::test]
+async fn attempt_timeout_defaults_are_signed_and_sent_without_post_auth_mutation() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    r.table.budget_defaults.store(true, Ordering::SeqCst);
+    let t = token();
+    for explicit in [None, Some(b"1m".as_slice())] {
+        let far = r.egress.unit(route());
+        assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+        let mut req = request();
+        if let Some(value) = explicit {
+            req.fields.push((b"grpc-timeout".to_vec(), value.to_vec()));
+        }
+        assert!(far.send(&t, req).await);
+        let signed = r
+            .auth
+            .heads
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(b"grpc-timeout"))
+            .expect("auth sees the timeout")
+            .1
+            .clone();
+        let sent = r
+            .table
+            .opened
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .1
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("grpc-timeout"))
+            .expect("the authenticated timeout reaches the wire")
+            .1
+            .clone();
+        assert_eq!(signed, sent);
+        if let Some(value) = explicit {
+            assert_eq!(sent, value);
+        }
+        let _ = drain(&far, &t).await;
+    }
+}
+
+#[tokio::test]
+async fn failed_timeout_defaults_refuse_before_authentication_or_open() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    r.table.fail_defaults.store(true, Ordering::SeqCst);
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(!far.send(&t, request()).await);
+    assert!(r.auth.heads.lock().unwrap().is_empty());
+    assert!(r.table.opened.lock().unwrap().is_empty());
+    assert_eq!(far.unsent(&t), Some(RefusalCode::UnsentOpenRefused));
 }

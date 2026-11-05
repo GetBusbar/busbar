@@ -1854,6 +1854,20 @@ extern "C" fn write_request(
                             true
                         }
                     });
+                    // Freeze protocol defaults, including the remaining timeout, before auth
+                    // observes the head. The same fields are submitted after signing.
+                    let defaults = match completing(table, id, need, &target, &h, &body) {
+                        Ok(defaults) => defaults,
+                        Err(error) => {
+                            install(st, id, i.stream, table, Conn::Failed(error));
+                            return Answered::ready(0, 0);
+                        }
+                    };
+                    h.fields.extend(
+                        defaults.into_iter().map(|(name, value)| {
+                            (String::from_utf8_lossy(&name).into_owned(), value)
+                        }),
+                    );
                     let unit = super::services::serving_unit();
                     let at = (target.as_str(), within.as_slice(), member.as_str());
 
@@ -1883,49 +1897,45 @@ extern "C" fn write_request(
                         Some(_) if handle.is_none() => {
                             Conn::Failed(ConnError::CredentialUnavailable)
                         }
-                        Some(binding) => match auth_request(
-                            &binding,
-                            unit,
-                            &h,
-                            &target,
-                            &body,
-                            scope,
-                            &completing(table, id, need, &target, &h, &body),
-                        ) {
-                            None => Conn::Failed(ConnError::Refused),
-                            Some(request) => {
-                                let handle = handle.unwrap_or(binding.handle);
-                                match binding.auth.fields_now(handle, &request) {
-                                    Some(Fields::Ready(auth)) => {
-                                        let seal = lent_seal(ctx);
-                                        open_with(
-                                            table,
-                                            id,
+                        Some(binding) => {
+                            match auth_request(&binding, unit, &h, &target, &body, scope, &[]) {
+                                None => Conn::Failed(ConnError::Refused),
+                                Some(request) => {
+                                    let handle = handle.unwrap_or(binding.handle);
+                                    match binding.auth.fields_now(handle, &request) {
+                                        Some(Fields::Ready(auth)) => {
+                                            let seal = lent_seal(ctx);
+                                            open_with(
+                                                table,
+                                                id,
+                                                need,
+                                                unit.unwrap_or(0),
+                                                at,
+                                                &h,
+                                                body,
+                                                &auth,
+                                                seal.as_deref(),
+                                                prepared.clone(),
+                                            )
+                                        }
+                                        Some(Fields::Refused) => {
+                                            Conn::Failed(ConnError::AuthRefused)
+                                        }
+                                        Some(Fields::Failed) => Conn::Failed(ConnError::AuthFailed),
+                                        None => Conn::Authing(Box::new(Authing {
+                                            unit: unit.unwrap_or(0),
+                                            fielding: binding.auth.fields(handle, request, 0),
                                             need,
-                                            unit.unwrap_or(0),
-                                            at,
-                                            &h,
+                                            target,
+                                            within,
+                                            member,
+                                            head: h,
                                             body,
-                                            &auth,
-                                            seal.as_deref(),
-                                            prepared.clone(),
-                                        )
+                                        })),
                                     }
-                                    Some(Fields::Refused) => Conn::Failed(ConnError::AuthRefused),
-                                    Some(Fields::Failed) => Conn::Failed(ConnError::AuthFailed),
-                                    None => Conn::Authing(Box::new(Authing {
-                                        unit: unit.unwrap_or(0),
-                                        fielding: binding.auth.fields(handle, request, 0),
-                                        need,
-                                        target,
-                                        within,
-                                        member,
-                                        head: h,
-                                        body,
-                                    })),
                                 }
                             }
-                        },
+                        }
                     };
                     install(st, id, i.stream, table, conn);
                     Answered::ready(0, 0)
@@ -2099,9 +2109,9 @@ fn completing(
     target: &str,
     h: &Head,
     body: &[u8],
-) -> Vec<(Vec<u8>, Vec<u8>)> {
-    table
-        .request_head(id, need, target)
+) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ConnError> {
+    Ok(table
+        .request_head(id, need, target, h.timeout_ms)?
         .completing(
             |name| {
                 h.fields
@@ -2112,7 +2122,7 @@ fn completing(
         )
         .into_iter()
         .filter(|(name, _)| !busbar_contract::conn::is_sealed_query_field(name))
-        .collect()
+        .collect())
 }
 
 #[allow(clippy::too_many_arguments)]

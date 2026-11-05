@@ -14,7 +14,7 @@ use busbar_core_connector::compose::HeadWords;
 use busbar_core_connector::framed_stream::FramedStream;
 use busbar_core_connector::framer::FramerDoor;
 use busbar_kernel::plane_driver::{CallerEnd, HeadFields, Rendered, SessionCaller};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Notify};
 
 use super::{refusal_status, stated, IngressCaller, Stated};
 
@@ -37,6 +37,8 @@ pub(super) struct Slot {
     pub(super) out: bool,
 
     pub(super) then: Option<Close>,
+    changed: Arc<Notify>,
+    failure: Option<ReasonCode>,
 }
 
 pub(super) fn shared(stream: FramedStream) -> Shared {
@@ -44,6 +46,8 @@ pub(super) fn shared(stream: FramedStream) -> Shared {
         stream: Some(stream),
         out: false,
         then: None,
+        changed: Arc::new(Notify::new()),
+        failure: None,
     }))
 }
 
@@ -60,6 +64,73 @@ pub(super) fn close_with(s: &Shared, close: impl FnOnce(FramedStream) + Send + '
     }
     if slot.out && slot.then.is_none() {
         slot.then = Some(Box::new(close));
+    }
+}
+
+/// Put a stream back after crossing the plugin without holding the custody lock.
+pub(super) fn returned(s: &Shared, stream: FramedStream, failure: Option<ReasonCode>) {
+    let close = {
+        let mut slot = lock(s);
+        slot.out = false;
+        slot.failure = slot.failure.or(failure);
+        slot.changed.notify_one();
+        match slot.then.take() {
+            Some(close) => Some((close, stream)),
+            None => {
+                slot.stream = Some(stream);
+                None
+            }
+        }
+    };
+    if let Some((close, stream)) = close {
+        close(stream);
+    }
+}
+
+/// A stream timer belongs to the active unit, so cancelling it follows the unit's normal
+/// cancellation and accounting path. Emission wakes this waiter when the deadline changes.
+pub(super) async fn stopped(s: &Shared) -> ReasonCode {
+    loop {
+        let (changed, deadline) = {
+            let slot = lock(s);
+            if let Some(reason) = slot.failure {
+                return reason;
+            }
+            (
+                Arc::clone(&slot.changed),
+                slot.stream.as_ref().and_then(FramedStream::deadline),
+            )
+        };
+        let until = async {
+            match deadline {
+                Some(at) => tokio::time::sleep_until(at.into()).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            biased;
+            () = changed.notified() => continue,
+            () = until => {}
+        }
+        let stream = {
+            let mut slot = lock(s);
+            // An emit may have replaced or cleared the deadline while the timer woke.
+            let due = slot
+                .stream
+                .as_ref()
+                .and_then(FramedStream::deadline)
+                .is_some_and(|at| at <= std::time::Instant::now());
+            if !due {
+                continue;
+            }
+            let stream = slot.stream.take();
+            slot.out = stream.is_some();
+            stream
+        };
+        if let Some(mut stream) = stream {
+            let failure = stream.timer().err().map(|_| ReasonCode::DeadlineExceeded);
+            returned(s, stream, failure);
+        }
     }
 }
 
@@ -168,20 +239,11 @@ impl FramedCaller {
             return false;
         };
         let wire = s.emit(bytes, ends);
-        let close = {
-            let mut slot = lock(&self.stream);
-            slot.out = false;
-            match slot.then.take() {
-                Some(close) => Some((close, s)),
-                None => {
-                    slot.stream = Some(s);
-                    None
-                }
-            }
-        };
-        if let Some((close, s)) = close {
-            close(s);
-        }
+        returned(
+            &self.stream,
+            s,
+            wire.as_ref().err().map(|_| ReasonCode::ClientGone),
+        );
         match wire {
             Ok(w) if w.is_empty() => true,
             Ok(w) => self.inner.write(&w).await,
@@ -191,6 +253,10 @@ impl FramedCaller {
 }
 
 impl CallerEnd for FramedCaller {
+    async fn stopped(&self) -> ReasonCode {
+        stopped(&self.stream).await
+    }
+
     fn head(&self, status: u32, mut fields: HeadFields) {
         fields.extend(self.opening.iter().cloned());
         fields.retain(|(name, _)| !name.eq_ignore_ascii_case(b"content-length"));

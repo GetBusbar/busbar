@@ -1329,7 +1329,17 @@ impl EgressFarEnd<'_> {
         };
         let url = join(&base_url, &request.target);
 
-        let located = e.conns.head_defaults(e.caller, need, &url);
+        let located = match e
+            .conns
+            .head_defaults(e.caller, need, &url, self.attempt_cap())
+        {
+            Ok(located) => located,
+            Err(_) => {
+                self.lock().unsent = Some(RefusalCode::UnsentOpenRefused);
+                self.settle_attempt(&record);
+                return false;
+            }
+        };
         let opening: &[u8] = if request.text { &[] } else { &request.body };
         let defaults = located.completing(
             |name| {

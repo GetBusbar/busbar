@@ -476,7 +476,21 @@ impl FramerDoor for Dispatched {
     fn cross(&self, call: Call<'_>) -> Crossed {
         let p = &self.live.plugin;
         match call {
-            Call::Locate(i, o) => go(p, slot::LOCATE, i, o),
+            Call::Locate(i, o) => {
+                if i.head.deadline_ns != 0 {
+                    let Some(provider) = self.on.host_services() else {
+                        return Crossed {
+                            outcome: Outcome::Failed,
+                            error: Some(b"request head deadline requires the host clock".to_vec()),
+                        };
+                    };
+                    // Framer deadlines and CLOCK_NOW have distinct epochs. Cross the ABI using
+                    // the same provider clock the plugin reads when preparing its signed head.
+                    let remaining = i.head.deadline_ns.saturating_sub(crate::framer::now_ns());
+                    i.head.deadline_ns = provider.now().mono_ns.saturating_add(remaining).max(1);
+                }
+                go(p, slot::LOCATE, i, o)
+            }
             Call::Begin(i, o) => go(p, slot::BEGIN, i, o),
             Call::Ingest(i, o) => go(p, slot::INGEST, i, o),
             Call::Emit(i, o) => go(p, slot::EMIT, i, o),

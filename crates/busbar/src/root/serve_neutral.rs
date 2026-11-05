@@ -542,20 +542,11 @@ impl<C: Output> FramedOutput<C> {
             return false;
         };
         let wire = stream.emit(bytes, ends);
-        let close = {
-            let mut slot = serve_framed::lock(&self.stream);
-            slot.out = false;
-            match slot.then.take() {
-                Some(close) => Some((close, stream)),
-                None => {
-                    slot.stream = Some(stream);
-                    None
-                }
-            }
-        };
-        if let Some((close, stream)) = close {
-            close(stream);
-        }
+        serve_framed::returned(
+            &self.stream,
+            stream,
+            wire.as_ref().err().map(|_| ReasonCode::ClientGone),
+        );
         match wire {
             Ok(wire) if wire.is_empty() => true,
             Ok(wire) => self.inner.write(&wire).await,
@@ -565,6 +556,10 @@ impl<C: Output> FramedOutput<C> {
 }
 
 impl<C: Output> CallerEnd for FramedOutput<C> {
+    async fn stopped(&self) -> ReasonCode {
+        serve_framed::stopped(&self.stream).await
+    }
+
     fn head(&self, status: u32, mut fields: HeadFields) {
         fields.extend(self.opening.iter().cloned());
         self.inner.head(status, fields);

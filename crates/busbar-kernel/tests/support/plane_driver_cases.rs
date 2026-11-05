@@ -316,9 +316,18 @@ pub(crate) struct Caller {
     /// A STALLED caller: once it has taken this many writes its side is never writable again, and
     /// it never goes away (a client that stops reading with its socket open).
     pub(crate) stall_after: Option<u64>,
+    pub(crate) stop_after: Option<Duration>,
 }
 
 impl CallerEnd for Caller {
+    async fn stopped(&self) -> ReasonCode {
+        match self.stop_after {
+            Some(after) => tokio::time::sleep(after).await,
+            None => std::future::pending().await,
+        }
+        ReasonCode::DeadlineExceeded
+    }
+
     fn head(&self, status: u32, fields: Vec<(Vec<u8>, Vec<u8>)>) {
         *self.head.lock().unwrap() = Some((status, fields));
     }
@@ -367,6 +376,13 @@ impl SessionCaller for Caller {
 }
 
 impl Caller {
+    pub(crate) fn stopping_after(after: Duration) -> Self {
+        Self {
+            stop_after: Some(after),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn text(&self) -> String {
         String::from_utf8_lossy(&self.bytes.lock().unwrap()).into_owned()
     }
@@ -383,6 +399,7 @@ pub(crate) struct Book {
     checkpoints: Mutex<Vec<u64>>,
     bills: Mutex<Vec<CancelBill>>,
     abandoned: AtomicU64,
+    pub(crate) finished: AtomicU64,
     /// Every serving member the driver named, in order.
     served: Mutex<Vec<(String, String)>>,
     /// Every ledger lane the driver named, in order.
@@ -404,6 +421,10 @@ impl Book {
 }
 
 impl MoneySeam for Book {
+    fn finished(&self, _: &UnitCtx) {
+        self.finished.fetch_add(1, Ordering::SeqCst);
+    }
+
     fn checkpoint(&self, ctx: &UnitCtx, units: &[UnitCount]) -> Checkpoint {
         let forwarded = self.forward.as_ref().map(|f| f.checkpoint(ctx, units));
         let amount = units.iter().map(|u| u.amount).max().unwrap_or(0);
@@ -1838,3 +1859,31 @@ async fn open_unit_drives_the_same_steps() {
 
 #[path = "plane_driver_timing_cases.rs"]
 mod timing_cases;
+
+#[tokio::test]
+async fn caller_transport_deadline_cancels_idle_work_and_settles_once() {
+    let r = rig(super::Way::Double, BufferCaps::default(), Book::default());
+    let (steps, far, caller) = (
+        TestUnits::passing(),
+        Far::new(&["hang"], CHUNKS),
+        Caller {
+            stop_after: Some(Duration::from_millis(20)),
+            ..Caller::default()
+        },
+    );
+    // No driver deadline: only the caller transport can wake this idle admitted unit.
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, arrival("/call", b"x"), 0);
+    let outcome = tokio::time::timeout(Duration::from_secs(2), drive(&units))
+        .await
+        .expect("the caller transport's failure wakes the unit");
+    assert!(matches!(
+        outcome,
+        Outcome::Failed(StepName::Route, ReasonCode::DeadlineExceeded)
+    ));
+    let bills = r.book.bills();
+    assert_eq!(bills.len(), 1);
+    assert_eq!(bills[0].cause, ReasonCode::DeadlineExceeded);
+    assert_eq!(r.stats()[stat::CANCELS], 1);
+}
