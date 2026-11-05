@@ -288,7 +288,7 @@ pub fn usage(token: &Grant<Consumption>, quantity: u64) -> Usage {
         token,
         vec![UsageLine {
             class: MeterClassId::new("nano_units"),
-            quantity,
+            quantity: quantity.into(),
             source: busbar_contract::caps::QuantitySource::Count,
             estimated: false,
         }],

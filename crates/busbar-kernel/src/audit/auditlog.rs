@@ -275,6 +275,42 @@ impl PlaneAuditLog {
         }
     }
 
+    /// One bounded, same-lock observation of the live ring. Offsets are not snapshots.
+    pub fn list_page(
+        &self,
+        offset: usize,
+        limit: usize,
+        action: Option<&str>,
+        resource: Option<&str>,
+    ) -> crate::audit_ring::AuditPage {
+        let q = self.ring.lock().unwrap_or_else(|e| e.into_inner());
+        let limit = limit.clamp(1, MAX_AUDIT_ENTRIES);
+        let mut items: Vec<_> = q
+            .iter()
+            .rev()
+            .map(|kept| &kept.entry)
+            .filter(|e| action.is_none_or(|a| e.action == a))
+            .filter(|e| resource.is_none_or(|r| e.resource == r))
+            .skip(offset)
+            .take(limit + 1)
+            .cloned()
+            .collect();
+        let has_more = items.len() > limit;
+        items.truncate(limit);
+        crate::audit_ring::AuditPage {
+            returned_from: items.last().map(|e| e.seq.to_string()),
+            returned_to: items.first().map(|e| e.seq.to_string()),
+            retained_from: q.front().map(|e| e.entry.seq.to_string()),
+            retained_to: q.back().map(|e| e.entry.seq.to_string()),
+            retention_limit: MAX_AUDIT_ENTRIES.to_string(),
+            semantics: "live_offset".into(),
+            // An offset/filter observation cannot establish complete audit coverage.
+            complete: false,
+            truncated: has_more,
+            items,
+        }
+    }
+
     pub fn list_filtered(
         &self,
         offset: usize,

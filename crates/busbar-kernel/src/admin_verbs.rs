@@ -11,13 +11,14 @@ use busbar_contract::abi::mechanism::route::RouteMethod;
 
 use crate::plane_driver::EngineHost;
 
-/// THE NEUTRAL PLANE-VERB ERROR — the three, and only three, shapes a plane's `resolve`/`look` ever
+/// THE NEUTRAL PLANE-VERB ERROR — the typed shapes a plane's `resolve`/`look` ever
 /// produce (a validation refusal with or without its named condition). A plane never produces a
 /// `Forbidden`/`Scope` answer: authorization is enforced by the admin auth middleware BEFORE the
 /// handler runs, so a verb only ever refuses with a missing registration, an operator-configuration
-/// problem, or an internal failure. Core maps each variant back onto its frozen `AdminError` at the
+/// problem, temporary unavailability, or an internal failure. Core maps each variant back onto its
+/// frozen `AdminError` at the
 /// boundary (`NotFound` → `not_found`, `Validation` and `ValidationOf` → `Validation`, `Internal` →
-/// `Internal`), so no plane names `AdminError` and `Scope` stays wholly core.
+/// `Internal`, `Unavailable` → `Unavailable`), so no plane names `AdminError` and `Scope` stays wholly core.
 #[derive(Debug, Clone)]
 pub enum PlaneVerbError {
     /// The registration is missing (either half a plane needs is absent). Carries no message: the core
@@ -34,6 +35,8 @@ pub enum PlaneVerbError {
     /// An internal failure — core's `internal` (500). The string is diagnostic only; the wire message
     /// is core's generic one (details never leave the process).
     Internal(String),
+    /// A temporarily unavailable plane dependency (503). No backend detail crosses the boundary.
+    Unavailable,
 }
 
 pub trait PlaneTrust: Send + Sync + 'static {

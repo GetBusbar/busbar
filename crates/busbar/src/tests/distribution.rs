@@ -203,6 +203,9 @@ mod key_revoke_tombstone_tests;
 #[path = "admin_application/plugin_inspect_envelope.rs"]
 mod plugin_inspect_envelope;
 
+#[path = "admin_application/admin_response_consistency.rs"]
+mod admin_response_consistency;
+
 #[path = "admin_application/split_admin_listener.rs"]
 mod split_admin_listener;
 

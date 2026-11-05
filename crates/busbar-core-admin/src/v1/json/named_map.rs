@@ -22,9 +22,7 @@ use busbar_kernel::audit_ring as audit;
 use busbar_kernel::config::named_map::NamedMapSection;
 use busbar_kernel::state::{App, AppHandle};
 
-#[path = "settings_edit.rs"]
-mod settings_edit;
-use settings_edit::SettingsEdit;
+use super::settings_edit::SettingsEdit;
 
 pub(crate) fn routes() -> Router<Arc<AppHandle>> {
     let mut router = Router::new();
@@ -57,6 +55,41 @@ fn settings_path(section: NamedMapSection) -> String {
     format!("{}/settings", item_path(section))
 }
 
+type PendingDefs =
+    std::collections::BTreeMap<String, busbar_kernel::config::overlay::UnparseableNamedDef>;
+
+/// Capture desired malformed entries under the same transaction as the installed generation.
+/// A later writer must not pair a new desired entry with an old config ETag.
+async fn read_snapshot(
+    handle: &Arc<AppHandle>,
+    section: NamedMapSection,
+    name: Option<String>,
+) -> Result<(Arc<App>, PendingDefs), AdminError> {
+    let dispatch = tracing::dispatcher::get_default(|d| d.clone());
+    let (current, pending) = config_transaction(handle, move |txn| {
+        let current = txn.app().clone();
+        if name.as_ref().is_some_and(|name| {
+            crate::v1::service::AdminService::new(current.clone())
+                .get_named_def(section, name, &PendingDefs::new())
+                .is_ok()
+        }) {
+            return Ok::<_, AdminError>(txn.done((current, PendingDefs::new())));
+        }
+        Ok(txn.read_store(move || {
+            let pending = tracing::dispatcher::with_default(&dispatch, || {
+                busbar_kernel::config::overlay::unparseable_named_map_entries(
+                    current.overlay_path.as_deref(),
+                    section,
+                )
+            })
+            .map_err(AdminError::Validation)?;
+            Ok(Outcome::Value((current, pending)))
+        }))
+    })
+    .await?;
+    Ok((super::response_snapshot(current), pending))
+}
+
 async fn list(
     State(handle): State<Arc<AppHandle>>,
     Extension(section): Extension<NamedMapSection>,
@@ -64,14 +97,15 @@ async fn list(
     if let Some(resp) = plane_gate(&handle, section) {
         return resp;
     }
-    let current = handle.load();
+    let (current, pending) = match read_snapshot(&handle, section, None).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => return err_json(&error),
+    };
     let version = current.config_version;
     with_config_etag(
         respond(
             StatusCode::OK,
-            crate::v1::service::AdminService::new(current)
-                .list_named_defs(section)
-                .await,
+            crate::v1::service::AdminService::new(current).list_named_defs(section, &pending),
         ),
         version,
     )
@@ -85,7 +119,10 @@ async fn get_one(
     if let Some(resp) = plane_gate(&handle, section) {
         return resp;
     }
-    let current = handle.load();
+    let (current, pending) = match read_snapshot(&handle, section, Some(name.clone())).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => return err_json(&error),
+    };
     let version = current.config_version;
     let (paths, exports) = if section == NamedMapSection::Export {
         let mut paths: Vec<String> = current
@@ -118,8 +155,7 @@ async fn get_one(
         respond(
             StatusCode::OK,
             crate::v1::service::AdminService::new(current.clone())
-                .get_named_def(section, &name)
-                .await
+                .get_named_def(section, &name, &pending)
                 .map(|def| {
                     MutatedDefView::new(def, paths, Vec::new(), exports)
                         .with_configuration(&current, section, &name)
@@ -620,8 +656,7 @@ async fn apply(
         respond(
             StatusCode::OK,
             crate::v1::service::AdminService::new(installed.clone())
-                .get_named_def(section, &name)
-                .await
+                .get_named_def(section, &name, &PendingDefs::new())
                 .map(|def| {
                     MutatedDefView::new(
                         def,

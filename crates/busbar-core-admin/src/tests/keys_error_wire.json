@@ -25,7 +25,7 @@
     "status": 404
   },
   "list_bad_cursor": {
-    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"invalid or foreign pagination cursor\"}}",
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"invalid pagination cursor\"}}",
     "content_type": "application/json",
     "status": 400
   },

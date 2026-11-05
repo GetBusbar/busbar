@@ -279,6 +279,43 @@ pub(crate) struct AuditChainRangeView {
     /// The head published at or before `to`, or null when none was.
     anchor: Option<AuditChainSignedHead>,
     records: Vec<AuditChainRecordView>,
+    /// Fixed upper audit position captured on the first page; exact decimal string.
+    snapshot_to: String,
+    /// `bounded_live_range`: upper bound is fixed, retention is live, no snapshot is retained.
+    semantics: String,
+    returned_from: Option<String>,
+    returned_to: Option<String>,
+    /// Round-trip with the original from/to. May be present even when records is empty.
+    next_cursor: Option<String>,
+    /// There is more bounded scanning to do.
+    truncated: bool,
+    /// True only on the last page when this traversal found every requested position.
+    complete: bool,
+    /// A prior or current page had missing/oversized journal data or an audit gap.
+    incomplete: bool,
+    gaps: Vec<AuditRangeGapView>,
+    retention: AuditRetentionView,
+    scanned_positions: String,
+    scan_limit: String,
+}
+
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[allow(dead_code)]
+struct AuditRangeGapView {
+    from: String,
+    to: String,
+}
+
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[allow(dead_code)]
+struct AuditRetentionView {
+    ring_from: Option<String>,
+    ring_to: Option<String>,
+    /// Unknown: the Store does not expose an audit retention floor.
+    durable_from: Option<String>,
+    durable_from_known: bool,
 }
 
 /// One sealed record: the digest recipe's fields, in the recipe's order (every value a string: a
@@ -1195,18 +1232,23 @@ fn doc_for(
                         "schema": {"type": "integer", "minimum": 0},
                         "description": format!(
                             "The window's {} position, inclusive. Both are required; `from` \
-                             must not exceed `to`. A window running off either end of what the \
-                             node holds is simply shorter.",
+                             must not exceed `to`. Retention gaps are explicit; continue with \
+                             next_cursor until null, including through empty pages.",
                             if name == "from" { "first" } else { "last" }
                         ),
                     })
                 })
                 .collect();
+            doc.query.push(json!({
+                "name": "cursor", "in": "query", "required": false,
+                "schema": {"type": "string", "maxLength": 256},
+                "description": "Opaque next_cursor from this audit range, bound to node/incarnation and the original from/to. The first page pins an upper bound; retention remains live. At most 64 journal positions (256 parts each) are scanned per page; at most 1024 cached records. No retries against concurrent appends."
+            }));
             doc.errors.insert(
                 0,
                 (
                     "400",
-                    "`invalid_request`: `from` or `to` missing or not a non-negative integer, or \
+                    "`invalid_request`: malformed or mismatched cursor; `from` or `to` missing or not a non-negative integer, or \
                      `from` after `to`"
                         .to_string(),
                 ),

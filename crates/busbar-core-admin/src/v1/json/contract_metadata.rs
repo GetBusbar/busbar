@@ -58,9 +58,22 @@ pub(super) fn complete(paths: &mut Map<String, Value>, schemas: &mut Map<String,
             let Some(op) = methods.get_mut(method) else {
                 continue;
             };
+            let extracts_request = op.get("requestBody").is_some()
+                || op["parameters"].as_array().is_some_and(|parameters| {
+                    parameters
+                        .iter()
+                        .any(|parameter| matches!(parameter["in"].as_str(), Some("path" | "query")))
+                });
+            let plane_operation = op.get("x-busbar-plane").is_some();
             let responses = op[RESPONSES_KEY]
                 .as_object_mut()
                 .expect("operation responses");
+            if extracts_request {
+                responses.entry("400").or_insert_with(|| json!({"description":"Malformed admin request path, query or body (invalid_request). Request values and parser diagnostics are not echoed.","content":error}));
+            }
+            if plane_operation {
+                responses.entry("503").or_insert_with(|| json!({"description":"A plane dependency is temporarily unavailable (unavailable); no backend diagnostic detail is returned.","content":error}));
+            }
             responses.entry("413").or_insert_with(||json!({"description":"Admin request exceeds the listener body limit (request_too_large)","content":error}));
             // Ordinary admin write admission is shared by core and kernel verbs.
             if !matches!(method, "get" | "head") || path.ends_with("/ledger/recovery") {
@@ -133,6 +146,18 @@ pub(super) fn complete(paths: &mut Map<String, Value>, schemas: &mut Map<String,
     }
     schemas.insert("PatchSettingsReq".into(), hook_settings_schema());
     super::replay_metadata::complete(paths, schemas);
+    for methods in paths.values_mut().filter_map(Value::as_object_mut) {
+        for operation in methods.values_mut() {
+            if let Some(responses) = operation
+                .get_mut(RESPONSES_KEY)
+                .and_then(Value::as_object_mut)
+            {
+                for response in responses.values_mut() {
+                    response["headers"]["Cache-Control"] = json!({"description":"Administrative responses, including credential issuance and replay, must not be stored.","schema":{"type":"string","const":"no-store"}});
+                }
+            }
+        }
+    }
     for schema in schemas.values_mut() {
         exact_metadata(schema);
     }

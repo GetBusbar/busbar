@@ -255,9 +255,13 @@ impl AdminService {
             .ok_or_else(|| AdminError::not_found(format!("hook `{name}`")))
     }
 
-    pub(crate) async fn list_named_defs(
+    pub(crate) fn list_named_defs(
         &self,
         section: NamedMapSection,
+        pending: &std::collections::BTreeMap<
+            String,
+            busbar_kernel::config::overlay::UnparseableNamedDef,
+        >,
     ) -> Result<Page<NamedDefView>, AdminError> {
         let mut defs: Vec<NamedDefView> = match section {
             NamedMapSection::IdentityProviders => self
@@ -276,19 +280,23 @@ impl AdminService {
             NamedMapSection::Plane(_) => plane_named_def_list(section, &self.app),
         };
 
-        for (name, entry) in self.unparseable_overlay_entries(section).await? {
-            if !defs.iter().any(|d| d.name == name) {
-                defs.push(unparseable_def_view(&name, &entry));
+        for (name, entry) in pending {
+            if !defs.iter().any(|d| &d.name == name) {
+                defs.push(unparseable_def_view(name, entry));
             }
         }
         defs.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(Page::single(defs))
     }
 
-    pub(crate) async fn get_named_def(
+    pub(crate) fn get_named_def(
         &self,
         section: NamedMapSection,
         name: &str,
+        pending: &std::collections::BTreeMap<
+            String,
+            busbar_kernel::config::overlay::UnparseableNamedDef,
+        >,
     ) -> Result<NamedDefView, AdminError> {
         let view = match section {
             NamedMapSection::IdentityProviders => self
@@ -308,42 +316,10 @@ impl AdminService {
             return Ok(view);
         }
 
-        self.unparseable_overlay_entries(section)
-            .await?
+        pending
             .get(name)
             .map(|entry| unparseable_def_view(name, entry))
             .ok_or_else(|| AdminError::not_found(format!("{} `{name}`", section.singular())))
-    }
-
-    async fn unparseable_overlay_entries(
-        &self,
-        section: NamedMapSection,
-    ) -> Result<
-        std::collections::BTreeMap<String, busbar_kernel::config::overlay::UnparseableNamedDef>,
-        AdminError,
-    > {
-        let overlay = self.app.overlay_path.clone();
-
-        let dispatch = tracing::dispatcher::get_default(|d| d.clone());
-        tokio::task::spawn_blocking(move || {
-            tracing::dispatcher::with_default(&dispatch, || {
-                busbar_kernel::config::overlay::unparseable_named_map_entries(
-                    overlay.as_deref(),
-                    section,
-                )
-            })
-        })
-        .await
-        .map_err(|join_err| {
-            diag_error!(
-                ADMIN_STORE_TASK_JOIN_FAILED,
-                operation = "named_defs.overlay",
-                error = %join_err,
-                "admin blocking task failed"
-            );
-            AdminError::Internal
-        })?
-        .map_err(AdminError::Validation)
     }
 
     pub(crate) async fn list_groups(

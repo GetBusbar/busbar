@@ -68,9 +68,13 @@ pub(crate) async fn list_providers(State(handle): State<Arc<AppHandle>>) -> Resp
 }
 
 pub(crate) async fn list_hooks(State(handle): State<Arc<AppHandle>>) -> Response {
-    let version = handle.load().config_version;
+    let current = response_snapshot(handle.load());
+    let version = current.config_version;
     with_config_etag(
-        respond(StatusCode::OK, service(&handle).list_hooks().await),
+        respond(
+            StatusCode::OK,
+            AdminService::new(current).list_hooks().await,
+        ),
         version,
     )
 }
@@ -79,9 +83,13 @@ pub(crate) async fn get_hook(
     State(handle): State<Arc<AppHandle>>,
     Path(name): Path<String>,
 ) -> Response {
-    let version = handle.load().config_version;
+    let current = response_snapshot(handle.load());
+    let version = current.config_version;
     with_config_etag(
-        respond(StatusCode::OK, service(&handle).get_hook(&name).await),
+        respond(
+            StatusCode::OK,
+            AdminService::new(current).get_hook(&name).await,
+        ),
         version,
     )
 }
@@ -92,11 +100,12 @@ pub(crate) async fn list_groups(
 ) -> Response {
     let (start, limit) =
         ok_or_respond!(boxed page_window(&q, crate::v1::contract::LIST_LIMIT_DEFAULT));
-    let version = handle.load().config_version;
+    let current = response_snapshot(handle.load());
+    let version = current.config_version;
     with_config_etag(
         respond(
             StatusCode::OK,
-            service(&handle).list_groups(start, limit).await,
+            AdminService::new(current).list_groups(start, limit).await,
         ),
         version,
     )
@@ -106,9 +115,13 @@ pub(crate) async fn get_group(
     State(handle): State<Arc<AppHandle>>,
     Path(name): Path<String>,
 ) -> Response {
-    let version = handle.load().config_version;
+    let current = response_snapshot(handle.load());
+    let version = current.config_version;
     with_config_etag(
-        respond(StatusCode::OK, service(&handle).get_group(&name).await),
+        respond(
+            StatusCode::OK,
+            AdminService::new(current).get_group(&name).await,
+        ),
         version,
     )
 }
@@ -549,9 +562,13 @@ pub(crate) async fn get_auth(State(handle): State<Arc<AppHandle>>) -> Response {
 }
 
 pub(crate) async fn get_admin_auth(State(handle): State<Arc<AppHandle>>) -> Response {
-    let version = handle.load().config_version;
+    let current = response_snapshot(handle.load());
+    let version = current.config_version;
     with_config_etag(
-        respond(StatusCode::OK, service(&handle).get_admin_auth().await),
+        respond(
+            StatusCode::OK,
+            AdminService::new(current).get_admin_auth().await,
+        ),
         version,
     )
 }
@@ -590,9 +607,13 @@ pub(crate) async fn get_usage(
 }
 
 pub(crate) async fn get_config(State(handle): State<Arc<AppHandle>>) -> Response {
-    let version = handle.load().config_version;
+    let current = response_snapshot(handle.load());
+    let version = current.config_version;
     with_config_etag(
-        respond(StatusCode::OK, service(&handle).get_config().await),
+        respond(
+            StatusCode::OK,
+            AdminService::new(current).get_config().await,
+        ),
         version,
     )
 }
@@ -752,7 +773,9 @@ pub(crate) async fn register_hook(
                     } else {
                         StatusCode::CREATED
                     },
-                    service(&handle).get_hook(&name).await,
+                    AdminService::new(response_snapshot(installed.clone()))
+                        .get_hook(&name)
+                        .await,
                 ),
                 installed.config_version,
             )
@@ -819,7 +842,12 @@ pub(crate) async fn put_hook(
             audit::AUDIT.record_by("hook.replace", &resource, audit::OUTCOME_APPLIED, &actor);
             installed.record_version(&actor, &format!("hook.replace {resource}"));
             with_config_etag(
-                respond(StatusCode::OK, service(&handle).get_hook(&name).await),
+                respond(
+                    StatusCode::OK,
+                    AdminService::new(response_snapshot(installed.clone()))
+                        .get_hook(&name)
+                        .await,
+                ),
                 installed.config_version,
             )
         }
@@ -942,7 +970,9 @@ pub(crate) async fn register_group(
                     } else {
                         StatusCode::CREATED
                     },
-                    service(&handle).get_group(&name).await,
+                    AdminService::new(response_snapshot(installed.clone()))
+                        .get_group(&name)
+                        .await,
                 ),
                 installed.config_version,
             )
@@ -990,7 +1020,12 @@ pub(crate) async fn put_group(
             audit::AUDIT.record_by("group.replace", &resource, audit::OUTCOME_APPLIED, &actor);
             record_group_version(&installed, &actor, &format!("group.replace {resource}"));
             with_config_etag(
-                respond(StatusCode::OK, service(&handle).get_group(&name).await),
+                respond(
+                    StatusCode::OK,
+                    AdminService::new(response_snapshot(installed.clone()))
+                        .get_group(&name)
+                        .await,
+                ),
                 installed.config_version,
             )
         }
@@ -1045,7 +1080,12 @@ pub(crate) async fn patch_group(
             audit::AUDIT.record_by("group.patch", &resource, audit::OUTCOME_APPLIED, &actor);
             record_group_version(&installed, &actor, &format!("group.patch {resource}"));
             with_config_etag(
-                respond(StatusCode::OK, service(&handle).get_group(&name).await),
+                respond(
+                    StatusCode::OK,
+                    AdminService::new(response_snapshot(installed.clone()))
+                        .get_group(&name)
+                        .await,
+                ),
                 installed.config_version,
             )
         }
@@ -1455,13 +1495,13 @@ pub(crate) async fn get_audit(
     let action = q.get("action").map(String::as_str);
     let resource = q.get("resource").map(String::as_str);
 
-    let mut entries =
-        busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(start, limit + 1, action, resource);
-    let next_cursor = page_cursor(&mut entries, start, limit);
-    ok_json(
-        StatusCode::OK,
-        &json!({ "items": entries, "next_cursor": next_cursor }),
-    )
+    let page = busbar_kernel::audit::auditlog::AUDIT_LOG.list_page(start, limit, action, resource);
+    let next_cursor = page
+        .truncated
+        .then(|| crate::v1::contract::encode_offset_cursor(start.saturating_add(limit)));
+    let mut body = json!(page);
+    body["next_cursor"] = json!(next_cursor);
+    ok_json(StatusCode::OK, &body)
 }
 
 pub(crate) async fn list_config_versions(
@@ -2801,7 +2841,12 @@ pub(crate) async fn patch_hook_settings(
             audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_APPLIED, &actor);
             installed.record_version(&actor, &format!("hook.settings {resource}"));
             with_config_etag(
-                respond(StatusCode::OK, service(&handle).get_hook(&name).await),
+                respond(
+                    StatusCode::OK,
+                    AdminService::new(response_snapshot(installed.clone()))
+                        .get_hook(&name)
+                        .await,
+                ),
                 installed.config_version,
             )
         }
@@ -4180,8 +4225,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     if let Some(op) = op!("/config/settings", "put") {
         let content =
             &mut op[RESPONSES_KEY]["200"]["content"][busbar_contract::protocol::APPLICATION_JSON];
-        let legacy = content["schema"].clone();
-        content["schema"] = json!({"oneOf": [legacy, super::config_document::response_schema()]});
+        content["schema"] = json!({"$ref": "#/components/schemas/ConfigSettingsMutationView"});
     }
 
     typed!("/config/reload", "post", "200", sview::ConfigReloadView);
@@ -4410,6 +4454,17 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     );
 
     let mut schemas = gen.definitions().clone();
+    schemas.insert(
+        "ConfigSettingsMutationView".to_string(),
+        json!({"oneOf": [
+            {"$ref": "#/components/schemas/ConfigSettingsView"},
+            {"$ref": "#/components/schemas/ConfigDocumentMutationView"}
+        ]}),
+    );
+    schemas.insert(
+        "ConfigDocumentMutationView".to_string(),
+        super::config_document::response_schema(),
+    );
     if let Some(schema) = schemas.get_mut("ConfigSettingsView") {
         schema["properties"]["configuration"] = json!({"type": "object", "description": "Sanitized values captured from the installed config generation, bound to the response ETag; configured does not mean physically active."});
         schema["properties"]["settings_source"] = json!({"type": "string", "description": "desired_root_overlay on GET; settings never represents the full applied configuration."});

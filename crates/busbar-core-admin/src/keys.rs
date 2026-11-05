@@ -1352,7 +1352,7 @@ pub(crate) async fn list_keys(
             None => {
                 return key_err(
                     KeyAudit::Read,
-                    &AdminError::Validation("invalid or foreign pagination cursor".into()),
+                    &AdminError::Validation("invalid pagination cursor".into()),
                     Cond::MalformedCursor,
                 )
             }

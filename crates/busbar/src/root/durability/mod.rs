@@ -58,6 +58,9 @@ mod audit_heads;
 #[cfg(feature = "root-admin")]
 pub use audit::AuditWindowAt;
 
+#[cfg(feature = "root-admin")]
+mod audit_page;
+
 mod recovery;
 pub use recovery::{node_verb_store, report_operator_breaks};
 

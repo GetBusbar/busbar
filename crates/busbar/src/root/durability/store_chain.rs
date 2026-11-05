@@ -1174,6 +1174,69 @@ impl HeldChain {
         })
     }
 
+    /// A bounded administrative read. Missing or oversized records are explicit gaps;
+    /// this never walks the journal from its beginning or retries concurrent writers.
+    #[cfg(feature = "root-admin")]
+    pub(super) fn read_audit_page(
+        self,
+        start: u64,
+        through: u64,
+    ) -> Result<(Vec<JournalRecord>, bool), String> {
+        const PART_LIMIT: u32 = 256;
+        let HeldChain {
+            lane, node, held, ..
+        } = self;
+        let held: std::collections::BTreeMap<_, _> = held
+            .into_iter()
+            .filter(|record| {
+                record.node == node && record.node_seq >= start && record.node_seq < through
+            })
+            .map(|record| (record.node_seq, record))
+            .collect();
+        off_runtime(|| {
+            let mut records = Vec::new();
+            let mut incomplete = false;
+            for sequence in start..through {
+                let key = part_key(node, sequence, 0);
+                let page = wait_for(lane.calls().record_scan(
+                    JOURNAL_SCHEMA,
+                    &key[..16],
+                    PART_LIMIT,
+                ))
+                .map_err(|why| format!("audit page unavailable: {why}"))?;
+                valid_journal_page(&key[..16], &page, PART_LIMIT)?;
+                let count = page.first().map(|(_, value)| {
+                    u16::from_be_bytes(value.as_slice()[..2].try_into().expect("validated count"))
+                        as usize
+                });
+                if count != Some(page.len()) || page.is_empty() {
+                    // A captured record may still be in the asynchronous Store lane.
+                    if let Some(record) = held.get(&sequence) {
+                        records.push(checked_record(record.clone())?);
+                    } else {
+                        incomplete = true;
+                    }
+                    continue;
+                }
+                let mut body = Vec::new();
+                for (part, (key, value)) in page.iter().enumerate() {
+                    if usize::from(u16::from_be_bytes(
+                        key[16..18].try_into().expect("validated key"),
+                    )) != part
+                        || usize::from(u16::from_be_bytes(
+                            value.as_slice()[..2].try_into().expect("validated count"),
+                        )) != page.len()
+                    {
+                        return Err("inconsistent audit journal parts".into());
+                    }
+                    body.extend_from_slice(&value.as_slice()[2..]);
+                }
+                records.push(checked_record(Record::new(node, sequence, body))?);
+            }
+            Ok((records, incomplete))
+        })
+    }
+
     pub(super) fn store(&self) -> &str {
         self.lane.store()
     }

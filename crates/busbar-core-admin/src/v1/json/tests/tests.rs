@@ -239,7 +239,7 @@ fn openapi_documents_the_loops_503_on_every_operation_it_walks() {
             let loop_walks =
                 crate::admin_codec::verbs::resolve(&method.to_ascii_uppercase(), path).is_some();
             let documented = &op[OAS_OPERATION_STATUSES]["503"];
-            if loop_walks {
+            if loop_walks || op.get("x-busbar-plane").is_some() {
                 walked += 1;
                 assert_eq!(
                     documented["content"]["application/json"]["schema"]["$ref"],
@@ -250,7 +250,7 @@ fn openapi_documents_the_loops_503_on_every_operation_it_walks() {
             } else {
                 assert!(
                     documented.is_null(),
-                    "{method} {path} is not walked through the loop but documents a 503"
+                    "{method} {path} is neither loop-walked nor a plane operation but documents a 503"
                 );
             }
         }

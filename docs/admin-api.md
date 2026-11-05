@@ -121,6 +121,60 @@ The topology reads (`/pools`, `/models`, `/providers`, `/hooks`, `/plugins`) ret
 
 Numeric limits on legacy keys/groups/audit/versions lists are clamped to 1–1000. Groups/audit/versions use their default for malformed values; keys refuses malformed values. These existing parser differences remain part of v1.
 
+### Audit coverage and bounded range retrieval
+
+`GET /audit` remains the newest-first, filtered live offset inventory of the admin
+mutation ring (at most 1000 retained entries). Its additive `returned_from` and
+`returned_to` identify the actual page bounds; `retained_from`, `retained_to` and
+`retention_limit` describe the unfiltered ring captured under the same lock.
+All these new exact quantities are decimal strings, with null bounds for empty sets.
+`semantics: "live_offset"` and `complete: false` explicitly prohibit treating a
+finished traversal as a complete audit. `truncated` means matching rows remained
+in that observation. Concurrent appends and evictions can duplicate or skip rows;
+a null `next_cursor` is only the observed end. A syntactically valid legacy offset
+cursor is not bound to its list or filters; foreign-token rejection is not promised.
+
+`GET /audit/range?from=F&to=T` reads the **separate sealed unit audit chain**, in
+ascending audit position. Keep the original inclusive `from` and `to` unchanged
+and round-trip each `next_cursor` as `cursor` until it is null, even if `records`
+is empty. The first page pins `snapshot_to` to the lesser of `to` and the captured
+chain tip. This is `semantics: "bounded_live_range"`: later appends do not extend
+the range, but retained storage can change between requests. No snapshot is held.
+The cursor is scoped to the node, incarnation and requested bounds; malformed,
+mismatched or expired-incarnation cursors receive `400 invalid_request`.
+
+Legacy `from`/`to` continue to echo the request. New `returned_from`/`returned_to`
+are actual returned bounds (null on an empty page). `truncated` means further
+bounded scanning is required, and is equivalent to non-null `next_cursor`.
+`complete` is true only on a terminal page after this traversal observed every
+requested audit position; it does not certify signatures or guarantee retention
+for later reads. `incomplete` carries forward a detected gap or missing/oversized
+journal record. `gaps` lists newly detected missing inclusive audit intervals,
+including an unsealed requested tail. Do not infer completeness from HTTP 200,
+requested bounds, an anchor, a full page or an empty page. Deduplicate by chain
+identity and position, verify hashes/signatures, and preserve coverage metadata.
+Audit positions are 1-based; `from=0` includes the first position without inventing
+an audit record at zero.
+
+Each stored page examines at most 64 journal positions, at most 256 parts of 512
+bytes per position, with no rescan/retry against concurrent appends. Store calls
+run outside the durability lock. The ring fast path returns at most 1024 records;
+the memory-only journal is bounded by its existing 8192-record capacity.
+`scanned_positions` and `scan_limit` expose the Store position work bound. This
+bounds call count and scanned bytes, not a Store plugin's response latency.
+Missing or oversized records mark `incomplete`; malformed, unreadable or corrupt
+records refuse the read rather than silently skipping them. Each record's journal
+digest is checked; this paged read is not a whole-journal verification operation.
+
+`retention.ring_from`/`ring_to` identify the ring at page capture. The Store does not
+publish an audit retention floor, so `durable_from` is null and
+`durable_from_known` is false. A requested older range is scanned and any missing
+coverage is reported explicitly. All new sequence/scan values and gap endpoints
+are exact decimal strings; existing numeric envelope fields retain their wire
+format. The published anchor is at or before the pinned upper bound; its history
+may itself be pruned, in which case it is null. This sealed unit chain does not
+replace the separate admin mutation ring.
+
 ## Exact-number client profile
 
 `x-busbar-exact-numbers.profile: lossless-number-token-v1` describes the legacy numeric wire. Parse raw JSON integer/decimal tokens losslessly before binary64 conversion. Existing Count values are signed i128 mantissas at scale 6 (range -170141183460469231731687303715884.105728 through 170141183460469231731687303715884.105727). Existing u64 counters range from 0 through 18446744073709551615. For example, `9007199254740993` and `9007199254.740993` must survive parsing unchanged. An already rounded JavaScript Number cannot be repaired later.

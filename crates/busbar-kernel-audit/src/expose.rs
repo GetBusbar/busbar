@@ -211,7 +211,16 @@ pub fn range_body(chain: &AuditChain, records: &[AuditRecord], from: u64, to: u6
     }
     out.push(',');
     push_json_string(&mut out, "records");
-    out.push_str(":[");
+    out.push(':');
+    out.push_str(&range_records_body(records, from, to));
+    out.push('}');
+    out
+}
+
+/// The records of a bounded range, using the same lossless digest-field wire format.
+#[must_use]
+pub fn range_records_body(records: &[AuditRecord], from: u64, to: u64) -> String {
+    let mut out = String::from("[");
     let mut first = true;
     for record in records.iter().filter(|r| r.seq >= from && r.seq <= to) {
         if !first {
@@ -220,7 +229,7 @@ pub fn range_body(chain: &AuditChain, records: &[AuditRecord], from: u64, to: u6
         first = false;
         push_record(&mut out, record);
     }
-    out.push_str("]}");
+    out.push(']');
     out
 }
 

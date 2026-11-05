@@ -16,6 +16,55 @@ tokio::task_local! {
     static PHYSICAL_REFUSER: (bool, Option<crate::plane_routes::PlaneRefuseByPathFn>);
 }
 
+/// Admin responses can contain credentials, including an idempotent replay. Apply this outside
+/// every handler/replay path. Axum extractor refusals are plain text and may quote request values;
+/// replace those framework errors without inspecting or retaining their body.
+async fn admin_response_boundary(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::{header::CONTENT_TYPE, StatusCode};
+    let prefix = crate::admin::gate::ADMIN_PREFIX;
+    let admin = !is_private_listener()
+        && (req.uri().path() == prefix
+            || req
+                .uri()
+                .path()
+                .strip_prefix(prefix)
+                .is_some_and(|tail| tail.starts_with('/')));
+    let mut response = next.run(req).await;
+    if !admin {
+        return response;
+    }
+    let plain_text = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.split(';').next() == Some("text/plain"));
+    if plain_text {
+        response = match response.status() {
+            StatusCode::BAD_REQUEST
+            | StatusCode::UNSUPPORTED_MEDIA_TYPE
+            | StatusCode::UNPROCESSABLE_ENTITY => crate::admin::gate::error_envelope(
+                400,
+                "invalid_request",
+                "malformed admin request",
+            ),
+            StatusCode::PAYLOAD_TOO_LARGE => crate::admin::gate::error_envelope(
+                413,
+                busbar_contract::protocol::ERR_TYPE_REQUEST_TOO_LARGE,
+                "admin request body exceeds the configured limit",
+            ),
+            _ => response,
+        };
+    }
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
 pub(crate) fn is_private_listener() -> bool {
     PHYSICAL_REFUSER
         .try_with(|(private, _)| *private)
@@ -660,7 +709,9 @@ fn apply_common_layers_for_mounts(
     };
 
     let router = router.layer(CatchPanicLayer::new(handle.clone()));
-    router.with_state(handle.clone())
+    router
+        .layer(axum::middleware::from_fn(admin_response_boundary))
+        .with_state(handle.clone())
 }
 
 /// POLICY: **A PANIC IN A REQUEST HANDLER FAILS THAT REQUEST — NEVER THE

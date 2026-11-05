@@ -855,3 +855,20 @@ fn a_refused_facing_keeps_only_the_same_successful_serving_slot() {
     assert!(Arc::ptr_eq(&old, &refused_owned));
     assert!((decl.build)(decl, &owned_ctx(serde_yaml::Value::Null)).is_none());
 }
+
+#[test]
+fn temporary_admin_plane_unavailability_preserves_503_classification() {
+    use crate::admin_verbs::PlaneVerbError;
+    assert!(matches!(
+        admin_plane_error(503, "PRIVATE_BACKEND_SENTINEL".into(), &Vec::new()),
+        PlaneVerbError::Unavailable
+    ));
+    assert!(matches!(
+        admin_plane_error(500, "PRIVATE_BACKEND_SENTINEL".into(), &Vec::new()),
+        PlaneVerbError::Internal(_)
+    ));
+    assert!(matches!(
+        admin_plane_error(502, "PRIVATE_BACKEND_SENTINEL".into(), &Vec::new()),
+        PlaneVerbError::Internal(_)
+    ));
+}

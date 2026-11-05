@@ -31,6 +31,9 @@ pub fn to_admin_error(plane: &'static str, name: &str, err: PlaneVerbError) -> A
             AdminError::Validation(msg)
         }
         PlaneVerbError::Internal(_) => AdminError::Internal,
+        PlaneVerbError::Unavailable => {
+            AdminError::Unavailable("plane dependency is temporarily unavailable".into())
+        }
     }
 }
 

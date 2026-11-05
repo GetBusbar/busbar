@@ -939,25 +939,36 @@ async fn admin_reply(
         ))),
         Some(Ok(served)) => {
             let text = String::from_utf8_lossy(&served.body).into_owned();
-            let refused = match served.status {
-                200..=299 => return AdminReply::Applied(text),
-                404 => PlaneVerbError::NotFound,
-                400 => match condition_of(&served.fields) {
-                    Some(cond) => PlaneVerbError::ValidationOf(text, cond),
-                    None => PlaneVerbError::Validation(text),
-                },
-                status => {
-                    return AdminReply::Rejected(PlaneVerbError::Internal(format!(
-                        "the plane answered `{verb} {path}` with status {status}"
-                    )));
-                }
-            };
+            if (200..=299).contains(&served.status) {
+                return AdminReply::Applied(text);
+            }
+            let refused = admin_plane_error(served.status, text, &served.fields);
+            if matches!(&refused, PlaneVerbError::Internal(_)) {
+                return AdminReply::Rejected(refused);
+            }
             if served.audit == busbar_contract::abi::plane::AUDIT_NONE {
                 AdminReply::Refused(refused)
             } else {
                 AdminReply::Rejected(refused)
             }
         }
+    }
+}
+
+fn admin_plane_error(
+    status: u32,
+    text: String,
+    fields: &crate::plane_driver::HeadFields,
+) -> crate::admin_verbs::PlaneVerbError {
+    use crate::admin_verbs::PlaneVerbError;
+    match status {
+        404 => PlaneVerbError::NotFound,
+        503 => PlaneVerbError::Unavailable,
+        400 => match condition_of(fields) {
+            Some(cond) => PlaneVerbError::ValidationOf(text, cond),
+            None => PlaneVerbError::Validation(text),
+        },
+        status => PlaneVerbError::Internal(format!("the plane answered with status {status}")),
     }
 }
 

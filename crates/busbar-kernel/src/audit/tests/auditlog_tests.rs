@@ -1749,3 +1749,52 @@ fn repeated_restore_keeps_exact_rows_once_and_preserves_raw_tamper_evidence() {
         "scope is part of persisted identity even for a scopeless digest"
     );
 }
+
+#[test]
+fn live_audit_page_metadata_tracks_append_and_eviction_without_claiming_completeness() {
+    let log = PlaneAuditLog::new();
+    let append = |seq| {
+        log.push_entry(
+            AuditEntry {
+                seq,
+                ts: seq,
+                action: "test".into(),
+                resource: "test".into(),
+                outcome: "applied".into(),
+                principal: "test".into(),
+                prev_hash: String::new(),
+                hash: seq.to_string(),
+                scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
+                recorded_here: false,
+            },
+            "admin",
+            Vec::new(),
+            false,
+        );
+    };
+    for seq in 1..=MAX_AUDIT_ENTRIES as u64 {
+        append(seq);
+    }
+    let first = log.list_page(0, 2, None, None);
+    assert_eq!(first.retained_from.as_deref(), Some("1"));
+    assert_eq!(first.returned_to.as_deref(), Some("1000"));
+    assert!(first.truncated);
+    append(1001);
+    let second = log.list_page(2, 2, None, None);
+    assert_eq!(second.retained_from.as_deref(), Some("2"));
+    assert_eq!(second.retained_to.as_deref(), Some("1001"));
+    assert_eq!(
+        first.items[1].seq, second.items[0].seq,
+        "live offsets can duplicate after an append"
+    );
+    assert_eq!(second.semantics, "live_offset");
+    assert!(!second.complete);
+    let empty = log.list_page(0, 100, Some("absent"), None);
+    assert!(empty.returned_from.is_none());
+    assert!(!empty.truncated);
+    assert!(
+        !empty.complete,
+        "a filtered empty result proves no complete audit coverage"
+    );
+    assert_eq!(empty.retained_from.as_deref(), Some("2"));
+}

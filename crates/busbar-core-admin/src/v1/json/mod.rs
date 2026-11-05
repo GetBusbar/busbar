@@ -132,6 +132,27 @@ impl AdminTransport for JsonV1 {
     }
 }
 
+/// Keep the response projection and its ETag on the same immutable generation. In particular,
+/// mutation callers supply the installed snapshot, never a second load of the current handle.
+fn response_snapshot(app: Arc<busbar_kernel::state::App>) -> Arc<busbar_kernel::state::App> {
+    #[cfg(any(test, feature = "test-support"))]
+    let _ = RESPONSE_SNAPSHOT_OBSERVER.try_with(|observer| observer());
+    app
+}
+
+#[cfg(any(test, feature = "test-support"))]
+tokio::task_local! {
+    static RESPONSE_SNAPSHOT_OBSERVER: Arc<dyn Fn() + Send + Sync>;
+}
+
+#[cfg(feature = "test-support")]
+pub async fn with_response_snapshot_observer<F: std::future::Future>(
+    observer: Arc<dyn Fn() + Send + Sync>,
+    future: F,
+) -> F::Output {
+    RESPONSE_SNAPSHOT_OBSERVER.scope(observer, future).await
+}
+
 async fn supply_replay_cache(
     State(own): State<Arc<crate::keys::KeyReplayCache>>,
     mut req: axum::extract::Request,
@@ -347,7 +368,7 @@ fn cursor_offset(q: &std::collections::HashMap<String, String>) -> Result<usize,
         None => Ok(0),
         Some(c) => crate::v1::contract::decode_offset_cursor(c).ok_or_else(|| {
             err_json_cond(
-                &AdminError::Validation("invalid or foreign pagination cursor".into()),
+                &AdminError::Validation("invalid pagination cursor".into()),
                 Cond::MalformedCursor,
             )
         }),
@@ -362,9 +383,9 @@ fn base_owned(kind: &str, name: &str) -> AdminError {
 }
 
 fn json_body<T: serde::de::DeserializeOwned>(body: &[u8], what: &str) -> Result<T, Box<Response>> {
-    serde_json::from_slice(body).map_err(|e| {
+    serde_json::from_slice(body).map_err(|_| {
         Box::new(err_json(&AdminError::Validation(format!(
-            "malformed {what} body: {e}"
+            "malformed {what} body"
         ))))
     })
 }
@@ -439,6 +460,7 @@ mod contract_metadata;
 mod handlers;
 #[cfg(feature = "openapi-schema")]
 mod replay_metadata;
+mod settings_edit;
 pub(super) mod telemetry;
 pub(crate) use handlers::*;
 

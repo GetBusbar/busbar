@@ -1677,7 +1677,7 @@ async fn cancel_on_the_cut() {
         assert_eq!(bill.disposition, CANCEL_OK_PARTIAL);
         assert_eq!(
             bill.billed,
-            vec![(0, 6)],
+            vec![(0, busbar_contract::Count::from(6u64))],
             "{way:?}: the streamed, far-end-reported units"
         );
         let s = r.stats();

@@ -469,7 +469,8 @@ pub struct ConfigDiffView {
 /// audit handler).
 #[derive(Serialize, JsonSchema)]
 pub struct AuditPageView {
-    pub items: Vec<crate::v1::json::audit::AuditEntry>,
+    #[serde(flatten)]
+    pub page: busbar_kernel::audit_ring::AuditPage,
     pub next_cursor: Option<String>,
 }
 

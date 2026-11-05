@@ -623,7 +623,7 @@ async fn test_admin_v1_key_rotate_and_pagination() {
     assert_eq!(
         bad.status().as_u16(),
         400,
-        "foreign cursor is invalid_request"
+        "malformed cursor is invalid_request"
     );
     assert_eq!(
         bad.json::<serde_json::Value>().await.unwrap()["error"]["code"],

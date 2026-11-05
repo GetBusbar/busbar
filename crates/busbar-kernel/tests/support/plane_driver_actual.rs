@@ -2514,7 +2514,7 @@ async fn a_refusal_after_admission_within_limits_is_the_planes_and_nets_no_charg
     let usage = spend();
     assert_eq!(
         (usage.spend_cents, usage.tokens),
-        (0, 0),
+        (0, busbar_contract::Count::ZERO),
         "nothing net-charged, nothing ledgered"
     );
 }

@@ -260,6 +260,24 @@ pub trait AuditView: Send + Sync {
         self.read(take);
     }
 
+    fn range_page(
+        &self,
+        from: u64,
+        to: u64,
+        cursor: Option<&str>,
+    ) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
+        if cursor.is_some() {
+            return Err(busbar_core_admin::GovernanceError::Validation);
+        }
+        let mut answer = Err(busbar_core_admin::GovernanceError::Store);
+        self.read_window(from, to, &mut |chain, records| {
+            answer = records
+                .map(|records| expose::range_body(chain, records, from, to).into_bytes())
+                .ok_or(busbar_core_admin::GovernanceError::NotFound);
+        });
+        answer
+    }
+
     fn keys(&self) -> AuditKeySet;
 
     fn restart_findings(&self) -> Vec<String> {
@@ -335,6 +353,16 @@ impl AuditView for NodeAudit {
         }
     }
 
+    fn range_page(
+        &self,
+        from: u64,
+        to: u64,
+        cursor: Option<&str>,
+    ) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
+        let plan = self.lock().prepare_audit_page(from, to, cursor)?;
+        plan.finish()
+    }
+
     fn keys(&self) -> AuditKeySet {
         crate::root::durability::keyset_of(&self.lock().record)
     }
@@ -390,16 +418,15 @@ fn render_audit_view(
         KernelVerb::GetAuditRange => {
             let (from, to) = audit_window(target).ok_or(GovernanceError::Validation)?;
 
-            let mut answered: Option<Option<String>> = None;
-            view.read_window(from, to, &mut |chain, records| {
-                answered =
-                    Some(records.map(|records| expose::range_body(chain, records, from, to)));
-            });
-            match answered {
-                None => Err(GovernanceError::Store),
-                Some(None) => Err(GovernanceError::NotFound),
-                Some(Some(body)) => Ok(body.into_bytes()),
-            }
+            let cursor = target
+                .split_once('?')
+                .and_then(|(_, query)| query.split('#').next())
+                .and_then(|query| {
+                    query
+                        .split('&')
+                        .find_map(|pair| pair.strip_prefix("cursor="))
+                });
+            view.range_page(from, to, cursor)
         }
         KernelVerb::GetAuditKeys => Ok(expose::keys_body(&view.keys()).into_bytes()),
 

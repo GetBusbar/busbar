@@ -81,3 +81,23 @@ impl AuditLog {
 }
 
 pub static AUDIT: AuditLog = AuditLog { _private: () };
+
+/// Additive metadata for a live admin ring page. All new exact positions are decimal strings.
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub struct AuditPage {
+    pub items: Vec<AuditEntry>,
+    /// Actual lowest/highest returned sequence, null for an empty page.
+    pub returned_from: Option<String>,
+    pub returned_to: Option<String>,
+    /// Lowest/highest sequence in the unfiltered ring under the same lock as items.
+    pub retained_from: Option<String>,
+    pub retained_to: Option<String>,
+    pub retention_limit: String,
+    /// `live_offset`: concurrent appends/evictions may duplicate or skip rows across pages.
+    pub semantics: String,
+    /// Always false: this live filtered inventory does not prove complete audit coverage.
+    pub complete: bool,
+    /// More matching rows existed in this observation.
+    pub truncated: bool,
+}
