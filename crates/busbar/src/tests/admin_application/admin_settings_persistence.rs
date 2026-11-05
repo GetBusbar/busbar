@@ -189,8 +189,12 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store opens the configuration authority");
+    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+        &config,
+        &plugin_config,
+        &directory,
+    )
+    .expect("the actual Store opens the configuration authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
         anchor
             .calls

@@ -280,8 +280,12 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store bootstraps its config authority");
+    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+        &config,
+        &plugin_config,
+        &directory,
+    )
+    .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
         anchor
             .calls
@@ -482,8 +486,12 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the product deployment resolves");
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-        let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-            .expect("the actual Store bootstraps its config authority");
+        let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+            &config,
+            &plugin_config,
+            &directory,
+        )
+        .expect("the actual Store bootstraps its config authority");
         let overlay = busbar_kernel::config::overlay::OverlayStore::new(
             anchor
                 .calls
@@ -646,8 +654,12 @@ async fn existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persi
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store bootstraps its config authority");
+    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+        &config,
+        &plugin_config,
+        &directory,
+    )
+    .expect("the actual Store bootstraps its config authority");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -787,8 +799,12 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the product deployment resolves");
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-        let mut anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-            .expect("the actual Store bootstraps its config authority");
+        let mut anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+            &config,
+            &plugin_config,
+            &directory,
+        )
+        .expect("the actual Store bootstraps its config authority");
         let observed = Arc::new(ObservedStoreCalls {
             calls: anchor
                 .calls
@@ -1015,9 +1031,12 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
             let config = busbar_kernel::config::resolve(&deploy, &Default::default())
                 .expect("the product deployment resolves");
             let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-            let mut anchor =
-                busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-                    .expect("the actual Store bootstraps its config authority");
+            let mut anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+                &config,
+                &plugin_config,
+                &directory,
+            )
+            .expect("the actual Store bootstraps its config authority");
             let observed = Arc::new(ObservedStoreCalls {
                 calls: anchor
                     .calls

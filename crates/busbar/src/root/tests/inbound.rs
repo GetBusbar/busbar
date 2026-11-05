@@ -179,7 +179,15 @@ fn app_with_admin_reader(
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let boot_store = reader.then(|| {
+        crate::root::test_plugins::bootstrap_fresh_application_store(
+            &config,
+            &plugin_config,
+            &directory,
+        )
+        .expect("provision the actual new marked-auth fixture Store")
+    });
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
         None,
@@ -188,6 +196,8 @@ fn app_with_admin_reader(
         (None, None),
         None,
         &rules,
+        boot_store,
+        false,
     )
     .expect("the actual product builds the door deployment");
     limits.stage_boot();

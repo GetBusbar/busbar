@@ -397,7 +397,12 @@ fn app() -> (
             name: "third-party".into(),
             public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
         });
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config).unwrap();
+    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+        &config,
+        &plugin_config,
+        &directory,
+    )
+    .unwrap();
     let store = Store::new(anchor.records);
     let anchor = busbar_contract::store_calls::OpenedStore {
         records: store.clone(),

@@ -34,6 +34,148 @@ pub fn application_store_settings(directory: &Path) -> serde_json::Value {
     serde_json::json!({ "db_path": directory.join("application.sqlite") })
 }
 
+/// Creation provenance owned only by the provisioner of a new fixture database.
+/// May cross construction stages, but must be initialized before any serving starts.
+pub struct FreshApplicationStore {
+    opened: busbar_contract::store_calls::OpenedStore,
+    evidence_sha256: String,
+    store_sha256: String,
+}
+
+impl FreshApplicationStore {
+    pub fn opened(&self) -> busbar_contract::store_calls::OpenedStore {
+        busbar_contract::store_calls::OpenedStore {
+            records: self.opened.records.clone(),
+            calls: self.opened.calls.clone(),
+        }
+    }
+
+    pub fn initialize_principal_format(
+        self,
+        cfg: &busbar_kernel::config::RootCfg,
+        plugins: &busbar_kernel::config::PluginsCfg,
+    ) -> Result<busbar_contract::store_calls::OpenedStore, String> {
+        use busbar_kernel::governance::principal_transition as transition;
+        use busbar_kernel::host_records::{RecordRows, StoreRows};
+        let store_sha256 = transition::store_fingerprint(&cfg.store)?;
+        if store_sha256 != self.store_sha256 {
+            return Err(
+                "new fixture Store configuration changed before baseline initialization".into(),
+            );
+        }
+        let registry = busbar_kernel::plugins_preflight(
+            cfg.store.as_ref(),
+            cfg.auth.as_ref(),
+            &cfg.identity_providers,
+            &cfg.hooks,
+            plugins,
+            &cfg.export,
+        )?;
+        let requirements = transition::requirements(cfg, registry.as_ref())?;
+        assert!(
+            requirements.iter().any(|r| !r.format.is_empty()),
+            "this explicit fixture initializer is for admitted marked-auth deployments"
+        );
+        let calls = self
+            .opened
+            .calls
+            .clone()
+            .expect("the actual fixture Store exposes typed calls");
+        let schema = busbar_contract::ids::RecordSchemaId::new("test.fixture.principal-creation");
+        StoreRows(calls.clone())
+            .record_put(
+                schema,
+                b"namespace",
+                &busbar_contract::kinds::RecordBytes::new(self.evidence_sha256.as_bytes().to_vec())
+                    .expect("the public fixture witness fits one record"),
+            )
+            .map_err(|error| error.to_string())?;
+        let receipt = transition::FreshNamespace {
+            version: 1,
+            store_config_sha256: store_sha256.clone(),
+            requirements: requirements.clone(),
+            witness: Some(busbar_kernel::host_record_bootstrap::StoreWitness {
+                schema: schema.as_str().into(),
+                key_hex: hex::encode(b"namespace"),
+                value_hex: hex::encode(self.evidence_sha256.as_bytes()),
+            }),
+            ephemeral_instance: false,
+            exclusive_instance: false,
+            creation_evidence_sha256: self.evidence_sha256,
+            newly_created_namespace: true,
+            sender_quiesced: true,
+            backend_quiesced: true,
+            actor: "isolated application fixture provisioner".into(),
+            reason: "exclusive new database file; construction only, serving not activated".into(),
+        };
+        transition::initialize_fresh(&receipt, calls, &store_sha256, &requirements)?;
+        Ok(self.opened)
+    }
+}
+
+/// Exclusively create the actual database before its first Store open.
+/// A retained App or an already existing database cannot supply this provenance.
+pub fn provision_fresh_application_store(
+    cfg: &busbar_kernel::config::RootCfg,
+    plugins: &busbar_kernel::config::PluginsCfg,
+    directory: &Path,
+) -> Result<FreshApplicationStore, String> {
+    let store = cfg
+        .store
+        .as_ref()
+        .expect("the fixture explicitly selects its Store");
+    assert_eq!(
+        serde_json::Value::Object(store.settings.clone()),
+        application_store_settings(directory),
+        "the fixture owns the exact configured application database path"
+    );
+    let database = directory.join("application.sqlite");
+    for suffix in ["application.sqlite-wal", "application.sqlite-shm"] {
+        assert!(
+            !directory.join(suffix).exists(),
+            "no retained database sidecar belongs to this new fixture"
+        );
+    }
+    // Exclusive filesystem creation is the provisioner's evidence, not an empty Store scan.
+    drop(
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&database)
+            .expect("the fixture exclusively creates its database file before opening the Store"),
+    );
+    let evidence = serde_json::to_vec(&serde_json::json!({
+        "database": database, "creation": "exclusive create_new before Store open",
+        "fixture": directory, "sender_quiesced": true, "backend_quiesced": true,
+    }))
+    .expect("fixture creation evidence serializes");
+    std::fs::write(
+        directory.join("principal-creation-evidence.json"),
+        &evidence,
+    )
+    .expect("retain the actual fixture creation evidence");
+    let evidence_sha256 = sha256_hex(&evidence);
+    let opened = busbar_kernel::appbuild::bootstrap_config_store(cfg, plugins)?;
+    Ok(FreshApplicationStore {
+        opened,
+        evidence_sha256,
+        store_sha256: busbar_kernel::governance::principal_transition::store_fingerprint(
+            &cfg.store,
+        )?,
+    })
+}
+
+/// Provision and initialize a genuinely new SQLite fixture before normal app startup.
+/// Call only for the first open in a new scratch directory; retained fixtures reopen normally.
+pub fn bootstrap_fresh_application_store(
+    cfg: &busbar_kernel::config::RootCfg,
+    plugins: &busbar_kernel::config::PluginsCfg,
+    directory: &Path,
+) -> Result<busbar_contract::store_calls::OpenedStore, String> {
+    provision_fresh_application_store(cfg, plugins, directory)?
+        .initialize_principal_format(cfg, plugins)
+}
+
 /// The explicit configuration document for the same fixture plugin policy used at boot.
 pub fn config_document(config: &busbar_kernel::config::PluginsCfg) -> serde_json::Value {
     let publishers: Vec<_> = config

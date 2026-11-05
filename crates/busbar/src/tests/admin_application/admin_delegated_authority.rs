@@ -134,8 +134,12 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store opens the configuration authority");
+    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+        &config,
+        &plugin_config,
+        &directory,
+    )
+    .expect("the actual Store opens the configuration authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
         anchor
             .calls
@@ -324,8 +328,12 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store opens the configuration authority");
+    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+        &config,
+        &plugin_config,
+        &directory,
+    )
+    .expect("the actual Store opens the configuration authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
         anchor
             .calls
@@ -786,8 +794,12 @@ async fn test_admin_v1_equal_subjects_from_distinct_issuers_cannot_replay_secret
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store opens the configuration authority");
+    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+        &config,
+        &plugin_config,
+        &directory,
+    )
+    .expect("the actual Store opens the configuration authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
         anchor
             .calls

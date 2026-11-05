@@ -63,8 +63,12 @@ async fn admin_plugin_full_binding_allows_mutation() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store bootstraps its config authority");
+    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+        &config,
+        &plugin_config,
+        &directory,
+    )
+    .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
         anchor
             .calls
@@ -189,8 +193,12 @@ async fn admin_max_admin_scope_caps_binding() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store bootstraps its config authority");
+    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+        &config,
+        &plugin_config,
+        &directory,
+    )
+    .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
         anchor
             .calls
@@ -310,8 +318,12 @@ async fn admin_plugin_readonly_binding_get_ok_post_403() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store bootstraps its config authority");
+    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+        &config,
+        &plugin_config,
+        &directory,
+    )
+    .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
         anchor
             .calls
@@ -467,8 +479,12 @@ async fn roleless_external_admin_principal_denied() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store bootstraps its config authority");
+    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+        &config,
+        &plugin_config,
+        &directory,
+    )
+    .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
         anchor
             .calls
@@ -581,8 +597,12 @@ async fn forbidden_admin_requests_audit_once_per_window() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store bootstraps its config authority");
+    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+        &config,
+        &plugin_config,
+        &directory,
+    )
+    .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
         anchor
             .calls
@@ -717,8 +737,12 @@ async fn the_admin_gate_admits_only_the_listed_verbs() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store bootstraps its config authority");
+    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+        &config,
+        &plugin_config,
+        &directory,
+    )
+    .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
         anchor
             .calls
@@ -1165,8 +1189,12 @@ fn a_slow_admin_door_does_not_stall_healthz() {
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the product deployment resolves");
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-        let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-            .expect("the actual Store bootstraps its config authority");
+        let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+            &config,
+            &plugin_config,
+            &directory,
+        )
+        .expect("the actual Store bootstraps its config authority");
         let overlay = busbar_kernel::config::overlay::OverlayStore::new(
             anchor
                 .calls
@@ -1354,8 +1382,12 @@ async fn external_admin_verifier_receives_bearer_and_admin_header_candidates() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store bootstraps its config authority");
+    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+        &config,
+        &plugin_config,
+        &directory,
+    )
+    .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
         anchor
             .calls
@@ -1534,8 +1566,12 @@ async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict(
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store bootstraps its config authority");
+    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+        &config,
+        &plugin_config,
+        &directory,
+    )
+    .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::new(
         anchor
             .calls

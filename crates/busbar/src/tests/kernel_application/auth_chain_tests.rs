@@ -62,7 +62,10 @@ fn test_chain_identifies_with_module_and_principal() {
             module, principal, ..
         } => {
             assert_eq!(module, "test-groups-module");
-            assert_eq!(principal.id, "oidc:dev");
+            assert_eq!(
+                principal.id,
+                "oidc-v2:aHR0cHM6Ly9pc3N1ZXIuZTJlLmludmFsaWQ:dev"
+            );
             assert_eq!(principal.roles, vec!["dev".to_string()]);
         }
         other => panic!("expected Identified, got {other:?}"),
@@ -376,7 +379,10 @@ fn a_verified_oidc_role_is_bound_under_the_provider_name() {
             module, principal, ..
         } => {
             assert_eq!(module, "idp");
-            assert_eq!(principal.id, "oidc:alice");
+            assert_eq!(
+                principal.id,
+                "oidc-v2:aHR0cHM6Ly9pc3N1ZXIuZTJlLmludmFsaWQ:alice"
+            );
             assert_eq!(principal.roles, vec!["platform".to_string()]);
         }
         other => panic!("expected Identified, got {other:?}"),
@@ -601,7 +607,7 @@ fn a_slow_auth_door_does_not_park_the_reactor() {
         );
         assert!(
             matches!(verdict, ChainVerdict::Identified { module, principal, .. }
-            if module == "slow-idp" && principal.id == "oidc:alice"),
+            if module == "slow-idp" && principal.id == "oidc-v2:aHR0cHM6Ly9pc3N1ZXIuZTJlLmludmFsaWQ:alice"),
             "only the genuine signed token/real JWKS response qualifies the completion"
         );
     });
