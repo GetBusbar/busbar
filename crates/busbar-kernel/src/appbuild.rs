@@ -882,6 +882,7 @@ pub fn build_app_from_config_with_store(
     boot_store: Option<busbar_contract::store_calls::OpenedStore>,
     recover_usage_before_hydration: bool,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
+    config::security_policy::check_candidate(prior, &cfg, &plugins_cfg)?;
     let configured_card = config::card::CardFields::of_root(&cfg);
     let configured_view = Arc::new(config::readback::ConfiguredView::from_root(
         &cfg,

@@ -244,17 +244,10 @@ pub struct SigningKeyRotateView {
 /// `observability` section here, and no `metrics` one either: 1.5.3 DELETED both from the config
 /// grammar, and `RootSettings` (what this endpoint projects) carries neither field: a PUT naming
 /// `observability` is a loud `400` (`deny_unknown_fields`), never a silent no-op. All telemetry
-/// egress is now `export:`, a NAMED MAP of exporter instances that this endpoint does not reach at
-/// all: it is edited in `config.yaml` and made live by a plugin reload, not by `PUT /config/settings`.
-/// Each `export:` entry is keyed by an operator-chosen instance name and carries a `module:` naming
-/// the exporter plus a `settings:` bag that module validates, and MAY carry a `streams:`
-/// subscription list. The built-in modules are `prometheus` (carries the `metrics` stream), `otlp`
-/// (`traces`), and `request-log-webhook` + `request-log-file` (`logs`); subscribing an instance to a
-/// stream its module does not carry is rejected rather than silently delivering nothing. An entry
-/// MAY also carry a `fields:` projection, but do NOT plan on it in 1.5.3: it is parsed and enforced
-/// yet unreachable with every built-in module, because each stream they carry has a pinned field
-/// that has no producer yet, so any `fields:` on them is rejected. Omit it and receive the stream's
-/// produced default set.
+/// egress uses the named `export:` map. Export definitions and explicit supported field projections
+/// are authored through the named exporter routes or source-fenced configuration document edits.
+/// Module-carried streams, produced fields and required pinned fields are published in the export
+/// form schema; lifecycle and restart requirements remain explicit in mutation responses.
 /// `advanced` is live EXCEPT `response_headers`: `response_headers.server_timing` is
 /// baked into router middleware state at boot (same "config apply swaps `Arc<App>`, never the
 /// router" freezing as `max_inbound_concurrent`) and `response_headers.route_policy` seeds a
@@ -313,6 +306,9 @@ pub struct HookSchemaView {
 /// precedence rule from context; the server always picks exactly one source and reports which.
 #[derive(Serialize, JsonSchema)]
 pub struct PluginSchemaView {
+    /// Ownership metadata; lifecycle settings schemas do not replace authored input grammar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<crate::v1::contract::PluginConfiguration>,
     pub name: String,
     /// The plugin's semantic version from its manifest. Present on `POST /plugins/inspect` (which
     /// previews an on-disk candidate's manifest) and installed_archive schema reads; absent on
@@ -335,7 +331,8 @@ pub struct PluginSchemaView {
     /// `"describe"` when a currently-loaded `kind: hook` answered its live `describe` wire
     /// message; `"statement"` for a linked plugin; `"manifest"` for a dropped-in plugin
     /// (its signed Statement schema, or the legacy manifest fallback); "installed_archive" for
-    /// an explicit archive lookup bound to the returned archive_sha256. Lets
+    /// an explicit archive lookup bound to the returned archive_sha256. source=linked_statement
+    /// requests read the startup cache and return "statement" here. Lets
     /// busbar-ui explain "why does this form look different from what I expected" without
     /// implementing the describe/manifest precedence rule itself.
     pub source: String,

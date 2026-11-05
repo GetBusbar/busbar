@@ -2636,6 +2636,13 @@ impl<K: Kind> Plugin<K> {
         self.inner.name()
     }
 
+    /// The loader's exact host-service identity. The composition root shares these Arc identities
+    /// with record drivers; reconstructing the same text would create a different generation.
+    #[must_use]
+    pub fn service_caller(&self) -> Option<busbar_contract::services::Caller> {
+        self.inner.wake.caller.get().cloned()
+    }
+
     pub(crate) fn note(&self, severity: u8, text: &str) {
         self.inner.sink.diag(Diagnostic {
             id: DIAG_LOG,

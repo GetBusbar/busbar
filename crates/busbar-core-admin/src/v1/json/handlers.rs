@@ -632,7 +632,7 @@ pub(crate) struct PutGroupReq {
 /// changed, the rest preserved from the current definition. The ergonomic "raise Alice's budget"
 /// (send just `limits`) and "freeze a group" (send `enabled: false`) verb. `limits`/`child_default`
 /// REPLACE their whole list when present (a list can't be field-merged). To CLEAR `parent` or
-/// `child_default` (make a group a root / drop its template), use `PUT` with the full definition.
+/// `child_default` (make a group a root / drop its template), name it in `clear`. Legacy null is a no-op.
 /// `deny_unknown_fields` so a typo'd field is a 400, never a silent no-op.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -645,6 +645,45 @@ pub(crate) struct GroupPatchReq {
     limits: Option<Vec<busbar_kernel::config::LimitCfg>>,
     #[serde(default)]
     child_default: Option<busbar_kernel::config::groups::ChildDefault>,
+    /// Explicit removal; omitted/null legacy fields remain no-ops.
+    #[serde(default)]
+    clear: Vec<GroupClearField>,
+}
+
+#[derive(serde::Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum GroupClearField {
+    Parent,
+    ChildDefault,
+}
+
+impl GroupPatchReq {
+    fn apply(
+        self,
+        base: busbar_kernel::config::GroupCfg,
+    ) -> Result<busbar_kernel::config::GroupCfg, AdminError> {
+        if (self.parent.is_some() && self.clear.contains(&GroupClearField::Parent))
+            || (self.child_default.is_some() && self.clear.contains(&GroupClearField::ChildDefault))
+        {
+            return Err(AdminError::Validation(
+                "a group patch cannot both set and clear the same field".into(),
+            ));
+        }
+        let mut merged = merge_group_patch(
+            base,
+            self.parent,
+            self.enabled,
+            self.limits,
+            self.child_default,
+        );
+        for field in self.clear {
+            match field {
+                GroupClearField::Parent => merged.parent = None,
+                GroupClearField::ChildDefault => merged.child_default = None,
+            }
+        }
+        Ok(merged)
+    }
 }
 
 pub(crate) async fn register_hook(
@@ -990,13 +1029,7 @@ pub(crate) async fn patch_group(
             return Err(e);
         }
 
-        let merged = merge_group_patch(
-            existing.clone(),
-            req.parent,
-            req.enabled,
-            req.limits,
-            req.child_default,
-        );
+        let merged = req.apply(existing.clone())?;
         let installed = Arc::new(build_with_group(current, &txn_name, merged)?);
 
         let p = installed.clone();
@@ -2648,7 +2681,37 @@ pub(crate) async fn put_config_settings(
 pub(crate) struct PatchSettingsReq {
     // settings-leak-lint: allow — INBOUND request body (`Deserialize` only). This is the operator
     // settings-leak-lint: allow — the envelope member; `redact_settings_bags` above has
-    settings: serde_json::Map<String, serde_json::Value>,
+    #[serde(default, deserialize_with = "present_settings_mode")]
+    settings: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Explicit top-level edits preserve all unmentioned settings, including private values.
+    #[serde(default, deserialize_with = "present_settings_mode")]
+    edit: Option<super::settings_edit::SettingsEdit>,
+}
+
+fn present_settings_mode<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+impl PatchSettingsReq {
+    fn apply(
+        self,
+        existing: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, AdminError> {
+        match (self.settings, self.edit) {
+            (Some(settings), None) => {
+                crate::v1::service::validate_hook_settings_size(&settings)?;
+                Ok(settings)
+            }
+            (None, Some(edit)) => edit.apply(existing),
+            _ => Err(AdminError::Validation(
+                "select exactly one settings replacement or explicit edit".into(),
+            )),
+        }
+    }
 }
 
 pub(crate) async fn patch_hook_settings(
@@ -2662,9 +2725,6 @@ pub(crate) async fn patch_hook_settings(
     let expected = ok_or_respond!(if_match_version(&headers));
     let req: PatchSettingsReq = ok_or_respond!(boxed json_body(&body, "settings"));
 
-    if let Err(e) = crate::v1::service::validate_hook_settings_size(&req.settings) {
-        return err_json(&e);
-    }
     let current = handle.load();
     let resource = format!("hook:{name}");
     let Some(existing) = current.hook_registry.get(&name) else {
@@ -2682,7 +2742,10 @@ pub(crate) async fn patch_hook_settings(
         return err_json(&e);
     }
     let mut updated = existing.clone();
-    updated.settings = req.settings;
+    updated.settings = match req.apply(existing.settings.clone()) {
+        Ok(settings) => settings,
+        Err(error) => return reject("hook.settings", &resource, &actor, &error),
+    };
     let pre_push_version = current.config_version;
     let settings_version = pre_push_version.wrapping_add(1);
 
@@ -2773,9 +2836,20 @@ pub(crate) async fn plugin_schema(
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     if let Some(source) = query.get("source") {
+        if source == "linked_statement" {
+            if query.contains_key("expected_archive_sha256") {
+                return err_json(&AdminError::Validation(
+                    "expected_archive_sha256 requires source=installed_archive".into(),
+                ));
+            }
+            return match cached_linked_plugin_schema(&handle.load(), &name) {
+                Some(view) => ok_json(StatusCode::OK, &view),
+                None => err_json(&AdminError::not_found(format!("linked plugin `{name}`"))),
+            };
+        }
         if source != "installed_archive" {
             return err_json(&AdminError::Validation(
-                "unknown schema source; expected installed_archive".into(),
+                "unknown schema source; expected installed_archive or linked_statement".into(),
             ));
         }
         let expected = query.get("expected_archive_sha256").cloned();
@@ -2824,26 +2898,30 @@ pub(crate) async fn plugin_schema(
 
         let kind = loadable.as_ref().map(|p| p.kind.clone());
         let restart_required_default = kind.as_deref().map(|k| kind_restart_default(&current, k));
-        return ok_json(
-            StatusCode::OK,
-            &hook_schema_selection(
-                &name,
-                described,
-                (
-                    loadable.as_ref().and_then(|p| p.settings_schema.as_deref()),
-                    if loadable.as_ref().is_some_and(|p| p.linked) {
-                        "statement"
-                    } else {
-                        "manifest"
-                    },
-                ),
-                trust,
-                kind.as_deref(),
-                restart_required_default,
+        let mut selection = hook_schema_selection(
+            &name,
+            described,
+            (
+                loadable.as_ref().and_then(|p| p.settings_schema.as_deref()),
+                if loadable.as_ref().is_some_and(|p| p.linked) {
+                    "statement"
+                } else {
+                    "manifest"
+                },
             ),
+            trust,
+            kind.as_deref(),
+            restart_required_default,
         );
+        if let Some(row) = loadable.as_ref() {
+            selection["configuration"] = loaded_plugin_configuration(&current, row);
+        }
+        return ok_json(StatusCode::OK, &selection);
     }
     let Some(loadable) = current.hook_env.registry.resolve(&name) else {
+        if let Some(view) = cached_linked_plugin_schema(&current, &name) {
+            return ok_json(StatusCode::OK, &view);
+        }
         return err_json(&AdminError::not_found(format!("plugin `{name}`")));
     };
     let trust = verdict_trust(&loadable.trust);
@@ -2852,6 +2930,7 @@ pub(crate) async fn plugin_schema(
         StatusCode::OK,
         &json!({
             "name": name,
+            "configuration": loaded_plugin_configuration(&current, &loadable),
             "schema": schema,
             "schema_error": schema_error,
             "trust": trust,
@@ -2860,6 +2939,52 @@ pub(crate) async fn plugin_schema(
             "restart_required_default": kind_restart_default(&current, &loadable.kind),
         }),
     )
+}
+
+fn cached_linked_plugin_schema(
+    app: &busbar_kernel::state::App,
+    name: &str,
+) -> Option<serde_json::Value> {
+    let stated = app
+        .plugin_admission?
+        .linked_configuration()
+        .into_iter()
+        .find(|row| row.name == name || row.alias == name)?;
+    let configuration = crate::v1::plugin_configuration::configuration(
+        &stated.kind,
+        stated.configuration.as_ref(),
+        "linked_statement",
+        true,
+    );
+    let publisher = stated.publisher.clone();
+    let mut view = crate::v1::service::inspect_plugin_view(
+        stated,
+        busbar_kernel::admission::Judged::Trusted { publisher },
+        |kind| kind_restart_default(app, kind),
+    );
+    view["source"] = json!("statement");
+    view["configuration"] = json!(configuration);
+    Some(view)
+}
+
+fn loaded_plugin_configuration(
+    app: &busbar_kernel::state::App,
+    row: &busbar_contract::plugin_rows::Row,
+) -> serde_json::Value {
+    let declaration = app.plugin_admission.and_then(|admission| {
+        admission.loaded_configuration(app.hook_env.registry.as_ref(), &row.name)
+    });
+    serde_json::to_value(crate::v1::plugin_configuration::configuration(
+        &row.kind,
+        declaration.as_ref(),
+        if row.linked {
+            "linked_statement"
+        } else {
+            "loaded_manifest"
+        },
+        app.plugin_admission.is_some(),
+    ))
+    .expect("configuration metadata serializes")
 }
 
 fn hook_schema_selection(
@@ -3168,15 +3293,15 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ap("/plugins/{file}/schema"),
         json!({
             "get": {
-                "summary": "The plugin settings JSON Schema for every kind. source=installed_archive reads the named disk artifact, optionally fenced by expected_archive_sha256; it never substitutes a loaded generation. Without source, resolve the loaded module by name or alias. Canonical Statement first, legacy manifest field only when the Statement carries no schema. Dropped plugins are read from the signed manifest without opening the library; linked plugins publish their Statement. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)",
+                "summary": "The plugin settings JSON Schema for every kind. source=installed_archive reads the named disk artifact, optionally fenced by expected_archive_sha256; it never substitutes a loaded generation. source=linked_statement reads a linked plane/transport declaration cached during startup. Without source, resolve the loaded module by name or alias, then the linked declaration cache. Canonical Statement first, legacy manifest field only when the Statement carries no schema. Dropped plugins are read from the signed manifest without opening the library; linked plugins publish their Statement. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)",
                 "security": [{"adminToken": []}],
                 "parameters": [{
                     "name": "file", "in": "path", "required": true,
                     "schema": {"type": "string"}
                 }, {
                     "name": "source", "in": "query", "required": false,
-                    "schema": {"type": "string", "enum": ["installed_archive"]},
-                    "description": "Read and validate the named disk archive instead of resolving a loaded module name/alias."
+                    "schema": {"type": "string", "enum": ["installed_archive", "linked_statement"]},
+                    "description": "Read a named disk archive, or a linked plane/transport declaration cached during startup. Without source, resolve the current registry then the linked declaration cache."
                 }, {
                     "name": "expected_archive_sha256", "in": "query", "required": false,
                     "schema": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -3624,7 +3749,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ap("/keys/{id}/revoke"),
         json!({
             "post": {
-                "summary": "REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent: revoking an already-revoked key is 200. DELETE /keys/{id} is the revoke-AND-forget variant (1.5.0)",
+                "summary": "REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent: revoking an already-revoked key is 200. DELETE /keys/{id} tombstones the binding while retaining usage and audit attribution",
                 "security": [{"adminToken": []}],
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 RESPONSES_KEY: {
@@ -4145,7 +4270,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     body!("/plugins/rollback", "post", PluginRollbackReq);
     body!("/config/rollback", "post", RollbackReq);
     body_optional!("/restart", "post", RestartReq);
-    body!("/hooks/{name}/settings", "patch", PatchSettingsReq);
+    body_raw!(
+        "/hooks/{name}/settings",
+        "patch",
+        super::contract_metadata::hook_settings_schema()
+    );
     body!("/keys", "post", crate::keys::CreateKeyReq);
     body!("/keys/{id}", "patch", crate::keys::UpdateKeyReq);
 
@@ -4203,10 +4332,10 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "The group name."},
-                "config": config_doc("A `groups:` entry, as JSON."),
+                "config": super::config_forms::core_reference("Group"),
             },
             "required": ["name", "config"],
-            "additionalProperties": false
+            "additionalProperties": true
         })
     );
     body_raw!(
@@ -4214,26 +4343,15 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         "put",
         json!({
             "type": "object",
-            "properties": {"config": config_doc("A `groups:` entry, as JSON.")},
+            "properties": {"config": super::config_forms::core_reference("Group")},
             "required": ["config"],
-            "additionalProperties": false
+            "additionalProperties": true
         })
     );
     body_raw!(
         "/groups/{name}",
         "patch",
-        json!({
-            "type": "object",
-            "description": "A partial update: only the fields present are changed. `limits` and \
-                            `child_default` REPLACE their whole value when present.",
-            "properties": {
-                "parent": {"type": ["string", "null"]},
-                "enabled": {"type": ["boolean", "null"]},
-                "limits": {"type": ["array", "null"], "items": config_doc("A `limits:` entry.")},
-                "child_default": config_doc("A `child_default:` template."),
-            },
-            "additionalProperties": false
-        })
+        super::contract_metadata::group_patch_schema()
     );
     body_raw!(
         PATH_HOOKS,
@@ -4242,10 +4360,10 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "The hook name."},
-                "config": config_doc("A `hooks:` entry, as JSON."),
+                "config": super::config_forms::core_reference("Hook"),
             },
             "required": ["name", "config"],
-            "additionalProperties": false
+            "additionalProperties": true
         })
     );
     body_raw!(
@@ -4253,9 +4371,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         "put",
         json!({
             "type": "object",
-            "properties": {"config": config_doc("A `hooks:` entry, as JSON.")},
+            "properties": {"config": super::config_forms::core_reference("Hook")},
             "required": ["config"],
-            "additionalProperties": false
+            "additionalProperties": true
         })
     );
 
@@ -4348,6 +4466,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }
     }
 
+    super::config_forms::insert_core_components(&mut schemas);
+    super::contract_metadata::complete(&mut paths, &mut schemas);
+
     for (path, item) in paths.iter_mut() {
         let Some(item) = item.as_object_mut() else {
             continue;
@@ -4365,6 +4486,8 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     json!({
         "openapi": "3.1.0",
         "x-busbar-config-schemas": super::config_forms::extension(),
+        "x-busbar-exact-numbers": super::contract_metadata::number_profile(),
+        "x-busbar-settings-profile": "integer-token-v1",
         "info": {
             "title": "Busbar Admin API",
             "version": env!("CARGO_PKG_VERSION"),
@@ -4703,9 +4826,8 @@ mod archive_precondition_contract_tests {
         let doc = openapi_doc();
         let operation = &doc["paths"]["/api/v1/admin/plugins/{file}/schema"]["get"];
         let parameters = operation["parameters"].as_array().unwrap();
-        assert!(parameters
-            .iter()
-            .any(|p| p["name"] == "source" && p["schema"]["enum"] == json!(["installed_archive"])));
+        assert!(parameters.iter().any(|p| p["name"] == "source"
+            && p["schema"]["enum"] == json!(["installed_archive", "linked_statement"])));
         assert!(parameters
             .iter()
             .any(|p| p["name"] == "expected_archive_sha256" && p["required"] == false));

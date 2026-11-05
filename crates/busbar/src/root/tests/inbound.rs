@@ -16,6 +16,9 @@ use crate::root::loader::dispatch::auth_handle::{self, RefSpace};
 const OWNER: u64 = 11;
 const GEN: u64 = 1;
 
+#[path = "inbound_admin_sender_constraint.rs"]
+mod admin_sender_constraint;
+
 fn captured_rates() -> std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg> {
     let plane = busbar_kernel::plane_driver::registry::plane_decl_for(
         busbar_kernel::plane_driver::dispatch::fallback_key(),

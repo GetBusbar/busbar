@@ -6,9 +6,16 @@
 
 use serde_json::{json, Value};
 
+mod core;
 #[cfg(test)]
 mod integer_token;
+#[cfg(test)]
+mod store_secret_tests;
 mod tables;
+
+pub(super) use core::{
+    component_reference as core_reference, insert_components as insert_core_components,
+};
 #[cfg(test)]
 mod tests;
 
@@ -30,10 +37,46 @@ fn object(properties: Value) -> Value {
 
 pub(super) fn schema_document() -> Value {
     let mut definitions = tables::definitions();
+    core::definitions(&mut definitions);
     let mut secret = busbar_contract::secret_ref::oneof_schema();
     secret["writeOnly"] = json!(true);
     secret["description"] = json!("Core user-input SecretRef grammar. Plugin-declared shorthand is resolved separately; use explicit module/settings for portable forms. Never an inline credential.");
     definitions.insert("SecretRef".into(), secret);
+    let store_object = object(json!({
+        "module":{"type":"string","default":""},
+        "settings":{"type":"object","default":{},"x-busbar-module-settings":true}
+    }));
+    let mut store = json!({"oneOf":[store_object,{
+        "type":"array","prefixItems":[{"type":"string"},{"type":"object","x-busbar-module-settings":true}],
+        "items":{},"minItems":0,"maxItems":2,
+        "description":"Existing positional parser form: [], [module], or [module, settings]. Omitted trailing fields use the same defaults as the object form."
+    }]});
+    store["description"] = json!("The singular store wrapper, canonically an object. Its parser also accepts a positional array. Omitted module defaults to an empty string and omitted settings to an empty object; configuration resolution requires a selected store module.");
+    store["x-busbar-runtime-validation"] = json!([
+        "a store selection is required and its module must resolve to an admitted store",
+        "module lifecycle settings after host secret resolution",
+        "store changes require a process restart"
+    ]);
+    definitions.insert("Store".into(), store);
+    let secret_module_object = object(json!({
+        "settings":{"type":"object","default":{},"x-busbar-module-settings":true}
+    }));
+    let mut secret_module = json!({"oneOf":[secret_module_object,{
+        "type":"array","prefixItems":[{"type":"object","x-busbar-module-settings":true}],
+        "items":{},"minItems":0,"maxItems":1,
+        "description":"Existing positional parser form: [] or [settings]. Omitted settings default to an empty object."
+    }]});
+    secret_module["description"] = json!("Module-level initialization settings, keyed by the secret module name or alias under secrets, canonically an object; the parser also accepts a positional array. This is not a named instance and has no inner module field. Per-reference SecretRef settings are a separate input.");
+    secret_module["x-busbar-runtime-validation"] = json!([
+        "the map key must resolve to an admitted secret module; built-in env/file modules take no module-level configuration",
+        "initialization SecretRefs resolve only through the bootstrap env/file resolvers, never another secret plugin",
+        "module lifecycle settings after bootstrap secret resolution",
+        "secret module initialization changes require a process restart"
+    ]);
+    definitions.insert("SecretModule".into(), secret_module);
+    let mut secrets = dictionary(reference("SecretModule"));
+    secrets["default"] = json!({});
+    secrets["description"] = json!("Module-keyed secret initialization map. Module selection and bootstrap SecretRef restrictions are runtime validation, not new wrapper fields.");
     let scope = nullable(json!({"enum":["read-only","full"]}));
     definitions.insert(
         "BrowserLogin".into(),
@@ -116,7 +159,11 @@ pub(super) fn schema_document() -> Value {
             "export":dictionary(reference("Export")),
             "providers":dictionary(reference("ProviderDeployment")),
             "models":dictionary(reference("Model")),
-            "pools":reference("Pools")
+            "pools":reference("Pools"),
+            "groups":dictionary(reference("Group")),
+            "hooks":dictionary(reference("HookDefinition")),
+            "store":nullable(reference("Store")),
+            "secrets":secrets
         },
         "additionalProperties":true,
         "x-busbar-partial":true,
@@ -195,9 +242,13 @@ pub(super) fn extension() -> Value {
         "declared_plane_scope_kinds":scope_kinds,
         "admin_verbs":crate::verb::admin_rows().map(|row|json!({"name":row.name,"scope":row.scope.as_str(),"bound":row.bound})).collect::<Vec<_>>(),
         "ownership":{
+            "groups":"host GroupCfg, compact LimitCfg and ChildDefault; runtime validation owns tree and pool references",
+            "hooks":"deploy HookDefCfg; admin POST/PUT use distinct HookCfg schema",
             "auth":"host AuthDeployCfg and policy prepass",
             "identity-providers":"host IdentityProviderCfg wrapper; module owns settings",
             "export":"host ExportDefCfg and export projection resolver; module owns settings",
+            "store":"host StoreCfg singular wrapper; selected store module owns settings",
+            "secrets":"host SecretModuleCfg map keyed by module; initialization settings resolve only bootstrap env/file SecretRefs",
             "providers":"host ProviderDeploy grammar; protocol-specific remainder belongs to the plane",
             "provider_catalog":"separate document: map of ProviderCatalogEntry",
             "models":"host ModelCfg",

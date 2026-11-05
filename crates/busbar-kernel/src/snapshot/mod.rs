@@ -322,7 +322,7 @@ pub fn usage_tap_fault(protocol: &str, reason: &'static str) {
             protocol = protocol,
             reason = reason,
             "usage tap: a same-protocol 2xx body's usage could not be read; \
-             billing 0 tokens for this request"
+             billing follows the plane's usage policy"
         );
     } else {
         crate::diagnostics::diag_debug!(
@@ -330,7 +330,7 @@ pub fn usage_tap_fault(protocol: &str, reason: &'static str) {
             protocol = protocol,
             reason = reason,
             "usage tap: a same-protocol 2xx body's usage still could not be read; \
-             billing 0 tokens for this request"
+             billing follows the plane's usage policy"
         );
     }
 }

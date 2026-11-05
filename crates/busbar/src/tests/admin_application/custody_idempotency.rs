@@ -269,3 +269,37 @@ fn a_legacy_refusal_cannot_hide_its_pending_successor_during_migration() {
         Err(Refused::InFlight)
     );
 }
+
+#[test]
+fn credential_body_binding_survives_process_cache_loss() {
+    let store = durable_store();
+    let now = busbar_kernel::store::now();
+    let key = key("credential-binding-actor", "create:bound-action");
+    let a = busbar_contract::abi::sdk::digest::sha256(br#"{"name":"a"}"#);
+    let b = busbar_contract::abi::sdk::digest::sha256(br#"{"name":"b"}"#);
+    let claim = durable::claim_bound(store.as_ref(), &key, a, now)
+        .unwrap()
+        .unwrap();
+    durable::settle(
+        store.as_ref(),
+        &claim,
+        now,
+        &Settled::Applied("key:public-id".into()),
+    )
+    .unwrap();
+    assert!(
+        matches!(durable::claim_bound(store.as_ref(), &key, a, now + 1), Ok(Err(Refused::Applied(resource))) if resource == "key:public-id")
+    );
+    for changed in [b, busbar_contract::abi::sdk::digest::sha256(b"{")] {
+        assert!(durable::claim_bound(store.as_ref(), &key, changed, now + 1).is_err());
+    }
+    let other = ("other-actor".into(), key.1.clone());
+    assert!(durable::claim_bound(store.as_ref(), &other, b, now + 1)
+        .unwrap()
+        .is_ok());
+    assert!(
+        durable::claim_bound(store.as_ref(), &key, b, now + IDEMPOTENCY_TTL_SECS)
+            .unwrap()
+            .is_ok()
+    );
+}

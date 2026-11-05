@@ -28,7 +28,10 @@ pub(crate) fn rotate_replay_key(id: &str, header: &str) -> String {
     key_replay_key(KeyOperation::Rotate(id), header)
 }
 
-type Slot<V> = (u64, Option<V>);
+type Slot<V> = (u64, Option<V>, Option<[u8; 32]>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BindingMismatch;
 
 pub struct IdempotencyCache<V> {
     slots: Mutex<HashMap<(String, String), Slot<V>>>,
@@ -52,21 +55,47 @@ impl<V: Clone> IdempotencyCache<V> {
     }
 
     pub fn probe(&self, key: (String, String), now: u64) -> Probe<'_, V> {
+        self.probe_inner(key, None, now)
+            .expect("unbound replay probe")
+    }
+
+    /// Compare the exact request fingerprint before returning any cached answer.
+    pub(crate) fn probe_bound(
+        &self,
+        key: (String, String),
+        fingerprint: [u8; 32],
+        now: u64,
+    ) -> Result<Probe<'_, V>, BindingMismatch> {
+        self.probe_inner(key, Some(fingerprint), now)
+    }
+
+    fn probe_inner(
+        &self,
+        key: (String, String),
+        fingerprint: Option<[u8; 32]>,
+        now: u64,
+    ) -> Result<Probe<'_, V>, BindingMismatch> {
         let mut guard = self.slots.lock().unwrap_or_else(|e| e.into_inner());
-        guard.retain(|_, (t, v)| v.is_none() || now.saturating_sub(*t) < IDEMPOTENCY_TTL_SECS);
-        match guard.get(&key) {
-            Some((_, Some(v))) => Probe::Replay(v.clone()),
-            Some((_, None)) => Probe::InFlight,
+        guard.retain(|_, (t, v, _)| v.is_none() || now.saturating_sub(*t) < IDEMPOTENCY_TTL_SECS);
+        if let Some((_, _, held)) = guard.get(&key) {
+            if fingerprint.is_some() && held != &fingerprint {
+                return Err(BindingMismatch);
+            }
+        }
+        Ok(match guard.get(&key) {
+            Some((_, Some(v), _)) => Probe::Replay(v.clone()),
+            Some((_, None, _)) => Probe::InFlight,
             None => {
-                guard.insert(key.clone(), (now, None));
+                guard.insert(key.clone(), (now, None, fingerprint));
                 drop(guard);
                 Probe::Reserved(Reservation {
                     cache: self,
                     key,
                     live: true,
+                    fingerprint,
                 })
             }
-        }
+        })
     }
 }
 
@@ -80,6 +109,7 @@ pub struct Reservation<'a, V: Clone> {
     cache: &'a IdempotencyCache<V>,
     key: (String, String),
     live: bool,
+    fingerprint: Option<[u8; 32]>,
 }
 
 impl<'a, V: Clone> Reservation<'a, V> {
@@ -89,7 +119,7 @@ impl<'a, V: Clone> Reservation<'a, V> {
 
     pub fn commit(mut self, value: V, now: u64) {
         let mut guard = self.cache.slots.lock().unwrap_or_else(|e| e.into_inner());
-        guard.insert(self.key.clone(), (now, Some(value)));
+        guard.insert(self.key.clone(), (now, Some(value), self.fingerprint));
         self.live = false;
     }
 
@@ -108,7 +138,7 @@ impl<'a, V: Clone> Reservation<'a, V> {
 
     fn clear_inner(&self) {
         let mut guard = self.cache.slots.lock().unwrap_or_else(|e| e.into_inner());
-        if matches!(guard.get(&self.key), Some((_, None))) {
+        if matches!(guard.get(&self.key), Some((_, None, _))) {
             guard.remove(&self.key);
         }
     }
@@ -125,7 +155,7 @@ impl<'a, V: Clone> Drop for Reservation<'a, V> {
 pub mod durable {
     use busbar_contract::records::{PlaneDisposition, PlaneRecordRef, RecordStore, Retention};
 
-    use super::IDEMPOTENCY_TTL_SECS;
+    use super::{BindingMismatch, IDEMPOTENCY_TTL_SECS};
 
     pub const REPLAY_KIND: &str = "busbar.admin-idempotency";
 
@@ -252,6 +282,65 @@ pub mod durable {
             return Ok(None);
         }
         Ok(Some((generation, settled)))
+    }
+
+    /// Bind a credential action before effects. Only digests are persisted; never secrets.
+    /// A competing claim with no binding yet remains in flight and cannot replay an answer.
+    pub fn claim_bound(
+        store: &dyn RecordStore,
+        key: &(String, String),
+        fingerprint: [u8; 32],
+        now: u64,
+    ) -> Result<Result<Claim, Refused>, BindingMismatch> {
+        let id = format!("binding:{}", record_id(key));
+        let check = || -> Result<Result<(), Refused>, BindingMismatch> {
+            match store.get_plane_record(REPLAY_KIND, &id) {
+                Ok(Some(bytes)) if bytes.len() == 40 => {
+                    let written =
+                        u64::from_be_bytes(bytes[..8].try_into().expect("length checked"));
+                    if now.saturating_sub(written) < IDEMPOTENCY_TTL_SECS
+                        && bytes[8..] != fingerprint
+                    {
+                        return Err(BindingMismatch);
+                    }
+                }
+                Ok(Some(_)) => {
+                    return Ok(Err(Refused::Unavailable(
+                        "unreadable request binding".into(),
+                    )))
+                }
+                Err(error) => return Ok(Err(Refused::Unavailable(error.to_string()))),
+                Ok(None) => {}
+            }
+            Ok(Ok(()))
+        };
+        if let Err(refused) = check()? {
+            return Ok(Err(refused));
+        }
+        let claim = match claim(store, key, now) {
+            Ok(claim) => claim,
+            Err(refused) => {
+                // Another process may have installed the binding after our first read.
+                if let Err(error) = check()? {
+                    return Ok(Err(error));
+                }
+                return Ok(Err(refused));
+            }
+        };
+        let mut body = now.to_be_bytes().to_vec();
+        body.extend_from_slice(&fingerprint);
+        if let Err(error) = store.upsert_plane_record(PlaneRecordRef {
+            kind: REPLAY_KIND,
+            id: &id,
+            parent: None,
+            seq: 0,
+            ts: now,
+            disposition: PlaneDisposition::Terminal,
+            body: &body,
+        }) {
+            return Ok(Err(Refused::Unavailable(error.to_string())));
+        }
+        Ok(Ok(claim))
     }
 
     pub fn claim(

@@ -132,11 +132,18 @@ async fn body(response: reqwest::Response, status: u16) -> serde_json::Value {
 }
 
 fn schema_candidate(schema: &'static [u8], legacy: Option<&str>) -> Vec<u8> {
-    let mut manifest = plugins::manifest(
-        "store",
-        "installed-schema-target",
-        plugins::FIXTURE_PUBLISHER,
-    );
+    declaration_candidate("store", schema, legacy, &[], &[])
+}
+
+fn declaration_candidate(
+    kind: &str,
+    schema: &'static [u8],
+    legacy: Option<&str>,
+    sections: &[(&str, u32)],
+    claims: &[&str],
+) -> Vec<u8> {
+    let mut manifest =
+        plugins::manifest(kind, "installed-schema-target", plugins::FIXTURE_PUBLISHER);
     // Encode the documented pointer-free canonical metadata format directly. This fixture
     // exercises signed archive inspection, never a plugin door or executable library. The real
     // canonical reader below verifies the byte structure before the archive is signed.
@@ -154,12 +161,16 @@ fn schema_candidate(schema: &'static [u8], legacy: Option<&str>) -> Vec<u8> {
     );
     word(
         &mut rendering,
-        busbar_contract::abi::mechanism::KindCode::Store as u32,
+        match kind {
+            "plane" => busbar_contract::abi::mechanism::KindCode::Plane,
+            "transport" => busbar_contract::abi::mechanism::KindCode::Transport,
+            _ => busbar_contract::abi::mechanism::KindCode::Store,
+        } as u32,
     );
     word(&mut rendering, manifest.abi_version);
     word(&mut rendering, 1); // max_inflight
     bytes(&mut rendering, b"installed-schema-target");
-    bytes(&mut rendering, b"1.6.0");
+    bytes(&mut rendering, manifest.version.as_bytes());
     for _ in 0..8 {
         word(&mut rendering, 0);
     } // families, diagnostics, tail, tail facts,
@@ -175,10 +186,20 @@ fn schema_candidate(schema: &'static [u8], legacy: Option<&str>) -> Vec<u8> {
     word(&mut rendering, 0); // blob flags
     bytes(&mut rendering, schema);
     rendering.extend(0u64.to_le_bytes()); // marks
-    for _ in 0..8 {
+    word(&mut rendering, 0); // words
+    word(&mut rendering, 0); // rewrites
+    word(&mut rendering, sections.len().try_into().unwrap());
+    for (name, flags) in sections {
+        bytes(&mut rendering, name.as_bytes());
+        word(&mut rendering, *flags);
+    }
+    for _ in 0..4 {
         word(&mut rendering, 0);
-    } // words, rewrites, sections, needs,
-      // target, trust, answers, claims
+    } // needs, target, trust, answers
+    word(&mut rendering, claims.len().try_into().unwrap());
+    for claim in claims {
+        bytes(&mut rendering, claim.as_bytes());
+    }
     let facts = busbar_contract::abi::mechanism::rendering::read(&rendering).unwrap();
     assert_eq!(facts.name, "installed-schema-target");
     manifest.statement = Some(hex::encode(rendering));
@@ -357,4 +378,294 @@ async fn installed_schema_urls_bind_actual_archive_before_reload_and_refuse_stal
     .await;
     server.abort();
     let _ = server.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_configuration_inactive_signed_archives_report_declarations_without_loading_code() {
+    if isolated() {
+        return;
+    }
+    use busbar_contract::abi::mechanism::door::{
+        SECTION_CONSUMED, SECTION_DECLARING, SECTION_SELECTS,
+    };
+    let (app, scratch) = application();
+    let router = busbar_core_admin::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}/api/v1/admin");
+    let stores = body(
+        client
+            .get(format!("{base}/plugins?type=store"))
+            .bearer_auth(TOKEN)
+            .send()
+            .await
+            .unwrap(),
+        200,
+    )
+    .await;
+    let store = stores["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["file"] == "store.tar.gz")
+        .unwrap();
+    let loaded = body(
+        client
+            .get(format!(
+                "{base}/plugins/{}/schema",
+                store["name"].as_str().unwrap()
+            ))
+            .bearer_auth(TOKEN)
+            .send()
+            .await
+            .unwrap(),
+        200,
+    )
+    .await;
+    assert_eq!(
+        loaded["configuration"]["declaration_availability"],
+        "present"
+    );
+    assert_eq!(
+        loaded["configuration"]["declaration_source"],
+        "loaded_manifest"
+    );
+    assert_eq!(
+        loaded["configuration"]["root_keys"],
+        store["configuration"]["root_keys"]
+    );
+    assert_eq!(
+        loaded["configuration"]["sections"],
+        store["configuration"]["sections"]
+    );
+    for kind in ["plane", "transport"] {
+        let sections = if kind == "plane" {
+            vec![
+                ("fixture-root", SECTION_DECLARING),
+                ("fixture-owned", SECTION_SELECTS),
+                ("fixture-shared", SECTION_CONSUMED),
+            ]
+        } else {
+            Vec::new()
+        };
+        let claims = if kind == "transport" {
+            vec!["fixture-wire"]
+        } else {
+            Vec::new()
+        };
+        let archive = declaration_candidate(kind, b"", None, &sections, &claims);
+        let digest = busbar_contract::redacted::sha256_hex(&archive);
+        std::fs::write(scratch.0.join("inactive.tar.gz"), &archive).unwrap();
+        body(
+            client
+                .get(format!("{base}/plugins/installed-schema-target/schema"))
+                .bearer_auth(TOKEN)
+                .send()
+                .await
+                .unwrap(),
+            404,
+        )
+        .await;
+        let listed = body(
+            client
+                .get(format!("{base}/plugins?type={kind}"))
+                .bearer_auth(TOKEN)
+                .send()
+                .await
+                .unwrap(),
+            200,
+        )
+        .await;
+        let row = listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["file"] == "inactive.tar.gz")
+            .unwrap();
+        assert_eq!(row["has_schema"], false);
+        assert_eq!(row["archive_sha256"], digest);
+        let metadata = &row["configuration"];
+        assert_eq!(metadata["declaration_availability"], "present");
+        assert_eq!(metadata["declaration_source"], "installed_archive");
+        assert_eq!(metadata["input_schema_complete"], false);
+        if kind == "plane" {
+            assert_eq!(
+                metadata["root_keys"],
+                serde_json::json!(["fixture-root", "fixture-owned"])
+            );
+            assert_eq!(metadata["sections"][2]["consumed"], true);
+        } else {
+            assert_eq!(
+                metadata["root_keys"],
+                serde_json::json!([busbar_contract::plugin::Kind::Transport.root()])
+            );
+            assert_eq!(metadata["claims"], serde_json::json!(["fixture-wire"]));
+        }
+        let url = format!("{base}/plugins/inactive.tar.gz/schema?source=installed_archive&expected_archive_sha256={digest}");
+        let inspected = body(
+            client.get(&url).bearer_auth(TOKEN).send().await.unwrap(),
+            200,
+        )
+        .await;
+        assert_eq!(&inspected["configuration"], metadata);
+        assert_eq!(inspected["schema_state"], "absent");
+        // Changing the installed Statement invalidates the same archive fence, even without a schema.
+        std::fs::write(
+            scratch.0.join("inactive.tar.gz"),
+            declaration_candidate(kind, b"", None, &[], &[]),
+        )
+        .unwrap();
+        body(
+            client.get(&url).bearer_auth(TOKEN).send().await.unwrap(),
+            409,
+        )
+        .await;
+    }
+    let invalid = declaration_candidate("plane", b"", None, &[("fixture-invalid", u32::MAX)], &[]);
+    let digest = busbar_contract::redacted::sha256_hex(&invalid);
+    std::fs::write(scratch.0.join("inactive.tar.gz"), invalid).unwrap();
+    let inspected = body(client.get(format!("{base}/plugins/inactive.tar.gz/schema?source=installed_archive&expected_archive_sha256={digest}")).bearer_auth(TOKEN).send().await.unwrap(), 200).await;
+    assert_eq!(
+        inspected["configuration"]["declaration_availability"],
+        "unavailable"
+    );
+    assert_eq!(
+        inspected["configuration"]["root_keys"],
+        serde_json::json!([])
+    );
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_configuration_actual_linked_plane_and_transport_reads_never_call_doors() {
+    if isolated() {
+        return;
+    }
+    use busbar_contract::abi::mechanism::door::{Door, DoorFn};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static PLANE_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static TRANSPORT_CALLS: AtomicUsize = AtomicUsize::new(0);
+    extern "C" fn plane_door() -> &'static Door {
+        PLANE_CALLS.fetch_add(1, Ordering::SeqCst);
+        crate::LINKED.plane_doors[0]()
+    }
+    extern "C" fn transport_door() -> &'static Door {
+        TRANSPORT_CALLS.fetch_add(1, Ordering::SeqCst);
+        (crate::LINKED_TRANSPORT_DOORS[0].1)()
+    }
+    static PLANES: [DoorFn; 1] = [plane_door];
+    let linked = crate::root::linked::Linked {
+        plane_doors: &PLANES,
+        ..crate::LINKED
+    };
+    let transport_key = crate::LINKED_TRANSPORT_DOORS[0].0;
+    crate::root::settings_public::install_with_transports(
+        &linked,
+        None,
+        &[(transport_key, transport_door)],
+    );
+    let (app, _scratch) = application();
+    let expected = crate::root::settings_public::linked_configuration();
+    assert_eq!(expected.iter().filter(|row| row.kind == "plane").count(), 1);
+    assert_eq!(
+        expected
+            .iter()
+            .filter(|row| row.kind == "transport")
+            .count(),
+        1
+    );
+    let calls = (
+        PLANE_CALLS.load(Ordering::SeqCst),
+        TRANSPORT_CALLS.load(Ordering::SeqCst),
+    );
+    assert!(calls.0 > 0 && calls.1 > 0);
+    let router = busbar_core_admin::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}/api/v1/admin");
+    for declared in expected {
+        let listed = body(
+            client
+                .get(format!("{base}/plugins?type={}", declared.kind))
+                .bearer_auth(TOKEN)
+                .send()
+                .await
+                .unwrap(),
+            200,
+        )
+        .await;
+        let rows: Vec<_> = listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["loader"] == "compiled-in" && row["name"] == declared.name)
+            .collect();
+        assert_eq!(rows.len(), 1);
+        let row = rows[0];
+        assert_eq!(row["version"], declared.version);
+        assert_eq!(
+            row["configuration"]["declaration_source"],
+            "linked_statement"
+        );
+        assert_eq!(row["configuration"]["declaration_availability"], "present");
+        let url = format!(
+            "{base}/plugins/{}/schema?source=linked_statement",
+            declared.name
+        );
+        let read = body(
+            client.get(&url).bearer_auth(TOKEN).send().await.unwrap(),
+            200,
+        )
+        .await;
+        assert_eq!(read["configuration"], row["configuration"]);
+        assert_eq!(read["source"], "statement");
+        let facts = declared.configuration.unwrap();
+        if declared.kind == "transport" {
+            assert_eq!(
+                row["configuration"]["claims"],
+                serde_json::json!(facts.claims)
+            );
+            assert_eq!(
+                row["configuration"]["root_keys"],
+                serde_json::json!([busbar_contract::Kind::Transport.root()])
+            );
+        } else {
+            use busbar_contract::abi::mechanism::door::{SECTION_CONSUMED, SECTION_DECLARING};
+            let roots: Vec<_> = facts
+                .sections
+                .iter()
+                .filter(|(_, flags)| {
+                    flags & SECTION_DECLARING != 0 || flags & SECTION_CONSUMED == 0
+                })
+                .map(|(name, _)| name)
+                .collect();
+            assert_eq!(row["configuration"]["root_keys"], serde_json::json!(roots));
+            assert!(!roots.is_empty());
+        }
+        if let Some(url) = row["schema_url"].as_str() {
+            assert!(url.ends_with("?source=linked_statement"));
+        }
+        body(
+            client
+                .get(format!("{url}&expected_archive_sha256={}", "0".repeat(64)))
+                .bearer_auth(TOKEN)
+                .send()
+                .await
+                .unwrap(),
+            400,
+        )
+        .await;
+    }
+    assert_eq!(
+        (
+            PLANE_CALLS.load(Ordering::SeqCst),
+            TRANSPORT_CALLS.load(Ordering::SeqCst)
+        ),
+        calls
+    );
+    server.abort();
 }

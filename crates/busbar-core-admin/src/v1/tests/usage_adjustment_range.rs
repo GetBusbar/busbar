@@ -128,3 +128,21 @@ fn whole_adjustment_preserves_fractional_remainder_and_rejection_is_atomic() {
     assert!(fold_adjustments(&mut rows, &[adjustment(LANE, -26)]).is_err());
     assert_eq!(rows, before);
 }
+
+#[test]
+fn fractional_adjustments_project_without_whole_unit_rounding() {
+    let mut rows = vec![row(LANE, 0, 1)];
+    let exact = UsageAdjustment {
+        key_id: KEY.into(),
+        lane: LANE.into(),
+        era: 0,
+        entry_id: None,
+        delta: BTreeMap::from([(
+            UNIT_INPUT.into(),
+            busbar_contract::Count::parse("-0.000001").unwrap(),
+        )]),
+    };
+    super::super::fold_adjustments_exact(&mut rows, &[exact]).unwrap();
+    assert_eq!(rows[0].scale, 6);
+    assert_eq!(rows[0].tokens_input, 999_999);
+}

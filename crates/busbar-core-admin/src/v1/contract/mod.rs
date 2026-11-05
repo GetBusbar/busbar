@@ -4,6 +4,7 @@
 use serde::Serialize;
 
 pub mod taxonomy;
+pub use super::plugin_configuration::{PluginConfiguration, PluginConfigurationSection};
 
 pub use busbar_kernel::admin::gate::{
     required_scope, ADMIN_PREFIX, API_ROOT, PATH_ADMIN_AUTH, PATH_CONFIG_VALIDATE,
@@ -170,6 +171,9 @@ impl From<busbar_kernel::config::transaction::TxnError> for AdminError {
             busbar_kernel::config::transaction::TxnError::Conflict(msg) => {
                 AdminError::Conflict(msg)
             }
+            busbar_kernel::config::transaction::TxnError::Forbidden => AdminError::Forbidden {
+                needed: Scope::Full,
+            },
             busbar_kernel::config::transaction::TxnError::Internal => AdminError::Internal,
         }
     }
@@ -446,6 +450,12 @@ pub struct LimitView {
     /// Where `on_exhaust: downgrade` sends exhausted traffic. Present iff downgrading.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub downgrade_to: Option<String>,
+    /// Authored budget admission policy: exact (default when absent) or estimate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admission: Option<&'static str>,
+    /// Authored in-flight exhaustion policy: finish-unit (default when absent) or cut-stream.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_exhaustion: Option<&'static str>,
 }
 
 impl LimitView {
@@ -460,6 +470,14 @@ impl LimitView {
                 busbar_kernel::config::groups::OnExhaust::Downgrade => "downgrade",
             }),
             downgrade_to: l.downgrade_to.as_ref().map(|s| s.value.clone()),
+            admission: l.admission.map(|mode| match mode {
+                busbar_kernel::config::groups::AdmissionMode::Exact => "exact",
+                busbar_kernel::config::groups::AdmissionMode::Estimate => "estimate",
+            }),
+            on_exhaustion: l.on_exhaustion.map(|mode| match mode {
+                busbar_kernel::config::groups::ExhaustionMode::FinishUnit => "finish-unit",
+                busbar_kernel::config::groups::ExhaustionMode::CutStream => "cut-stream",
+            }),
         }
     }
 }
@@ -644,9 +662,13 @@ pub struct PluginView {
     /// and expected_archive_sha256 to inspect the exact disk bytes, not an older loaded generation.
     /// A malformed legacy schema keeps a URL and reports schema_error. Absent when no schema
     /// is published, or the archive cannot be read within the admission cap (an unavailable error).
-    /// Linked rows use their registered name and do not need a backing file.
+    /// Linked rows use their registered name and do not need a backing file. Cached linked
+    /// plane/transport URLs specify source=linked_statement to avoid archive/name shadowing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema_url: Option<String>,
+    /// Configuration ownership and declaration availability; no plugin settings values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<PluginConfiguration>,
     /// A malformed legacy schema, or an unavailable installed-archive schema. Distinct from
     /// an absent schema. Malformed legacy schema text keeps its URL; an unreadable archive
     /// omits the URL because the engine cannot bind a schema lookup to its bytes.
@@ -678,6 +700,7 @@ impl PluginView {
             valid: None,
             error: None,
             schema_url: None,
+            configuration: None,
             schema_error: None,
         }
     }

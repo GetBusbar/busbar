@@ -444,6 +444,7 @@ pub struct CoreGovernance {
     replay_store: Option<bound::ReplayStore>,
 
     trust: TrustDesk,
+    effect: Option<(busbar_kernel::auth::effect::Context, EffectAdmission)>,
 }
 
 impl CoreGovernance {
@@ -474,6 +475,7 @@ impl CoreGovernance {
             replays: Arc::new(bound::ReplayCache::new()),
             replay_store: None,
             trust: no_trust(),
+            effect: None,
         }
     }
 
@@ -539,6 +541,31 @@ impl CoreGovernance {
         self
     }
 
+    fn fenced(
+        mut self,
+        context: Option<busbar_kernel::auth::effect::Context>,
+        admission: Option<EffectAdmission>,
+    ) -> Self {
+        self.effect = context.zip(admission);
+        self
+    }
+
+    fn admit_effect(
+        &self,
+    ) -> Result<Option<busbar_kernel::config::transaction::EffectGuard>, AdminAnswer> {
+        self.effect
+            .as_ref()
+            .map(|(context, admit)| admit(context))
+            .transpose()
+            .map_err(|_| {
+                admin_mount::error_answer_with_message(
+                    403,
+                    "forbidden",
+                    "current authority does not admit this effect",
+                )
+            })
+    }
+
     fn run(&self) -> AdminAnswer {
         self.dispatch.execute(self.verb, &self.request)
     }
@@ -562,6 +589,20 @@ impl busbar_core_admin::Governance for CoreGovernance {
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         request: &[u8],
     ) -> Result<AdminAnswer, busbar_core_admin::GovernanceError> {
+        let _effect = if matches!(
+            verb,
+            KernelVerb::AmendRateHistory
+                | KernelVerb::Adjust
+                | KernelVerb::TrustApprove
+                | KernelVerb::TrustRevoke
+        ) {
+            match self.admit_effect() {
+                Ok(guard) => guard,
+                Err(answer) => return Ok(answer),
+            }
+        } else {
+            None
+        };
         if verb == KernelVerb::AmendRateHistory {
             return amend_rate_history_effect(
                 &crate::root::kernel::ROOT_CARD,
@@ -577,7 +618,15 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 VerbScope::Full => busbar_contract::authz::Scope::Full,
                 VerbScope::ReadOnly => busbar_contract::authz::Scope::ReadOnly,
             };
-            return adjust::adjust_effect(request, scope, &*self.pools, &self.adjuster);
+            return adjust::adjust_request(
+                &self.request,
+                request,
+                scope,
+                &self.attribution.principal,
+                self.replay_store.as_ref(),
+                &*self.pools,
+                &self.adjuster,
+            );
         }
 
         match verb {
@@ -616,6 +665,10 @@ impl busbar_core_admin::Governance for CoreGovernance {
                     request,
                     self.amendments.as_deref(),
                     || {
+                        let _effect = match self.admit_effect() {
+                            Ok(guard) => guard,
+                            Err(answer) => return Ok(bound::EffectAnswer::unapplied(answer)),
+                        };
                         bound::plane_record_write_effect(
                             request,
                             self.request.at,
@@ -637,6 +690,10 @@ impl busbar_core_admin::Governance for CoreGovernance {
                     request,
                     self.amendments.as_deref(),
                     || {
+                        let _effect = match self.admit_effect() {
+                            Ok(guard) => guard,
+                            Err(answer) => return Ok(bound::EffectAnswer::unapplied(answer)),
+                        };
                         bound::commit_upgrade_effect(
                             request,
                             self.request.at,
@@ -1436,6 +1493,7 @@ fn render_reconciliation(ledger: &PricedLedger) -> String {
 /// node-wide table for an entry to leak from.
 pub(crate) struct AdminWalk {
     admission: Option<busbar_kernel::inbound::RequestAdmission>,
+    effect_context: Option<busbar_kernel::auth::effect::Context>,
     request: AdminRequest,
     verb: Option<ResolvedVerb>,
     granted: Option<VerbScope>,
@@ -1457,6 +1515,7 @@ impl AdminWalk {
     pub(crate) fn new(request: AdminRequest) -> Self {
         AdminWalk {
             admission: None,
+            effect_context: None,
             request,
             verb: None,
             granted: None,
@@ -1502,7 +1561,18 @@ pub(crate) fn door_of_chain(chain: busbar_kernel_identity::AuthChain) -> AdminDo
     )
 }
 
+pub type EffectAdmission = Arc<
+    dyn Fn(
+            &busbar_kernel::auth::effect::Context,
+        ) -> Result<
+            busbar_kernel::config::transaction::EffectGuard,
+            busbar_kernel::config::transaction::TxnError,
+        > + Send
+        + Sync,
+>;
+
 pub struct AdminBinding {
+    pub effect_admission: Option<EffectAdmission>,
     pub dispatch: Arc<dyn AdminDispatch>,
 
     pub door: AdminDoorFn,
@@ -1542,6 +1612,7 @@ impl AdminBinding {
     #[must_use]
     pub fn new(dispatch: Arc<dyn AdminDispatch>, door: AdminDoorFn) -> Self {
         AdminBinding {
+            effect_admission: None,
             dispatch,
             door,
             ledger: Arc::new(UnopenedLedger),
@@ -1655,6 +1726,27 @@ pub(crate) fn authenticate(
         || (binding.door)(request),
         busbar_kernel::inbound::RequestAdmission::admin_verdict,
     );
+    walk.effect_context = Some(walk.admission.as_ref().map_or_else(
+        || {
+            let headers = request
+                .headers
+                .iter()
+                .filter_map(|(name, value)| {
+                    Some((
+                        name.parse::<axum::http::HeaderName>().ok()?,
+                        value.parse::<axum::http::HeaderValue>().ok()?,
+                    ))
+                })
+                .collect();
+            busbar_kernel::auth::effect::Context::new(
+                &request.method,
+                &request.path,
+                headers,
+                &verdict.door,
+            )
+        },
+        busbar_kernel::inbound::RequestAdmission::effect_context,
+    ));
     let (principal, grants, listed) = match verdict.door {
         busbar_kernel::auth::AdminDoor::Open => (
             busbar_kernel_identity::principal::ANONYMOUS.to_string(),
@@ -1790,6 +1882,10 @@ pub(crate) fn route(
             binding.audit.clone(),
             verb,
             request.clone(),
+        )
+        .fenced(
+            walk.effect_context.clone(),
+            binding.effect_admission.clone(),
         )
         .amending(
             binding.amendments.clone(),
@@ -1942,7 +2038,11 @@ fn seal_root_only(walk: &AdminWalk, resolved: &ResolvedVerb, applied: bool) {
     let root_only =
         !resolved.read_only && kernel_verb(resolved).is_some_and(|v| NEW_VERBS.contains(&v));
     if let (true, Some(actor)) = (root_only, resolved_actor(walk)) {
-        let outcome = if applied {
+        let outcome = if kernel_verb(resolved) == Some(KernelVerb::Adjust) {
+            // Only the host-owned adjustment handler constructs this response. Never consult
+            // incoming request headers or a plugin's response to classify another operation.
+            adjustment_audit_outcome(walk.answer.as_ref(), applied)
+        } else if applied {
             busbar_kernel::audit_ring::OUTCOME_APPLIED
         } else {
             busbar_kernel::audit_ring::OUTCOME_REJECTED
@@ -1953,6 +2053,23 @@ fn seal_root_only(walk: &AdminWalk, resolved: &ResolvedVerb, applied: bool) {
             outcome,
             &actor,
         );
+    }
+}
+
+fn adjustment_audit_outcome(answer: Option<&AdminAnswer>, applied: bool) -> &'static str {
+    let effect = answer.and_then(|answer| {
+        answer
+            .headers
+            .iter()
+            .find(|(name, _)| name == "x-busbar-adjust-effect")
+            .map(|(_, value)| value.as_str())
+    });
+    match effect {
+        Some("unknown") => busbar_kernel::audit_ring::OUTCOME_DEGRADED,
+        Some("applied") => busbar_kernel::audit_ring::OUTCOME_APPLIED,
+        Some("not_applied") => busbar_kernel::audit_ring::OUTCOME_REJECTED,
+        _ if applied => busbar_kernel::audit_ring::OUTCOME_APPLIED,
+        _ => busbar_kernel::audit_ring::OUTCOME_REJECTED,
     }
 }
 

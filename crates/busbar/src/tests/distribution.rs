@@ -496,3 +496,6 @@ mod admin_plugin_artifact_cas;
 
 #[path = "admin_application/installed_schema.rs"]
 mod admin_installed_schema;
+
+#[path = "admin_application/admin_effect_authority.rs"]
+mod admin_effect_authority;

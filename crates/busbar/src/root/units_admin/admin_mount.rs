@@ -595,6 +595,13 @@ pub fn mount_node(
                 book,
             );
 
+            let authority_handle = Arc::clone(app);
+            units.admin.effect_admission = Some(Arc::new(move |context| {
+                crate::root::durability::wait_for(busbar_kernel::config::transaction::admit_effect(
+                    &authority_handle,
+                    Some(context),
+                ))
+            }));
             let live = Arc::clone(app);
             units.admin.pools = Arc::new(move |pool: &str| {
                 busbar_kernel::governance::group_provision::pool_known(&live.load(), pool)

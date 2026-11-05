@@ -142,6 +142,35 @@ pub fn fold_adjustments(
     rows: &mut [busbar_kernel::governance::MeteringRow],
     adjustments: &[busbar_kernel::governance::UsageAdjustment],
 ) -> Result<(), String> {
+    let exact = adjustments
+        .iter()
+        .map(|row| {
+            let delta = row
+                .delta
+                .iter()
+                .map(|(class, value)| {
+                    Ok((
+                        class.clone(),
+                        Count::from_integer(*value).map_err(|e| e.to_string())?,
+                    ))
+                })
+                .collect::<Result<_, String>>()?;
+            Ok(busbar_kernel::governance::UsageAdjustment {
+                key_id: row.key_id.clone(),
+                lane: row.lane.clone(),
+                era: row.era,
+                entry_id: row.entry_id,
+                delta,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    fold_adjustments_exact(rows, &exact)
+}
+
+pub fn fold_adjustments_exact(
+    rows: &mut [busbar_kernel::governance::MeteringRow],
+    adjustments: &[busbar_kernel::governance::UsageAdjustment<Count>],
+) -> Result<(), String> {
     let mut staged = rows.to_vec();
     fold_adjustments_inner(&mut staged, adjustments)?;
     rows.clone_from_slice(&staged);
@@ -150,7 +179,7 @@ pub fn fold_adjustments(
 
 fn fold_adjustments_inner(
     rows: &mut [busbar_kernel::governance::MeteringRow],
-    adjustments: &[busbar_kernel::governance::UsageAdjustment],
+    adjustments: &[busbar_kernel::governance::UsageAdjustment<Count>],
 ) -> Result<(), String> {
     fn column<'r>(row: &'r mut busbar_kernel::governance::MeteringRow, class: &str) -> &'r mut u64 {
         match class {
@@ -190,13 +219,10 @@ fn fold_adjustments_inner(
             ));
         };
         for (class, d) in &adj.delta {
-            let magnitude = Count::from_integer(*d)
-                .map_err(|_| format!("an adjustment of {class} leaves the range"))?
-                .micros()
-                .unsigned_abs();
+            let magnitude = d.micros().unsigned_abs();
             let magnitude = u64::try_from(magnitude)
                 .map_err(|_| format!("an adjustment of {class} leaves the range"))?;
-            if *d >= 0 {
+            if *d >= Count::ZERO {
                 let c = column(&mut rows[first], class);
                 *c = c
                     .checked_add(magnitude)
@@ -839,12 +865,13 @@ fn check_inspect_tarball_size(size: usize, cap: u64) -> Result<(), AdminError> {
     Ok(())
 }
 
-fn inspect_plugin_view(
+pub(crate) fn inspect_plugin_view(
     manifest: busbar_kernel::admission::Stated,
     judged: busbar_kernel::admission::Judged,
     restart_default: impl FnOnce(&str) -> bool,
 ) -> serde_json::Value {
     use busbar_kernel::admission::Judged;
+    let declaration_available = !matches!(&judged, Judged::Rejected { .. });
     let trust = match judged {
         Judged::Trusted { .. } => "trusted",
         Judged::Allowed => "unverified",
@@ -854,6 +881,7 @@ fn inspect_plugin_view(
     let (schema, schema_error) = manifest_schema(manifest.settings_schema.as_deref());
 
     serde_json::json!({
+        "configuration": super::plugin_configuration::configuration(&manifest.kind, manifest.configuration.as_ref(), "manifest", declaration_available),
         "name": manifest.name,
         "version": manifest.version,
         "kind": manifest.kind,
@@ -890,7 +918,8 @@ fn plugin_inventory_view(row: busbar_kernel::admission::Inventoried) -> PluginVi
         Some("export") => "export",
         Some("transport") => "transport",
         Some("plane") => "plane",
-        _ => "store",
+        Some("store") => "store",
+        _ => "unknown",
     };
 
     let (schema_url, schema_error) = match row.stated.as_ref() {
@@ -914,6 +943,12 @@ fn plugin_inventory_view(row: busbar_kernel::admission::Inventoried) -> PluginVi
         error: (row.status != "ready").then(|| row.status.clone()),
         schema_url,
         schema_error,
+        configuration: Some(super::plugin_configuration::configuration(
+            row.stated.as_ref().map_or("", |m| m.kind.as_str()),
+            row.stated.as_ref().and_then(|m| m.configuration.as_ref()),
+            "installed_archive",
+            row.status == "ready" && r#type != "unknown",
+        )),
     }
 }
 

@@ -833,6 +833,8 @@ async fn run(
         .hold_listeners(Arc::clone(&listener_plan))
         .unwrap_or_else(|e| die(e));
 
+    let record_bootstrap_store = serde_json::to_value(&cfg.store)
+        .unwrap_or_else(|error| die(format!("effective Store settings: {error}")));
     let store_module = cfg
         .store
         .as_ref()
@@ -889,6 +891,36 @@ async fn run(
         &app.demotion_record,
         &planes,
     );
+
+    // Only the process operator can provide this cold-start receipt. Reload never reads it.
+    // Consumption is durable in the attached store and must finish before any plane admission.
+    if let Some(path) = std::env::var_os(busbar_kernel::host_record_bootstrap::RECEIPT_ENV) {
+        let fingerprint =
+            busbar_kernel::host_record_bootstrap::store_fingerprint(&record_bootstrap_store);
+        let kernel = late_services
+            .kernel()
+            .unwrap_or_else(|| die("record bootstrap has no installed kernel"));
+        let consumed = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            use std::io::Read;
+            let file = std::fs::File::open(path)
+                .map_err(|error| format!("read cold record bootstrap receipt: {error}"))?;
+            let mut bytes = Vec::new();
+            file.take(16_385)
+                .read_to_end(&mut bytes)
+                .map_err(|error| format!("read cold record bootstrap receipt: {error}"))?;
+            if bytes.len() > 16_384 {
+                return Err("cold record bootstrap receipt exceeds 16384 bytes".into());
+            }
+            let receipt = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("parse cold record bootstrap receipt: {error}"))?;
+            kernel
+                .arm_record_bootstrap(receipt, &fingerprint)
+                .map_err(str::to_string)
+        })
+        .await
+        .unwrap_or_else(|error| die(format!("cold record bootstrap failed: {error}")));
+        consumed.unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
+    }
 
     let door_auths = root::door_steps::process_auths();
 

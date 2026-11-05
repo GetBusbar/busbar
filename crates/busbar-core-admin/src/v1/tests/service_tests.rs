@@ -85,6 +85,7 @@ fn inspect_reports_the_admissions_verdict_in_the_catalog_vocabulary() {
             publisher: "acme".into(),
             abi_version: 3,
             settings_schema: None,
+            configuration: None,
         };
         let view = inspect_plugin_view(manifest, judged, |_| true);
         assert_eq!(view["trust"], word, "{word}");
@@ -117,6 +118,7 @@ fn catalog_preserves_manifest_kinds_and_filters_store_queries() {
                 publisher: "acme".into(),
                 abi_version: 3,
                 settings_schema: None,
+                configuration: None,
             }),
             signature: "unsigned (allowed)".into(),
             status: "ready".into(),
@@ -146,7 +148,7 @@ fn catalog_preserves_manifest_kinds_and_filters_store_queries() {
             .find(|p| p.file.as_deref() == Some(file.as_str()))
             .unwrap();
         let expected = if matches!(kind, "unknown" | "corrupt") {
-            "store"
+            "unknown"
         } else {
             kind
         };
@@ -158,7 +160,7 @@ fn catalog_preserves_manifest_kinds_and_filters_store_queries() {
             .filter_map(|row| row.file)
             .collect();
         files.sort();
-        assert_eq!(files, ["corrupt.tar.gz", "store.tar.gz", "unknown.tar.gz"]);
+        assert_eq!(files, ["store.tar.gz"]);
     }
     for query in ["export", "transport", "plane"] {
         let Ok(PluginQuery::Catalog(kind)) = plugin_query(query) else {
@@ -213,6 +215,7 @@ fn linked_catalog_exposes_the_same_schema_and_error_as_inspection() {
                 publisher: "busbar".into(),
                 abi_version: 1,
                 settings_schema: Some(text.into()),
+                configuration: None,
             },
             Judged::Allowed,
             |_| true,
@@ -248,6 +251,7 @@ fn catalog_projects_each_inventory_row_into_the_catalog_vocabulary() {
                 publisher: "acme".into(),
                 abi_version: 3,
                 settings_schema: None,
+                configuration: None,
             }),
             signature: signature.into(),
             status: status.into(),
@@ -1395,5 +1399,74 @@ fn submicro_metering_rows_project_once_per_final_usage_view() {
         assert_eq!(view.total.spend_micros, 16_001);
         assert_eq!(view.by_model[0].usage.spend_micros, 16_001);
         assert_eq!(view.others.unwrap().spend_micros, 1);
+    }
+}
+
+#[test]
+fn plugin_configuration_inspection_suppresses_refused_declarations() {
+    let manifest = Stated {
+        name: "fixture-plane".into(),
+        alias: "fixture-plane".into(),
+        kind: "plane".into(),
+        version: "1.6.0".into(),
+        publisher: "fixture".into(),
+        abi_version: 1,
+        settings_schema: None,
+        configuration: Some(busbar_kernel::admission::ConfigurationDeclaration {
+            valid: true,
+            sections: vec![(
+                "fixture-root".into(),
+                busbar_contract::abi::mechanism::door::SECTION_DECLARING,
+            )],
+            claims: Vec::new(),
+        }),
+    };
+    let accepted = inspect_plugin_view(manifest.clone(), Judged::Allowed, |_| true);
+    assert_eq!(
+        accepted["configuration"]["root_keys"],
+        serde_json::json!(["fixture-root"])
+    );
+    let refused = inspect_plugin_view(
+        manifest,
+        Judged::Rejected {
+            reason: "fixture refusal".into(),
+        },
+        |_| true,
+    );
+    assert_eq!(
+        refused["configuration"]["declaration_availability"],
+        "unavailable"
+    );
+    assert_eq!(refused["configuration"]["root_keys"], serde_json::json!([]));
+    assert_eq!(refused["configuration"]["sections"], serde_json::json!([]));
+}
+
+#[test]
+fn plugin_configuration_corrupt_and_unknown_inventory_have_no_store_ownership() {
+    for stated in [
+        None,
+        Some(Stated {
+            name: "unknown-kind".into(),
+            alias: "unknown-kind".into(),
+            kind: "unknown".into(),
+            version: "1.6.0".into(),
+            publisher: "fixture".into(),
+            abi_version: 1,
+            settings_schema: None,
+            configuration: None,
+        }),
+    ] {
+        let row = plugin_inventory_view(Inventoried {
+            file: "broken.tar.gz".into(),
+            stated,
+            signature: "-".into(),
+            status: "INVALID: fixture".into(),
+        });
+        assert_eq!(row.r#type, "unknown");
+        let configuration = row.configuration.as_ref().unwrap();
+        assert!(configuration.root_keys.is_empty());
+        assert_eq!(configuration.root_source, "unavailable");
+        assert_eq!(configuration.declaration_availability, "unavailable");
+        assert_eq!(catalog_rows_of_kind(vec![row], "store").count(), 0);
     }
 }

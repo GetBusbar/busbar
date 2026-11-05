@@ -403,20 +403,64 @@ async fn complete_key_mutation(
     op: &'static str,
     mutation: impl std::future::Future<Output = Response> + Send + 'static,
 ) -> Response {
-    match tokio::spawn(mutation).await {
+    let context = busbar_kernel::auth::effect::current();
+    match tokio::spawn(busbar_kernel::auth::effect::scope(context, mutation)).await {
         Ok(response) => response,
         Err(error) => join_error(op, &error),
     }
 }
 
+async fn admit_key_effect(
+    handle: &std::sync::Arc<busbar_kernel::state::AppHandle>,
+    who: KeyAudit<'_>,
+) -> Result<
+    (
+        busbar_kernel::config::transaction::EffectGuard,
+        Option<busbar_kernel::auth::effect::Context>,
+    ),
+    Response,
+> {
+    let context = busbar_kernel::auth::effect::current();
+    match busbar_kernel::config::transaction::admit_effect(handle, context.as_ref()).await {
+        Ok(guard) => Ok((guard, context)),
+        Err(error) => {
+            record_key_refusal(who);
+            Err(crate::v1::json::err_json(&AdminError::from(error)))
+        }
+    }
+}
+
+fn key_effect_still_authorized(
+    handle: &std::sync::Arc<busbar_kernel::state::AppHandle>,
+    context: Option<&busbar_kernel::auth::effect::Context>,
+) -> bool {
+    context.is_none_or(|context| {
+        tokio::runtime::Handle::current()
+            .block_on(context.revalidate(&handle.load()))
+            .is_ok()
+    })
+}
+
+fn key_effect_forbidden(who: KeyAudit<'_>) -> Response {
+    record_key_refusal(who);
+    crate::v1::json::err_json(&AdminError::Forbidden {
+        needed: busbar_contract::authz::Scope::Full,
+    })
+}
+
 async fn claim_in_store(
     store: std::sync::Arc<dyn busbar_kernel::governance::RecordStore>,
     key: (String, String),
-) -> Result<Claim, Refused> {
+    fingerprint: [u8; 32],
+) -> Result<Result<Claim, Refused>, crate::idempotency::BindingMismatch> {
     let now = busbar_kernel::store::now();
-    tokio::task::spawn_blocking(move || durable::claim(&*store, &key, now))
+    tokio::task::spawn_blocking(move || durable::claim_bound(&*store, &key, fingerprint, now))
         .await
-        .unwrap_or_else(|e| Err(Refused::Unavailable(format!("the claim did not run: {e}"))))
+        .unwrap_or_else(|e| {
+            Ok(Err(Refused::Unavailable(format!(
+                "the claim did not run: {e}"
+            ))))
+        })
 }
 
 async fn settle_in_store(
@@ -438,6 +482,29 @@ async fn settle_in_store(
     diag_error!(ADMIN_STORE_OPERATION_FAILED, operation = "idempotency.settle", error = %why, "the store did not keep an Idempotency-Key's outcome; a retry is refused as in flight until the claim lapses");
 }
 
+fn applied_mutation(operation: &str, resource: &str) -> Response {
+    json_response(
+        StatusCode::CONFLICT,
+        json!({
+            "error": { "code": "mutation_applied", "message": "The mutation committed; cache reconciliation is incomplete" },
+            "effect": "applied", "operation": operation, "resource": resource,
+            "recovery": if operation == "key.rotate" { "rotate_with_new_action" } else { "reread_resource" },
+            "credential_recoverable": false
+        }),
+    )
+}
+
+fn idempotency_mismatch(who: KeyAudit<'_>) -> Response {
+    record_key_refusal(who);
+    json_response(
+        StatusCode::CONFLICT,
+        json!({
+            "error": { "code": "idempotency_mismatch", "message": "Idempotency-Key is bound to different exact request bytes" },
+            "effect": "not_applied"
+        }),
+    )
+}
+
 fn claim_refused(who: KeyAudit<'_>, refused: Refused) -> Response {
     let ran = match refused {
         Refused::InFlight | Refused::Retained(_) => {
@@ -456,7 +523,21 @@ fn claim_refused(who: KeyAudit<'_>, refused: Refused) -> Response {
                 "the store could not record this Idempotency-Key; nothing was done".into(),
             ));
         }
-        Refused::Applied(what) => what,
+        Refused::Applied(what) => {
+            let operation = match who {
+                KeyAudit::Mutation { verb, .. } => verb,
+                KeyAudit::Read => "key",
+            };
+            return json_response(
+                StatusCode::CONFLICT,
+                json!({
+                    "error": { "code": "mutation_applied", "message": "The earlier mutation committed; its once-shown secret cannot be replayed here" },
+                    "effect": "applied", "operation": operation, "resource": what,
+                    "recovery": if operation == "key.rotate" { "rotate_with_new_action" } else { "reread_resource" },
+                    "credential_recoverable": false
+                }),
+            );
+        }
         Refused::Answer(_) => "an earlier request".to_string(),
     };
     key_err(
@@ -560,14 +641,15 @@ async fn create_key_owned(
     let idem_ckey: Option<(String, String)> = idem_key
         .as_ref()
         .map(|k| (actor.clone(), crate::idempotency::create_replay_key(k)));
+    let fingerprint = busbar_contract::abi::sdk::digest::sha256(&body);
     let mut idem_reservation: Option<crate::idempotency::Reservation<'_, Value>> = None;
     if let Some(ref ck) = idem_ckey {
-        match replays.probe(ck.clone(), busbar_kernel::store::now()) {
-            Probe::NoKey => {}
+        match replays.probe_bound(ck.clone(), fingerprint, busbar_kernel::store::now()) {
+            Ok(Probe::NoKey) => {}
 
-            Probe::Replay(cached) => return json_response(StatusCode::CREATED, cached),
+            Ok(Probe::Replay(cached)) => return json_response(StatusCode::CREATED, cached),
 
-            Probe::InFlight => {
+            Ok(Probe::InFlight) => {
                 return key_err(
                     who,
                     &AdminError::Conflict(
@@ -577,7 +659,8 @@ async fn create_key_owned(
                 );
             }
 
-            Probe::Reserved(r) => idem_reservation = Some(r),
+            Ok(Probe::Reserved(r)) => idem_reservation = Some(r),
+            Err(crate::idempotency::BindingMismatch) => return idempotency_mismatch(who),
         }
     }
     let Some(gov) = &app.governance else {
@@ -775,9 +858,16 @@ async fn create_key_owned(
     let replay_store = gov.store();
     let claim = match idem_reservation.as_ref() {
         Some(r) => {
-            match claim_in_store(std::sync::Arc::clone(&replay_store), r.key().clone()).await {
-                Ok(claim) => Some(claim),
-                Err(refused) => return claim_refused(who, refused),
+            match claim_in_store(
+                std::sync::Arc::clone(&replay_store),
+                r.key().clone(),
+                fingerprint,
+            )
+            .await
+            {
+                Ok(Ok(claim)) => Some(claim),
+                Ok(Err(refused)) => return claim_refused(who, refused),
+                Err(crate::idempotency::BindingMismatch) => return idempotency_mismatch(who),
             }
         }
         None => None,
@@ -1079,6 +1169,7 @@ async fn update_key_owned(
     };
 
     enum UpdateOutcome {
+        Applied,
         Updated(Box<busbar_kernel::governance::VirtualKey>, &'static str),
         NotFound,
         EtagStale,
@@ -1156,12 +1247,14 @@ async fn update_key_owned(
                         return Ok(UpdateOutcome::AtCap { group: g, n, cap });
                     }
                 }
-                Ok(match gov.update_key(&id, enabled, group)? {
-                    Some(key) => {
+                Ok(match gov.update_key_outcome(&id, enabled, group) {
+                    Err(busbar_kernel::governance::KeyMutationError::Applied { .. }) => UpdateOutcome::Applied,
+                    Err(busbar_kernel::governance::KeyMutationError::Store(error)) => return Err(error),
+                    Ok(Some(key)) => {
                         let state = key_state(&key, &gov);
                         UpdateOutcome::Updated(Box::new(key), state)
                     }
-                    None => UpdateOutcome::NotFound,
+                    Ok(None) => UpdateOutcome::NotFound,
                 })
             })()
             .map_err(|e| {
@@ -1173,6 +1266,10 @@ async fn update_key_owned(
     })
     .await;
     match res {
+        Ok(UpdateOutcome::Applied) => {
+            audit::AUDIT.record_by("key.patch", &resource, audit::OUTCOME_APPLIED, &actor);
+            applied_mutation("key.patch", &resource)
+        }
         Ok(UpdateOutcome::Updated(key, state)) => {
             audit::AUDIT.record_by("key.patch", &resource, audit::OUTCOME_APPLIED, &actor);
             let mut body = key_meta(&key);
@@ -1331,6 +1428,8 @@ pub(crate) async fn list_keys(
 }
 
 enum RotateOutcome {
+    Forbidden,
+    Applied,
     Rotated(
         &'static str,
         Box<busbar_kernel::governance::RotatedCredential>,
@@ -1342,26 +1441,30 @@ enum RotateOutcome {
 }
 
 pub(crate) async fn rotate_key(
-    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
+    axum::extract::State(handle): axum::extract::State<
+        std::sync::Arc<busbar_kernel::state::AppHandle>,
+    >,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
 
     axum::Extension(replays): axum::Extension<std::sync::Arc<KeyReplayCache>>,
+    body: Bytes,
 ) -> Response {
     complete_key_mutation(
         "rotate_key",
-        rotate_key_owned(app, principal, id, headers, replays),
+        rotate_key_owned(handle, principal, id, headers, replays, body),
     )
     .await
 }
 
 async fn rotate_key_owned(
-    app: std::sync::Arc<busbar_kernel::state::App>,
+    handle: std::sync::Arc<busbar_kernel::state::AppHandle>,
     principal: busbar_kernel::auth::AuthPrincipal,
     id: String,
     headers: axum::http::HeaderMap,
     replays: std::sync::Arc<KeyReplayCache>,
+    body: Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
 
@@ -1380,12 +1483,13 @@ async fn rotate_key_owned(
         .and_then(|v| v.to_str().ok())
         .filter(|v| !v.is_empty())
         .map(|k| (actor.clone(), crate::idempotency::rotate_replay_key(&id, k)));
+    let fingerprint = busbar_contract::abi::sdk::digest::sha256(&body);
     let mut idem_reservation: Option<crate::idempotency::Reservation<'_, Value>> = None;
     if let Some(ref ck) = idem_ckey {
-        match replays.probe(ck.clone(), busbar_kernel::store::now()) {
-            Probe::NoKey => {}
-            Probe::Replay(cached) => return json_response(StatusCode::OK, cached),
-            Probe::InFlight => {
+        match replays.probe_bound(ck.clone(), fingerprint, busbar_kernel::store::now()) {
+            Ok(Probe::NoKey) => {}
+            Ok(Probe::Replay(cached)) => return json_response(StatusCode::OK, cached),
+            Ok(Probe::InFlight) => {
                 return key_err(
                     who,
                     &AdminError::Conflict(
@@ -1394,9 +1498,15 @@ async fn rotate_key_owned(
                     Cond::IdempotencyInFlight,
                 );
             }
-            Probe::Reserved(r) => idem_reservation = Some(r),
+            Ok(Probe::Reserved(r)) => idem_reservation = Some(r),
+            Err(crate::idempotency::BindingMismatch) => return idempotency_mismatch(who),
         }
     }
+    let (effect_guard, effect_context) = match admit_key_effect(&handle, who).await {
+        Ok(admitted) => admitted,
+        Err(response) => return response,
+    };
+    let app = handle.load();
     let Some(gov) = &app.governance else {
         return disabled_write(who);
     };
@@ -1413,9 +1523,16 @@ async fn rotate_key_owned(
     let replay_store = gov.store();
     let claim = match idem_reservation.as_ref() {
         Some(r) => {
-            match claim_in_store(std::sync::Arc::clone(&replay_store), r.key().clone()).await {
-                Ok(claim) => Some(claim),
-                Err(refused) => return claim_refused(who, refused),
+            match claim_in_store(
+                std::sync::Arc::clone(&replay_store),
+                r.key().clone(),
+                fingerprint,
+            )
+            .await
+            {
+                Ok(Ok(claim)) => Some(claim),
+                Ok(Err(refused)) => return claim_refused(who, refused),
+                Err(crate::idempotency::BindingMismatch) => return idempotency_mismatch(who),
             }
         }
         None => None,
@@ -1426,7 +1543,11 @@ async fn rotate_key_owned(
     }
     let res = tokio::task::spawn_blocking(
         move || -> Result<RotateOutcome, busbar_kernel::governance::RecordStoreError> {
+            let _effect_guard = effect_guard;
             let _existence_guard = EXISTENCE_GATE.claim(gid.clone());
+            if !key_effect_still_authorized(&handle, effect_context.as_ref()) {
+                return Ok(RotateOutcome::Forbidden);
+            }
 
             let Some(key) = gov
                 .store()
@@ -1451,16 +1572,39 @@ async fn rotate_key_owned(
                 Err(msg) => return Ok(RotateOutcome::PastCeiling(msg)),
             };
 
-            Ok(match gov.rotate_key(&gid, now.saturating_add(ttl))? {
-                Some(rotated) => {
-                    RotateOutcome::Rotated(key_state(&rotated.key, &gov), Box::new(rotated))
-                }
-                None => RotateOutcome::Unknown,
-            })
+            Ok(
+                match gov.rotate_key_outcome(&gid, now.saturating_add(ttl)) {
+                    Err(busbar_kernel::governance::KeyMutationError::Applied { .. }) => {
+                        RotateOutcome::Applied
+                    }
+                    Err(busbar_kernel::governance::KeyMutationError::Store(error)) => {
+                        return Err(error)
+                    }
+                    Ok(Some(rotated)) => {
+                        RotateOutcome::Rotated(key_state(&rotated.key, &gov), Box::new(rotated))
+                    }
+                    Ok(None) => RotateOutcome::Unknown,
+                },
+            )
         },
     )
     .await;
     match res {
+        Ok(Ok(RotateOutcome::Forbidden)) => {
+            if let Some(r) = idem_reservation.take() {
+                r.clear();
+            }
+            settle_in_store(replay_store, claim, Settled::Released).await;
+            key_effect_forbidden(who)
+        }
+        Ok(Ok(RotateOutcome::Applied)) => {
+            audit::AUDIT.record_by("key.rotate", &resource, audit::OUTCOME_APPLIED, &actor);
+            if let Some(r) = idem_reservation.take() {
+                r.clear();
+            }
+            settle_in_store(replay_store, claim, Settled::Applied(resource.clone())).await;
+            applied_mutation("key.rotate", &resource)
+        }
         Ok(Ok(RotateOutcome::Rotated(state, rotated))) => {
             audit::AUDIT.record_by("key.rotate", &resource, audit::OUTCOME_APPLIED, &actor);
             let mut body = key_meta(&rotated.key);
@@ -1510,15 +1654,17 @@ async fn rotate_key_owned(
 }
 
 pub(crate) async fn revoke_key(
-    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
+    axum::extract::State(handle): axum::extract::State<
+        std::sync::Arc<busbar_kernel::state::AppHandle>,
+    >,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(id): Path<String>,
 ) -> Response {
-    complete_key_mutation("revoke_key", revoke_key_owned(app, principal, id)).await
+    complete_key_mutation("revoke_key", revoke_key_owned(handle, principal, id)).await
 }
 
 async fn revoke_key_owned(
-    app: std::sync::Arc<busbar_kernel::state::App>,
+    handle: std::sync::Arc<busbar_kernel::state::AppHandle>,
     principal: busbar_kernel::auth::AuthPrincipal,
     id: String,
 ) -> Response {
@@ -1530,6 +1676,11 @@ async fn revoke_key_owned(
         resource: &resource,
         actor: &actor,
     };
+    let (effect_guard, effect_context) = match admit_key_effect(&handle, who).await {
+        Ok(admitted) => admitted,
+        Err(response) => return response,
+    };
+    let app = handle.load();
     let Some(gov) = &app.governance else {
         return disabled_write(who);
     };
@@ -1539,25 +1690,37 @@ async fn revoke_key_owned(
     let gov = gov.clone();
     let id_for_task = id.clone();
 
+    enum RevokeOutcome {
+        Applied,
+        NotFound,
+        Forbidden,
+    }
     let res = tokio::task::spawn_blocking(
-        move || -> busbar_kernel::governance::RecordStoreResult<bool> {
+        move || -> busbar_kernel::governance::RecordStoreResult<RevokeOutcome> {
+            let _effect_guard = effect_guard;
             let _existence_guard = EXISTENCE_GATE.claim(id_for_task.clone());
+            if !key_effect_still_authorized(&handle, effect_context.as_ref()) {
+                return Ok(RevokeOutcome::Forbidden);
+            }
 
             let exists = gov.store().get_key(&id_for_task)?.is_some();
             if !exists {
-                return Ok(false);
+                return Ok(RevokeOutcome::NotFound);
             }
             gov.revoke(&id_for_task, "revoked via admin API")?;
-            Ok(true)
+            Ok(RevokeOutcome::Applied)
         },
     )
     .await;
     match res {
-        Ok(Ok(true)) => {
+        Ok(Ok(RevokeOutcome::Forbidden)) => key_effect_forbidden(who),
+        Ok(Ok(RevokeOutcome::Applied)) => {
             audit::AUDIT.record_by("key.revoke", &resource, audit::OUTCOME_APPLIED, &actor);
             json_response(StatusCode::OK, json!({ "revoked": id }))
         }
-        Ok(Ok(false)) => key_err(who, &AdminError::not_found("key"), Cond::UnknownResource),
+        Ok(Ok(RevokeOutcome::NotFound)) => {
+            key_err(who, &AdminError::not_found("key"), Cond::UnknownResource)
+        }
         Ok(Err(e)) => {
             record_key_refusal(who);
             internal_error("revoke_key", &e)
@@ -1719,16 +1882,22 @@ pub(crate) async fn key_usage(
 }
 
 pub(crate) async fn delete_key(
-    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
+    axum::extract::State(handle): axum::extract::State<
+        std::sync::Arc<busbar_kernel::state::AppHandle>,
+    >,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    complete_key_mutation("delete_key", delete_key_owned(app, principal, id, headers)).await
+    complete_key_mutation(
+        "delete_key",
+        delete_key_owned(handle, principal, id, headers),
+    )
+    .await
 }
 
 async fn delete_key_owned(
-    app: std::sync::Arc<busbar_kernel::state::App>,
+    handle: std::sync::Arc<busbar_kernel::state::AppHandle>,
     principal: busbar_kernel::auth::AuthPrincipal,
     id: String,
     headers: axum::http::HeaderMap,
@@ -1741,6 +1910,11 @@ async fn delete_key_owned(
         resource: &resource,
         actor: &actor,
     };
+    let (effect_guard, effect_context) = match admit_key_effect(&handle, who).await {
+        Ok(admitted) => admitted,
+        Err(response) => return response,
+    };
+    let app = handle.load();
     let Some(gov) = &app.governance else {
         return disabled_write(who);
     };
@@ -1754,6 +1928,8 @@ async fn delete_key_owned(
     };
 
     enum DeleteOutcome {
+        Forbidden,
+        Applied,
         Deleted,
         NotFound,
         EtagStale,
@@ -1762,7 +1938,11 @@ async fn delete_key_owned(
     let id_for_task = id.clone();
     let task_actor = actor.clone();
     let res = tokio::task::spawn_blocking(move || {
+        let _effect_guard = effect_guard;
         let _existence_guard = EXISTENCE_GATE.claim(id_for_task.clone());
+        if !key_effect_still_authorized(&handle, effect_context.as_ref()) {
+            return Ok(DeleteOutcome::Forbidden);
+        }
 
         let key = gov.store().get_key(&id_for_task)?;
         match key {
@@ -1777,9 +1957,12 @@ async fn delete_key_owned(
                 }
 
                 gov.revoke(&id_for_task, "key deleted")?;
-                match gov.delete_key(&id_for_task) {
+                match gov.delete_key_outcome(&id_for_task) {
                     Ok(()) => Ok(DeleteOutcome::Deleted),
-                    Err(error) => {
+                    Err(busbar_kernel::governance::KeyMutationError::Applied { .. }) => {
+                        Ok(DeleteOutcome::Applied)
+                    }
+                    Err(busbar_kernel::governance::KeyMutationError::Store(error)) => {
                         audit::AUDIT.record_by(
                             "key.revoke",
                             &format!("key:{id_for_task}"),
@@ -1794,6 +1977,11 @@ async fn delete_key_owned(
     })
     .await;
     match res {
+        Ok(Ok(DeleteOutcome::Forbidden)) => key_effect_forbidden(who),
+        Ok(Ok(DeleteOutcome::Applied)) => {
+            audit::AUDIT.record_by("key.delete", &resource, audit::OUTCOME_APPLIED, &actor);
+            applied_mutation("key.delete", &resource)
+        }
         Ok(Ok(DeleteOutcome::Deleted)) => {
             audit::AUDIT.record_by("key.delete", &resource, audit::OUTCOME_APPLIED, &actor);
 
@@ -1840,3 +2028,7 @@ mod key_custody_tests;
 #[cfg(test)]
 #[path = "tests/admin_pure_contracts.rs"]
 mod admin_pure_contracts;
+
+#[cfg(test)]
+#[path = "tests/applied_key_outcomes.rs"]
+mod applied_key_outcomes;

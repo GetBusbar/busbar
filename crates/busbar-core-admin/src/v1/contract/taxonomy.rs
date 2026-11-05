@@ -146,7 +146,9 @@ impl Cond {
             Cond::StillParent => "another group still names it as parent",
             Cond::GovernanceOff => "governance is not enabled on this server",
             Cond::NoSigningKey => "no signing key is configured for signed-token minting",
-            Cond::RecoveryConflict => "the retained operation, recovery version, verdict or resolution authority conflicts with the request",
+            Cond::RecoveryConflict => {
+                "the retained operation, recovery version, verdict or resolution authority conflicts with the request"
+            }
             Cond::IdempotencyInFlight => "an `Idempotency-Key` request is already in flight",
             Cond::AtKeyCap => "the group is at the `limits.max_keys_per_principal` cap",
             Cond::ParentWithoutGroup => "`parent` was given without `group`",
@@ -154,7 +156,7 @@ impl Cond {
             Cond::RebindTargetMissing => "the rebind target group does not exist",
             Cond::HookNoAck => "the hook did not acknowledge; nothing committed",
             Cond::SettingsPush => "a config change landed during the settings push; retry",
-            Cond::MalformedCursor => "malformed or foreign pagination `cursor`",
+            Cond::MalformedCursor => "malformed pagination `cursor`",
             Cond::MissingRequiredQuery => "missing or unknown required query parameter",
             Cond::InvalidQueryValue => "invalid query-parameter value",
             Cond::NonNumericPath => "non-numeric path segment",
@@ -417,6 +419,7 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             de![Validation / NonNumericPath, NotFound / UnknownResource,]
         }
 
+        (Get, "/groups") => de![Validation / MalformedCursor],
         (Get, "/audit") => de![Validation / MalformedCursor],
         (Get, "/config/versions") => de![Validation / MalformedCursor],
         (Get, "/plugins/{file}/schema") => de![

@@ -183,10 +183,10 @@ async fn test_admin_v1_mutation_rate_limit_config_class() {
 }
 
 #[tokio::test]
-async fn test_admin_v1_put_auth_applies_an_empty_chain_as_1_5_5_did() {
+async fn test_admin_v1_put_auth_refuses_clearing_a_protected_chain() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_DCB6C72E958E";
     const WITNESS: &str =
-        "actual root case test_admin_v1_put_auth_applies_an_empty_chain_as_1_5_5_did completed";
+        "actual root case test_admin_v1_put_auth_refuses_clearing_a_protected_chain completed";
     if std::env::var_os(CHILD).is_none() {
         struct Child(std::process::Child);
         impl Drop for Child {
@@ -252,7 +252,7 @@ async fn test_admin_v1_put_auth_applies_an_empty_chain_as_1_5_5_did() {
     );
     manifest.statement = Some(hex::encode(statement));
     let directory =
-        plugins::scratch("test_admin_v1_put_auth_applies_an_empty_chain_as_1_5_5_did-actual-store");
+        plugins::scratch("test_admin_v1_put_auth_refuses_clearing_a_protected_chain-actual-store");
     let archive = plugins::signed(
         &crate::dist_root_install::release_key(),
         manifest,
@@ -338,18 +338,22 @@ async fn test_admin_v1_put_auth_applies_an_empty_chain_as_1_5_5_did() {
         .unwrap();
     assert_eq!(
         r.status().as_u16(),
-        200,
-        "1.5.5 applied an empty admin_auth chain live"
+        409,
+        "protected admin authority cannot be removed through the API"
     );
     let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["applied"], true, "{body}");
+    assert_eq!(body["error"]["code"], "conflict", "{body}");
 
     let r = client
         .get(format!("http://{addr}/api/v1/admin/info"))
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status().as_u16(), 200, "the open posture is in force");
+    assert_eq!(
+        r.status().as_u16(),
+        401,
+        "the protected posture remains in force"
+    );
 
     handle.abort();
     println!("{WITNESS}");

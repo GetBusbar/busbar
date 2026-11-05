@@ -572,7 +572,41 @@ impl AdminService {
                 plugins.extend(catalog_rows_of_kind(catalog, kind));
             }
         }
+        if let Ok(admission) = admission(&self.app) {
+            let kind = match plugin_query(ptype)? {
+                PluginQuery::Catalog(kind) => Some(kind),
+                _ => None,
+            };
+            for stated in admission
+                .linked_configuration()
+                .into_iter()
+                .filter(|row| Some(row.kind.as_str()) == kind)
+            {
+                if !plugins
+                    .iter()
+                    .any(|row| row.loader == "compiled-in" && row.name == stated.name)
+                {
+                    plugins.push(linked_configuration_view(stated));
+                }
+            }
+        }
         for view in &mut plugins {
+            if view.configuration.is_none() {
+                let row = self.app.hook_env.registry.resolve(&view.name);
+                let declaration = admission(&self.app).ok().and_then(|admission| {
+                    admission.loaded_configuration(self.app.hook_env.registry.as_ref(), &view.name)
+                });
+                view.configuration = Some(crate::v1::plugin_configuration::configuration(
+                    row.as_ref().map_or(view.r#type, |row| row.kind.as_str()),
+                    declaration.as_ref(),
+                    if row.as_ref().is_some_and(|row| row.linked) {
+                        "linked_statement"
+                    } else {
+                        "loaded_manifest"
+                    },
+                    row.is_some() && self.app.plugin_admission.is_some(),
+                ));
+            }
             if view.loader != "compiled-in" {
                 continue;
             }
@@ -699,11 +733,37 @@ impl AdminService {
             return rows;
         };
         for row in inventory {
-            let archive_sha256 =
-                read_archive_bounded(&dir.join(&row.file), admission.max_tarball_bytes())
-                    .ok()
-                    .map(|bytes| busbar_contract::redacted::sha256_hex(&bytes));
+            let bytes =
+                read_archive_bounded(&dir.join(&row.file), admission.max_tarball_bytes()).ok();
+            let archive_sha256 = bytes
+                .as_ref()
+                .map(|bytes| busbar_contract::redacted::sha256_hex(bytes));
             let mut view = plugin_inventory_view(row);
+            view.configuration = Some(
+                match bytes
+                    .as_ref()
+                    .and_then(|bytes| admission.inspect(bytes, cfg).ok())
+                {
+                    Some((manifest, judged))
+                        if manifest.name == view.name
+                            && manifest.kind == view.r#type
+                            && Some(&manifest.version) == view.version.as_ref() =>
+                    {
+                        crate::v1::plugin_configuration::configuration(
+                            &manifest.kind,
+                            manifest.configuration.as_ref(),
+                            "installed_archive",
+                            view.valid == Some(true) && !matches!(judged, Judged::Rejected { .. }),
+                        )
+                    }
+                    _ => crate::v1::plugin_configuration::configuration(
+                        view.r#type,
+                        None,
+                        "unavailable",
+                        false,
+                    ),
+                },
+            );
             if view.has_schema {
                 if let Some(digest) = archive_sha256.as_deref() {
                     let file = archive_path_segment(
@@ -865,8 +925,16 @@ impl AdminService {
         let (manifest, judged) = admission
             .inspect(&bytes, &self.app.plugins_cfg)
             .map_err(refused)?;
+        let configuration = crate::v1::plugin_configuration::configuration(
+            &manifest.kind,
+            manifest.configuration.as_ref(),
+            "installed_archive",
+            !matches!(&judged, Judged::Rejected { .. }),
+        );
         let mut view =
             inspect_plugin_view(manifest, judged, |kind| admission.restart_default(kind));
+        view["configuration"] =
+            serde_json::to_value(configuration).expect("configuration metadata serializes");
         view["source"] = serde_json::json!("installed_archive");
         view["file"] = serde_json::json!(file);
         view["archive_sha256"] = serde_json::json!(digest);
@@ -1167,7 +1235,7 @@ impl AdminService {
         };
         type UsageFetchError = (&'static str, busbar_kernel::governance::RecordStoreError);
         let joined =
-            tokio::task::spawn_blocking(move || -> Result<FetchedUsage, UsageFetchError> {
+            tokio::task::spawn_blocking(move || -> Result<FetchedUsage<Count>, UsageFetchError> {
                 let rows = gov
                     .metering_for(bucket)
                     .map_err(|e| ("usage.metering", e))?;
@@ -1180,7 +1248,7 @@ impl AdminService {
                     .collect();
 
                 let adjustments = gov
-                    .usage_adjustments(bucket)
+                    .usage_adjustments_exact(bucket)
                     .map_err(|e| ("usage.adjustments", e))?;
                 Ok((rows, names, adjustments))
             })
@@ -1204,7 +1272,7 @@ impl AdminService {
             }
         };
 
-        project_usage_rows(
+        project_usage_rows_exact(
             cost,
             history,
             snapshot,
@@ -1248,12 +1316,13 @@ impl AdminService {
     }
 }
 
-type FetchedUsage = (
+type FetchedUsage<T = i128> = (
     Vec<busbar_kernel::governance::MeteringRow>,
     std::collections::HashMap<String, String>,
-    Vec<busbar_kernel::governance::UsageAdjustment>,
+    Vec<busbar_kernel::governance::UsageAdjustment<T>>,
 );
 
+#[cfg(test)]
 pub(super) fn project_usage_rows(
     cost: Arc<busbar_kernel::cost::CostModel>,
     history: Option<Arc<busbar_kernel::cost::History>>,
@@ -1263,6 +1332,26 @@ pub(super) fn project_usage_rows(
     data: FetchedUsage,
 ) -> Result<UsageView, AdminError> {
     let (mut rows, names, adjustments) = data;
+    fold_adjustments(&mut rows, &adjustments).map_err(|_| AdminError::Internal)?;
+    project_usage_rows_exact(
+        cost,
+        history,
+        snapshot,
+        window,
+        now,
+        (rows, names, Vec::new()),
+    )
+}
+
+fn project_usage_rows_exact(
+    cost: Arc<busbar_kernel::cost::CostModel>,
+    history: Option<Arc<busbar_kernel::cost::History>>,
+    snapshot: Option<busbar_kernel::cost::EntryKey>,
+    window: UsageWindow,
+    now: u64,
+    data: FetchedUsage<Count>,
+) -> Result<UsageView, AdminError> {
+    let (mut rows, names, adjustments) = data;
     let view = history.as_deref().map(|h| match snapshot {
         Some(at) => h.snapshot(at),
         None => h.current(),
@@ -1270,7 +1359,7 @@ pub(super) fn project_usage_rows(
 
     let mut priced_by: Option<busbar_kernel::cost::EntryKey> = None;
 
-    if let Err(why) = fold_adjustments(&mut rows, &adjustments) {
+    if let Err(why) = super::fold_adjustments_exact(&mut rows, &adjustments) {
         diag_error!(
             ADMIN_STORE_OPERATION_FAILED,
             operation = "usage.adjustments",
@@ -1491,6 +1580,33 @@ pub(super) fn linked_plugin_view(
         }
         busbar_contract::plugin_rows::Trust::Allowed { .. } => view.trust = Some("unverified"),
     }
+    view
+}
+
+fn linked_configuration_view(stated: Stated) -> PluginView {
+    let kind = match stated.kind.as_str() {
+        "plane" => "plane",
+        "transport" => "transport",
+        _ => "unknown",
+    };
+    let (schema_url, schema_error) =
+        manifest_schema_url_and_error(&stated.name, stated.settings_schema.as_deref());
+    let configuration = crate::v1::plugin_configuration::configuration(
+        &stated.kind,
+        stated.configuration.as_ref(),
+        "linked_statement",
+        true,
+    );
+    let mut view = PluginView::basic(stated.name, kind, "compiled-in", None, None);
+    view.version = Some(stated.version);
+    view.interface_version = Some(stated.abi_version);
+    view.publisher = Some(stated.publisher);
+    view.trust = Some("trusted");
+    view.valid = Some(true);
+    view.has_schema = schema_url.is_some();
+    view.schema_url = schema_url.map(|url| format!("{url}?source=linked_statement"));
+    view.schema_error = schema_error;
+    view.configuration = Some(configuration);
     view
 }
 

@@ -2045,11 +2045,12 @@ pub(crate) fn compose_planes_over(
 
             caller_refs: plane_money.caller_refs(),
         };
-        let caller = Caller {
-            instance: Arc::from(instance.as_str()),
-            plugin: Arc::from(plugin.name()),
-            kind: KindCode::Plane,
-        };
+        let caller = plugin
+            .service_caller()
+            .ok_or_else(|| format!("{instance}: plane has no bound service caller"))?;
+        kernel
+            .bind_record_bootstrap_caller(&caller)
+            .map_err(|why| format!("{instance}: {why}"))?;
         let driver = PlaneDriver::new(
             Arc::clone(&calls) as Arc<dyn PlaneCalls>,
             config,

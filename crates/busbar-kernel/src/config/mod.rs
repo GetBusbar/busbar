@@ -34,6 +34,7 @@ pub mod secret;
 
 pub mod settings_public;
 
+pub(crate) mod security_policy;
 pub mod transaction;
 
 pub use prepass::{deploy_from_deserializer, deploy_from_yaml_str, deploy_from_yaml_value};

@@ -105,6 +105,11 @@ pub fn settings(audience: &str) -> serde_json::Map<String, serde_json::Value> {
 }
 
 pub fn token_for(sub: &str, roles: &[&str], aud: &str) -> String {
+    token_with_claims(sub, roles, aud, serde_json::json!({}))
+}
+
+/// Sign additional test claims with the same actual IdP key used by the product verifier.
+pub fn token_with_claims(sub: &str, roles: &[&str], aud: &str, extra: serde_json::Value) -> String {
     use base64::Engine as _;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -117,13 +122,17 @@ pub fn token_for(sub: &str, roles: &[&str], aud: &str) -> String {
         }))
         .expect("JWT header"),
     );
-    let claims = b64.encode(
-        serde_json::to_vec(&serde_json::json!({
-            "iss": ISSUER, "aud": aud, "sub": sub, "roles": roles,
-            "exp": now + 3600, "nbf": now.saturating_sub(10),
-        }))
-        .expect("JWT claims"),
+    let mut claims = serde_json::json!({
+        "iss": ISSUER, "aud": aud, "sub": sub, "roles": roles,
+        "exp": now + 3600, "nbf": now.saturating_sub(10),
+    });
+    claims.as_object_mut().unwrap().extend(
+        extra
+            .as_object()
+            .expect("additional test claims are an object")
+            .clone(),
     );
+    let claims = b64.encode(serde_json::to_vec(&claims).expect("JWT claims"));
     let signed = format!("{header}.{claims}");
     let signature = idp()
         .0

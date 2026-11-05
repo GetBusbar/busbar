@@ -204,7 +204,13 @@ fn openapi_error_enum_matches_admin_error_codes() {
     ]
     .iter()
     .map(|e| e.code().to_string())
-    .chain(std::iter::once("unavailable".to_string()))
+    .chain([
+        "unavailable".to_string(),
+        busbar_contract::protocol::ERR_TYPE_REQUEST_TOO_LARGE.to_string(),
+        "idempotency_mismatch".to_string(),
+        "mutation_applied".to_string(),
+        "action_in_flight".to_string(),
+    ])
     .collect();
     assert_eq!(
         enum_codes, actual_codes,

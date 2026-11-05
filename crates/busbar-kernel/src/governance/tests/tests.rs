@@ -6444,3 +6444,72 @@ fn metering_open_units_keep_the_pinned_keys_historical_group() {
         [("team".into(), 6), ("later".into(), 3), (String::new(), 3)].into()
     );
 }
+
+#[test]
+fn credential_postcommit_refresh_failure_is_typed_applied() {
+    for operation in ["key.patch", "key.rotate", "key.delete"] {
+        let store = Arc::new(RefreshBlipStore::new());
+        let gov =
+            GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
+        let (key, token) = gov
+            .mint_signed(
+                NewKeySpec {
+                    name: "typed-outcome".into(),
+                    ..Default::default()
+                },
+                2000,
+                1000,
+            )
+            .unwrap();
+        store.arm();
+        let result = match operation {
+            "key.patch" => gov
+                .update_key_outcome(&key.id, Some(false), None)
+                .map(|_| ()),
+            "key.rotate" => gov.rotate_key_outcome(&key.id, 3000).map(|_| ()),
+            _ => gov.delete_key_outcome(&key.id),
+        };
+        assert!(
+            matches!(result, Err(KeyMutationError::Applied { key_id, operation: applied, .. }) if key_id == key.id && applied == operation)
+        );
+        assert!(gov
+            .verify_token(token.expose(&crate::seal::lend()), 1500, None)
+            .is_none());
+        let durable = store.inner.get_key(&key.id).unwrap().unwrap();
+        match operation {
+            "key.patch" => assert!(!durable.enabled),
+            "key.rotate" => assert_ne!(durable.generation_hash, key.generation_hash),
+            _ => assert!(durable.deleted_at.is_some()),
+        }
+    }
+}
+
+#[test]
+fn credential_precommit_write_failure_is_not_typed_applied() {
+    let store = Arc::new(RefreshBlipStore::new());
+    let gov = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
+    let (key, token) = gov
+        .mint_signed(
+            NewKeySpec {
+                name: "precommit".into(),
+                ..Default::default()
+            },
+            2000,
+            1000,
+        )
+        .unwrap();
+    store
+        .fail_put
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(matches!(
+        gov.update_key_outcome(&key.id, Some(false), None),
+        Err(KeyMutationError::Store(_))
+    ));
+    assert!(matches!(
+        gov.rotate_key_outcome(&key.id, 3000),
+        Err(KeyMutationError::Store(_))
+    ));
+    assert!(gov
+        .verify_token(token.expose(&crate::seal::lend()), 1500, None)
+        .is_some());
+}

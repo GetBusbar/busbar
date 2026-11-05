@@ -30,7 +30,18 @@ impl busbar_kernel::config::settings_public::PublicSettings for Table {
     }
 }
 
-fn table(linked: &Linked, dropped: Option<&PluginRegistry>) -> Result<Table, String> {
+static LINKED_CONFIGURATION: std::sync::OnceLock<Vec<busbar_kernel::admission::Stated>> =
+    std::sync::OnceLock::new();
+
+pub(crate) fn linked_configuration() -> Vec<busbar_kernel::admission::Stated> {
+    LINKED_CONFIGURATION.get().cloned().unwrap_or_default()
+}
+
+fn table(
+    linked: &Linked,
+    dropped: Option<&PluginRegistry>,
+    transports: &[(&str, DoorFn)],
+) -> Result<(Table, Vec<busbar_kernel::admission::Stated>), String> {
     let mut doors: Vec<(DoorFn, Vec<&str>)> = Vec::new();
     doors.extend(linked.secrets.iter().map(|d| (*d, Vec::new())));
     doors.extend(linked.hook_doors.iter().map(|d| (*d, Vec::new())));
@@ -52,12 +63,23 @@ fn table(linked: &Linked, dropped: Option<&PluginRegistry>) -> Result<Table, Str
             .iter()
             .map(|(key, canonical, door)| (*door, vec![*key, *canonical])),
     );
+    doors.extend(linked.plane_doors.iter().map(|door| (*door, Vec::new())));
+    doors.extend(transports.iter().map(|(_, door)| (*door, Vec::new())));
+    let mut configuration = Vec::new();
     let mut rows = Vec::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
     for (door, words) in doors {
         let Ok(stated) = super::loader::dispatch::rendering_of(door) else {
             continue;
         };
+        let declaration = super::admission::linked_configuration_from_statement(&stated)?;
+        if matches!(declaration.kind.as_str(), "plane" | "transport")
+            && !configuration
+                .iter()
+                .any(|row: &busbar_kernel::admission::Stated| row.name == declaration.name)
+        {
+            configuration.push(declaration);
+        }
         if let Some(r) = public_settings(&stated, &words)? {
             if seen.insert(r.name.clone()) {
                 rows.push(Row {
@@ -80,12 +102,23 @@ fn table(linked: &Linked, dropped: Option<&PluginRegistry>) -> Result<Table, Str
             }
         }
     }
-    Ok(Table(rows))
+    Ok((Table(rows), configuration))
 }
 
 pub fn install(linked: &Linked, dropped: Option<&'static PluginRegistry>) {
-    match table(linked, dropped) {
-        Ok(t) => busbar_kernel::config::settings_public::install(Box::leak(Box::new(t))),
+    install_with_transports(linked, dropped, crate::LINKED_TRANSPORT_DOORS);
+}
+
+pub(crate) fn install_with_transports(
+    linked: &Linked,
+    dropped: Option<&'static PluginRegistry>,
+    transports: &[(&str, DoorFn)],
+) {
+    match table(linked, dropped, transports) {
+        Ok((t, configuration)) => {
+            let _ = LINKED_CONFIGURATION.set(configuration);
+            busbar_kernel::config::settings_public::install(Box::leak(Box::new(t)));
+        }
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);

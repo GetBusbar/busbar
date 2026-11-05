@@ -570,12 +570,15 @@ pub const TICKET_NOT_HELD: &str = "no ticket record is held for this unit";
 pub const RESERVED_RECORD_KINDS: &[&str] = &[
     crate::governance::TICKET_RECORD_KIND,
     crate::host_work::WORK_SCHEMA.as_str(),
+    crate::host_record_bootstrap::RECEIPT_SCHEMA.as_str(),
     crate::host_chains::CHAIN_LIFE_SCHEMA.as_str(),
 ];
 
 /// Why an instance was not admitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdmitRefused {
+    /// A cold bootstrap namespace cannot admit another generation in this process.
+    BootstrapHeld { instance: String },
     /// The label is longer than 65535 bytes or holds a control character: every per-instance key
     /// is built from it, and only a label without them keeps those keys apart.
     LabelUnfit {
@@ -637,6 +640,7 @@ pub enum AdmitRefused {
 impl std::fmt::Display for AdmitRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::BootstrapHeld { instance } => write!(f, "instance `{instance}` holds a cold record bootstrap grant; another generation requires a cold restart"),
             Self::LabelUnfit { len } => write!(
                 f,
                 "an instance label of {len} bytes is longer than 65535 bytes or holds a control \
@@ -726,6 +730,7 @@ pub struct KernelServices {
 
     mono_ns: Option<MonoNs>,
     instances: Mutex<HashMap<Arc<str>, Arc<InstanceFacts>>>,
+    record_bootstrap: Mutex<Option<crate::host_record_bootstrap::Bootstrap>>,
     plane_cleanup: Mutex<Vec<std::sync::Weak<crate::plane_driver::PlaneDriver>>>,
     records: OnceLock<Records>,
     pool: OnceLock<Arc<dyn Offload>>,
@@ -813,6 +818,7 @@ impl KernelServices {
             wall_ms: Arc::new(system_wall_ms),
             mono_ns: None,
             instances: Mutex::default(),
+            record_bootstrap: Mutex::default(),
             plane_cleanup: Mutex::default(),
             records: OnceLock::new(),
             pool: OnceLock::new(),
@@ -840,6 +846,58 @@ impl KernelServices {
             credentials: None,
             tickets: OnceLock::new(),
         }
+    }
+
+    /// Install an operator-attested cold migration grant before ANY instance admission. The
+    /// attached store is immutable for this KernelServices lifetime. Never call from reload.
+    /// Blocking: the composition root invokes this on its blocking pool before serving planes.
+    pub fn arm_record_bootstrap(
+        &self,
+        receipt: crate::host_record_bootstrap::ColdRecordReceipt,
+        expected_store_fingerprint: &str,
+    ) -> Result<(), &'static str> {
+        let instances = self.lock_instances();
+        let mut bootstrap = self
+            .record_bootstrap
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !instances.is_empty()
+            || bootstrap.is_some()
+            || !self.batcher.idle()
+            || self.pending.queued() != 0
+        {
+            return Err("record bootstrap requires a cold, unadmitted host");
+        }
+        let records = self.records.get().ok_or(NO_STORE)?;
+        let grant = crate::host_record_bootstrap::Bootstrap::consume(
+            receipt,
+            expected_store_fingerprint,
+            &*records.reads,
+        )?;
+        tracing::info!(instance = %grant.instance, epoch = %grant.epoch,
+            "consumed operator-attested cold record bootstrap receipt");
+        *bootstrap = Some(grant);
+        Ok(())
+    }
+
+    /// Bind the actual loader caller before admitting the cold migration namespace. Only the
+    /// composition root calls this Rust-only method; service callers cannot choose their identity.
+    pub fn bind_record_bootstrap_caller(&self, caller: &Caller) -> Result<(), &'static str> {
+        let instances = self.lock_instances();
+        let mut held = self
+            .record_bootstrap
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(grant) = held
+            .as_mut()
+            .filter(|grant| grant.instance == caller.instance.as_ref())
+        else {
+            return Ok(());
+        };
+        if instances.contains_key(&caller.instance) {
+            return Err("cold bootstrap namespace is already admitted");
+        }
+        grant.bind_caller(caller)
     }
 
     pub fn attach_tickets(&self, press: Arc<dyn TicketPress>) -> bool {
@@ -1078,6 +1136,19 @@ impl KernelServices {
             _ => Vec::new(),
         };
         let mut instances = self.lock_instances();
+        if self
+            .record_bootstrap
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|grant| {
+                grant.instance == instance && (instances.contains_key(instance) || !grant.bound())
+            })
+        {
+            return Err(AdmitRefused::BootstrapHeld {
+                instance: instance.to_string(),
+            });
+        }
         let decided = if instances.contains_key(instance) {
             Vec::new()
         } else {
@@ -1227,6 +1298,19 @@ impl KernelServices {
         let Some(facts) = self.facts(caller) else {
             return false;
         };
+        // Reserve the WHOLE kind before ordinary principal scopes, including malformed suffixes.
+        if target
+            .split_once(':')
+            .is_some_and(|(kind, _)| kind == "record-quota-bootstrap")
+        {
+            return target == crate::host_record_bootstrap::ENTITLEMENT
+                && self
+                    .record_bootstrap
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .is_some_and(|grant| grant.instance == caller.instance.as_ref());
+        }
         if target == busbar_contract::abi::host::service::ENTITLEMENT_STANDING {
             return self.stands(unit);
         }
@@ -1568,6 +1652,11 @@ impl KernelServices {
         kind: &str,
         before: u64,
     ) -> RecordStoreResult<u64> {
+        if kind == crate::host_record_bootstrap::RECEIPT_SCHEMA.as_str() {
+            return Err(busbar_contract::records::RecordStoreError(
+                "cold bootstrap receipts must remain durable".into(),
+            ));
+        }
         if self.conditional_kind(instance, kind) {
             return Err(busbar_contract::records::RecordStoreError(
                 "this record kind requires conditional retirement".into(),
@@ -1715,7 +1804,17 @@ impl KernelServices {
     }
 
     fn facts(&self, caller: &Caller) -> Option<Arc<InstanceFacts>> {
-        self.lock_instances().get(&caller.instance).cloned()
+        let facts = self.lock_instances().get(&caller.instance).cloned()?;
+        if self
+            .record_bootstrap
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|grant| !grant.accepts(caller))
+        {
+            return None;
+        }
+        Some(facts)
     }
 
     fn scope(

@@ -35,6 +35,8 @@
 //! 2. **The body is SYNCHRONOUS.** `F: FnOnce(&Txn) -> Result<Outcome<T, E>, E>` has no
 //!    `async`, so it cannot `.await`. The "never hold the lock across a network await" contract is
 //!    now a type, not a comment — a configure-ack push physically cannot move inside the section.
+//!    Fresh authority verification is the sole bounded async admission step under the lock;
+//!    it runs before the body and again on the worker before effects, never after commit.
 //! 3. **Blocking work is structurally deferred.** The body never gets a `&dyn Store`, a
 //!    `&GovState`, or a filesystem step it can run inline. Store/disk work is handed to
 //!    [`Txn::read_store`] / [`Txn::store_write`] as a `FnOnce` that is *stored*, not called;
@@ -90,6 +92,8 @@ pub enum TxnError {
     /// A `commit_and_swap` persist step failed; `String` is the final operator-facing message the
     /// site's own `Persist` closure produced.
     Validation(String),
+    /// Current authority no longer admits this effect. No mutation has started.
+    Forbidden,
     /// A TERMINAL state conflict surfaced by the extracted governance logic that shares this
     /// machinery (e.g. group auto-provisioning's re-home/base-shadow guards).
     Conflict(String),
@@ -101,6 +105,7 @@ impl TxnError {
     pub fn message(&self) -> String {
         match self {
             TxnError::Validation(msg) => msg.clone(),
+            TxnError::Forbidden => "current authority does not admit this effect".into(),
             TxnError::Conflict(msg) => msg.clone(),
             TxnError::Internal => "internal error".to_string(),
         }
@@ -254,7 +259,10 @@ where
     T: Send + 'static,
     E: From<TxnError> + Send + 'static,
 {
-    let guard = Arc::clone(&CONFIG_MUTATION_LOCK).lock_owned().await;
+    let context = crate::auth::effect::current();
+    let guard = admit_effect(handle, context.as_ref())
+        .await
+        .map_err(E::from)?;
     let snapshot = handle.load();
     if mode == TransactionMode::Mutation {
         if let Some(overlay) = &snapshot.overlay_path {
@@ -263,11 +271,14 @@ where
                 .map_err(|msg| E::from(TxnError::Validation(msg)))?;
         }
     }
-    let outcome = body(&Txn { app: &snapshot })?;
+    let outcome =
+        super::security_policy::scoped(guard.authority, || body(&Txn { app: &snapshot }))?;
     let handle = Arc::clone(handle);
 
     tokio::task::spawn_blocking(move || {
-        let result = apply(&handle, outcome, mode);
+        let result = super::security_policy::scoped(guard.authority, || {
+            apply(&handle, outcome, mode, context.as_ref(), guard.authority)
+        });
         drop(guard);
         crate::export::plugin::refresh_pending();
         result
@@ -280,11 +291,26 @@ fn apply<T, E>(
     handle: &Arc<AppHandle>,
     mut outcome: Outcome<T, E>,
     mode: TransactionMode,
+    context: Option<&crate::auth::effect::Context>,
+    mut authority: Option<crate::auth::effect::Authority>,
 ) -> Result<T, E>
 where
     E: From<TxnError>,
 {
+    let mut committed = false;
     loop {
+        // spawn_blocking itself may queue. Recheck on its worker before the first Store/disk
+        // step, and again before publication after a read/build. Once committed, finish custody
+        // and preserve the receipt even if a provider revokes this credential during completion.
+        if !committed && !matches!(outcome, Outcome::Value(_)) {
+            if let Some(context) = context {
+                authority = Some(
+                    tokio::runtime::Handle::current()
+                        .block_on(context.revalidate(&handle.load()))
+                        .map_err(E::from)?,
+                );
+            }
+        }
         match outcome {
             Outcome::Value(value) => return Ok(value),
             Outcome::Commit {
@@ -293,6 +319,8 @@ where
                 rates,
                 then,
             } => {
+                super::security_policy::admit(&handle.load(), &next, context, authority)
+                    .map_err(E::from)?;
                 match rates {
                     Some(rates) => {
                         let (limits, origin) = *rates;
@@ -308,6 +336,7 @@ where
                     None => handle.commit_and_swap(next, persist),
                 }
                 .map_err(|msg| E::from(TxnError::Validation(msg)))?;
+                committed = true;
                 match then {
                     Then::Value(value) => return Ok(value),
 
@@ -326,3 +355,30 @@ mod txn_fence;
 #[cfg(all(test, feature = "loom-model"))]
 #[path = "tests/txn_loom.rs"]
 mod txn_loom;
+
+/// Serializes effect admission with config-policy publication. Holding this guard means the
+/// effect has started; revocation can deny queued callers, never undo an admitted Store write.
+/// The only network await under this lock is the bounded fresh authentication check.
+pub struct EffectGuard {
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+    authority: Option<crate::auth::effect::Authority>,
+}
+
+pub async fn effect_lock() -> tokio::sync::OwnedMutexGuard<()> {
+    Arc::clone(&CONFIG_MUTATION_LOCK).lock_owned().await
+}
+
+pub async fn admit_effect(
+    handle: &Arc<AppHandle>,
+    context: Option<&crate::auth::effect::Context>,
+) -> Result<EffectGuard, TxnError> {
+    let guard = effect_lock().await;
+    let authority = match context {
+        Some(context) => Some(context.revalidate(&handle.load()).await?),
+        None => None, // Internal kernel work has no administrative caller.
+    };
+    Ok(EffectGuard {
+        _guard: guard,
+        authority,
+    })
+}

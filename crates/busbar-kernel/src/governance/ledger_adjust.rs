@@ -31,7 +31,7 @@ pub fn metering_lane<'a>(model: &'a str, provider: &str) -> std::borrow::Cow<'a,
 /// One day's net adjustment of one (key, lane, era): what the usage read folds into the day's
 /// metering rows of that key, lane and era.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UsageAdjustment {
+pub struct UsageAdjustment<T = i128> {
     /// The key whose counts were adjusted.
     pub key_id: String,
     /// The lane, as [`metering_lane`] names a metering row's.
@@ -41,7 +41,7 @@ pub struct UsageAdjustment {
     /// The exact entry identity where it was captured, absent for historical timestamp rows.
     pub entry_id: Option<EntryId>,
     /// The exact signed difference of two raw `u64` counters per class. Zero nets are left off.
-    pub delta: BTreeMap<String, i128>,
+    pub delta: BTreeMap<String, T>,
 }
 
 fn metered_count(row: &MeteringRow, class: &str) -> RecordStoreResult<Count> {
@@ -71,7 +71,7 @@ pub struct PricedBucket {
 
 /// One operator correction to a unit's counts, as signed deltas.
 #[derive(Debug, Clone)]
-pub struct Adjustment<'a> {
+pub struct Adjustment<'a, T = i64> {
     /// The key whose counts are corrected.
     pub key_id: &'a str,
     /// The pool the unit was dispatched through (Q64/Q67): a group bucket takes the correction only
@@ -90,7 +90,7 @@ pub struct Adjustment<'a> {
     /// and the metering day — never the instant the correction is made.
     pub card_epoch_ms: u64,
     /// The signed delta per class. Zero deltas are ignored.
-    pub delta: &'a BTreeMap<String, i64>,
+    pub delta: &'a BTreeMap<String, T>,
     /// The instant the correction is made, wall seconds: the touched cells' last touch, and nothing
     /// else.
     pub now: u64,
@@ -119,7 +119,7 @@ pub enum AdjustRefused {
         /// What the segment holds now.
         count: Count,
         /// The delta asked for.
-        delta: i64,
+        delta: Count,
     },
     /// No rate-card entry covers the corrected unit's epoch: its card cannot be resolved.
     NoCardInForce {
@@ -220,8 +220,49 @@ impl GovState {
         cost: &crate::cost::CostModel,
         adj: &Adjustment<'_>,
     ) -> RecordStoreResult<Result<(), AdjustRefused>> {
+        let delta = adj
+            .delta
+            .iter()
+            .map(|(class, value)| {
+                (
+                    class.clone(),
+                    Count::from_integer(i128::from(*value)).expect("i64 whole count fits"),
+                )
+            })
+            .collect();
+        self.adjust_usage_exact(
+            cost,
+            &Adjustment {
+                key_id: adj.key_id,
+                pool: adj.pool,
+                model: adj.model,
+                entry_era: adj.entry_era,
+                entry_id: adj.entry_id,
+                card_epoch_ms: adj.card_epoch_ms,
+                delta: &delta,
+                now: adj.now,
+            },
+        )
+    }
+
+    pub fn adjust_usage_exact(
+        &self,
+        cost: &crate::cost::CostModel,
+        adj: &Adjustment<'_, Count>,
+    ) -> RecordStoreResult<Result<(), AdjustRefused>> {
+        self.adjust_usage_exact_action(cost, adj, None)
+    }
+
+    /// The action id also travels in retained correction custody, linking HTTP reconciliation
+    /// to the raw conditional operation without changing the Store request ABI.
+    pub fn adjust_usage_exact_action(
+        &self,
+        cost: &crate::cost::CostModel,
+        adj: &Adjustment<'_, Count>,
+        action_id: Option<&str>,
+    ) -> RecordStoreResult<Result<(), AdjustRefused>> {
         let _claim = self.correction_claims.claim(adj.key_id.to_string());
-        if self.resume_usage_correction(adj)? {
+        if self.resume_usage_correction(adj, action_id)? {
             return Ok(Ok(()));
         }
         if let Err(refused) = check_epoch(adj.card_epoch_ms, crate::store::now_ms()) {
@@ -230,10 +271,10 @@ impl GovState {
         if !self.store.supports_usage_correction() {
             return Err(RecordStoreError("usage corrections unsupported".into()));
         }
-        let delta: BTreeMap<&str, i64> = adj
+        let delta: BTreeMap<&str, Count> = adj
             .delta
             .iter()
-            .filter(|(_, d)| **d != 0)
+            .filter(|(_, d)| **d != Count::ZERO)
             .map(|(class, d)| (class.as_str(), *d))
             .collect();
         if delta.is_empty() {
@@ -260,10 +301,40 @@ impl GovState {
         let epoch = at / 1_000;
 
         let day = crate::governance::metering_bucket(epoch);
-        self.correct_usage(cost, adj, &delta, day)
+        self.correct_usage(cost, adj, &delta, day, action_id)
     }
 
     pub fn usage_adjustments(&self, day: u64) -> RecordStoreResult<Vec<UsageAdjustment>> {
+        self.usage_adjustments_exact(day)?
+            .into_iter()
+            .map(|row| {
+                let delta = row
+                    .delta
+                    .into_iter()
+                    .map(|(class, count)| {
+                        if count.micros() % 1_000_000 != 0 {
+                            return Err(RecordStoreError(
+                                "fractional whole-unit adjustment".into(),
+                            ));
+                        }
+                        Ok((class, count.micros() / 1_000_000))
+                    })
+                    .collect::<RecordStoreResult<_>>()?;
+                Ok(UsageAdjustment {
+                    key_id: row.key_id,
+                    lane: row.lane,
+                    era: row.era,
+                    entry_id: row.entry_id,
+                    delta,
+                })
+            })
+            .collect()
+    }
+
+    pub fn usage_adjustments_exact(
+        &self,
+        day: u64,
+    ) -> RecordStoreResult<Vec<UsageAdjustment<Count>>> {
         if self
             .corrections
             .lock()
@@ -281,16 +352,13 @@ impl GovState {
                 for (class, count) in model.usage_units {
                     let count = Count::from_stored(i128::from(count), model.scale)
                         .map_err(|e| RecordStoreError(e.to_string()))?;
-                    if count.micros() % 1_000_000 != 0 {
-                        return Err(RecordStoreError("fractional whole-unit adjustment".into()));
-                    }
                     let slot = net
                         .entry(model.model.clone())
                         .or_default()
                         .entry(class)
                         .or_default();
                     *slot = slot
-                        .checked_add(count.micros() / 1_000_000 * sign)
+                        .checked_add(count.micros() * sign)
                         .ok_or_else(|| RecordStoreError("adjustment total overflow".into()))?;
                 }
             }
@@ -308,6 +376,7 @@ impl GovState {
             let delta: BTreeMap<_, _> = counts
                 .into_iter()
                 .filter(|(_, count)| *count != 0)
+                .map(|(class, count)| (class, Count::from_micros(count)))
                 .collect();
             if !delta.is_empty() {
                 result.push(UsageAdjustment {
@@ -356,11 +425,8 @@ fn segment_at(models: &[ModelCell], lane: &str, at_ms: u64) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-fn moved(count: Count, delta: i64) -> Option<Count> {
-    count
-        .checked_add(Count::from_integer(i128::from(delta)).ok()?)
-        .ok()
-        .filter(|n| !n.is_negative())
+fn moved(count: Count, delta: Count) -> Option<Count> {
+    count.checked_add(delta).ok().filter(|n| !n.is_negative())
 }
 
 #[cfg(test)]

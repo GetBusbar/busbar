@@ -63,7 +63,7 @@ impl EffectAnswer {
         }
     }
 
-    fn unapplied(answer: AdminAnswer) -> Self {
+    pub(super) fn unapplied(answer: AdminAnswer) -> Self {
         Self {
             answer,
             disposition: EffectDisposition::Unapplied,

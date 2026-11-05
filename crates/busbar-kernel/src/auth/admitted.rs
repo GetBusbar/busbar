@@ -188,6 +188,18 @@ impl crate::inbound::RequestAdmission {
     #[must_use]
     pub fn admin_verdict(&self) -> super::AdminVerdict {
         let app = self.app();
+        if self.inner.admitted.as_ref().is_some_and(|admitted| {
+            super::admin_sender_constraint::downgraded(
+                &app,
+                &admitted.provider,
+                &crate::inbound::header_map(&self.inner.original),
+            )
+        }) {
+            return super::AdminVerdict {
+                door: super::AdminDoor::Denied,
+                claim: None,
+            };
+        }
         let cap = self
             .inner
             .admitted

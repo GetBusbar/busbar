@@ -16,6 +16,11 @@ use super::{PluginsCfg, RootCfg};
 /// what a generation was configured with, not which sockets, runtime or Store are physically active.
 #[derive(Clone, Debug, Serialize)]
 pub struct ConfiguredView {
+    /// Private comparison digests only; never expose policy material or a reusable source document.
+    #[serde(skip)]
+    pub(crate) security_digest: [u8; 32],
+    #[serde(skip)]
+    pub(crate) deployment_security_digest: [u8; 32],
     pub meaning: &'static str,
     pub sections: BTreeMap<String, Value>,
     /// Boot-only source facts that resolution does not retain. Absence here must not be read as
@@ -36,6 +41,9 @@ impl ConfiguredView {
             return;
         };
         let view = std::sync::Arc::make_mut(view);
+        view.deployment_security_digest = super::security_policy::digest(&json!({
+            "admin_require_mtls": deploy.admin_require_mtls,
+        }));
         view.sections.insert(
             "config".into(),
             json!({
@@ -266,6 +274,8 @@ impl ConfiguredView {
             })
         );
         Self {
+            security_digest: super::security_policy::root_digest(cfg, plugins),
+            deployment_security_digest: [0; 32],
             meaning: "generation_configured_not_physical_activation",
             sections,
             unavailable_from_resolved: vec![

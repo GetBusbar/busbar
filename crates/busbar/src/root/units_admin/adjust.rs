@@ -23,7 +23,9 @@ pub struct Correction {
     /// The pool the unit was dispatched through.
     pub pool: String,
     /// The signed delta per class.
-    pub delta: BTreeMap<String, i64>,
+    pub delta: BTreeMap<String, busbar_contract::Count>,
+    /// Public durable action identity, also retained by conditional correction recovery.
+    pub action_id: Option<String>,
 }
 
 /// Why the ledger would not take a correction.
@@ -69,9 +71,11 @@ pub fn live_adjuster(app: Arc<busbar_kernel::state::AppHandle>) -> UsageAdjuster
             delta: &c.delta,
             now: busbar_kernel::store::now(),
         };
-        crate::root::durability::off_runtime(|| gov.adjust_usage(&snapshot.cost, &adjustment))
-            .map(|applied| applied.map_err(Refused::Ledger))
-            .map_err(|e| e.to_string())
+        crate::root::durability::off_runtime(|| {
+            gov.adjust_usage_exact_action(&snapshot.cost, &adjustment, c.action_id.as_deref())
+        })
+        .map(|applied| applied.map_err(Refused::Ledger))
+        .map_err(|e| e.to_string())
     })
 }
 
@@ -86,23 +90,11 @@ pub(crate) fn adjust_effect(
     }
     let doc: serde_json::Value =
         serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
-    let obj = doc.as_object().ok_or(GovernanceError::Validation)?;
-    let text = |key: &str| {
-        obj.get(key)
-            .and_then(serde_json::Value::as_str)
-            .filter(|s| !s.trim().is_empty())
-            .ok_or(GovernanceError::Validation)
-    };
-    let key = text("key")?;
-    let lane = text("lane")?;
-    let _reason = text("reason")?;
-    let entry = busbar_kernel::cost::EntryKey::parse_hex(text("entry")?)
-        .ok_or(GovernanceError::Validation)?;
-    let card_epoch_ms = obj
-        .get("card_epoch_ms")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or(GovernanceError::Validation)?;
-    let Ok(pool) = text("pool") else {
+    let Some(pool) = doc
+        .get("pool")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+    else {
         return Ok(super::error_answer_with_message(
             400,
             "invalid_request",
@@ -116,6 +108,40 @@ pub(crate) fn adjust_effect(
             &format!("`pool` names `{pool}`, which is not a configured pool"),
         ));
     }
+    let correction = parse_correction(body, pool_known, false)?;
+    apply_correction(correction, adjuster)
+}
+
+fn parse_correction(
+    body: &[u8],
+    pool_known: &dyn Fn(&str) -> bool,
+    exact: bool,
+) -> Result<Correction, GovernanceError> {
+    let doc: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
+    let obj = doc.as_object().ok_or(GovernanceError::Validation)?;
+    let text = |key: &str| {
+        obj.get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .ok_or(GovernanceError::Validation)
+    };
+    let key = text("key")?;
+    let lane = text("lane")?;
+    let reason = text("reason")?;
+    if reason.len() > 4096 {
+        return Err(GovernanceError::Validation);
+    }
+    let entry = busbar_kernel::cost::EntryKey::parse_hex(text("entry")?)
+        .ok_or(GovernanceError::Validation)?;
+    let card_epoch_ms = obj
+        .get("card_epoch_ms")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(GovernanceError::Validation)?;
+    let pool = text("pool")?;
+    if !pool_known(pool) {
+        return Err(GovernanceError::Validation);
+    }
     let mut delta = BTreeMap::new();
     for (class, n) in obj
         .get("delta")
@@ -123,17 +149,37 @@ pub(crate) fn adjust_effect(
         .filter(|m| !m.is_empty())
         .ok_or(GovernanceError::Validation)?
     {
-        let n = n.as_i64().ok_or(GovernanceError::Validation)?;
+        let n = if exact {
+            let decimal = match n {
+                serde_json::Value::String(value) => value.clone(),
+                serde_json::Value::Number(value) => value.to_string(),
+                _ => return Err(GovernanceError::Validation),
+            };
+            busbar_contract::Count::parse(&decimal).map_err(|_| GovernanceError::Validation)?
+        } else {
+            busbar_contract::Count::from_integer(i128::from(
+                n.as_i64().ok_or(GovernanceError::Validation)?,
+            ))
+            .map_err(|_| GovernanceError::Validation)?
+        };
         delta.insert(class.clone(), n);
     }
-    let correction = Correction {
+    Ok(Correction {
         key: key.to_string(),
         lane: lane.to_string(),
         entry,
         card_epoch_ms,
         pool: pool.to_string(),
         delta,
-    };
+        action_id: None,
+    })
+}
+
+fn apply_correction(
+    correction: Correction,
+    adjuster: &UsageAdjuster,
+) -> Result<AdminAnswer, GovernanceError> {
+    let entry = correction.entry;
     match adjuster(&correction) {
         Err(why) => {
             tracing::error!(why = %why, "an adjustment could not reach the ledger");
@@ -146,6 +192,7 @@ pub(crate) fn adjust_effect(
         Ok(Err(Refused::Ledger(why))) => Ok(refused(&why.to_string())),
         Ok(Ok(())) => serde_json::to_vec(&serde_json::json!({
             "applied": true,
+            "retry": "nonretryable_without_idempotency_key",
             "key": correction.key,
             "lane": correction.lane,
             "entry": correction.entry.hex(),
@@ -157,6 +204,10 @@ pub(crate) fn adjust_effect(
         .map_err(|_| GovernanceError::Store),
     }
 }
+
+#[path = "adjust_action.rs"]
+mod action;
+pub(crate) use action::adjust_request;
 
 fn refused(message: &str) -> AdminAnswer {
     AdminAnswer {

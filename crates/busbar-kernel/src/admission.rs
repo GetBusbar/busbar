@@ -1,6 +1,47 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+/// Public configuration facts projected from a validated Statement, never plugin settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigurationDeclaration {
+    /// False means the declaration could be read but its section/claim structure is invalid.
+    pub valid: bool,
+    pub sections: Vec<(String, u32)>,
+    pub claims: Vec<String>,
+}
+
+impl ConfigurationDeclaration {
+    pub fn from_statement(statement: &busbar_contract::abi::mechanism::rendering::Read) -> Self {
+        use busbar_contract::abi::mechanism::{
+            call::AbiStr,
+            check,
+            door::{Section, SECTION_SELECTS},
+            KindCode,
+        };
+        let sections: Vec<_> = statement
+            .sections
+            .iter()
+            .map(|(name, flags)| Section {
+                name: AbiStr::over(name.as_bytes()),
+                flags: *flags,
+                _reserved: 0,
+            })
+            .collect();
+        let valid = check::check_statement_sections(&sections).is_ok()
+            && (!sections.iter().any(|s| s.flags & SECTION_SELECTS != 0)
+                || statement.kind == KindCode::Plane as u32)
+            && (statement.claims.is_empty() || statement.kind == KindCode::Transport as u32)
+            && statement.claims.iter().all(|claim| {
+                check::named(AbiStr::over(claim.as_bytes()), "statement.claim").is_ok()
+            });
+        Self {
+            valid,
+            sections: statement.sections.clone(),
+            claims: statement.claims.clone(),
+        }
+    }
+}
+
 /// What a plugin's signed manifest states, as the operator surface reads it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stated {
@@ -18,6 +59,8 @@ pub struct Stated {
     pub abi_version: u32,
     /// The settings schema the manifest states, as signed text.
     pub settings_schema: Option<String>,
+    /// Section and claim declarations; absent for legacy manifests.
+    pub configuration: Option<ConfigurationDeclaration>,
 }
 
 /// How the trust policy judged a tarball.
@@ -73,6 +116,20 @@ pub struct Admitted {
 }
 
 pub trait PluginAdmission: Send + Sync {
+    /// Cached linked declarations populated during startup, never by an admin read.
+    fn linked_configuration(&self) -> Vec<Stated> {
+        Vec::new()
+    }
+
+    /// Cached admission facts only. Discovery must not open or call a plugin door.
+    fn loaded_configuration(
+        &self,
+        _registry: &dyn busbar_contract::plugin_rows::PluginRows,
+        _name: &str,
+    ) -> Option<ConfigurationDeclaration> {
+        None
+    }
+
     fn bootstrap_probe_selected(
         &self,
         _tarball: &[u8],

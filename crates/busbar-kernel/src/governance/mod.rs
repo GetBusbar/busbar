@@ -841,8 +841,8 @@ pub mod group_provision;
 mod state;
 pub(crate) use state::key_row_expired;
 pub use state::{
-    metering_lane, AdjustRefused, Adjustment, MintError, PricedBucket, UsageAdjustment,
-    ADJUST_DOWN_BUCKET, ADJUST_UP_BUCKET,
+    metering_lane, AdjustRefused, Adjustment, KeyMutationError, MintError, PricedBucket,
+    UsageAdjustment, ADJUST_DOWN_BUCKET, ADJUST_UP_BUCKET,
 };
 
 mod tickets;

@@ -79,7 +79,7 @@ pub type IdentityProviders = indexmap::IndexMap<String, IdentityProviderCfg>;
 /// definition). This is an INTERNAL type built by busbar-core's `resolve_auth` — it is never
 /// deserialized, because 1.5.3 removed the inline chain-entry form entirely (a chain is now a list of
 /// bare NAMES).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AuthChainEntry {
     /// The PROVIDER NAME (the `identity-providers:` key) — the runtime identity `role_bindings.<name>`
     /// binds and `auth_scope_caps` keys off. For a bare built-in this equals the module name.
@@ -255,7 +255,7 @@ pub type RoleBindings =
 /// keeps byte-identical existing behavior. `rename_all = "kebab-case"` fixes the wire spelling
 /// (`time-bound` / `user-bound` / `both`); an enum (not a bare string) means an unknown mode fails
 /// boot rather than sitting inert, and adding a mode later is an additive enum-variant append.
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BindingMode {
     /// Expires at `exp`; no identity tie. The app/service-token lifecycle.
@@ -281,7 +281,7 @@ impl BindingMode {
 /// CORE-SIDE enforcement (`MintPolicy::check_mint`, `admin/mod.rs`) mitigates the compromised-app-admin
 /// threat (review H2/H3). All fields optional; an omitted ceiling for a role imposes no additional cap here.
 /// `deny_unknown_fields`: a typo'd cap key must fail boot, never silently widen the ceiling.
-#[derive(Debug, Deserialize, Clone, Default, PartialEq)]
+#[derive(Debug, Deserialize, Clone, Default, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct MintCeilingCfg {
     /// The longest TTL this role may mint, a duration string (`"7d"`, `"24h"`, …) parsed by
@@ -304,7 +304,7 @@ pub struct MintCeilingCfg {
 /// self-serve path (`auth/self_keys.rs`) and the binding-mode / TTL / pool ceilings are applied at
 /// `MintPolicy::check_mint` (`admin/mod.rs`).
 /// `deny_unknown_fields`: a typo'd policy key must fail boot, not silently disable a control.
-#[derive(Debug, Deserialize, Clone, Default, PartialEq)]
+#[derive(Debug, Deserialize, Clone, Default, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct AuthPolicyCfg {
     /// May users SELF-SERVE mint (`POST /auth/token`)? `None` ⇒ today's behavior (self-mint available
@@ -356,7 +356,7 @@ pub struct BrowserLoginCfg {
 /// carries a `browser_login:` block (freeze blocker). Built by busbar-core's `resolve_auth`, never
 /// deserialized: the config-facing shape is the provider definition itself, and this is just the
 /// slice of it the login machinery reads.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AuthMethodCfg {
     /// The `kind: auth` PLUGIN backing this method — the provider definition's `module:`. Distinct
     /// from the map KEY, which is the provider NAME (two named providers may share one module).
@@ -420,7 +420,7 @@ impl Default for AuthDeployCfg {
 /// The RESOLVED `auth:` block — each `chain:`/`admin_auth:` NAME joined to its `identity-providers:`
 /// definition (see busbar-core's `resolve_auth`). This is what every runtime consumer reads; it is
 /// constructed by `resolve`, never parsed from YAML.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AuthCfg {
     /// The key-signing key: a SECRET REFERENCE resolving to the ed25519 signing key busbar
     /// mints + verifies virtual-key tokens with. Fleet-shared (every node verifying the same tokens

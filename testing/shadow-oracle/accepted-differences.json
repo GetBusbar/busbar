@@ -5053,8 +5053,8 @@
       "kind": "improvement",
       "changelog": "1.6.0 Changed: a request that asks for a stream is answered as a stream in the caller's own dialect even when the upstream answers with one whole body; the conversion is audited (`egress.stream_synthesized`) and billed from the upstream's body.",
       "by": "owner (Matthew Jackson), 2026-10-27 (signature recorded ~/Developer/tmp/cleanup/NEXT.md:328)",
-      "cells": "^(llm\\|anthropic\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|openai\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|responses\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|openai\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|responses\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|openai\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|responses\\|request\\|ok_stream_whole_answer|llm\\|openai\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|openai\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|openai\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|openai\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|openai\\|responses\\|request\\|ok_stream_whole_answer|llm\\|responses\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|responses\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|responses\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|responses\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|responses\\|openai\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|responses\\|request\\|ok_stream|llm\\|bedrock\\|responses\\|request\\|ok_stream|llm\\|cohere\\|responses\\|request\\|ok_stream|llm\\|gemini\\|responses\\|request\\|ok_stream|llm\\|openai\\|responses\\|request\\|ok_stream)$",
-      "expected_cells": 30,
+      "cells": "^(llm\\|anthropic\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|openai\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|responses\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|openai\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|responses\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|openai\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|responses\\|request\\|ok_stream_whole_answer|llm\\|openai\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|openai\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|openai\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|openai\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|openai\\|responses\\|request\\|ok_stream_whole_answer|llm\\|responses\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|responses\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|responses\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|responses\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|responses\\|openai\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|responses\\|request\\|ok_stream|llm\\|bedrock\\|responses\\|request\\|ok_stream|llm\\|cohere\\|responses\\|request\\|ok_stream|llm\\|gemini\\|responses\\|request\\|ok_stream|llm\\|openai\\|responses\\|request\\|ok_stream|llm\\|responses\\|responses\\|request\\|ok_stream|llm\\|anthropic\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|bedrock\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|openai\\|openai\\|request\\|ok_stream_whole_answer|llm\\|responses\\|responses\\|request\\|ok_stream_whole_answer)$",
+      "expected_cells": 37,
       "classes": [
         "headers",
         "body",
@@ -5073,6 +5073,14 @@
           {
             "cell": "llm|openai|anthropic|request|ok_stream_whole_answer",
             "body_contains": "data: [DONE]"
+          },
+          {
+            "cell": "llm|openai|openai|request|ok_stream_whole_answer",
+            "body_contains": "data: [DONE]"
+          },
+          {
+            "cell": "llm|responses|responses|request|ok_stream",
+            "body_contains": "response.completed"
           }
         ]
       },
@@ -5084,13 +5092,18 @@
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-28",
           "ruling": "OWNER SIGNED 2026-10-28 (asked by the coordinator with the before/after below): extend S-1-SYNTH by the 5 cells llm|{anthropic,bedrock,cohere,gemini,openai}|responses|request|ok_stream. Before: application/json, one whole JSON body, no audit row. After: text/event-stream in the caller's format, plus one egress.stream_synthesized audit row."
+        },
+        "widened_2026_10_31": {
+          "who": "lead, under owner delegation (busbar 1.6.0)",
+          "when": "2026-10-31",
+          "ruling": "LEAD-SIGNED 2026-10-31 under owner delegation (~/Developer/tmp/cleanup/SIGN-plane-llm-stream.md, Row A): extend S-1-SYNTH by the 7 same-dialect cells llm|responses|responses|request|ok_stream and llm|{anthropic,bedrock,cohere,gemini,openai,responses} same-dialect |request|ok_stream_whole_answer (30 -> 37). Before (1.5.5): 200, application/json, the whole JSON body, no audit row. After: 200, text/event-stream synthesized in the caller's dialect from the whole body, one egress.stream_synthesized audit row naming the far dialect; usage billed from the body (same counts). llm|gemini|gemini|request|ok_stream_array_whole_answer is unchanged and not covered."
         }
       },
       "expires": {
         "baseline": "1.5.5",
         "by": "2026-12-31"
       },
-      "rationale": "SPLIT 2026-10-27 out of S-1 (ORACLE-116 review): on these 25 cells a stream:true request reaches a far end of another dialect that answers one whole JSON body. 1.5.5 relayed that body as application/json; 1.6.0 answers the caller in its own dialect AND mode, a stream synthesised from the whole body (owner rule of 2026-10-27). headers: content-type application/json -> the caller's stream type. body: the JSON document -> the caller's event stream carrying the same answer. effects.audit: the conversion writes one applied `egress.stream_synthesized` row naming the far dialect (busbar-plane-llm #53). Money is unchanged: the stream is billed from the far end's whole body (no usage class is forgiven). PREMISE (evaluated): the anthropic door's synthesised stream opens with `message_start` and the openai door's ends with `[DONE]`, i.e. each is the caller's own stream shape. WIDENED 2026-10-28 (OWNER signed 2026-10-28): the 5 cells llm|anthropic|responses|request|ok_stream, llm|bedrock|responses|request|ok_stream, llm|cohere|responses|request|ok_stream, llm|gemini|responses|request|ok_stream and llm|openai|responses|request|ok_stream (+5, 30). Before: application/json, one whole JSON body, no audit row. After: text/event-stream in the caller's format, plus one egress.stream_synthesized audit row. These cells only."
+      "rationale": "SPLIT 2026-10-27 out of S-1 (ORACLE-116 review): on these 25 cells a stream:true request reaches a far end of another dialect that answers one whole JSON body. 1.5.5 relayed that body as application/json; 1.6.0 answers the caller in its own dialect AND mode, a stream synthesised from the whole body (owner rule of 2026-10-27). headers: content-type application/json -> the caller's stream type. body: the JSON document -> the caller's event stream carrying the same answer. effects.audit: the conversion writes one applied `egress.stream_synthesized` row naming the far dialect (busbar-plane-llm #53). Money is unchanged: the stream is billed from the far end's whole body (no usage class is forgiven). PREMISE (evaluated): the anthropic door's synthesised stream opens with `message_start` and the openai door's ends with `[DONE]`, i.e. each is the caller's own stream shape. WIDENED 2026-10-28 (OWNER signed 2026-10-28): the 5 cells llm|anthropic|responses|request|ok_stream, llm|bedrock|responses|request|ok_stream, llm|cohere|responses|request|ok_stream, llm|gemini|responses|request|ok_stream and llm|openai|responses|request|ok_stream (+5, 30). Before: application/json, one whole JSON body, no audit row. After: text/event-stream in the caller's format, plus one egress.stream_synthesized audit row. These cells only. WIDENED 2026-10-31 (LEAD-SIGNED under owner delegation, SIGN-plane-llm-stream.md Row A): the same rule within one dialect. The 7 cells llm|responses|responses|request|ok_stream, llm|anthropic|anthropic|request|ok_stream_whole_answer, llm|bedrock|bedrock|request|ok_stream_whole_answer, llm|cohere|cohere|request|ok_stream_whole_answer, llm|gemini|gemini|request|ok_stream_whole_answer, llm|openai|openai|request|ok_stream_whole_answer and llm|responses|responses|request|ok_stream_whole_answer (+7, 37): a stream:true caller whose far end of its own dialect answered one whole body. Before: application/json, the whole JSON body, no audit row. After: text/event-stream synthesized in the caller's dialect, plus one egress.stream_synthesized audit row; billed from the body (same counts, once). busbar-plane-llm llm-conformance-landed (red 8aa1a4f, fix 82c0d42, relay.rs takes_whole). PREMISE widened with it: the openai door's same-dialect whole answer ends with [DONE] and the responses door's same-dialect ok_stream carries response.completed, so the entry forgives nothing (WITHHELD) on a dist that still pins a plane-llm without the change. The JSON-array gemini caller (ok_stream_array_whole_answer) keeps its array; not covered."
     },
     {
       "id": "S-1-AUDIT a stream synthesised for a Bedrock caller writes its egress.stream_synthesized audit row",
@@ -6565,6 +6578,107 @@
           "candidate": "359"
         }
       ]
+    },
+    {
+      "id": "1.6 typed signed fixture exact28",
+      "kind": "improvement",
+      "cells": "^(llm\\|anthropic\\|bedrock\\|request\\|ok|llm\\|anthropic\\|bedrock\\|request\\|ok_stream|llm\\|anthropic\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|bedrock\\|request\\|upstream_down|llm\\|bedrock\\|bedrock\\|request\\|ok|llm\\|bedrock\\|bedrock\\|request\\|ok_cachepoint_document@fixture|llm\\|bedrock\\|bedrock\\|request\\|ok_stream|llm\\|bedrock\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|bedrock\\|bedrock\\|request\\|stream_upstream_cut|llm\\|bedrock\\|bedrock\\|request\\|stream_upstream_error@fixture|llm\\|bedrock\\|bedrock\\|request\\|upstream_down|llm\\|cohere\\|bedrock\\|request\\|ok|llm\\|cohere\\|bedrock\\|request\\|ok_stream|llm\\|cohere\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|bedrock\\|request\\|upstream_down|llm\\|gemini\\|bedrock\\|request\\|ok|llm\\|gemini\\|bedrock\\|request\\|ok_stream|llm\\|gemini\\|bedrock\\|request\\|ok_stream_array_whole_answer|llm\\|gemini\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|bedrock\\|request\\|upstream_down|llm\\|openai\\|bedrock\\|request\\|ok|llm\\|openai\\|bedrock\\|request\\|ok_stream|llm\\|openai\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|openai\\|bedrock\\|request\\|upstream_down|llm\\|responses\\|bedrock\\|request\\|ok|llm\\|responses\\|bedrock\\|request\\|ok_stream|llm\\|responses\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|responses\\|bedrock\\|request\\|upstream_down)$",
+      "expected_cells": 28,
+      "classes": [
+        "effects.egress",
+        "norm.rules"
+      ],
+      "signed_fixture_1_6": true,
+      "rationale": "1.6 candidate-only typed fixture signs requests. Only cryptographically verified three added headers and egress.cred marker are accepted; every other JSON value remains byte-equivalent to immutable1.5.5 records.",
+      "changelog": null,
+      "changelog_reason": "Owner-approved oracle fixture correction for new1.6 expectations only; immutable published1.5.5 contract and recorded outputs remain unchanged. No customer-visible behavior is waived.",
+      "premise": {
+        "signed_fixture_1_6": true
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-11-02",
+        "signed": "\u00a7Oracle signed fixture approval 2026-11-02",
+        "ruling": "Active conversation 01a19ef1-7f89-7e20-923e-ea0b9ca6368b: user \u201cCorrect Approved\u201d after explicit clarification that published1.5.5 never changes and only corresponding new1.6.0 expectations may change; exact message clock unavailable."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "E1 same-Bedrock synthesis derived normalization markers",
+      "kind": "improvement",
+      "changelog": "1.6.0 Changed: a request that asks for a stream is answered as a stream in the caller's own dialect even when the upstream answers with one whole body; the conversion is audited (`egress.stream_synthesized`) and billed from the upstream's body.",
+      "by": "owner (Matthew Jackson), existing E1 direct approval 2026-10-31T17:12:12.636440+00:00; bounded interpretation recorded 2026-11-02",
+      "cells": "^llm\\|bedrock\\|bedrock\\|request\\|ok_stream_whole_answer$",
+      "expected_cells": 1,
+      "classes": [
+        "norm.rules"
+      ],
+      "values": [
+        {
+          "pointer": "/applied",
+          "golden": [
+            "audit.hash",
+            "egress.body",
+            "egress.elapsed",
+            "egress.host",
+            "hdr.date",
+            "key.id",
+            "metrics.timing"
+          ],
+          "candidate": [
+            "audit.hash",
+            "egress.body",
+            "egress.elapsed",
+            "egress.host",
+            "eventstream.frames",
+            "hdr.date",
+            "hdr.length",
+            "key.id",
+            "metrics.timing"
+          ]
+        }
+      ],
+      "premise": {
+        "all": [
+          {
+            "signed_fixture_1_6": true
+          },
+          {
+            "cell": "llm|anthropic|openai|request|ok_stream_whole_answer",
+            "status": 200
+          },
+          {
+            "cell": "llm|anthropic|openai|request|ok_stream_whole_answer",
+            "body_contains": "event: message_start"
+          },
+          {
+            "cell": "llm|openai|anthropic|request|ok_stream_whole_answer",
+            "body_contains": "data: [DONE]"
+          },
+          {
+            "cell": "llm|openai|openai|request|ok_stream_whole_answer",
+            "body_contains": "data: [DONE]"
+          },
+          {
+            "cell": "llm|responses|responses|request|ok_stream",
+            "body_contains": "response.completed"
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson), existing E1 approval",
+        "when": "2026-10-31",
+        "signed": "\u00a7Oracle existing E1 derived markers",
+        "ruling": "Existing OWNER DIRECT APPROVAL E1, SIGN-plane-llm-stream.md Row A, 2026-10-31T17:12:12.636440+00:00: owner replied yes to converting upstream whole JSON into caller-requested stream for seven named same-dialect cases, same billed counts and one synthesis audit. ROOT independently reviewed the exact same-Bedrock pair as mechanically derived normalization metadata, not new behavior or new approval; decision oracle-existing-e1-marker-scope-decision.json. Only exact full /applied before/after arrays and mandatory signed28 cryptographic plus five RowA behavioral premises; no blanket norm.rules waiver."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "Exact same-Bedrock one-cell bookkeeping only: eventstream.frames records successful decode of synthesized caller-mode EventStream; hdr.length records content-length normalized after body normalization. The complete /applied before/after arrays must match, after signed exact28 has projected only egress.cred. Any extra/missing marker fails the exact value transform. All other JSON is untouched and judged by existing normal entries. Mandatory all28 cryptographic premise and all five existing RowA behavioral probes. Append after signed exact28 entry. Historical1.5 records unchanged."
     }
   ]
 }

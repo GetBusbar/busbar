@@ -1364,7 +1364,10 @@ fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
         Err(super::AdjustRefused::Exceeds { count, delta, .. }) => {
             assert_eq!(
                 (count, delta),
-                (busbar_contract::Count::from(1_000u64), -1_001)
+                (
+                    busbar_contract::Count::from(1_000u64),
+                    busbar_contract::Count::from_integer(-1_001).unwrap()
+                )
             );
         }
         other => panic!("a correction past the count is refused, got {other:?}"),

@@ -75,9 +75,17 @@ pub struct LoadablePlugin {
     keyed_by_alias: bool,
     /// Validated Statement schema, or the legacy manifest fallback. Never changes signed bytes.
     pub(crate) settings_schema: Option<String>,
+    /// Parsed at admission/link time; admin discovery never calls the door to read declarations.
+    configuration_statement: Option<Box<busbar_contract::abi::mechanism::rendering::Read>>,
 }
 
 impl LoadablePlugin {
+    pub fn configuration_statement(
+        &self,
+    ) -> Option<&busbar_contract::abi::mechanism::rendering::Read> {
+        self.configuration_statement.as_deref()
+    }
+
     #[must_use]
     pub fn release_keys_version(&self) -> Option<u64> {
         self.accepted_release_keys_version
@@ -498,6 +506,7 @@ impl PluginRegistry {
                 LinkedEntry::Store { door } => crate::dispatch::load::raw(door),
                 LinkedEntry::Door(door) => door,
             };
+            let mut configuration_statement = None;
             let settings_schema = match crate::dispatch::LinkedRow::of_raw(door) {
                 Ok(rendered) => {
                     let stated =
@@ -505,8 +514,10 @@ impl PluginRegistry {
                             .map_err(|e| {
                                 format!("linked Statement byte {} is not {}", e.at, e.what)
                             })?;
-                    crate::settings_schema::statement_schema(&stated.settings_schema)?
-                        .or_else(|| manifest.settings_schema.clone())
+                    let schema = crate::settings_schema::statement_schema(&stated.settings_schema)?
+                        .or_else(|| manifest.settings_schema.clone());
+                    configuration_statement = Some(Box::new(stated));
+                    schema
                 }
                 // Registration has historically allowed an unopened/null linked door; loading it
                 // still refuses. It states no schema, unlike a present malformed Statement.
@@ -527,6 +538,7 @@ impl PluginRegistry {
                 entry: Some(entry),
                 keyed_by_alias,
                 settings_schema,
+                configuration_statement,
             });
         }
         let new = rows.len();
@@ -1008,6 +1020,10 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
                 Ok(schema) => schema,
                 Err(reason) => return FileOutcome::Invalid { file, reason },
             };
+            let configuration_statement = match unpacked.manifest.stated() {
+                Ok(statement) => statement.map(Box::new),
+                Err(reason) => return FileOutcome::Invalid { file, reason },
+            };
             let plugin = LoadablePlugin {
                 file,
                 manifest: unpacked.manifest,
@@ -1019,6 +1035,7 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
                 entry: None,
                 keyed_by_alias: false,
                 settings_schema,
+                configuration_statement,
             };
 
             match plugin.first_party() {

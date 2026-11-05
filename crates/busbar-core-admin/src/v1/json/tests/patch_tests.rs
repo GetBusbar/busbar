@@ -82,3 +82,95 @@ fn empty_patch_is_identity() {
     let out = merge_group_patch(base.clone(), None, None, None, None);
     assert_eq!(out, base);
 }
+
+#[test]
+fn group_explicit_clear_preserves_legacy_null_and_distinguishes_empty_template() {
+    use super::GroupPatchReq;
+    let base = GroupCfg {
+        parent: Some("parent".into()),
+        child_default: Some(ChildDefault {
+            limits: vec![budget(7)],
+        }),
+        ..Default::default()
+    };
+    for body in [
+        r#"{}"#,
+        r#"{"parent":null,"child_default":null,"limits":null,"enabled":null}"#,
+    ] {
+        let patch: GroupPatchReq = serde_json::from_str(body).unwrap();
+        assert_eq!(patch.apply(base.clone()).unwrap(), base);
+    }
+    let patch: GroupPatchReq =
+        serde_json::from_str(r#"{"clear":["parent","child_default"]}"#).unwrap();
+    let cleared = patch.apply(base.clone()).unwrap();
+    assert!(cleared.parent.is_none());
+    assert!(cleared.child_default.is_none());
+    assert_eq!(cleared.limits, base.limits);
+    let patch: GroupPatchReq = serde_json::from_str(r#"{"child_default":{}}"#).unwrap();
+    assert_eq!(
+        patch.apply(base.clone()).unwrap().child_default,
+        Some(ChildDefault::default())
+    );
+    for body in [
+        r#"{"parent":"new","clear":["parent"]}"#,
+        r#"{"child_default":{},"clear":["child_default"]}"#,
+    ] {
+        let patch: GroupPatchReq = serde_json::from_str(body).unwrap();
+        assert!(patch.apply(base.clone()).is_err());
+    }
+    assert!(serde_json::from_str::<GroupPatchReq>(r#"{"clear":["enabled"]}"#).is_err());
+}
+
+#[test]
+fn hook_explicit_edit_preserves_private_settings_and_replacement_remains_explicit() {
+    use super::PatchSettingsReq;
+    use serde_json::json;
+    let existing = json!({"credential":{"env":"PRIVATE"},"visible":1,"remove_me":true})
+        .as_object()
+        .unwrap()
+        .clone();
+    let request: PatchSettingsReq = serde_json::from_value(
+        json!({"edit":{"set":{"visible":2,"nullable":null},"remove":["remove_me"]}}),
+    )
+    .unwrap();
+    let edited = request.apply(existing.clone()).unwrap();
+    assert_eq!(edited["credential"], existing["credential"]);
+    assert_eq!(edited["visible"], 2);
+    assert!(edited["nullable"].is_null());
+    assert!(!edited.contains_key("remove_me"));
+    let request: PatchSettingsReq =
+        serde_json::from_value(json!({"settings":{"visible":3}})).unwrap();
+    assert_eq!(
+        request.apply(existing.clone()).unwrap(),
+        json!({"visible":3}).as_object().unwrap().clone()
+    );
+    for body in [
+        json!({}),
+        json!({"settings":{},"edit":{}}),
+        json!({"edit":{"set":{"credential":null},"remove":["credential"]}}),
+    ] {
+        let request: PatchSettingsReq = serde_json::from_value(body).unwrap();
+        assert!(request.apply(existing.clone()).is_err());
+    }
+    for body in [
+        json!({"settings":null}),
+        json!({"settings":{},"edit":null}),
+        json!({"edit":{"unknown":true}}),
+    ] {
+        assert!(serde_json::from_value::<PatchSettingsReq>(body).is_err());
+    }
+}
+
+#[test]
+fn group_budget_readback_preserves_all_authored_policy_and_exact_u64_wire() {
+    use crate::v1::contract::GroupView;
+    let cfg: GroupCfg = serde_json::from_str(r#"{"limits":[{"budget":9007199254740993,"per":"month","admission":"estimate","on_exhaustion":"cut-stream"}],"child_default":{"limits":[{"budget":7,"per":"day","admission":"exact","on_exhaustion":"finish-unit"}]}}"#).unwrap();
+    let view = GroupView::from_cfg("group", &cfg);
+    let encoded = serde_json::to_string(&view).unwrap();
+    assert!(encoded.contains("9007199254740993"));
+    assert_eq!(view.limits[0].admission, Some("estimate"));
+    assert_eq!(view.limits[0].on_exhaustion, Some("cut-stream"));
+    let template = view.child_default.unwrap();
+    assert_eq!(template[0].admission, Some("exact"));
+    assert_eq!(template[0].on_exhaustion, Some("finish-unit"));
+}

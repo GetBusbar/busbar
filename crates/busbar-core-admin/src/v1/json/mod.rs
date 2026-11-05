@@ -434,7 +434,11 @@ fn with_config_etag(mut resp: Response, version: u64) -> Response {
 mod config_document;
 #[cfg(feature = "openapi-schema")]
 mod config_forms;
+#[cfg(feature = "openapi-schema")]
+mod contract_metadata;
 mod handlers;
+#[cfg(feature = "openapi-schema")]
+mod replay_metadata;
 pub(super) mod telemetry;
 pub(crate) use handlers::*;
 

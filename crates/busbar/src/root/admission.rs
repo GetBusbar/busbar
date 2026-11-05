@@ -15,6 +15,45 @@ pub static ADMISSION: RootAdmission = RootAdmission;
 
 pub static DURABLE: RootDurable = RootDurable;
 
+fn configuration_declaration(
+    m: &Manifest,
+    statement: &busbar_contract::abi::mechanism::rendering::Read,
+) -> busbar_kernel::admission::ConfigurationDeclaration {
+    let mut declaration =
+        busbar_kernel::admission::ConfigurationDeclaration::from_statement(statement);
+    declaration.valid &= busbar_contract::abi::mechanism::KindCode::from_raw(statement.kind)
+        .is_some_and(|kind| crate::root::loader::boot::kind_of(kind).to_string() == m.kind)
+        && statement.name == m.name
+        && statement.version == m.version
+        && statement.kind_abi == m.abi_version
+        && statement.mechanism_version == busbar_contract::abi::mechanism::MECHANISM_VERSION;
+    declaration
+}
+
+pub(super) fn linked_configuration_from_statement(bytes: &[u8]) -> Result<Stated, String> {
+    use busbar_contract::abi::mechanism::{door::REWRITE_ALIAS, rendering, KindCode};
+    let statement =
+        rendering::read(bytes).map_err(|e| format!("invalid linked Statement: {e:?}"))?;
+    let kind = KindCode::from_raw(statement.kind).ok_or("unknown linked Statement kind")?;
+    let schema = super::loader::settings_schema::statement_schema(&statement.settings_schema)?;
+    Ok(Stated {
+        name: statement.name.clone(),
+        alias: statement
+            .rewrites
+            .iter()
+            .find(|(class, _, _)| *class == REWRITE_ALIAS)
+            .map_or_else(|| statement.name.clone(), |(_, from, _)| from.clone()),
+        kind: super::loader::boot::kind_of(kind).to_string(),
+        version: statement.version.clone(),
+        publisher: super::loader::sign::FIRST_PARTY_PUBLISHER.to_string(),
+        abi_version: statement.kind_abi,
+        settings_schema: schema,
+        configuration: Some(
+            busbar_kernel::admission::ConfigurationDeclaration::from_statement(&statement),
+        ),
+    })
+}
+
 fn stated(m: &Manifest) -> Result<Stated, String> {
     Ok(Stated {
         name: m.name.clone(),
@@ -24,6 +63,10 @@ fn stated(m: &Manifest) -> Result<Stated, String> {
         publisher: m.publisher.clone(),
         abi_version: m.abi_version,
         settings_schema: m.settings_schema_text()?,
+        configuration: m
+            .stated()?
+            .as_ref()
+            .map(|statement| configuration_declaration(m, statement)),
     })
 }
 
@@ -69,6 +112,20 @@ fn unpack_checked(
 pub struct RootAdmission;
 
 impl PluginAdmission for RootAdmission {
+    fn linked_configuration(&self) -> Vec<Stated> {
+        super::settings_public::linked_configuration()
+    }
+
+    fn loaded_configuration(
+        &self,
+        registry: &dyn busbar_contract::plugin_rows::PluginRows,
+        name: &str,
+    ) -> Option<busbar_kernel::admission::ConfigurationDeclaration> {
+        let row = crate::root::loader::rows::registry_of(registry)?.resolve(name)?;
+        row.configuration_statement()
+            .map(|statement| configuration_declaration(&row.manifest, statement))
+    }
+
     fn bootstrap_probe_selected(
         &self,
         tarball: &[u8],

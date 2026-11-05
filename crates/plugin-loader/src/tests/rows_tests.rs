@@ -208,3 +208,31 @@ fn reference_slots_are_the_reference_fields_the_statement_names() {
     assert!(rows.reference_slots("unslotted").is_empty());
     assert!(rows.reference_slots("nope").is_empty());
 }
+
+#[test]
+fn plugin_configuration_linked_discovery_uses_cached_statement_without_calling_door() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    extern "C" fn counting_door() -> &'static busbar_contract::abi::mechanism::door::Door {
+        CALLS.fetch_add(1, Ordering::SeqCst);
+        crate::actual_store::door()
+    }
+    let registry = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::store(
+            "cached-store",
+            counting_door,
+            true,
+        )])
+        .unwrap();
+    let calls = CALLS.load(Ordering::SeqCst);
+    let row = registry.resolve("cached-store").unwrap();
+    let cached = row.configuration_statement().unwrap();
+    assert_eq!(
+        cached.kind,
+        busbar_contract::abi::mechanism::KindCode::Store as u32
+    );
+    for _ in 0..3 {
+        assert_eq!(row.configuration_statement(), Some(cached));
+    }
+    assert_eq!(CALLS.load(Ordering::SeqCst), calls);
+}

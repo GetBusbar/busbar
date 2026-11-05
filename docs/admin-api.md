@@ -40,9 +40,47 @@ Over-budget is `429 rate_limited` with a **`Retry-After: 60`** header, and the e
 
 **The static admin token is one shared principal.** Per-principal budgeting is only as isolating as the principal identity, and the built-in `admin-tokens` module ([GetBusbar/busbar-auth-admin-tokens](https://github.com/GetBusbar/busbar-auth-admin-tokens), linked into the default build at a pinned rev) maps *every* successful static-token authentication, regardless of which holder presented it, to the same constant principal id, `"admin"`. So if you hand the one static token to busbar-ui, your CI, your Terraform, and an operator's `curl`, they all collapse onto that single principal and **share one bucket per class** (10/min config-mutation, 60/min CRUD, 30/min plugin-inspect): a script hammering one of them can 429 the others, and the two are indistinguishable from the response alone. Failed attempts also spend budget (deliberate, anti-enumeration), which sharpens this. If you need per-caller isolation and attribution, don't fan the static token out to multiple automations. Authenticate them through a **role-bound external admin module** instead (OIDC/SSO/AD; see `admin_auth:` above and `auth.role_bindings.<provider>`). Role-carrying principals from an external module get distinct principal ids and therefore distinct rate buckets.
 
+## Security-sensitive config and queued effects
+
+Named edits, whole-config apply, document pointers (including parent replacement and removal),
+overlay reset, rollback and reload share the semantic config transaction policy. A named verb
+such as `put_config_settings` permits ordinary configuration edits; it does **not** confer full
+operator authority. Changes to authentication chains, role bindings, identity-provider definitions,
+credential/secret sources, transport security or plugin trust require a whole `full` grant
+(`admin_scope: full` or `verbs: "*"`), capped by the identifying provider. The engine derives this
+from the authenticated grant, never from a subject spelling such as `admin`.
+
+Even a full operator cannot raise an identity-provider ceiling through the API, replace an
+existing hook's immutable kind/prompt/user grants, or change a protected nonempty admin chain to
+an empty one. Configure the intentional open development posture at startup. A chain replacement
+must preserve this operator's full access under the proposed chain. These checks compare resolved
+candidates before builder plugin/provider opening and generations before persistence and publication, so broader document representations are not an
+alternate permission path. Boot and internal kernel maintenance are not administrative requests.
+
+Config, detached credential and root-owned mutation work carries its original authenticated
+identity to effect admission. The shared admission gate serializes not-yet-started work with
+local configuration-policy publication; queued work authenticates again against the current
+chain and must retain the same principal, asserted role set and operation grant. A changed role set
+requires a fresh request; old request roles cannot continue feeding credential mint ceilings. The config worker rechecks after
+its blocking-work queue and before persistence. Failure before admission returns `forbidden`
+without the requested effect. Provider unavailability also fails closed at this boundary.
+Once an effect has been admitted, local policy publication waits for its custody section;
+revocation cannot undo an already committed Store write. Completion and retained receipt
+reconciliation continue to report the actual outcome. HTTP cancellation is not rollback.
+
+This is a **local engine admission** guarantee, not instantaneous fleet or issuer revocation.
+An external admin provider is called again, but its own cached JWKS, introspection, role and
+revocation data determine what it can observe; operators must qualify the pinned provider's
+expiry, refresh, outage and revocation behavior. The shared static operator credential still
+identifies all holders as the same full-authority operator. Data-plane virtual-key revocation
+is a separate mechanism: it is applied synchronously on the writing node, while peers may serve
+the prior set during refresh (five-second staleness windows, approximately two windows with a
+healthy Store; freshness can degrade during Store outage). No credential-provider or fleet-wide
+instant revocation claim follows from a successful local mutation.
+
 ## The error contract
 
-Every `/api/v1/admin` error (including 401, 404 on an unmatched path, and 405 on a wrong method) is the same shape. Branch on `code` (frozen), never on `message` (human-facing, may change):
+Ordinary `/api/v1/admin` refusals (including 401, unmatched-path 404, and wrong-method 405) use this shape. The explicitly selected durable `/adjust` action profile can instead return its typed outcome body at non-2xx statuses. Branch on known `code` values and preserve unknown strings; never branch on human-facing `message`:
 
 ```json
 { "error": { "code": "not_found", "message": "pool `west` not found" } }
@@ -54,19 +92,23 @@ Every `/api/v1/admin` error (including 401, 404 on an unmatched path, and 405 on
 | `unauthorized` | 401 | No or invalid admin credential |
 | `method_not_allowed` | 405 | The path exists, but not with this method |
 | `forbidden` | 403 | Authenticated but under-scoped (the message names the sufficient scope) |
-| `invalid_request` | 400 | Malformed body, bad parameter, malformed `If-Match`, or a foreign pagination cursor |
+| `invalid_request` | 400 | Malformed body, bad parameter, malformed `If-Match`, or a malformed pagination cursor |
 | `version_conflict` | 409 | **Retryable**: your `If-Match` is stale, re-read for a fresh ETag and retry |
-| `conflict` | 409 | **Terminal**: the request contradicts server state in a way a retry cannot fix (governance disabled, base-defined hook or group, a group another group still parents on, immutable grant change, in-flight idempotency reservation, lockout guard) |
+| `conflict` | 409 | State/precondition refusal. Recovery is operation-specific: base ownership and immutable grants require a changed proposal; an in-flight replay or config race requires reconciliation before retry |
 | `unpriced_class` | 409 | **Terminal**: a usage read (`GET /usage`, `/groups/{name}/usage`, `/keys/{id}/usage`) hit a billable class or lane the rate card in force names no price for, so the figure cannot be priced (see [configuration.md](configuration.md#per-plane-rate-cards-toolsrate_card-agentsrate_card-streamsrate_card-decisionsrate_card)) |
+| `idempotency_mismatch` | 409 | The caller action is already bound to different exact request bytes; no second effect |
+| `mutation_applied` | 409 | The named key mutation committed; subsequent cache/readback reconciliation failed. Read the typed effect/recovery fields |
+| `action_in_flight` | 409 | A durable adjustment action was claimed but its receipt binding is not available; reconcile, never start another delta automatically |
+| `request_too_large` | 413 | Admin request exceeds the listener body limit |
 | `rate_limited` | 429 | The principal's per-minute mutation budget is spent (`Retry-After: 60`) |
 | `internal` | 500 | An internal failure (details are logged server-side, never returned) |
 | `unavailable` | 503 | The node could not take the request into its administrative loop, or could not record what the operation would do (an administrative write that cannot be journalled is not performed). Retry later |
 
-The `version_conflict`/`conflict` split is deliberate: a client distinguishes retryable staleness from a terminal state conflict without ever string-matching the message.
+`version_conflict` names stale revision intent. Reread and review the new proposal before resubmitting; do not automatically rebase an approved mutation. `conflict` recovery depends on the operation, never message parsing.
 
 ## Pagination
 
-Every list endpoint speaks one envelope: `{ "items": [...], "next_cursor": "..." }`. `next_cursor` is present iff more rows remain; round-trip it verbatim into `?cursor=`. It is **opaque** by contract (never parse it). A malformed or foreign cursor is a loud `400 invalid_request`, never a silent skip. `?limit=` bounds the page:
+Every list endpoint speaks one envelope: `{ "items": [...], "next_cursor": "..." }`. `next_cursor` is nullable: a string means more rows, null means the observed end; round-trip it verbatim into `?cursor=`. It is **opaque** by contract (never parse it). A malformed cursor is `400 invalid_request`. The legacy offset cursor is not bound to an operation or filter, so a syntactically valid token from another legacy list may be accepted. Lists are live observations: insertion/removal between pages may duplicate or skip rows; deduplicate identities and do not claim snapshot completeness. `?limit=` bounds the page:
 
 | List | Default limit | Cap |
 |---|---|---|
@@ -76,6 +118,14 @@ Every list endpoint speaks one envelope: `{ "items": [...], "next_cursor": "..."
 | `GET /groups` | 200 | 1000 |
 
 The topology reads (`/pools`, `/models`, `/providers`, `/hooks`, `/plugins`) return the same envelope in a single page (`next_cursor: null`). They are bounded by static config. `/groups` is cursor-paginated like `/keys`/`/audit`/`/config/versions` instead: `plan_mint_group` auto-provisions a leaf group per self-service key mint, so the group tree grows at runtime and is not safe to return unbounded.
+
+Numeric limits on legacy keys/groups/audit/versions lists are clamped to 1–1000. Groups/audit/versions use their default for malformed values; keys refuses malformed values. These existing parser differences remain part of v1.
+
+## Exact-number client profile
+
+`x-busbar-exact-numbers.profile: lossless-number-token-v1` describes the legacy numeric wire. Parse raw JSON integer/decimal tokens losslessly before binary64 conversion. Existing Count values are signed i128 mantissas at scale 6 (range -170141183460469231731687303715884.105728 through 170141183460469231731687303715884.105727). Existing u64 counters range from 0 through 18446744073709551615. For example, `9007199254740993` and `9007199254.740993` must survive parsing unchanged. An already rounded JavaScript Number cannot be repaired later.
+
+Count units follow the field's billable class; `spend_cents`, `spend_micros` and ledger nano-units are distinct. The schema marks exact fields with `x-busbar-exact-number`; a double format is not promised for Count. New exact quantities use decimal strings. Existing numeric fields retain their numeric wire types; a browser adapter delivers exact strings after raw-token parsing.
 
 ## Concurrency: ETag + If-Match
 
@@ -98,7 +148,7 @@ Plugin artifact preconditions are independent of the config generation: an insta
 GET /api/v1/admin/openapi.json
 ```
 
-The OpenAPI 3.1 schema of the whole surface: generate a client, or point tooling at it. Every path it lists resolves (a node serves it filtered to the planes it configured — see below); its error-code enum matches the envelope above exactly; every operation is annotated with `x-busbar-required-scope` from the same matrix the middleware enforces (all three are test-locked). Browse it rendered, endpoint by endpoint, in the [API reference](https://getbusbar.com/docs/api/).
+The OpenAPI 3.1 schema of the whole surface: generate a client, or point tooling at it. Every path it lists resolves (a node serves it filtered to the planes it configured — see below); its known error-code enum covers the envelope above (clients tolerate future strings); every operation is annotated with `x-busbar-required-scope` from the same matrix the middleware enforces (all three are test-locked). Browse it rendered, endpoint by endpoint, in the [API reference](https://getbusbar.com/docs/api/).
 
 ### Configuration form schemas
 
@@ -135,6 +185,10 @@ provider options retain their declaring parser's ownership. An installed module'
 user-input wrapper or authorize copying secret material into a form. Opaque options remain opaque.
 
 ### Pinning a released schema
+
+Core authoring definitions now include `Group`, compact `Limit`, `ChildDefault`, admin/overlay `Hook`, and deploy `HookDefinition`. Admin group/hook bodies reference ordinary `ConfigInput*` OpenAPI components for generated clients. The deploy named hook wrapper differs from admin `HookCfg`: `default`, `signals`, `global` and legacy `at` belong to runtime/admin Hook, not deploy HookDefinition. Runtime module selection, fallback/tree references and current policy remain canonical validation requirements. Dynamic settings remain module-owned and are validated after SecretRef resolution.
+
+Group budget readback retains authored `admission` (`exact|estimate`) and `on_exhaustion` (`finish-unit|cut-stream`); omission retains its default meaning. Read views remain projections, not full writable definitions. Group limits are whole-list replacements, so preserve every unchanged policy from readback deliberately.
 
 The live endpoint requires a booted, authenticated instance. So that tooling can consume the contract without one, every tagged release **attaches the schema as a release asset**: `busbar-openapi-<tag>.json` on the [GitHub Release](https://github.com/GetBusbar/busbar/releases). CI emits it in-repo from the same `openapi_doc()` the gateway serves (test-locked against drift), and its `info.version` is stamped from the binary's version, so each release's artifact is self-identifying. Downstream tooling can pin a client to an exact version and diff the API surface release-over-release without decompiling or running the gateway.
 
@@ -223,9 +277,12 @@ The ledger views and audit-chain reads:
 
 Every one is a read and takes exactly what `GET /api/v1/admin/usage` takes — the same credential,
 presented the same way. Money figures come back as **decimal strings**, not JSON numbers: the ledger
-keeps them in 128-bit integers and a JSON number is a double, exact only to 2^53, so a busy day's
-nano-unit total would silently lose its last digits while still looking like money. Counts are
-ordinary numbers.
+keeps them in 128-bit integers; binary64 client numbers are exact only through 2^53, so a busy day's
+nano-unit total would lose digits in a binary64 client. Existing Count fields remain exact scale-6 JSON numeric tokens and require lossless parsing.
+
+With one `Idempotency-Key` header (1–128 ASCII graphic bytes), `POST /adjust` selects the durable exact-Count action profile. Per-class deltas accept decimal strings (preferred for new clients) or lossless JSON numeric tokens, within signed i128 scale 6. The same actor/action and exact body bytes replay one retained outcome across restart; changed bytes return `idempotency_mismatch`. Claims and receipts do not automatically expire or recycle. Without the header, the legacy signed-integer request remains `nonretryable_without_idempotency_key`.
+
+The action response is `{operation_id,operation:"adjust",actor,target,fingerprint,reason_hash,effect,applied,retry:"same_action_only",recovery,count_scale:6}`. It does not echo counts or the free-text reason. `effect` is `applied`, `not_applied` or `unknown`; unknown is HTTP 409 and requires `reconcile_ledger_recovery`. Known refusal may also use this outcome body at HTTP 400, so do not assume every non-2xx body is the generic Error envelope. The reason must be nonblank and at most 4096 UTF-8 bytes. `x-busbar-receipt-durable:false` means final receipt settlement was not confirmed; a later process may see the retained unknown receipt and must reconcile before another action.
 
 `POST /api/v1/admin/adjust` corrects a recorded unit's **counts** — a signed whole delta per
 billable class on the key's counts for one lane — never a money figure; what the unit costs stays
@@ -440,7 +497,9 @@ The virtual-key surface at `/api/v1/admin/keys` (`full` scope for mutations). Ke
 | `POST /keys/{id}/rotate` | Re-issue the key's **credential in place**: `200`, same id (budgets, rate windows, usage history, audit attribution carry over), the **previous credential stops authenticating immediately** (fleet-wide, because the new binding generation is durable), the new one is shown exactly once. Answers `{token, expires_at, state}` (every token issued before the rotation is now rejected, and 1.5.0 has exactly one bearer-credential shape, so rotation always re-issues a signed token). Rotate does not itself change `enabled`/revoked/tombstoned status, so `state` reflects whatever the key's disposition already was (`active` or `disabled`, or `revoked`, since rotating a revoked key is legal and leaves it revoked); a tombstoned key refuses to rotate at all (`404`). An attached SigV4 credential is untouched. Bearer rotation and SigV4 rotation are independent planes |
 | `GET /keys/{id}/usage` | The **attribution view**: `{id, budget_period: "total", window_start: 0, as_of, group, spend_cents, tokens, requests, rate_headroom}`, the key's all-time attribution counters (its limits, if any, live on the bound group's own windows). `spend_cents` is DERIVED at read time from the key bucket's token ledger x the current `rate_card` plus fee x requests (reprice-on-read; nothing dollar-shaped is stored). `rate_headroom`: the fraction `[0,1]` of the tightest `requests`/`tokens` limit across the group chain left in each limit's own window (`null` = no such limit), back off *before* tripping a 429 |
 
-**Idempotency.** `POST /keys` and `POST /keys/{id}/rotate` accept an **`Idempotency-Key`** header: a retried request with the same key inside the ~10-minute window returns the first response verbatim (including the once-shown secret) instead of double-minting. The cache is scoped per principal (and per operation + key id for rotate), so no other admin's identical header value can replay your secret. A concurrent request while the first is still in flight is a terminal `409 conflict`.
+**Idempotency.** `POST /keys` and `POST /keys/{id}/rotate` accept `Idempotency-Key`. Authenticated actor, operation, target and SHA256 of the exact request bytes bind a replay for about 10 minutes; whitespace changes are changed bytes. A changed request returns `409 idempotency_mismatch` with `effect:not_applied` and no cached secret. In-flight reservations refuse another effect. Secret-bearing responses can replay only while the current process retains their secret; durable applied receipts survive restart without storing the secret and refuse secret replay. Retention is finite: never reuse a completed action key as a new action or blindly retry after its replay window.
+
+A key rotate/PATCH/delete that committed but cannot refresh its cache returns `409 mutation_applied` with `effect:applied`, `operation`, non-secret `resource:key:<id>`, `recovery` and `credential_recoverable:false`. Rotation's recovery is `rotate_with_new_action`; other writes use `reread_resource`. This response is evidence of the committed effect, not rejection. A lost secret is never disclosed by parsing a backend message.
 
 If a mint's key write commits but cache reconciliation fails, `POST /keys` returns `409 conflict` with `MINT APPLIED (new secret not returned)` and the committed public key ID. It returns no token or issued secret. The applied outcome is audited and retained for its `Idempotency-Key`; retrying that key does not mint again, including after the response cache is lost. Recover the Store/cache service, then revoke or delete the identified key before minting a replacement. A Store write failure without a confirmed commit keeps the existing uncertain-outcome handling; it is not reported as applied.
 
@@ -475,7 +534,7 @@ The `groups:` limit tree, where every limit lives (keys are pure auth), is fully
 |---|---|
 | `POST /groups` | Create (or replace) a group at runtime. Body `{ "name": "...", "config": { "parent": ..., "enabled": ..., "limits": [...], "child_default": ... } }`, a config.yaml group block verbatim. **`201` when the name is new; `200` when it replaces an existing overlay group** (honest upsert; re-creating a deleted name clears its tombstone) |
 | `PUT /groups/{name}` | Replace an existing **overlay** group, live. `404` for an unknown name (PUT replaces; POST creates) |
-| `PATCH /groups/{name}` | **Partial** update: only the fields present change, the rest are preserved. This is the ergonomic "raise Alice's budget" (send just `limits`) and "freeze this team" (send `enabled: false`) verb. `limits`/`child_default` replace their whole list when present (a list can't be field-merged); to *clear* `parent` or `child_default`, use `PUT` with the full definition. A typo'd field is a `400`, never a silent no-op |
+| `PATCH /groups/{name}` | **Partial** update: omitted and null legacy fields preserve current values. Non-null values replace the field. This is the ergonomic "raise Alice's budget" (send just `limits`) and "freeze this team" (send `enabled: false`) verb. `limits`/`child_default` replace their whole list when present (a list can't be field-merged); to *clear* `parent` or `child_default`, send `{"clear":["parent","child_default"]}` (either name may be selected). Setting a non-null value and clearing the same field is `400`. An empty child template remains present and stops ancestor-template lookup; it is distinct from clearing. A typo'd field is a `400`, never a silent no-op |
 | `DELETE /groups/{name}` | Remove an overlay group, live. **`204`** (still carrying the new config ETag); `404` if unknown; terminal `409` if another group still names it as `parent` (re-parent or remove the children first, because a delete never silently orphans them). The name is tombstoned in the overlay so the deletion survives restart |
 
 **Validate-at-the-door.** Every write runs the mutated registry through the *same* `validate_groups` boot uses (parent exists, chain acyclic, pool qualifiers resolve, limit values sane): a bad group (dangling or cyclic parent, a `pool:` naming no pool) is a `400` that changes nothing. On success the enforcement projection is rebuilt atomically and the new limits are live for the next request; the usage **ledger survives the swap**, so past accrual is preserved across a limit change.
@@ -535,7 +594,7 @@ A missing or corrupt overlay is ignored at boot: a bad overlay can never brick s
 | `POST /hooks` | Register a hook at runtime. Body `{ "name": "...", "config": { "kind": "gate\|tap", "module": "<kind: hook plugin name/alias>", "settings": {...}, ... } }`. `module` names a loaded `kind: hook` plugin (1.5.0 retired the built-in `socket`/`webhook` transports; for HTTPS-sidecar forwarding use the first-party `busbar-hook-webrequest` plugin, and note `plugins.enabled: true` is required). **`201` when the name is new; `200` when it replaces an existing overlay hook** (honest upsert). A `global: true` hook is live for the next request. Invalid definitions are `400` and change nothing; a base-config-defined name is a terminal `409` (the API never silently shadows file config) |
 | `PUT /hooks/{name}` | Replace an existing **overlay** hook, live. `404` for an unknown name (PUT replaces; POST creates); terminal `409` for a base-defined hook or a grant change: `kind`/`prompt`/`user` are immutable (delete and re-register to change them) |
 | `DELETE /hooks/{name}` | Remove an overlay hook, live. **`204`** (still carrying the new config ETag); `404` if unregistered; terminal `409` for a base-defined hook. The deletion is tombstoned in the overlay so it survives restart |
-| `PATCH /hooks/{name}/settings` | Push an opaque settings map to the **running** hook and **commit on ack**: Busbar sends the `configure` op (5s deadline) and only a version-echoing acknowledgment commits the change (audited, versioned, persisted). A nack/timeout commits nothing (`400` names the reason); if another mutation landed during the push, the commit is refused with `409`, retry. A forwarding hook (e.g. `busbar-hook-webrequest`) relays committed settings to its sidecar, so a restarted sidecar never runs blind |
+| `PATCH /hooks/{name}/settings` | Choose exactly one body mode: `{"settings":{...}}` replaces the entire bag, dropping omitted keys; `{"edit":{"set":{...},"remove":[...]}}` preserves all unmentioned fields, including hidden secrets. set/remove overlap is `400`; null values are authored values, never removal. Never copy redacted readback into a replacement. Both modes push an opaque settings map to the **running** hook and **commit on ack**: Busbar sends the `configure` op (5s deadline) and only a version-echoing acknowledgment commits the change (audited, versioned, persisted). A nack/timeout commits nothing (`400` names the reason); if another mutation landed during the push, the commit is refused with `409`, retry. A forwarding hook (e.g. `busbar-hook-webrequest`) relays committed settings to its sidecar, so a restarted sidecar never runs blind |
 
 All hook mutations honor `If-Match` against the config-plane ETag, are audited (including rejections: probing which names exist leaves a trail), recorded in version history, and overlay-persisted.
 

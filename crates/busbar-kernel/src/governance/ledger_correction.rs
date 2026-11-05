@@ -20,10 +20,12 @@ struct Intent {
     era: u64,
     entry_id: Option<[u8; 12]>,
     epoch: u64,
-    delta: BTreeMap<String, i64>,
+    delta: BTreeMap<String, Count>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    action_id: Option<String>,
 }
 impl Intent {
-    fn of(adj: &Adjustment<'_>) -> Self {
+    fn of(adj: &Adjustment<'_, Count>, action_id: Option<&str>) -> Self {
         Self {
             pool: adj.pool.into(),
             model: adj.model.into(),
@@ -31,6 +33,7 @@ impl Intent {
             entry_id: adj.entry_id.map(|id| id.0),
             epoch: adj.card_epoch_ms,
             delta: adj.delta.clone(),
+            action_id: action_id.map(str::to_string),
         }
     }
 }
@@ -784,7 +787,7 @@ impl GovState {
             let delta = intent
                 .delta
                 .iter()
-                .filter(|(_, count)| **count != 0)
+                .filter(|(_, count)| **count != Count::ZERO)
                 .map(|(unit, count)| (unit.as_str(), *count))
                 .collect();
             self.correct_usage_with_parent(
@@ -793,6 +796,7 @@ impl GovState {
                 &delta,
                 pending.request.day_start,
                 Some(parent.operation_id),
+                intent.action_id.as_deref(),
             )?
             .map_err(|refused| {
                 unresolved(&format!(
@@ -986,7 +990,11 @@ impl GovState {
         Ok(())
     }
 
-    pub(super) fn resume_usage_correction(&self, adj: &Adjustment<'_>) -> RecordStoreResult<bool> {
+    pub(super) fn resume_usage_correction(
+        &self,
+        adj: &Adjustment<'_, Count>,
+        action_id: Option<&str>,
+    ) -> RecordStoreResult<bool> {
         let pending = self
             .corrections
             .lock()
@@ -1001,7 +1009,7 @@ impl GovState {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(adj.key_id);
-        Ok(decision == Decision::Applied && pending.intent == Intent::of(adj))
+        Ok(decision == Decision::Applied && pending.intent == Intent::of(adj, action_id))
     }
 
     fn decide_usage_correction(&self, pending: &PendingCorrection) -> RecordStoreResult<Decision> {
@@ -1449,20 +1457,22 @@ impl GovState {
     pub(super) fn correct_usage(
         &self,
         cost: &crate::cost::CostModel,
-        adj: &Adjustment<'_>,
-        delta: &BTreeMap<&str, i64>,
+        adj: &Adjustment<'_, Count>,
+        delta: &BTreeMap<&str, Count>,
         day: u64,
+        action_id: Option<&str>,
     ) -> RecordStoreResult<Result<(), AdjustRefused>> {
-        self.correct_usage_with_parent(cost, adj, delta, day, None)
+        self.correct_usage_with_parent(cost, adj, delta, day, None, action_id)
     }
 
     fn correct_usage_with_parent(
         &self,
         cost: &crate::cost::CostModel,
-        adj: &Adjustment<'_>,
-        delta: &BTreeMap<&str, i64>,
+        adj: &Adjustment<'_, Count>,
+        delta: &BTreeMap<&str, Count>,
         day: u64,
         parent_operation_id: Option<[u8; 16]>,
+        action_id: Option<&str>,
     ) -> RecordStoreResult<Result<(), AdjustRefused>> {
         if parent_operation_id.is_some() {
             if let Err(refused) = check_epoch(adj.card_epoch_ms, crate::store::now_ms()) {
@@ -1609,13 +1619,13 @@ impl GovState {
                 } else {
                     segment_at(&target.models, adj.model, adj.card_epoch_ms)
                 };
-                if segment.is_none() && delta.values().any(|count| *count < 0) {
+                if segment.is_none() && delta.values().any(|count| *count < Count::ZERO) {
                     return Ok(Err(AdjustRefused::Unplaced {
                         bucket: bucket.clone(),
                         window: *window,
                         class: delta
                             .iter()
-                            .find(|(_, count)| **count < 0)
+                            .find(|(_, count)| **count < Count::ZERO)
                             .expect("negative delta")
                             .0
                             .to_string(),
@@ -1642,14 +1652,14 @@ impl GovState {
                         &mut plain_after,
                         adj.model,
                         class,
-                        i128::from(*change) * 1_000_000,
+                        change.micros(),
                     ))?;
                     if era != RawRateEra::legacy(0) {
                         exact(move_unit(
                             &mut dated_after,
                             &era_model(era, adj.model),
                             class,
-                            i128::from(*change) * 1_000_000,
+                            change.micros(),
                         ))?;
                     }
                 }
@@ -1673,7 +1683,7 @@ impl GovState {
             }
             let slot = adjustment_slot(adj.key_id, adj.model, metered_era);
             for (class, change) in delta {
-                let bucket = if *change > 0 {
+                let bucket = if *change > Count::ZERO {
                     ADJUST_UP_BUCKET
                 } else {
                     ADJUST_DOWN_BUCKET
@@ -1684,7 +1694,10 @@ impl GovState {
                         .expect("adjustment row read"),
                     &slot,
                     class,
-                    i128::from(change.unsigned_abs()) * 1_000_000,
+                    change
+                        .micros()
+                        .checked_abs()
+                        .ok_or_else(|| RecordStoreError("adjustment magnitude overflow".into()))?,
                 ))?;
             }
             let request = Request {
@@ -1723,7 +1736,7 @@ impl GovState {
             }
             let pending = PendingCorrection {
                 request,
-                intent: Intent::of(adj),
+                intent: Intent::of(adj, action_id),
                 targets,
                 sent_at: crate::store::now(),
                 started: std::time::Instant::now(),
@@ -1754,7 +1767,10 @@ impl GovState {
     }
 }
 
-fn unique_metered_era(adj: &Adjustment<'_>, rows: &[MeteringRow]) -> RecordStoreResult<RawRateEra> {
+fn unique_metered_era(
+    adj: &Adjustment<'_, Count>,
+    rows: &[MeteringRow],
+) -> RecordStoreResult<RawRateEra> {
     let mut captured = None;
     for row in rows.iter().filter(|row| {
         row.priced_from_ms == adj.entry_era && metering_lane(&row.model, &row.provider) == adj.model
@@ -1794,8 +1810,8 @@ fn unique_metered_era(adj: &Adjustment<'_>, rows: &[MeteringRow]) -> RecordStore
 }
 
 fn check_metered(
-    adj: &Adjustment<'_>,
-    delta: &BTreeMap<&str, i64>,
+    adj: &Adjustment<'_, Count>,
+    delta: &BTreeMap<&str, Count>,
     day: u64,
     metering: &[MeteringRow],
     up: &UsageLedger,

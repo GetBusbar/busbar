@@ -1339,3 +1339,55 @@ fn independent_entry_refund_posts_while_only_the_matching_entry_negative_is_quar
         .unwrap();
     assert_eq!(exact_count(&capacity, &era_model(entry_b, &lane)), 1);
 }
+
+#[test]
+fn exact_scale_six_adjustment_survives_store_readback() {
+    let store = crate::real_store::store();
+    let gov = GovState::new(store.clone(), None).unwrap();
+    let key = key("vk_correction_micro", None);
+    store.put_key(&key).unwrap();
+    let cm = model(&[]);
+    let now = crate::store::now();
+    let era = RawRateEra::entry(0, EntryId([61; 12]));
+    gov.record_usage_served_in_era(
+        &cm,
+        &key,
+        "",
+        MODEL,
+        None,
+        &toks(INITIAL_INPUT, 0),
+        now,
+        era,
+    );
+    metered_entry(store.as_ref(), &key, era, now);
+    let delta = BTreeMap::from([(
+        busbar_contract::records::UNIT_INPUT.into(),
+        Count::parse("-0.000001").unwrap(),
+    )]);
+    let adj = super::super::Adjustment {
+        key_id: &key.id,
+        pool: "",
+        model: MODEL,
+        entry_era: 0,
+        entry_id: era.entry_id,
+        card_epoch_ms: now * 1000,
+        delta: &delta,
+        now,
+    };
+    gov.adjust_usage_exact(&cm, &adj).unwrap().unwrap();
+    let rows = store.get_usage(&key.id, 0).unwrap();
+    let raw = rows.models.iter().find(|row| row.model == MODEL).unwrap();
+    assert_eq!(raw.scale, 6);
+    assert_eq!(
+        raw.usage_units[busbar_contract::records::UNIT_INPUT],
+        INITIAL_INPUT * 1_000_000 - 1
+    );
+    let restarted = GovState::new(store, None).unwrap();
+    let adjustments = restarted
+        .usage_adjustments_exact(super::super::metering_bucket(now))
+        .unwrap();
+    assert_eq!(
+        adjustments[0].delta[busbar_contract::records::UNIT_INPUT],
+        Count::parse("-0.000001").unwrap()
+    );
+}

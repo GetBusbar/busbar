@@ -28,6 +28,56 @@ pub const REVOCATION_DURABLE_MARKER: &str = "REVOCATION APPLIED (cache reconcile
 
 pub const ROTATION_DURABLE_MARKER: &str = "ROTATION APPLIED (new secret not returned)";
 
+/// Typed commit boundary for credential mutations. Store failures carry no claim of rejection;
+/// Applied identifies a completed durable write whose cache reconciliation failed.
+#[derive(Debug)]
+pub enum KeyMutationError {
+    Store(RecordStoreError),
+    Applied {
+        key_id: String,
+        operation: &'static str,
+        reconcile: RecordStoreError,
+    },
+}
+impl From<RecordStoreError> for KeyMutationError {
+    fn from(error: RecordStoreError) -> Self {
+        Self::Store(error)
+    }
+}
+impl std::fmt::Display for KeyMutationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Store(error) => error.fmt(f),
+            Self::Applied {
+                key_id, operation, ..
+            } => write!(
+                f,
+                "{operation} applied to key '{key_id}'; cache reconciliation incomplete"
+            ),
+        }
+    }
+}
+impl std::error::Error for KeyMutationError {}
+impl From<KeyMutationError> for RecordStoreError {
+    fn from(error: KeyMutationError) -> Self {
+        match error {
+            KeyMutationError::Store(error) => error,
+            KeyMutationError::Applied {
+                key_id,
+                operation,
+                reconcile,
+            } => Self(format!(
+                "{}: {operation} applied to key '{key_id}'; cache reconciliation incomplete ({reconcile})",
+                if operation == "key.rotate" {
+                    ROTATION_DURABLE_MARKER
+                } else {
+                    REVOCATION_DURABLE_MARKER
+                }
+            )),
+        }
+    }
+}
+
 /// A mint can commit its binding before cache reconciliation fails. An applied failure
 /// exposes only the public key identifier; no issued credential is returned.
 #[derive(Debug)]
@@ -1172,6 +1222,10 @@ impl GovState {
     }
 
     pub fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
+        self.delete_key_outcome(id).map_err(Into::into)
+    }
+
+    pub fn delete_key_outcome(&self, id: &str) -> Result<(), KeyMutationError> {
         let _claim = self.claim_key_mutation(id)?;
         let _correction = self.correction_claims.claim(id.to_string());
         self.settle_correction_for_delete(id)?;
@@ -1197,13 +1251,11 @@ impl GovState {
                  the in-memory caches (it no longer authenticates), but the full cache reconcile \
                  failed; other cache entries may be stale until the next successful refresh"
             );
-            return Err(RecordStoreError(format!(
-                "{REVOCATION_DURABLE_MARKER}: key '{id}' IS revoked — the tombstone is committed in \
-                 the store and the credential was evicted from the in-memory cache, so it no longer \
-                 authenticates. Only the full cache reconcile failed ({refresh_err}); OTHER cache \
-                 entries may be stale until the next successful refresh. Do NOT re-issue this \
-                 revocation expecting it to have been a no-op — it took effect."
-            )));
+            return Err(KeyMutationError::Applied {
+                key_id: id.into(),
+                operation: "key.delete",
+                reconcile: refresh_err,
+            });
         }
         Ok(())
     }
@@ -1261,6 +1313,14 @@ impl GovState {
     }
 
     pub fn rotate_key(&self, id: &str, exp: u64) -> RecordStoreResult<Option<RotatedCredential>> {
+        self.rotate_key_outcome(id, exp).map_err(Into::into)
+    }
+
+    pub fn rotate_key_outcome(
+        &self,
+        id: &str,
+        exp: u64,
+    ) -> Result<Option<RotatedCredential>, KeyMutationError> {
         let _claim = self.claim_key_mutation(id)?;
         let Some(mut key) = self.store.get_key(id)? else {
             return Ok(None);
@@ -1274,7 +1334,8 @@ impl GovState {
                 "cannot rotate a signed-token key: no signing key is configured (rotation \
                  re-mints the token)"
                     .to_string(),
-            ));
+            )
+            .into());
         };
         let generation = generate_binding_generation().store()?;
         key.generation_hash = binding_marker(&key.id, &generation);
@@ -1290,14 +1351,11 @@ impl GovState {
                  is dead) and the key was evicted from the in-memory caches, but the full cache \
                  reconcile failed, so the freshly-minted token could not be returned"
             );
-            return Err(RecordStoreError(format!(
-                "{ROTATION_DURABLE_MARKER}: key '{id}' WAS rotated — the new generation is \
-                 committed in the store, so the PREVIOUS credential is permanently dead and was \
-                 evicted from the in-memory cache. Only the cache reconcile failed \
-                 ({refresh_err}), so the newly-minted token could not be returned and is now \
-                 unrecoverable. This was NOT a no-op: rotate this key again to obtain a usable \
-                 credential."
-            )));
+            return Err(KeyMutationError::Applied {
+                key_id: id.into(),
+                operation: "key.rotate",
+                reconcile: refresh_err,
+            });
         }
         let token: Secret<String> = material.signer.mint(&key.id, exp, Some(&generation)).into();
         Ok(Some(RotatedCredential { key, token, exp }))
@@ -1309,6 +1367,16 @@ impl GovState {
         enabled: Option<bool>,
         group: Option<Option<String>>,
     ) -> RecordStoreResult<Option<VirtualKey>> {
+        self.update_key_outcome(id, enabled, group)
+            .map_err(Into::into)
+    }
+
+    pub fn update_key_outcome(
+        &self,
+        id: &str,
+        enabled: Option<bool>,
+        group: Option<Option<String>>,
+    ) -> Result<Option<VirtualKey>, KeyMutationError> {
         let _claim = self.claim_key_mutation(id)?;
         let Some(mut key) = self.store.get_key(id)? else {
             return Ok(None);
@@ -1327,7 +1395,13 @@ impl GovState {
 
         self.store.put_key(&key)?;
         self.patch_key_in_caches(Arc::new(key.clone()));
-        self.refresh()?;
+        if let Err(reconcile) = self.refresh() {
+            return Err(KeyMutationError::Applied {
+                key_id: id.into(),
+                operation: "key.patch",
+                reconcile,
+            });
+        }
         Ok(Some(key))
     }
 

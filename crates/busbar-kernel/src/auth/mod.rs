@@ -23,7 +23,9 @@ use busbar_contract::auth_calls::{
 };
 use busbar_kernel_identity::operator::Judgement;
 
+mod admin_sender_constraint;
 mod admitted;
+pub mod effect;
 pub use admitted::{admitted_context, AdmittedContext, AdmittedRefusal};
 
 const AUTH_SCHEME_BEARER: &str = "bearer";
@@ -1356,6 +1358,9 @@ async fn run_admin_chain(
         let (verdict, replay) = carry_admin_outcome(carried, name, outcome);
         if let Some(verdict) = chain_position_verdict(name, verdict) {
             if matches!(verdict, ChainVerdict::Identified { .. }) {
+                if admin_sender_constraint::downgraded(app, name, headers) {
+                    return (ChainVerdict::Denied, None);
+                }
                 carried.replay = replay.map(|r| (name.clone(), r));
                 let cap = module_admin_scope_cap(app, name);
                 return (complete_chain(Some(verdict)), cap);
@@ -2338,6 +2343,14 @@ pub(crate) async fn auth_middleware(
             };
             door
         };
+        let effect_context = effect::Context::new(
+            req.method().as_str(),
+            target,
+            inbound_headers
+                .clone()
+                .unwrap_or_else(|| req.headers().clone()),
+            &door,
+        );
         let authorized = admin_door_admits(&door, req.method().as_str(), &path);
         strike_named(&mut req, &mut consumed, &strips);
         req.extensions_mut().insert(consumed);
@@ -2427,7 +2440,7 @@ pub(crate) async fn auth_middleware(
         req.extensions_mut()
             .insert(crate::governance::GovCtx::default());
         drop(_mw.take());
-        return Ok(next.run(req).await);
+        return Ok(effect::scope(Some(effect_context), next.run(req)).await);
     }
 
     if app.auth.keys_in_chain && app.upstream_creds() == UpstreamCreds::Passthrough {

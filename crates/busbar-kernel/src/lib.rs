@@ -162,6 +162,7 @@ pub mod host_work;
 pub mod ingress;
 pub mod ir;
 
+pub mod host_record_bootstrap;
 pub mod host_services;
 pub mod json;
 pub mod limits;

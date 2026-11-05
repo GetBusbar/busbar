@@ -170,3 +170,38 @@ fn create_and_rotate_claim_inputs_are_disjoint_before_durable_claim() {
         "the private factories supply distinct durable claim keys"
     );
 }
+
+#[test]
+fn exact_request_binding_precedes_secret_replay_and_inflight() {
+    let cache = IdempotencyCache::<String>::new();
+    let key = key("alice", "create:action");
+    let a = busbar_contract::abi::sdk::digest::sha256(br#"{"name":"a"}"#);
+    let b = busbar_contract::abi::sdk::digest::sha256(br#"{"name":"b"}"#);
+    let invalid = busbar_contract::abi::sdk::digest::sha256(b"{");
+    let reservation = match cache.probe_bound(key.clone(), a, 1000).unwrap() {
+        Probe::Reserved(reservation) => reservation,
+        _ => panic!("first request reserves"),
+    };
+    for changed in [b, invalid] {
+        assert!(cache.probe_bound(key.clone(), changed, 1001).is_err());
+    }
+    assert!(matches!(
+        cache.probe_bound(key.clone(), a, 1001),
+        Ok(Probe::InFlight)
+    ));
+    reservation.commit("once-shown-secret".into(), 1002);
+    for changed in [b, invalid] {
+        assert!(cache.probe_bound(key.clone(), changed, 1003).is_err());
+    }
+    assert!(
+        matches!(cache.probe_bound(key.clone(), a, 1003), Ok(Probe::Replay(value)) if value == "once-shown-secret")
+    );
+    assert!(matches!(
+        cache.probe_bound(("bob".into(), key.1.clone()), b, 1003),
+        Ok(Probe::Reserved(_))
+    ));
+    assert!(matches!(
+        cache.probe_bound(key, b, 1002 + IDEMPOTENCY_TTL_SECS),
+        Ok(Probe::Reserved(_))
+    ));
+}
