@@ -27,6 +27,23 @@ pub enum AdmittedRefusal {
 pub async fn admitted_context(
     request: &crate::inbound::RequestAdmission,
 ) -> Result<AdmittedContext, AdmittedRefusal> {
+    let result = complete_context(request).await;
+    if let Err(refusal) = &result {
+        use busbar_contract::caps::{ReasonCode, StepName};
+        let (step, reason) = match refusal {
+            AdmittedRefusal::Identity(IdentityRefusal::NoGrant) => {
+                (StepName::Approve, ReasonCode::ScopeDenied)
+            }
+            _ => (StepName::Authenticate, ReasonCode::Unauthenticated),
+        };
+        request.refuse(step, reason);
+    }
+    result
+}
+
+async fn complete_context(
+    request: &crate::inbound::RequestAdmission,
+) -> Result<AdmittedContext, AdmittedRefusal> {
     let app = request.app();
     let mut head = request.head().clone();
     if matches!(request.selected_line().auth, crate::guest::LineAuth::None) {
@@ -114,6 +131,10 @@ pub async fn admitted_context(
     };
     let (principal, gov) =
         resolve_data_plane_identity(&app, verdict).map_err(AdmittedRefusal::Identity)?;
+    request.principal(
+        gov.key()
+            .map_or_else(|| principal.actor_id(), |key| key.id.as_str()),
+    );
     if !request.claim_replay().await {
         return Err(AdmittedRefusal::Identity(IdentityRefusal::Denied));
     }
@@ -158,5 +179,24 @@ impl AdmittedRefusal {
             description,
             None,
         ))
+    }
+}
+
+impl crate::inbound::RequestAdmission {
+    /// Project the first-hand identity through the pinned admin bindings and provider cap.
+    /// This never verifies credentials again or spends replay before the admin approve step.
+    #[must_use]
+    pub fn admin_verdict(&self) -> super::AdminVerdict {
+        let app = self.app();
+        let cap = self
+            .inner
+            .admitted
+            .as_ref()
+            .and_then(|admitted| super::module_admin_scope_cap(&app, &admitted.provider));
+        super::AdminVerdict {
+            door: super::admin_door_of(&app, self.verdict(), cap),
+            // The host admin bridge claims through claim_admin_replay after approve.
+            claim: None,
+        }
     }
 }

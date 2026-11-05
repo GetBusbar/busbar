@@ -76,6 +76,7 @@ async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reac
     let day_window = crate::governance::budget_window(crate::governance::WINDOW_DAY, now);
     let foreign = UsageDelta {
         models: vec![busbar_contract::records::ModelTokensDelta {
+            scale: 0,
             model: MODEL.into(),
             usage_units: BTreeMap::from([("input".into(), 100)]),
         }],

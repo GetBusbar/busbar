@@ -214,6 +214,7 @@ fn metered(store: &dyn RecordStore, key_id: &str, model: &str, n: u64, now: u64)
     let era = busbar_kernel::rate_apply::era_at(busbar_kernel::store::now_ms());
     store
         .add_metering(&MeteringDelta {
+            scale: 0,
             key_id: key_id.into(),
             bucket: busbar_kernel::governance::metering_bucket(now),
             model: model.into(),

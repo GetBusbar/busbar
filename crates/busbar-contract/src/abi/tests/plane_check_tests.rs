@@ -208,7 +208,10 @@ fn a_floor_count_is_a_known_source_that_bills() {
     assert!(units_bill(UNITS_FLOOR));
     assert!(units_bill(UNITS_REPORTED));
     assert!(!units_bill(UNITS_ESTIMATED));
-    assert!(!units_bill(UNITS_FLOOR + 1));
+    assert!(!units_bill(UNITS_ESTIMATED_MICROS));
+    assert!(units_bill(UNITS_REPORTED_MICROS));
+    assert!(units_bill(UNITS_FLOOR_MICROS));
+    assert!(!units_bill(UNITS_FLOOR_MICROS + 1));
 }
 
 /// THE CANCEL RULE's shape: an arrival is either a cancellable unit (`correlation`) or a cancel
@@ -366,7 +369,7 @@ fn a_unit_naming_no_billable_class_or_unknown_source_is_fault() {
         f(Rule::IndexOutOfRange, "unit.class")
     );
     u.class = 1;
-    u.source = UNITS_FLOOR + 1;
+    u.source = UNITS_FLOOR_MICROS + 1;
     assert_eq!(
         check_arrive(Ready, &o, &[u], 4, &bounds()),
         f(Rule::UnknownCode, "unit.source")
@@ -1917,7 +1920,9 @@ fn a_verdict_is_known() {
     let mut o: OnPieceOut = z();
     o.verdict = VERDICT_HARD;
     assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
-    o.verdict = VERDICT_HARD + 1;
+    o.verdict = VERDICT_COUNT_REFUSED;
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+    o.verdict = VERDICT_COUNT_REFUSED + 1;
     assert_eq!(
         piece(&o, &[], &[], &[]),
         f(Rule::UnknownCode, "on_piece.verdict")
@@ -3928,4 +3933,43 @@ fn serve_and_refusal_recall_all_four_buffers_atomically() {
             );
         }
     }
+}
+
+#[test]
+fn exact_unit_count_wire_keeps_legacy_whole_semantics_and_checks_scale_range() {
+    use crate::{count::CountError, Count};
+    assert_eq!(std::mem::size_of::<UnitCount>(), 16);
+    for source in [UNITS_ESTIMATED, UNITS_REPORTED, UNITS_FLOOR] {
+        let whole = UnitCount::from_count(0, source, Count::parse("27.0").unwrap()).unwrap();
+        assert_eq!((whole.source, whole.amount), (source, 27));
+        let fraction = UnitCount::from_count(0, source, Count::parse("27.5").unwrap()).unwrap();
+        assert_eq!((fraction.source, fraction.amount), (source + 3, 27_500_000));
+        assert_eq!(fraction.count().unwrap(), Count::parse("27.5").unwrap());
+        assert_eq!(units_bill(fraction.source), units_bill(source));
+        let legacy = UnitCount {
+            class: 0,
+            source,
+            amount: 1_000_000,
+        };
+        assert_eq!(legacy.count().unwrap(), Count::from(1_000_000u64));
+    }
+    assert_eq!(
+        UnitCount::from_count(
+            0,
+            UNITS_REPORTED,
+            Count::from_micros(i128::from(i64::MAX) + 1)
+        )
+        .unwrap_err(),
+        CountError::OutOfRange
+    );
+    let mut output: OnPieceOut = z();
+    output.verdict = VERDICT_COUNT_REFUSED;
+    output.arena_written = 1;
+    output.fault_reason = sp(0, 1);
+    assert_eq!(piece(&output, &[], &[], &[]), Ok(()));
+    output.verdict = VERDICT_NONE;
+    assert_eq!(
+        piece(&output, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.fault_reason_unread")
+    );
 }

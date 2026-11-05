@@ -308,6 +308,7 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
     for priced_from_ms in [0, edit_ms] {
         store
             .add_metering(&busbar_contract::records::MeteringDelta {
+                scale: 0,
                 usage_units: Default::default(),
                 key_id: KEY.into(),
                 bucket,

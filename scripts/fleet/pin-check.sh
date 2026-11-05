@@ -30,8 +30,8 @@
 set -euo pipefail
 
 SRC='https://github.com/GetBusbar/busbar'
-# Canonical Forgejo and historical Cargo aliases, including [patch] source spellings.
-SOURCE_HOST_PATTERN='https://(github\.com|(www\.)?github\.com)/GetBusbar/'
+# Canonical public Cargo source aliases, including [patch] source spellings.
+SOURCE_HOST_PATTERN='https://(www\.)?github\.com/GetBusbar/'
 CORE_SOURCE_PATTERN="${SOURCE_HOST_PATTERN}busbar(\\.git)?"
 FRAMER_SOURCE_PATTERN="${SOURCE_HOST_PATTERN}busbar-transport-[A-Za-z0-9_-]+(\\.git)?\\?"
 

@@ -399,6 +399,11 @@ fn routes(g: &mut Deployment) -> (Arc<serving::DataRoutes>, Arc<serve_datagram::
     }
     (
         Arc::new(serving::DataRoutes {
+            live: served
+                .planes
+                .iter()
+                .map(|plane| plane.live.current())
+                .collect(),
             entries: serving::arrival_entries(&served),
             served,
             claim_doors: None,

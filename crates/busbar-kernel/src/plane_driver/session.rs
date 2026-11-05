@@ -402,8 +402,8 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         end_session(ended, why.map_or(Halt::Over, Halt::Cause));
         if let (Some(reason), End::Cancel(_, done)) = (why, end) {
             let _bill = run.cancel(reason, done).await;
-            if reason == ReasonCode::OverBudget {
-                self.cut_frame().await;
+            if matches!(reason, ReasonCode::OverBudget | ReasonCode::Unpriced) {
+                self.cut_frame(reason).await;
             }
         }
         run.finish();

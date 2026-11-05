@@ -275,8 +275,17 @@ impl Refusal {
 
 /// A refusal the kernel answered, as its sink is told it: the unit it refused (none for a request
 /// that matched no line or was refused before any), whose listener, which line and why.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefusedUnit {
+    /// Verified principal, when authentication had resolved one. Never a credential.
+    pub principal: Option<String>,
+    /// The selected claimant's declared audit class, before decode.
+    pub audit_kind: busbar_contract::caps::OpClassId,
+    /// The listener generation pinned by the first handle call.
+    pub generation: u64,
+    /// Structural refusal facts, independent of a transport status.
+    pub step: busbar_contract::caps::StepName,
+    pub reason: busbar_contract::caps::ReasonCode,
     /// The refused unit; `None` when the request had none.
     pub unit: Option<u64>,
     /// The listener's owner.
@@ -287,6 +296,69 @@ pub struct RefusedUnit {
     pub cause: u32,
     /// The status answered.
     pub status: u32,
+}
+
+/// The first-auth unit's terminal ownership. A successful driver handoff consumes it;
+/// otherwise its last owner records one refusal, including cancellation before dispatch.
+struct PendingUnit {
+    principal: Mutex<Option<String>>,
+    audit_kind: busbar_contract::caps::OpClassId,
+    unit: u64,
+    generation: u64,
+    owner: u64,
+    line: u32,
+    state: std::sync::atomic::AtomicU8,
+    sink: RefusedSink,
+}
+
+impl PendingUnit {
+    fn refuse(
+        &self,
+        step: busbar_contract::caps::StepName,
+        reason: busbar_contract::caps::ReasonCode,
+        cause: u32,
+        status: u32,
+    ) {
+        if self
+            .state
+            .compare_exchange(
+                0,
+                2,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            let principal = self
+                .principal
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            (self.sink)(&RefusedUnit {
+                principal,
+                audit_kind: self.audit_kind,
+                unit: Some(self.unit),
+                generation: self.generation,
+                owner: self.owner,
+                line: self.line,
+                step,
+                reason,
+                cause,
+                status,
+            });
+        }
+    }
+}
+
+impl Drop for PendingUnit {
+    fn drop(&mut self) {
+        self.refuse(
+            busbar_contract::caps::StepName::Arrival,
+            busbar_contract::caps::ReasonCode::ClientGone,
+            REFUSE_STOPPED,
+            0,
+        );
+    }
 }
 
 /// What a unit ref's MAC covers (#74).
@@ -376,6 +448,8 @@ pub type NeutralRefuse = Arc<
 /// Host-only route ownership retained with one listener generation.
 #[derive(Clone)]
 pub struct ListenerScope {
+    /// Audit class of a sealed line, retained with the same dispatcher.
+    pub audit_kind: Option<Arc<dyn Fn(u32) -> busbar_contract::caps::OpClassId + Send + Sync>>,
     /// Neutral refusal producer retained with the same sealed data dispatcher.
     pub neutral_refuse: Option<NeutralRefuse>,
     /// Resolve the selected claimant's own audience, never another listener's path match.
@@ -477,6 +551,7 @@ pub struct RequestAdmission {
 }
 
 pub(crate) struct AdmittedRequest {
+    pending: Arc<PendingUnit>,
     owner: u64,
     line: u32,
     binding: RequestBinding,
@@ -552,6 +627,110 @@ impl UpgradePermit {
 }
 
 impl RequestAdmission {
+    /// Identity minted before the first verdict, retained through dispatch and exit.
+    #[must_use]
+    pub fn unit_key(&self) -> busbar_contract::UnitKey {
+        busbar_contract::UnitKey::new(self.inner.pending.unit)
+    }
+
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.inner.pending.generation
+    }
+
+    /// The selected claimant's sealed pre-decode audit class.
+    #[must_use]
+    pub fn audit_kind(&self) -> busbar_contract::caps::OpClassId {
+        self.inner.pending.audit_kind
+    }
+
+    /// Verified attribution, excluding credentials.
+    #[must_use]
+    pub fn principal_id(&self) -> Option<String> {
+        self.inner
+            .pending
+            .principal
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The admin walk claims only after scope/approval; every projection shares one result.
+    pub async fn claim_admin_replay(&self) -> bool {
+        self.claim_replay().await
+    }
+
+    /// Transfer terminal audit ownership to the teller exactly once.
+    pub fn begin_execution(&self) -> bool {
+        use busbar_contract::caps::{ReasonCode, StepName};
+        let reason = if !self.inner.alive.load(std::sync::atomic::Ordering::Acquire) {
+            Some(ReasonCode::ClientGone)
+        } else if self
+            .inner
+            .deadline
+            .is_some_and(|at| std::time::Instant::now() >= at)
+        {
+            Some(ReasonCode::DeadlineExceeded)
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            self.refuse(StepName::Arrival, reason);
+            return false;
+        }
+        self.inner
+            .pending
+            .state
+            .compare_exchange(
+                0,
+                1,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    /// The teller could not install the unit; return its terminal ownership to ingress.
+    pub fn execution_unavailable(&self) {
+        if self
+            .inner
+            .pending
+            .state
+            .compare_exchange(
+                1,
+                0,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            self.refuse(
+                busbar_contract::caps::StepName::Arrival,
+                busbar_contract::caps::ReasonCode::InFlightCap,
+            );
+        }
+    }
+
+    pub(crate) fn principal(&self, principal: &str) {
+        *self
+            .inner
+            .pending
+            .principal
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(principal.to_owned());
+    }
+
+    /// Finish a host refusal before the teller has taken ownership.
+    pub fn refuse(
+        &self,
+        step: busbar_contract::caps::StepName,
+        reason: busbar_contract::caps::ReasonCode,
+    ) {
+        self.inner
+            .pending
+            .refuse(step, reason, REFUSE_CHECK_FAILED, 0);
+    }
+
     /// The exact sealed line that admitted this request, retained across publication.
     #[must_use]
     pub fn selected_line(&self) -> &Line {
@@ -655,12 +834,12 @@ async fn claim_request_replay(
     if !alive.load(std::sync::atomic::Ordering::Acquire) {
         return false;
     }
-    let Some(replay) = replay else {
-        return true;
-    };
     if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
         return false;
     }
+    let Some(replay) = replay else {
+        return true;
+    };
     let won = until_deadline(deadline, replay.won.get_or_init(|| replay.pending.win()))
         .await
         .copied()
@@ -768,6 +947,7 @@ struct RequestBinding {
 }
 
 struct UnitState {
+    pending: Option<Arc<PendingUnit>>,
     table: Arc<Table>,
     owner: u64,
     generation: u64,
@@ -816,6 +996,7 @@ impl UnitState {
         table: Arc<Table>,
     ) -> Self {
         Self {
+            pending: None,
             table,
             owner,
             generation,
@@ -1881,8 +2062,19 @@ impl Inbound {
         if matches!(line.auth, LineAuth::Chain(..)) && unit.admitted.is_none() {
             return Err(UNIT_FOREIGN);
         }
+        if let (Some(pending), Some(admitted)) = (&unit.pending, &unit.admitted) {
+            *pending
+                .principal
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) =
+                Some(admitted.resolved.as_ref().map_or_else(
+                    || admitted.identity.subject.clone(),
+                    |key| key.id.to_string(),
+                ));
+        }
         let admission = RequestAdmission {
             inner: Arc::new(AdmittedRequest {
+                pending: Arc::clone(unit.pending.as_ref().ok_or(UNIT_FOREIGN)?),
                 owner,
                 line: unit.line,
                 binding: unit.binding,
@@ -2090,6 +2282,24 @@ impl Inbound {
                 None => return Err(UNIT_FOREIGN),
             }
         }
+        state.pending = Some(Arc::new(PendingUnit {
+            principal: Mutex::new(None),
+            audit_kind: state
+                .table
+                .listener
+                .scope
+                .as_ref()
+                .and_then(|scope| scope.audit_kind.as_ref())
+                .map_or(busbar_contract::caps::OpClassId::new("inbound"), |kind| {
+                    kind(line)
+                }),
+            unit,
+            generation,
+            owner,
+            line,
+            state: std::sync::atomic::AtomicU8::new(0),
+            sink: Arc::clone(&self.refused),
+        }));
         self.units().insert(unit, state);
         Ok(UnitRef { id: unit, mac })
     }
@@ -2692,7 +2902,11 @@ impl Inbound {
                 return Err(UNIT_FOREIGN);
             }
             u.handed_head = Some(h.head);
-            u.deadline = deadline;
+            // Hand-in may tighten the first-auth deadline, but cannot clear or extend it.
+            u.deadline = match (u.deadline, deadline) {
+                (Some(first), Some(handed)) => Some(first.min(handed)),
+                (first, handed) => first.or(handed),
+            };
         }
         Ok((flow, unit))
     }
@@ -2728,6 +2942,47 @@ impl Inbound {
         }
 
         !still_present(&u.strips, &h.head)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_refusal(
+        &self,
+        unit: Option<UnitRef>,
+        owner: u64,
+        generation: u64,
+        line: u32,
+        cause: u32,
+        status: u32,
+        overloaded: bool,
+    ) {
+        use busbar_contract::caps::{ReasonCode, StepName};
+        let (step, reason) = match cause {
+            REFUSE_NO_ROUTE => (StepName::Decode, ReasonCode::NoDestination),
+            REFUSE_METHOD_MISS => (StepName::Decode, ReasonCode::MethodNotAllowed),
+            REFUSE_OVER_GATE => (StepName::Arrival, ReasonCode::BodyTooLarge),
+            _ if overloaded => (StepName::Arrival, ReasonCode::InFlightCap),
+            _ => (StepName::Authenticate, ReasonCode::Unauthenticated),
+        };
+        if let Some(unit) = unit {
+            let retired = self.units().remove(&unit.id);
+            if let Some(pending) = retired.as_ref().and_then(|unit| unit.pending.as_ref()) {
+                pending.refuse(step, reason, cause, status);
+            }
+            drop(retired);
+        } else {
+            (self.refused)(&RefusedUnit {
+                principal: None,
+                audit_kind: busbar_contract::caps::OpClassId::new("inbound"),
+                unit: None,
+                generation,
+                owner,
+                line,
+                step,
+                reason,
+                cause,
+                status,
+            });
+        }
     }
 
     pub fn refuse(&self, r: Refuse) -> Result<Refusal, &'static str> {
@@ -2887,16 +3142,15 @@ impl Inbound {
                         .collect::<Result<_, _>>()?,
                     body: rendered.body,
                 };
-                if let Some(unit) = unit {
-                    self.exit(unit.id);
-                }
-                (self.refused)(&RefusedUnit {
-                    unit: unit.map(|unit| unit.id),
-                    owner: r.owner,
-                    line: r.line,
-                    cause: r.cause,
-                    status: refusal.status,
-                });
+                self.finish_refusal(
+                    unit,
+                    r.owner,
+                    r.generation,
+                    r.line,
+                    r.cause,
+                    refusal.status,
+                    overloaded,
+                );
                 return Ok(refusal);
             }
         }
@@ -3008,16 +3262,15 @@ impl Inbound {
             crate::router::private_listener_scope(respond)
         }?;
         let refusal = Refusal::of(resp);
-        if let Some(u) = unit {
-            self.exit(u.id);
-        }
-        (self.refused)(&RefusedUnit {
-            unit: unit.map(|u| u.id),
-            owner: r.owner,
-            line: r.line,
-            cause: r.cause,
-            status: refusal.status,
-        });
+        self.finish_refusal(
+            unit,
+            r.owner,
+            r.generation,
+            r.line,
+            r.cause,
+            refusal.status,
+            overloaded,
+        );
         Ok(refusal)
     }
 }

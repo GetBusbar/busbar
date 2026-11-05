@@ -9,8 +9,8 @@ use crate::config::groups::{AdmissionMode, LimitMetric};
 
 pub use busbar_kernel_ledger::cost::{
     budget_remaining, plane_fee_lane, price_ledger, sum_spend, Author, CardEntryDraft, EntryId,
-    EntryKey, History, HistorySeq, HistoryView, LedgerEntry, MeteredRow, MoneyError, PlaneFees,
-    RateCard, RawRateEra, TierRates, PER_SESSION,
+    EntryKey, History, HistorySeq, HistoryView, LedgerEntry, MeteredRow, Money, MoneyError,
+    PlaneFees, RateCard, RawRateEra, Tally, TierRates, PER_SESSION, STANDARD_TIER_BP,
 };
 
 pub const GROUP_BUCKET_PREFIX: &str = "group:";
@@ -476,6 +476,25 @@ impl CostModel {
         busbar_kernel_ledger::cost::nanos_of_exact(tally.exact().ok()?).ok()
     }
 
+    /// The exact reported measurements, priced by the same canonical tally as whole usage.
+    pub fn price_counts_nanos(
+        &self,
+        model: &str,
+        counts: &BTreeMap<String, busbar_contract::Count>,
+    ) -> Option<u128> {
+        let mut tally = busbar_kernel_ledger::cost::Tally::at_card(&self.card);
+        tally
+            .row(
+                model,
+                0,
+                busbar_kernel_ledger::cost::STANDARD_TIER_BP,
+                counts.iter().map(|(class, count)| (class.as_str(), *count)),
+                busbar_contract::Count::ZERO,
+            )
+            .ok()?;
+        busbar_kernel_ledger::cost::nanos_of_exact(tally.exact().ok()?).ok()
+    }
+
     pub fn estimate_minor(&self, models: &[&str], expected: &BTreeMap<String, u64>) -> Option<i64> {
         if expected.values().all(|n| *n == 0) {
             return Some(0);
@@ -489,6 +508,22 @@ impl CostModel {
         }
         let minor = highest.div_ceil(busbar_kernel_ledger::cost::NANOS_PER_CENT);
         Some(i64::try_from(minor).unwrap_or(i64::MAX))
+    }
+
+    /// Price an exact admission estimate without rounding its measured quantities.
+    pub fn estimate_counts_minor(
+        &self,
+        models: &[&str],
+        expected: &BTreeMap<String, busbar_contract::Count>,
+    ) -> Option<i64> {
+        if expected.values().all(|count| count.is_zero()) {
+            return Some(0);
+        }
+        let mut highest = 0;
+        for model in models {
+            highest = highest.max(self.price_counts_nanos(model, expected)?);
+        }
+        i64::try_from(highest.div_ceil(busbar_kernel_ledger::cost::NANOS_PER_CENT)).ok()
     }
 
     #[inline]

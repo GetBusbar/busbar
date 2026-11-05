@@ -312,6 +312,35 @@ pub trait DeclaredConns: Conns {
         self.open_with_security(caller, need, desc, require_secure)
     }
 
+    /// Prepare a framed transport without sending an application request. The returned connection
+    /// owns the original dial/deadline and exposes only actual established security through
+    /// `landed`/`facts`. It is committed on that same connection by `commit_request` or closed.
+    /// Tables without this capability refuse; opening a replacement request is not a fallback.
+    fn prepare_request(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        dial_timeout_ms: u64,
+    ) -> Result<ConnId, ConnError> {
+        let _ = (caller, need, desc, dial_timeout_ms);
+        Err(ConnError::Refused)
+    }
+
+    /// Commit the framed request on its prepared connection, exactly once. Target/ownership,
+    /// original deadlines and required actual connection security remain enforced by the host.
+    /// Pending must leave the request uncommitted; retry must never duplicate its wire bytes.
+    fn commit_request(
+        &self,
+        caller: InstanceId,
+        conn: ConnId,
+        desc: &OpenDesc<'_>,
+        require_secure: bool,
+    ) -> Result<(), ConnError> {
+        let _ = (caller, conn, desc, require_secure);
+        Err(ConnError::Refused)
+    }
+
     /// UPGRADE `conn`, an open raw byte stream, to connection security from its next byte on
     fn upgrade_secure(
         &self,

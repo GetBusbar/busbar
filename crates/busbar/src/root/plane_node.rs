@@ -396,6 +396,62 @@ impl Node {
         self.inflight.get(key).map(|slot| Parent { key, slot })
     }
 
+    /// Seal a first-auth unit that never entered the teller. This uses the same signed
+    /// journal and bounded Store lane as an ordinary end, without an arrival hold or ledger.
+    pub(crate) fn refused_inbound(&self, refused: &busbar_kernel::inbound::RefusedUnit) {
+        if let Some(unit) = refused.unit {
+            let anonymous = busbar_kernel::auth::AuthPrincipal(None);
+            self.unmetered_inbound(
+                UnitKey::new(unit),
+                refused.audit_kind,
+                &PrincipalId::new(
+                    refused
+                        .principal
+                        .as_deref()
+                        .unwrap_or_else(|| anonymous.actor_id()),
+                ),
+                Outcome::Refused(refused.step, refused.reason),
+            );
+        }
+    }
+
+    pub(crate) fn unmetered_inbound(
+        &self,
+        key: UnitKey,
+        audit_kind: OpClassId,
+        principal: &PrincipalId,
+        outcome: Outcome,
+    ) {
+        let Some(book) = self.book.get() else {
+            return;
+        };
+        let seal = Sealing::from(UnitSeal {
+            facts: busbar_contract::caps::AuditFacts {
+                op_class: audit_kind,
+                finish: if outcome.is_completed() {
+                    busbar_contract::FinishClass::Complete
+                } else {
+                    busbar_contract::FinishClass::Error
+                },
+            },
+            pass: busbar_kernel::teller::verb_audit_pass(&self.kernel),
+            key,
+            origin: self.kernel.origin(OriginKind::Client),
+            parent: None,
+        });
+        let _ = seal.seal(
+            book,
+            &self.durability_token,
+            principal,
+            self.arrived(),
+            None,
+            outcome,
+            Vec::new(),
+            0,
+            None,
+        );
+    }
+
     #[must_use]
     pub fn mint(&self) -> UnitKey {
         self.next_key.mint()
@@ -413,12 +469,27 @@ impl Node {
         history: Option<crate::root::kernel::PinnedHistory>,
         parent: Option<&Parent>,
         audit_kind: OpClassId,
+        admission: Option<&busbar_kernel::inbound::RequestAdmission>,
     ) -> Option<Outcome> {
         self.sweep(arrived);
         if self.journal_refusal().is_some() {
+            if let Some(admission) = admission {
+                admission.refuse(
+                    busbar_contract::caps::StepName::Arrival,
+                    busbar_contract::caps::ReasonCode::DurabilityUnavailable,
+                );
+            }
+            return None;
+        }
+        if admission.is_some_and(|admission| !admission.begin_execution()) {
             return None;
         }
         post.open(key, principal.clone(), arrived, history.clone());
+        post.checkpoint_identity(
+            key,
+            audit_kind,
+            parent.map_or(OriginKind::Client, |p| OriginKind::Nested { parent: p.key }),
+        );
         let meter = Arc::new(AccrualMeter::new());
         let origin = parent.map_or(OriginKind::Client, |p| OriginKind::Nested { parent: p.key });
         let call = self.kernel.next_call();
@@ -438,6 +509,9 @@ impl Node {
             now: arrived.ms(),
         }) else {
             post.close(key);
+            if let Some(admission) = admission {
+                admission.execution_unavailable();
+            }
             return None;
         };
         let mut occupied = Occupied {
@@ -512,12 +586,23 @@ impl Node {
         units: &U,
         history: Option<crate::root::kernel::PinnedHistory>,
         audit_kind: OpClassId,
+        admission: Option<&busbar_kernel::inbound::RequestAdmission>,
     ) -> Option<(busbar_kernel::teller::SessionOpen, UnitCtx, SessionSlot<'n>)> {
         self.sweep(arrived);
         if self.journal_refusal().is_some() {
+            if let Some(admission) = admission {
+                admission.refuse(
+                    busbar_contract::caps::StepName::Arrival,
+                    busbar_contract::caps::ReasonCode::DurabilityUnavailable,
+                );
+            }
+            return None;
+        }
+        if admission.is_some_and(|admission| !admission.begin_execution()) {
             return None;
         }
         post.open(key, principal.clone(), arrived, history);
+        post.checkpoint_identity(key, audit_kind, OriginKind::Client);
         let meter = Arc::new(AccrualMeter::new());
         let call = self.kernel.next_call();
         let hold = busbar_kernel::inflight::arrival_hold(
@@ -536,6 +621,9 @@ impl Node {
             now: arrived.ms(),
         }) else {
             post.close(key);
+            if let Some(admission) = admission {
+                admission.execution_unavailable();
+            }
             return None;
         };
         let mut occupied = Occupied {
@@ -633,6 +721,7 @@ impl Node {
             arrived,
             history,
             mut sealing,
+            ..
         } = open;
         let (said, report) = (sealing.said.take(), sealing.report.take());
         let Some(outcome) = said else {
@@ -840,7 +929,7 @@ pub struct Report {
     /// Every class the tap reported, by neutral unit class — the reserved token split and every open
     /// class beside it (a rerank's search units): the same counts the governance ledger accrued when
     /// the cell filled. Empty for a response that billed nothing.
-    pub usage: busbar_contract::billing::Usage,
+    pub usage: busbar_contract::billing::ExactUsage,
     /// How many billable requests this unit is: one for a delivered client request that reached an
     /// upstream, zero otherwise — the Meter step's own count, carried rather than re-decided.
     pub fee_count: u32,
@@ -902,7 +991,9 @@ impl LateAccrual {
 
         let completed = outcome.is_some_and(Outcome::is_completed);
         let report = late().map(Report::of).filter(|report| {
-            completed || report.fee_count > 0 || report.usage.usage_units.values().any(|n| *n > 0)
+            completed
+                || report.fee_count > 0
+                || report.usage.usage_units.values().any(|n| !n.is_zero())
         });
         let (Some(seal), Some(outcome)) = (seal, outcome) else {
             return;
@@ -1272,6 +1363,8 @@ struct OpenUnit {
     history: Option<crate::root::kernel::PinnedHistory>,
 
     sealing: Accruing,
+    checkpoint_class: Option<OpClassId>,
+    checkpoint_origin: OriginKind,
 }
 
 pub struct NodeEndPost {
@@ -1335,8 +1428,17 @@ impl NodeEndPost {
                 arrived,
                 history,
                 sealing: Accruing::default(),
+                checkpoint_class: None,
+                checkpoint_origin: OriginKind::Client,
             },
         );
+    }
+
+    pub(crate) fn checkpoint_identity(&self, key: UnitKey, class: OpClassId, origin: OriginKind) {
+        if let Some(open) = self.lock(key).get_mut(&key) {
+            open.checkpoint_class = Some(class);
+            open.checkpoint_origin = origin;
+        }
     }
 
     fn routed(&self, key: UnitKey, destinations: &[VerifiedDestination]) {
@@ -1432,6 +1534,54 @@ impl busbar_kernel::plane_driver::HookJournal for NodeEndPost {
 }
 
 impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
+    fn checkpoint_decoded(&self, key: UnitKey, class: OpClassId) {
+        if let Some(open) = self.lock(key).get_mut(&key) {
+            open.checkpoint_class = Some(class);
+        }
+    }
+
+    fn checkpoint_facts(&self, key: UnitKey) -> Option<Vec<u8>> {
+        let all = self.lock(key);
+        let open = all.get(&key)?;
+        let book = self
+            .node
+            .book
+            .get()?
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let captured = crate::root::durability::RunningAudit {
+            incarnation: book.incarnation,
+            principal: open.principal.as_str().to_string(),
+            op_class: open.checkpoint_class?.as_str().to_string(),
+            origin: open.checkpoint_origin.as_str().to_string(),
+            parent: match open.checkpoint_origin {
+                OriginKind::Nested { parent } | OriginKind::Delivery { parent } => {
+                    Some(parent.get())
+                }
+                _ => None,
+            },
+            wall: open.arrived.secs(),
+            mono: open.arrived.mono(),
+            destination: open.sealing.ran.destination(None),
+            rate_card: card_in_force(open.history.as_ref(), open.arrived.ms()),
+            policy_epoch: policy_in_force(open.history.as_ref(), open.arrived.ms()),
+            hooks: open
+                .sealing
+                .ran
+                .hooks
+                .iter()
+                .map(|hook| {
+                    (
+                        hook.hook.clone(),
+                        hook.head.as_str().to_string(),
+                        hook.failed,
+                    )
+                })
+                .collect(),
+        };
+        serde_json::to_vec(&captured).ok()
+    }
+
     fn post(&self, ctx: &UnitCtx, ended: Ended) {
         let facts = self.lock(ctx.key).remove(&ctx.key);
         if let Some(open) = facts {
@@ -1694,7 +1844,7 @@ fn report_lines(report: &Report) -> Vec<RecordLine> {
         .usage
         .usage_units
         .iter()
-        .filter(|(_, count)| **count > 0)
+        .filter(|(_, count)| !count.is_zero())
         .filter_map(|(class, count)| {
             Some(RecordLine {
                 class: Registration::meter_class(class)?,

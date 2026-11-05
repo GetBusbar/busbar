@@ -234,6 +234,7 @@ async fn a_borrowed_unit_seals_its_verified_destination() {
             None,
             None,
             OpClassId::new("seal"),
+            None,
         )
         .await;
     assert!(outcome.is_some(), "the table took the unit and it ended");
@@ -367,6 +368,7 @@ async fn open_and_finish<U: Units + RouteAwait>(
             units,
             None,
             OpClassId::new("seal"),
+            None,
         )
         .await
         .expect("the table took the session");
@@ -396,6 +398,7 @@ async fn an_unfinished_session_retires_its_facts_and_preserves_its_destination_f
             &ToDestination,
             Some(history),
             OpClassId::new("seal"),
+            None,
         )
         .await
         .expect("the session opens");
@@ -639,6 +642,7 @@ async fn sealed_after(
             None,
             None,
             OpClassId::new("seal"),
+            None,
         )
         .await;
     assert!(outcome.is_some(), "the table took the unit and it ended");
@@ -742,6 +746,7 @@ async fn sealed_under(
             history(arrived.ms()),
             None,
             OpClassId::new("seal"),
+            None,
         )
         .await;
     assert!(outcome.is_some(), "the table took the unit and it ended");

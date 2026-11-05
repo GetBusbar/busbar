@@ -2310,18 +2310,33 @@ pub(crate) async fn auth_middleware(
     if is_admin {
         let target = req.uri().path_and_query().map_or("/", |t| t.as_str());
         let mut strips = Vec::new();
-        let judged = judge_admin_door(
-            &app,
-            req.method().as_str(),
-            target,
-            inbound_headers.as_ref().unwrap_or_else(|| req.headers()),
-            false,
-            true,
-            &mut strips,
-        );
-
-        let Ok(door) = judged.await else {
-            return Err(admin_unavailable_response());
+        let door = if let Some(admission) = &inbound {
+            let verdict = admission.admin_verdict();
+            if admin_door_admits(&verdict.door, req.method().as_str(), target)
+                && !admission.claim_admin_replay().await
+            {
+                admission.refuse(
+                    busbar_contract::caps::StepName::Authenticate,
+                    busbar_contract::caps::ReasonCode::Unauthenticated,
+                );
+                return Err(admin_unauthorized_response());
+            }
+            verdict.door
+        } else {
+            let Ok(door) = judge_admin_door(
+                &app,
+                req.method().as_str(),
+                target,
+                req.headers(),
+                false,
+                true,
+                &mut strips,
+            )
+            .await
+            else {
+                return Err(admin_unavailable_response());
+            };
+            door
         };
         let authorized = admin_door_admits(&door, req.method().as_str(), &path);
         strike_named(&mut req, &mut consumed, &strips);
@@ -2329,11 +2344,25 @@ pub(crate) async fn auth_middleware(
 
         let principal = match admin_principal_or_response(door) {
             Ok(principal) => principal,
-            Err(response) => return Err(*response),
+            Err(response) => {
+                if let Some(admission) = &inbound {
+                    admission.refuse(
+                        busbar_contract::caps::StepName::Authenticate,
+                        busbar_contract::caps::ReasonCode::Unauthenticated,
+                    );
+                }
+                return Err(*response);
+            }
         };
         let required = crate::admin::gate::required_scope(req.method(), &path);
 
         if !authorized {
+            if let Some(admission) = &inbound {
+                admission.refuse(
+                    busbar_contract::caps::StepName::Approve,
+                    busbar_contract::caps::ReasonCode::ScopeDenied,
+                );
+            }
             let actor = principal
                 .as_ref()
                 .map(|p| p.id.as_str())
@@ -2382,6 +2411,12 @@ pub(crate) async fn auth_middleware(
                         &format!("{}:{path}", class.label()),
                         crate::audit_ring::OUTCOME_REJECTED,
                         actor,
+                    );
+                }
+                if let Some(admission) = &inbound {
+                    admission.refuse(
+                        busbar_contract::caps::StepName::Admit,
+                        busbar_contract::caps::ReasonCode::RateLimited,
                     );
                 }
                 return Err(rate_limited_response());

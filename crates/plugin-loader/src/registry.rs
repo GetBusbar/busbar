@@ -73,6 +73,8 @@ pub struct LoadablePlugin {
     entry: Option<LinkedEntry>,
     /// [`LinkedPlugin::keyed_by_alias`]: this row's surfaces print its alias ([`Self::key`]).
     keyed_by_alias: bool,
+    /// Validated Statement schema, or the legacy manifest fallback. Never changes signed bytes.
+    pub(crate) settings_schema: Option<String>,
 }
 
 impl LoadablePlugin {
@@ -492,6 +494,25 @@ impl PluginRegistry {
                     )),
                 })
                 .map_err(|e| format!("linked plugin '{}': {e}", manifest.name))?;
+            let door = match entry {
+                LinkedEntry::Store { door } => crate::dispatch::load::raw(door),
+                LinkedEntry::Door(door) => door,
+            };
+            let settings_schema = match crate::dispatch::LinkedRow::of_raw(door) {
+                Ok(rendered) => {
+                    let stated =
+                        busbar_contract::abi::mechanism::rendering::read(&rendered.statement)
+                            .map_err(|e| {
+                                format!("linked Statement byte {} is not {}", e.at, e.what)
+                            })?;
+                    crate::settings_schema::statement_schema(&stated.settings_schema)?
+                        .or_else(|| manifest.settings_schema.clone())
+                }
+                // Registration has historically allowed an unopened/null linked door; loading it
+                // still refuses. It states no schema, unlike a present malformed Statement.
+                Err(crate::dispatch::LoadError::NullDoor) => manifest.settings_schema.clone(),
+                Err(error) => return Err(format!("linked plugin '{}': {error}", manifest.name)),
+            };
             rows.push(LoadablePlugin {
                 file: LINKED_FILE.to_string(),
                 verdict: Verdict::Trusted {
@@ -505,6 +526,7 @@ impl PluginRegistry {
                 ephemeral,
                 entry: Some(entry),
                 keyed_by_alias,
+                settings_schema,
             });
         }
         let new = rows.len();
@@ -982,6 +1004,10 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
 
     match evaluate_with_evidence(&unpacked.lib_bytes, &unpacked.manifest, policy) {
         Ok((verdict, accepted_release_keys_version)) => {
+            let settings_schema = match unpacked.manifest.settings_schema_text() {
+                Ok(schema) => schema,
+                Err(reason) => return FileOutcome::Invalid { file, reason },
+            };
             let plugin = LoadablePlugin {
                 file,
                 manifest: unpacked.manifest,
@@ -992,6 +1018,7 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
                 ephemeral: false,
                 entry: None,
                 keyed_by_alias: false,
+                settings_schema,
             };
 
             match plugin.first_party() {

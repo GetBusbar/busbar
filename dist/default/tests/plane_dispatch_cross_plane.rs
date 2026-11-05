@@ -3,7 +3,7 @@
 
 use busbar_kernel::plane_driver::dispatch::{
     fallback_key, plane_decl, plane_keys, sole_of, sole_wire_format, wire_format_names,
-    wire_formats, Ingress, PlaneDispatch, WIRE_GRPC, WIRE_JSONRPC,
+    wire_formats, Ingress, PlaneDispatch,
 };
 
 mod linked;
@@ -22,6 +22,22 @@ fn single() -> &'static str {
 
 fn multi() -> &'static str {
     linked::owning("agents").key
+}
+
+fn declared_wire(plane: &str, expected: &str) -> &'static str {
+    wire_format_names(plane)
+        .iter()
+        .copied()
+        .find(|wire| *wire == expected)
+        .unwrap_or_else(|| panic!("{plane} does not declare {expected}"))
+}
+
+fn document_wire() -> &'static str {
+    declared_wire(single(), "jsonrpc")
+}
+
+fn framed_wire() -> &'static str {
+    declared_wire(multi(), "grpc")
 }
 
 fn door(key: &str) -> String {
@@ -97,12 +113,12 @@ fn the_multi_binding_legs_are_named_by_the_planes_wire_formats() {
     assert_eq!(
         wires,
         [
-            WIRE_JSONRPC,
-            busbar_kernel::plane_driver::dispatch::WIRE_HTTP_JSON,
-            WIRE_GRPC
+            document_wire(),
+            declared_wire(multi(), "http+json"),
+            framed_wire()
         ]
         .as_slice(),
-        "the multi-binding plane's wire formats must be the shared wire-format words"
+        "the multi-binding plane must preserve its declared wire-format names and order"
     );
 }
 
@@ -156,7 +172,7 @@ fn with_nothing_mounted_every_path_is_the_fallback_plane() {
 fn a_mounted_plane_claims_its_mount_and_everything_below_it() {
     register_planes();
     let (k, m) = (single(), door(single()));
-    let d = PlaneDispatch::default().mount(k, &m, WIRE_JSONRPC);
+    let d = PlaneDispatch::default().mount(k, &m, document_wire());
     assert_eq!(plane_of(&d, &m), k);
     assert_eq!(plane_of(&d, &format!("{m}/")), k);
     assert_eq!(plane_of(&d, &format!("{m}/tools/list")), k);
@@ -166,7 +182,7 @@ fn a_mounted_plane_claims_its_mount_and_everything_below_it() {
 fn a_prefix_sibling_is_not_the_plane() {
     register_planes();
     let (k, m) = (single(), door(single()));
-    let d = PlaneDispatch::default().mount(k, &m, WIRE_JSONRPC);
+    let d = PlaneDispatch::default().mount(k, &m, document_wire());
     let short = &m[..m.len() - 1];
     for path in [
         format!("{m}x"),
@@ -184,8 +200,8 @@ fn two_mounted_planes_do_not_claim_each_other() {
     register_planes();
     let (s, a) = (single(), multi());
     let d = PlaneDispatch::default()
-        .mount(s, &door(s), WIRE_JSONRPC)
-        .mount(a, &door(a), WIRE_JSONRPC);
+        .mount(s, &door(s), document_wire())
+        .mount(a, &door(a), document_wire());
     assert_eq!(plane_of(&d, &format!("{}/tools/list", door(s))), s);
     assert_eq!(plane_of(&d, &format!("{}/tasks/send", door(a))), a);
     assert_eq!(plane_of(&d, "/v1/messages"), fallback());
@@ -195,7 +211,7 @@ fn two_mounted_planes_do_not_claim_each_other() {
 fn an_unmounted_plane_claims_nothing() {
     register_planes();
     let (s, a) = (single(), multi());
-    let d = PlaneDispatch::default().mount(a, &door(a), WIRE_JSONRPC);
+    let d = PlaneDispatch::default().mount(a, &door(a), document_wire());
     assert_eq!(plane_of(&d, &door(s)), fallback());
     assert_eq!(plane_of(&d, &format!("{}/tools/list", door(s))), fallback());
 }
@@ -206,7 +222,7 @@ fn a_mount_is_normalised_before_it_is_matched() {
     let k = single();
     let m = door(k);
     for spelling in [m.clone(), format!("{m}/"), k.to_string(), format!("{k}/")] {
-        let d = PlaneDispatch::default().mount(k, &spelling, WIRE_JSONRPC);
+        let d = PlaneDispatch::default().mount(k, &spelling, document_wire());
         assert_eq!(plane_of(&d, &m), k, "spelling {spelling}");
         assert_eq!(
             plane_of(&d, &format!("{m}/tools/list")),
@@ -229,7 +245,7 @@ fn the_fallback_plane_cannot_be_mounted() {
         fallback(),
         "the fallback key is the declaring plane's"
     );
-    let d = PlaneDispatch::default().mount(fallback_key(), &door(fallback()), WIRE_JSONRPC);
+    let d = PlaneDispatch::default().mount(fallback_key(), &door(fallback()), document_wire());
     assert_eq!(
         plane_of(&d, &door(fallback())),
         fallback(),
@@ -242,7 +258,7 @@ fn the_fallback_plane_cannot_be_mounted() {
 fn a_mount_is_readable_back() {
     register_planes();
     let (s, a) = (single(), multi());
-    let d = PlaneDispatch::default().mount(s, &door(s), WIRE_JSONRPC);
+    let d = PlaneDispatch::default().mount(s, &door(s), document_wire());
     assert_eq!(d.mount_of(s), Some(door(s).as_str()));
     assert_eq!(d.mount_of(a), None);
 }
@@ -270,7 +286,7 @@ fn sole_wire_format_answers_exactly_when_a_plane_speaks_one() {
         );
     }
     assert_eq!(sole_wire_format(fallback()), None);
-    assert_eq!(sole_wire_format(single()), Some(WIRE_JSONRPC));
+    assert_eq!(sole_wire_format(single()), Some(document_wire()));
     assert_eq!(sole_wire_format(multi()), None);
 }
 
@@ -280,14 +296,14 @@ fn a_multi_binding_plane_is_still_labelled_at_the_door_that_was_knocked_on() {
     let a = multi();
     let (m, svc) = (door(a), "/lf.svc.v1.Service");
     let d = PlaneDispatch::default()
-        .mount(a, &m, WIRE_JSONRPC)
-        .mount(a, svc, WIRE_GRPC);
+        .mount(a, &m, document_wire())
+        .mount(a, svc, framed_wire());
     let under = format!("{m}/agents/x");
     assert_eq!(d.mounted_plane_of(&under), Some(a));
-    assert_eq!(d.wire_format_of(&under), Some(WIRE_JSONRPC));
+    assert_eq!(d.wire_format_of(&under), Some(document_wire()));
     let call = format!("{svc}/SendMessage");
     assert_eq!(d.mounted_plane_of(&call), Some(a));
-    assert_eq!(d.wire_format_of(&call), Some(WIRE_GRPC));
+    assert_eq!(d.wire_format_of(&call), Some(framed_wire()));
     assert_eq!(d.mount_of(a), Some(m.as_str()));
     assert_eq!(d.wire_format_of("/v1/chat/completions"), None);
 }
@@ -303,13 +319,13 @@ fn a_claim_only_names_a_wire_format_its_plane_speaks() {
     for plane in mountable {
         let path = door(plane);
         assert!(
-            wire_format_names(plane).contains(&WIRE_JSONRPC),
-            "{plane:?} is mounted at {path} speaking `{WIRE_JSONRPC}`, which it does not declare: {:?}",
+            wire_format_names(plane).contains(&document_wire()),
+            "{plane:?} is mounted at {path} speaking `JSON-RPC`, which it does not declare: {:?}",
             wire_format_names(plane)
         );
     }
 
-    assert!(wire_format_names(multi()).contains(&WIRE_GRPC));
+    assert!(wire_format_names(multi()).contains(&framed_wire()));
 }
 
 #[test]
@@ -318,18 +334,18 @@ fn every_mounted_planes_door_dialect_is_jsonrpc() {
     for p in plane_keys().filter(|p| *p != fallback_key()) {
         assert_eq!(
             Ingress::Mounted(p).shaping_wire_format(),
-            Some(WIRE_JSONRPC),
+            Some(document_wire()),
             "{p:?} is mountable but its door does not speak JSON-RPC — `ingress::native`'s mounted \
              arm would mis-shape its refusals"
         );
         assert_eq!(
             wire_format_names(p).first(),
-            Some(&WIRE_JSONRPC),
+            Some(&document_wire()),
             "{p:?} is mountable and its canonical binding is not JSON-RPC"
         );
         assert_eq!(
             busbar_kernel::ingress::native::envelope_dialect(Ingress::Mounted(p)),
-            WIRE_JSONRPC,
+            document_wire(),
             "{p:?}'s door refusals must not fall through to a vendor envelope"
         );
     }
@@ -340,7 +356,7 @@ fn the_mount_table_is_read_before_the_path_shape() {
     register_planes();
     let (s, a) = (single(), multi());
     let m = door(s);
-    let d = PlaneDispatch::default().mount(s, &m, WIRE_JSONRPC);
+    let d = PlaneDispatch::default().mount(s, &m, document_wire());
     assert_eq!(d.ingress_of(&m), Ingress::Mounted(s));
     assert_eq!(
         d.ingress_of(&format!("{m}/tools/list")),
@@ -377,14 +393,14 @@ fn an_unmounted_plane_is_never_resolved_from_the_path() {
 fn a_resolved_ingress_names_its_own_wire_format() {
     register_planes();
     let s = single();
-    let d = PlaneDispatch::default().mount(s, &door(s), WIRE_JSONRPC);
-    assert_eq!(d.ingress_of(&door(s)).wire_format(), Some(WIRE_JSONRPC));
+    let d = PlaneDispatch::default().mount(s, &door(s), document_wire());
+    assert_eq!(d.ingress_of(&door(s)).wire_format(), Some(document_wire()));
     assert_eq!(d.ingress_of("/v1/messages").wire_format(), None);
     assert_eq!(d.ingress_of("/stats").wire_format(), None);
-    let over = PlaneDispatch::default().mount(s, "/v1/messages", WIRE_JSONRPC);
+    let over = PlaneDispatch::default().mount(s, "/v1/messages", document_wire());
     assert_eq!(
         over.ingress_of("/v1/messages").wire_format(),
-        Some(WIRE_JSONRPC)
+        Some(document_wire())
     );
 }
 
@@ -394,8 +410,8 @@ fn only_a_mounted_plane_claims_a_path_and_the_two_readings_agree() {
     let (s, a) = (single(), multi());
     let (ms, ma) = (door(s), door(a));
     let d = PlaneDispatch::default()
-        .mount(s, &ms, WIRE_JSONRPC)
-        .mount(a, &ma, WIRE_JSONRPC);
+        .mount(s, &ms, document_wire())
+        .mount(a, &ma, document_wire());
     for path in [
         ms.clone(),
         format!("{ms}/x"),

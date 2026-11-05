@@ -102,7 +102,14 @@ fn counts(r: &Rig, bucket: &str, lane: &str) -> BTreeMap<String, u64> {
         .bucket_model_tokens(bucket, WINDOW_TOTAL, NOW)
         .into_iter()
         .find(|(model, _)| model == lane)
-        .map(|(_, units)| units)
+        .map(|(_, units)| {
+            units
+                .into_iter()
+                .map(|(class, count)| {
+                    (class, count.whole_u64().expect("whole-count scope fixture"))
+                })
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -185,7 +192,8 @@ fn admitted_qualified_pool_accrues_and_refunds_the_same_scope_as_a_bare_pool() {
                 .iter()
                 .find(|m| m.model == lane)
                 .expect("stored serving lane");
-            assert_eq!(model.usage_units, units(10_000, 3));
+            assert_eq!(model.scale, 6);
+            assert_eq!(model.usage_units, units(10_000_000_000, 3_000_000));
             if lane.contains('\u{1f}') {
                 assert!(
                     row.models.iter().all(|m| m.model != "m"),
@@ -291,7 +299,10 @@ fn scoped_headroom(session: bool, pool: &str, lane: &str, other: &str) {
             billed: if session {
                 vec![]
             } else {
-                vec![(0, 49_988), (1, 3)]
+                vec![
+                    (0, busbar_contract::Count::from(49_988u64)),
+                    (1, busbar_contract::Count::from(3u64)),
+                ]
             },
         },
     );
@@ -348,7 +359,8 @@ fn scoped_headroom(session: bool, pool: &str, lane: &str, other: &str) {
             .find(|row| row.model == "fallback")
             .expect("served plane row");
         assert_eq!((row.provider.as_str(), row.requests), ("tp", 1));
-        assert_eq!(row.usage_units, units(49_988, 3));
+        assert_eq!(row.scale, 6);
+        assert_eq!(row.usage_units, units(49_988_000_000, 3_000_000));
         assert!(rows.iter().all(|row| !row.model.contains('\u{1f}')));
     }
 }

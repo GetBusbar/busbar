@@ -27,7 +27,11 @@ pub use store_chain::{part_key, JOURNAL_SCHEMA};
 
 mod conditional;
 
+mod unit_checkpoint;
+mod unit_checkpoint_audit;
 mod usage_recovery;
+pub(crate) use unit_checkpoint::unit_checkpoint_sink;
+pub(crate) use unit_checkpoint_audit::RunningAudit;
 pub(crate) use usage_recovery::usage_recovery_sink;
 
 mod store_identity;

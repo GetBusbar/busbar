@@ -484,10 +484,19 @@ purpose.
 
 ### 1.5.3 config consolidation
 
+**For a deployment moving to 1.6.0:** runtime config persists exclusively through the operator's
+base Store, not the overlay files described in this historical 1.5.3 section. A durable Store
+preserves runtime changes across restart; memory is ephemeral. Legacy `config.overlay.file` and
+`BUSBAR_CONFIG_OVERLAY` inputs only warn and never read, write or import those files. A read-only
+config directory has no effect on Store persistence. Set `config.locked: true` to refuse runtime
+mutations, or use a Store with the required atomic conditional-record support. Failed Store
+persistence refuses the mutation before generation publication; failed overlay recovery refuses
+boot unless explicitly quarantined with `--safe-mode`. See [current operations](operations.md#config-mutability-locked--overlay).
+
 1.5.3 also moves operational config out of environment variables and **into `config.yaml`**, and makes admin-API
-config mutability explicit and **durable by default**. Every migrated env var was deprecated in 1.5.3 and remains
-**deprecated but honored** in 1.6.0 — each still takes effect exactly as it did in 1.5.5, with a boot warning
-(`BUSBAR-3021`) naming the config.yaml key that replaces it. Move each into config.yaml at your convenience.
+config mutability explicit and **durable by default**. The file-overlay examples below describe
+1.5.3; the 1.6.0 Store-only rule above supersedes their persistence and read-only-directory advice.
+Other migrated operational environment inputs remain deprecated compatibility inputs with warnings.
 
 #### Env var → config.yaml (deprecated since 1.5.3, still honored)
 
@@ -559,6 +568,13 @@ it, choose one:
 Either resolves the boot refusal. Busbar never silently falls back to the old lose-on-restart behavior.
 
 ### 1.5.3 behavior change: `busbar --validate` resolves secret references
+
+**1.6.0 supersedes the warn-and-continue behavior below.** A configured provider credential that
+does not resolve refuses boot and a replacement config cannot publish with an unresolved required
+credential. Declare `api_key: none` only for a provider that takes no credential. Offline
+`--validate` resolves built-in `env:` / `file:` references and checks configured plugin references;
+it does not prove external secret-backend reachability, application Store recovery or readiness.
+See [the 1.6.0 upgrade guide](migration-1.6.md#6-a-provider-credential-that-cannot-resolve-refuses-boot).
 
 **What changed.** Through 1.5.2, `--validate` checked that a secret reference was well FORMED and
 stopped there: a config saying `api_key: { env: ANTHROPIC_KEY }` with `ANTHROPIC_KEY` unset printed

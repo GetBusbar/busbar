@@ -549,6 +549,16 @@ impl Audit for AuditChain {
         inputs: AuditInputs,
         _token: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
     ) -> AuditRecord {
+        let recipe = if inputs
+            .usage
+            .lines
+            .iter()
+            .any(|line| line.quantity.whole_u64().is_err())
+        {
+            crate::recipe::Recipe::V6
+        } else {
+            crate::recipe::Recipe::V5
+        };
         let mut record = AuditRecord {
             subject: inputs.subject,
             what: inputs.what,
@@ -566,7 +576,7 @@ impl Audit for AuditChain {
                 .map(|label| crate::digest::sha256_hex(label.as_bytes())),
             seq: self.next_seq,
             prev_hash: self.tail_hash.clone(),
-            recipe: crate::recipe::Recipe::V5,
+            recipe,
             hash: String::new(),
             signature: None,
             key_id: None,

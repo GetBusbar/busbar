@@ -1212,9 +1212,6 @@ fs_extra = { git = "https://github.com/MattJackson/fs_extra", rev = "70f47864db8
 h2 = { git = "https://github.com/MattJackson/h2", rev = "d6146a5c425e55653cdfebc5660e52d87430c588" }
 tungstenite = { git = "https://github.com/MattJackson/tungstenite-rs", rev = "1c190f7dda55dc7df4781b7ecea9faa671fc76fd" }
 
-[patch.'https://github.com/GetBusbar/busbar']
-busbar-contract = { path = "../../crates/busbar-contract" }
-
 [profile.release]
 # Tuned for the shipped "deploy-and-done" binary: max optimization and smallest size,
 # at the cost of slower release compiles (fine — releases are built in CI, not in the loop).

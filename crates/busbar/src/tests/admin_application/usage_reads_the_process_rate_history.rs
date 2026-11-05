@@ -262,6 +262,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         .expect("the actual Store opened governance")
         .store()
         .add_metering(&MeteringDelta {
+            scale: 0,
             usage_units: Default::default(),
             key_id: "vk_dated_read".into(),
             bucket,

@@ -41,6 +41,7 @@ fn delta(requests: i64, input: i64) -> UsageDelta {
         requests,
         billable_requests: requests,
         models: vec![ModelTokensDelta {
+            scale: 0,
             model: "m".to_string(),
             usage_units: [("input".to_string(), input)].into_iter().collect(),
         }],
@@ -264,6 +265,7 @@ fn a_usage_batch_replays_once_and_a_reused_op_id_is_a_conflict() {
 fn a_metering_batch_applies_through_the_typed_surface() {
     let s = open();
     let m = busbar_contract::records::MeteringDelta {
+        scale: 0,
         key_id: "k".into(),
         bucket: 86_400,
         model: "m".into(),

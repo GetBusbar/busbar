@@ -211,7 +211,9 @@ async fn a_revoked_admission_cannot_enter_the_neutral_plane_dispatcher() {
     let head = Head {
         method: "POST".into(),
         target: "/framed/ok".into(),
-        ..Head::default()
+        authority: String::new(),
+        query: None,
+        fields: Vec::new(),
     };
     let (host, admission) = admission(Arc::clone(&g.app), mounts.data.guests.clone(), &head);
     host.stream_ended(OWNER, FRAMING, STREAM);
@@ -289,6 +291,7 @@ async fn neutral_auth_refusal(target: &str, expected_status: u32) {
     let callback_host = Arc::clone(&weak);
     let callback_routes = Arc::clone(&routes);
     let scope = ListenerScope {
+        audit_kind: None,
         neutral_refuse: Some(Arc::new(move |app, refusal| {
             // Acquiring the units mutex inside the producer catches a held host lock.
             let host = callback_host.lock().unwrap().upgrade().unwrap();
@@ -302,7 +305,9 @@ async fn neutral_auth_refusal(target: &str, expected_status: u32) {
     let head = Head {
         method: "POST".into(),
         target: target.into(),
-        ..Head::default()
+        authority: String::new(),
+        query: None,
+        fields: Vec::new(),
     };
     let (host, admission) = admission_with_scope(app, routes.guests.clone(), &head, Some(scope));
     *weak.lock().unwrap() = Arc::downgrade(&host);
@@ -341,3 +346,6 @@ async fn neutral_auth_refusal(target: &str, expected_status: u32) {
     assert_eq!(g.money.open_units(), 0);
     assert!(g.book.lock().unwrap().audit_records.is_empty());
 }
+
+#[path = "serve_inbound_audit.rs"]
+mod inbound_audit;

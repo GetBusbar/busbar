@@ -6,6 +6,8 @@
 /// Atomic correction vocabulary for the existing raw usage ledger.
 pub mod correction;
 
+mod count_scale;
+
 /// A kind-tagged scope reference — e.g. `{ kind: "pool", value: "fast" }`. The generic
 /// admission-topology substrate: everywhere busbar used
 /// to name "which pool" with a bare `String`, it now names "which scope, of what kind" with this
@@ -461,6 +463,9 @@ pub const RESERVED_UNITS: [&str; 4] = [UNIT_INPUT, UNIT_OUTPUT, UNIT_CACHE_READ,
 /// store, and upgraded on disk by the store plugin's own `migrate()`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ModelTokens {
+    /// Count encoding: absent/zero is legacy whole units; six is exact micro-units.
+    #[serde(default, skip_serializing_if = "count_scale::is_whole")]
+    pub scale: u32,
     pub model: String,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub usage_units: std::collections::BTreeMap<String, u64>,
@@ -582,6 +587,9 @@ impl UsageLedger {
 /// an all-zero delta serializes to `{"model":…}`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ModelTokensDelta {
+    /// Count encoding: absent/zero is legacy whole units; six is exact micro-units.
+    #[serde(default, skip_serializing_if = "count_scale::is_whole")]
+    pub scale: u32,
     pub model: String,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub usage_units: std::collections::BTreeMap<String, i64>,
@@ -621,6 +629,9 @@ impl UsageDelta {
 /// separately (design: expose the inputs of the cost computation, not just busbar's own result).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MeteringDelta {
+    /// Scale of token columns and usage_units; request counters always remain whole.
+    #[serde(default, skip_serializing_if = "count_scale::is_whole")]
+    pub scale: u32,
     pub key_id: String,
     /// The UTC-day bucket this response is attributed to; derived from the request's pinned
     /// header-arrival epoch, same as the budget charges.
@@ -697,6 +708,9 @@ pub struct MeteringDelta {
 /// by_key aggregations — the service aggregates in memory; buckets are bounded by (keys × models)).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MeteringRow {
+    /// Scale of token columns and usage_units; request counters always remain whole.
+    #[serde(default, skip_serializing_if = "count_scale::is_whole")]
+    pub scale: u32,
     pub key_id: String,
     pub model: String,
     pub provider: String,

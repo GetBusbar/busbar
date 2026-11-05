@@ -372,6 +372,7 @@ fn usage_ledger_applies_deltas_and_floors_at_zero() {
         requests: 2,
         billable_requests: 2,
         models: vec![ModelTokensDelta {
+            scale: 0,
             model: "gpt-5".to_string(),
             usage_units: units(100, 50, 10, 5),
         }],
@@ -393,6 +394,7 @@ fn usage_ledger_applies_deltas_and_floors_at_zero() {
         requests: 1,
         billable_requests: 1,
         models: vec![ModelTokensDelta {
+            scale: 0,
             model: "haiku".to_string(),
             usage_units: units(7, 3, 0, 0),
         }],
@@ -404,6 +406,7 @@ fn usage_ledger_applies_deltas_and_floors_at_zero() {
         requests: -10,
         billable_requests: -10,
         models: vec![ModelTokensDelta {
+            scale: 0,
             model: "haiku".to_string(),
             usage_units: units(-1000, -1, 0, 0),
         }],
@@ -457,6 +460,7 @@ fn default_add_usage_accumulates_via_get_put() {
         requests: 1,
         billable_requests: 1,
         models: vec![ModelTokensDelta {
+            scale: 0,
             model: "m".to_string(),
             usage_units: units(5, 5, 0, 0),
         }],
@@ -496,6 +500,7 @@ fn model_tokens_is_zero_requires_every_unit_zero() {
     assert!(ModelTokens::default().is_zero());
     for u in RESERVED_UNITS {
         let m = ModelTokens {
+            scale: 0,
             model: "m".into(),
             usage_units: std::collections::BTreeMap::from([(u.to_string(), 1u64)]),
         };
@@ -503,6 +508,7 @@ fn model_tokens_is_zero_requires_every_unit_zero() {
     }
 
     let m = ModelTokens {
+        scale: 0,
         model: "m".into(),
         usage_units: std::collections::BTreeMap::from([("audio".to_string(), 1u64)]),
     };
@@ -513,11 +519,13 @@ fn model_tokens_is_zero_requires_every_unit_zero() {
 fn model_tokens_delta_is_zero_requires_every_unit_zero() {
     assert!(ModelTokensDelta::default().is_zero());
     let d = ModelTokensDelta {
+        scale: 0,
         model: "m".into(),
         usage_units: units(1, 0, 0, 0),
     };
     assert!(!d.is_zero());
     let d = ModelTokensDelta {
+        scale: 0,
         model: "m".into(),
         usage_units: units(0, -1, 0, 0),
     };
@@ -539,6 +547,7 @@ fn usage_delta_is_zero_requires_requests_billable_and_every_model_zero() {
     .is_zero());
     assert!(!UsageDelta {
         models: vec![ModelTokensDelta {
+            scale: 0,
             model: "m".to_string(),
             usage_units: units(1, 0, 0, 0),
         }],
@@ -779,6 +788,7 @@ fn plane_record_envelope_round_trips_through_the_store_seam_encoding() {
 #[test]
 fn model_tokens_usage_units_is_the_sole_representation() {
     let reserved = ModelTokens {
+        scale: 0,
         model: "gpt-x".into(),
         usage_units: units(10, 20, 0, 0),
     };
@@ -789,6 +799,7 @@ fn model_tokens_usage_units_is_the_sole_representation() {
     assert_eq!(rt, reserved);
 
     let empty = ModelTokens {
+        scale: 0,
         model: "z".into(),
         usage_units: std::collections::BTreeMap::new(),
     };
@@ -806,6 +817,7 @@ fn model_tokens_usage_units_is_the_sole_representation() {
 fn apply_model_delta_folds_usage_units_flooring_at_zero() {
     let mut ledger = UsageLedger::default();
     let mut d1 = ModelTokensDelta {
+        scale: 0,
         model: "m".into(),
         usage_units: units(0, 0, 0, 0),
     };
@@ -814,6 +826,7 @@ fn apply_model_delta_folds_usage_units_flooring_at_zero() {
     assert_eq!(ledger.models[0].usage_units.get("search"), Some(&5));
 
     let mut d2 = ModelTokensDelta {
+        scale: 0,
         model: "m".into(),
         usage_units: std::collections::BTreeMap::new(),
     };

@@ -107,7 +107,7 @@ fn an_undecodable_audit_record_refuses_the_chain_window_without_reclassifying_th
     let mut next = inputs(2);
     next.usage.lines.push(busbar_kernel_audit::UsageLine {
         class: busbar_contract::MeterClassId::new("unregistered-window-class"),
-        quantity: 3,
+        quantity: 3.into(),
         source: busbar_contract::caps::QuantitySource::Count,
         estimated: false,
     });

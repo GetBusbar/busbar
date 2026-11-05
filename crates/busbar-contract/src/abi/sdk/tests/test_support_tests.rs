@@ -1506,3 +1506,47 @@ mod pending_open_custody {
         );
     }
 }
+
+#[test]
+fn restated_transport_retains_operations_and_owns_replacement_metadata() {
+    use crate::abi::mechanism::{extensions, rendering};
+    use crate::abi::sdk::test_support::RestatedTransport;
+    let fixture = RestatedTransport::new();
+    let names = [String::from("foreign-a"), String::from("foreign-b")];
+    let extension = Vec::from(b"owned value".as_slice());
+    let changed = fixture.get_or_init(
+        plugin::MACRO_DOOR,
+        &[names[0].as_str(), names[1].as_str()],
+        &[("fixture-owned", Some(&extension))],
+    );
+    drop(names);
+    drop(extension);
+    let original = plugin::door();
+    assert_eq!(changed.ops(), original.ops());
+    // SAFETY: the sealed original and test fixture retain both immutable Statements.
+    let (changed_statement, original_statement) =
+        unsafe { (&*changed.statement(), &*original.statement()) };
+    assert_eq!(changed_statement.kind_tail, original_statement.kind_tail);
+    // SAFETY: all source and replacement declaration buffers remain process-lived.
+    let rendered = unsafe { rendering::render(changed_statement) }.unwrap();
+    let read = rendering::read(&rendered).unwrap();
+    assert_eq!(read.claims, vec!["foreign-a", "foreign-b"]);
+    assert_eq!(
+        extensions::get(&read.extensions.bytes, "fixture-owned"),
+        Some(b"owned value".as_slice())
+    );
+    assert!(std::ptr::eq(
+        changed,
+        fixture.get_or_init(plugin::MACRO_DOOR, &[], &[])
+    ));
+}
+
+#[test]
+#[should_panic(expected = "restatement must preserve claim count")]
+fn restated_transport_rejects_a_claim_count_change() {
+    crate::abi::sdk::test_support::RestatedTransport::new().get_or_init(
+        plugin::MACRO_DOOR,
+        &["only-one"],
+        &[],
+    );
+}

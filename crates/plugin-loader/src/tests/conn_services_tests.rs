@@ -986,6 +986,10 @@ struct Scripted {
     /// The independent dial and whole-request bounds every actual open received.
     timeouts: Mutex<Vec<(u64, u64)>>,
     declared_timeouts: Mutex<Vec<u64>>,
+    prepared: Mutex<Vec<(ConnId, NeedId)>>,
+    committed: Mutex<Vec<ConnId>>,
+    facts_pends: Mutex<u32>,
+    commit_pends: Mutex<u32>,
 }
 
 /// A door double's park: armed, the next caller notes it entered and waits for the release (at
@@ -1026,6 +1030,78 @@ impl Gate {
 type Upgrade = (ConnId, Option<String>, Option<String>);
 
 impl DeclaredConns for Scripted {
+    fn prepare_request(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        dial_timeout_ms: u64,
+    ) -> Result<ConnId, ConnError> {
+        self.slab.check_need(caller, need)?;
+        assert!(desc.fields.is_empty() && desc.body.is_empty() && desc.method.is_empty());
+        assert!(!held_here(), "prepare must cross outside the loader lock");
+        self.timeouts
+            .lock()
+            .unwrap()
+            .push((dial_timeout_ms, desc.timeout_ms));
+        let conn = self.slab.insert(caller, need, ())?;
+        self.prepared.lock().unwrap().push((conn, need));
+        Ok(conn)
+    }
+
+    fn commit_request(
+        &self,
+        caller: InstanceId,
+        conn: ConnId,
+        desc: &OpenDesc<'_>,
+        require_secure: bool,
+    ) -> Result<(), ConnError> {
+        self.slab.get(caller, conn)?;
+        assert!(!held_here(), "commit must cross outside the loader lock");
+        if require_secure
+            && !self
+                .facts
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|f| f.peer_cert.is_some())
+        {
+            return Err(ConnError::AuthRefused);
+        }
+        let mut pending = self.commit_pends.lock().unwrap();
+        if *pending > 0 {
+            *pending -= 1;
+            return Err(ConnError::Pending);
+        }
+        drop(pending);
+        let mut committed = self.committed.lock().unwrap();
+        if committed.contains(&conn) {
+            return Err(ConnError::Refused);
+        }
+        let need = self
+            .prepared
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(id, _)| *id == conn)
+            .map(|(_, need)| *need)
+            .ok_or(ConnError::Closed)?;
+        self.opened.lock().unwrap().push((
+            need,
+            desc.target.to_owned(),
+            desc.method.to_vec(),
+            desc.head_target.to_vec(),
+            desc.fields
+                .iter()
+                .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
+                .collect(),
+            desc.body.to_vec(),
+        ));
+        self.opened_units.lock().unwrap().push(desc.unit);
+        committed.push(conn);
+        Ok(())
+    }
+
     fn open_request(
         &self,
         caller: InstanceId,
@@ -1182,7 +1258,13 @@ impl Conns for Scripted {
     fn wait(&self, _: InstanceId, _: &[ConnId], _: u64) -> Result<usize, ConnError> {
         Err(ConnError::Pending)
     }
-    fn facts(&self, _: InstanceId, _: ConnId) -> Result<ConnFacts, ConnError> {
+    fn facts(&self, owner: InstanceId, conn: ConnId) -> Result<ConnFacts, ConnError> {
+        self.slab.get(owner, conn)?;
+        let mut pending = self.facts_pends.lock().unwrap();
+        if *pending > 0 {
+            *pending -= 1;
+            return Err(ConnError::Pending);
+        }
         self.facts.lock().unwrap().clone().ok_or(ConnError::Closed)
     }
     fn close(&self, c: InstanceId, id: ConnId) -> Result<(), ConnError> {
@@ -3887,3 +3969,6 @@ fn sdk_facts_replay_always_retains_the_observed_security_state() {
         );
     }
 }
+
+#[path = "conn_prepared_tests.rs"]
+mod conn_prepared_tests;

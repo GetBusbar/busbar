@@ -3,6 +3,30 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+/// Read the public schema from the canonical Statement, without opening a plugin.
+/// Absence is allowed; a present but malformed schema is an admission error.
+pub fn statement_schema(
+    schema: &busbar_contract::abi::mechanism::rendering::ReadBlob,
+) -> Result<Option<String>, String> {
+    if schema.bytes.is_empty() {
+        return Ok(None);
+    }
+    if schema.fmt != busbar_contract::abi::mechanism::call::BLOB_JSON || schema.flags != 0 {
+        return Err("Statement settings_schema must be public JSON".into());
+    }
+    if schema.bytes.len() > 256 * 1024 {
+        return Err("Statement settings_schema exceeds the 262144-byte cap".into());
+    }
+    let text = std::str::from_utf8(&schema.bytes)
+        .map_err(|_| "Statement settings_schema is not UTF-8".to_string())?;
+    let value: serde_json::Value = serde_json::from_str(text)
+        .map_err(|e| format!("Statement settings_schema is not valid JSON: {e}"))?;
+    if !value.is_object() && !value.is_boolean() {
+        return Err("Statement settings_schema must be a JSON Schema object or boolean".into());
+    }
+    Ok(Some(text.to_string()))
+}
+
 pub const SECRET_NAME_HINTS: &[&str] = &[
     "password",
     "secret",
@@ -158,8 +182,10 @@ fn check_public(
 ///      nested marked field would silently never resolve, defeating the whole guarantee. A
 ///      legitimately nested secret-bearing struct field must be flattened to a root property
 ///      (`tls_key`, not `tls.key`).
-///   2. A marked field must be `type: string`, optionally with `contentEncoding: "base64"` for
-///      the binary-secret case — no other type may claim to be a secret.
+///   2. A marked field is `type: string` (optionally `contentEncoding: "base64"`), or an
+///      untyped `writeOnly: true` lifecycle slot. The latter preserves parsers accepting opaque
+///      JSON, including the host's `{"$secret": index}` placeholder after secret resolution.
+///      This schema does not replace config-time `SecretRef` validation.
 ///   3. An UNMARKED field (at any depth) whose name matches [`SECRET_NAME_HINTS`] is a hard
 ///      error too — the mitigation against a third-party plugin silently shipping a plaintext-
 ///      credential field with no marker at all.
@@ -207,11 +233,16 @@ pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
             }
             let ty = eff.get("type").and_then(|t| t.as_str());
             let content_encoding = eff.get("contentEncoding").and_then(|t| t.as_str());
-            let ok = ty == Some("string") && matches!(content_encoding, None | Some("base64"));
+            let string = ty == Some("string") && matches!(content_encoding, None | Some("base64"));
+            let opaque = !eff.contains_key("type")
+                && !eff.contains_key("contentEncoding")
+                && eff.get("writeOnly") == Some(&serde_json::Value::Bool(true));
+            let ok = string || opaque;
             if !ok {
                 return Err(format!(
                     "x-busbar-secret: true is only valid on a `type: string` field (optionally \
-                     with `contentEncoding: \"base64\"` for a binary secret) — found type={ty:?} \
+                     with `contentEncoding: \"base64\"` for a binary secret), or an untyped \
+                     `writeOnly: true` lifecycle slot — found type={ty:?} \
                      contentEncoding={content_encoding:?}"
                 ));
             }

@@ -25,7 +25,7 @@ fn usage_lines(pairs: &[(&'static str, u64)]) -> Vec<busbar_contract::caps::Usag
         .iter()
         .map(|(class, quantity)| busbar_contract::caps::UsageLine {
             class: busbar_contract::caps::step::MeterClassId::new(class),
-            quantity: *quantity,
+            quantity: (*quantity).into(),
             source: busbar_contract::caps::QuantitySource::Count,
             estimated: false,
         })
@@ -109,11 +109,11 @@ fn admin_row(counts: &[(&'static str, u64)], requests: u64) -> admin::UsageBreak
             .unwrap_or(0)
     };
     admin::UsageBreakdown {
-        tokens_input: at(INPUT),
-        tokens_output: at(OUTPUT),
-        tokens_cache_read: at(CACHE_READ),
+        tokens_input: at(INPUT).into(),
+        tokens_output: at(OUTPUT).into(),
+        tokens_cache_read: at(CACHE_READ).into(),
 
-        tokens_cache_creation: at(CACHE_WRITE),
+        tokens_cache_creation: at(CACHE_WRITE).into(),
         requests,
         spend_micros: 0,
         classes: Default::default(),

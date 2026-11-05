@@ -42,6 +42,7 @@ fn delta(requests: i64, billable: i64, model: &str, units: &[(&str, i64)]) -> Us
             Vec::new()
         } else {
             vec![ModelTokensDelta {
+                scale: 0,
                 model: model.to_string(),
                 usage_units: units.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
             }]
@@ -58,6 +59,7 @@ fn meter(
     reqs: u64,
 ) -> MeteringDelta {
     MeteringDelta {
+        scale: 0,
         key_id: key.to_string(),
         bucket,
         model: model.to_string(),

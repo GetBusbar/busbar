@@ -21,7 +21,7 @@ pub fn host() -> &'static Arc<Inbound> {
     ONE.get_or_init(|| {
         Inbound::new(
             kin::Seals {
-                mint: Arc::new(|| crate::root::plane_node::node().mint().get()),
+                mint: Arc::new(|| mint_on(&crate::root::plane_node::node())),
                 mac: Arc::new(|t: &kin::UnitTag| {
                     auth_handle::mint_unit_ref(t.secret, t.generation, t.owner, t.line, t.unit)
                         .map(|u| u.mac)
@@ -42,7 +42,18 @@ pub fn host() -> &'static Arc<Inbound> {
     })
 }
 
+/// A full audit lane stops new identities before the kernel constructs a UnitTag.
+/// Existing units can still end and retain their one record for the normal retry tick.
+pub(in crate::root) fn mint_on(node: &crate::root::plane_node::Node) -> u64 {
+    if node.journal_refusal().is_some() {
+        0
+    } else {
+        node.mint().get()
+    }
+}
+
 fn refused(r: &kin::RefusedUnit) {
+    crate::root::plane_node::node().refused_inbound(r);
     tracing::debug!(
         unit = ?r.unit,
         owner = r.owner,

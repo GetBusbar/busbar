@@ -498,6 +498,12 @@ pub const UNITS_ESTIMATED: u32 = 0;
 pub const UNITS_REPORTED: u32 = 1;
 /// [`UnitCount::source`]: the plane's floor for a delivered reply whose far-end usage could not be
 pub const UNITS_FLOOR: u32 = 2;
+/// An estimated count whose amount is an exact scale-six mantissa; never billed.
+pub const UNITS_ESTIMATED_MICROS: u32 = 3;
+/// A reported count whose amount is an exact scale-six mantissa.
+pub const UNITS_REPORTED_MICROS: u32 = 4;
+/// A usage floor whose amount is an exact scale-six mantissa.
+pub const UNITS_FLOOR_MICROS: u32 = 5;
 
 /// [`OnPieceOut::tap_fault`]: no usage-tap fault.
 pub const TAP_FAULT_NONE: u8 = 0;
@@ -510,7 +516,10 @@ pub const TAP_FAULT_UNKNOWN_PROTOCOL: u8 = 3;
 
 /// THE ONE BILLING RULE ON A COUNT'S SOURCE: [`UNITS_REPORTED`] and [`UNITS_FLOOR`] bill;
 pub const fn units_bill(source: u32) -> bool {
-    matches!(source, UNITS_REPORTED | UNITS_FLOOR)
+    matches!(
+        source,
+        UNITS_REPORTED | UNITS_FLOOR | UNITS_REPORTED_MICROS | UNITS_FLOOR_MICROS
+    )
 }
 
 /// [`ArriveOut::principal_need`]: no principal.
@@ -630,6 +639,9 @@ pub const VERDICT_OK: u32 = 1;
 pub const VERDICT_RETRY: u32 = 2;
 /// [`OnPieceOut::verdict`]: the far end's answer is a failure no other member would change.
 pub const VERDICT_HARD: u32 = 3;
+/// The provider reported a count that cannot be represented exactly. The host refuses
+/// this piece before accepting its usage or releasing its response bytes.
+pub const VERDICT_COUNT_REFUSED: u32 = 4;
 
 /// [`RefusalIn::cause`]: the kernel refused.
 pub const REFUSAL_KERNEL: u32 = 0;
@@ -1845,13 +1857,59 @@ impl OutField {
 pub struct UnitCount {
     /// Index into [`PlaneTail::billable_classes`].
     pub class: u32,
-    /// [`UNITS_ESTIMATED`] | [`UNITS_REPORTED`] | [`UNITS_FLOOR`].
+    /// Whole-unit source 0/1/2, or the corresponding explicit micro-unit source 3/4/5.
     pub source: u32,
-    /// The cumulative count.
+    /// The cumulative count, interpreted using `source`; legacy whole values are unchanged.
     pub amount: u64,
 }
 
 impl UnitCount {
+    /// Read the measurement without changing the legacy whole-unit source codes.
+    pub fn count(self) -> Result<crate::Count, crate::count::CountError> {
+        let scale = match self.source {
+            UNITS_ESTIMATED | UNITS_REPORTED | UNITS_FLOOR => 0,
+            UNITS_ESTIMATED_MICROS | UNITS_REPORTED_MICROS | UNITS_FLOOR_MICROS => 6,
+            _ => return Err(crate::count::CountError::UnknownScale),
+        };
+        crate::Count::from_stored(i128::from(self.amount), scale)
+    }
+
+    /// Encode a nonnegative measurement within the declared signed store range.
+    /// Whole counts retain their original source and amount; fractional counts explicitly name scale six.
+    pub fn from_count(
+        class: u32,
+        source: u32,
+        count: crate::Count,
+    ) -> Result<Self, crate::count::CountError> {
+        use crate::count::CountError;
+        if count.is_negative() {
+            return Err(CountError::Negative);
+        }
+        if !count.fits_a_64_bit_column() {
+            return Err(CountError::OutOfRange);
+        }
+        let base = match source {
+            UNITS_ESTIMATED | UNITS_ESTIMATED_MICROS => UNITS_ESTIMATED,
+            UNITS_REPORTED | UNITS_REPORTED_MICROS => UNITS_REPORTED,
+            UNITS_FLOOR | UNITS_FLOOR_MICROS => UNITS_FLOOR,
+            _ => return Err(CountError::UnknownScale),
+        };
+        let micros = u64::try_from(count.micros()).map_err(|_| CountError::OutOfRange)?;
+        Ok(if micros % 1_000_000 == 0 {
+            Self {
+                class,
+                source: base,
+                amount: micros / 1_000_000,
+            }
+        } else {
+            Self {
+                class,
+                source: base + 3,
+                amount: micros,
+            }
+        })
+    }
+
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
     pub const ZERO: Self = Self {
         class: 0,

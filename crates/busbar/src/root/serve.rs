@@ -2607,20 +2607,34 @@ fn open(
 }
 
 fn arrival_entries(served: &Served) -> Vec<Arc<EntrySpans>> {
-    served.planes.iter().map(|plane| {
-        Arc::new(EntrySpans::of(plane.snapshot.claims.iter().map(|claim| {
-            (claim.verb.as_str(), claim.target.as_str(), claim.flags, claim.arrival_span.as_str())
-        })))
-    }).collect()
+    served
+        .planes
+        .iter()
+        .map(|plane| {
+            Arc::new(EntrySpans::of(plane.snapshot.claims.iter().map(|claim| {
+                (
+                    claim.verb.as_str(),
+                    claim.target.as_str(),
+                    claim.flags,
+                    claim.arrival_span.as_str(),
+                )
+            })))
+        })
+        .collect()
 }
 
 /// Reserved credential and hop fields never enter a plane request, regardless of carrier.
 fn keep_arrival_field(name: &[u8]) -> bool {
-    !name.eq_ignore_ascii_case(busbar_contract::abi::host::service::CARRIER_SESSION_FIELD.as_bytes())
-        && !NEVER_KEPT.iter().any(|reserved| name.eq_ignore_ascii_case(reserved.as_bytes()))
+    !name
+        .eq_ignore_ascii_case(busbar_contract::abi::host::service::CARRIER_SESSION_FIELD.as_bytes())
+        && !NEVER_KEPT
+            .iter()
+            .any(|reserved| name.eq_ignore_ascii_case(reserved.as_bytes()))
 }
 
 pub struct DataRoutes {
+    /// The plane configuration sealed with this listener dispatcher.
+    live: Vec<Arc<DoorLive>>,
     entries: Vec<Arc<EntrySpans>>,
     served: Served,
 
@@ -3865,7 +3879,16 @@ impl ListenerPlan {
                 .and_then(|prepared| prepared.data())
                 .and_then(|data| data.downcast::<DataRoutes>().ok())
                 .map(|routes| Arc::new(move |app: &Arc<busbar_kernel::state::App>, refusal: &busbar_kernel::plane_routes::KernelRefusal<'_>| routes.refuse_line(app, refusal)) as busbar_kernel::inbound::NeutralRefuse);
+            let audit_kind = plan
+                .prepared(&source.app, &at)
+                .and_then(|prepared| prepared.data())
+                .and_then(|data| data.downcast::<DataRoutes>().ok())
+                .map(|routes| {
+                    Arc::new(move |line| routes.inbound_audit_kind(line))
+                        as Arc<dyn Fn(u32) -> OpClassId + Send + Sync>
+                });
             let scope = busbar_kernel::inbound::ListenerScope {
+                audit_kind,
                 neutral_refuse,
                 legacy_fallback,
                 refuse: plan
@@ -4388,6 +4411,11 @@ fn door_mounts_planned(
     }
     let kernel = served.planes.first().map(|p| Arc::clone(&p.kernel));
     let routes = Arc::new(DataRoutes {
+        live: served
+            .planes
+            .iter()
+            .map(|plane| plane.live.current())
+            .collect(),
         entries: arrival_entries(&served),
         served,
         claim_doors: plan.map(|(plan, _, _)| Arc::clone(&plan.claim_doors)),
@@ -4501,7 +4529,6 @@ fn door_mounts_planned(
             }
         })
         .collect();
-
 
     let refuse_by_path: busbar_kernel::plane_routes::PlaneRefuseByPathFn = {
         let routes = Arc::clone(&routes);
@@ -4652,6 +4679,11 @@ pub(crate) fn line_routes(
     });
     let kernel = served.planes.first().map(|p| Arc::clone(&p.kernel));
     let routes = Arc::new(DataRoutes {
+        live: served
+            .planes
+            .iter()
+            .map(|plane| plane.live.current())
+            .collect(),
         entries: arrival_entries(&served),
         served,
         claim_doors: None,
@@ -4906,12 +4938,25 @@ impl DataRoutes {
         use busbar_kernel::teller::SessionOpen;
         let served = &self.served.planes[door.plane];
         if let Some(refused) = journal_refused(served, &self.post, &arrival) {
+            if let Some(admission) = &door.admission {
+                admission.refuse(
+                    busbar_contract::caps::StepName::Arrival,
+                    ReasonCode::DurabilityUnavailable,
+                );
+            }
             let _ = verdict.send(Err(Some(refused)));
             return;
         }
-        let live = served.live.current();
+        let live = if door.admission.is_some() {
+            Arc::clone(&self.live[door.plane])
+        } else {
+            served.live.current()
+        };
         let node = self.post.node();
-        let unit = node.mint();
+        let unit = door
+            .admission
+            .as_ref()
+            .map_or_else(|| node.mint(), |admission| admission.unit_key());
         let carrier_end = CarrierEnd {
             unit: unit.get(),
             ended: attach.ended.take(),
@@ -4965,6 +5010,7 @@ impl DataRoutes {
                 &units,
                 (self.pin)(),
                 live.facts.audit_kind,
+                door.admission.as_ref(),
             )
             .await
         else {
@@ -5187,6 +5233,7 @@ impl DataRoutes {
                 .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
         let key = gov.key.clone();
         let door = SessionDoor {
+            admission: None,
             plane,
             app,
             principal,
@@ -5248,8 +5295,10 @@ impl DataRoutes {
                 Ok(messages) => messages,
                 Err(why) => {
                     let status = refusal_status(ReasonCode::DecodeFailed);
-                    return match stream.refuse(why.error.as_bytes(), status, false) {
-                        Ok(block) => serve_framed::whole(status, &block),
+                    return match stream.refuse_response(why.error.as_bytes(), status, false) {
+                        Ok(closing) => {
+                            serve_framed::whole(closing.status.unwrap_or(status), &closing.fields)
+                        }
                         Err(_) => stated((status, Vec::new()), Body::empty()),
                     };
                 }
@@ -5267,6 +5316,7 @@ impl DataRoutes {
                     open,
                     &caller,
                     arrival,
+                    None,
                     None,
                 )
                 .await
@@ -5288,6 +5338,7 @@ impl DataRoutes {
                 open,
                 &caller,
                 arrival,
+                None,
                 None,
             )
             .await
@@ -5381,23 +5432,11 @@ impl DataRoutes {
                     &caller,
                     arrival,
                     Some(nesting),
+                    None,
                 )
                 .await
         };
-        let response = reply.answer_nested(Box::pin(unit)).await;
-        let (parts, body) = response.into_parts();
-        let Ok(body) = axum::body::to_bytes(body, NEST_REPLY_MAX).await else {
-            return NestReply::Failed(NEST_UNREAD);
-        };
-        NestReply::Answered {
-            status: u32::from(parts.status.as_u16()),
-            fields: parts
-                .headers
-                .iter()
-                .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
-                .collect(),
-            body: body.to_vec(),
-        }
+        reply.answer_nested(Box::pin(unit)).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5410,18 +5449,29 @@ impl DataRoutes {
         caller: &C,
         arrival: Arrival,
         nesting: Option<Nesting>,
+        admission: Option<&busbar_kernel::inbound::RequestAdmission>,
     ) -> Option<Rendered> {
         let served = &self.served.planes[plane];
         if let Some(refused) = journal_refused(served, &self.post, &arrival) {
+            if let Some(admission) = admission {
+                admission.refuse(
+                    busbar_contract::caps::StepName::Arrival,
+                    ReasonCode::DurabilityUnavailable,
+                );
+            }
             return Some(refused);
         }
 
-        let live = served.live.current();
+        let live = if admission.is_some() {
+            Arc::clone(&self.live[plane])
+        } else {
+            served.live.current()
+        };
         let started = std::time::Instant::now();
         let claim = arrival.claim;
         let app_for_metrics = Arc::clone(&app);
         let node = self.post.node();
-        let unit = node.mint();
+        let unit = admission.map_or_else(|| node.mint(), |admission| admission.unit_key());
         let arrived = node.arrived();
 
         self.frames_lock().insert(unit.get(), Arc::clone(&app));
@@ -5482,6 +5532,7 @@ impl DataRoutes {
                 (self.pin)(),
                 nesting.as_ref().map(|n| &n.parent),
                 live.facts.audit_kind,
+                admission,
             )
             .await;
 
@@ -5587,7 +5638,7 @@ pub(crate) fn report_of(
     facts: &DoorFacts,
 ) -> Option<crate::root::linked::node::Reported> {
     let lane = money.serving(unit)?;
-    let mut usage_units: BTreeMap<String, u64> = BTreeMap::new();
+    let mut usage_units: BTreeMap<String, busbar_contract::Count> = BTreeMap::new();
     let mut fee = 0u32;
     for u in money
         .last_counts(unit)
@@ -5599,12 +5650,18 @@ pub(crate) fn report_of(
             continue;
         }
         if let Some(name) = facts.classes.get(u.class as usize) {
-            let n = usage_units.entry(name.clone()).or_insert(0);
-            *n = n.saturating_add(u.amount);
+            let n = usage_units
+                .entry(name.clone())
+                .or_insert(busbar_contract::Count::ZERO);
+            *n = n.checked_add(u.count().ok()?).ok()?;
         }
     }
-    usage_units.retain(|_, n| *n > 0);
-    Some((busbar_contract::billing::Usage { usage_units }, fee, lane))
+    usage_units.retain(|_, n| !n.is_zero());
+    Some((
+        busbar_contract::billing::ExactUsage { usage_units },
+        fee,
+        lane,
+    ))
 }
 
 struct DoorFar<'d, 's> {
@@ -5902,6 +5959,7 @@ impl Attach {
 }
 
 struct SessionDoor {
+    admission: Option<busbar_kernel::inbound::RequestAdmission>,
     plane: usize,
     app: Arc<busbar_kernel::state::App>,
     principal: PrincipalId,
@@ -6051,14 +6109,6 @@ pub struct IngressReply {
     trailers: Option<oneshot::Receiver<axum::http::HeaderMap>>,
 }
 
-/// Ordinary whole replies retain their buffering; nested replies are collected only by the
-/// existing nesting bound, while their producer is still running.
-#[derive(Clone, Copy)]
-enum WholeReplies {
-    Collect,
-    Stream,
-}
-
 impl IngressCaller {
     #[must_use]
     pub fn new() -> (Self, IngressReply) {
@@ -6153,15 +6203,69 @@ impl IngressReply {
     }
 
     pub async fn answer(self, unit: DrivenUnit) -> Response {
-        self.answer_collecting(unit, WholeReplies::Collect).await
+        self.answer_collecting(unit).await
     }
 
-    async fn answer_nested(self, unit: DrivenUnit) -> Response {
-        self.answer_collecting(unit, WholeReplies::Stream).await
+    async fn answer_nested(self, mut unit: DrivenUnit) -> busbar_kernel::host_services::NestReply {
+        use busbar_kernel::host_services::NestReply;
+        let IngressReply {
+            mut head, mut body, ..
+        } = self;
+        let first = tokio::select! {
+            biased;
+            head = &mut head => Ok(head.ok()),
+            rendered = &mut unit => Err(rendered),
+        };
+        let rendered = match first {
+            Ok(Some((status, fields))) => {
+                return match collect_nested(body, unit).await {
+                    Some(body) => NestReply::Answered {
+                        status,
+                        fields,
+                        body,
+                    },
+                    None => NestReply::Failed(NEST_UNREAD),
+                };
+            }
+            Ok(None) => unit.await,
+            Err(rendered) => match head.try_recv() {
+                Ok((status, fields)) => {
+                    let mut whole = NestedBody::default();
+                    while let Ok(piece) = body.try_recv() {
+                        if !whole.push(piece) {
+                            return NestReply::Failed(NEST_UNREAD);
+                        }
+                    }
+                    return NestReply::Answered {
+                        status,
+                        fields,
+                        body: whole.into_bytes(),
+                    };
+                }
+                Err(_) => rendered,
+            },
+        };
+        match rendered {
+            Some(Rendered {
+                status,
+                fields,
+                body,
+            }) if body.len() <= NEST_REPLY_MAX => NestReply::Answered {
+                status,
+                fields,
+                body,
+            },
+            Some(_) => NestReply::Failed(NEST_UNREAD),
+            None => NestReply::Answered {
+                status: refusal_status(ReasonCode::PlanePanic),
+                fields: Vec::new(),
+                body: Vec::new(),
+            },
+        }
     }
 
-    async fn answer_collecting(self, unit: DrivenUnit, whole: WholeReplies) -> Response {
-        self.answer_with_collection(unit, whole, |rendered| match rendered {
+    async fn answer_collecting(self, unit: DrivenUnit) -> Response {
+        self.answer_with_collection(unit, |rendered| match rendered {
             Some(r) => stated((r.status, r.fields), Body::from(r.body)),
             None => stated(
                 (refusal_status(ReasonCode::PlanePanic), Vec::new()),
@@ -6176,14 +6280,12 @@ impl IngressReply {
         unit: DrivenUnit,
         unrendered: impl FnOnce(Option<Rendered>) -> Response,
     ) -> Response {
-        self.answer_with_collection(unit, WholeReplies::Collect, unrendered)
-            .await
+        self.answer_with_collection(unit, unrendered).await
     }
 
     async fn answer_with_collection(
         self,
         mut unit: DrivenUnit,
-        whole: WholeReplies,
         unrendered: impl FnOnce(Option<Rendered>) -> Response,
     ) -> Response {
         let IngressReply {
@@ -6197,7 +6299,7 @@ impl IngressReply {
             rendered = &mut unit => Err(rendered),
         };
         let rendered = match first {
-            Ok(Some(h)) if matches!(whole, WholeReplies::Collect) && whole_answer(&h.1) => {
+            Ok(Some(h)) if whole_answer(&h.1) => {
                 let whole = collect(body, unit).await;
                 return stated(unlengthed(h), Body::from(whole));
             }
@@ -6213,7 +6315,7 @@ impl IngressReply {
             }
             Ok(None) => unit.await,
             Err(rendered) => match head.try_recv() {
-                Ok(h) if matches!(whole, WholeReplies::Collect) && whole_answer(&h.1) => {
+                Ok(h) if whole_answer(&h.1) => {
                     let mut body = body;
                     let mut whole = Whole::default();
                     while let Ok(bytes) = body.try_recv() {
@@ -6317,6 +6419,58 @@ async fn collect(mut body: mpsc::Receiver<Bytes>, mut unit: DrivenUnit) -> Bytes
         }
     }
     whole.into_bytes()
+}
+
+/// A nested reply is opaque and bounded while its producer is still running. Owning the
+/// producer here makes an over-limit reply or a dropped collector cancel it synchronously.
+async fn collect_nested(mut body: mpsc::Receiver<Bytes>, mut unit: DrivenUnit) -> Option<Vec<u8>> {
+    let mut whole = NestedBody::default();
+    loop {
+        tokio::select! {
+            biased;
+            piece = body.recv() => match piece {
+                Some(piece) => {
+                    if !whole.push(piece) { return None; }
+                }
+                None => {
+                    let _ = unit.await;
+                    break;
+                }
+            },
+            _ = &mut unit => {
+                while let Ok(piece) = body.try_recv() {
+                    if !whole.push(piece) { return None; }
+                }
+                break;
+            }
+        }
+    }
+    Some(whole.into_bytes())
+}
+
+#[derive(Default)]
+struct NestedBody {
+    length: usize,
+    whole: Whole,
+}
+
+impl NestedBody {
+    fn push(&mut self, piece: Bytes) -> bool {
+        let Some(length) = self
+            .length
+            .checked_add(piece.len())
+            .filter(|n| *n <= NEST_REPLY_MAX)
+        else {
+            return false;
+        };
+        self.length = length;
+        self.whole.push(piece);
+        true
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.whole.into_bytes().to_vec()
+    }
 }
 
 /// A whole answer's pieces, joined: a lone piece is kept as written, never copied.

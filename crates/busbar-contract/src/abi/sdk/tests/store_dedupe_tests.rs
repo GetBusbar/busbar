@@ -46,14 +46,30 @@ fn delta(requests: i64) -> UsageDelta {
         requests,
         billable_requests: 1,
         models: vec![ModelTokensDelta {
+            scale: 0,
             model: "m".into(),
             usage_units: BTreeMap::from([("input".to_owned(), 7)]),
         }],
     }
 }
 
+#[test]
+fn count_scale_is_part_of_operation_identity_and_never_matches_a_legacy_receipt() {
+    let whole = [("b", 60, delta(1))];
+    let mut scaled = whole.clone();
+    scaled[0].2.models[0].scale = 6;
+    let legacy = Dedupe::usage(&whole);
+    let exact = Dedupe::usage(&scaled);
+    assert_ne!(legacy.body(), exact.body());
+    assert_eq!(exact.seen(Some(legacy.body())), Seen::Conflict);
+    let older = br#"add_usage_batch:[("b", 60, UsageDelta { requests: 1, billable_requests: 1, models: [ModelTokensDelta { model: "m", usage_units: {"input": 7} }] })]"#;
+    assert_eq!(exact.seen(Some(older)), Seen::Conflict);
+    assert_eq!(legacy.seen(Some(older)), Seen::Replay);
+}
+
 fn metering(tokens_input: u64) -> MeteringDelta {
     MeteringDelta {
+        scale: 0,
         key_id: "k".into(),
         bucket: 20_000,
         model: "m".into(),
@@ -339,6 +355,7 @@ fn frozen_legacy_receipts_keep_quoting_order_signed_units_and_terminal_rows() {
             requests: i64::MIN,
             billable_requests: 0,
             models: vec![ModelTokensDelta {
+                scale: 0,
                 model: "\tπ".into(),
                 usage_units: BTreeMap::from([("z".into(), -1), ("a".into(), 0)]),
             }],

@@ -39,6 +39,8 @@ impl ManifestFacts {
     pub fn read(rendering: &[u8]) -> Result<Self, LoadError> {
         let facts = read(rendering)
             .map_err(|e| LoadError::Rendering(format!("byte {} is not {}", e.at, e.what)))?;
+        crate::settings_schema::statement_schema(&facts.settings_schema)
+            .map_err(LoadError::Rendering)?;
         let kind = facts.kind;
         Ok(Self {
             mechanism_version: facts.mechanism_version,

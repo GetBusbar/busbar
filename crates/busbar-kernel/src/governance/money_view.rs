@@ -17,7 +17,7 @@ struct Facts {
     requests: u64,
     billable_requests: u64,
     fee_eras: RawFeeEras,
-    models: Vec<(Arc<str>, RawRateEra, BTreeMap<String, u64>)>,
+    models: Vec<(Arc<str>, RawRateEra, BTreeMap<String, super::Count>)>,
 }
 
 /// Everything one bucket's derived figure depends on.

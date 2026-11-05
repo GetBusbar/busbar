@@ -12,7 +12,19 @@ and the two common extension tasks.
 
 ---
 
-## Repo layout, `src/` module map
+## Current 1.6.0 ownership
+
+The composition root is `crates/busbar/src/root/`; `dist/default/Cargo.toml` assembles the shipping
+plugin set. `busbar-kernel` owns neutral admission, routing and governance, `busbar-contract` owns
+shared types and the memory ABI, `busbar-core-connector` owns connections, and `plugin-loader`
+owns native loading. Protocol intelligence belongs to plane, transport and connector plugins,
+not a new registry or protocol handler inside core. Add a protocol in its owning plugin using
+[the SDK migration guide](plugin-sdk-migration-1.6.md) and [the plugin guide](plugins.md).
+
+## Historical 1.5.5 `src/` module map
+
+The following map describes the old monolith. Its paths and extension recipes are historical,
+not instructions to move protocol logic back into the 1.6.0 kernel.
 
 | Module | Owns |
 |---|---|
@@ -41,14 +53,15 @@ and the two common extension tasks.
 
 ## Build / test / lint
 
-Single Rust binary, stable toolchain, edition 2021.
+Use the repository's pinned toolchain. Locally run formatting, linting and only the tests directly
+covering the change; CI runs the full suites. Build the actual default distribution when checking
+the assembled product, since the core-only binary deliberately links no production plugins.
 
 ```bash
 cargo build                                   # core workspace debug build
 cargo build --release --locked --manifest-path dist/default/Cargo.toml --target-dir target
 # assembled release binary -> target/release/busbar
-cargo test                                    # core workspace suite
-cargo test --locked --manifest-path dist/default/Cargo.toml --target-dir target # distribution integration suite
+cargo test -p <changed-package> <test-filter>  # only the directly affected cases locally
 cargo clippy --all-targets -- -D warnings     # lints must be clean (treat warnings as errors)
 cargo fmt --all                               # format (rustfmt.toml in repo)
 ```
@@ -198,6 +211,10 @@ Full field reference: [configuration.md](configuration.md).
 ---
 
 ## Adding a new protocol
+
+For 1.6.0, implement a protocol in its owning plane/transport plugin; core stays protocol-neutral.
+The monolithic recipe below is historical 1.5.5 guidance, retained to explain the old source map.
+Use the [plugin SDK guide](plugin-sdk-migration-1.6.md) for current plugin boundaries.
 
 A protocol is the unit of Busbar's scope (the count to grow is **6**, not the
 provider count). To add one:

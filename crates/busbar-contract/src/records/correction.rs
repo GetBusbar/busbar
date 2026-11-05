@@ -90,6 +90,14 @@ impl Request {
         if self.metering.iter().any(|row| row.key_id != self.key_id) {
             return Err("usage correction metering key mismatch");
         }
+        // Validation must not rewrite the immutable request: its original scale and bytes
+        // belong to the operation fingerprint, including a legacy whole-unit replay.
+        for row in &self.metering {
+            let mut checked = row.clone();
+            checked
+                .normalize_scale6()
+                .map_err(|_| "usage correction metering count scale or range is invalid")?;
+        }
         if self
             .metering
             .windows(2)
@@ -134,6 +142,8 @@ impl Request {
 
 /// Canonicalize one complete raw ledger, rejecting duplicate model identities.
 pub fn canonical_ledger(row: &mut UsageLedger) -> Result<(), &'static str> {
+    row.normalize_scale6()
+        .map_err(|_| "usage correction count scale or range is invalid")?;
     row.models.sort_by(|a, b| a.model.cmp(&b.model));
     if row
         .models
@@ -150,6 +160,10 @@ pub fn canonical_ledger(row: &mut UsageLedger) -> Result<(), &'static str> {
 }
 
 fn validate_ledger(row: &UsageLedger) -> Result<(), &'static str> {
+    let mut checked = row.clone();
+    checked
+        .normalize_scale6()
+        .map_err(|_| "usage correction count scale or range is invalid")?;
     if row.models.iter().any(|model| {
         model.usage_units.is_empty() || model.usage_units.values().any(|count| *count == 0)
     }) {
@@ -195,5 +209,117 @@ mod op_id_wire {
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<OpId, D::Error> {
         <[u8; 16]>::deserialize(deserializer).map(OpId)
+    }
+}
+
+#[cfg(test)]
+mod exact_count_validation_tests {
+    use super::*;
+    use crate::records::ModelTokens;
+    use std::collections::BTreeMap;
+
+    fn request(scale: u32, quantity: u64) -> Request {
+        let ledger = UsageLedger {
+            requests: u64::MAX,
+            billable_requests: u64::MAX,
+            models: vec![ModelTokens {
+                scale,
+                model: "model".into(),
+                usage_units: BTreeMap::from([("audio_seconds".into(), quantity)]),
+            }],
+        };
+        Request {
+            version: VERSION,
+            op_id: OpId::from_parts(81, 1),
+            key_id: "key".into(),
+            day_start: 0,
+            metering: vec![MeteringRow {
+                scale,
+                key_id: "key".into(),
+                model: "model".into(),
+                provider: "provider".into(),
+                tokens_input: quantity,
+                tokens_output: 0,
+                tokens_cache_read: 0,
+                tokens_cache_write: 0,
+                requests: u64::MAX,
+                billable_requests: u64::MAX,
+                key_group_at_use: String::new(),
+                pricing_version: String::new(),
+                priced_from_ms: 0,
+                usage_units: BTreeMap::from([("audio_seconds".into(), quantity)]),
+            }],
+            usage: vec![UsageChange {
+                address: UsageAddress {
+                    bucket_id: "bucket".into(),
+                    window_start: 0,
+                },
+                expected: ledger.clone(),
+                replacement: ledger,
+            }],
+        }
+    }
+
+    #[test]
+    fn exact_count_validation_preserves_legacy_and_scaled_wire_fingerprints() {
+        for (scale, quantity) in [(0, 2), (6, 123_456), (6, i64::MAX as u64)] {
+            let original = request(scale, quantity);
+            let bytes = serde_json::to_vec(&original).unwrap();
+            let fingerprint = original.fingerprint();
+            original.validate().unwrap();
+            assert_eq!(original.encode().unwrap(), bytes);
+            let decoded = Request::decode(&bytes).unwrap();
+            assert_eq!(decoded, original);
+            assert_eq!(decoded.fingerprint(), fingerprint);
+            assert_eq!(decoded.usage[0].expected.models[0].scale, scale);
+            assert_eq!(decoded.metering[0].scale, scale);
+            if scale == 0 {
+                assert!(!String::from_utf8(bytes).unwrap().contains("\"scale\""));
+            }
+        }
+    }
+
+    #[test]
+    fn exact_count_validation_checks_both_ledger_sides_and_metering_quantities() {
+        for (scale, quantity) in [
+            (3, 1),
+            (6, i64::MAX as u64 + 1),
+            (0, i64::MAX as u64 / 1_000_000 + 1),
+        ] {
+            for field in 0..4 {
+                let mut invalid = request(6, 1);
+                match field {
+                    0 | 1 => {
+                        let change = &mut invalid.usage[0];
+                        let ledger = if field == 0 {
+                            &mut change.expected
+                        } else {
+                            &mut change.replacement
+                        };
+                        ledger.models[0].scale = scale;
+                        ledger.models[0]
+                            .usage_units
+                            .insert("audio_seconds".into(), quantity);
+                    }
+                    2 => {
+                        invalid.metering[0].scale = scale;
+                        invalid.metering[0].tokens_input = quantity;
+                    }
+                    _ => {
+                        invalid.metering[0].scale = scale;
+                        invalid.metering[0]
+                            .usage_units
+                            .insert("audio_seconds".into(), quantity);
+                    }
+                }
+                assert!(
+                    invalid.validate().is_err(),
+                    "field={field}, scale={scale}, quantity={quantity}"
+                );
+                let bytes = serde_json::to_vec(&invalid).unwrap();
+                assert!(Request::decode(&bytes).is_err());
+                assert!(invalid.encode().is_err());
+            }
+        }
     }
 }

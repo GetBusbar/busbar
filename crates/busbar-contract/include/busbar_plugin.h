@@ -393,6 +393,9 @@ extern "C" {
 #define BB_PLANE_UNITS_ESTIMATED UINT32_C(0) /* [`UnitCount::source`]: the plane's own estimate; never billed. */
 #define BB_PLANE_UNITS_REPORTED UINT32_C(1) /* [`UnitCount::source`]: the far end reported it; it bills. */
 #define BB_PLANE_UNITS_FLOOR UINT32_C(2) /* [`UnitCount::source`]: the plane's floor for a delivered reply whose far-end usage could not be */
+#define BB_PLANE_UNITS_ESTIMATED_MICROS UINT32_C(3) /* An estimated count whose amount is an exact scale-six mantissa; never billed. */
+#define BB_PLANE_UNITS_REPORTED_MICROS UINT32_C(4) /* A reported count whose amount is an exact scale-six mantissa. */
+#define BB_PLANE_UNITS_FLOOR_MICROS UINT32_C(5) /* A usage floor whose amount is an exact scale-six mantissa. */
 #define BB_PLANE_TAP_FAULT_NONE UINT8_C(0) /* [`OnPieceOut::tap_fault`]: no usage-tap fault. */
 #define BB_PLANE_TAP_FAULT_DECODE UINT8_C(1) /* [`OnPieceOut::tap_fault`]: the cell's own reader refused the body (`reason="decode"`). */
 #define BB_PLANE_TAP_FAULT_BAD_JSON UINT8_C(2) /* [`OnPieceOut::tap_fault`]: the body is not JSON (`reason="bad_json"`). */
@@ -434,6 +437,7 @@ extern "C" {
 #define BB_PLANE_VERDICT_OK UINT32_C(1) /* [`OnPieceOut::verdict`]: the far end's answer is a success. */
 #define BB_PLANE_VERDICT_RETRY UINT32_C(2) /* [`OnPieceOut::verdict`]: the far end's answer is a failure another member may not share. The */
 #define BB_PLANE_VERDICT_HARD UINT32_C(3) /* [`OnPieceOut::verdict`]: the far end's answer is a failure no other member would change. */
+#define BB_PLANE_VERDICT_COUNT_REFUSED UINT32_C(4) /* The provider reported a count that cannot be represented exactly. The host refuses */
 #define BB_PLANE_REFUSAL_KERNEL UINT32_C(0) /* [`RefusalIn::cause`]: the kernel refused. */
 #define BB_PLANE_REFUSAL_GATE UINT32_C(1) /* [`RefusalIn::cause`]: a gate refused. */
 #define BB_PLANE_REFUSAL_ARRIVE UINT32_C(2) /* [`RefusalIn::cause`]: the plane refused its own arrival; [`RefusalIn::text`] is that arrival's */

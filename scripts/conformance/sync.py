@@ -187,7 +187,7 @@ def shipped_pins(root):
     lock = root / "dist" / "default" / "Cargo.lock"
     if lock.is_file():
         for repo, sha in sorted(set(re.findall(
-                r'source = "git\+https://(?:github\.com|github\.com)/GetBusbar/([A-Za-z0-9._-]+?)(?:\.git)?'
+                r'source = "git\+https://github\.com/GetBusbar/([A-Za-z0-9._-]+?)(?:\.git)?'
                 r'(?:\?[^#"]*)?#([0-9a-f]{40})"', lock.read_text()))):
             if repo != "busbar":
                 put(repo, sha, "dist/default/Cargo.lock")
@@ -262,7 +262,10 @@ def load_fetched(directory):
                 expected = rerun.get("sha") if not rerun.get("refused") and rerun else rec.get("sha")
                 if hashlib.sha256(data).hexdigest() != expected:
                     raise Refused("the fetched archive does not hash to its receipt")
-                verdicts = archive_verdicts(data)
+                from invocation import validated_verdicts
+                state = rerun.get("state") if rerun and not rerun.get("refused") else rec.get("state")
+                verdicts = validated_verdicts(data, repo=repo, head=rec.get("head"),
+                                              state=state, allow_failed=True)
             except (OSError, ValueError, tarfile.TarError, Refused) as e:
                 rec = {**rec, "missing": str(e)}
         out[repo] = {"receipt": rec, "verdicts": verdicts}

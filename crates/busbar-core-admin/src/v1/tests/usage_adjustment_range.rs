@@ -28,6 +28,7 @@ fn zero_cost() -> CostModel {
 
 fn row(model: &str, era: u64, count: u64) -> MeteringRow {
     MeteringRow {
+        scale: 0,
         key_id: KEY.into(),
         model: model.into(),
         provider: PROVIDER.into(),
@@ -71,35 +72,32 @@ fn adjustments_at_one_timestamp_only_change_rows_of_their_recorded_entry() {
     fold_adjustments(&mut rows, &[exact]).unwrap();
     assert_eq!(
         rows.iter().map(|row| row.tokens_input).collect::<Vec<_>>(),
-        [9, 11, 5]
+        [9_000_000, 11_000_000, 5_000_000]
     );
     fold_adjustments(&mut rows, &[adjustment(LANE, 3)]).unwrap();
     assert_eq!(
         rows.iter().map(|row| row.tokens_input).collect::<Vec<_>>(),
-        [9, 14, 5]
+        [9_000_000, 14_000_000, 5_000_000]
     );
 }
 
 #[test]
-fn full_unsigned_negative_fold_spans_rows_and_keeps_other_eras_unchanged() {
-    let mut rows = vec![
-        row(LANE, 0, i64::MIN.unsigned_abs()),
-        row(LANE, 0, i64::MAX as u64),
-        row(LANE, OTHER_ERA, 1),
-    ];
-    fold_adjustments(&mut rows, &[adjustment(LANE, -i128::from(u64::MAX))])
-        .expect("distributed subtraction");
+fn negative_fold_spans_rows_and_keeps_other_eras_unchanged() {
+    let mut rows = vec![row(LANE, 0, 7), row(LANE, 0, 9), row(LANE, OTHER_ERA, 1)];
+    fold_adjustments(&mut rows, &[adjustment(LANE, -16)]).expect("distributed subtraction");
     assert_eq!(
         rows.iter().map(|row| row.tokens_input).collect::<Vec<_>>(),
-        vec![0, 0, 1]
+        vec![0, 0, 1_000_000]
     );
 }
 
 #[test]
-fn empty_model_fold_keeps_full_unsigned_counts_and_rejects_out_of_range_magnitudes() {
+fn empty_model_fold_keeps_scaled_counts_and_rejects_out_of_range_magnitudes() {
     let mut rows = vec![row("", 0, 0)];
-    fold_adjustments(&mut rows, &[adjustment("", i128::from(u64::MAX))]).expect("empty model lane");
-    assert_eq!(rows[0].tokens_input, u64::MAX);
+    let maximum_whole = i64::MAX / 1_000_000;
+    fold_adjustments(&mut rows, &[adjustment("", i128::from(maximum_whole))])
+        .expect("empty model lane");
+    assert_eq!(rows[0].tokens_input, maximum_whole as u64 * 1_000_000);
     let unchanged = rows.clone();
     for invalid in [
         i128::from(u64::MAX) + 1,
@@ -117,4 +115,16 @@ fn empty_model_fold_keeps_full_unsigned_counts_and_rejects_out_of_range_magnitud
         rows, unchanged,
         "checked positive overflow preserves the column"
     );
+}
+
+#[test]
+fn whole_adjustment_preserves_fractional_remainder_and_rejection_is_atomic() {
+    let mut measured = row(LANE, 0, 27_500_000);
+    measured.scale = 6;
+    let mut rows = vec![measured];
+    fold_adjustments(&mut rows, &[adjustment(LANE, -2)]).unwrap();
+    assert_eq!(rows[0].tokens_input, 25_500_000);
+    let before = rows.clone();
+    assert!(fold_adjustments(&mut rows, &[adjustment(LANE, -26)]).is_err());
+    assert_eq!(rows, before);
 }

@@ -38,7 +38,9 @@ fn usage_delta(out: &mut String, delta: &UsageDelta) {
         if index != 0 {
             out.push_str(", ");
         }
-        let ModelTokensDelta { model, usage_units } = model;
+        let ModelTokensDelta {
+            model, usage_units, ..
+        } = model;
         let _ = write!(out, "ModelTokensDelta {{ model: {model:?}, usage_units: ");
         units(out, usage_units);
         out.push_str(" }");
@@ -80,6 +82,7 @@ pub(super) fn metering(out: &mut String, deltas: &[MeteringDelta]) {
             pricing_version,
             priced_from_ms,
             usage_units,
+            ..
         } = delta;
         let _ = write!(out,
             "MeteringDelta {{ key_id: {key_id:?}, bucket: {bucket}, model: {model:?}, provider: {provider:?}, tokens_input: {tokens_input}, tokens_output: {tokens_output}, tokens_cache_read: {tokens_cache_read}, tokens_cache_write: {tokens_cache_write}, requests: {requests}, billable_requests: {billable_requests}, key_group_at_use: {key_group_at_use:?}, pricing_version: {pricing_version:?}, priced_from_ms: {priced_from_ms}, usage_units: "

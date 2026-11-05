@@ -500,11 +500,17 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 return self.close(cx);
             }
             moved |= self.parked(cx);
-            while !self.pending.is_empty() {
+            while !self.failed && self.framing.is_some() && !self.pending.is_empty() {
                 match self.apply_front() {
                     Step::Done => moved = true,
                     Step::Wait => break,
                 }
+            }
+            // A failed command (including a dropped upgrade acknowledgement) is terminal.
+            // Do not process its queued response or publish any bytes in this same poll.
+            if self.failed || self.framing.is_none() {
+                self.tasks.abort_all();
+                return self.close(cx);
             }
             if self.session.is_some() {
                 match self.pump_session(cx) {
@@ -1521,6 +1527,64 @@ pub(in crate::root) async fn serve_governed_test<I>(
     serve(io, framer, Router::new(), secured, timeout, stop).await;
 }
 
+/// Exercise the production admitted request actor with decoded body frames.
+#[cfg(test)]
+pub(in crate::root) async fn serve_admitted_body_test(
+    routes: Arc<crate::root::serve::DataRoutes>,
+    admission: busbar_kernel::inbound::RequestAdmission,
+    pieces: Vec<Result<Bytes, &'static str>>,
+) -> Option<u32> {
+    let (body_tx, body_rx) = mpsc::unbounded_channel();
+    for piece in pieces {
+        body_tx.send(piece.map_err(BodyError::from)).unwrap();
+    }
+    drop(body_tx);
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let emitter = Emitter { stream: 1, tx };
+    let collect = async move {
+        let mut status = None;
+        while let Some((_, op)) = rx.recv().await {
+            match op {
+                Op::Head {
+                    status: stated,
+                    done,
+                    ..
+                } => {
+                    status = Some(stated);
+                    let _ = done.send(true);
+                }
+                Op::Data { done, .. } | Op::Trailers { done, .. } => {
+                    let _ = done.send(true);
+                }
+                Op::Refuse { status: stated, .. } => {
+                    status = Some(stated);
+                }
+                Op::Ended { .. } => break,
+                _ => {}
+            }
+        }
+        status
+    };
+    let (_, status) = tokio::join!(
+        serve_data(
+            routes,
+            admission,
+            InboundBody {
+                pieces: body_rx,
+                ended: false
+            },
+            SessionSlot::default(),
+            emitter.clone(),
+            StreamEnd(emitter, None),
+            busbar_contract::abi::host::service::SCHEME_SECURE,
+            std::time::Duration::from_secs(1),
+            None
+        ),
+        collect
+    );
+    status
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn serve_data(
     routes: Arc<crate::root::serve::DataRoutes>,
@@ -1593,6 +1657,10 @@ async fn serve_data(
             match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), work).await {
                 Ok(pipe) => pipe,
                 Err(_) => {
+                    admission.refuse(
+                        busbar_contract::caps::StepName::Arrival,
+                        ReasonCode::DeadlineExceeded,
+                    );
                     out.send(Op::Refuse {
                         status: busbar_kernel::plane_driver::refusal_status(
                             ReasonCode::DeadlineExceeded,
@@ -1626,6 +1694,7 @@ async fn refuse_data(
     reason: busbar_contract::caps::ReasonCode,
 ) {
     use busbar_kernel::plane_driver::CallerEnd;
+    admission.refuse(busbar_contract::caps::StepName::Arrival, reason);
     if let Some(rendered) = routes.refusal(admission, reason) {
         crate::root::serve::neutral::render(caller, rendered).await;
     } else {

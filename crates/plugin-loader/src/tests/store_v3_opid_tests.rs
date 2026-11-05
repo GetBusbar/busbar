@@ -244,6 +244,7 @@ fn provided_metering_id_replays_across_handles_and_refuses_changed_counts() {
     const ID: OpId = OpId([0x79; 16]);
     let first = open("provided-metering-id", must_not_mint);
     let delta = MeteringDelta {
+        scale: 0,
         key_id: "metered".into(),
         bucket: 60,
         model: "model".into(),

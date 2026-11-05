@@ -25,6 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import conformance_gate as cg  # noqa: E402
+from test_invocation import invocation_record
 
 T = "1" * 40  # the release commit (the tag target)
 OLD_CORE = "2" * 40  # an older core the plugin pins in .busbar-ref
@@ -84,6 +85,11 @@ def archive(verdicts) -> bytes:
             ti = tarfile.TarInfo(f"target/conformance/verdicts/{v['suite']}.json")
             ti.size = len(data)
             t.addfile(ti, io.BytesIO(data))
+        if verdicts:
+            data = json.dumps(invocation_record(verdicts)).encode()
+            ti = tarfile.TarInfo("target/conformance/invocation.json")
+            ti.size = len(data)
+            t.addfile(ti, io.BytesIO(data))
     return buf.getvalue()
 
 
@@ -101,13 +107,17 @@ class FakeMCI(cg.ModernCI):
             raise cg.NoOutput(f"no check result or measurement of conformance at {head} kept outputs")
         if isinstance(self.outputs[(repo, head)], Exception):
             raise self.outputs[(repo, head)]
-        return {"repo": repo, "from": "dev", "head": head, "state": "green"}, archive(self.outputs[(repo, head)])
+        verdicts = self.outputs[(repo, head)]
+        state = "green" if all(v["status"] == "pass" for v in verdicts) else "red"
+        return {"repo": repo, "from": "dev", "head": head, "state": state}, archive(verdicts)
 
     def rerun(self, repo, head, core):
         self.rerun_calls.append((repo, head, core))
         if (repo, head, core) not in self.reruns:
             raise cg.CannotRerun("ModernCI measure has no core-pin override")
-        return {"repo": repo, "from": "dev", "head": head, "state": "green"}, archive(self.reruns[(repo, head, core)])
+        verdicts = self.reruns[(repo, head, core)]
+        state = "green" if all(v["status"] == "pass" for v in verdicts) else "red"
+        return {"repo": repo, "from": "dev", "head": head, "state": state}, archive(verdicts)
 
     def dev_head(self, repo):
         return self.heads[repo]
@@ -125,7 +135,8 @@ class World:
             f'source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev={P}#{P}"\n')
         (self.root / "release").mkdir()
         self.mci = FakeMCI()
-        self.mci.outputs[(CORE, T)] = [verdict("tls", CORE, T, T), verdict("sigstore", CORE, T, T, status="not-run", armed=False)]
+        # Unlisted private Sigstore is not-run; a listed non-pass would make the whole job red.
+        self.mci.outputs[(CORE, T)] = [verdict("tls", CORE, T, T)]
         self.mci.outputs[(WS, P)] = [verdict("ws", WS, P, T)]
         # K2 stand-in: a software ssh key under the file namespace.
         self.key = self.tmp / "k2"

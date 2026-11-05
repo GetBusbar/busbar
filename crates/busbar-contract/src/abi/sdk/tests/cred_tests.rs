@@ -472,3 +472,39 @@ fn the_requirement_travels_with_every_seal() {
         .expect("encodes")
         .secure_required());
 }
+
+#[test]
+fn header_field_values_reject_del_between_allowed_bytes() {
+    for (byte, accepted) in [(0x7e, true), (0x7f, false), (0x80, true)] {
+        let credential = Cred::captured(zeroize::Zeroizing::new(vec![byte]));
+        assert_eq!(
+            credential.is_field_value(),
+            accepted,
+            "header byte {byte:#04x}"
+        );
+    }
+}
+
+#[test]
+fn header_field_values_allow_tab_but_reject_neighboring_controls() {
+    for (byte, accepted) in [(0x08, false), (0x09, true), (0x0a, false)] {
+        let credential = Cred::captured(zeroize::Zeroizing::new(vec![byte]));
+        assert_eq!(
+            credential.is_field_value(),
+            accepted,
+            "header byte {byte:#04x}"
+        );
+    }
+}
+
+#[test]
+fn header_field_values_allow_space_at_the_visible_byte_boundary() {
+    for (byte, accepted) in [(0x1f, false), (0x20, true), (0x21, true)] {
+        let credential = Cred::captured(zeroize::Zeroizing::new(vec![byte]));
+        assert_eq!(
+            credential.is_field_value(),
+            accepted,
+            "header byte {byte:#04x}"
+        );
+    }
+}

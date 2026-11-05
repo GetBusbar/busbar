@@ -176,7 +176,7 @@ fn a_usage_rows_classes_serialize_keyed_by_class_each_count_and_cost() {
             classes: std::collections::BTreeMap::from([(
                 "bytes".to_string(),
                 ClassUsage {
-                    count: 30,
+                    count: busbar_contract::Count::from(30u64),
                     cost: 60_000,
                 },
             )]),

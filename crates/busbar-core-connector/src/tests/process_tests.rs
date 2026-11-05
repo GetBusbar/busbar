@@ -368,7 +368,7 @@ fn bare_user_authority_never_supplies_a_security_fact() {
     let guard = guard_judge(&[], vec![]);
     assert_eq!(
         guard.judge_name("93.184.216.34:443", EGRESS_OPEN_WEB, false),
-        Err(DEST_SCHEME)
+        Err(DEST_PLAINTEXT)
     );
     let target = Destination {
         authority: "93.184.216.34:443",

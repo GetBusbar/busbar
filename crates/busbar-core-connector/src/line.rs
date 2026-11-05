@@ -407,6 +407,51 @@ impl Line {
                 .unwrap_or(false)
     }
 
+    /// Commit the request on an already reserved stream of a dedicated line.
+    pub(crate) fn commit(
+        &self,
+        stream: u64,
+        opening: Option<Opening>,
+        words: HeadWords,
+    ) -> Result<(), Failure> {
+        let held = HeldOpening { opening, words };
+        let waker = self.fan_waker();
+        let mut s = self.state();
+        if s.closing || !s.held.contains(&stream) {
+            return Err(Failure::Closed);
+        }
+        if s.conn.is_none() {
+            s.opening.push_back((stream, held));
+            return Ok(());
+        }
+        match self.turn(
+            s,
+            None,
+            |conn| {
+                let (opening, words) = held.take();
+                conn.open_exchange(stream, opening, words, &mut Context::from_waker(&waker))
+            },
+            |_, _| {},
+        ) {
+            // open_exchange accepts the whole opening, buffering a parked framer or
+            // carrier write. Its drive returns Ok(false) for backpressure, never Pending.
+            // An unexpected Pending after crossing cannot safely invite a duplicate request.
+            Turn::Ran(Err(Failure::Pending)) => Err(Failure::Failed(
+                "a committed opening unexpectedly returned pending".into(),
+            )),
+            Turn::Ran(result) => result,
+            // The same guard checked s.conn above; turn cannot observe it absent.
+            Turn::Out => Err(Failure::Failed("a reserved connection disappeared".into())),
+            Turn::Closed => Err(Failure::Closed),
+        }
+    }
+
+    /// Actual completed TLS security; unavailable facts fail closed.
+    pub(crate) fn secured(&self) -> bool {
+        self.fact(Connection::secured, |s| s.secured)
+            .unwrap_or(false)
+    }
+
     /// Open a new exchange on the line (the pool lent it, so its holder is already counted): its
     pub(crate) fn attach(
         &self,
@@ -596,6 +641,30 @@ impl Line {
             s,
             Some(&missed),
             |conn| conn.poll_landed(&mut Context::from_waker(&waker)),
+            |_, _| {},
+        ) {
+            Turn::Ran(landed) => landed,
+            Turn::Out => Poll::Pending,
+            Turn::Closed => Poll::Ready(Err(Failure::Closed)),
+        }
+    }
+
+    /// Finish security and framing for a reserved request.
+    pub(crate) fn poll_prepared(
+        &self,
+        stream: u64,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), Failure>> {
+        if !cx.waker().will_wake(Waker::noop()) {
+            self.fan.wait(stream, cx.waker());
+        }
+        let waker = self.fan_waker();
+        let missed = Arc::new(cx.waker().clone());
+        let s = self.state();
+        match self.turn(
+            s,
+            Some(&missed),
+            |conn| conn.poll_prepared(&mut Context::from_waker(&waker)),
             |_, _| {},
         ) {
             Turn::Ran(landed) => landed,

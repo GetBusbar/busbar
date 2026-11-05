@@ -478,7 +478,7 @@ fn historical_usage_class_absent_from_current_registry_keeps_its_signed_head() {
     let mut inputs = super::super::audit::tests::inputs(1);
     inputs.usage.lines.push(busbar_kernel_audit::UsageLine {
         class: busbar_contract::MeterClassId::new("unregistered-retained-head-class"),
-        quantity: 1,
+        quantity: 1.into(),
         source: busbar_kernel_audit::QuantitySource::Count,
         estimated: false,
     });

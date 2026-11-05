@@ -259,6 +259,7 @@ fn malformed_versioned_budget_provenance_refuses_instead_of_repricing_as_legacy(
             0,
             &UsageLedger {
                 models: vec![ModelTokens {
+                    scale: 0,
                     model: RAW_MODEL.into(),
                     usage_units: input(RAW_COUNT),
                 }],
@@ -274,6 +275,7 @@ fn malformed_versioned_budget_provenance_refuses_instead_of_repricing_as_legacy(
             0,
             &UsageLedger {
                 models: vec![ModelTokens {
+                    scale: 0,
                     model: "busbar.raw-era.v1:0:invalid\u{1f}m".into(),
                     usage_units: input(RAW_COUNT),
                 }],

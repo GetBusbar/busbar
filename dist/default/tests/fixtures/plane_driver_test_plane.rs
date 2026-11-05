@@ -994,6 +994,34 @@ extern "C" fn on_piece(
                 return say(out, Outcome::Pending);
             }
         }
+        if head.as_slice() == b"/framed/nested-opaque" {
+            const BODY: &[u8] = b"opaque child body";
+            let fields: &[(&[u8], &[u8])] = &[
+                (b"opaque field", b"\0first "),
+                (b"opaque field", b" \xffsecond\0"),
+            ];
+            let needed: usize = fields
+                .iter()
+                .map(|(name, value)| name.len() + value.len())
+                .sum();
+            if i.reply_cap < BODY.len() || i.fields_cap < fields.len() || i.arena_cap < needed {
+                return say(out, Outcome::Fault);
+            }
+            let mut at = 0;
+            for (index, (name, value)) in fields.iter().enumerate() {
+                *i.fields_buf.add(index) = OutField {
+                    name: put(i, &mut at, name),
+                    value: put(i, &mut at, value),
+                };
+            }
+            std::ptr::copy_nonoverlapping(BODY.as_ptr(), i.reply_buf, BODY.len());
+            o.reply_status = 70_001;
+            o.fields_written = fields.len() as u32;
+            o.arena_written = at as u64;
+            o.emitted = BODY.len() as u64;
+            o.flags = EMIT_DONE;
+            return say(out, Outcome::Ready);
+        }
         if let Some((length, whole)) = head
             .strip_prefix(LOCAL_REPEAT)
             .map(|length| (length, false))
@@ -1267,7 +1295,30 @@ unsafe fn nest(me: &'static Inst, t: Ticket, child: &[u8], body: &[u8]) -> Optio
             let first = spans[0].value;
             let at = first.offset as usize;
             let child_body = &buf[at..at + first.len as usize];
-            Some([format!("nested:{}:", answer.value).as_bytes(), child_body].concat())
+            let mut reply = [format!("nested:{}:", answer.value).as_bytes(), child_body].concat();
+            if child == b"/framed/nested-opaque" {
+                let read =
+                    |span: Span| &buf[span.offset as usize..(span.offset + span.len) as usize];
+                let fields: Vec<_> = spans
+                    .iter()
+                    .take(answer.items as usize)
+                    .skip(1)
+                    .map(|field| (read(field.key), read(field.value)))
+                    .collect();
+                reply.extend_from_slice(
+                    if fields
+                        == [
+                            (b"opaque field".as_slice(), b"\0first ".as_slice()),
+                            (b"opaque field".as_slice(), b" \xffsecond\0".as_slice()),
+                        ]
+                    {
+                        b":opaque-fields"
+                    } else {
+                        b":fields-lost"
+                    },
+                );
+            }
+            Some(reply)
         }
         outcome => {
             let why = if answer.error.ptr.is_null() {

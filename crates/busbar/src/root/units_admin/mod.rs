@@ -91,6 +91,27 @@ pub struct AdminAnswer {
 
 pub trait AdminDispatch: Send + Sync {
     fn execute(&self, verb: KernelVerb, request: &AdminRequest) -> AdminAnswer;
+
+    fn execute_admitted(
+        &self,
+        verb: KernelVerb,
+        request: &AdminRequest,
+        _admission: &busbar_kernel::inbound::RequestAdmission,
+    ) -> AdminAnswer {
+        self.execute(verb, request)
+    }
+}
+
+/// Host-owned request context, never part of the serialized administrative request.
+struct AdmittedDispatch {
+    inner: Arc<dyn AdminDispatch>,
+    admission: busbar_kernel::inbound::RequestAdmission,
+}
+
+impl AdminDispatch for AdmittedDispatch {
+    fn execute(&self, verb: KernelVerb, request: &AdminRequest) -> AdminAnswer {
+        self.inner.execute_admitted(verb, request, &self.admission)
+    }
 }
 
 /// The dispatch a node has before it has mounted an admin surface.
@@ -1413,8 +1434,8 @@ fn render_reconciliation(ledger: &PricedLedger) -> String {
 /// Owned by the one call that answers the request ([`AdminNode::answer`]) and handed to each step in
 /// turn, so a step reads exactly the field it needs and nothing outlives the request: there is no
 /// node-wide table for an entry to leak from.
-#[derive(Debug)]
 pub(crate) struct AdminWalk {
+    admission: Option<busbar_kernel::inbound::RequestAdmission>,
     request: AdminRequest,
     verb: Option<ResolvedVerb>,
     granted: Option<VerbScope>,
@@ -1435,6 +1456,7 @@ impl AdminWalk {
     #[must_use]
     pub(crate) fn new(request: AdminRequest) -> Self {
         AdminWalk {
+            admission: None,
             request,
             verb: None,
             granted: None,
@@ -1629,7 +1651,10 @@ pub(crate) fn authenticate(
             .zip(request.credential.as_deref())
             .is_some_and(|(set, credential)| set.is_revoked(credential))
     };
-    let verdict = (binding.door)(request);
+    let verdict = walk.admission.as_ref().map_or_else(
+        || (binding.door)(request),
+        busbar_kernel::inbound::RequestAdmission::admin_verdict,
+    );
     let (principal, grants, listed) = match verdict.door {
         busbar_kernel::auth::AdminDoor::Open => (
             busbar_kernel_identity::principal::ANONYMOUS.to_string(),
@@ -1637,13 +1662,13 @@ pub(crate) fn authenticate(
             None,
         ),
         busbar_kernel::auth::AdminDoor::Identified(principal, grants) => {
-            if revoked() {
+            if walk.admission.is_none() && revoked() {
                 return Err(ReasonCode::Revoked);
             }
             (principal.id, grants, None)
         }
         busbar_kernel::auth::AdminDoor::Listed(principal, grants, list) => {
-            if revoked() {
+            if walk.admission.is_none() && revoked() {
                 return Err(ReasonCode::Revoked);
             }
             (principal.id, grants, Some(list))
@@ -1670,6 +1695,11 @@ pub(crate) fn authenticate(
 }
 
 pub(crate) fn claim(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
+    if let Some(admission) = &walk.admission {
+        return crate::root::durability::wait_for(admission.claim_admin_replay())
+            .then_some(())
+            .ok_or(ReasonCode::Unauthenticated);
+    }
     match walk.claim.take() {
         Some(pending) if !pending.win_now() => Err(ReasonCode::Unauthenticated),
         _ => Ok(()),
@@ -1736,8 +1766,18 @@ pub(crate) fn route(
     let granted = walk.granted.ok_or(ReasonCode::ScopeDenied)?;
     let request = &walk.request;
 
+    let dispatch: Arc<dyn AdminDispatch> = walk.admission.as_ref().map_or_else(
+        || Arc::clone(&binding.dispatch),
+        |admission| {
+            Arc::new(AdmittedDispatch {
+                inner: Arc::clone(&binding.dispatch),
+                admission: admission.clone(),
+            }) as Arc<dyn AdminDispatch>
+        },
+    );
+
     if mints_its_own_identity(verb) {
-        walk.answer = Some(binding.dispatch.execute(verb, request));
+        walk.answer = Some(dispatch.execute(verb, request));
         return Ok(());
     }
 
@@ -1745,7 +1785,7 @@ pub(crate) fn route(
 
     let verbs = busbar_core_admin::Verbs::new(
         CoreGovernance::new(
-            Arc::clone(&binding.dispatch),
+            dispatch,
             Arc::clone(&binding.ledger),
             binding.audit.clone(),
             verb,

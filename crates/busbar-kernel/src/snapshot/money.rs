@@ -17,6 +17,11 @@ pub(super) fn set_gauge(gauge: metrics::Gauge, value: impl Into<i128>) {
     gauge.set(exact as f64);
 }
 
+fn set_count_gauge(gauge: metrics::Gauge, value: busbar_contract::count::Count) {
+    // Floating point belongs only at the metrics display boundary.
+    gauge.set(value.micros() as f64 / 1_000_000.0);
+}
+
 fn metric_labels(
     key: &busbar_contract::records::VirtualKey,
 ) -> impl Iterator<Item = (&String, &String)> {
@@ -92,7 +97,7 @@ pub(super) fn refresh_governance_gauges(
             metrics::gauge!(KEY_SPEND_CENTS, base_labels(&[])),
             usage.spend_cents,
         );
-        set_gauge(
+        set_count_gauge(
             metrics::gauge!(KEY_TOKENS_TOTAL, base_labels(&[])),
             usage.tokens,
         );
@@ -108,7 +113,7 @@ pub(super) fn refresh_governance_gauges(
                 }
                 labels.push(metrics::Label::new("model", model.clone()));
                 labels.push(metrics::Label::new("tier", tier));
-                set_gauge(metrics::gauge!(BUCKET_TOKENS, labels), v);
+                set_count_gauge(metrics::gauge!(BUCKET_TOKENS, labels), v);
             }
         }
     }
@@ -153,7 +158,7 @@ pub(super) fn refresh_governance_gauges(
             }
             for (model, tokens) in gov.bucket_model_tokens(&bucket.bucket_id, bucket.window, now) {
                 for (tier, v) in crate::governance::token_series(&model, &tokens) {
-                    set_gauge(
+                    set_count_gauge(
                         metrics::gauge!(
                             BUCKET_TOKENS,
                             dims(&[("model", model.clone()), ("tier", tier)])

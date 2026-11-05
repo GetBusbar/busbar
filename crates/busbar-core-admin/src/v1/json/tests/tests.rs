@@ -609,3 +609,111 @@ async fn inspect_plugin_unpacks_the_candidate_off_the_async_worker() {
         "the plugin inspect ran on the async worker"
     );
 }
+
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_existing_sdk_routes_named_mutations_include_restart_metadata() {
+    let doc = openapi_doc();
+    let schemas = &doc["components"]["schemas"];
+    for section in busbar_kernel::config::named_map::NamedMapSection::sections() {
+        let root = section.path_root();
+        for (suffix, method, expected) in [
+            ("/{name}", "get", "NamedDefView"),
+            ("/{name}", "put", "MutatedDefView"),
+            ("/{name}/settings", "patch", "MutatedDefView"),
+        ] {
+            let path = format!("/api/v1/admin{root}{suffix}");
+            assert_eq!(
+                doc["paths"][&path][method][OAS_OPERATION_STATUSES]["200"]["content"]
+                    ["application/json"]["schema"]["$ref"],
+                format!("#/components/schemas/{expected}"),
+                "{method} {path}"
+            );
+        }
+    }
+    let mutation = &schemas["MutatedDefView"];
+    for field in ["reload_to_apply", "note"] {
+        assert!(mutation["properties"].get(field).is_some(), "{field}");
+        assert!(!mutation["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(field)));
+    }
+    // Flattened post-state still includes every definition field.
+    for field in schemas["NamedDefView"]["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+    {
+        assert!(mutation["properties"].get(field).is_some(), "{field}");
+    }
+}
+
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_existing_sdk_routes_pool_list_includes_summary_and_detail() {
+    let doc = openapi_doc();
+    let response = &doc["paths"]["/api/v1/admin/pools"]["get"][OAS_OPERATION_STATUSES]["200"]
+        ["content"]["application/json"]["schema"];
+    assert_eq!(response["$ref"], "#/components/schemas/PoolListView");
+    let schemas = &doc["components"]["schemas"];
+    let branches = schemas["PoolListView"]["anyOf"]
+        .as_array()
+        .expect("inclusive union");
+    assert_eq!(branches.len(), 2);
+    for item in ["PoolView", "PoolDetailView"] {
+        let page_ref = format!("#/components/schemas/Page_{item}");
+        assert!(branches.iter().any(|branch| branch["$ref"] == page_ref));
+        assert_eq!(
+            schemas[format!("Page_{item}")]["properties"]["items"]["items"]["$ref"],
+            format!("#/components/schemas/{item}")
+        );
+    }
+    assert!(schemas["PoolMemberStatusView"]["properties"]
+        .get("usable")
+        .is_some());
+    assert!(schemas["PoolMemberView"]["properties"]
+        .get("usable")
+        .is_none());
+}
+
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_existing_sdk_routes_cache_flush_accepts_absent_body() {
+    let doc = openapi_doc();
+    let body = &doc["paths"]["/api/v1/admin/auth/cache/flush"]["post"]["requestBody"];
+    assert_eq!(body["required"], false);
+    assert_eq!(
+        body["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/FlushCacheReq"
+    );
+    let request = &doc["components"]["schemas"]["FlushCacheReq"];
+    assert!(request["properties"].get("module").is_some());
+    assert!(request["required"]
+        .as_array()
+        .is_none_or(|fields| fields.is_empty()));
+    // The neighboring body-taking endpoint still requires its configuration.
+    assert_eq!(
+        doc["paths"]["/api/v1/admin/admin-auth"]["put"]["requestBody"]["required"],
+        true
+    );
+}
+
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_existing_sdk_routes_money_describes_each_wire_representation() {
+    let doc = openapi_doc();
+    let schemas = &doc["components"]["schemas"];
+    assert_eq!(
+        schemas["KeyMeteringView"]["properties"]["spend_cents"]["type"],
+        "integer"
+    );
+    assert_eq!(
+        schemas["UsageBreakdown"]["properties"]["spend_micros"]["type"],
+        "integer"
+    );
+    assert_eq!(schemas["Amount"]["type"], "string");
+    let money = doc["info"]["x-busbar-marks"]["money"].as_str().unwrap();
+    assert!(money.contains("Amount values are decimal-integer JSON strings"));
+    assert!(money.contains("spend_micros are JSON integers"));
+}

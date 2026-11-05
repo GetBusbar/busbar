@@ -306,14 +306,26 @@ impl Manifest {
     ) -> Result<Option<busbar_contract::abi::mechanism::rendering::Read>, String> {
         self.stated_rendering()?
             .map(|b| {
-                busbar_contract::abi::mechanism::rendering::read(&b).map_err(|e| {
+                let stated = busbar_contract::abi::mechanism::rendering::read(&b).map_err(|e| {
                     format!(
                         "manifest statement is not a Statement rendering: byte {} is not {}",
                         e.at, e.what
                     )
-                })
+                })?;
+                crate::settings_schema::statement_schema(&stated.settings_schema)?;
+                Ok(stated)
             })
             .transpose()
+    }
+
+    /// The Statement is authoritative; old packages may carry only the legacy manifest field.
+    pub fn settings_schema_text(&self) -> Result<Option<String>, String> {
+        let schema = self
+            .stated()?
+            .map(|stated| crate::settings_schema::statement_schema(&stated.settings_schema))
+            .transpose()?
+            .flatten();
+        Ok(schema.or_else(|| self.settings_schema.clone()))
     }
 }
 

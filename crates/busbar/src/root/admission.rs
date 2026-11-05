@@ -15,16 +15,16 @@ pub static ADMISSION: RootAdmission = RootAdmission;
 
 pub static DURABLE: RootDurable = RootDurable;
 
-fn stated(m: &Manifest) -> Stated {
-    Stated {
+fn stated(m: &Manifest) -> Result<Stated, String> {
+    Ok(Stated {
         name: m.name.clone(),
         alias: m.alias.clone(),
         kind: m.kind.clone(),
         version: m.version.clone(),
         publisher: m.publisher.clone(),
         abi_version: m.abi_version,
-        settings_schema: m.settings_schema.clone(),
-    }
+        settings_schema: m.settings_schema_text()?,
+    })
 }
 
 fn policy(cfg: &PluginsCfg, binary_version: &str) -> Result<TrustPolicy, String> {
@@ -120,7 +120,8 @@ impl PluginAdmission for RootAdmission {
         Ok(crate::root::loader::inventory_tarballs(dir, &policy)
             .into_iter()
             .map(|row| Inventoried {
-                stated: row.manifest.as_ref().map(stated),
+                // Invalid Statement schemas already carry the inventory's INVALID status.
+                stated: row.manifest.as_ref().and_then(|m| stated(m).ok()),
                 file: row.file,
                 signature: row.signature,
                 status: row.status,
@@ -195,7 +196,7 @@ impl PluginAdmission for RootAdmission {
             .map_err(Refusal::Conflict)?
             .is_some();
         Ok(Admitted {
-            stated: stated(manifest),
+            stated: stated(manifest).map_err(Refusal::Validation)?,
             judged,
             linked_serves,
         })
@@ -212,7 +213,10 @@ impl PluginAdmission for RootAdmission {
                 reason: rejected.reason,
             },
         };
-        Ok((stated(&unpacked.manifest), judged))
+        Ok((
+            stated(&unpacked.manifest).map_err(Refusal::Validation)?,
+            judged,
+        ))
     }
 
     fn rollback_target(
@@ -229,7 +233,9 @@ impl PluginAdmission for RootAdmission {
             manifest,
         );
         match evaluate(&unpacked.lib_bytes, manifest, &policy) {
-            Ok(Verdict::Trusted { .. } | Verdict::Allowed { .. }) => Ok(stated(manifest)),
+            Ok(Verdict::Trusted { .. } | Verdict::Allowed { .. }) => {
+                stated(manifest).map_err(Refusal::Validation)
+            }
             Err(rejected) => Err(Refusal::Conflict(format!(
                 "rollback target `{file}` is not loadable under the trust policy even with the \
                  floor lowered to its own version {}: {}. A rollback lowers the anti-downgrade \

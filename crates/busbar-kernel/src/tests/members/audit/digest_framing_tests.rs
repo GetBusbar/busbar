@@ -53,7 +53,7 @@ fn record_inputs(op_class: &str, destination: &str) -> AuditInputs {
         usage: Usage {
             lines: vec![UsageLine {
                 class: busbar_contract::caps::MeterClassId::new("tokens_out"),
-                quantity: 120,
+                quantity: 120u64.into(),
                 source: QuantitySource::Locator {
                     direction: busbar_contract::ClassDirection::Response,
                     ptr: busbar_contract::caps::LocatorPtr::new("/usage/output_tokens"),

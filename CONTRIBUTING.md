@@ -13,8 +13,10 @@ This page is the short version. Where the two differ, Part 6 wins.
 
 ## How a change lands
 
-1. Branch `lane-<name>` from `origin/predev`.
-2. Before you ship, run the local pre-flight and nothing heavier:
+1. Branch `lane-<name>` from `origin/dev`. `predev` is retired.
+2. Before you ship, format, lint and run the few tests directly covering the change. Full
+   behavior suites, the assembled oracle and supply-chain checks run in CI. Follow the current
+   owner-authorized runner path for the branch; a local quick check is not final certification.
 
    ```bash
    cargo fmt --all
@@ -26,9 +28,10 @@ This page is the short version. Where the two differ, Part 6 wins.
    both sides moved (theirs + ours − base; anything else stays a conflict):
    `git config merge.ledger-count.driver "cargo xtask ledger-merge %O %A %B"`.
 
-   Builds, tests, clippy, the gates and the oracle run in CI: ModernCI, for `predev` PRs and for every promotion (`.ci/*.yaml`).
-3. Push the lane and open a PR into `predev`. ModernCI (required check `ci`) judges and lands it.
-   Then stop; CI is the proof and a red comes back as a task.
+   Final CI evidence binds fmt, clippy/workspace lints, behavior tests, the assembled 1.5.5 oracle,
+   and supply-chain checks (both `cargo deny` and `cargo vet`) to the actual final product revision.
+3. When authorized to commit/push, push the lane and open a PR into `dev`. Inspect the CI result
+   and fix actual failures. QA/main promotion and signed publication require the owner's authority.
 4. The PR body says what changed, why, and the ruling or issue it implements. No AI attribution.
 
 ## Fixing a defect: the remediation contract and what every PR is held to

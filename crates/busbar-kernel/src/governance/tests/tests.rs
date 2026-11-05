@@ -237,7 +237,10 @@ fn ledger_tokens(
     bucket: &str,
     window: u64,
 ) -> u64 {
-    store.get_usage(bucket, window).unwrap().total_tokens()
+    store
+        .get_usage(bucket, window)
+        .unwrap()
+        .total_whole_tokens_for_test()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -401,6 +404,7 @@ fn test_metering_accumulates_split_per_key_model_and_bucket() {
     let day = metering_bucket(1_700_000_123);
     assert_eq!(day % METERING_BUCKET_SECS, 0);
     let d = |model: &str, input: u64, output: u64| MeteringDelta {
+        scale: 0,
         usage_units: Default::default(),
         key_id: "vk_a".into(),
         bucket: day,
@@ -422,6 +426,7 @@ fn test_metering_accumulates_split_per_key_model_and_bucket() {
     s.add_metering(&d("gpt-y", 1, 2)).unwrap();
 
     s.add_metering(&MeteringDelta {
+        scale: 0,
         bucket: day + METERING_BUCKET_SECS,
         ..d("gpt-x", 999, 999)
     })
@@ -433,12 +438,19 @@ fn test_metering_accumulates_split_per_key_model_and_bucket() {
     let x = &rows[0];
     assert_eq!((x.model.as_str(), x.provider.as_str()), ("gpt-x", "acme"));
     assert_eq!(
-        (x.tokens_input, x.tokens_output, x.requests),
+        (
+            stored_whole_for_test(x.tokens_input, x.scale),
+            stored_whole_for_test(x.tokens_output, x.scale),
+            x.requests
+        ),
         (150, 30, 2),
         "raw split accumulates + one request per response"
     );
     assert_eq!(
-        (x.tokens_cache_read, x.tokens_cache_write),
+        (
+            stored_whole_for_test(x.tokens_cache_read, x.scale),
+            stored_whole_for_test(x.tokens_cache_write, x.scale)
+        ),
         (14, 6),
         "cache reads/writes carry separately (they price differently)"
     );
@@ -470,10 +482,10 @@ fn test_record_metering_from_ir_usage_and_flat() {
     );
     assert_eq!(
         (
-            r.tokens_input,
-            r.tokens_output,
-            r.tokens_cache_read,
-            r.tokens_cache_write,
+            stored_whole_for_test(r.tokens_input, r.scale),
+            stored_whole_for_test(r.tokens_output, r.scale),
+            stored_whole_for_test(r.tokens_cache_read, r.scale),
+            stored_whole_for_test(r.tokens_cache_write, r.scale),
             r.requests
         ),
         (11, 22, 5, 0, 2),
@@ -953,12 +965,12 @@ fn test_two_node_flush_is_additive_no_lost_update() {
         "the durable record is the FLEET SUM (3 + 2), not last-writer-wins"
     );
     assert_eq!(
-        u.tokens_for("gpt-5").unwrap(),
+        u.tokens_for_whole_test("gpt-5").unwrap(),
         140,
         "per-model token deltas SUM across nodes (100 + 40)"
     );
     assert_eq!(
-        u.tokens_for("haiku").unwrap(),
+        u.tokens_for_whole_test("haiku").unwrap(),
         7,
         "a model only one node used still lands"
     );
@@ -967,7 +979,7 @@ fn test_two_node_flush_is_additive_no_lost_update() {
     node_b.flush_budgets();
     let u = store.get_usage("k_fleet", 0).unwrap();
     assert_eq!(u.requests, 5, "an idle re-flush adds nothing");
-    assert_eq!(u.tokens_for("gpt-5").unwrap(), 140);
+    assert_eq!(u.tokens_for_whole_test("gpt-5").unwrap(), 140);
 
     assert!(node_a.try_admit(&cost, &k, "", 1_700_000_000).is_ok());
     node_a.flush_budgets();
@@ -1102,21 +1114,22 @@ fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outag
         "every accrued request is still counted"
     );
     assert_eq!(
-        sum_rec.tokens_input,
+        sum_rec.tokens_input.whole_for_test(),
         n64 * 3,
         "no input tokens lost to the cap"
     );
     assert_eq!(
-        sum_rec.tokens_output,
+        sum_rec.tokens_output.whole_for_test(),
         n64 * 5,
         "no output tokens lost to the cap"
     );
     assert_eq!(
-        sum_rec.tokens_cache_read, n64,
+        sum_rec.tokens_cache_read.whole_for_test(),
+        n64,
         "no cache-read tokens lost to the cap"
     );
     assert_eq!(
-        sum_rec.tokens_cache_write,
+        sum_rec.tokens_cache_write.whole_for_test(),
         n64 * 2,
         "no cache-write tokens lost to the cap"
     );
@@ -1136,7 +1149,7 @@ fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outag
         "retry preserves every request across the failed flush (nothing dropped, nothing doubled)"
     );
     assert_eq!(
-        sum_flush.tokens_input,
+        sum_flush.tokens_input.whole_for_test(),
         n64 * 3,
         "no billable input tokens lost across the failed flush"
     );
@@ -1193,12 +1206,12 @@ fn test_sharded_metering_accrual_is_exactly_once_under_concurrency() {
         "every one of the {total} concurrent accruals is counted exactly once"
     );
     assert_eq!(
-        sum.tokens_input,
+        sum.tokens_input.whole_for_test(),
         total * 2,
         "input tokens summed exactly once"
     );
     assert_eq!(
-        sum.tokens_output,
+        sum.tokens_output.whole_for_test(),
         total * 3,
         "output tokens summed exactly once"
     );
@@ -1394,10 +1407,10 @@ fn test_record_usage_derives_spend_and_reprices_on_read() {
     gov.record_usage(&cost, &k, "", "gpt-5", &tt(2000), 1_700_000_000);
     gov.flush_budgets();
     let ledger = store.get_usage("k1", 0).unwrap();
-    assert_eq!(ledger.tokens_for("gpt-5").unwrap(), 2000);
+    assert_eq!(ledger.tokens_for_whole_test("gpt-5").unwrap(), 2000);
     let u = gov.usage_for(&cost, "k1", 1_700_000_000).unwrap().unwrap();
     assert_eq!(u.spend_cents, 100, "2000 x 500 micro = 100 cents derived");
-    assert_eq!(u.tokens, 2000);
+    assert_eq!(u.tokens.whole_for_test(), 2000);
 
     let corrected = card_cost("gpt-5", 250.0);
     let u = gov
@@ -1408,7 +1421,11 @@ fn test_record_usage_derives_spend_and_reprices_on_read() {
         u.spend_cents, 50,
         "historical derived spend halves on the next read under the corrected rate"
     );
-    assert_eq!(u.tokens, 2000, "tokens never changed - they are the truth");
+    assert_eq!(
+        u.tokens.whole_for_test(),
+        2000,
+        "tokens never changed - they are the truth"
+    );
 }
 
 #[test]
@@ -1426,7 +1443,8 @@ fn test_sub_cent_precision_via_ledger_no_carry() {
     let u1 = gov.usage_for(&cost, "k1", 1_700_000_000).unwrap().unwrap();
     assert_eq!(u1.spend_cents, 0, "0.5 cents derives to 0 whole cents");
     assert_eq!(
-        u1.tokens, 500,
+        u1.tokens.whole_for_test(),
+        500,
         "but every token is recorded - nothing truncated"
     );
 
@@ -1436,7 +1454,7 @@ fn test_sub_cent_precision_via_ledger_no_carry() {
         u2.spend_cents, 1,
         "two 0.5-cent requests derive a whole cent from the raw ledger - no carry needed"
     );
-    assert_eq!(u2.tokens, 1000);
+    assert_eq!(u2.tokens.whole_for_test(), 1000);
 }
 
 #[test]
@@ -1493,7 +1511,7 @@ async fn test_record_usage_write_behind_under_runtime() {
     assert_eq!(gov.flush_budgets(), 1, "one dirty cell flushed");
     let u = store.get_usage("k1", 0).unwrap();
     assert_eq!(
-        u.tokens_for("gpt-5").unwrap(),
+        u.tokens_for_whole_test("gpt-5").unwrap(),
         2000,
         "the per-model tier split lands durably"
     );
@@ -1885,6 +1903,7 @@ fn test_negative_fee_and_rate_clamp_to_zero() {
         .bucket_model_tokens("k1", crate::governance::WINDOW_TOTAL, 1_700_000_000)
         .iter()
         .flat_map(|(_, units)| units.values())
+        .map(|n| n.whole_for_test())
         .sum();
     assert_eq!(tokens, 5000, "tokens are still counted");
 }
@@ -2579,7 +2598,10 @@ fn test_boundary_straddle_charge_never_rewinds_the_live_cell() {
     let before = gov
         .derived_bucket_usage(&cost, bucket, WINDOW_DAY, true, w1_early)
         .unwrap();
-    assert_eq!((before.tokens, before.requests), (10_000, 1));
+    assert_eq!(
+        (before.tokens.whole_for_test(), before.requests),
+        (10_000, 1)
+    );
 
     gov.try_admit(&cost, &k, "", w0_late)
         .expect("under-cap straddler admits");
@@ -2587,7 +2609,7 @@ fn test_boundary_straddle_charge_never_rewinds_the_live_cell() {
         .derived_bucket_usage(&cost, bucket, WINDOW_DAY, true, w1_early)
         .unwrap();
     assert_eq!(
-        (after.tokens, after.requests),
+        (after.tokens.whole_for_test(), after.requests),
         (10_000, 2),
         "the live window's ledger survives a straddling charge (no rewind); the straddler's \
          request lands in the live cell"
@@ -2635,7 +2657,7 @@ fn test_new_window_admission_rolls_the_stale_cell_fresh() {
         .derived_bucket_usage(&cost, bucket, WINDOW_DAY, true, day5)
         .unwrap();
     assert_eq!(
-        (after.tokens, after.requests),
+        (after.tokens.whole_for_test(), after.requests),
         (0, 1),
         "the rolled cell must carry ONLY the new window's charge, not day 0's leftover spend"
     );
@@ -3669,7 +3691,10 @@ mod metering_fanout {
         let rows = gov.metering_for(metering_bucket(now)).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(
-            (rows[0].tokens_input, rows[0].requests),
+            (
+                stored_whole_for_test(rows[0].tokens_input, rows[0].scale),
+                rows[0].requests
+            ),
             (10, 1),
             "the full delta landed exactly once, not zero and not twice"
         );
@@ -3728,7 +3753,14 @@ mod metering_fanout {
             .metering_for(metering_bucket(AT))
             .unwrap()
             .into_iter()
-            .map(|row| (row.key_group_at_use, row.usage_units["search_units"]))
+            .map(|row| {
+                (
+                    row.key_group_at_use,
+                    Count::from_stored(i128::from(row.usage_units["search_units"]), row.scale)
+                        .unwrap()
+                        .whole_for_test(),
+                )
+            })
             .collect();
         assert_eq!(counts, [("first".into(), 3), ("second".into(), 3)].into());
         assert_eq!(gov.flush_metering(), 0, "retry commits each count once");
@@ -5807,7 +5839,7 @@ fn a_planes_request_fee_charges_its_requests_and_the_pools_fee_charges_the_pools
         u.requests, 5,
         "every admission still counts toward a requests cap"
     );
-    assert_eq!(u.tokens, 0, "a fee unit is not a token");
+    assert_eq!(u.tokens.whole_for_test(), 0, "a fee unit is not a token");
 
     gov.flush_budgets();
     let ledger = store.get_usage("k1", 0).unwrap();
@@ -5821,7 +5853,10 @@ fn a_planes_request_fee_charges_its_requests_and_the_pools_fee_charges_the_pools
         .iter()
         .find(|m| m.model == lane)
         .expect("fee lane");
-    assert_eq!(row.usage_units[PER_REQUEST], 3);
+    assert_eq!(
+        Count::from_stored(i128::from(row.usage_units[PER_REQUEST]), row.scale).unwrap(),
+        whole_count(3)
+    );
     let restarted = GovState::new(store, None).unwrap();
     restarted.hydrate_budgets(&cost, AT).unwrap();
     assert_eq!(spend(&restarted, &cost), 19);
@@ -5869,7 +5904,14 @@ fn a_planes_refund_returns_its_own_fee_unit_never_the_flat_base() {
         .iter()
         .find(|m| m.model == lane)
         .expect("fee lane");
-    assert_eq!(row.usage_units[busbar_kernel_ledger::cost::PER_REQUEST], 1);
+    assert_eq!(
+        Count::from_stored(
+            i128::from(row.usage_units[busbar_kernel_ledger::cost::PER_REQUEST]),
+            row.scale
+        )
+        .unwrap(),
+        Count::ONE
+    );
     assert_eq!(
         gov.usage_for(&cost, "k1", AT).unwrap().unwrap().requests,
         4,
@@ -5936,7 +5978,25 @@ fn the_metering_row_carries_every_class_the_budget_book_holds() {
     let row = |model: &str, provider: &str| {
         rows.iter()
             .find(|r| r.key_id == k.id && r.model == model && r.provider == provider)
-            .map(|r| (r.requests, r.tokens_input, r.usage_units.clone()))
+            .map(|r| {
+                (
+                    r.requests,
+                    Count::from_stored(i128::from(r.tokens_input), r.scale)
+                        .unwrap()
+                        .whole_for_test(),
+                    r.usage_units
+                        .iter()
+                        .map(|(k, n)| {
+                            (
+                                k.clone(),
+                                Count::from_stored(i128::from(*n), r.scale)
+                                    .unwrap()
+                                    .whole_for_test(),
+                            )
+                        })
+                        .collect(),
+                )
+            })
     };
     assert_eq!(
         row("", "sp"),
@@ -5982,8 +6042,10 @@ fn a_served_units_open_class_lands_on_its_providers_row() {
     let row = mine[0];
     assert_eq!(row.requests, 1);
     assert_eq!(
-        row.usage_units.get("unitemized_tokens"),
-        Some(&3),
+        row.usage_units
+            .get("unitemized_tokens")
+            .map(|n| Count::from_stored(i128::from(*n), row.scale).unwrap()),
+        Some(whole_count(3)),
         "the open class rides its provider's row"
     );
 }
@@ -6369,7 +6431,12 @@ fn metering_open_units_keep_the_pinned_keys_historical_group() {
                 row.pricing_version.is_empty(),
                 "no named price version was supplied"
             );
-            (row.key_group_at_use, row.usage_units["search_units"])
+            (
+                row.key_group_at_use,
+                Count::from_stored(i128::from(row.usage_units["search_units"]), row.scale)
+                    .unwrap()
+                    .whole_for_test(),
+            )
         })
         .collect();
     assert_eq!(

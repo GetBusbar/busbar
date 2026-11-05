@@ -107,7 +107,7 @@ fn accrue_raw(gov: &GovState, input: u64, era: RawRateEra) {
         "provider",
         MeterCounts {
             requests: 1,
-            tokens_input: input,
+            tokens_input: whole_count(input),
             ..Default::default()
         },
         NOW,
@@ -146,7 +146,16 @@ fn unknown_and_unwound_flushes_keep_exact_same_timestamp_entry_identity() {
     assert_ne!(calls[0].0, calls[3].0);
     let rows = gov.metering_for(metering_bucket(NOW)).unwrap();
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows.iter().map(|row| row.tokens_input).sum::<u64>(), 8);
+    assert_eq!(
+        rows.iter()
+            .map(
+                |row| Count::from_stored(i128::from(row.tokens_input), row.scale)
+                    .unwrap()
+                    .whole_for_test()
+            )
+            .sum::<u64>(),
+        8
+    );
     assert_eq!(rows.iter().map(|row| row.requests).sum::<u64>(), 2);
 }
 
@@ -171,7 +180,10 @@ fn ordinary_refusal_requeues_the_original_exact_provenance() {
             .iter()
             .find(|row| row.pricing_version == era.entry_id.unwrap().metering_version())
             .unwrap();
-        assert_eq!(row.tokens_input, count);
+        assert_eq!(
+            Count::from_stored(i128::from(row.tokens_input), row.scale).unwrap(),
+            whole_count(count)
+        );
         assert_eq!(row.requests, 1);
     }
     assert_eq!(store.legacy_calls.load(Ordering::SeqCst), 3);
@@ -206,7 +218,10 @@ fn lost_ack_then_unknown_replays_exact_body_before_fresh_arrivals() {
     let calls = store.calls.lock().unwrap();
     assert_eq!(calls[0], calls[1]);
     assert_eq!(calls[0], calls[2]);
-    assert_eq!(calls[0].1[0].tokens_input, 3);
+    assert_eq!(
+        Count::from_stored(i128::from(calls[0].1[0].tokens_input), calls[0].1[0].scale).unwrap(),
+        whole_count(3)
+    );
     assert_eq!(calls[0].1[0].priced_from_ms, 123);
     assert_eq!(calls[0].1[0].key_group_at_use, "historical-group");
     assert!(calls[3..].iter().all(|call| call.0 != calls[0].0));
@@ -214,7 +229,14 @@ fn lost_ack_then_unknown_replays_exact_body_before_fresh_arrivals() {
     assert_eq!(gov.pending_metering_totals().1.requests, 0);
     let rows = gov.metering_for(metering_bucket(NOW)).unwrap();
     assert_eq!(rows.len(), 2, "historical pricing instants remain distinct");
-    assert_eq!(rows.iter().map(|r| r.tokens_input).sum::<u64>(), 15);
+    assert_eq!(
+        rows.iter()
+            .map(|r| Count::from_stored(i128::from(r.tokens_input), r.scale)
+                .unwrap()
+                .whole_for_test())
+            .sum::<u64>(),
+        15
+    );
 }
 
 #[test]
@@ -369,7 +391,10 @@ fn expired_unknown_metering_is_not_replayed_by_periodic_or_final_flush() {
             "the possibly committed body is never applied twice"
         );
         let (cells, counts) = gov.pending_metering_totals();
-        assert_eq!((cells, counts.requests, counts.tokens_input), (2, 2, 8));
+        assert_eq!(
+            (cells, counts.requests, counts.tokens_input.whole_for_test()),
+            (2, 2, 8)
+        );
     }
     assert_eq!(
         first.1[0].pricing_version,

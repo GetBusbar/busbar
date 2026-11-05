@@ -34,10 +34,17 @@ fn input(row: &UsageLedger) -> u64 {
         .iter()
         .filter(|row| row.model == MODEL)
         .map(|row| {
-            row.usage_units
-                .get(busbar_contract::records::UNIT_INPUT)
-                .copied()
-                .unwrap_or(0)
+            Count::from_stored(
+                i128::from(
+                    row.usage_units
+                        .get(busbar_contract::records::UNIT_INPUT)
+                        .copied()
+                        .unwrap_or(0),
+                ),
+                row.scale,
+            )
+            .unwrap()
+            .whole_for_test()
         })
         .sum()
 }
@@ -48,6 +55,7 @@ fn delta() -> BTreeMap<String, i64> {
 fn metered_entry(store: &dyn RecordStore, key: &VirtualKey, era: RawRateEra, now: u64) {
     store
         .add_metering(&MeteringDelta {
+            scale: 0,
             key_id: key.id.clone(),
             bucket: super::super::metering_bucket(now),
             model: MODEL.into(),
@@ -177,7 +185,8 @@ fn correction_acceptance_durably_captures_unflushed_raw_counts_and_fee_epochs() 
             .usage_for(&cm, &key.id, now)
             .unwrap()
             .unwrap()
-            .tokens,
+            .tokens
+            .whole_for_test(),
         CORRECTED_INPUT
     );
     gov.flush_budgets();
@@ -194,7 +203,12 @@ fn correction_acceptance_durably_captures_unflushed_raw_counts_and_fee_epochs() 
             .models
             .iter()
             .any(|model| model.model == era_now().to_string()
-                && model.usage_units.get(super::super::ERA_FEE_UNIT) == Some(&1)));
+                && model
+                    .usage_units
+                    .get(super::super::ERA_FEE_UNIT)
+                    .is_some_and(
+                        |n| Count::from_stored(i128::from(*n), model.scale).unwrap() == Count::ONE
+                    )));
     }
 }
 
@@ -532,11 +546,14 @@ fn correction_common_positives_keep_same_timestamp_fee_refunds_in_both_raw_branc
         before.requests = 1;
         before.billable_requests = 1;
         before.fee_eras.charge(old);
-        before.accrue_raw(MODEL, old, &toks(INITIAL_INPUT, 0));
+        before
+            .accrue_raw(MODEL, old, &whole_counts(&toks(INITIAL_INPUT, 0)))
+            .unwrap();
         let mut accepted = before.clone();
-        accepted.models[0]
-            .cur
-            .insert(busbar_contract::records::UNIT_INPUT.into(), CORRECTED_INPUT);
+        accepted.models[0].cur.insert(
+            busbar_contract::records::UNIT_INPUT.into(),
+            whole_count(CORRECTED_INPUT),
+        );
         accepted.models[0].flushed = accepted.models[0].cur.clone();
         accepted.models[0].flushed_era = accepted.models[0].cur.clone();
         accepted.flushed_requests = 1;
@@ -551,7 +568,9 @@ fn correction_common_positives_keep_same_timestamp_fee_refunds_in_both_raw_branc
             branch.requests += 1;
             branch.fee_eras.refund(old);
             branch.fee_eras.charge(new);
-            branch.accrue_raw(MODEL, new, &toks(CONCURRENT_INPUT, 0));
+            branch
+                .accrue_raw(MODEL, new, &whole_counts(&toks(CONCURRENT_INPUT, 0)))
+                .unwrap();
         });
         if roll {
             before.roll(60);
@@ -561,12 +580,15 @@ fn correction_common_positives_keep_same_timestamp_fee_refunds_in_both_raw_branc
             .unwrap();
         assert_eq!((positive.requests, positive.billable_requests), (1, 1));
         let units = |debt: &ExactUsageDelta, model: &str, unit: &str| {
-            debt.models
+            let micros = debt
+                .models
                 .iter()
                 .find(|row| row.model == model)
                 .and_then(|row| row.usage_units.get(unit))
                 .copied()
-                .unwrap_or(0)
+                .unwrap_or(0);
+            assert_eq!(micros % 1_000_000, 0);
+            micros / 1_000_000
         };
         assert_eq!(
             units(&positive, MODEL, busbar_contract::records::UNIT_INPUT),
@@ -710,6 +732,7 @@ fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_
                 requests: 1,
                 billable_requests: 1,
                 models: vec![busbar_contract::records::ModelTokensDelta {
+                    scale: 0,
                     model: MODEL.into(),
                     usage_units: BTreeMap::from([(
                         busbar_contract::records::UNIT_INPUT.into(),
@@ -723,7 +746,11 @@ fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_
     gov.attach_recovery_sink(journal.clone()).unwrap();
     gov.hydrate_budgets(&cm, now).unwrap();
     assert_eq!(
-        gov.usage_for(&cm, &key.id, now).unwrap().unwrap().tokens,
+        gov.usage_for(&cm, &key.id, now)
+            .unwrap()
+            .unwrap()
+            .tokens
+            .whole_for_test(),
         FOREIGN_INPUT,
         "fresh Store counts remain authoritative while old branches are quarantined separately"
     );
@@ -777,7 +804,11 @@ fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_
         (CORRECTED_INPUT + FOREIGN_INPUT + CONCURRENT_INPUT, 3, 2)
     );
     assert_eq!(
-        gov.usage_for(&cm, &key.id, now).unwrap().unwrap().tokens,
+        gov.usage_for(&cm, &key.id, now)
+            .unwrap()
+            .unwrap()
+            .tokens
+            .whole_for_test(),
         CORRECTED_INPUT + FOREIGN_INPUT + CONCURRENT_INPUT
     );
     let events = journal.selected.lock().unwrap().clone();
@@ -856,6 +887,7 @@ fn restarted_landed_correction_keeps_foreign_basis_and_does_not_reapply_the_old_
             0,
             &UsageDelta {
                 models: vec![busbar_contract::records::ModelTokensDelta {
+                    scale: 0,
                     model: MODEL.into(),
                     usage_units: BTreeMap::from([(
                         busbar_contract::records::UNIT_INPUT.into(),
@@ -897,7 +929,11 @@ fn restarted_landed_correction_keeps_foreign_basis_and_does_not_reapply_the_old_
         CORRECTED_INPUT + CONCURRENT_INPUT
     );
     assert_eq!(
-        gov.usage_for(&cm, &key.id, now).unwrap().unwrap().tokens,
+        gov.usage_for(&cm, &key.id, now)
+            .unwrap()
+            .unwrap()
+            .tokens
+            .whole_for_test(),
         CORRECTED_INPUT + CONCURRENT_INPUT + NEXT_WINDOW_INPUT
     );
 }
@@ -1021,6 +1057,7 @@ fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_before_
             0,
             &UsageDelta {
                 models: vec![busbar_contract::records::ModelTokensDelta {
+                    scale: 0,
                     model: MODEL.into(),
                     usage_units: BTreeMap::from([(
                         busbar_contract::records::UNIT_INPUT.into(),
@@ -1036,7 +1073,12 @@ fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_before_
     second.hydrate_budgets(&cm, now).unwrap();
     let hydrated = CORRECTED_INPUT + FOREIGN_INPUT;
     assert_eq!(
-        second.usage_for(&cm, &key.id, now).unwrap().unwrap().tokens,
+        second
+            .usage_for(&cm, &key.id, now)
+            .unwrap()
+            .unwrap()
+            .tokens
+            .whole_for_test(),
         hydrated
     );
     second.flush_budgets();
@@ -1078,7 +1120,7 @@ fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_before_
         (hydrated + CONCURRENT_INPUT, 1)
     );
     assert_eq!(
-        third.usage_for(&cm, &key.id, now).unwrap().unwrap().tokens,
+        third.usage_for(&cm, &key.id, now).unwrap().unwrap().tokens.whole_for_test(),
         hydrated,
         "posting common raw work never installs the old whole before/accepted aggregates into hydrated RAM"
     );
@@ -1132,6 +1174,7 @@ fn independent_entry_refund_posts_while_only_the_matching_entry_negative_is_quar
     first.record_usage_served_in_era(&cm, &key, "", &lane, None, &one, now, entry_b);
     store
         .add_metering(&MeteringDelta {
+            scale: 0,
             key_id: key.id.clone(),
             bucket: super::super::metering_bucket(now),
             model: lane.clone(),
@@ -1187,17 +1230,26 @@ fn independent_entry_refund_posts_while_only_the_matching_entry_negative_is_quar
         row.models
             .iter()
             .find(|row| row.model == model)
-            .and_then(|row| row.usage_units.get(PER_SESSION))
-            .copied()
+            .map(|row| {
+                Count::from_stored(
+                    i128::from(row.usage_units.get(PER_SESSION).copied().unwrap_or(0)),
+                    row.scale,
+                )
+                .unwrap()
+                .whole_for_test()
+            })
             .unwrap_or(0)
     };
     let exact_count = |debt: &ExactUsageDelta, model: &str| {
-        debt.models
+        let micros = debt
+            .models
             .iter()
             .find(|row| row.model == model)
             .and_then(|row| row.usage_units.get(PER_SESSION))
             .copied()
-            .unwrap_or(0)
+            .unwrap_or(0);
+        assert_eq!(micros % 1_000_000, 0);
+        micros / 1_000_000
     };
     let (_, capacity) = gov
         .quarantined_correction_negative_capacity(&key.id, 0)
@@ -1232,6 +1284,7 @@ fn independent_entry_refund_posts_while_only_the_matching_entry_negative_is_quar
     );
     let negative = UsageDelta {
         models: vec![busbar_contract::records::ModelTokensDelta {
+            scale: 0,
             model: lane.clone(),
             usage_units: BTreeMap::from([(PER_SESSION.to_string(), -1)]),
         }],

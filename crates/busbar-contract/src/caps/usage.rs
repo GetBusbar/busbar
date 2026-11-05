@@ -108,7 +108,7 @@ pub struct UsageLine {
     /// Which declared class this quantity belongs to.
     pub class: MeterClassId,
     /// How much of it, in the class's own quantity.
-    pub quantity: u64,
+    pub quantity: crate::Count,
     /// Where the number came from.
     pub source: QuantitySource,
     /// Whether this line is the node's floor rather than a figure somebody reported.
@@ -120,11 +120,16 @@ pub struct UsageLine {
 pub enum UsageError {
     /// More lines than the fixed-size record can hold.
     TooManyLines,
+    /// A quantity is negative or the exact total is outside the count range.
+    InvalidCount,
 }
 
 impl std::fmt::Display for UsageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("more usage lines than the record can hold")
+        f.write_str(match self {
+            Self::TooManyLines => "more usage lines than the record can hold",
+            Self::InvalidCount => "usage contains an invalid or overflowing exact count",
+        })
     }
 }
 
@@ -147,6 +152,11 @@ impl Usage {
         if lines.len() > MAX_USAGE_LINES {
             return Err(UsageError::TooManyLines);
         }
+        if lines.iter().any(|line| line.quantity.is_negative())
+            || crate::Count::total(lines.iter().map(|line| line.quantity)).is_err()
+        {
+            return Err(UsageError::InvalidCount);
+        }
         Ok(Usage {
             lines,
             estimated: false,
@@ -166,10 +176,9 @@ impl Usage {
     }
 
     /// The sum across every line, in no unit.
-    pub fn total(&self) -> u64 {
-        self.lines
-            .iter()
-            .fold(0u64, |acc, l| acc.saturating_add(l.quantity))
+    pub fn total(&self) -> crate::Count {
+        crate::Count::total(self.lines.iter().map(|line| line.quantity))
+            .expect("report validated the exact total")
     }
 
     /// Whether this is the kernel's floor rather than a reported figure.

@@ -62,10 +62,14 @@ fn metering_rows(rig: &DoorRig, at: u64) -> Vec<String> {
                 "{}/{} in={} out={} cr={} cw={} req={} billable={}",
                 row.model,
                 row.provider,
-                row.tokens_input,
-                row.tokens_output,
-                row.tokens_cache_read,
-                row.tokens_cache_write,
+                busbar_contract::Count::from_stored(i128::from(row.tokens_input), row.scale)
+                    .unwrap(),
+                busbar_contract::Count::from_stored(i128::from(row.tokens_output), row.scale)
+                    .unwrap(),
+                busbar_contract::Count::from_stored(i128::from(row.tokens_cache_read), row.scale)
+                    .unwrap(),
+                busbar_contract::Count::from_stored(i128::from(row.tokens_cache_write), row.scale)
+                    .unwrap(),
                 row.requests,
                 row.billable_requests
             )
@@ -779,4 +783,181 @@ async fn the_pools_door_dials_a_served_unit_once_and_a_refused_one_never() {
             far.served()
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exact_provider_counts_reach_real_store_and_the_same_priced_view() {
+    use busbar_contract::Count;
+    let _one = PUBLISHING.lock().await;
+    let card = card_of("{ input_utok: 1000, output_utok: 1000 }");
+    for (instance, raw, decimal) in [
+        ("exact-provider-275", "27.5", "27.5"),
+        ("exact-provider-271", "27.1", "27.1"),
+        ("exact-provider-270", "27.0", "27"),
+        ("exact-provider-exp", "1e3", "1000"),
+    ] {
+        let response = format!(
+            r#"{{"id":"exact","object":"chat.completion","created":0,"model":"m0","choices":[{{"index":0,"finish_reason":"stop","message":{{"role":"assistant","content":"exact"}}}}],"usage":{{"prompt_tokens":{raw},"completion_tokens":0,"total_tokens":{raw}}}}}"#
+        );
+        let endpoint = axum::Router::new().fallback(axum::routing::post(move || {
+            let response = response.clone();
+            async move { ([("content-type", "application/json")], response) }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move { axum::serve(listener, endpoint).await.unwrap() });
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port, 1)],
+                rate_card: Some(&card),
+                fee_cents: Some(0),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let at = now();
+        let (status, _, body) = rig.chat().await;
+        assert_eq!(
+            status,
+            200,
+            "{instance}: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let _ = rig.ledger_after(1).await;
+        rig.gov.flush_budgets();
+        rig.gov.flush_metering();
+        let expected = Count::parse(decimal).unwrap();
+        let row = rig.gov.store().get_usage(&rig.key_id, 0).unwrap();
+        let model = row
+            .models
+            .iter()
+            .find(|row| row.model == "m0")
+            .expect("raw model row");
+        assert_eq!(model.scale, 6);
+        assert_eq!(
+            model.usage_units["input"],
+            u64::try_from(expected.micros()).unwrap()
+        );
+        let counts = model.counts().unwrap();
+        assert_eq!(counts["input"], expected);
+        let nanos = rig.app.cost.price_counts_nanos("m0", &counts).unwrap();
+        assert_eq!(nanos, u128::try_from(expected.micros()).unwrap());
+        let usage = rig
+            .gov
+            .usage_for(&rig.app.cost, &rig.key_id, at)
+            .unwrap()
+            .unwrap();
+        assert_eq!(usage.tokens, expected);
+        assert_eq!(
+            usage.spend_cents,
+            i64::try_from(nanos / 10_000_000).unwrap()
+        );
+        let metering = rig
+            .gov
+            .metering_for(busbar_kernel::governance::metering_bucket(at))
+            .unwrap();
+        let measured = metering
+            .iter()
+            .find(|row| row.key_id == rig.key_id && row.model == "m0")
+            .unwrap();
+        assert_eq!(measured.scale, 6);
+        assert_eq!(
+            Count::from_stored(i128::from(measured.tokens_input), measured.scale).unwrap(),
+            expected
+        );
+        let reopened =
+            busbar_kernel::governance::GovState::new(rig.gov.store().clone(), None).unwrap();
+        let reread = reopened
+            .usage_for(&rig.app.cost, &rig.key_id, at)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reread, usage,
+            "new governor reads the exact durable ledger and price"
+        );
+        server.abort();
+        let _ = server.await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unrepresentable_provider_count_refuses_before_success_or_usage_commit() {
+    let _one = PUBLISHING.lock().await;
+    const BAD: &str = r#"{"id":"bad-count","object":"chat.completion","created":0,"model":"m0","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"must not escape"}}],"usage":{"prompt_tokens":27.0000001,"completion_tokens":2,"total_tokens":29.0000001}}"#;
+    let far = far_end_answering(200, BAD).await;
+    let card = card_of("{ input_utok: 1000, output_utok: 1000 }");
+    let rig = rig(
+        "exact-provider-refused",
+        RigOpts {
+            members: &[(far.port, 1)],
+            rate_card: Some(&card),
+            fee_cents: Some(0),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig.chat().await;
+    assert!(
+        status >= 400,
+        "an unpriced measurement cannot return success: {status}"
+    );
+    assert!(!String::from_utf8_lossy(&body).contains("must not escape"));
+    rig.gov.flush_budgets();
+    rig.gov.flush_metering();
+    let usage = rig
+        .gov
+        .usage_for(&rig.app.cost, &rig.key_id, now())
+        .unwrap()
+        .unwrap();
+    assert_eq!(usage.tokens, busbar_contract::Count::ZERO);
+    assert_eq!(usage.spend_cents, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unrepresentable_stream_count_cuts_at_the_last_exact_report() {
+    let _one = PUBLISHING.lock().await;
+    const GOOD: &str = r#"{"id":"exact-stream","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"accepted"},"finish_reason":null}],"usage":{"prompt_tokens":27.5,"completion_tokens":0,"total_tokens":27.5}}"#;
+    const BAD: &str = r#"{"id":"exact-stream","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{"content":"must not escape"},"finish_reason":null}],"usage":{"prompt_tokens":27.5000001,"completion_tokens":0,"total_tokens":27.5000001}}"#;
+    let far = far_end_scripted(Script {
+        head: STREAM_HEAD.to_string(),
+        pieces: vec![(0, frame(GOOD)), (20, frame(BAD)), (0, frame("[DONE]"))],
+        finish: Some(b"0\r\n\r\n".to_vec()),
+    })
+    .await;
+    let card = card_of("{ input_utok: 1000, output_utok: 1000 }");
+    let rig = rig(
+        "exact-provider-stream-refused",
+        RigOpts {
+            members: &[(far.port, 1)],
+            rate_card: Some(&card),
+            fee_cents: Some(0),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig
+        .send("POST", "/v1/chat/completions", Some(streamed_chat()))
+        .await;
+    assert_eq!(
+        status, 200,
+        "the first exact piece already committed its head"
+    );
+    let body = String::from_utf8_lossy(&body);
+    assert!(body.contains("accepted"));
+    assert!(!body.contains("must not escape"));
+    assert!(
+        body.contains("error"),
+        "the committed stream gets its protocol refusal: {body}"
+    );
+    let _ = rig.ledger_after(1).await;
+    rig.gov.flush_budgets();
+    rig.gov.flush_metering();
+    let usage = rig
+        .gov
+        .usage_for(&rig.app.cost, &rig.key_id, now())
+        .unwrap()
+        .unwrap();
+    assert_eq!(usage.tokens, busbar_contract::Count::parse("27.5").unwrap());
+    assert_eq!(usage.spend_cents, 2);
 }

@@ -8,8 +8,7 @@ use crate::root::loader::dispatch::auth_handle::{
 };
 use busbar_contract::abi::host::service::UnitRef;
 use busbar_contract::abi::mechanism::call::Outcome;
-use busbar_core_connector::carrier::{Carry, Side};
-use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor, Refused};
+use busbar_core_connector::framer::FramerDoor;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -102,16 +101,6 @@ impl AuthHandleHost for AdmissionHost {
     }
 }
 
-type Scope = Arc<dyn busbar_contract::framing_scope::FramingScope>;
-
-struct ObservedAdopter {
-    actual: Arc<dyn FramerDoor>,
-    claimed: Mutex<Vec<String>>,
-    money: Arc<PlaneMoney>,
-    book: Arc<Mutex<crate::root::durability::Durability>>,
-    plane: crate::root::boot::DoorPlane,
-}
-
 fn handler_pieces(plane: &crate::root::boot::DoorPlane) -> u64 {
     use crate::root::loader::dispatch::{in_head, out_head, Frame};
     use busbar_contract::abi::plane::{slot, ArriveIn, ArriveOut, UnitCount};
@@ -130,83 +119,6 @@ fn handler_pieces(plane: &crate::root::boot::DoorPlane) -> u64 {
     assert_eq!(plane.call(slot::ARRIVE, &mut frame).outcome, Outcome::Ready);
     assert_eq!(frame.out.units_written, 7);
     units[0].amount
-}
-
-impl FramerDoor for ObservedAdopter {
-    fn facts(&self) -> &DoorFacts {
-        self.actual.facts()
-    }
-    fn accepts(&self) -> bool {
-        self.actual.accepts()
-    }
-    fn detaches(&self) -> bool {
-        self.actual.detaches()
-    }
-    fn adopts(&self) -> bool {
-        self.actual.adopts()
-    }
-    fn seals_values(&self) -> bool {
-        self.actual.seals_values()
-    }
-    fn instance(&self) -> Option<u64> {
-        self.actual.instance()
-    }
-    fn io_owner(&self) -> Option<u64> {
-        self.actual.io_owner()
-    }
-    fn framing_side(&self) -> Option<Box<dyn Side>> {
-        self.actual.framing_side()
-    }
-    fn side(&self) -> Option<Box<dyn Side>> {
-        self.actual.side()
-    }
-    fn cross(&self, call: Call<'_>) -> Crossed {
-        self.actual.cross(call)
-    }
-    fn cross_on(&self, side: &dyn Side, resume: bool, call: Call<'_>) -> Crossed {
-        self.actual.cross_on(side, resume, call)
-    }
-    fn carry(&self, side: &dyn Side, resume: bool, call: Carry<'_>) -> Crossed {
-        self.actual.carry(side, resume, call)
-    }
-    fn framing_context(&self, listener: u64, connection: u64) -> Result<Option<Scope>, Refused> {
-        self.actual.framing_context(listener, connection)
-    }
-    fn adopting_context(&self, source: Scope) -> Result<Option<Scope>, Refused> {
-        self.actual.adopting_context(source)
-    }
-    #[allow(unsafe_code)]
-    fn cross_scoped(
-        &self,
-        scope: Option<&Scope>,
-        side: Option<&dyn Side>,
-        resume: bool,
-        call: Call<'_>,
-    ) -> Crossed {
-        if let Call::Adopt(input, _) = &call {
-            // SAFETY: this is the connector's live AdoptIn loan, including its bounded facts.
-            let claim = unsafe {
-                let claim = (*input.facts).claim;
-                std::str::from_utf8(std::slice::from_raw_parts(claim.ptr, claim.len)).unwrap()
-            };
-            self.claimed.lock().unwrap().push(claim.into());
-            assert_eq!(
-                self.money.open_units(),
-                0,
-                "adoption precedes paid admission"
-            );
-            assert!(self.book.lock().unwrap().audit_records.is_empty());
-            assert_eq!(
-                handler_pieces(&self.plane),
-                0,
-                "no plane handler precedes actual adoption"
-            );
-        }
-        self.actual.cross_scoped(scope, side, resume, call)
-    }
-    fn cancel_scoped(&self, scope: Option<&Scope>, side: &dyn Side, call: Carry<'_>) -> Crossed {
-        self.actual.cancel_scoped(scope, side, call)
-    }
 }
 
 fn opened_transport(claim: &str, dispatcher: &Arc<Dispatcher>) -> Arc<dyn FramerDoor> {
@@ -244,13 +156,24 @@ async fn exercise(case: Case) {
     });
     assert!(dispatcher.install_auth_handle(host.clone()));
     let http = opened_transport("http", &dispatcher);
-    let ws = Arc::new(ObservedAdopter {
-        actual: opened_transport("wss", &dispatcher),
-        claimed: Mutex::new(Vec::new()),
-        money: Arc::clone(&g.money),
-        book: Arc::clone(&g.book),
-        plane: Arc::clone(&plane),
-    });
+    let claimed = Arc::new(Mutex::new(Vec::new()));
+    let claims = Arc::clone(&claimed);
+    let money = Arc::clone(&g.money);
+    let book = Arc::clone(&g.book);
+    let observed_plane = Arc::clone(&plane);
+    let ws = busbar_core_connector::test_support::observe_adoption(
+        opened_transport("wss", &dispatcher),
+        move |claim| {
+            claims.lock().unwrap().push(claim.to_owned());
+            assert_eq!(money.open_units(), 0, "adoption precedes paid admission");
+            assert!(book.lock().unwrap().audit_records.is_empty());
+            assert_eq!(
+                handler_pieces(&observed_plane),
+                0,
+                "no plane handler precedes actual adoption"
+            );
+        },
+    );
     assert_eq!(
         ws.facts().claims[0],
         "ws",
@@ -284,7 +207,7 @@ async fn exercise(case: Case) {
     let selected = Arc::new(Mutex::new(Vec::new()));
     let selections = Arc::clone(&selected);
     let actual_http = Arc::clone(&http);
-    let actual_ws: Arc<dyn FramerDoor> = ws.clone();
+    let actual_ws = Arc::clone(&ws);
     let framers: crate::root::listener::framed::FramerFor = Arc::new(move |claim| {
         if claim == "http" {
             return Some(Arc::clone(&actual_http));
@@ -356,7 +279,7 @@ async fn exercise(case: Case) {
         .expect("the genuine governed upgrade commits its handshake");
         assert!(wire.starts_with(b"HTTP/1.1 101"), "{wire:?}");
         assert_eq!(*selected.lock().unwrap(), ["wss"]);
-        assert_eq!(*ws.claimed.lock().unwrap(), ["wss"]);
+        assert_eq!(*claimed.lock().unwrap(), ["wss"]);
         assert_eq!(
             g.requests(),
             1,
@@ -413,7 +336,7 @@ async fn exercise(case: Case) {
         .expect("the refused upgrade terminates or produces a bounded refusal");
         assert!(!wire.windows(12).any(|bytes| bytes == b"HTTP/1.1 101"));
         assert!(
-            ws.claimed.lock().unwrap().is_empty(),
+            claimed.lock().unwrap().is_empty(),
             "no invalid authority reaches the adopter"
         );
         assert_eq!(

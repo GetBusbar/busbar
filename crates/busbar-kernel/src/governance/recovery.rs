@@ -838,6 +838,79 @@ impl RecoveryAdmin<'_> {
 }
 
 impl super::GovState {
+    /// A terminal unit can outlive an ACK when its named checkpoint deletion was interrupted.
+    /// Reload that exact receipt even when ordinary settled-root pruning dropped its RAM cache.
+    pub(super) fn restore_unit_terminal_receipt(
+        &self,
+        initial: &RecoveryEvent,
+    ) -> super::RecordStoreResult<()> {
+        if self.recovery_event(initial.operation_id).is_some() {
+            return Ok(());
+        }
+        if self
+            .recovery_book
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&initial.operation_id)
+            .is_some_and(|entry| entry.pending.as_ref() == Some(initial))
+        {
+            // A freshly staged local operation (or an ambiguous initial ACK) can select its exact
+            // retained candidate directly. Historical receipt scans are only a restart fallback.
+            return Ok(());
+        }
+        let sink = self.recovery_book.sink.get().ok_or_else(|| {
+            super::RecordStoreError("unit terminal receipt has no recovery Store".into())
+        })?;
+        let selected = sink
+            .replay_selections()
+            .map_err(|error| super::RecordStoreError(error.to_string()))?
+            .into_iter()
+            .find(|selection| selection.initial.operation_id == initial.operation_id);
+        let Some(selection) = selected else {
+            return Ok(());
+        };
+        selection
+            .validate_identity()
+            .map_err(|error| super::RecordStoreError(error.to_string()))?;
+        if selection.initial != *initial {
+            return Err(super::RecordStoreError(
+                "unit terminal receipt differs from its persisted intent".into(),
+            ));
+        }
+        let mut entries = self
+            .recovery_book
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let entry = entries.entry(initial.operation_id).or_default();
+        if entry.selected.is_none() {
+            if entry
+                .pending
+                .as_ref()
+                .is_some_and(|pending| pending != initial)
+            {
+                return Err(super::RecordStoreError(
+                    "another unit terminal candidate is pending".into(),
+                ));
+            }
+            entry.pending = None;
+            entry.ever_quarantined = selection.selected.revision > 2
+                || matches!(
+                    selection.selected.state,
+                    RecoveryState::LandedUnknown
+                        | RecoveryState::VerdictLanded
+                        | RecoveryState::VerdictNotLanded
+                );
+            entry.initial = Some(selection.initial);
+            entry.selected = Some(selection.selected);
+            self.recovery_book
+                .selection_epoch
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
+        Ok(())
+    }
+
     pub fn attach_recovery_sink(
         &self,
         sink: std::sync::Arc<dyn RecoverySink>,

@@ -107,8 +107,8 @@ impl GuardJudge {
         Ok((host, port, target.secure, literal))
     }
 
-    /// Compatibility input for operator HTTP destinations. Bare user input supplies no security
-    /// intent and is refused; connector dials use the explicit descriptor methods instead.
+    /// Compatibility input for HTTP destinations and content-host classification. Bare input
+    /// carries no secure intent; connector dials use independently located descriptors.
     fn named(
         &self,
         dest: &str,
@@ -155,11 +155,30 @@ fn split(dest: &str) -> Result<(String, u16, bool), u64> {
             Err(_) => Err(DEST_NO_HOST),
         };
     }
-    Err(if dest.is_empty() {
-        DEST_NO_HOST
-    } else {
-        DEST_SCHEME
-    })
+    if dest.is_empty() || dest.contains('@') {
+        return Err(DEST_NO_HOST);
+    }
+    let (host, port) = match dest.strip_prefix('[') {
+        Some(inner) => {
+            let (host, tail) = inner.split_once(']').ok_or(DEST_NO_HOST)?;
+            let port = match tail {
+                "" => None,
+                _ => Some(tail.strip_prefix(':').ok_or(DEST_NO_HOST)?),
+            };
+            (host, port)
+        }
+        None => match dest.rsplit_once(':') {
+            Some((h, p)) if !h.contains(':') => (h, Some(p)),
+            _ => (dest, None),
+        },
+    };
+    // Preserve the legacy content classifier's omitted-port representation, never its former
+    // assumption that a bare hostname implies TLS. Actual connector dials carry an explicit port.
+    let port = port.map_or(Ok(443), |p| p.parse().map_err(|_| DEST_NO_HOST))?;
+    if host.is_empty() {
+        return Err(DEST_NO_HOST);
+    }
+    Ok((host.to_owned(), port, false))
 }
 
 impl DestJudge for GuardJudge {

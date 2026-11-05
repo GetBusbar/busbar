@@ -14,7 +14,7 @@ fn test_admin_v1_plugin_schema_falls_back_to_manifest_when_describe_answers_null
     let got = hook_schema_selection(
         "fallback-hook",
         None,
-        Some(&signed_schema),
+        (Some(&signed_schema), "manifest"),
         "trusted",
         Some("hook"),
         Some(false),
@@ -36,7 +36,7 @@ fn a_live_description_takes_precedence_without_parsing_the_unused_manifest() {
     let got = hook_schema_selection(
         "live-hook",
         Some(schema.clone()),
-        Some("{ invalid unused schema"),
+        (Some("{ invalid unused schema"), "manifest"),
         "trusted",
         Some("hook"),
         Some(false),
@@ -44,4 +44,18 @@ fn a_live_description_takes_precedence_without_parsing_the_unused_manifest() {
     assert_eq!(got["schema"], schema);
     assert_eq!(got["source"], "describe");
     assert_eq!(got["schema_error"], serde_json::Value::Null);
+}
+
+#[test]
+fn linked_hook_fallback_reports_statement_provenance() {
+    let got = hook_schema_selection(
+        "linked",
+        None,
+        (Some("false"), "statement"),
+        "trusted",
+        Some("hook"),
+        Some(false),
+    );
+    assert_eq!(got["schema"], false);
+    assert_eq!(got["source"], "statement");
 }

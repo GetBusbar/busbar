@@ -480,10 +480,56 @@ impl AdminService {
             }
 
             PluginQuery::Secret => {
+                plugins.extend(
+                    self.app
+                        .hook_env
+                        .registry
+                        .linked()
+                        .into_iter()
+                        .filter(|row| row.kind == "secret")
+                        .map(|row| linked_plugin_view(row, "secret")),
+                );
                 plugins.extend(catalog_rows_of_kind(
                     self.store_plugin_catalog_async().await?,
                     "secret",
                 ));
+            }
+            PluginQuery::Catalog(kind) => {
+                plugins.extend(
+                    self.app
+                        .hook_env
+                        .registry
+                        .linked()
+                        .into_iter()
+                        .filter(|row| row.kind == kind)
+                        .map(|row| linked_plugin_view(row, kind)),
+                );
+                plugins.extend(catalog_rows_of_kind(
+                    self.store_plugin_catalog_async().await?,
+                    kind,
+                ));
+            }
+        }
+        for view in &mut plugins {
+            if view.loader != "compiled-in" {
+                continue;
+            }
+            if let Some(row) = self
+                .app
+                .hook_env
+                .registry
+                .resolve(&view.name)
+                .filter(|row| row.linked)
+            {
+                let projected = linked_plugin_view(row, view.r#type);
+                view.has_schema = projected.has_schema;
+                view.schema_url = projected.schema_url;
+                view.schema_error = projected.schema_error;
+                view.version = projected.version;
+                view.interface_version = projected.interface_version;
+                view.publisher = projected.publisher;
+                view.trust = projected.trust;
+                view.valid = projected.valid;
             }
         }
         Ok(Page::single(plugins))
@@ -1141,176 +1187,187 @@ pub(super) fn project_usage_rows(
         return Err(AdminError::Internal);
     }
 
-    let mut total = UsageBreakdown::default();
-    let mut by_model: std::collections::BTreeMap<(String, String), UsageBreakdown> =
+    let mut total = UsageRollup::default();
+    let mut by_model: std::collections::BTreeMap<(String, String), UsageRollup> =
         std::collections::BTreeMap::new();
-    let mut by_key: std::collections::BTreeMap<String, UsageBreakdown> =
+    let mut by_key: std::collections::BTreeMap<String, UsageRollup> =
         std::collections::BTreeMap::new();
     for r in &rows {
         let lane = row_lane(&r.model, &r.provider);
-
-        let mut row_view = UsageBreakdown {
-            tokens_input: r.tokens_input,
-            tokens_output: r.tokens_output,
-            tokens_cache_read: r.tokens_cache_read,
-
-            tokens_cache_creation: r.tokens_cache_write,
-            requests: r.requests,
-            spend_micros: 0,
-            classes: std::collections::BTreeMap::new(),
+        let mut row = UsageRollup {
+            usage: UsageBreakdown {
+                tokens_input: Count::from_micros(i128::from(r.tokens_input)),
+                tokens_output: Count::from_micros(i128::from(r.tokens_output)),
+                tokens_cache_read: Count::from_micros(i128::from(r.tokens_cache_read)),
+                tokens_cache_creation: Count::from_micros(i128::from(r.tokens_cache_write)),
+                requests: r.requests,
+                ..Default::default()
+            },
+            ..Default::default()
         };
-
         let at = row_priced_at_ms(window.start, r.priced_from_ms);
         let resolved = view
             .as_ref()
             .map(|v| row_card(v, r, at))
             .transpose()
             .map_err(|e| usage_refusal("usage.price", &e))?;
-
-        let classes: &std::collections::BTreeMap<String, u64> = &r.usage_units;
-        let row_spend = match resolved {
-            Some((card_seq, card)) => {
-                priced_by = priced_by.max(Some(card_seq));
-                derive_spend_micros_row_classes_at_entry(
-                    card_seq, card, &cost, &lane, &row_view, classes,
-                )
-            }
-            None => derive_spend_micros_row_classes(&cost, &lane, &row_view, classes),
-        };
-
-        let row_spend = match row_spend {
-            Ok(spend) => spend,
-            Err(e) => return Err(usage_refusal("usage.price", &e)),
-        };
-
-        let none = UsageBreakdown::default();
-        let unitemized = std::collections::BTreeMap::new();
-        let itemized = if row_carries_classes(&r.provider) {
-            classes
-        } else {
-            &unitemized
-        };
-        for (class, count) in itemized {
-            let one = std::collections::BTreeMap::from([(class.clone(), *count)]);
-            let class_cost = match resolved {
-                Some((card_seq, card)) => derive_spend_micros_row_classes_at_entry(
-                    card_seq, card, &cost, &lane, &none, &one,
-                ),
-                None => derive_spend_micros_row_classes(&cost, &lane, &none, &one),
-            }
-            .map_err(|e| usage_refusal("usage.price", &e))?;
-            row_view.classes.insert(
-                class.clone(),
-                ClassUsage {
-                    count: *count,
-                    cost: class_cost,
-                },
-            );
+        if let Some((card_seq, _)) = resolved {
+            priced_by = priced_by.max(Some(card_seq));
         }
-        for b in [
+        let classes: std::collections::BTreeMap<String, Count> = r
+            .usage_units
+            .iter()
+            .map(|(class, n)| (class.clone(), Count::from_micros(i128::from(*n))))
+            .collect();
+        let price = |usage: &UsageBreakdown,
+                     classes: &std::collections::BTreeMap<String, Count>| {
+            let metered = metered_row(&cost, &lane, usage, classes);
+            match resolved {
+                Some((seq, card)) => metered.exact_at_card_seq(seq, card),
+                None => metered.exact_at_card(cost.card()),
+            }
+            .map_err(|e| usage_refusal("usage.price", &e))
+        };
+        row.exact = price(&row.usage, &classes)?;
+        if row_carries_classes(&r.provider) {
+            for (class, count) in &classes {
+                let one = std::collections::BTreeMap::from([(class.clone(), *count)]);
+                row.class_exact
+                    .insert(class.clone(), price(&UsageBreakdown::default(), &one)?);
+                row.usage.classes.insert(
+                    class.clone(),
+                    ClassUsage {
+                        count: *count,
+                        cost: 0,
+                    },
+                );
+            }
+        }
+        for aggregate in [
             &mut total,
             by_model
                 .entry((r.model.clone(), r.provider.clone()))
                 .or_default(),
             by_key.entry(r.key_id.clone()).or_default(),
         ] {
-            b.tokens_input = b.tokens_input.saturating_add(row_view.tokens_input);
-            b.tokens_output = b.tokens_output.saturating_add(row_view.tokens_output);
-            b.tokens_cache_read = b
-                .tokens_cache_read
-                .saturating_add(row_view.tokens_cache_read);
-            b.tokens_cache_creation = b
-                .tokens_cache_creation
-                .saturating_add(row_view.tokens_cache_creation);
-            b.requests = b.requests.saturating_add(r.requests);
-            if add_classes(&mut b.classes, &row_view.classes).is_none() {
-                diag_error!(
-                    ADMIN_STORE_OPERATION_FAILED,
-                    operation = "usage.price",
-                    error = "a class cost rollup left the representable range",
-                    "admin store operation failed"
-                );
-                return Err(AdminError::Internal);
-            }
-
-            b.spend_micros = match busbar_kernel::cost::sum_spend(b.spend_micros, row_spend) {
-                Ok(sum) => sum,
-                Err(_) => {
-                    diag_error!(
-                        ADMIN_STORE_OPERATION_FAILED,
-                        operation = "usage.price",
-                        error = "the spend rollup left the representable range",
-                        "admin store operation failed"
-                    );
-                    return Err(AdminError::Internal);
-                }
-            };
+            aggregate.add(&row)?;
         }
     }
     let by_model = by_model
         .into_iter()
-        .map(|((model, provider), usage)| ModelUsageView {
-            model,
-            upstream: provider,
-            usage,
+        .map(|((model, provider), usage)| {
+            Ok(ModelUsageView {
+                model,
+                upstream: provider,
+                usage: usage.project()?,
+            })
         })
-        .collect();
-    let mut by_key: Vec<KeyUsageView> = by_key
-        .into_iter()
-        .map(|(id, usage)| KeyUsageView {
-            name: names.get(&id).cloned(),
-            id,
-            usage,
-        })
-        .collect();
-
+        .collect::<Result<Vec<_>, AdminError>>()?;
+    let mut by_key: Vec<_> = by_key.into_iter().collect();
     const BY_KEY_CAP: usize = 1000;
-    by_key.sort_by(|a, b| {
-        b.usage
-            .spend_micros
-            .cmp(&a.usage.spend_micros)
-            .then_with(|| a.id.cmp(&b.id))
+    by_key.sort_by(|(a_id, a), (b_id, b)| {
+        busbar_kernel::cost::Money::of_exact(b.exact)
+            .micros()
+            .cmp(&busbar_kernel::cost::Money::of_exact(a.exact).micros())
+            .then_with(|| a_id.cmp(b_id))
     });
     let by_key_truncated = by_key.len() > BY_KEY_CAP;
-
     let others = if by_key_truncated {
-        let mut o = UsageBreakdown::default();
-        for row in &by_key[BY_KEY_CAP..] {
-            o.tokens_input = o.tokens_input.saturating_add(row.usage.tokens_input);
-            o.tokens_output = o.tokens_output.saturating_add(row.usage.tokens_output);
-            o.tokens_cache_read = o
-                .tokens_cache_read
-                .saturating_add(row.usage.tokens_cache_read);
-            o.tokens_cache_creation = o
-                .tokens_cache_creation
-                .saturating_add(row.usage.tokens_cache_creation);
-            o.requests = o.requests.saturating_add(row.usage.requests);
-
-            o.spend_micros = busbar_kernel::cost::sum_spend(o.spend_micros, row.usage.spend_micros)
-                .map_err(|_| rollup_refused("the others spend rollup left the range"))?;
-            for (class, u) in &row.usage.classes {
-                let e = o.classes.entry(class.clone()).or_default();
-                e.count = e.count.saturating_add(u.count);
-                e.cost = busbar_kernel::cost::sum_spend(e.cost, u.cost)
-                    .map_err(|_| rollup_refused("the others class cost left the range"))?;
-            }
+        let mut others = UsageRollup::default();
+        for (_, row) in &by_key[BY_KEY_CAP..] {
+            others.add(row)?;
         }
-        Some(o)
+        Some(others.project()?)
     } else {
         None
     };
     by_key.truncate(BY_KEY_CAP);
+    let by_key = by_key
+        .into_iter()
+        .map(|(id, usage)| {
+            Ok(KeyUsageView {
+                name: names.get(&id).cloned(),
+                id,
+                usage: usage.project()?,
+            })
+        })
+        .collect::<Result<Vec<_>, AdminError>>()?;
     Ok(UsageView {
         window,
         as_of: now,
         currency: (),
         rate_card_version: priced_by.map(|key| key.hex()),
-        total,
+        total: total.project()?,
         by_model,
         by_key,
         by_key_truncated,
         others,
     })
+}
+
+/// Read-time totals retain scale-15 prices until each complete wire view is projected.
+#[derive(Default)]
+struct UsageRollup {
+    usage: UsageBreakdown,
+    exact: i128,
+    class_exact: std::collections::BTreeMap<String, i128>,
+}
+
+impl UsageRollup {
+    fn add(&mut self, row: &Self) -> Result<(), AdminError> {
+        for (into, value) in [
+            (&mut self.usage.tokens_input, row.usage.tokens_input),
+            (&mut self.usage.tokens_output, row.usage.tokens_output),
+            (
+                &mut self.usage.tokens_cache_read,
+                row.usage.tokens_cache_read,
+            ),
+            (
+                &mut self.usage.tokens_cache_creation,
+                row.usage.tokens_cache_creation,
+            ),
+        ] {
+            *into = into
+                .checked_add(value)
+                .map_err(|_| rollup_refused("the count rollup left the range"))?;
+        }
+        self.usage.requests = self
+            .usage
+            .requests
+            .checked_add(row.usage.requests)
+            .ok_or_else(|| rollup_refused("the request rollup left the range"))?;
+        self.exact = self
+            .exact
+            .checked_add(row.exact)
+            .ok_or_else(|| rollup_refused("the exact spend rollup left the range"))?;
+        for (class, usage) in &row.usage.classes {
+            let into = self.usage.classes.entry(class.clone()).or_default();
+            into.count = into
+                .count
+                .checked_add(usage.count)
+                .map_err(|_| rollup_refused("the class count rollup left the range"))?;
+        }
+        for (class, exact) in &row.class_exact {
+            let into = self.class_exact.entry(class.clone()).or_default();
+            *into = into
+                .checked_add(*exact)
+                .ok_or_else(|| rollup_refused("the exact class cost rollup left the range"))?;
+        }
+        Ok(())
+    }
+
+    fn project(mut self) -> Result<UsageBreakdown, AdminError> {
+        self.usage.spend_micros = busbar_kernel::cost::Money::of_exact(self.exact)
+            .micros_i64()
+            .map_err(|e| usage_refusal("usage.price", &e))?;
+        for (class, exact) in self.class_exact {
+            self.usage.classes.entry(class).or_default().cost =
+                busbar_kernel::cost::Money::of_exact(exact)
+                    .micros_i64()
+                    .map_err(|e| usage_refusal("usage.price", &e))?;
+        }
+        Ok(self.usage)
+    }
 }
 
 fn linked_store_rows() -> Vec<PluginView> {
@@ -1321,16 +1378,27 @@ fn linked_store_rows() -> Vec<PluginView> {
     stores.iter().map(row).collect()
 }
 
-fn add_classes(
-    into: &mut std::collections::BTreeMap<String, ClassUsage>,
-    row: &std::collections::BTreeMap<String, ClassUsage>,
-) -> Option<()> {
-    for (class, u) in row {
-        let e = into.entry(class.clone()).or_default();
-        e.count = e.count.saturating_add(u.count);
-        e.cost = busbar_kernel::cost::sum_spend(e.cost, u.cost).ok()?;
+pub(super) fn linked_plugin_view(
+    row: busbar_contract::plugin_rows::Row,
+    kind: &'static str,
+) -> PluginView {
+    let (schema_url, schema_error) =
+        manifest_schema_url_and_error(&row.name, row.settings_schema.as_deref());
+    let mut view = PluginView::basic(row.name, kind, "compiled-in", None, None);
+    view.has_schema = schema_url.is_some();
+    view.schema_url = schema_url;
+    view.schema_error = schema_error;
+    view.version = Some(row.version);
+    view.interface_version = Some(row.abi_version);
+    view.valid = Some(true);
+    match row.trust {
+        busbar_contract::plugin_rows::Trust::Trusted { publisher, .. } => {
+            view.trust = Some("trusted");
+            view.publisher = Some(publisher);
+        }
+        busbar_contract::plugin_rows::Trust::Allowed { .. } => view.trust = Some("unverified"),
     }
-    Some(())
+    view
 }
 
 fn rollup_refused(error: &'static str) -> AdminError {
@@ -1378,4 +1446,45 @@ fn validate_config_blocking(
         ) => vec![e],
     };
     ConfigValidateView { ok, errors }
+}
+
+#[cfg(test)]
+mod exact_usage_rollup_tests {
+    use super::*;
+
+    #[test]
+    fn class_cost_and_overflow_are_projected_only_after_aggregation() {
+        let row = UsageRollup {
+            usage: UsageBreakdown {
+                classes: std::collections::BTreeMap::from([(
+                    "seconds".into(),
+                    ClassUsage {
+                        count: Count::parse("0.5").unwrap(),
+                        cost: 0,
+                    },
+                )]),
+                ..Default::default()
+            },
+            exact: 500_000_000,
+            class_exact: std::collections::BTreeMap::from([("seconds".into(), 500_000_000)]),
+        };
+        let mut total = UsageRollup::default();
+        total.add(&row).unwrap();
+        total.add(&row).unwrap();
+        let view = total.project().unwrap();
+        assert_eq!(view.spend_micros, 1);
+        assert_eq!(view.classes["seconds"].cost, 1);
+        assert_eq!(view.classes["seconds"].count, Count::ONE);
+        assert!(UsageRollup {
+            exact: i128::MAX,
+            ..Default::default()
+        }
+        .project()
+        .is_err());
+        let mut overflow = UsageRollup {
+            exact: i128::MAX,
+            ..Default::default()
+        };
+        assert!(overflow.add(&row).is_err());
+    }
 }

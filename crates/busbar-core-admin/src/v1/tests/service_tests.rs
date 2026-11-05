@@ -161,9 +161,66 @@ fn catalog_preserves_manifest_kinds_and_filters_store_queries() {
         assert_eq!(files, ["corrupt.tar.gz", "store.tar.gz", "unknown.tar.gz"]);
     }
     for query in ["export", "transport", "plane"] {
-        assert!(
-            matches!(plugin_query(query), Err(AdminError::Validation(_))),
-            "the catalog correction adds no new query type"
+        let Ok(PluginQuery::Catalog(kind)) = plugin_query(query) else {
+            panic!("missing catalog query {query}");
+        };
+        assert_eq!(kind, query);
+        let rows: Vec<_> = catalog_rows_of_kind(catalog.clone(), kind).collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, query);
+    }
+}
+
+#[test]
+fn linked_catalog_exposes_the_same_schema_and_error_as_inspection() {
+    use busbar_contract::plugin_rows::{Row, Trust};
+    for text in ["false", "{broken", "{\"type\":\"object\"}"] {
+        let row = Row {
+            file: "(linked)".into(),
+            key: "metrics".into(),
+            name: "metrics".into(),
+            alias: "metrics".into(),
+            kind: "export".into(),
+            version: "1.6.0".into(),
+            abi_version: 1,
+            trust: Trust::Trusted {
+                publisher: "busbar".into(),
+                first_party: true,
+            },
+            ephemeral: false,
+            in_process: false,
+            linked: true,
+            needs_prompt: Default::default(),
+            needs_user: Default::default(),
+            settings_schema: Some(text.into()),
+        };
+        let listed = operations::linked_plugin_view(row, "export");
+        assert!(listed.has_schema);
+        assert_eq!(
+            listed.schema_url.as_deref(),
+            Some("/api/v1/admin/plugins/metrics/schema")
+        );
+        assert_eq!(listed.file, None);
+        assert_eq!(listed.trust, Some("trusted"));
+        let (schema, error) = manifest_schema(Some(text));
+        assert_eq!(listed.schema_error, error);
+        let inspected = inspect_plugin_view(
+            Stated {
+                name: "metrics".into(),
+                alias: "metrics".into(),
+                kind: "export".into(),
+                version: "1.6.0".into(),
+                publisher: "busbar".into(),
+                abi_version: 1,
+                settings_schema: Some(text.into()),
+            },
+            Judged::Allowed,
+            |_| true,
+        );
+        assert_eq!(inspected["schema"], serde_json::to_value(schema).unwrap());
+        assert_eq!(
+            inspected["schema_error"],
+            serde_json::to_value(error).unwrap()
         );
     }
 }
@@ -278,10 +335,10 @@ fn catalog_cache_future_inserted_at_is_treated_as_stale() {
 fn admin_usage_breakdown_json_is_byte_identical_flat_token_aliases() {
     use crate::v1::contract::UsageBreakdown;
     let b = UsageBreakdown {
-        tokens_input: 100,
-        tokens_output: 40,
-        tokens_cache_read: 7,
-        tokens_cache_creation: 3,
+        tokens_input: 100.into(),
+        tokens_output: 40.into(),
+        tokens_cache_read: 7.into(),
+        tokens_cache_creation: 3.into(),
         requests: 5,
         spend_micros: 12_345,
         classes: Default::default(),
@@ -479,6 +536,7 @@ mod dated_rate_card_history {
                 (
                     bucket,
                     busbar_kernel::governance::MeteringRow {
+                        scale: 0,
                         usage_units: Default::default(),
                         key_id: KEY.to_string(),
                         model: LANE.to_string(),
@@ -645,7 +703,10 @@ mod dated_rate_card_history {
         );
         let both = metering_rows(&[(later, old * 1_000), (later, activated * 1_000)]);
         let both_read = read(both, src, later).await;
-        assert_eq!(both_read.total.tokens_input, TOKENS * 2);
+        assert_eq!(
+            both_read.total.tokens_input,
+            busbar_contract::Count::from(TOKENS * 2)
+        );
         assert_eq!(both_read.total.spend_micros, 11_000);
     }
 
@@ -916,7 +977,8 @@ mod dated_rate_card_history {
              20_000 (all morning) and not 2_000 (all afternoon)"
         );
         assert_eq!(
-            view.total.tokens_input, 2_000,
+            view.total.tokens_input,
+            busbar_contract::Count::from(2_000u64),
             "and the quantities still roll up whole: splitting the price never splits the counts"
         );
         assert_eq!(
@@ -1176,4 +1238,162 @@ fn an_admin_view_shows_only_declared_public_setting_values() {
     );
     assert!(v["other"].get("settings_public").is_none(), "{text}");
     assert_eq!(v["other"]["settings_keys"], serde_json::json!(["url"]));
+}
+
+#[test]
+fn fractional_metering_row_matches_canonical_tally_and_keeps_numeric_json() {
+    use busbar_contract::count::Count;
+    use busbar_contract::records::{MeteringRow, UNIT_INPUT};
+    use busbar_kernel::cost::{CostModel, Tally, STANDARD_TIER_BP};
+    use std::collections::BTreeMap;
+    let cost = CostModel::resolve_parts(
+        Some(&BTreeMap::from([(
+            "fractional-model".into(),
+            busbar_kernel::config::RateEntryCfg {
+                input_utok: 16.0,
+                ..Default::default()
+            },
+        )])),
+        0,
+        &BTreeMap::new(),
+    );
+    let row = MeteringRow {
+        scale: 6,
+        key_id: "fractional-key".into(),
+        model: "fractional-model".into(),
+        provider: "fractional-provider".into(),
+        tokens_input: 27_500_000,
+        tokens_output: 0,
+        tokens_cache_read: 0,
+        tokens_cache_write: 0,
+        requests: 0,
+        billable_requests: 0,
+        key_group_at_use: String::new(),
+        pricing_version: String::new(),
+        priced_from_ms: 0,
+        usage_units: BTreeMap::new(),
+    };
+    let quantity = Count::parse("27.5").unwrap();
+    let mut tally = Tally::at_card(cost.card());
+    tally
+        .row(
+            "fractional-model",
+            0,
+            STANDARD_TIER_BP,
+            [(UNIT_INPUT, quantity)],
+            Count::ZERO,
+        )
+        .unwrap();
+    let expected = tally.money().unwrap().micros_i64().unwrap();
+    assert_eq!(expected, 440);
+    let view = super::operations::project_usage_rows(
+        Arc::new(cost),
+        None,
+        None,
+        UsageWindow {
+            start: 0,
+            end: 86_400,
+        },
+        0,
+        (vec![row], HashMap::new(), Vec::new()),
+    )
+    .unwrap();
+    assert_eq!(view.total.tokens_input, quantity);
+    assert_eq!(view.total.spend_micros, expected);
+    assert_eq!(view.by_key[0].usage.tokens_input, quantity);
+    assert_eq!(view.by_model[0].usage.spend_micros, expected);
+    assert_eq!(
+        serde_json::to_string(&view.total.tokens_input).unwrap(),
+        "27.5"
+    );
+}
+
+#[test]
+fn submicro_metering_rows_project_once_per_final_usage_view() {
+    use busbar_contract::count::Count;
+    use busbar_contract::records::{MeteringRow, UNIT_INPUT};
+    use busbar_kernel::cost::{CostModel, History, Tally, STANDARD_TIER_BP};
+    use std::collections::BTreeMap;
+    let cost = Arc::new(CostModel::resolve_parts(
+        Some(&BTreeMap::from([(
+            "fractional-model".into(),
+            busbar_kernel::config::RateEntryCfg {
+                input_utok: 16.0,
+                ..Default::default()
+            },
+        )])),
+        0,
+        &BTreeMap::new(),
+    ));
+    let history = Arc::new(History::opening(cost.card().clone(), 0));
+    let row = |key: String, micros: u64| MeteringRow {
+        scale: 6,
+        key_id: key,
+        model: "fractional-model".into(),
+        provider: "fractional-provider".into(),
+        tokens_input: micros,
+        tokens_output: 0,
+        tokens_cache_read: 0,
+        tokens_cache_write: 0,
+        requests: 0,
+        billable_requests: 0,
+        key_group_at_use: String::new(),
+        pricing_version: String::new(),
+        priced_from_ms: 0,
+        usage_units: BTreeMap::new(),
+    };
+    for dated in [None, Some(history)] {
+        for quantity in [31_250, 1_000_000] {
+            let rows = vec![row("key".into(), quantity), row("key".into(), quantity)];
+            let mut tally = Tally::at_card(cost.card());
+            for r in &rows {
+                tally
+                    .row(
+                        "fractional-model",
+                        0,
+                        STANDARD_TIER_BP,
+                        [(UNIT_INPUT, Count::from_micros(i128::from(r.tokens_input)))],
+                        Count::ZERO,
+                    )
+                    .unwrap();
+            }
+            let expected = tally.money().unwrap().micros_i64().unwrap();
+            assert_eq!(expected, if quantity == 31_250 { 1 } else { 32 });
+            let view = super::operations::project_usage_rows(
+                Arc::clone(&cost),
+                dated.clone(),
+                None,
+                UsageWindow {
+                    start: 0,
+                    end: 86_400,
+                },
+                0,
+                (rows, HashMap::new(), Vec::new()),
+            )
+            .unwrap();
+            assert_eq!(view.total.spend_micros, expected);
+            assert_eq!(view.by_model[0].usage.spend_micros, expected);
+            assert_eq!(view.by_key[0].usage.spend_micros, expected);
+        }
+        let mut rows: Vec<_> = (0..1000)
+            .map(|i| row(format!("key-{i}"), 1_000_000))
+            .collect();
+        rows.extend([row("tail-a".into(), 31_250), row("tail-b".into(), 31_250)]);
+        let view = super::operations::project_usage_rows(
+            Arc::clone(&cost),
+            dated,
+            None,
+            UsageWindow {
+                start: 0,
+                end: 86_400,
+            },
+            0,
+            (rows, HashMap::new(), Vec::new()),
+        )
+        .unwrap();
+        assert!(view.by_key_truncated);
+        assert_eq!(view.total.spend_micros, 16_001);
+        assert_eq!(view.by_model[0].usage.spend_micros, 16_001);
+        assert_eq!(view.others.unwrap().spend_micros, 1);
+    }
 }

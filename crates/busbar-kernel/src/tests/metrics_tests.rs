@@ -120,6 +120,7 @@ fn test_scrape_gauges_key_spend_and_remaining() {
                 requests: 200,
                 billable_requests: 200,
                 models: vec![busbar_contract::records::ModelTokens {
+                    scale: 0,
                     model: "m".to_string(),
                     usage_units: std::collections::BTreeMap::from([(
                         busbar_contract::records::UNIT_INPUT.to_string(),
@@ -389,6 +390,7 @@ fn test_key_gauge_limit_truncation() {
                     requests: 1,
                     billable_requests: 1,
                     models: vec![busbar_contract::records::ModelTokens {
+                        scale: 0,
                         model: "m".to_string(),
                         usage_units: std::collections::BTreeMap::from([(
                             busbar_contract::records::UNIT_INPUT.to_string(),
@@ -455,6 +457,7 @@ fn gov_with_n_keys(n: usize) -> Arc<GovState> {
                     requests: 1,
                     billable_requests: 1,
                     models: vec![busbar_contract::records::ModelTokens {
+                        scale: 0,
                         model: "m".to_string(),
                         usage_units: std::collections::BTreeMap::from([(
                             busbar_contract::records::UNIT_INPUT.to_string(),
@@ -720,6 +723,7 @@ fn seed_viewed_key(store: &dyn RecordStore, id: &str, input: u64) -> VirtualKey 
         requests: 1,
         billable_requests: 1,
         models: vec![busbar_contract::records::ModelTokens {
+            scale: 0,
             model: "m".to_string(),
             usage_units: std::collections::BTreeMap::from([(
                 busbar_contract::records::UNIT_INPUT.to_string(),

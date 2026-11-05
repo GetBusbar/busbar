@@ -98,10 +98,10 @@ fn two_nodes_cannot_both_accept_corrections_beyond_the_shared_count() {
     first_node.flush_budgets();
     second_node.flush_budgets();
     assert_eq!(
-        store.get_usage(&key.id, 0).unwrap().models[0]
-            .usage_units
-            .get(busbar_contract::records::UNIT_INPUT)
-            .copied(),
+        store
+            .get_usage(&key.id, 0)
+            .unwrap()
+            .tokens_for_whole_test(MODEL),
         Some(u64::try_from(ACCEPTED_INPUT_UNITS).unwrap())
     );
 }
@@ -309,8 +309,13 @@ fn a_failed_era_row_retries_without_repeating_the_successful_plain_row() {
         era.models
             .iter()
             .find(|row| row.model == "42")
-            .and_then(|row| row.usage_units.get(super::super::ERA_FEE_UNIT))
-            .copied(),
+            .map(|row| stored_whole_for_test(
+                row.usage_units
+                    .get(super::super::ERA_FEE_UNIT)
+                    .copied()
+                    .unwrap_or(0),
+                row.scale
+            )),
         Some(1),
         "fee attribution must survive a transient era-row write failure"
     );
@@ -397,8 +402,13 @@ fn correction_hydration_preserves_an_older_inflight_eras_retry_and_group_owner()
         era.models
             .iter()
             .find(|row| row.model == "42")
-            .and_then(|row| row.usage_units.get(super::super::ERA_FEE_UNIT))
-            .copied(),
+            .map(|row| stored_whole_for_test(
+                row.usage_units
+                    .get(super::super::ERA_FEE_UNIT)
+                    .copied()
+                    .unwrap_or(0),
+                row.scale
+            )),
         Some(1),
     );
     assert_eq!(minute_row(store.as_ref(), bucket, now), (1, 1, 0, 0));

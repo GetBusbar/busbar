@@ -61,6 +61,62 @@ fn a_signed_record_round_trips_through_its_journal_body() {
 }
 
 #[test]
+fn whole_fractional_whole_chain_keeps_v5_bytes_and_verifies_v6() {
+    use busbar_kernel_audit::{Audit, AuditVerifyingKey, Recipe};
+    let signer = AuditSigningKey::from_seed(&[73; 32]);
+    let verify = AuditVerifyingKey::from_hex(&signer.public_key_hex()).unwrap();
+    let mut chain = AuditChain::new()
+        .signing_with(signer)
+        .sealing_as(SEALING_NODE);
+    let counts = ["120", "27.5", "121"];
+    let records: Vec<_> = counts
+        .iter()
+        .enumerate()
+        .map(|(index, count)| {
+            let mut inputs = super::sign_tests::rich_inputs(index as u64 + 1);
+            inputs.usage.lines[0].quantity = busbar_contract::Count::parse(count).unwrap();
+            Audit::seal(
+                &mut chain,
+                inputs,
+                &Pass::<AuditStep>::mint(&crate::seal::acquire()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        records.iter().map(|r| r.recipe.clone()).collect::<Vec<_>>(),
+        vec![Recipe::V5, Recipe::V6, Recipe::V5]
+    );
+    let mut decoded = Vec::new();
+    for (index, record) in records.iter().enumerate() {
+        let bytes = journal_body(record).unwrap();
+        if index != 1 {
+            let whole = record.usage.lines[0]
+                .quantity
+                .whole_u64()
+                .unwrap()
+                .to_be_bytes();
+            assert!(bytes.windows(8).any(|window| window == whole));
+            assert!(bytes
+                .windows(JOURNAL_TAG.len())
+                .any(|window| window == JOURNAL_TAG.as_bytes()));
+        }
+        let back = from_journal_body(&bytes, &declared).unwrap().unwrap();
+        assert_eq!(&back, record);
+        assert_eq!(journal_body(&back).unwrap(), bytes);
+        AuditChain::verify_signature(&back, &verify).unwrap();
+        decoded.push(back);
+    }
+    AuditChain::verify_chain(&decoded).unwrap();
+    let mut forged = journal_body(&records[1]).unwrap();
+    let at = forged.windows(8).position(|b| b == b"audit.v6").unwrap();
+    forged[at + 7] = b'5';
+    assert!(
+        from_journal_body(&forged, &declared).is_err(),
+        "a tag never selects another recipe's quantity framing"
+    );
+}
+
+#[test]
 fn a_body_that_is_not_an_audit_record_is_none_and_a_torn_one_is_an_error() {
     assert_eq!(from_journal_body(b"posting/counts", &declared), Ok(None));
     let body = journal_body(&sealed(1)[0]).expect("the body fits");

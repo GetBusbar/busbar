@@ -30,7 +30,15 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
                 .spawn()
                 .expect("start the isolated actual-root case"),
         );
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        // Each path composes an isolated router over the actual Store. The bounded child
+        // budget must grow with the complete document, not stop a progressing census halfway.
+        let document: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../busbar-core-admin/src/v1/json/openapi.json"
+        ))
+        .expect("the committed administrative document parses");
+        let path_count = document["paths"].as_object().expect("document paths").len();
+        let budget = std::time::Duration::from_secs(30 + 5 * path_count as u64);
+        let until = std::time::Instant::now() + budget;
         loop {
             if let Some(status) = child.0.try_wait().unwrap() {
                 use std::io::Read;
@@ -224,7 +232,11 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         .filter(|(method, _)| method == "GET")
         .map(|(_, path)| path.as_str())
         .collect();
-    let client = reqwest::Client::new();
+    // A stuck route fails independently of the larger complete-census child budget.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .expect("the bounded census client builds");
     let ask = |addr: std::net::SocketAddr, method: &str, path: &str| {
         let method = reqwest::Method::from_bytes(method.as_bytes()).unwrap();
         let req = client

@@ -6,6 +6,9 @@
 /// The recipe's version name. Goes in every published body so a verifier never has to guess which
 pub const DIGEST_RECIPE: &str = "busbar.audit.digest.v5";
 
+/// Exact scale-six quantities, with canonical decimal text in the quantity field.
+pub const DIGEST_RECIPE_V6: &str = "busbar.audit.digest.v6";
+
 /// The unchanged legacy recipe with a chain-local rate-card ordinal.
 pub const DIGEST_RECIPE_V4: &str = "busbar.audit.digest.v4";
 
@@ -35,8 +38,10 @@ pub enum Recipe {
         /// The exact ordinal byte framed by this old recipe, never a current history key.
         legacy_rate_card_version: u64,
     },
-    /// The keyed recipe used by every new seal.
+    /// The keyed recipe retained for whole-count seals.
     V5,
+    /// The keyed recipe with exact decimal quantity text. Whole-only seals keep V5.
+    V6,
 }
 
 impl Recipe {
@@ -47,6 +52,7 @@ impl Recipe {
             Recipe::V2 { .. } => DIGEST_RECIPE_V2,
             Recipe::V4 { .. } => DIGEST_RECIPE_V4,
             Recipe::V5 => DIGEST_RECIPE,
+            Recipe::V6 => DIGEST_RECIPE_V6,
         }
     }
 }
@@ -117,7 +123,7 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
     ));
     f.push(DigestField::num("unit_key", record.what.unit_key.get()));
 
-    if matches!(record.recipe, Recipe::V4 { .. } | Recipe::V5) {
+    if matches!(record.recipe, Recipe::V4 { .. } | Recipe::V5 | Recipe::V6) {
         f.push(DigestField::num("incarnation", record.what.incarnation));
     }
     f.push(DigestField::text("op_class", record.what.op_class.as_str()));
@@ -140,7 +146,7 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
     f.push(DigestField::num("wall", record.wall));
     f.push(DigestField::num("mono", record.mono));
 
-    if matches!(record.recipe, Recipe::V4 { .. } | Recipe::V5) {
+    if matches!(record.recipe, Recipe::V4 { .. } | Recipe::V5 | Recipe::V6) {
         f.push(DigestField::num("node", record.node));
     }
     f.push(DigestField::text("origin_kind", record.origin_kind));
@@ -178,7 +184,16 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
     ));
     for line in &record.usage.lines {
         f.push(DigestField::text("lines[].class", line.class.as_str()));
-        f.push(DigestField::num("lines[].quantity", line.quantity));
+        f.push(if matches!(record.recipe, Recipe::V6) {
+            DigestField::text("lines[].quantity", line.quantity.to_decimal_string())
+        } else {
+            DigestField::num(
+                "lines[].quantity",
+                line.quantity
+                    .whole_u64()
+                    .expect("legacy recipe has whole quantities"),
+            )
+        });
         f.push(DigestField::text(
             "lines[].source",
             quantity_source_tag(&line.source),
@@ -210,7 +225,7 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
                 legacy_rate_card_version,
             ));
         }
-        Recipe::V5 => {
+        Recipe::V5 | Recipe::V6 => {
             f.push(DigestField::num(
                 "rate_card_key_present",
                 u64::from(record.usage.rate_card_version.is_some()),
@@ -259,7 +274,7 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
     for hook in &record.controls.hooks_applied {
         f.push(DigestField::text("hooks[].hook", hook.hook.clone()));
 
-        if matches!(record.recipe, Recipe::V4 { .. } | Recipe::V5) {
+        if matches!(record.recipe, Recipe::V4 { .. } | Recipe::V5 | Recipe::V6) {
             f.push(DigestField::text("hooks[].head", hook.head.as_str()));
             f.push(DigestField::num("hooks[].failed", u64::from(hook.failed)));
         }

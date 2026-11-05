@@ -1098,7 +1098,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         Arc::new(move || {
             gov.usage_for(cost.as_ref(), &key_id, busbar_kernel::store::now())
                 .expect("usage read")
-                .map_or(0, |u| u.tokens)
+                .map_or(0, |u| u.tokens.whole_u64().expect("whole-count fixture"))
         })
     };
     let mut rewrite = SeatProbe::new("rewrite", &log);

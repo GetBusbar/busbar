@@ -6,6 +6,16 @@ use serde::Serialize;
 
 use crate::v1::contract::{AdminError, HookView};
 
+/// `GET /pools`: summary pages by default or with `detail=false`; live member-status pages with
+/// `detail=true`. Untagged because both branches retain the existing `{items, next_cursor}` envelope.
+/// Use an inclusive union: empty pages (and permissive summary schemas) can match both branches.
+#[derive(Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum PoolListView {
+    Summary(crate::v1::contract::Page<crate::v1::contract::PoolView>),
+    Detailed(crate::v1::contract::Page<crate::v1::contract::PoolDetailView>),
+}
+
 /// Virtual-key metadata: the `key_meta()` shape returned by `GET /keys/{id}`, `PATCH /keys/{id}`,
 /// and as each item of `GET /keys`. Never the secret or its hash. 1.5.0: keys are PURE AUTH, no
 /// inline limits; `allowed_pools` is `null` = all pools, `[]` = no pools; `group` names the
@@ -106,7 +116,9 @@ pub struct KeyMeteringView {
     /// The bound `groups:` entry (`null` = unlimited key).
     pub group: Option<String>,
     pub spend_cents: i64,
-    pub tokens: u64,
+    /// Exact scale-6 decimal quantity, serialized as a JSON number.
+    #[schemars(with = "f64", extend("x-busbar-count-scale" = 6))]
+    pub tokens: busbar_contract::count::Count,
     pub requests: u64,
     pub rate_headroom: Option<f64>,
 }
@@ -308,9 +320,9 @@ pub struct PluginSchemaView {
     /// handler always sends, rather than silently dropping it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// The plugin's settings JSON Schema verbatim, or `null`, either because the manifest never
-    /// set `settings_schema`, or (distinctly, see `schema_error`) because it did but the value
-    /// failed to parse.
+    /// The plugin settings JSON Schema. The canonical Statement takes precedence over the
+    /// legacy manifest field. Null means neither was supplied, or a legacy schema failed parsing
+    /// (with `schema_error`); malformed Statement schemas are refused at admission.
     pub schema: Option<serde_json::Value>,
     /// Set only when the manifest's `settings_schema` was present but failed to parse as JSON;
     /// `null` for a manifest that genuinely never set the field. Never collapsed into a bare
@@ -321,7 +333,8 @@ pub struct PluginSchemaView {
     /// uses (never `"verified"`).
     pub trust: String,
     /// `"describe"` when a currently-loaded `kind: hook` answered its live `describe` wire
-    /// message (the existing describe-proxy behavior, unchanged); `"manifest"` otherwise. Lets
+    /// message; `"statement"` for a linked plugin; `"manifest"` for a dropped-in plugin
+    /// (its signed Statement schema, or the legacy manifest fallback). Lets
     /// busbar-ui explain "why does this form look different from what I expected" without
     /// implementing the describe/manifest precedence rule itself.
     pub source: String,

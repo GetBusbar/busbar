@@ -72,9 +72,7 @@ fn tallied(card: &RateCard, p: &Posting) -> Result<u128, crate::cost::MoneyError
         &p.lane,
         p.arrived_ms,
         p.tier_bp,
-        p.quantities
-            .iter()
-            .map(|q| (q.class.as_str(), crate::cost::whole(q.amount))),
+        p.quantities.iter().map(|q| (q.class.as_str(), q.amount)),
         crate::cost::whole(p.fee_count),
     )?;
     crate::cost::nanos_of_exact(tally.exact()?)

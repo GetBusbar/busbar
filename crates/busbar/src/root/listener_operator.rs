@@ -93,12 +93,31 @@ pub(super) async fn serve(
     _end: StreamEnd,
     _permit: Option<tokio::sync::OwnedSemaphorePermit>,
 ) {
+    let admission = req
+        .extensions()
+        .get::<busbar_kernel::inbound::RequestAdmission>()
+        .cloned();
     let Ok(response) = {
         use hyper::service::Service as _;
         hyper_util::service::TowerToHyperService::new(router)
             .call(req)
             .await
     };
+    // Fixed admin operations have already taken terminal ownership and sealed their
+    // existing record. Clean routes without an operation still finish the first-auth unit.
+    if let Some(admission) = admission.filter(|admission| admission.begin_execution()) {
+        use busbar_contract::caps::{Outcome, PrincipalId};
+        crate::root::plane_node::node().unmetered_inbound(
+            admission.unit_key(),
+            admission.audit_kind(),
+            &PrincipalId::new(
+                admission
+                    .principal_id()
+                    .unwrap_or_else(|| "anonymous".into()),
+            ),
+            Outcome::Completed,
+        );
+    }
     if let Some(pipe) = slot.take() {
         out.send(Op::Switch { pipe });
         return;

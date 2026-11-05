@@ -1246,6 +1246,8 @@ slot!(
 /// table, a need whose `target_from`/`trust_from` names a settings path at `open` and every
 /// `refresh`; a store op on a ticket reaches it through [`Op::connector`](super::Op::connector) and
 /// [`Op::checkout`](super::Op::checkout).
+/// A final `settings_schema: Blob` argument supplies the settings schema; omitting it keeps
+/// `Statement::settings_schema` absent for existing callers.
 #[macro_export]
 macro_rules! store_door {
     // Every argument after the max-inflight is optional and keeps this order: the needs it states,
@@ -1253,41 +1255,43 @@ macro_rules! store_door {
     // a `Blob` built by `statement_extensions!`), and the
     // settings paths it declares secret (`secret_refs`, `.`-separated, `*` = any key or index;
     // `busbar_contract::secret_fields`).
-    ($store:ty, $name:expr, $version:expr, $max_inflight:expr $(,)?) => {
-        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], ABSENT, &[]);
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr $(, settings_schema: $schema:expr)? $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], ABSENT, &[], $crate::store_door!(@schema $($schema)? ));
     };
-    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr $(,)?) => {
-        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, ABSENT, &[]);
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr $(, settings_schema: $schema:expr)? $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, ABSENT, &[], $crate::store_door!(@schema $($schema)? ));
     };
-    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, extensions: $ext:expr $(,)?) => {
-        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], $ext, &[]);
-    };
-    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr,
-        extensions: $ext:expr $(,)?) => {
-        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, $ext, &[]);
-    };
-    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, secret_refs: $refs:expr $(,)?) => {
-        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], ABSENT, $refs);
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, extensions: $ext:expr $(, settings_schema: $schema:expr)? $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], $ext, &[], $crate::store_door!(@schema $($schema)? ));
     };
     ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr,
-        secret_refs: $refs:expr $(,)?) => {
-        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, ABSENT, $refs);
+        extensions: $ext:expr $(, settings_schema: $schema:expr)? $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, $ext, &[], $crate::store_door!(@schema $($schema)? ));
+    };
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, secret_refs: $refs:expr $(, settings_schema: $schema:expr)? $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], ABSENT, $refs, $crate::store_door!(@schema $($schema)? ));
+    };
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr,
+        secret_refs: $refs:expr $(, settings_schema: $schema:expr)? $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, ABSENT, $refs, $crate::store_door!(@schema $($schema)? ));
     };
     ($store:ty, $name:expr, $version:expr, $max_inflight:expr, extensions: $ext:expr,
-        secret_refs: $refs:expr $(,)?) => {
-        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], $ext, $refs);
+        secret_refs: $refs:expr $(, settings_schema: $schema:expr)? $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], $ext, $refs, $crate::store_door!(@schema $($schema)? ));
     };
     ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr,
-        extensions: $ext:expr, secret_refs: $refs:expr $(,)?) => {
-        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, $ext, $refs);
+        extensions: $ext:expr, secret_refs: $refs:expr $(, settings_schema: $schema:expr)? $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, $ext, $refs, $crate::store_door!(@schema $($schema)? ));
     };
+    (@schema) => { $crate::abi::mechanism::call::Blob::ABSENT };
+    (@schema $schema:expr) => { $schema };
     (@all $store:ty, $name:expr, $version:expr, $max_inflight:expr, $needs:expr, ABSENT,
-        $refs:expr) => {
+        $refs:expr, $schema:expr) => {
         $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs,
-            $crate::abi::mechanism::call::Blob::ABSENT, $refs);
+            $crate::abi::mechanism::call::Blob::ABSENT, $refs, $schema);
     };
     (@all $store:ty, $name:expr, $version:expr, $max_inflight:expr, $needs:expr, $ext:expr,
-        $refs:expr) => {
+        $refs:expr, $schema:expr) => {
         const __BUSBAR_STORE_NEEDS: &[$crate::abi::host::conn::connector::Need] = $needs;
         const __BUSBAR_STORE_SECRET_REFS: &[$crate::abi::mechanism::call::AbiStr] = $refs;
         $crate::store_door!(@door $store, $name, $version, $max_inflight,
@@ -1303,10 +1307,10 @@ macro_rules! store_door {
             } else {
                 __BUSBAR_STORE_SECRET_REFS.as_ptr()
             },
-            __BUSBAR_STORE_SECRET_REFS.len());
+            __BUSBAR_STORE_SECRET_REFS.len(), $schema);
     };
     (@door $store:ty, $name:expr, $version:expr, $max_inflight:expr, $needs:expr, $needs_len:expr,
-        $ext:expr, $refs:expr, $refs_len:expr) => {
+        $ext:expr, $refs:expr, $refs_len:expr, $schema:expr) => {
         const __BUSBAR_STORE_TAIL: $crate::abi::store::StoreTail =
             $crate::abi::sdk::store::door::tail::<$store>();
         const __BUSBAR_STORE_DIAGS: [$crate::abi::mechanism::call::AbiStr; 1] =
@@ -1322,6 +1326,7 @@ macro_rules! store_door {
                 needs: $needs,
                 needs_len: $needs_len,
                 extensions: $ext,
+                settings_schema: $schema,
                 secret_refs: $refs,
                 secret_refs_len: $refs_len,
                 ..$crate::abi::sdk::door::statement($name, $version, $max_inflight)
@@ -1362,4 +1367,22 @@ macro_rules! store_door {
             },
         }
     };
+}
+
+#[cfg(test)]
+mod settings_schema_macro_tests {
+    use crate::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
+
+    #[test]
+    fn settings_schema_macro_defaults_and_explicit_blob() {
+        const ABSENT: Blob = crate::store_door!(@schema);
+        const BYTES: &[u8] = br#"{"type":"object","maxProperties":0}"#;
+        const SCHEMA: Blob = crate::store_door!(@schema Blob::json(BYTES));
+        assert_eq!(ABSENT.fmt, BLOB_ABSENT);
+        assert!(ABSENT.ptr.is_null());
+        assert_eq!(ABSENT.len, 0);
+        assert_eq!(SCHEMA.fmt, BLOB_JSON);
+        assert_eq!(SCHEMA.ptr, BYTES.as_ptr());
+        assert_eq!(SCHEMA.len, BYTES.len());
+    }
 }

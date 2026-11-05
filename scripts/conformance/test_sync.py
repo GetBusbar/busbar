@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sync  # noqa: E402
+from test_invocation import archive as invocation_archive
 
 REG = '''
 [[suite]]
@@ -111,17 +112,10 @@ def fetched(d, repo, head, verdicts, missing=None):
     r = Path(d) / repo
     generation = r / "generation-fixture"
     generation.mkdir(parents=True, exist_ok=True)
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w") as archive:
-        for v in verdicts:
-            data = json.dumps(v).encode()
-            member = tarfile.TarInfo(f"target/conformance/verdicts/{v['suite']}.json")
-            member.size = len(data)
-            archive.addfile(member, io.BytesIO(data))
-    data = buf.getvalue()
+    data = invocation_archive(verdicts)
     (generation / "artifact.tar").write_bytes(data)
     rec = {"repo": repo, "check": "conformance", "from": "dev", "head": head,
-           "generation": generation.name, "sha": hashlib.sha256(data).hexdigest()}
+           "generation": generation.name, "state": "green", "sha": hashlib.sha256(data).hexdigest()}
     if missing:
         rec["missing"] = missing
     (r / "receipt.json").write_text(json.dumps(rec))
@@ -176,6 +170,24 @@ class ReleaseRender(unittest.TestCase):
                          ("pass", "GetBusbar/busbar-transport-ws", P_WS, T))
         self.assertTrue(ws["evidence"].endswith("head=" + P_WS))
         self.assertEqual(ws["verified_at"], "2026-10-28T10:00:00Z")
+
+    def test_a_failed_same_head_job_cannot_reuse_a_successful_archive(self):
+        repo = "GetBusbar/busbar-transport-ws"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "registry.toml").write_text(REG)
+            fetched(root / "f", repo, P_WS, [stamped("ws", repo, P_WS, T)])
+            def render():
+                return json.loads(sync.render_release(root / "registry.toml", root / "f", release="1.6.0",
+                    commit=T, pins={repo: P_WS}, exceptions={}))
+            self.assertEqual(self.suite(render(), "ws")["status"], "pass")
+            receipt = root / "f" / repo / "receipt.json"
+            record = json.loads(receipt.read_text())
+            record["state"] = "red"
+            receipt.write_text(json.dumps(record))
+            verdict = self.suite(render(), "ws")
+            self.assertEqual((verdict["status"], verdict["claim"]), ("not-run", None))
+            self.assertIn("exit does not match", verdict["reason"])
 
     def test_an_unbound_legacy_directory_cannot_supply_a_release_pass(self):
         repo = "GetBusbar/busbar-transport-ws"

@@ -100,7 +100,7 @@ pub fn sweep_settle(
 
                 let line = UsageLine {
                     class: evidence.class.unwrap_or(KERNEL_ACCRUAL_CLASS),
-                    quantity: amount,
+                    quantity: amount.into(),
                     source: QuantitySource::Count,
                     estimated,
                 };

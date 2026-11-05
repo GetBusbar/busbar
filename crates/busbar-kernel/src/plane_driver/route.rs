@@ -11,7 +11,7 @@ use busbar_contract::abi::plane::{
     reason_code, FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, RefusalCode, UnitCount,
     AUDIT_REJECTED, CLAIM_PROBE, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_CUT, PIECE_FIELDS, PIECE_FINAL, PIECE_HAS_STATUS,
-    PIECE_LAST, PIECE_OUT_TEXT, PIECE_REFUSED, RECORD_AUDIT, VERDICT_RETRY,
+    PIECE_LAST, PIECE_OUT_TEXT, PIECE_REFUSED, RECORD_AUDIT, VERDICT_COUNT_REFUSED, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, ReasonCode, Route};
@@ -1283,6 +1283,11 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
             let out = match (done.outcome, out) {
                 (AbiOutcome::Ready, Some(out)) => {
+                    if out.verdict == VERDICT_COUNT_REFUSED {
+                        let detail = String::from_utf8_lossy(run.bufs.arena(out.fault_reason));
+                        tracing::warn!(%detail, "provider usage count refused");
+                        return Step::End(End::Cancel(ReasonCode::Unpriced, Some(done)));
+                    }
                     if out.says_done(&piece, run.final_answer) {
                         run.lock().close.closed();
                     }
@@ -1376,11 +1381,15 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             let checkpoint = if units.is_empty() || !run.billed() {
                 Checkpoint::Continue
             } else {
+                let checkpoint = self.driver.money.checkpoint(run.ctx, units);
+                if checkpoint == Checkpoint::Unpriced {
+                    return Step::End(End::Cancel(ReasonCode::Unpriced, Some(done)));
+                }
                 let mut st = run.lock();
                 st.facts.units.clear();
                 st.facts.units.extend_from_slice(units);
                 drop(st);
-                self.driver.money.checkpoint(run.ctx, units)
+                checkpoint
             };
 
             if let Some(reason) = out.usage_tap_fault() {

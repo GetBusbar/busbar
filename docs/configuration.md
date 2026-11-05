@@ -75,23 +75,21 @@ Busbar at config.yaml, taking precedence over `BUSBAR_CONFIG`; `--providers <pat
 `--providers=<path>`) points it at the provider catalog, taking precedence over `providers_file:`.
 See [Operations → Process configuration](operations.md#process-configuration).
 
-**Operational env vars moved into `config.yaml` (1.5.3); the old names are deprecated but still honoured.** `BUSBAR_CONFIG_OVERLAY` → `config.overlay.file`, `BUSBAR_WORKER_THREADS` → `advanced.worker_threads`, `BUSBAR_UPSTREAM_HTTP1_ONLY` → `advanced.upstream_http1_only`, `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` → `advanced.upstream_h2_prior_knowledge`, and `BUSBAR_PROVIDERS` → `providers_file:` (or the `--providers` flag). Each was deprecated in 1.5.3 and is read in 1.6.0 exactly as it was in 1.5.5, with a boot warning (BUSBAR-3021) naming the config.yaml key that replaces it; move each into config.yaml at your convenience. Only `BUSBAR_CONFIG` (bootstrap), secret `{ env: NAME }` references, and `RUST_LOG` are env-native by design (`TOKIO_WORKER_THREADS` is still a fallback for `advanced.worker_threads`). See the [`config`](#config) and [`advanced`](#advanced) sections and the [upgrade note](migration-1.5.md#153-config-consolidation).
+**Operational env vars moved into `config.yaml` (1.5.3); the old names are deprecated but still honoured.** `BUSBAR_CONFIG_OVERLAY` → `config.overlay.file`, `BUSBAR_WORKER_THREADS` → `advanced.worker_threads`, `BUSBAR_UPSTREAM_HTTP1_ONLY` → `advanced.upstream_http1_only`, `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` → `advanced.upstream_h2_prior_knowledge`, and `BUSBAR_PROVIDERS` → `providers_file:` (or the `--providers` flag). These deprecated compatibility inputs warn at boot; the overlay selector no longer reads or writes a file, because 1.6.0 persists runtime config only through Store. Move the other operational inputs into config.yaml at your convenience. Only `BUSBAR_CONFIG` (bootstrap), secret `{ env: NAME }` references, and `RUST_LOG` are env-native by design (`TOKIO_WORKER_THREADS` is still a fallback for `advanced.worker_threads`). See the [`config`](#config) and [`advanced`](#advanced) sections and the [upgrade note](migration-1.5.md#153-config-consolidation).
 
 ### `config`
 
-The top-level `config:` block is config-**management** policy: whether the admin API may mutate config at runtime, and where those mutations persist. It is distinct from `store:` (the data-plane store). Absent ⇒ **durable-by-default**: mutable, with an overlay file next to `config.yaml`, so admin-API mutations survive a restart.
+The top-level `config:` block is config-**management** policy: whether the admin API may mutate config at runtime. Runtime mutations persist exclusively through the operator's base `store:`, which anchors overlay recovery. A durable Store preserves them across restart; the memory Store is ephemeral. There is no independent overlay file.
 
 ```yaml
 config:
   locked: false                 # false = mutable (admin API may change config); true = immutable/GitOps
-  overlay:
-    file: busbar-overlay.json    # where mutations persist; relative paths resolve next to config.yaml
-    # `overlay: false` disables persistence entirely. Valid ONLY with `locked: true`.
 ```
 
 - **`locked: true`**: admin-API config mutations are refused at runtime; change config by editing `config.yaml` + `POST /config/reload`. The overlay is ignored.
-- **Boot invariant: `locked` XOR a writable overlay.** A mutable config with no writable overlay (you set `overlay: false`, or the config dir is read-only) **refuses to boot**, with a message naming the two fixes (a writable `config.overlay.file`, or `config.locked: true`). This makes a silently-non-durable mutation unreachable.
-- The `overlay:` map names its backend by key (`file:` today), mirroring `store: { module, settings }`, so a future durable-store overlay backend is additive.
+- Mutable management requires the Store's atomic conditional-record capability. Persistence must succeed before a new config generation is published; failure refuses the mutation.
+- A read-only config directory has no effect on Store persistence. `overlay: false` requires `locked: true`. Legacy `config.overlay.file` and `BUSBAR_CONFIG_OVERLAY` selectors are deprecated compatibility inputs: they never read, write or import an overlay file.
+- Boot recovers the complete overlay from the base Store before opening effective application plugins. An unavailable, incomplete, corrupt or newer overlay refuses recovery. `--safe-mode` explicitly quarantines it without deleting its Store records. `--validate` does not open a Store or recover its overlay. See [Operations](operations.md#config-mutability-locked--overlay) for recovery and anchor changes.
 
 ---
 
@@ -591,8 +589,8 @@ groups:
   roll (`total` never rolls, so no header).
 - **`tokens`** is best-effort post-paid: tokens land after each response, so the cap blocks the
   NEXT request once the ledgered total crosses it. Rejection: 429 + `Retry-After`.
-- **`budget`** derives at admission from the bucket's token ledger x the current `rate_card`
-  plus `per_request_fee` x its request count, in abstract cents. Rejection: the vendor's native
+- **`budget`** derives at admission from the bucket's exact class ledger and dated rate-card history,
+  including fee units, in abstract cost units. Rejection: the vendor's native
   quota status (429 for most protocols; Bedrock's quota shape is 400-class), naming the bucket.
 - **`concurrent`** is an in-flight gauge: incremented at admission, released when the response
   stream completes. Rejection: 429, no `Retry-After`. Takes no `pool:` (the gauge is per group).
@@ -672,9 +670,11 @@ its tokens the LLM plane ledgers `search_units` (rerank search units, Anthropic 
 `images` (per-image answers: dall-e, Imagen, Titan, SDXL), `audio_ms` (a transcription's reported
 duration, in whole milliseconds) and one class per Bedrock guardrail policy-unit count
 (`guardrail_*`). None of these counts toward a `tokens:` cap;
-every dollar figure is DERIVED at read time as `sum(class_count x class_rate) + requests x
-per_request_fee`, so correcting a rate is a config edit + reload with no re-billing and no data
-migration.
+every spend figure is DERIVED at read time from exact class counts and the applicable dated rates,
+including fee units. A new card prices subsequent arrivals without repricing earlier usage.
+An attributed backdated amendment corrects only its declared window; `as_of` selects a reproducible
+history point. No derived money or rewritten booked row is stored. Card history and activation
+confirmation belong to the configured Store; see [Store-owned rate-card history](store-card-history.md).
 
 ```yaml
 rate_card:
@@ -696,7 +696,7 @@ per_request_fee: 0
 |---|---|---|---|
 | `rate_card` | map | absent (billing off) | Per-model, per-tier token rates in MICRO-units (1e-6 abstract cost unit) per unit; an omitted `*_utok` tier prices 0. Each `*_utok` rate must be a whole number of nano-units — at most three decimal places (`2.5`, `0.075`, `3.125`); a finer rate (`0.0015`, `0.5005`) is refused at boot/`--validate` naming the model, tier and value, never rounded. ALL-OR-NOTHING at TWO levels: (1) present = every configured model needs an entry, or boot/`--validate` fail with a paste-ready stub of exactly the missing models; (2) present = every billable class the LLM plane declares — the four reserved token tiers (`input`, `output`, `cache_read`, `cache_write`) and all fifteen open classes listed in the upgrade note below (`search_units`, `classifications`, `web_fetch_requests`, `unitemized_tokens`, `images`, `audio_ms` and the nine `guardrail_*` classes) — must be configured on SOME entry, or boot/`--validate` refuse naming the section and every missing class. The four reserved tiers count as configured by the card's mere presence (an omitted `*_utok` field is a configured `0`); the open classes are not reserved, so each needs an explicit `units: { <class>: <rate> }` on at least one entry (`0` makes it free). A `units:` key the plane does not declare is refused too (almost always a typo). With a card present, a request for an arbitrary passthrough model with no rate is also rejected pre-forward. |
 | `units` | map, per entry | `{}` | Rates for OPEN (non-reserved) billable classes, alongside a model's four `*_utok` tiers: `{ <class>: <rate> }`, same MICRO-units-per-unit scale. The wire form is a non-negative integer, or an exact decimal STRING (`"0.5"`); a bare YAML/JSON float is refused — it has already lost precision through a binary double by the time serde sees it. A rate finer than 0.001 micro-units per unit, negative, or past ~1.8e16 is refused at parse ("finer than one nano-unit, the finest rate the card holds; round it to three decimal places"). A reserved class name (`input`, `output`, `cache_read`, `cache_write`) under `units:` is refused — it already has its own `*_utok` field. An unpriced class under a card that IS configured for the model REFUSES at the point it is hit, rather than silently billing `0` (see [Virtual keys and enforcement](#virtual-keys-and-enforcement)). |
-| `per_request_fee` | integer | `0` | Flat charge per request in abstract cents, charged at admission into every chain bucket's request count (refunded on a non-2xx outcome). |
+| `per_request_fee` | integer | `0` | Flat charge per request in abstract cost units, charged at admission into every chain bucket's request count (refunded on a non-2xx outcome). |
 
 The rate numbers are **abstract cost units**: Busbar does pure integer math and never knows what
 currency they represent. Currency, symbols, and FX are display concerns owned by your dashboard.
@@ -794,9 +794,12 @@ your own retention horizon; Busbar does not choose one for you.
 **Backend caveats:** the Valkey store supports TLS (`rediss://`), transparent reconnect, and atomic
 multi-key cascades (MULTI/EXEC), and scrubs the URL password from error strings; it writes WITHOUT
 TTLs (usage/metering/audit grow unboundedly by design: apply your own retention, per the metering
-note above). The Postgres store currently connects `NoTls` and without automatic reconnect: run it
-over a trusted network segment (or a TLS-terminating proxy such as pgbouncer/stunnel) and let your
-supervisor restart Busbar on a persistent connection loss.
+note above). The 1.6.0 Postgres store uses the host connector and supports the connection string's
+`sslmode`; it is not restricted to `NoTls`. Configure the mode and host trust policy deliberately:
+an absent `sslmode`, `disable` and `allow` use plaintext. `prefer` permits plaintext fallback and
+does not verify the certificate when TLS is accepted. `require`, `verify-ca` and `verify-full`
+use host trust anchors and name verification and refuse a server that declines TLS. This describes
+the implementation, not live qualification of every deployment.
 
 ---
 
@@ -1451,9 +1454,9 @@ unlimited (access only).
   `409 conflict`. Absent or `0` = unlimited.
 
 **Enforcement** walks the bound group's chain at admission and ANDs every limit (see
-[`groups`](#groups) for per-metric semantics). Spend derives at check time from the token ledger
-x the current `rate_card` + `per_request_fee` x requests: tokens are the only stored truth, so a
-rate correction reprices everything on the next read. A key bound to a group missing from the
+[`groups`](#groups) for per-metric semantics). Spend derives at check time from exact ledger
+quantities and dated rate history. Forward card changes preserve earlier prices; attributed
+backdated corrections apply only to their declared windows. A key bound to a group missing from the
 running config fails CLOSED (the rejection names the unconfigured bucket); minting validates the
 group exists, and boot re-checks every stored key.
 
@@ -1507,7 +1510,7 @@ plugins:
 | `trust.publishers` | list | no | empty | Third-party publishers: `{ name, public_key }` pairs (hex ed25519). The name `busbar` is reserved for the embedded release key and cannot be configured. A RETIRED busbar release key (the 1.5 key `b18395a3…`) listed here under any other name is the explicit opt-in that loads a first-party plugin it signed; without the entry that plugin is refused (`retired_key`), and with it the boot warns that the plugin is unverified. |
 | `trust.allow_unsigned` | bool | no | `false` | EXPLICIT opt-in to load plugins with no valid signature (unsigned/tampered). Without it they are logged and skipped, never `dlopen`ed. It never admits a plugin signed by a RETIRED busbar release key: that is a revocation, refused (`retired_key`) unless the key is named under `trust.publishers`. |
 | `trust.allow_third_party` | bool | no | `false` | EXPLICIT opt-in to load validly-signed plugins from a publisher NOT in `publishers`. |
-| `fetch` | list | no | empty | Tarballs Busbar downloads into `dir` before the plugin preflight: at boot (a miss is fatal) and on `POST /plugins/reload` (a miss warns, BUSBAR-6001, and keeps the current artifact). Each entry is exactly one of `{ github: "org/repo@tag", sha256? }`, `{ url: "https://…/plugin.tar.gz", sha256? }` or `{ env: VAR }` (the variable holds a URL, optionally `url@sha256`); a URL must end in a tarball filename, and an unknown key fails the parse. `sha256` is an integrity pin and the download-skip cache key (a file in `dir` already hashing to it means no network); signature verification remains the trust gate. `--validate` does no network, so it does not fetch. |
+| `fetch` | list | no | empty | Tarballs Busbar downloads into `dir` before the plugin preflight: at boot (a miss is fatal) and on `POST /plugins/reload` (a miss warns, BUSBAR-6001, and keeps the current artifact). Each entry is exactly one of `{ github: "org/repo@tag", sha256? }`, `{ url: "https://…/plugin.tar.gz", sha256? }` or `{ env: VAR }` (the variable holds a URL, optionally `url@sha256`); a complete-archive pin is required before dropped native bootstrap/check/migration code executes (see [Plugins](plugins.md#how-plugins-are-secured)); a URL must end in a tarball filename, and an unknown key fails the parse. `sha256` is an integrity pin and the download-skip cache key (a file in `dir` already hashing to it means no network); signature verification remains the trust gate. `--validate` does no network, so it does not fetch. |
 | `min_versions` | map | no | empty | Anti-downgrade floors: manifest `name` -> minimum `version`. A floored plugin must prove (trusted signature at/above the floor) that it meets it; no opt-in flag can bypass a floor. First-party plugins are automatically floored at the running binary's version. |
 | `logs.dir` | string | no | `logs/plugins` | Where each plugin instance's own log file goes: `<dir>/<section>.<instance>.log`: the instance name after its kind's config section (`export`, `secrets`, `store`, `identity-providers`, `hooks`, `providers`; a plane's instance is its own section), with every character outside `[A-Za-z0-9._-]` written as `_`. So the `metrics` export writes `export.metrics.log` and the memory store `store.memory.log`. |
 | `logs.level` | string | no | `info` | The level of an instance `logs.levels` does not name: `off`, `error`, `warn`, `info`, `debug` or `trace`. Any other word is a boot error naming the key. |
@@ -1515,7 +1518,7 @@ plugins:
 | `logs.rotate_mb` | integer | no | never | Past this size the file is renamed `<file>.1` (older archives shift up) and a new file begins, the request-log file's rotation. `0` is a boot error. |
 | `logs.keep` | integer | no | `5` | How many rotated archives are kept. |
 
-**Fail-closed guarantees:** with plugins enabled, ANY invalid tarball or manifest in `dir` (unparseable, missing/malformed fields, sha256 mismatch, unsupported `abi_version`) aborts boot naming the file and reason; any name/alias conflict between loadable plugins aborts boot naming both. `busbar --validate` runs the exact same pipeline ahead of time (zero side effects, nothing loaded), and `busbar --list-plugins` prints the manifest-only inventory with each plugin's signature verdict and load status.
+**Fail-closed guarantees:** with plugins enabled, ANY invalid tarball or manifest in `dir` (unparseable, missing/malformed fields, sha256 mismatch, unsupported `abi_version`) aborts boot naming the file and reason; any name/alias conflict between loadable plugins aborts boot naming both. `busbar --validate` checks operator inputs and local artifacts without network access, Store opening or overlay recovery. Authorized native grammar/check callbacks may execute; they require the bootstrap archive authorization described in [Plugins](plugins.md#how-plugins-are-secured). Validation does not prove plugin opening, readiness or backend reachability. `busbar --list-plugins` remains manifest-only.
 
 ### `secrets`
 

@@ -41,6 +41,20 @@ impl From<Rendered> for Whole {
 }
 
 impl DataRoutes {
+    pub(super) fn inbound_audit_kind(&self, line: u32) -> OpClassId {
+        self.guests
+            .lines()
+            .get(line as usize)
+            .and_then(|line| {
+                let busbar_kernel::guest::Claimant::Plane(instance) = &line.claimant else {
+                    return None;
+                };
+                let (plane, _) = self.of_line.get(&(instance.clone(), line.route.rung))?;
+                Some(self.live[*plane].facts.audit_kind)
+            })
+            .unwrap_or(OpClassId::new("inbound"))
+    }
+
     fn admitted_claim(&self, admission: &RequestAdmission) -> Option<DoorClaim> {
         let line = admission.selected_line();
         let busbar_kernel::guest::Claimant::Plane(instance) = &line.claimant else {
@@ -62,6 +76,7 @@ impl DataRoutes {
         admission: &RequestAdmission,
         reason: ReasonCode,
     ) -> Option<Rendered> {
+        admission.refuse(busbar_contract::caps::StepName::Decode, reason);
         let (plane, _) = self.admitted_claim(admission)?;
         let head = admission.head();
         let target = target_of(head);
@@ -172,6 +187,7 @@ impl DataRoutes {
                 .get(claim as usize)
                 .is_some_and(|claim| claim.flags & CLAIM_OPEN != 0);
         let door = SessionDoor {
+            admission: None,
             plane,
             app,
             principal,
@@ -185,6 +201,36 @@ impl DataRoutes {
             host_ticket_admission: consumed.host_ticket_admission,
         };
         (door, arrival)
+    }
+
+    async fn complete_unmetered<C: Output>(
+        &self,
+        plane: usize,
+        admission: &RequestAdmission,
+        context: &AdmittedContext,
+        caller: &C,
+        rendered: Rendered,
+    ) {
+        caller.head(rendered.status, rendered.fields);
+        if !rendered.body.is_empty() && !caller.write(&rendered.body).await {
+            admission.refuse(
+                busbar_contract::caps::StepName::Encode,
+                ReasonCode::ClientGone,
+            );
+            return;
+        }
+        if admission.begin_execution() {
+            let principal = context.gov.key().map_or_else(
+                || PrincipalId::new(AuthPrincipal(None).actor_id()),
+                |key| PrincipalId::new(key.id.as_str()),
+            );
+            self.post.node().unmetered_inbound(
+                admission.unit_key(),
+                self.live[plane].facts.audit_kind,
+                &principal,
+                busbar_contract::caps::Outcome::Completed,
+            );
+        }
     }
 
     /// The same teller driver, money seam, hooks and NodeEndPost as the compatibility adapter.
@@ -244,7 +290,8 @@ impl DataRoutes {
                     scopes_supported: &document.scopes_supported,
                 },
             );
-            render(&*caller, rendered).await;
+            self.complete_unmetered(plane, admission, &context, &*caller, rendered)
+                .await;
             return None;
         }
         let catalog = self.served.planes[plane]
@@ -267,11 +314,13 @@ impl DataRoutes {
                 &fields,
                 &names,
             ) {
-                render(&*caller, rendered).await;
+                self.complete_unmetered(plane, admission, &context, &*caller, rendered)
+                    .await;
             }
             return None;
         }
-        let (door, mut arrival) = self.neutral_arrival(plane, claim, context, body);
+        let (mut door, mut arrival) = self.neutral_arrival(plane, claim, context, body);
+        door.admission = Some(admission.clone());
         if admission.selected_line().upgrade.is_some() {
             if !slot.admit().await {
                 if let Some(rendered) = self.refusal(admission, ReasonCode::DecodeFailed) {
@@ -347,6 +396,10 @@ impl DataRoutes {
                             }
                         }
                         Err(_) => {
+                            admission.refuse(
+                                busbar_contract::caps::StepName::Decode,
+                                ReasonCode::DecodeFailed,
+                            );
                             if let Ok(closing) = stream.refuse_response(
                                 &[],
                                 refusal_status(ReasonCode::DecodeFailed),
@@ -383,6 +436,7 @@ impl DataRoutes {
         caller: &C,
     ) -> Option<Rendered> {
         let SessionDoor {
+            admission,
             plane,
             app,
             principal,
@@ -400,6 +454,7 @@ impl DataRoutes {
             caller,
             arrival,
             None,
+            admission.as_ref(),
         )
         .await
     }

@@ -158,6 +158,7 @@ impl GovState {
             budget_flush_runner: BudgetFlushRunner::default(),
             deleting_budget_buckets: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             pending_metering: PendingMetering::new(),
+            unit_checkpoints: unit_checkpoint::UnitCheckpointBook::default(),
             money_view: money_view::MoneyView::default(),
             caller_refs: Arc::new(RwLock::new(Some(Arc::new(match signer.as_ref() {
                 Some(s) => crate::auth::CallerRefKey::derive(&s.secret_bytes()),
@@ -515,33 +516,61 @@ impl GovState {
         now: u64,
         era: RawRateEra,
     ) {
-        if units.values().all(|v| *v == 0) {
-            return;
+        self.record_counts_served_in_era(
+            cost,
+            key,
+            pool,
+            model,
+            provider,
+            &whole_counts(units),
+            now,
+            era,
+        )
+        .expect("whole usage accrual exceeds Count range");
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_counts_served_in_era(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        pool: &str,
+        model: &str,
+        provider: Option<&str>,
+        units: &std::collections::BTreeMap<String, Count>,
+        now: u64,
+        era: RawRateEra,
+    ) -> Result<(), CountError> {
+        if units.values().all(|v| v.is_zero()) {
+            return Ok(());
         }
 
-        self.meter_classes(key, model, provider, units, era, now);
+        if units.values().any(|n| n.is_negative()) {
+            return Err(CountError::Negative);
+        }
 
-        let chain = match cost.chain_for(key) {
-            Ok(c) => c,
+        let (_, pool) = split_plane_lane(pool);
+        let targets = match cost.chain_for(key) {
+            Ok(chain) => chain
+                .iter()
+                .filter(|b| b.applies_to_pool(pool))
+                .map(|b| {
+                    (
+                        b.bucket_id.to_string(),
+                        budget_window(b.window, now),
+                        b.group_name.map(str::to_owned),
+                    )
+                })
+                .collect::<Vec<_>>(),
             Err(missing) => {
                 diag_debug!(ACCRUAL_GROUP_MISSING, key = %key.id, group = missing,
                     "group missing at accrual; tokens ledgered to the key bucket only");
-                self.accrue_bucket(&key.id, None, super::WINDOW_TOTAL, (model, era), units, now);
-                return;
+                vec![(key.id.clone(), 0, None)]
             }
         };
-
-        let (_, pool) = split_plane_lane(pool);
-        for bucket in chain.iter().filter(|b| b.applies_to_pool(pool)) {
-            self.accrue_bucket(
-                bucket.bucket_id,
-                bucket.group_name,
-                bucket.window,
-                (model, era),
-                units,
-                now,
-            );
-        }
+        self.accrue_count_targets(&targets, model, era, units, now, false, || {
+            self.meter_classes(key, model, provider, units, era, now)
+        })
     }
 
     fn meter_classes(
@@ -549,22 +578,22 @@ impl GovState {
         key: &VirtualKey,
         lane: &str,
         provider: Option<&str>,
-        units: &std::collections::BTreeMap<String, u64>,
+        units: &std::collections::BTreeMap<String, Count>,
         era: RawRateEra,
         now: u64,
-    ) {
+    ) -> Result<(), CountError> {
         let (plane, subject) = busbar_kernel_ledger::cost::split_plane_lane(lane);
-        let usage_units: std::collections::BTreeMap<String, u64> = units
+        let usage_units: std::collections::BTreeMap<String, Count> = units
             .iter()
             .filter(|(class, n)| {
-                **n != 0
+                !n.is_zero()
                     && !(plane.is_empty()
                         && busbar_contract::records::RESERVED_UNITS.contains(&class.as_str()))
             })
             .map(|(class, n)| (class.clone(), *n))
             .collect();
         if usage_units.is_empty() {
-            return;
+            return Ok(());
         }
         let (model, provider) = if plane.is_empty() {
             (lane, provider.unwrap_or(""))
@@ -582,13 +611,13 @@ impl GovState {
                 .map(|id| id.metering_version())
                 .unwrap_or_default(),
         );
-        self.pending_metering.accrue(
+        self.pending_metering.try_accrue(
             key,
             MeterCounts {
                 usage_units,
                 ..MeterCounts::default()
             },
-        );
+        )
     }
 
     pub fn record_lane_metering(
@@ -604,10 +633,11 @@ impl GovState {
             "",
             lane,
             provider,
-            units,
+            &whole_counts(units),
             now,
             crate::rate_apply::era_at(wall_ms()),
-        );
+        )
+        .expect("whole metering accumulation exceeds Count range");
     }
 
     pub fn record_lane_metering_for_key(
@@ -637,6 +667,22 @@ impl GovState {
         now: u64,
         era: RawRateEra,
     ) {
+        self.record_lane_counts_in_era(key, lane, provider, &whole_counts(units), now, era)
+            .expect("whole metering accrual exceeds Count range");
+    }
+
+    pub fn record_lane_counts_in_era(
+        &self,
+        key: &VirtualKey,
+        lane: &str,
+        provider: Option<&str>,
+        units: &std::collections::BTreeMap<String, Count>,
+        now: u64,
+        era: RawRateEra,
+    ) -> Result<(), CountError> {
+        if units.values().any(|n| n.is_negative()) {
+            return Err(CountError::Negative);
+        }
         self.record_lane_metering_attributed(
             &key.id,
             key.group.as_deref().unwrap_or(""),
@@ -645,7 +691,8 @@ impl GovState {
             units,
             now,
             era,
-        );
+        )?;
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -655,15 +702,15 @@ impl GovState {
         key_group_at_use: &str,
         lane: &str,
         provider: Option<&str>,
-        units: &std::collections::BTreeMap<String, u64>,
+        units: &std::collections::BTreeMap<String, Count>,
         now: u64,
         era: RawRateEra,
-    ) {
+    ) -> Result<(), CountError> {
         match split_plane_lane(lane) {
             ("", _) => {
                 if let Some(provider) = provider {
                     let add = MeterCounts::request(units);
-                    self.record_metered_request_in_era(
+                    self.try_record_metered_request_in_era(
                         key_id,
                         key_group_at_use,
                         lane,
@@ -671,12 +718,12 @@ impl GovState {
                         add,
                         now,
                         era,
-                    );
+                    )?;
                 }
             }
             (plane, subject) => {
                 let add = MeterCounts::request(&std::collections::BTreeMap::new());
-                self.record_metered_request_in_era(
+                self.try_record_metered_request_in_era(
                     key_id,
                     key_group_at_use,
                     subject,
@@ -684,40 +731,10 @@ impl GovState {
                     add,
                     now,
                     era,
-                );
+                )?;
             }
         }
-    }
-
-    fn accrue_bucket(
-        &self,
-        bucket_id: &str,
-        group: Option<&str>,
-        budget_period: &str,
-        (model, era): (&str, RawRateEra),
-        units: &std::collections::BTreeMap<String, u64>,
-        now: u64,
-    ) {
-        let window = budget_window(budget_period, now);
-        let mut map = self.budget.write(bucket_id);
-        let cell = match map.get_mut(bucket_id) {
-            Some(c) if window > c.window_start => {
-                c.roll(window);
-                c
-            }
-            Some(c) => c,
-            None => map
-                .entry(bucket_id.to_string())
-                .or_insert_with(|| BudgetCell::fresh(window)),
-        };
-        cell.mutate(|cell| {
-            if let Some(group) = group {
-                cell.group_owners.insert(group.to_string());
-            }
-            cell.accrue_raw(model, era, units);
-            cell.dirty = true;
-            cell.last_touch = now;
-        });
+        Ok(())
     }
 
     pub fn record_metering(
@@ -728,13 +745,28 @@ impl GovState {
         usage: Option<&busbar_contract::billing::TokenUsage>,
         now: u64,
     ) {
-        let add = MeterCounts {
-            requests: 1,
-            tokens_input: usage.map(|u| u.input).unwrap_or(0),
-            tokens_output: usage.map(|u| u.output).unwrap_or(0),
-            tokens_cache_read: usage.and_then(|u| u.cache_read).unwrap_or(0),
-            tokens_cache_write: usage.and_then(|u| u.cache_creation).unwrap_or(0),
-            usage_units: std::collections::BTreeMap::new(),
+        if usage.is_some_and(|u| !u.refused_counts.is_empty()) {
+            tracing::warn!(
+                key = key_id,
+                "metering refused: provider reported invalid exact counts"
+            );
+            return;
+        }
+        let add = if let Some(exact) = usage.and_then(|u| u.exact_counts.as_ref()) {
+            if exact.values().any(|n| n.is_negative()) {
+                tracing::warn!(key = key_id, "metering refused: negative exact count");
+                return;
+            }
+            MeterCounts::request(exact)
+        } else {
+            MeterCounts {
+                requests: 1,
+                tokens_input: whole_count(usage.map(|u| u.input).unwrap_or(0)),
+                tokens_output: whole_count(usage.map(|u| u.output).unwrap_or(0)),
+                tokens_cache_read: whole_count(usage.and_then(|u| u.cache_read).unwrap_or(0)),
+                tokens_cache_write: whole_count(usage.and_then(|u| u.cache_creation).unwrap_or(0)),
+                usage_units: std::collections::BTreeMap::new(),
+            }
         };
         self.record_metered_request(key_id, "", model, provider, add, now);
     }
@@ -795,6 +827,29 @@ impl GovState {
         now: u64,
         era: RawRateEra,
     ) {
+        self.try_record_metered_request_in_era(
+            key_id,
+            key_group_at_use,
+            model,
+            provider,
+            add,
+            now,
+            era,
+        )
+        .expect("metering accumulation exceeds Count range");
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn try_record_metered_request_in_era(
+        &self,
+        key_id: &str,
+        key_group_at_use: &str,
+        model: &str,
+        provider: &str,
+        add: MeterCounts,
+        now: u64,
+        era: RawRateEra,
+    ) -> Result<(), CountError> {
         let key: MeterKey = (
             key_id.to_string(),
             metering_bucket(now),
@@ -807,7 +862,7 @@ impl GovState {
                 .unwrap_or_default(),
         );
 
-        self.pending_metering.accrue(key, add);
+        self.pending_metering.try_accrue(key, add)
     }
 
     #[cfg(test)]
@@ -827,39 +882,41 @@ impl GovState {
         if self.store.supports_metering_batch_deduped() {
             return self.flush_metering_deduped(shutdown);
         }
-        let taken = self.pending_metering.drain();
+        let mut taken: std::collections::VecDeque<_> = self.pending_metering.drain().into();
         let mut flushed = 0usize;
 
         let mut failed = 0usize;
         let mut unrecorded: Vec<String> = Vec::new();
         let mut last_error: Option<String> = None;
-        for (
+        while let Some((
             (key_id, bucket, model, provider, priced_from_ms, key_group_at_use, pricing_version),
             counts,
-        ) in taken
+        )) = taken.pop_front()
         {
             if counts.is_zero() {
                 continue;
             }
-            let delta = MeteringDelta {
-                key_id: key_id.clone(),
+            let meter_key = (
+                key_id.clone(),
                 bucket,
-                model: model.clone(),
-                provider: provider.clone(),
-                tokens_input: counts.tokens_input,
-                tokens_output: counts.tokens_output,
-                tokens_cache_read: counts.tokens_cache_read,
-                tokens_cache_write: counts.tokens_cache_write,
-                requests: counts.requests,
-                billable_requests: counts.requests,
-                key_group_at_use: key_group_at_use.clone(),
-                pricing_version: pricing_version.clone(),
-
+                model.clone(),
+                provider.clone(),
                 priced_from_ms,
-                usage_units: counts.usage_units.clone(),
-            };
+                key_group_at_use.clone(),
+                pricing_version.clone(),
+            );
+            let (delta, remainder) = super::metering_flush::metering_chunk(&meter_key, &counts);
             match self.store.add_metering(&delta) {
-                Ok(()) => flushed += 1,
+                Ok(()) => {
+                    flushed += 1;
+                    if !remainder.is_zero() {
+                        if shutdown {
+                            taken.push_back((meter_key, remainder));
+                        } else {
+                            self.pending_metering.accrue(meter_key, remainder);
+                        }
+                    }
+                }
                 Err(e) => {
                     failed += 1;
                     if shutdown {
@@ -937,7 +994,7 @@ impl GovState {
             let (requests, tokens) = match self.budget.read(bucket.bucket_id).get(bucket.bucket_id)
             {
                 Some(cell) if cell.window_start == window => (cell.requests, cell.total_tokens()),
-                _ => (0, 0),
+                _ => (0, Count::ZERO),
             };
             let frac = |used: u64, cap: u64| -> f64 {
                 if cap == 0 {
@@ -951,7 +1008,11 @@ impl GovState {
                 h = h.min(frac(requests, cap));
             }
             if let Some(cap) = bucket.tokens_cap {
-                h = h.min(frac(tokens, cap));
+                h = h.min(if cap == 0 {
+                    0.0
+                } else {
+                    1.0 - tokens.micros() as f64 / whole_count(cap).micros() as f64
+                });
             }
             let h = h.clamp(0.0, 1.0);
             headroom = Some(headroom.map_or(h, |cur: f64| cur.min(h)));
@@ -1450,13 +1511,13 @@ impl GovState {
         bucket_id: &str,
         budget_period: &str,
         now: u64,
-    ) -> Vec<(String, std::collections::BTreeMap<String, u64>)> {
+    ) -> Vec<(String, std::collections::BTreeMap<String, Count>)> {
         let window = budget_window(budget_period, now);
         let live = (self.budget.read(bucket_id).get(bucket_id))
             .filter(|c| c.window_start == window)
             .map(|c| c.models.clone());
         let read = live.map_or_else(
-            || (self.store.get_usage(bucket_id, window)).map(|l| durable_segments(l.models)),
+            || (self.store.get_usage(bucket_id, window)).and_then(|l| durable_segments(l.models)),
             Ok,
         );
         let Ok(models) = read else {
@@ -1464,7 +1525,9 @@ impl GovState {
         };
 
         let models = models.iter().map(|m| (&*m.model, m.cur.clone()));
-        busbar_kernel_ledger::usage::by_lane(models, u64::saturating_add)
+        busbar_kernel_ledger::usage::by_lane(models, |a, b| {
+            a.checked_add(b).expect("lane count total overflow")
+        })
     }
 
     pub fn budget_state(
@@ -1605,7 +1668,25 @@ impl GovState {
         models: &[&str],
         expected: &BTreeMap<String, u64>,
     ) -> Result<AdmitGrant, LimitBlocked> {
-        self.admit_checked(cost, key, pool, now, cost.estimate_minor(models, expected))
+        self.try_admit_estimated_counts(cost, key, pool, now, models, &whole_counts(expected))
+    }
+
+    pub fn try_admit_estimated_counts(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        pool: &str,
+        now: u64,
+        models: &[&str],
+        expected: &BTreeMap<String, Count>,
+    ) -> Result<AdmitGrant, LimitBlocked> {
+        self.admit_checked(
+            cost,
+            key,
+            pool,
+            now,
+            cost.estimate_counts_minor(models, expected),
+        )
     }
 
     fn admit_checked(
@@ -1624,6 +1705,22 @@ impl GovState {
         let buckets: Vec<&crate::cost::ChainBucket<'_>> =
             chain.iter().filter(|b| b.applies_to_pool(pool)).collect();
         let groups = cost.groups();
+
+        // A recovered unit may have sent only part of its raw custody. Admit against exact
+        // hydrated rows only after that custody settles and its targets have been refreshed.
+        for bucket in &buckets {
+            let window = budget_window(bucket.window, now);
+            if self.unresolved_unit_target(bucket.bucket_id, window) {
+                return Err(LimitBlocked::Limit {
+                    group: bucket.group_name.unwrap_or(bucket.bucket_id).to_string(),
+                    metric: "budget",
+                    window: Some(bucket.window),
+                    pool: bucket.scope.map(|scope| scope.value.clone()),
+                    downgrade_to: None,
+                    retry_after: None,
+                });
+            }
+        }
 
         for &gi in chain.group_indices() {
             if !groups[gi].enabled {
@@ -1731,7 +1828,7 @@ impl GovState {
                     cell.correction.as_ref().map_or(cell.requests, |branch| {
                         cell.requests.max(branch.accepted.requests)
                     }),
-                    bucket.tokens_cap.map_or(0, |_| {
+                    bucket.tokens_cap.map_or(Count::ZERO, |_| {
                         cell.correction
                             .as_ref()
                             .map_or(cell.total_tokens(), |branch| {
@@ -1752,18 +1849,18 @@ impl GovState {
                     }),
                 ),
 
-                _ => (0, 0, None, Ok(0)),
+                _ => (0, Count::ZERO, None, Ok(0)),
             };
             let class_blocked = (bucket.class_caps.iter())
                 .find(|c| {
-                    live.map_or(0, |cell| {
+                    live.map_or(Count::ZERO, |cell| {
                         cell.correction
                             .as_ref()
                             .map_or(cell.total_tier(c.class), |branch| {
                                 cell.total_tier(c.class)
                                     .max(branch.accepted.total_tier(c.class))
                             })
-                    }) >= c.cap
+                    }) >= whole_count(c.cap)
                 })
                 .map(|c| c.metric.as_str());
 
@@ -1782,7 +1879,10 @@ impl GovState {
                 .is_some_and(|cap| requests.saturating_add(1) > cap)
             {
                 Some("requests")
-            } else if bucket.tokens_cap.is_some_and(|cap| tokens >= cap) {
+            } else if bucket
+                .tokens_cap
+                .is_some_and(|cap| tokens >= whole_count(cap))
+            {
                 Some("tokens")
             } else if class_blocked.is_some() {
                 class_blocked
@@ -1816,7 +1916,7 @@ impl GovState {
 
         let era = crate::rate_apply::era_at(wall_ms());
 
-        let one = || BTreeMap::from([(PER_REQUEST.to_string(), 1)]);
+        let one = || BTreeMap::from([(PER_REQUEST.to_string(), Count::ONE)]);
         let plane_fee = (!plane.is_empty()).then(|| (plane_fee_lane(plane), one()));
         grant.charge.lane = plane_fee.as_ref().map(|(lane, _)| lane.clone());
         grant.charge.era = era;
@@ -1841,7 +1941,8 @@ impl GovState {
                 }
                 cell.requests = cell.requests.saturating_add(1);
                 if let Some((lane, one)) = &plane_fee {
-                    cell.accrue_raw(lane, era, one);
+                    cell.accrue_raw(lane, era, one)
+                        .expect("fee count exceeds Count range");
                 } else {
                     cell.billable_requests = cell.billable_requests.saturating_add(1);
                     cell.fee_eras.charge(era);
@@ -1874,8 +1975,9 @@ impl GovState {
                         },
                         Some((lane, unit)) => UsageDelta {
                             models: vec![busbar_contract::records::ModelTokensDelta {
+                                scale: COUNT_SCALE,
                                 model: lane.to_string(),
-                                usage_units: BTreeMap::from([(unit.to_string(), -1)]),
+                                usage_units: BTreeMap::from([(unit.to_string(), -1_000_000)]),
                             }],
                             ..UsageDelta::default()
                         },
@@ -1963,7 +2065,7 @@ impl GovState {
                         .filter(|m| {
                             &*m.model == lane
                                 && era.is_none_or(|era| m.era == era)
-                                && m.cur.get(unit).is_some_and(|n| *n > 0)
+                                && m.cur.get(unit).is_some_and(|n| *n >= Count::ONE)
                         })
                         .max_by_key(|m| m.era);
                     if let Some(m) = held {
@@ -2180,10 +2282,14 @@ impl GovState {
                             }
                         } else if cell.window_start > snap.window {
                             if plain_ok {
-                                cell.park(snap.window, negated(&snap.delta));
+                                park_window(&mut cell.rolled, snap.window, negated(&snap.delta));
                             }
                             if era_ok {
-                                cell.park_eras(snap.window, negated(&snap.eras));
+                                park_window(
+                                    &mut cell.rolled_eras,
+                                    snap.window,
+                                    negated(&snap.eras),
+                                );
                             }
                             cell.dirty = true;
                         }
@@ -2377,28 +2483,30 @@ fn refund_in_place(cell: &mut BudgetCell, lane: Option<(&str, &str)>, era: RawRa
     });
 }
 
-fn take_one(counts: &mut BTreeMap<String, u64>, unit: &str) {
+fn take_one(counts: &mut BTreeMap<String, Count>, unit: &str) {
     if let Some(n) = counts.get_mut(unit) {
-        *n = n.saturating_sub(1);
-        if *n == 0 {
+        if *n < Count::ONE {
+            return;
+        }
+        *n = n
+            .checked_sub(Count::ONE)
+            .expect("fee refund count overflow");
+        if n.is_zero() {
             counts.remove(unit);
         }
     }
 }
 
-fn negated(delta: &UsageDelta) -> UsageDelta {
-    UsageDelta {
-        requests: delta.requests.saturating_neg(),
-        billable_requests: delta.billable_requests.saturating_neg(),
-        models: (delta.models.iter())
-            .map(|m| busbar_contract::records::ModelTokensDelta {
-                model: m.model.clone(),
-                usage_units: (m.usage_units.iter())
-                    .map(|(k, v)| (k.clone(), v.saturating_neg()))
-                    .collect(),
-            })
-            .collect(),
+fn negated(delta: &UsageDelta) -> ExactUsageDelta {
+    let mut exact = ExactUsageDelta::from_signed(delta);
+    exact.requests = -exact.requests;
+    exact.billable_requests = -exact.billable_requests;
+    for model in &mut exact.models {
+        for count in model.usage_units.values_mut() {
+            *count = -*count;
+        }
     }
+    exact
 }
 
 fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) -> RecordStoreError {
@@ -2407,7 +2515,7 @@ fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) ->
     ))
 }
 
-fn durable_cell(
+pub(super) fn durable_cell(
     row: busbar_contract::records::UsageLedger,
     eras: busbar_contract::records::UsageLedger,
     window: u64,
@@ -2417,7 +2525,7 @@ fn durable_cell(
     cell.billable_requests = row.billable_requests;
     cell.flushed_requests = row.requests;
     cell.flushed_billable_requests = row.billable_requests;
-    cell.models = durable_segments(row.models);
+    cell.models = durable_segments(row.models)?;
     let (mut fees, mut undated_fees) = (Vec::new(), row.billable_requests);
     for e in eras.models {
         let (era, model) = match e.model.split_once(ERA_MODEL_SEP) {
@@ -2431,7 +2539,17 @@ fn durable_cell(
             continue;
         }
         let Some(model) = model else {
-            let n = (e.usage_units.get(ERA_FEE_UNIT).copied().unwrap_or(0)).min(undated_fees);
+            let count = Count::from_stored(
+                i128::from(e.usage_units.get(ERA_FEE_UNIT).copied().unwrap_or(0)),
+                e.scale,
+            )
+            .map_err(|e| RecordStoreError(e.to_string()))?;
+            if count.micros() % 1_000_000 != 0 {
+                return Err(RecordStoreError("fractional fee count".into()));
+            }
+            let n = u64::try_from(count.micros() / 1_000_000)
+                .map_err(|e| RecordStoreError(e.to_string()))?
+                .min(undated_fees);
             undated_fees -= n;
             fees.push((era, n));
             continue;
@@ -2443,15 +2561,21 @@ fn durable_cell(
         };
         let mut cur = BTreeMap::new();
         for (unit, n) in e.usage_units {
-            let left = rest.cur.get(&unit).copied().unwrap_or(0);
-            let n = n.min(left);
-            if n == 0 {
+            let left = rest.cur.get(&unit).copied().unwrap_or_default();
+            let n = Count::from_stored(i128::from(n), e.scale)
+                .map_err(|e| RecordStoreError(e.to_string()))?
+                .min(left);
+            if n.is_zero() {
                 continue;
             }
             if left == n {
                 rest.cur.remove(&unit);
             } else {
-                rest.cur.insert(unit.clone(), left - n);
+                rest.cur.insert(
+                    unit.clone(),
+                    left.checked_sub(n)
+                        .map_err(|e| RecordStoreError(e.to_string()))?,
+                );
             }
             cur.insert(unit, n);
         }
@@ -2474,15 +2598,28 @@ fn durable_cell(
     Ok(cell)
 }
 
-fn durable_segments(rows: Vec<busbar_contract::records::ModelTokens>) -> Vec<ModelCell> {
-    let segment = |m: busbar_contract::records::ModelTokens| ModelCell {
-        model: std::sync::Arc::from(m.model),
-        era: RawRateEra::legacy(0),
-        cur: m.usage_units,
-        flushed: BTreeMap::new(),
-        flushed_era: BTreeMap::new(),
-    };
-    rows.into_iter().map(segment).collect()
+fn durable_segments(
+    rows: Vec<busbar_contract::records::ModelTokens>,
+) -> RecordStoreResult<Vec<ModelCell>> {
+    rows.into_iter()
+        .map(|m| {
+            Ok(ModelCell {
+                model: m.model.into(),
+                era: RawRateEra::legacy(0),
+                cur: m
+                    .usage_units
+                    .into_iter()
+                    .map(|(unit, n)| {
+                        Count::from_stored(i128::from(n), m.scale)
+                            .map(|n| (unit, n))
+                            .map_err(|e| RecordStoreError(e.to_string()))
+                    })
+                    .collect::<RecordStoreResult<_>>()?,
+                flushed: BTreeMap::new(),
+                flushed_era: BTreeMap::new(),
+            })
+        })
+        .collect()
 }
 
 #[path = "money_view.rs"]

@@ -356,7 +356,7 @@ All metrics are Prometheus counters/histograms exposed at `/metrics`, which is o
 | `busbar_translations_total` | counter | `from`, `to` | Cross-protocol translation hops. |
 | `busbar_request_duration_seconds` | histogram | `ingress_protocol`, `pool` | Model (LLM) plane only, unchanged from 1.5.4. End-to-end latency. |
 | `busbar_plane_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | Mounted planes (`mcp` / `a2a`). End-to-end latency for tool calls and agent tasks. |
-| `busbar_key_spend_cents` | gauge | `key` (+ mint labels) | Per-virtual-key derived spend in cents (all-time attribution bucket; spend derives from the token ledger x the current rate card at scrape time). |
+| `busbar_key_spend_cents` | gauge | `key` (+ mint labels) | Per-virtual-key derived spend (all-time attribution bucket), calculated from exact ledger quantities and dated rate history. The legacy metric name does not select a currency; cost units are operator-defined. |
 | `busbar_key_tokens_total` | gauge | `key` (+ mint labels) | Tokens consumed by each virtual key (all-time attribution bucket). |
 | `busbar_bucket_spend_cents` | gauge | `bucket`, `group`, `window` | Derived spend per (group, window) enforcement bucket (`bucket` = `group:<name>@<window>`). |
 | `busbar_bucket_budget_remaining_cents` | gauge | `bucket`, `group`, `window` | Budget cap minus derived spend, only for buckets carrying a `budget` limit. Enables Prometheus burn-rate alerting per group. |
@@ -649,10 +649,11 @@ durable revocation denylist immediately.
   insufficient_quota`; Bedrock signals over-budget as `400`), `concurrent` (in-flight gauge,
   `429`). The rejection names the exact blocking bucket (group + metric + window). A frozen
   group (`enabled: false`) rejects with `403`.
-- **Spend derives from the TOKEN LEDGER**: a flat `per_request_fee` is charged (as +1 request)
-  atomically pre-forward, and the response's per-(model, tier) token split is ledgered at
-  stream end. Spend = requests x fee + tokens x `rate_card` rates, recomputed on every check;
-  with no rate card, tokens price at 0 and only the flat fee counts.
+- **Spend derives from exact class quantities and dated rate history.** The plane reports
+  billable units, including fee units; the kernel retains quantities and provenance, never money.
+  Each read/check uses the applicable dated rates. A forward card change does not reprice earlier
+  arrivals; an attributed backdated amendment affects only its declared window. `as_of` reads
+  reproduce an earlier history point. See [Store-owned rate-card history](store-card-history.md).
 - **Ledgers are in-memory under `store: memory`** (ephemeral; the `store:` block itself is required in 1.6.0); configure a durable store plugin
   (`store: { module: sqlite|postgres|mysql|valkey, settings: {...} }`) to persist keys, usage, and
   the denylist across restarts.

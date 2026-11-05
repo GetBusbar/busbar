@@ -12,6 +12,10 @@ use std::sync::{Arc, Mutex};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
+#[path = "test_support_adoption.rs"]
+mod adoption;
+pub use adoption::observe_adoption;
+
 /// A real held datagram upstream for composition-root tests. Its exchange, writer, reader and
 pub struct DatagramSession(crate::dialled::Dialled);
 

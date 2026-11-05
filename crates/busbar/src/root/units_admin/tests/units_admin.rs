@@ -1657,9 +1657,25 @@ fn the_ledger_paths_answer_counts_times_card_and_survive_a_restart() {
 
     let stored = store.get_usage(&key.id, 0).expect("the row reads");
     assert_eq!(
-        stored.tokens_for("m"),
-        Some(1_000),
-        "the store holds the spend"
+        stored.models.len(),
+        1,
+        "the store holds the one model's counts"
+    );
+    let model = &stored.models[0];
+    assert_eq!(model.model, "m");
+    assert_eq!(
+        model.scale,
+        busbar_contract::count::COUNT_SCALE,
+        "the persisted envelope declares micro-units"
+    );
+    let expected_counts: std::collections::BTreeMap<_, _> = input
+        .iter()
+        .map(|(unit, quantity)| (unit.clone(), busbar_contract::count::Count::from(*quantity)))
+        .collect();
+    assert_eq!(
+        model.counts().expect("the stored scale decodes exactly"),
+        expected_counts,
+        "the stored envelope retains the original whole-unit quantity, never spend"
     );
 
     let totals = answer_over_counts(Arc::clone(&gov), "/api/v1/admin/ledger/totals");

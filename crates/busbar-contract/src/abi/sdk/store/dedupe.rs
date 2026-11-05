@@ -81,7 +81,14 @@ impl<'a> Dedupe<'a> {
 
     fn of(values: Values<'a>) -> Self {
         let mut f = Feed(Sha256::new());
-        f.text(TAG);
+        let scaled = match values {
+            Values::Usage(cells) => cells
+                .iter()
+                .any(|(_, _, d)| d.models.iter().any(|m| m.scale != 0)),
+            Values::Metering(rows) => rows.iter().any(|r| r.scale != 0),
+            _ => false,
+        };
+        f.text(if scaled { "busbar.store.op/2" } else { TAG });
         match values {
             Values::UsageCorrection(request) => {
                 f.text(super::correction::INTENT);
@@ -93,14 +100,14 @@ impl<'a> Dedupe<'a> {
                 for (bucket, window, delta) in cells {
                     f.text(bucket);
                     f.u64(*window);
-                    f.usage(delta);
+                    f.usage(delta, scaled);
                 }
             }
             Values::Metering(deltas) => {
                 f.text("add_metering_batch");
                 f.count(deltas.len());
                 for d in deltas {
-                    f.metering(d);
+                    f.metering(d, scaled);
                 }
             }
             Values::Append(record) => {
@@ -220,9 +227,18 @@ impl<'a> Dedupe<'a> {
         match self.values {
             Values::RecordTransaction(_) | Values::UsageCorrection(_) => return false,
             Values::Usage(cells) => {
+                if cells
+                    .iter()
+                    .any(|(_, _, delta)| delta.models.iter().any(|m| m.scale != 0))
+                {
+                    return false;
+                }
                 legacy::usage(&mut older, cells);
             }
             Values::Metering(deltas) => {
+                if deltas.iter().any(|delta| delta.scale != 0) {
+                    return false;
+                }
                 legacy::metering(&mut older, deltas);
             }
             Values::Append(record) => {
@@ -263,7 +279,7 @@ impl Feed {
         self.bytes(s.as_bytes());
     }
 
-    fn usage(&mut self, d: &UsageDelta) {
+    fn usage(&mut self, d: &UsageDelta, scaled: bool) {
         let UsageDelta {
             requests,
             billable_requests,
@@ -272,7 +288,15 @@ impl Feed {
         self.i64(*requests);
         self.i64(*billable_requests);
         self.count(models.len());
-        for ModelTokensDelta { model, usage_units } in models {
+        for ModelTokensDelta {
+            model,
+            usage_units,
+            scale,
+        } in models
+        {
+            if scaled {
+                self.u64(u64::from(*scale));
+            }
             self.text(model);
             self.count(usage_units.len());
             for (unit, n) in usage_units {
@@ -282,8 +306,9 @@ impl Feed {
         }
     }
 
-    fn metering(&mut self, d: &MeteringDelta) {
+    fn metering(&mut self, d: &MeteringDelta, scaled: bool) {
         let MeteringDelta {
+            scale,
             key_id,
             bucket,
             model,
@@ -299,6 +324,9 @@ impl Feed {
             priced_from_ms,
             usage_units,
         } = d;
+        if scaled {
+            self.u64(u64::from(*scale));
+        }
         self.text(key_id);
         self.u64(*bucket);
         self.text(model);

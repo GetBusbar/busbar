@@ -44,14 +44,15 @@ pub struct UsageAdjustment {
     pub delta: BTreeMap<String, i128>,
 }
 
-fn metered_count(row: &MeteringRow, class: &str) -> u64 {
-    match class {
+fn metered_count(row: &MeteringRow, class: &str) -> RecordStoreResult<Count> {
+    let raw = match class {
         busbar_contract::records::UNIT_INPUT => row.tokens_input,
         busbar_contract::records::UNIT_OUTPUT => row.tokens_output,
         busbar_contract::records::UNIT_CACHE_READ => row.tokens_cache_read,
         busbar_contract::records::UNIT_CACHE_WRITE => row.tokens_cache_write,
         other => row.usage_units.get(other).copied().unwrap_or(0),
-    }
+    };
+    Count::from_stored(i128::from(raw), row.scale).map_err(|e| RecordStoreError(e.to_string()))
 }
 
 /// One bucket's current window, priced by the one function: what the admin ledger views serve.
@@ -116,7 +117,7 @@ pub enum AdjustRefused {
         /// The class.
         class: String,
         /// What the segment holds now.
-        count: u64,
+        count: Count,
         /// The delta asked for.
         delta: i64,
     },
@@ -278,10 +279,19 @@ impl GovState {
         for (bucket, sign) in [(ADJUST_UP_BUCKET, 1i128), (ADJUST_DOWN_BUCKET, -1i128)] {
             for model in self.store.get_usage(bucket, day)?.models {
                 for (class, count) in model.usage_units {
-                    *net.entry(model.model.clone())
+                    let count = Count::from_stored(i128::from(count), model.scale)
+                        .map_err(|e| RecordStoreError(e.to_string()))?;
+                    if count.micros() % 1_000_000 != 0 {
+                        return Err(RecordStoreError("fractional whole-unit adjustment".into()));
+                    }
+                    let slot = net
+                        .entry(model.model.clone())
                         .or_default()
                         .entry(class)
-                        .or_default() += i128::from(count) * sign;
+                        .or_default();
+                    *slot = slot
+                        .checked_add(count.micros() / 1_000_000 * sign)
+                        .ok_or_else(|| RecordStoreError("adjustment total overflow".into()))?;
                 }
             }
         }
@@ -346,12 +356,11 @@ fn segment_at(models: &[ModelCell], lane: &str, at_ms: u64) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-fn moved(count: u64, delta: i64) -> Option<u64> {
-    if delta >= 0 {
-        count.checked_add(delta.unsigned_abs())
-    } else {
-        count.checked_sub(delta.unsigned_abs())
-    }
+fn moved(count: Count, delta: i64) -> Option<Count> {
+    count
+        .checked_add(Count::from_integer(i128::from(delta)).ok()?)
+        .ok()
+        .filter(|n| !n.is_negative())
 }
 
 #[cfg(test)]

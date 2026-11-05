@@ -20,7 +20,7 @@ pub struct Quantity {
     /// The declared meter class the quantity belongs to.
     pub class: String,
     /// How much of it was reported.
-    pub amount: u64,
+    pub amount: busbar_contract::Count,
 }
 
 impl Quantity {
@@ -28,7 +28,7 @@ impl Quantity {
     pub fn new(class: impl Into<String>, amount: u64) -> Self {
         Quantity {
             class: class.into(),
-            amount,
+            amount: amount.into(),
         }
     }
 }
@@ -71,7 +71,10 @@ impl Posting {
             quantities: usage
                 .lines()
                 .iter()
-                .map(|l| Quantity::new(l.class.as_str(), l.quantity))
+                .map(|l| Quantity {
+                    class: l.class.as_str().into(),
+                    amount: l.quantity,
+                })
                 .collect(),
             fee_count,
             tier_bp,
@@ -93,7 +96,7 @@ pub struct PricedLine {
     /// The meter class this quantity belongs to.
     pub class: String,
     /// How much of it was reported.
-    pub quantity: u64,
+    pub quantity: busbar_contract::Count,
     /// The card's rate for this class on the priced lane, in nano-units per unit of quantity.
     pub unit_price_nanos: u128,
     /// Quantity times unit price, in nano-units, before any tier multiplier.
@@ -226,9 +229,11 @@ pub fn price_at_card(
             ClassPrice::Nanos(nanos) => (u128::from(nanos), true),
             ClassPrice::Unpriced => (0u128, false),
         };
-        let amount_nanos = u128::from(quantity.amount)
+        let amount_nanos = u128::try_from(quantity.amount.micros())
+            .map_err(|_| Unpriceable::Overflow)?
             .checked_mul(unit_price_nanos)
-            .ok_or(Unpriceable::Overflow)?;
+            .ok_or(Unpriceable::Overflow)?
+            / 1_000_000;
         lines.push(PricedLine {
             class: class.to_string(),
             quantity: quantity.amount,
@@ -241,7 +246,7 @@ pub fn price_at_card(
     let fee_unit_price_nanos = pricing.card.fee_unit_price_nanos();
     lines.push(PricedLine {
         class: FEE_CLASS.to_string(),
-        quantity: posting.fee_count,
+        quantity: posting.fee_count.into(),
         unit_price_nanos: fee_unit_price_nanos,
         amount_nanos: u128::from(posting.fee_count).saturating_mul(fee_unit_price_nanos),
         unpriced: false,
@@ -257,7 +262,7 @@ pub fn price_at_card(
                 .iter()
                 .take(posting.quantities.len())
                 .filter(|l| !l.unpriced)
-                .map(|l| (l.class.as_str(), crate::cost::whole(l.quantity))),
+                .map(|l| (l.class.as_str(), l.quantity)),
             crate::cost::whole(posting.fee_count),
         )
     } else {

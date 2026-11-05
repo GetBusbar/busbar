@@ -270,8 +270,8 @@ impl GovState {
                 SegmentedUsage::of(&custody.plain, &custody.dated)?;
                 SegmentedUsage::of(&custody.absorbed_plain, &custody.absorbed_dated)?;
                 SegmentedUsage::of(
-                    &ExactUsageDelta::from_signed(&custody.chunk_plain),
-                    &ExactUsageDelta::from_signed(&custody.chunk_dated),
+                    &ExactUsageDelta::try_from_signed(&custody.chunk_plain).map_err(invalid)?,
+                    &ExactUsageDelta::try_from_signed(&custody.chunk_dated).map_err(invalid)?,
                 )?;
                 if usage_fingerprint(&custody)? != event.body_fingerprint {
                     return Err(invalid("usage original fingerprint differs"));

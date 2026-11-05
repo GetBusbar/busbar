@@ -40,7 +40,7 @@ def checkout(lock=LOCK, pins=None):
 
 
 class ShippedPin(unittest.TestCase):
-    def test_forgejo_and_historical_github_pin_identities(self):
+    def test_public_source_pin_identities(self):
         for url in ("https://github.com/GetBusbar/busbar-auth-oidc",
                     "https://github.com/GetBusbar/busbar-auth-oidc.git",
                     "https://www.github.com/GetBusbar/busbar-auth-oidc"):

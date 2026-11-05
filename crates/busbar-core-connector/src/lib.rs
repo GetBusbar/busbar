@@ -545,6 +545,10 @@ impl Drop for Reading<'_> {
 
 /// One connection the connector holds for its owner: the line it rides and the stream it reads
 struct Held {
+    /// A request reserved on this connection but not yet committed.
+    prepared: Mutex<Option<(String, String, std::time::Instant)>>,
+    /// Blocks application I/O until the prepared request has committed successfully.
+    uncommitted: AtomicBool,
     line: Mutex<Option<(Arc<Line>, u64)>>,
     /// Closed while a dial or replay may still have this state out. Published with `line` locked.
     retired: AtomicBool,
@@ -732,6 +736,8 @@ impl Held {
         pooled: Option<(usize, PoolKey)>,
     ) -> Self {
         Held {
+            prepared: Mutex::new(None),
+            uncommitted: AtomicBool::new(false),
             line: Mutex::new(line),
             retired: AtomicBool::new(false),
             judging: Mutex::new(judging),
@@ -2045,6 +2051,10 @@ impl Connector {
         held.watch_deadlines(interest, waker);
 
         held.within_due()?;
+        if held.uncommitted.load(Ordering::Acquire) {
+            self.settle(&held, Some(waker))?;
+            return Err(ConnError::Pending);
+        }
         let mut read = match &held.dialled {
             Some(d) => self.read_dialled(&held, d, waker, buf),
             None => self.read_held(&held, waker, buf),
@@ -2074,7 +2084,13 @@ impl Connector {
         let Some((line, stream)) = held.line() else {
             return Ok(false);
         };
-        match line.poll_landed(stream, &mut Context::from_waker(waker)) {
+        let mut cx = Context::from_waker(waker);
+        let landed = if held.uncommitted.load(Ordering::Acquire) {
+            line.poll_prepared(stream, &mut cx)
+        } else {
+            line.poll_landed(stream, &mut cx)
+        };
+        match landed {
             Poll::Ready(Ok(())) => {
                 held.landed();
                 Ok(true)
@@ -2276,7 +2292,118 @@ impl DeclaredConns for Connector {
         require_secure: bool,
         dial_timeout_ms: u64,
     ) -> Result<ConnId, ConnError> {
-        self.open_timed(caller, need, desc, require_secure, Some(dial_timeout_ms))
+        self.open_timed(
+            caller,
+            need,
+            desc,
+            require_secure,
+            Some(dial_timeout_ms),
+            false,
+        )
+    }
+
+    fn prepare_request(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        dial_timeout_ms: u64,
+    ) -> Result<ConnId, ConnError> {
+        self.open_timed(caller, need, desc, false, Some(dial_timeout_ms), true)
+    }
+
+    fn commit_request(
+        &self,
+        caller: InstanceId,
+        conn: ConnId,
+        desc: &OpenDesc<'_>,
+        require_secure: bool,
+    ) -> Result<(), ConnError> {
+        let (need, held) = self.slab.get(caller, conn)?;
+        held.within_due()?;
+        let authority_held = self
+            .authority_held
+            .lock()
+            .expect("authority held")
+            .contains(&caller);
+        if head_is_refused(desc, authority_held) {
+            return Err(ConnError::Refused);
+        }
+        {
+            let prepared = held.prepared.lock().expect("prepared");
+            let (target, member, started) = prepared.as_ref().ok_or(ConnError::Refused)?;
+            if target != desc.target || member != desc.member {
+                return Err(ConnError::Refused);
+            }
+            if let Some(at) = due_at(*started, desc.timeout_ms) {
+                let mut due = held.due.lock().expect("due");
+                if due.as_ref().is_none_or(|previous| at < previous.at) {
+                    let mut tighter = Due::new(at);
+                    if let Some(previous) = due.as_ref() {
+                        // Keep every registered deadline waiter when the HEAD adds a tighter bound.
+                        tighter.wake = Arc::clone(&previous.wake);
+                    }
+                    *due = Some(tighter);
+                }
+            }
+        }
+        held.within_due()?;
+        if !self.settle(&held, None)? {
+            return Err(ConnError::Pending);
+        }
+        let (line, stream) = held.line().ok_or(ConnError::Closed)?;
+        match line.poll_prepared(stream, &mut Context::from_waker(Waker::noop())) {
+            Poll::Pending => return Err(ConnError::Pending),
+            Poll::Ready(result) => result.map_err(|f| map(&f))?,
+        }
+        held.landed();
+        if require_secure && !line.secured() {
+            return Err(ConnError::AuthRefused);
+        }
+        let declared = self
+            .over
+            .lock()
+            .expect("needs")
+            .get(&(caller, need))
+            .cloned()
+            .ok_or(ConnError::Refused)?;
+        if desc
+            .fields
+            .iter()
+            .any(|(name, _)| program::is_expected_field(name))
+        {
+            return Err(ConnError::Refused);
+        }
+        let target = line.target().ok_or(ConnError::Closed)?;
+        let planned = self
+            .plan(
+                &declared.door,
+                Dial {
+                    target,
+                    tls: declared.tls.or_else(|| self.tls.clone()),
+                    alpn: declared.alpn,
+                    open_timeout: held.open_timeout,
+                    anchors: None,
+                    opening: Some((
+                        desc.fields
+                            .iter()
+                            .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
+                            .collect(),
+                        desc.body.clone(),
+                    )),
+                    head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
+                },
+            )
+            .map_err(|f| map(&f))?;
+        // Consume once, before crossing plugin code and without holding a host lock.
+        if held.prepared.lock().expect("prepared").take().is_none() {
+            return Err(ConnError::Refused);
+        }
+        held.within_due()?;
+        let (opening, words) = planned.into_opening();
+        line.commit(stream, opening, words).map_err(|f| map(&f))?;
+        held.uncommitted.store(false, Ordering::Release);
+        Ok(())
     }
 
     fn hold_authority(&self, owner: InstanceId) {
@@ -2445,7 +2572,13 @@ impl DeclaredConns for Connector {
             return Err(ConnError::Pending);
         }
         let (line, stream) = held.line().ok_or(ConnError::Closed)?;
-        match line.poll_landed(stream, &mut Context::from_waker(&waker)) {
+        let mut cx = Context::from_waker(&waker);
+        let landed = if held.uncommitted.load(Ordering::Acquire) {
+            line.poll_prepared(stream, &mut cx)
+        } else {
+            line.poll_landed(stream, &mut cx)
+        };
+        match landed {
             Poll::Ready(Ok(())) => {
                 held.landed();
                 Ok(())
@@ -2734,6 +2867,7 @@ impl Connector {
             (egress_class, declared_target, tls),
             false,
             require_secure,
+            false,
         )?;
         let dialled = dialled::Dialled::new(framing, port, pairing, due).begun(began)?;
         Ok(held.dialling(dialled))
@@ -2756,6 +2890,7 @@ impl Connector {
         ),
         poolable: bool,
         require_secure: bool,
+        prepare: bool,
     ) -> Result<Held, ConnError> {
         endpoint::named(target).map_err(|_| ConnError::Refused)?;
         let dial = Dial {
@@ -2763,14 +2898,20 @@ impl Connector {
             tls: tls.or_else(|| self.tls.clone()),
             alpn,
             open_timeout,
-            opening: Some((
-                desc.fields
-                    .iter()
-                    .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
-                    .collect(),
-                desc.body.clone(),
-            )),
-            head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
+            opening: (!prepare).then(|| {
+                (
+                    desc.fields
+                        .iter()
+                        .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
+                        .collect(),
+                    desc.body.clone(),
+                )
+            }),
+            head_words: if prepare {
+                (Vec::new(), Vec::new())
+            } else {
+                (desc.method.to_vec(), desc.head_target.to_vec())
+            },
             anchors: None,
         };
 
@@ -2929,7 +3070,9 @@ impl Connector {
         desc: &OpenDesc<'_>,
         require_secure: bool,
         dial_timeout_ms: Option<u64>,
+        prepare: bool,
     ) -> Result<ConnId, ConnError> {
+        let started = std::time::Instant::now();
         self.slab.check_need(caller, need)?;
         let declared_timeout_ms = self
             .declared
@@ -2980,6 +3123,10 @@ impl Connector {
                 .iter()
                 .any(|(name, _)| program::is_expected_field(name))
         {
+            return Err(ConnError::Refused);
+        }
+
+        if prepare && (members.is_some() || program.is_some() || door.facts().datagram) {
             return Err(ConnError::Refused);
         }
 
@@ -3062,6 +3209,9 @@ impl Connector {
         }
 
         if let Some(path) = socket::unix_path(target) {
+            if prepare {
+                return Err(ConnError::Refused);
+            }
             if require_secure {
                 return Err(ConnError::AuthRefused);
             }
@@ -3105,9 +3255,15 @@ impl Connector {
             target,
             open_timeout,
             (egress_class, declared_target, tls),
-            true,
+            !prepare,
             require_secure,
+            prepare,
         )?;
+        if prepare {
+            *held.prepared.lock().expect("prepared") =
+                Some((desc.target.to_owned(), desc.member.to_owned(), started));
+            held.uncommitted.store(true, Ordering::Release);
+        }
         let rejected = held
             .line()
             .map(|(line, stream)| (line, stream, held.pooled.clone()));
@@ -3142,7 +3298,7 @@ impl Conns for Connector {
         desc: &OpenDesc<'_>,
         require_secure: bool,
     ) -> Result<ConnId, ConnError> {
-        self.open_timed(caller, need, desc, require_secure, None)
+        self.open_timed(caller, need, desc, require_secure, None, false)
     }
 
     /// A write is taken whole, short, or (no room under
@@ -3155,6 +3311,9 @@ impl Conns for Connector {
         text: bool,
     ) -> Result<usize, ConnError> {
         let (_, held) = self.slab.get(caller, conn)?;
+        if held.uncommitted.load(Ordering::Acquire) {
+            return Err(ConnError::Pending);
+        }
         if let Some((member, lease)) = &held.lease {
             return member.write(*lease, bytes);
         }
@@ -3267,11 +3426,20 @@ impl Conns for Connector {
 
     fn facts(&self, caller: InstanceId, conn: ConnId) -> Result<ConnFacts, ConnError> {
         let (_, held) = self.slab.get(caller, conn)?;
+        held.within_due()?;
         if let Some((member, lease)) = &held.lease {
             return member.facts(*lease);
         }
         if !self.settle(&held, None)? {
             return Err(ConnError::Pending);
+        }
+        if held.uncommitted.load(Ordering::Acquire) {
+            let (line, stream) = held.line().ok_or(ConnError::Closed)?;
+            match line.poll_prepared(stream, &mut Context::from_waker(Waker::noop())) {
+                Poll::Pending => return Err(ConnError::Pending),
+                Poll::Ready(result) => result.map_err(|f| map(&f))?,
+            }
+            held.landed();
         }
         let (line, _) = held.line().ok_or(ConnError::Closed)?;
         let e = line.established().ok_or(ConnError::Closed)?;

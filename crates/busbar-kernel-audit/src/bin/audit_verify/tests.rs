@@ -115,13 +115,13 @@ fn current_producer_output_verifies_with_wide_numbers_and_repeated_groups() {
             lines: vec![
                 UsageLine {
                     class: busbar_contract::MeterClassId::new("input"),
-                    quantity: u64::MAX,
+                    quantity: u64::MAX.into(),
                     source: QuantitySource::Count,
                     estimated: false,
                 },
                 UsageLine {
                     class: busbar_contract::MeterClassId::new("output"),
-                    quantity: 9007199254740993,
+                    quantity: 9007199254740993u64.into(),
                     source: QuantitySource::KernelFrames { factor: 7 },
                     estimated: true,
                 },
@@ -431,4 +431,41 @@ fn mixed_v2_v4_v5_window_verifies_without_rewriting_old_signed_record() {
         range["records"][0], original,
         "the original old signature/preimage stays exact"
     );
+}
+
+#[test]
+fn mixed_v5_v6_v5_exact_quantity_chain_verifies_with_explicit_dispatch() {
+    let (keys, mut range, _) = chain();
+    let mut previous = String::new();
+    for index in 0..3 {
+        let record = &mut range["records"][index];
+        record["recipe"] = json!(if index == 1 {
+            DIGEST_RECIPE_V6
+        } else {
+            DIGEST_RECIPE
+        });
+        record["rate_card_key_present"] = json!("0");
+        record["rate_card_version"] = json!("");
+        record["prev_hash"] = json!(previous);
+        record["lines_count"] = json!("1");
+        record["lines"] = json!([{
+            "class": "input",
+            "quantity": if index == 1 { "27.5" } else { "27" },
+            "source": "Count",
+            "estimated": "0"
+        }]);
+        sign(record);
+        previous = record["hash"].as_str().unwrap().to_owned();
+    }
+    range["recipe"] = json!(DIGEST_RECIPE);
+    let trusted = head(&range["records"][2]);
+    range["anchor"] = trusted["head"].clone();
+    assert_eq!(verify(&keys, &range, Some(&trusted)).unwrap()["records"], 3);
+    let original = range["records"][0].clone();
+    range["records"][1]["lines"][0]["quantity"] = json!("27.50");
+    assert_eq!(
+        record_digest(&range["records"][1], DIGEST_RECIPE).unwrap_err(),
+        "noncanonical exact audit quantity"
+    );
+    assert_eq!(range["records"][0], original);
 }

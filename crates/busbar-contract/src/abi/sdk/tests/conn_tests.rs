@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use super::*;
 
 /// The handles `establish` was issued with.
-static SEEN: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+static SEEN: Mutex<Vec<(Ticket, u32)>> = Mutex::new(Vec::new());
 /// One SEEN-reading test at a time.
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -19,7 +19,9 @@ static WITHIN: Mutex<Vec<String>> = Mutex::new(Vec::new());
 extern "C" fn establish(_: HostCtx, i: *const c_void, o: *mut ServiceOut) -> RawOutcome {
     // SAFETY: an `EstablishIn`, leading with its `ServiceHead`.
     let input = unsafe { *i.cast::<EstablishIn>() };
-    SEEN.lock().unwrap().push(input.head.handle.seq);
+    SEEN.lock()
+        .unwrap()
+        .push((input.head.handle.ticket, input.head.handle.seq));
     let within = if input.within.ptr.is_null() {
         "<absent>".to_owned()
     } else {
@@ -175,7 +177,8 @@ fn a_connector_resumed_from_a_parked_count_issues_on_from_it() {
     assert_eq!(parked, 2);
     let mut resumed = h.connector_from(TICKET, parked);
     assert_eq!(resumed.establish(0, None, ""), Poll::Ready(Ok(7)));
-    assert_eq!(*SEEN.lock().unwrap(), vec![0, 1, 2]);
+    let seen = SEEN.lock().unwrap().clone();
+    assert_eq!(seen, vec![(TICKET, 0), (TICKET, 1), (TICKET, 2)]);
     assert_eq!(h.connector(TICKET).within(5).budget_ms(), Some(5));
 }
 
@@ -499,4 +502,117 @@ fn a_safe_wake_only_host_preserves_the_opaque_context_and_absent_tables() {
     assert!(!host.io(TICKET).armed());
     host.wake(TICKET);
     assert_eq!(WOKEN.load(std::sync::atomic::Ordering::SeqCst), 73);
+}
+
+/// The host accepts an output only after checking the caller-advertised prefix.
+extern "C" fn establish_with_checked_output(
+    _: HostCtx,
+    _: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    use crate::abi::host::service::{lent_out, write_out};
+    // SAFETY: the connector lends a live ServiceOut for this synchronous call.
+    let Some(lent) = (unsafe { lent_out(out) }) else {
+        return RawOutcome::of(Outcome::Fault);
+    };
+    if lent != std::mem::size_of::<ServiceOut>() {
+        return RawOutcome::of(Outcome::Fault);
+    }
+    let answer = ServiceOut {
+        outcome: RawOutcome::of(Outcome::Ready),
+        value: 7,
+        ..ServiceOut::ZERO
+    };
+    // SAFETY: lent_out established the writable prefix of this SDK-owned output.
+    unsafe { write_out(out, answer, lent) };
+    RawOutcome::of(Outcome::Ready)
+}
+
+#[test]
+fn a_connector_lends_the_output_prefix_a_real_host_requires() {
+    let slots = ConnectorSlots {
+        establish: Some(establish_with_checked_output),
+        ..SLOTS
+    };
+    let h = host(&slots);
+    assert_eq!(
+        h.connector(TICKET).establish(0, None, ""),
+        Poll::Ready(Ok(7))
+    );
+}
+
+static DISK_HANDLES: Mutex<Vec<(Ticket, u32)>> = Mutex::new(Vec::new());
+static DISK_BYTES: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
+
+extern "C" fn record_disk_handle(
+    _: HostCtx,
+    input: *const c_void,
+    _: *mut ServiceOut,
+) -> RawOutcome {
+    // SAFETY: disk_append lends a live DiskAppendIn and writable result for this call.
+    let input = unsafe { &*input.cast::<DiskAppendIn>() };
+    if input.bytes.ptr.is_null() || input.bytes.fmt != BLOB_OCTETS {
+        return RawOutcome::of(Outcome::Fault);
+    }
+    // SAFETY: the SDK lends these bytes for this call; the NULL case was refused above.
+    let bytes = unsafe { std::slice::from_raw_parts(input.bytes.ptr, input.bytes.len) };
+    DISK_BYTES.lock().unwrap().push(bytes.to_vec());
+    DISK_HANDLES
+        .lock()
+        .unwrap()
+        .push((input.head.handle.ticket, input.head.handle.seq));
+    // SAFETY: the connector owns this result and keeps it live through the callback.
+    unsafe {
+        *input.result = DiskWritten {
+            size: std::mem::size_of::<DiskWritten>() as u32,
+            ..DiskWritten::ZERO
+        };
+    }
+    RawOutcome::of(Outcome::Ready)
+}
+
+#[test]
+fn disk_append_preserves_octets_ticket_and_resumed_issue_order() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    DISK_HANDLES.lock().unwrap().clear();
+    DISK_BYTES.lock().unwrap().clear();
+    let services = HostSlots {
+        disk_append: Some(record_disk_handle),
+        ..*services()
+    };
+    // SAFETY: all harness tables and callbacks remain live while Host copies them.
+    let h = unsafe {
+        Host::from_raw(&HostTables {
+            size: std::mem::size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: HostCtx::NONE,
+            wake: None,
+            conns: std::ptr::null(),
+            services: &services,
+            io: std::ptr::null(),
+        })
+    };
+    let mut c = h.connector(TICKET);
+    assert!(matches!(
+        c.disk_append("audit", b"first"),
+        Poll::Ready(Ok(_))
+    ));
+    assert!(matches!(
+        c.disk_append("audit", b"second"),
+        Poll::Ready(Ok(_))
+    ));
+    let mut resumed = h.connector_from(TICKET, c.issued());
+    assert!(matches!(
+        resumed.disk_append("audit", b"third"),
+        Poll::Ready(Ok(_))
+    ));
+    let handles = DISK_HANDLES.lock().unwrap().clone();
+    let bytes = DISK_BYTES.lock().unwrap().clone();
+    assert_eq!(handles, vec![(TICKET, 0), (TICKET, 1), (TICKET, 2)]);
+    assert_eq!(
+        bytes,
+        vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()]
+    );
 }

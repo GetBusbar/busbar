@@ -781,6 +781,31 @@ async fn physical_routers_share_publication_but_keep_handlers_and_refusals_separ
 
 #[test]
 fn actual_nonempty_export_descriptor_supplies_the_candidate_listener_need() {
+    const CHILD: &str = "BUSBAR_LISTENER_DESCRIPTOR_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        // This witness owns the process's one initial registry. Other listener cases boot
+        // theirs concurrently, so exercise its unchanged pre-boot assertion in a fresh process.
+        let module = module_path!().split_once("::").expect("crate and module").1;
+        let test = format!(
+            "{module}::actual_nonempty_export_descriptor_supplies_the_candidate_listener_need"
+        );
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &test, "--test-threads", "1", "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("the isolated actual-descriptor witness starts");
+        let logs = String::from_utf8_lossy(&output.stdout).into_owned()
+            + &String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "isolated descriptor witness failed: {logs}"
+        );
+        assert!(
+            logs.contains("1 passed"),
+            "the exact child must execute its witness: {logs}"
+        );
+        return;
+    }
     use crate::root::test_plugins as fixtures;
     let path = std::path::PathBuf::from(
         std::env::var_os("BUSBAR_TEST_PROMETHEUS_CDYLIB")

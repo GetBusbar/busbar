@@ -631,7 +631,7 @@ fn kit_signed(
         Arc::new(|f: Pin<Box<dyn Future<Output = ()> + Send>>| {
             std::thread::spawn(move || futures::executor::block_on(f));
         }),
-        Arc::new(move |r: &RefusedUnit| sink.lock().unwrap().push(*r)),
+        Arc::new(move |r: &RefusedUnit| sink.lock().unwrap().push(r.clone())),
     );
     let listener = || Listener {
         guests: guests.clone(),

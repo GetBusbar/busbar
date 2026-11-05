@@ -41,7 +41,7 @@ fn inputs(unit: u64) -> AuditInputs {
         usage: Usage {
             lines: vec![UsageLine {
                 class: busbar_contract::caps::MeterClassId::new("tokens_out"),
-                quantity: 120,
+                quantity: 120u64.into(),
                 source: QuantitySource::Locator {
                     direction: busbar_contract::ClassDirection::Response,
                     ptr: busbar_contract::caps::LocatorPtr::new("/usage/output_tokens"),
@@ -258,10 +258,16 @@ fn tampering_fails_under_either_recipe_and_so_does_relabelling_one() {
         }),
         ("a v4 record's node", frozen_record(), |r| r.node += 1),
         ("a v2 record's count", frozen_v2_record(), |r| {
-            r.usage.lines[0].quantity += 1
+            r.usage.lines[0].quantity = r.usage.lines[0]
+                .quantity
+                .checked_add(busbar_contract::Count::ONE)
+                .unwrap()
         }),
         ("a v4 record's count", frozen_record(), |r| {
-            r.usage.lines[0].quantity += 1
+            r.usage.lines[0].quantity = r.usage.lines[0]
+                .quantity
+                .checked_add(busbar_contract::Count::ONE)
+                .unwrap()
         }),
     ];
     for (what, mut record, edit) in arms {
@@ -358,7 +364,12 @@ fn editing_any_recorded_fact_is_caught() {
     let edits: Vec<(&str, Edit)> = vec![
         ("the tier", |r| r.usage.tier_bp += 1),
         ("the fee count", |r| r.usage.fee_count += 1),
-        ("a quantity", |r| r.usage.lines[0].quantity += 1),
+        ("a quantity", |r| {
+            r.usage.lines[0].quantity = r.usage.lines[0]
+                .quantity
+                .checked_add(busbar_contract::Count::ONE)
+                .unwrap()
+        }),
         ("a quantity's source", |r| {
             r.usage.lines[0].source = QuantitySource::KernelBytes { divisor: 4 }
         }),

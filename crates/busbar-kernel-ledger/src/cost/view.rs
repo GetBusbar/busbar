@@ -289,7 +289,7 @@ pub fn price(ledger: &[LedgerEntry], history: &History) -> Result<Money, MoneyEr
 pub fn price_in_view(ledger: &[LedgerEntry], view: &HistoryView<'_>) -> Result<Money, MoneyError> {
     let exact = price_exact(ledger, view)?;
 
-    Ok(Money(exact / EXACT_PER_MONEY))
+    Ok(Money::of_exact(exact))
 }
 
 /// [`price_in_view`] with the final projection WITHHELD: the exact accumulator at [`EXACT_SCALE`].
@@ -324,6 +324,11 @@ pub fn nanos_of_exact(exact: i128) -> Result<u128, MoneyError> {
 }
 
 impl Money {
+    /// Project an exact scale-15 aggregate once, retaining checked narrowing at the wire boundary.
+    pub fn of_exact(exact: i128) -> Money {
+        Money(exact / EXACT_PER_MONEY)
+    }
+
     /// The micro-unit mantissa narrowed to the `i64` a served `spend_micros` field carries,
     pub fn micros_i64(self) -> Result<i64, MoneyError> {
         i64::try_from(self.0).map_err(|_| MoneyError::Overflow)
@@ -529,7 +534,7 @@ impl<'a> Tally<'a> {
 
     /// The figure as [`Money`] — THE ONE TRUNCATION, toward zero, to scale six.
     pub fn money(&self) -> Result<Money, MoneyError> {
-        Ok(Money(self.exact()? / EXACT_PER_MONEY))
+        Ok(Money::of_exact(self.exact()?))
     }
 }
 

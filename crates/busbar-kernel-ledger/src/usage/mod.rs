@@ -9,7 +9,9 @@
 mod dated;
 mod source;
 
-pub use dated::{by_lane, price_dated, price_dated_raw, DatedHistory, FeeEras};
+pub use dated::{
+    by_lane, price_dated, price_dated_counts_raw, price_dated_raw, DatedHistory, FeeEras,
+};
 pub use source::{Direction, LocatorPtr, QuantitySource};
 
 #[cfg(test)]

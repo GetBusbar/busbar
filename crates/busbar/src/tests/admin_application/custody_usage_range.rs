@@ -126,6 +126,7 @@ impl Fixture {
         let day = busbar_kernel::governance::metering_bucket(now);
         store
             .add_metering(&MeteringDelta {
+                scale: 0,
                 key_id: KEY.into(),
                 bucket: day,
                 model: LANE.into(),

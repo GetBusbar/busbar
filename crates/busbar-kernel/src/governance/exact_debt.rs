@@ -4,12 +4,41 @@
 use super::*;
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ExactModelDelta {
+    #[serde(default)]
+    pub(super) scale: u32,
     pub(super) model: String,
     #[serde(with = "decimal_units")]
     pub(super) usage_units: BTreeMap<String, i128>,
+}
+impl<'de> serde::Deserialize<'de> for ExactModelDelta {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Stored {
+            model: String,
+            #[serde(default)]
+            scale: u32,
+            #[serde(with = "decimal_units")]
+            usage_units: BTreeMap<String, i128>,
+        }
+        let row = Stored::deserialize(deserializer)?;
+        Ok(Self {
+            model: row.model,
+            scale: COUNT_SCALE,
+            usage_units: row
+                .usage_units
+                .into_iter()
+                .map(|(k, n)| {
+                    Count::from_stored(n, row.scale)
+                        .map(|n| (k, n.micros()))
+                        .map_err(serde::de::Error::custom)
+                })
+                .collect::<Result<_, _>>()?,
+        })
+    }
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -51,39 +80,65 @@ impl ExactUsageDelta {
             None => {
                 self.models.push(ExactModelDelta {
                     model: model.into(),
+                    scale: COUNT_SCALE,
                     usage_units: BTreeMap::new(),
                 });
                 self.models.last_mut().expect("just inserted raw model")
             }
         };
-        *row.usage_units.entry(unit.into()).or_default() += change;
+        let slot = row.usage_units.entry(unit.into()).or_default();
+        *slot = slot
+            .checked_add(change)
+            .expect("raw debt exceeds Count range");
     }
     pub(super) fn merge(&mut self, other: &Self) {
-        self.requests += other.requests;
-        self.billable_requests += other.billable_requests;
+        self.requests = self
+            .requests
+            .checked_add(other.requests)
+            .expect("request debt overflow");
+        self.billable_requests = self
+            .billable_requests
+            .checked_add(other.billable_requests)
+            .expect("fee debt overflow");
         for model in &other.models {
             for (unit, count) in &model.usage_units {
-                self.unit(&model.model, unit, *count);
+                self.unit(
+                    &model.model,
+                    unit,
+                    Count::from_stored(*count, model.scale)
+                        .expect("valid debt scale")
+                        .micros(),
+                );
             }
         }
     }
     pub(super) fn from_signed(delta: &UsageDelta) -> Self {
-        Self {
+        Self::try_from_signed(delta).expect("internally generated raw debt has a valid scale")
+    }
+
+    pub(super) fn try_from_signed(delta: &UsageDelta) -> Result<Self, CountError> {
+        Ok(Self {
             requests: i128::from(delta.requests),
             billable_requests: i128::from(delta.billable_requests),
             models: delta
                 .models
                 .iter()
-                .map(|model| ExactModelDelta {
-                    model: model.model.clone(),
-                    usage_units: model
-                        .usage_units
-                        .iter()
-                        .map(|(unit, count)| (unit.clone(), i128::from(*count)))
-                        .collect(),
+                .map(|model| {
+                    Ok(ExactModelDelta {
+                        model: model.model.clone(),
+                        scale: COUNT_SCALE,
+                        usage_units: model
+                            .usage_units
+                            .iter()
+                            .map(|(unit, count)| {
+                                Count::from_stored(i128::from(*count), model.scale)
+                                    .map(|n| (unit.clone(), n.micros()))
+                            })
+                            .collect::<Result<_, _>>()?,
+                    })
                 })
-                .collect(),
-        }
+                .collect::<Result<_, CountError>>()?,
+        })
     }
     pub(super) fn signed(&self) -> Option<UsageDelta> {
         Some(UsageDelta {
@@ -95,14 +150,17 @@ impl ExactUsageDelta {
                 .map(|model| {
                     Some(busbar_contract::records::ModelTokensDelta {
                         model: model.model.clone(),
+                        scale: COUNT_SCALE,
                         usage_units: model
                             .usage_units
                             .iter()
                             .filter(|(_, count)| **count != 0)
                             .map(|(unit, count)| {
-                                i64::try_from(*count)
-                                    .ok()
-                                    .map(|count| (unit.clone(), count))
+                                i64::try_from(
+                                    Count::from_stored(*count, model.scale).ok()?.micros(),
+                                )
+                                .ok()
+                                .map(|count| (unit.clone(), count))
                             })
                             .collect::<Option<_>>()?,
                     })
@@ -140,8 +198,14 @@ impl ExactUsageDelta {
                 debt.unit(
                     &name,
                     unit,
-                    i128::from(model.cur.get(unit).copied().unwrap_or(0))
-                        - i128::from(flushed.get(unit).copied().unwrap_or(0)),
+                    model
+                        .cur
+                        .get(unit)
+                        .copied()
+                        .unwrap_or_default()
+                        .checked_sub(flushed.get(unit).copied().unwrap_or_default())
+                        .expect("raw count difference overflow")
+                        .micros(),
                 );
             }
         }
@@ -156,8 +220,10 @@ impl ExactUsageDelta {
                 debt.unit(
                     &era_tag(*era),
                     ERA_FEE_UNIT,
-                    i128::from(current.get(era).copied().unwrap_or(0))
-                        - i128::from(flushed.get(era).copied().unwrap_or(0)),
+                    whole_count(current.get(era).copied().unwrap_or(0))
+                        .checked_sub(whole_count(flushed.get(era).copied().unwrap_or(0)))
+                        .expect("fee count difference overflow")
+                        .micros(),
                 );
             }
         }
@@ -246,7 +312,7 @@ impl SegmentedUsage {
                         },
                         *count,
                     );
-                    legacy.unit(name, unit, -*count);
+                    legacy.unit(name, unit, count.checked_neg().ok_or_else(invalid)?);
                 }
             } else {
                 if parse_era_tag(&model.model)?.is_none() {
@@ -256,10 +322,17 @@ impl SegmentedUsage {
                     if unit != ERA_FEE_UNIT {
                         return Err(invalid());
                     }
-                    result
-                        .0
-                        .insert(UsageSegment::Fee(Some(model.model.clone())), *count);
-                    legacy.billable_requests -= *count;
+                    result.0.insert(
+                        UsageSegment::Fee(Some(model.model.clone())),
+                        *count / 1_000_000,
+                    );
+                    if *count % 1_000_000 != 0 {
+                        return Err(invalid());
+                    }
+                    legacy.billable_requests = legacy
+                        .billable_requests
+                        .checked_sub(*count / 1_000_000)
+                        .ok_or_else(invalid)?;
                 }
             }
         }
@@ -301,11 +374,23 @@ impl SegmentedUsage {
         count: i128,
     ) {
         match segment {
-            UsageSegment::Requests => plain.requests += count,
+            UsageSegment::Requests => {
+                plain.requests = plain
+                    .requests
+                    .checked_add(count)
+                    .expect("request segments overflow")
+            }
             UsageSegment::Fee(era) => {
-                plain.billable_requests += count;
+                plain.billable_requests = plain
+                    .billable_requests
+                    .checked_add(count)
+                    .expect("fee segments overflow");
                 if let Some(era) = era {
-                    dated.unit(era, ERA_FEE_UNIT, count);
+                    dated.unit(
+                        era,
+                        ERA_FEE_UNIT,
+                        count.checked_mul(1_000_000).expect("fee count fits Count"),
+                    );
                 }
             }
             UsageSegment::Unit { model, unit, era } => {
@@ -327,7 +412,8 @@ impl SegmentedUsage {
     }
     pub(super) fn merge(&mut self, other: &Self) {
         for (segment, count) in &other.0 {
-            *self.0.entry(segment.clone()).or_default() += *count;
+            let slot = self.0.entry(segment.clone()).or_default();
+            *slot = slot.checked_add(*count).expect("raw segment overflow");
         }
     }
     pub(super) fn subtract(&mut self, other: &Self) -> RecordStoreResult<()> {
@@ -351,7 +437,7 @@ impl SegmentedUsage {
             let bound = capacity.map_or(i128::MAX, |capacity| {
                 capacity.0.get(segment).copied().unwrap_or(0).max(0)
             });
-            let amount = count.saturating_neg().min(bound);
+            let amount = count.unsigned_abs().min(bound as u128) as i128;
             *count += amount;
             if amount != 0 {
                 taken.0.insert(segment.clone(), -amount);
@@ -378,12 +464,16 @@ impl SegmentedUsage {
                     .copied()
                     .unwrap_or(0),
             };
-            let count = (*count)
-                .clamp(i128::from(i64::MIN), i128::from(i64::MAX))
-                .clamp(
-                    i128::from(i64::MIN) - current,
-                    i128::from(i64::MAX) - current,
-                );
+            let (minimum, maximum) = if matches!(segment, UsageSegment::Fee(Some(_))) {
+                let bound = i128::from(i64::MAX) / 1_000_000;
+                (-bound, bound)
+            } else {
+                (i128::from(i64::MIN), i128::from(i64::MAX))
+            };
+            let count = (*count).clamp(minimum, maximum).clamp(
+                i128::from(i64::MIN) - current,
+                i128::from(i64::MAX) - current,
+            );
             Self::add(&mut plain, &mut dated, segment, count);
         }
         (

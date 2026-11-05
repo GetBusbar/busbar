@@ -16,6 +16,7 @@ fn raw(slot: &str, count: u64) -> UsageLedger {
             Vec::new()
         } else {
             vec![ModelTokens {
+                scale: 0,
                 model: slot.into(),
                 usage_units: BTreeMap::from([(UNIT_INPUT.into(), count)]),
             }]

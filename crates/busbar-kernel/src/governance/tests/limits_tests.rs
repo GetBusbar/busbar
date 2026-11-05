@@ -764,7 +764,11 @@ fn accrual_and_hydrate_cover_every_chain_bucket() {
         let u = g
             .derived_bucket_usage(&cm, bucket, window, true, now)
             .unwrap();
-        assert_eq!(u.tokens, 500, "bucket {bucket} accrued the tokens");
+        assert_eq!(
+            u.tokens.whole_for_test(),
+            500,
+            "bucket {bucket} accrued the tokens"
+        );
     }
 
     assert!(g.flush_budgets() >= 1);
@@ -773,11 +777,19 @@ fn accrual_and_hydrate_cover_every_chain_bucket() {
     let day = g2
         .derived_bucket_usage(&cm, "group:g@day", "day", true, now)
         .unwrap();
-    assert_eq!(day.tokens, 500, "hydrate restored the day bucket");
+    assert_eq!(
+        day.tokens.whole_for_test(),
+        500,
+        "hydrate restored the day bucket"
+    );
     let month = g2
         .derived_bucket_usage(&cm, "group:g@month", "month", true, now)
         .unwrap();
-    assert_eq!(month.tokens, 500, "hydrate restored the month bucket");
+    assert_eq!(
+        month.tokens.whole_for_test(),
+        500,
+        "hydrate restored the month bucket"
+    );
 }
 
 #[test]
@@ -1036,7 +1048,8 @@ fn an_open_class_priced_in_config_is_charged_and_capped_end_to_end() {
         "CHARGED: 499 × 0.2 cents, truncated once"
     );
     assert_eq!(
-        read.tokens, 0,
+        read.tokens.whole_for_test(),
+        0,
         "a search unit is priced, never counted as a token"
     );
     g.try_admit(&cm, &k, "", now).expect("under the cap");
@@ -1231,7 +1244,11 @@ fn tokens_cap_counts_every_token_family_class_a_plane_declares() {
     let read = g
         .derived_bucket_usage(&cm, "group:g@minute", "minute", true, now)
         .expect("the read derives");
-    assert_eq!(read.tokens, 100, "audio tokens in + out are tokens");
+    assert_eq!(
+        read.tokens.whole_for_test(),
+        100,
+        "audio tokens in + out are tokens"
+    );
     assert_blocked(
         g.try_admit(&cm, &k, "", now).unwrap_err(),
         "g",
@@ -1248,6 +1265,7 @@ fn era_now() -> u64 {
 fn metered(g: &GovState, key_id: &str, model: &str, n: u64, now: u64) {
     g.store
         .add_metering(&busbar_contract::records::MeteringDelta {
+            scale: 0,
             key_id: key_id.to_string(),
             bucket: crate::governance::metering_bucket(now),
             model: model.to_string(),
@@ -1287,9 +1305,9 @@ fn an_adjust_moves_the_key_group_and_metrics_reads_of_the_budget_book() {
         let gauge = g.bucket_model_tokens(&k.id, super::WINDOW_TOTAL, now);
         (
             key.spend_cents,
-            key.tokens,
+            key.tokens.whole_for_test(),
             group.spend_cents,
-            gauge[0].1[UNIT_INPUT],
+            gauge[0].1[UNIT_INPUT].whole_for_test(),
         )
     };
     assert_eq!(read(&g), (250, 1_000_000, 250, 1_000_000), "as recorded");
@@ -1328,7 +1346,7 @@ fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
     let read = |g: &GovState| {
         let key = g.usage_for(&cm, &k.id, now).unwrap().unwrap();
         let group = (g.derived_bucket_usage(&cm, "group:g@day", "day", true, now)).unwrap();
-        (key.tokens, group.tokens)
+        (key.tokens.whole_for_test(), group.tokens.whole_for_test())
     };
     assert_eq!(read(&g), (1_000, 1_000));
     let delta = BTreeMap::from([(UNIT_INPUT.to_string(), -1_001i64)]);
@@ -1344,7 +1362,10 @@ fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
     };
     match g.adjust_usage(&cm, &adjustment).expect("the store reads") {
         Err(super::AdjustRefused::Exceeds { count, delta, .. }) => {
-            assert_eq!((count, delta), (1_000, -1_001));
+            assert_eq!(
+                (count, delta),
+                (busbar_contract::Count::from(1_000u64), -1_001)
+            );
         }
         other => panic!("a correction past the count is refused, got {other:?}"),
     }
@@ -1487,10 +1508,13 @@ fn q64_read(
             .unwrap()
             .spend_cents;
         let gauge = g.bucket_model_tokens(&id, "day", now);
-        (spend, gauge[0].1[busbar_contract::records::UNIT_INPUT])
+        (
+            spend,
+            gauge[0].1[busbar_contract::records::UNIT_INPUT].whole_for_test(),
+        )
     };
     [
-        (key.spend_cents, key.tokens),
+        (key.spend_cents, key.tokens.whole_for_test()),
         bucket(""),
         bucket("#pool:pool-a"),
         bucket("#pool:pool-b"),
@@ -1817,7 +1841,17 @@ fn minute_row(store: &dyn RecordStore, bucket: &str, at: u64) -> (u64, u64, u64,
         .get_usage(bucket, crate::governance::budget_window("minute", at))
         .expect("the store reads");
     let m = row.models.iter().find(|m| m.model == "m");
-    let unit = |u: &str| m.and_then(|m| m.usage_units.get(u).copied()).unwrap_or(0);
+    let unit = |u: &str| {
+        m.map(|m| {
+            Count::from_stored(
+                i128::from(m.usage_units.get(u).copied().unwrap_or(0)),
+                m.scale,
+            )
+            .unwrap()
+            .whole_for_test()
+        })
+        .unwrap_or(0)
+    };
     (
         row.requests,
         row.billable_requests,
@@ -2098,4 +2132,89 @@ fn a_shutdown_flush_against_a_down_store_names_what_is_unrecorded() {
         lines.iter().any(|l| l.contains("will retry next tick")),
         "{lines:?}"
     );
+}
+
+#[test]
+fn fractional_token_cap_uses_real_quantity_and_checked_accumulation() {
+    let g = gov();
+    let cm = model(&[(
+        "fractions",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Tokens, 1, Some(LimitWindow::Day))],
+        ),
+    )]);
+    let k = key("vk_fractional", Some("fractions"));
+    let now = 1_700_000_000;
+    let era = RawRateEra::legacy(0);
+    g.record_counts_served_in_era(
+        &cm,
+        &k,
+        "",
+        "m",
+        None,
+        &BTreeMap::from([("input".into(), Count::parse("0.999999").unwrap())]),
+        now,
+        era,
+    )
+    .unwrap();
+    assert!(g.try_admit(&cm, &k, "", now).is_ok());
+    g.record_counts_served_in_era(
+        &cm,
+        &k,
+        "",
+        "m",
+        None,
+        &BTreeMap::from([("input".into(), Count::EPSILON)]),
+        now,
+        era,
+    )
+    .unwrap();
+    assert!(g.try_admit(&cm, &k, "", now).is_err());
+}
+
+#[test]
+fn exact_accrual_overflow_leaves_every_chain_bucket_and_meter_unchanged() {
+    let g = gov();
+    let cm = model(&[(
+        "full",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Tokens, u64::MAX, Some(LimitWindow::Day))],
+        ),
+    )]);
+    let k = key("vk_atomic_fraction", Some("full"));
+    let now = 1_700_000_000;
+    let era = RawRateEra::legacy(0);
+    let bucket = "group:full@day";
+    let mut full = BudgetCell::fresh(budget_window("day", now));
+    full.accrue_raw(
+        "m",
+        era,
+        &BTreeMap::from([("input".into(), busbar_contract::count::MAX)]),
+    )
+    .unwrap();
+    g.budget.write(bucket).insert(bucket.into(), full);
+    let result = g.record_counts_served_in_era(
+        &cm,
+        &k,
+        "",
+        "m",
+        Some("p"),
+        &BTreeMap::from([
+            ("input".into(), Count::EPSILON),
+            ("search_units".into(), Count::ONE),
+        ]),
+        now,
+        era,
+    );
+    assert_eq!(result, Err(CountError::Overflow));
+    assert!(!g.budget.read(&k.id).contains_key(&k.id));
+    assert_eq!(
+        g.budget.read(bucket)[bucket].total_tokens(),
+        busbar_contract::count::MAX
+    );
+    assert!(g.pending_metering_totals().1.is_zero());
 }

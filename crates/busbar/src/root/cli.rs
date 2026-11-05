@@ -39,8 +39,10 @@ USAGE:
                         for correlating a perf number to a build and for CI's build-parity gate
     busbar --validate   parse + validate config.yaml/providers.yaml AND every plugin manifest
                         (structure, signature/trust, conflicts, abi, version floors) and exit
-                        (0 = valid, 1 = errors); no server, no network, no state, no dlopen —
-                        safe in CI and before a reload; a clean --validate means boot succeeds
+                        (0 = offline checks passed, 1 = errors); no server or network;
+                        no application Store opening or overlay recovery. Authorized native
+                        grammar/check callbacks may run. Passing does not guarantee boot,
+                        plugin readiness or backend reachability
     busbar --list-plugins
                         manifest-only inventory of the plugins dir (name/alias/kind/version,
                         signature verdict, load status + exact reason); never loads plugin code

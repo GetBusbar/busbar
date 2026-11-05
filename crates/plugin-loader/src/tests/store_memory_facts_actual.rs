@@ -65,6 +65,7 @@ fn the_memory_store_states_its_facts_in_its_tail() {
     assert_eq!(
         s.facts(),
         StoreFacts {
+            exact_counts: true,
             ephemeral: true,
             durable_plane: false,
             fork_refusal: true,
@@ -87,20 +88,9 @@ fn the_memory_store_states_its_facts_in_its_tail() {
     };
     absent.secret_refs = std::ptr::null();
     absent.secret_refs_len = 0;
-    let context = <Store as crate::dispatch::Kind>::context(&absent)
-        .expect("absence metadata parses")
-        .expect("Store facts context");
-    assert_eq!(
-        context.downcast_ref::<StoreFacts>().expect("Store facts"),
-        &StoreFacts {
-            ephemeral: true,
-            durable_plane: false,
-            fork_refusal: true,
-            record_transaction: false,
-            usage_correction: false,
-            secret_refs: Vec::new(),
-            credential_rewrap: false,
-        }
+    assert!(
+        <Store as crate::dispatch::Kind>::context(&absent).is_err(),
+        "a store without exact-count capability is refused before a quantity write"
     );
 }
 

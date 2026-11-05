@@ -6,7 +6,7 @@
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::reason_of;
-use super::{units_bill, UNITS_FLOOR};
+use super::units_bill;
 use super::{
     AdminRoute, ArriveOut, BillableClass, CatalogOut, Claim, DialectAuth, OnPieceOut, OutField,
     PinMechanism, PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain,
@@ -23,7 +23,7 @@ use super::{
     ROUTE_ONCE, ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SCOPE_LOCAL, ROUTE_SESSION,
     ROUTE_STREAM, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES,
     TAIL_REFUSED_PIECE, TAP_FAULT_NONE, TRUST_ITEM_APPROVALS, TRUST_PIN, TRUST_PRIVATE_REACH,
-    UNITS_ESTIMATED, VERDICT_HARD,
+    UNITS_ESTIMATED, VERDICT_COUNT_REFUSED,
 };
 use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -110,9 +110,12 @@ fn units(buf: &[UnitCount], n: u64, b: &Bounds) -> Result<(), Fault> {
         code(
             u64::from(u.source),
             u64::from(UNITS_ESTIMATED),
-            u64::from(UNITS_FLOOR),
+            u64::from(super::UNITS_FLOOR_MICROS),
             "unit.source",
         )?;
+        if u.source >= super::UNITS_ESTIMATED_MICROS && u.amount > i64::MAX as u64 {
+            return Err(fault(Rule::Contradiction, "unit.amount"));
+        }
 
         if counts[..i]
             .iter()
@@ -428,7 +431,10 @@ pub fn check_on_piece(
         out.arena_written,
         "on_piece.fault_reason",
     )?;
-    if out.fault_reason.len != 0 && out.fault == crate::abi::transport::FAULT_NONE {
+    if out.fault_reason.len != 0
+        && out.fault == crate::abi::transport::FAULT_NONE
+        && out.verdict != VERDICT_COUNT_REFUSED
+    {
         return Err(fault(Rule::Contradiction, "on_piece.fault_reason_unread"));
     }
     units(bufs.0, u64::from(out.units_written), b)?;
@@ -475,7 +481,12 @@ fn final_status(out: &OnPieceOut) -> Result<(), Fault> {
 
 /// `on_piece`'s verdict: a known `VERDICT_*`, and none on an answer that is not READY.
 fn verdict(outcome: Outcome, v: u32) -> Result<(), Fault> {
-    code(u64::from(v), 0, u64::from(VERDICT_HARD), "on_piece.verdict")?;
+    code(
+        u64::from(v),
+        0,
+        u64::from(VERDICT_COUNT_REFUSED),
+        "on_piece.verdict",
+    )?;
     if v != 0 && outcome != Outcome::Ready {
         return Err(fault(Rule::Contradiction, "on_piece.verdict_not_ready"));
     }

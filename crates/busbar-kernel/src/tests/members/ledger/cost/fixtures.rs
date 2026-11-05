@@ -46,7 +46,7 @@ pub(crate) fn lines(entries: &[(&'static str, u64)]) -> Vec<UsageLine> {
         .iter()
         .map(|(class, quantity)| UsageLine {
             class: MeterClassId::new(class),
-            quantity: *quantity,
+            quantity: (*quantity).into(),
             source: QuantitySource::Count,
             estimated: false,
         })

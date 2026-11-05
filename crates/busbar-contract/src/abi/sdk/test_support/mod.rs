@@ -14,6 +14,9 @@ mod sealed {
 pub mod chip;
 pub mod sink;
 
+mod restated_transport;
+pub use restated_transport::RestatedTransport;
+
 /// A REVIEWED ABI struct whose all-zero bit pattern is a valid value. Sealed: the implementors are
 pub trait AllZero: sealed::Sealed + Copy + 'static {}
 

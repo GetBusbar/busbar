@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Sealed keyed records use `audit.v5`; legacy `audit.v4` records keep their original bytes.
+//! Whole keyed records use `audit.v5`; exact fractional records use `audit.v6`.
+//! Legacy records keep their original bytes.
 
 use busbar_contract::caps::{Abort, MeterClassId, Outcome, ReasonCode, StepName, UnitKey};
 
@@ -11,8 +12,11 @@ use crate::record::{
     UsageLine, What,
 };
 
-/// The tag every new keyed audit record opens with.
+/// The tag for keyed audit records with legacy whole-count framing.
 pub const JOURNAL_TAG: &str = "audit.v5";
+
+/// Journal encoding for explicitly versioned exact decimal quantities.
+pub const JOURNAL_TAG_V6: &str = "audit.v6";
 
 /// The original journal format retained for legacy digest recipes.
 pub const JOURNAL_TAG_V4: &str = "audit.v4";
@@ -36,10 +40,10 @@ impl std::error::Error for FieldTooLong {}
 /// The journal body of one sealed record.
 pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
     let mut w = Writer::new();
-    w.text(if matches!(record.recipe, crate::recipe::Recipe::V5) {
-        JOURNAL_TAG
-    } else {
-        JOURNAL_TAG_V4
+    w.text(match record.recipe {
+        crate::recipe::Recipe::V6 => JOURNAL_TAG_V6,
+        crate::recipe::Recipe::V5 => JOURNAL_TAG,
+        _ => JOURNAL_TAG_V4,
     });
     w.text(record.recipe.name());
     if let crate::recipe::Recipe::V2 { currency, .. } = &record.recipe {
@@ -72,7 +76,15 @@ pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
     w.num(record.usage.lines.len() as u64);
     for line in &record.usage.lines {
         w.text(line.class.as_str());
-        w.num(line.quantity);
+        if matches!(record.recipe, crate::recipe::Recipe::V6) {
+            w.text(&line.quantity.to_decimal_string());
+        } else {
+            w.num(
+                line.quantity
+                    .whole_u64()
+                    .expect("legacy recipe has whole quantities"),
+            );
+        }
         write_source(&mut w, &line.source);
         w.num(u64::from(line.estimated));
     }
@@ -86,7 +98,7 @@ pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
         | crate::recipe::Recipe::V4 {
             legacy_rate_card_version,
         } => w.num(legacy_rate_card_version),
-        crate::recipe::Recipe::V5 => {
+        crate::recipe::Recipe::V5 | crate::recipe::Recipe::V6 => {
             w.num(u64::from(record.usage.rate_card_version.is_some()));
             if let Some(key) = &record.usage.rate_card_version {
                 w.bytes(key);
@@ -146,9 +158,10 @@ pub fn head_from_journal_body(bytes: &[u8]) -> Result<Option<JournalHead>, Strin
     };
     let bad = || "an audit head prefix does not decode".to_string();
     match r.text().as_deref().ok_or_else(bad)? {
-        crate::recipe::DIGEST_RECIPE if keyed => {}
-        crate::recipe::DIGEST_RECIPE_V4 if !keyed => {}
-        crate::recipe::DIGEST_RECIPE_V2 if !keyed => {
+        crate::recipe::DIGEST_RECIPE if keyed == 5 => {}
+        crate::recipe::DIGEST_RECIPE_V6 if keyed == 6 => {}
+        crate::recipe::DIGEST_RECIPE_V4 if keyed == 4 => {}
+        crate::recipe::DIGEST_RECIPE_V2 if keyed == 4 => {
             r.skip_text().ok_or_else(bad)?;
         }
         _ => return Err("an audit head names an unknown recipe".into()),
@@ -183,10 +196,11 @@ pub fn head_from_journal_body(bytes: &[u8]) -> Result<Option<JournalHead>, Strin
     }))
 }
 
-fn journal_kind(r: &mut Reader<'_>) -> Option<bool> {
+fn journal_kind(r: &mut Reader<'_>) -> Option<u8> {
     match r.text().as_deref()? {
-        JOURNAL_TAG => Some(true),
-        JOURNAL_TAG_V4 => Some(false),
+        JOURNAL_TAG => Some(5),
+        JOURNAL_TAG_V6 => Some(6),
+        JOURNAL_TAG_V4 => Some(4),
         _ => None,
     }
 }
@@ -194,15 +208,16 @@ fn journal_kind(r: &mut Reader<'_>) -> Option<bool> {
 fn decode(
     r: &mut Reader<'_>,
     class: &dyn Fn(&str) -> Option<MeterClassId>,
-    keyed: bool,
+    keyed: u8,
 ) -> Result<AuditRecord, String> {
     let bad = |what: &str| format!("an audit record whose {what} does not decode");
     let mut recipe = match r.text().ok_or_else(|| bad("recipe"))?.as_str() {
-        crate::recipe::DIGEST_RECIPE if keyed => crate::recipe::Recipe::V5,
-        crate::recipe::DIGEST_RECIPE_V4 if !keyed => crate::recipe::Recipe::V4 {
+        crate::recipe::DIGEST_RECIPE if keyed == 5 => crate::recipe::Recipe::V5,
+        crate::recipe::DIGEST_RECIPE_V6 if keyed == 6 => crate::recipe::Recipe::V6,
+        crate::recipe::DIGEST_RECIPE_V4 if keyed == 4 => crate::recipe::Recipe::V4 {
             legacy_rate_card_version: 0,
         },
-        crate::recipe::DIGEST_RECIPE_V2 if !keyed => crate::recipe::Recipe::V2 {
+        crate::recipe::DIGEST_RECIPE_V2 if keyed == 4 => crate::recipe::Recipe::V2 {
             currency: r.text().ok_or_else(|| bad("currency"))?,
             legacy_rate_card_version: 0,
         },
@@ -263,7 +278,17 @@ fn decode(
         })?;
         lines.push(UsageLine {
             class: resolved,
-            quantity: r.num().ok_or_else(|| bad("line quantity"))?,
+            quantity: if matches!(recipe, crate::recipe::Recipe::V6) {
+                let raw = r.text().ok_or_else(|| bad("line quantity"))?;
+                let count =
+                    busbar_contract::count::read_count(&raw).map_err(|_| bad("line quantity"))?;
+                if count.to_decimal_string() != raw {
+                    return Err(bad("noncanonical line quantity"));
+                }
+                count
+            } else {
+                r.num().ok_or_else(|| bad("line quantity"))?.into()
+            },
             source: read_source(r).ok_or_else(|| bad("line source"))?,
             estimated: r.flag().ok_or_else(|| bad("line estimate"))?,
         });
@@ -273,7 +298,7 @@ fn decode(
     let fee_count =
         u32::try_from(r.num().ok_or_else(|| bad("fee_count"))?).map_err(|_| bad("fee_count"))?;
     let rate_card_version = match &mut recipe {
-        crate::recipe::Recipe::V5 => {
+        crate::recipe::Recipe::V5 | crate::recipe::Recipe::V6 => {
             if r.flag().ok_or_else(|| bad("rate_card_key_present"))? {
                 Some(
                     r.bytes()

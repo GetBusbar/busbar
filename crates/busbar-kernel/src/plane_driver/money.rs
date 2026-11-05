@@ -8,7 +8,7 @@ use crate::host_services::VerifiedTicketIdentity;
 use busbar_contract::abi::plane::{units_bill, UnitCount};
 use busbar_contract::caps::{Admittance, CallId, Grant, PrincipalId, ReasonCode};
 use busbar_contract::records::{RecordStore, VirtualKey};
-use busbar_contract::UnitKey;
+use busbar_contract::{Count, UnitKey};
 
 use super::cancel::{CancelBill, Checkpoint, MoneySeam};
 use crate::config::groups::ExhaustionMode;
@@ -20,6 +20,10 @@ const NANOS_PER_MICRO: u128 = 1_000;
 
 pub trait EndPost: Send + Sync {
     fn post(&self, ctx: &UnitCtx, ended: Ended);
+    fn checkpoint_facts(&self, _key: UnitKey) -> Option<Vec<u8>> {
+        None
+    }
+    fn checkpoint_decoded(&self, _key: UnitKey, _class: busbar_contract::caps::OpClassId) {}
 }
 
 /// HOW A UNIT'S ANSWER ENDED, as the composition root hands it to [`PlaneMoney::settle_end_as`].
@@ -322,6 +326,8 @@ impl Drop for FeeParticipation {
 }
 
 struct Open {
+    checkpoint_id: [u8; 16],
+    checkpoint_audit: Option<Vec<u8>>,
     identity: Arc<()>,
     grant: Option<Arc<AdmitGrant>>,
     fee: FeeParticipation,
@@ -340,8 +346,15 @@ struct Open {
 }
 
 impl Open {
-    fn new(money: Arc<UnitMoney>, grant: Option<Arc<AdmitGrant>>, fee: FeeParticipation) -> Self {
+    fn new(
+        money: Arc<UnitMoney>,
+        grant: Option<Arc<AdmitGrant>>,
+        fee: FeeParticipation,
+        checkpoint_audit: Option<Vec<u8>>,
+    ) -> Self {
         Self {
+            checkpoint_id: crate::door::op_id().0,
+            checkpoint_audit,
             identity: Arc::new(()),
             grant,
             fee,
@@ -418,6 +431,7 @@ impl PlaneMoney {
                 owner: true,
                 refundable: false,
             },
+            self.post.checkpoint_facts(key),
         );
         let replaced = {
             let mut all = self.shard(key);
@@ -545,7 +559,12 @@ impl PlaneMoney {
         let ReservationMoney { grant, mut fee, .. } = reservation;
 
         fee.refundable = false;
-        let open = Open::new(Arc::new(money), Some(grant), fee);
+        let open = Open::new(
+            Arc::new(money),
+            Some(grant),
+            fee,
+            self.post.checkpoint_facts(child),
+        );
         all.insert(child, open);
         drop(all);
         Ok(())
@@ -659,6 +678,7 @@ impl PlaneMoney {
                     owner: false,
                     refundable: false,
                 },
+                self.post.checkpoint_facts(child),
             ))
         };
         let parent_shard = (parent.parent.get() % SHARDS as u64) as usize;
@@ -721,9 +741,10 @@ impl PlaneMoney {
         }
         if !open.ledgered {
             let delivered = (200..=299).contains(&caller_status);
-            self.bill(m, open.provider.as_deref(), &reported(&open.last), |_| {
-                delivered
-            });
+            let counts = reported(&open.last);
+            if !self.finish_checkpoint(key, &open, &counts, delivered) {
+                self.bill(m, open.provider.as_deref(), &counts, |_| delivered);
+            }
         }
         open.fee.refundable = m.fee.refunds(caller_status, &open.last);
     }
@@ -746,48 +767,129 @@ impl PlaneMoney {
         self.units.iter().map(|shard| locked(shard).len()).sum()
     }
 
+    pub fn checkpoint_decoded(&self, key: UnitKey, class: busbar_contract::caps::OpClassId) {
+        self.post.checkpoint_decoded(key, class);
+    }
+
+    fn checkpoint_snapshot(
+        &self,
+        key: UnitKey,
+        open: &Open,
+        counts: &[(u32, busbar_contract::Count)],
+        metered: bool,
+    ) -> Option<crate::governance::unit_checkpoint::UnitCheckpoint> {
+        use crate::governance::unit_checkpoint::{UnitCheckpoint, UnitTarget};
+        let m = &open.money;
+        let mut units = BTreeMap::<String, busbar_contract::Count>::new();
+        for (class, count) in counts {
+            if m.fee.is_fee(*class) {
+                continue;
+            }
+            let name = m.classes.get(*class as usize)?;
+            let previous = units.entry(name.clone()).or_default();
+            *previous = previous.checked_add(*count).ok()?;
+        }
+        let (_, pool) = busbar_kernel_ledger::cost::split_plane_lane(&m.pool);
+        let targets = match m.cost.chain_for(&m.key) {
+            Ok(chain) => chain
+                .iter()
+                .filter(|bucket| bucket.applies_to_pool(pool))
+                .map(|bucket| UnitTarget {
+                    bucket: bucket.bucket_id.to_string(),
+                    window: crate::governance::budget_window(bucket.window, m.arrived),
+                    group: bucket.group_name.map(str::to_string),
+                })
+                .collect(),
+            Err(_) => vec![UnitTarget {
+                bucket: m.key.id.clone(),
+                window: 0,
+                group: None,
+            }],
+        };
+        let era = m.charge.raw_era();
+        Some(UnitCheckpoint {
+            id: open.checkpoint_id,
+            revision: 0,
+            unit: key.get(),
+            principal: m.key.id.clone(),
+            group: m.key.group.clone().unwrap_or_default(),
+            arrived: m.arrived,
+            lane: m.lane.clone(),
+            provider: open.provider.clone(),
+            era_at: era.effective_from,
+            era_entry: era.entry_id.map(|entry| entry.0),
+            units,
+            targets,
+            metered,
+            ended: false,
+            terminal: None,
+            audit: self
+                .post
+                .checkpoint_facts(key)
+                .or_else(|| open.checkpoint_audit.clone()),
+        })
+    }
+
+    fn finish_checkpoint(
+        &self,
+        key: UnitKey,
+        open: &Open,
+        counts: &[(u32, busbar_contract::Count)],
+        metered: bool,
+    ) -> bool {
+        if !self.gov.unit_checkpoints_enabled() {
+            return false;
+        }
+        if let Some(snapshot) = self.checkpoint_snapshot(key, open, counts, metered) {
+            self.gov.finish_unit_checkpoint(snapshot);
+        } else {
+            tracing::error!(unit = key.get(), checkpoint = %hex::encode(open.checkpoint_id),
+                "terminal unit count conversion failed; running custody remains unresolved");
+        }
+        // An invalid terminal report cannot fall back to an independently owned ordinary bill.
+        true
+    }
+
     fn bill(
         &self,
         m: &UnitMoney,
         provider: Option<&str>,
-        counts: &[(u32, u64)],
-        metered: impl FnOnce(&[(u32, u64)]) -> bool,
+        counts: &[(u32, Count)],
+        metered: impl FnOnce(&[(u32, Count)]) -> bool,
     ) {
         let counts = &usage_only(m, counts);
-        let checked = named(&m.classes, counts, u64::checked_add);
-        let saturated;
-        let units = match &checked {
-            Some(units) => units,
-            None => {
-                saturated =
-                    named(&m.classes, counts, |a, b| Some(a.saturating_add(b))).unwrap_or_default();
-                &saturated
-            }
+        let Some(units) = named(&m.classes, counts) else {
+            tracing::error!("exact unit count overflow refused at settlement");
+            return;
         };
-        self.gov.record_usage_served_in_era(
+        if let Err(error) = self.gov.record_counts_served_in_era(
             &m.cost,
             &m.key,
             &m.pool,
             &m.lane,
             provider,
-            units,
+            &units,
             m.arrived,
             m.charge.raw_era(),
-        );
+        ) {
+            tracing::error!(%error, "exact usage accrual refused");
+            return;
+        }
         if metered(counts) {
-            let units = checked.unwrap_or_default();
-            self.gov.record_lane_metering_in_era(
+            if let Err(error) = self.gov.record_lane_counts_in_era(
                 &m.key,
                 &m.lane,
                 provider,
                 &units,
                 m.arrived,
                 m.charge.raw_era(),
-            );
+            ) {
+                tracing::error!(%error, "exact metering accrual refused");
+            }
         }
     }
 
-    fn dry(&self, m: &UnitMoney, counts: &[(u32, u64)]) -> bool {
+    fn dry(&self, m: &UnitMoney, counts: &[(u32, Count)]) -> bool {
         let (_, pool) = busbar_kernel_ledger::cost::split_plane_lane(&m.pool);
         let remaining = self
             .gov
@@ -799,11 +901,10 @@ impl PlaneMoney {
         let Some(remaining) = remaining else {
             return false;
         };
-        let Some(usage_units) = named(&m.classes, &usage_only(m, counts), u64::checked_add) else {
+        let Some(usage_units) = named(&m.classes, &usage_only(m, counts)) else {
             return true;
         };
-        let usage = busbar_contract::billing::Usage { usage_units };
-        match m.cost.price_usage_nanos(&m.lane, &usage) {
+        match m.cost.price_counts_nanos(&m.lane, &usage_units) {
             Some(nanos) => {
                 let micros = nanos.div_ceil(NANOS_PER_MICRO);
                 micros >= u128::try_from(remaining.max(0)).unwrap_or(0)
@@ -819,18 +920,22 @@ fn adds_up(classes: &[String], units: &[UnitCount]) -> bool {
         let Some(this) = name(u) else {
             return true;
         };
-        if units[..at].iter().any(|v| name(v) == Some(this)) {
+        let billed = units_bill(u.source);
+        if units[..at]
+            .iter()
+            .any(|v| name(v) == Some(this) && units_bill(v.source) == billed)
+        {
             return true;
         }
         units[at..]
             .iter()
-            .filter(|&v| name(v) == Some(this))
-            .try_fold(0u64, |sum, v| sum.checked_add(v.amount))
-            .is_some()
+            .filter(|&v| name(v) == Some(this) && units_bill(v.source) == billed)
+            .try_fold(Count::ZERO, |sum, v| sum.checked_add(v.count()?))
+            .is_ok_and(Count::fits_a_64_bit_column)
     })
 }
 
-fn usage_only(m: &UnitMoney, counts: &[(u32, u64)]) -> Vec<(u32, u64)> {
+fn usage_only(m: &UnitMoney, counts: &[(u32, Count)]) -> Vec<(u32, Count)> {
     counts
         .iter()
         .copied()
@@ -838,26 +943,22 @@ fn usage_only(m: &UnitMoney, counts: &[(u32, u64)]) -> Vec<(u32, u64)> {
         .collect()
 }
 
-fn named(
-    classes: &[String],
-    counts: &[(u32, u64)],
-    add: fn(u64, u64) -> Option<u64>,
-) -> Option<BTreeMap<String, u64>> {
-    let mut units: BTreeMap<String, u64> = BTreeMap::new();
+fn named(classes: &[String], counts: &[(u32, Count)]) -> Option<BTreeMap<String, Count>> {
+    let mut units: BTreeMap<String, Count> = BTreeMap::new();
     for (class, amount) in counts {
         if let Some(name) = classes.get(*class as usize) {
-            let n = units.entry(name.clone()).or_insert(0);
-            *n = add(*n, *amount)?;
+            let n = units.entry(name.clone()).or_insert(Count::ZERO);
+            *n = n.checked_add(*amount).ok()?;
         }
     }
     Some(units)
 }
 
-pub(super) fn reported(units: &[UnitCount]) -> Vec<(u32, u64)> {
+pub(super) fn reported(units: &[UnitCount]) -> Vec<(u32, Count)> {
     units
         .iter()
         .filter(|u| units_bill(u.source))
-        .map(|u| (u.class, u.amount))
+        .map(|u| (u.class, u.count().expect("validated unit source")))
         .collect()
 }
 
@@ -868,10 +969,25 @@ impl MoneySeam for PlaneMoney {
             return Checkpoint::Continue;
         };
         if !adds_up(&open.money.classes, units) {
-            return Checkpoint::Cut;
+            return Checkpoint::Unpriced;
         }
         open.last.clear();
         open.last.extend_from_slice(units);
+        if let Some(audit) = self.post.checkpoint_facts(ctx.key) {
+            open.checkpoint_audit = Some(audit);
+        }
+        if self.gov.unit_checkpoints_enabled() && !open.ledgered {
+            let counts = reported(units);
+            let Some(snapshot) = self.checkpoint_snapshot(
+                ctx.key,
+                open,
+                &counts,
+                bills(&usage_only(&open.money, &counts)),
+            ) else {
+                return Checkpoint::Unpriced;
+            };
+            self.gov.stage_unit_checkpoint(snapshot);
+        }
         if open.money.mode != ExhaustionMode::CutStream {
             return Checkpoint::Continue;
         }
@@ -885,7 +1001,7 @@ impl MoneySeam for PlaneMoney {
     }
 
     fn cancelled(&self, ctx: &UnitCtx, bill: &CancelBill) {
-        let (money, provider, removed) = {
+        let (money, provider, removed, durable) = {
             let mut all = self.shard(ctx.key);
             let Some(open) = all.get_mut(&ctx.key) else {
                 return;
@@ -894,6 +1010,12 @@ impl MoneySeam for PlaneMoney {
                 return;
             }
             open.ledgered = true;
+            let durable = self.finish_checkpoint(
+                ctx.key,
+                open,
+                &bill.billed,
+                bills(&usage_only(&open.money, &bill.billed)),
+            );
             let money = open.money.clone();
             let provider = open.provider.clone();
             let removed = if open.abandoned {
@@ -901,9 +1023,11 @@ impl MoneySeam for PlaneMoney {
             } else {
                 None
             };
-            (money, provider, removed)
+            (money, provider, removed, durable)
         };
-        self.bill(&money, provider.as_deref(), &bill.billed, bills);
+        if !durable {
+            self.bill(&money, provider.as_deref(), &bill.billed, bills);
+        }
         drop(removed);
     }
 
@@ -926,12 +1050,18 @@ impl MoneySeam for PlaneMoney {
         };
         if let Some((open, owed)) = removed {
             if owed {
-                self.bill(
-                    &open.money,
-                    open.provider.as_deref(),
-                    &reported(&open.last),
-                    bills,
-                );
+                let counts = reported(&open.last);
+                if !self.finish_checkpoint(
+                    ctx.key,
+                    &open,
+                    &counts,
+                    bills(&usage_only(&open.money, &counts)),
+                ) {
+                    self.bill(&open.money, open.provider.as_deref(), &counts, bills);
+                }
+            } else if !open.ledgered {
+                // Empty abandoned units still retire their last running snapshot.
+                self.finish_checkpoint(ctx.key, &open, &[], false);
             }
 
             drop(open);
@@ -956,7 +1086,7 @@ impl MoneySeam for PlaneMoney {
     }
 
     fn session_ended(&self, ctx: &UnitCtx) {
-        let (money, provider, counts, removed) = {
+        let (money, provider, counts, removed, durable) = {
             let mut all = self.shard(ctx.key);
             let Some(open) = all.get_mut(&ctx.key) else {
                 return;
@@ -968,14 +1098,22 @@ impl MoneySeam for PlaneMoney {
             let money = open.money.clone();
             let provider = open.provider.clone();
             let counts = reported(&open.last);
+            let durable = self.finish_checkpoint(
+                ctx.key,
+                open,
+                &counts,
+                bills(&usage_only(&open.money, &counts)),
+            );
             let removed = if open.abandoned {
                 all.remove(&ctx.key)
             } else {
                 None
             };
-            (money, provider, counts, removed)
+            (money, provider, counts, removed, durable)
         };
-        self.bill(&money, provider.as_deref(), &counts, bills);
+        if !durable {
+            self.bill(&money, provider.as_deref(), &counts, bills);
+        }
         drop(removed);
     }
 
@@ -1011,8 +1149,8 @@ fn locked<T>(shard: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn bills(usage: &[(u32, u64)]) -> bool {
-    usage.iter().any(|(_, n)| *n > 0)
+fn bills(usage: &[(u32, Count)]) -> bool {
+    usage.iter().any(|(_, n)| *n > Count::ZERO)
 }
 
 #[cfg(test)]

@@ -10,7 +10,7 @@ fn seal() -> KernelSeal {
 fn line(source: QuantitySource) -> UsageLine {
     UsageLine {
         class: MeterClassId::new("class"),
-        quantity: 1,
+        quantity: 1.into(),
         source,
         estimated: false,
     }
@@ -21,7 +21,7 @@ fn a_report_hands_back_the_lines_it_was_given() {
     let lines = vec![
         UsageLine {
             class: MeterClassId::new("tokens"),
-            quantity: 900,
+            quantity: 900.into(),
             source: QuantitySource::Locator {
                 direction: busbar_contract::ClassDirection::Response,
                 ptr: LocatorPtr::new("/usage/total_tokens"),
@@ -30,7 +30,7 @@ fn a_report_hands_back_the_lines_it_was_given() {
         },
         UsageLine {
             class: MeterClassId::new("seconds"),
-            quantity: 12,
+            quantity: 12.into(),
             source: QuantitySource::KernelElapsedMono,
             estimated: false,
         },

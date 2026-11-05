@@ -1455,6 +1455,10 @@ pub fn book(
         .map_err(|why| {
             format!("usage recovery could not be restored from the Store journal: {why}")
         })?;
+    gov.attach_unit_checkpoint_sink(super::durability::unit_checkpoint_sink(&durability))
+        .map_err(|why| {
+            format!("running unit checkpoints could not be restored from the Store journal: {why}")
+        })?;
     gov.hydrate_budgets(&app.cost, now)
         .map_err(|why| format!("budget hydration after usage recovery failed: {why}"))?;
     if let Err(why) = gov.resume_correction_verdicts(&app.cost) {

@@ -15,6 +15,11 @@ use crate::Count;
 /// modality-reporting operations alike.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TokenUsage {
+    /// Complete exact class counts when supplied by a decimal reader. Legacy integer fields are
+    /// compatibility projections only when this is present; money reads this map exclusively.
+    pub exact_counts: Option<std::collections::BTreeMap<String, Count>>,
+    /// Measurements explicitly refused by the decimal reader. They must never turn into a floor.
+    pub refused_counts: Vec<String>,
     /// Uncached input tokens (normalized; an upstream whose wire total includes the cache subtracts it).
     pub input: u64,
     pub output: u64,
@@ -99,6 +104,25 @@ pub fn duration_seconds_to_wire(seconds: Count) -> f64 {
 pub struct Usage {
     /// OPAQUE billable counts, reserved four AND opens. Keys are plane/operator DATA.
     pub usage_units: std::collections::BTreeMap<String, u64>,
+}
+
+/// Exact measured usage on the live count path. Legacy callers convert whole values once.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ExactUsage {
+    /// Complete reported quantities, keyed by the plane's declared class names.
+    pub usage_units: std::collections::BTreeMap<String, Count>,
+}
+
+impl From<Usage> for ExactUsage {
+    fn from(usage: Usage) -> Self {
+        Self {
+            usage_units: usage
+                .usage_units
+                .into_iter()
+                .map(|(class, count)| (class, Count::from(count)))
+                .collect(),
+        }
+    }
 }
 
 /// THE NEUTRAL TIER-RATE VIEW (1.6.0 config-seam S2a): one entry's four reserved-tier rates as EXACT

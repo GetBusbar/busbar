@@ -1189,52 +1189,28 @@ fn actual_http_and_ws_locate_before_open_without_network_or_runtime_state() {
 
 #[test]
 fn registered_foreign_provider_claim_uses_its_declaration_and_duplicates_refuse() {
-    use busbar_contract::abi::mechanism::door::{Door, DoorFn, DoorParts};
+    use busbar_contract::abi::mechanism::door::{Door, DoorFn};
+    use busbar_contract::abi::sdk::test_support::RestatedTransport;
     use busbar_contract::abi::transport::ROLE_CARRIER;
-    // Restate one actual carrier's claim; keep its complete operation table and ABI tail.
-    // The ordinary admission/locator path must select the foreign declaration without OPEN.
-    #[allow(unsafe_code)]
+    // Restate the actual carrier through its sealed SDK factory, preserving its operations.
     extern "C" fn foreign() -> &'static Door {
-        static ONE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-        let address = *ONE.get_or_init(|| {
-            let actual = crate::LINKED_TRANSPORT_DOORS
-                .iter()
-                .find_map(|(_, door)| {
-                    let facts =
-                        crate::root::loader::dispatch::kinds::transport::linked_facts(*door)
-                            .ok()?;
-                    (facts.role == ROLE_CARRIER && facts.ported).then_some(*door)
-                })
-                .expect("the distribution declares an IP carrier")();
-            // SAFETY: the linked door retains its immutable declaration for the process.
-            let mut statement = unsafe { *actual.statement() };
-            let claims = Box::leak(
-                (0..statement.claims_len)
-                    .map(|index| {
-                        let name: &'static str = if index == 0 {
-                            "foreign-c6"
-                        } else {
-                            Box::leak(format!("foreign-c6-{index}").into_boxed_str())
-                        };
-                        busbar_contract::abi::sdk::door::abi_str(name)
-                    })
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            );
-            assert!(!claims.is_empty());
-            statement.claims = claims.as_ptr();
-            let statement = Box::leak(Box::new(statement));
-            // SAFETY: only claim names change; the original typed table and tail stay retained.
-            let door = unsafe {
-                Door::__from_parts(DoorParts {
-                    statement,
-                    ..actual.parts()
-                })
-            };
-            Box::into_raw(Box::new(door)) as usize
-        });
-        // SAFETY: the immutable test declaration is process-lived.
-        unsafe { &*(address as *const Door) }
+        static ONE: RestatedTransport = RestatedTransport::new();
+        let source = busbar_transport_tcp::linked::MACRO_DOOR;
+        let facts = crate::root::loader::dispatch::kinds::transport::linked_facts(source.door_fn())
+            .expect("the actual carrier has a valid declaration");
+        assert_eq!(facts.role, ROLE_CARRIER);
+        assert!(facts.ported);
+        let claims: Vec<_> = (0..facts.claims.len())
+            .map(|index| {
+                if index == 0 {
+                    "foreign-c6".to_string()
+                } else {
+                    format!("foreign-c6-{index}")
+                }
+            })
+            .collect();
+        let claims: Vec<_> = claims.iter().map(String::as_str).collect();
+        ONE.get_or_init(source, &claims, &[])
     }
     let rows: Arc<dyn PluginRows> = Arc::new(PluginRegistry::empty());
     let door = foreign as DoorFn;

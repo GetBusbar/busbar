@@ -12,6 +12,7 @@ fn candidate() -> Request {
         requests: u64::MAX,
         billable_requests: u64::MAX,
         models: vec![ModelTokens {
+            scale: 0,
             model: "historical-model".into(),
             usage_units: [(UNIT_INPUT.into(), u64::MAX)].into(),
         }],

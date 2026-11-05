@@ -10,7 +10,7 @@ use busbar_contract::abi::plane::{
 };
 use busbar_contract::caps::{OriginKind, ReasonCode};
 use busbar_contract::records::VirtualKey;
-use busbar_contract::UnitKey;
+use busbar_contract::{Count, UnitKey};
 
 use super::*;
 use crate::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
@@ -152,7 +152,7 @@ fn reported(amount: u64) -> [UnitCount; 1] {
     }]
 }
 
-fn usage(r: &Rig) -> (u64, i64) {
+fn usage(r: &Rig) -> (Count, i64) {
     let u = r
         .gov
         .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
@@ -171,13 +171,21 @@ fn the_end_ledgers_the_last_reported_counts_once() {
     }
     assert_eq!(
         usage(&r).0,
-        0,
+        Count::from(0u64),
         "a running report is a checkpoint, never a ledger line"
     );
     r.money.settle_end(UnitKey::new(1), 200);
-    assert_eq!(usage(&r).0, 100, "the last cumulative count, once");
+    assert_eq!(
+        usage(&r).0,
+        Count::from(100u64),
+        "the last cumulative count, once"
+    );
     r.money.settle_end(UnitKey::new(1), 200);
-    assert_eq!(usage(&r).0, 100, "a closed unit ledgers nothing again");
+    assert_eq!(
+        usage(&r).0,
+        Count::from(100u64),
+        "a closed unit ledgers nothing again"
+    );
 }
 
 #[test]
@@ -190,7 +198,7 @@ fn an_estimate_never_bills() {
     }];
     let _ = r.money.checkpoint(&ctx(1), &estimated);
     r.money.settle_end(UnitKey::new(1), 200);
-    assert_eq!(usage(&r).0, 0);
+    assert_eq!(usage(&r).0, Count::from(0u64));
 }
 
 #[test]
@@ -204,14 +212,14 @@ fn a_cancel_bill_is_ledgered_and_the_end_adds_nothing() {
             disposition: CANCEL_OK_PARTIAL,
             far_end_answered: true,
             streamed: true,
-            billed: vec![(INPUT, 70)],
+            billed: vec![(INPUT, Count::from(70u64))],
         },
     );
-    assert_eq!(usage(&r).0, 70, "the bill's counts");
+    assert_eq!(usage(&r).0, Count::from(70u64), "the bill's counts");
     r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(
         usage(&r).0,
-        70,
+        Count::from(70u64),
         "the end does not ledger the unit a second time"
     );
 }
@@ -330,12 +338,12 @@ fn a_fee_unit_count_is_never_ledgered_as_usage() {
     r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(
         usage(&r),
-        (40, 5),
+        (Count::from(40u64), 5),
         "the input counts and the admission's fee, nothing else"
     );
 }
 
-fn group_month(r: &Rig, at: u64) -> (u64, i64) {
+fn group_month(r: &Rig, at: u64) -> (Count, i64) {
     let u = r
         .gov
         .derived_bucket_usage(
@@ -412,17 +420,17 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(
         group_month(&r, NOW).0,
-        1000,
+        Count::from(1000u64),
         "token accrual must be attributed to the charged_at (header-arrival) window"
     );
     assert_eq!(
         group_month(&r, today).0,
-        0,
+        Count::from(0u64),
         "token accrual must NOT leak into the wall-clock 'now' window (the #29 split bug)"
     );
     assert_eq!(
         usage(&r).0,
-        1000,
+        Count::from(1000u64),
         "the key's all-time bucket sees the tokens"
     );
 }
@@ -546,11 +554,15 @@ fn a_stream_cut_by_its_far_end_bills_and_meters_what_its_plane_ledgered() {
     );
     assert_eq!(
         (row.tokens_input, row.tokens_output),
-        (40, 0),
+        (40_000_000, 0),
         "the row carries the tokens the plane ledgered"
     );
     let (tokens, spend) = usage(&r);
-    assert_eq!(tokens, 40, "every token the plane ledgered bills");
+    assert_eq!(
+        tokens,
+        Count::from(40u64),
+        "every token the plane ledgered bills"
+    );
     assert!(spend >= 5, "and the fee its plane reported stands: {spend}");
     let u = r
         .gov
@@ -574,7 +586,7 @@ fn a_failed_over_unit_ledgers_and_meters_under_the_serving_member() {
             rows[0].requests,
             rows[0].tokens_input
         ),
-        ("m2", "fallback", 1, 40)
+        ("m2", "fallback", 1, 40_000_000)
     );
     let models: Vec<String> = r
         .gov
@@ -705,7 +717,10 @@ fn a_plane_units_declared_class_counts_reach_its_metering_row() {
             "srv_read",
             "tp",
             1,
-            BTreeMap::from([("bytes".to_string(), 37), ("calls".to_string(), 1)]),
+            BTreeMap::from([
+                ("bytes".to_string(), 37_000_000),
+                ("calls".to_string(), 1_000_000)
+            ]),
         )],
         "one request on the plane's row, carrying every declared class it reported and no fee unit"
     );
@@ -737,7 +752,10 @@ fn a_cancelled_stream_meters_only_a_reported_bill() {
         disposition: CANCEL_OK_PARTIAL,
         far_end_answered: true,
         streamed: true,
-        billed,
+        billed: billed
+            .into_iter()
+            .map(|(class, count)| (class, count.into()))
+            .collect(),
     };
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
     r.money.served(&ctx(1), "m", "acme");
@@ -747,7 +765,7 @@ fn a_cancelled_stream_meters_only_a_reported_bill() {
     r.money.served(&ctx(1), "m", "acme");
     r.money.cancelled(&ctx(1), &bill(vec![(INPUT, 30)]));
     let rows = metering_rows(&r);
-    assert_eq!((rows.len(), rows[0].tokens_input), (1, 30));
+    assert_eq!((rows.len(), rows[0].tokens_input), (1, 30_000_000));
 }
 
 #[test]
@@ -787,7 +805,8 @@ fn cut_stream_cuts_at_the_tightest_budget() {
 fn cut_stream_without_a_budget_never_cuts() {
     let r = rig(None, 0, ExhaustionMode::CutStream);
     assert_eq!(
-        r.money.checkpoint(&ctx(1), &reported(u64::MAX / 2)),
+        r.money
+            .checkpoint(&ctx(1), &reported(i64::MAX as u64 / 1_000_000)),
         Checkpoint::Continue
     );
 }
@@ -810,12 +829,12 @@ fn bill(cause: ReasonCode, amount: u64) -> CancelBill {
         disposition: CANCEL_OK_PARTIAL,
         far_end_answered: true,
         streamed: true,
-        billed: vec![(INPUT, amount)],
+        billed: vec![(INPUT, amount.into())],
     }
 }
 
 #[test]
-fn a_report_that_overflows_is_cut_and_never_kept() {
+fn a_report_that_overflows_is_unpriced_and_never_kept() {
     for mode in [ExhaustionMode::FinishUnit, ExhaustionMode::CutStream] {
         let r = rig(None, 0, mode);
         let _ = r.money.checkpoint(&ctx(1), &reported(40));
@@ -833,26 +852,33 @@ fn a_report_that_overflows_is_cut_and_never_kept() {
         ];
         assert_eq!(
             r.money.checkpoint(&ctx(1), &twice),
-            Checkpoint::Cut,
+            Checkpoint::Unpriced,
             "{mode:?}"
         );
         r.money.settle_end(UnitKey::new(1), 200);
-        assert_eq!(usage(&r).0, 40, "{mode:?}: the last report that added up");
+        assert_eq!(
+            usage(&r).0,
+            Count::from(40u64),
+            "{mode:?}: the last report that added up"
+        );
     }
 }
 
 #[test]
-fn class_sums_are_checked_and_the_fallback_saturates() {
+fn class_sums_are_checked_without_a_saturating_fallback() {
     let classes = ["input".to_string()];
-    let counts = [(INPUT, u64::MAX), (INPUT, 2)];
-    assert_eq!(super::named(&classes, &counts, u64::checked_add), None);
+    let counts = [
+        (INPUT, Count::from_micros(i128::MAX)),
+        (INPUT, Count::EPSILON),
+    ];
+    assert_eq!(super::named(&classes, &counts), None);
     assert_eq!(
-        super::named(&classes, &counts, |a, b| Some(a.saturating_add(b))).unwrap()["input"],
-        u64::MAX
-    );
-    assert_eq!(
-        super::named(&classes, &[(INPUT, 3), (INPUT, 4)], u64::checked_add).unwrap()["input"],
-        7
+        super::named(
+            &classes,
+            &[(INPUT, Count::from(3u64)), (INPUT, Count::from(4u64))]
+        )
+        .unwrap()["input"],
+        Count::from(7u64)
     );
 }
 
@@ -863,7 +889,11 @@ fn every_path_ledgers_a_unit_exactly_once_and_closes_it() {
     r.money.finished(&ctx(1));
     r.money.settle_end(UnitKey::new(1), 200);
     r.money.settle_end(UnitKey::new(1), 200);
-    assert_eq!((usage(&r).0, r.money.open_units()), (10, 0), "complete");
+    assert_eq!(
+        (usage(&r).0, r.money.open_units()),
+        (Count::from(10u64), 0),
+        "complete"
+    );
 
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
     let _ = r.money.checkpoint(&ctx(1), &reported(20));
@@ -872,7 +902,7 @@ fn every_path_ledgers_a_unit_exactly_once_and_closes_it() {
     r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(
         (usage(&r).0, r.money.open_units()),
-        (20, 0),
+        (Count::from(20u64), 0),
         "abandon after finish"
     );
 
@@ -890,7 +920,7 @@ fn every_path_ledgers_a_unit_exactly_once_and_closes_it() {
         .cancelled(&ctx(1), &bill(ReasonCode::ClientGone, 25));
     assert_eq!(
         (usage(&r).0, r.money.open_units()),
-        (25, 0),
+        (Count::from(25u64), 0),
         "abandon then bill"
     );
 
@@ -901,7 +931,7 @@ fn every_path_ledgers_a_unit_exactly_once_and_closes_it() {
     r.money.abandoned(&ctx(1), Ended::AlreadySettled);
     assert_eq!(
         (usage(&r).0, r.money.open_units()),
-        (25, 0),
+        (Count::from(25u64), 0),
         "bill then abandon"
     );
 
@@ -912,7 +942,7 @@ fn every_path_ledgers_a_unit_exactly_once_and_closes_it() {
     r.money.settle_end(UnitKey::new(1), 504);
     assert_eq!(
         (usage(&r).0, r.money.open_units()),
-        (5, 0),
+        (Count::from(5u64), 0),
         "cancel then end"
     );
 }
@@ -959,7 +989,7 @@ fn a_floor_count_bills_like_a_reported_one() {
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
     let _ = r.money.checkpoint(&ctx(1), &[floor(INPUT, 51)]);
     r.money.settle_end(UnitKey::new(1), 200);
-    assert_eq!(usage(&r).0, 51, "the floor bills, once");
+    assert_eq!(usage(&r).0, Count::from(51u64), "the floor bills, once");
 }
 
 #[test]
@@ -982,7 +1012,7 @@ fn a_cancel_bill_carries_the_floor_counts_and_never_an_estimate() {
         ],
     };
     let bill = CancelBill::new(ReasonCode::ClientGone, Some(CANCEL_OK_PARTIAL), &facts);
-    assert_eq!(bill.billed, vec![(INPUT, 40)]);
+    assert_eq!(bill.billed, vec![(INPUT, Count::from(40u64))]);
 }
 
 #[test]
@@ -1010,12 +1040,20 @@ fn a_session_writes_one_line_of_its_last_cumulative_counts_at_its_end() {
             Checkpoint::Continue
         );
     }
-    assert_eq!(usage(&r).0, 0, "a turn is a checkpoint, never a line");
+    assert_eq!(
+        usage(&r).0,
+        Count::from(0u64),
+        "a turn is a checkpoint, never a line"
+    );
     r.money.session_ended(&ctx(1));
-    assert_eq!(usage(&r).0, 120, "the session's one line");
+    assert_eq!(usage(&r).0, Count::from(120u64), "the session's one line");
     r.money.session_ended(&ctx(1));
     r.money.settle_end(UnitKey::new(1), 200);
-    assert_eq!(usage(&r).0, 120, "nothing is ledgered twice");
+    assert_eq!(
+        usage(&r).0,
+        Count::from(120u64),
+        "nothing is ledgered twice"
+    );
     assert_eq!(r.money.open_units(), 0, "the unit's end closes it");
 }
 
@@ -1036,9 +1074,17 @@ fn a_cancelled_side_does_not_replace_the_sessions_line() {
             },
         );
         r.money.cancelled(&ctx(1), &bill(cause, 40));
-        assert_eq!(usage(&r).0, 0, "{cause:?}: a side's bill is not the line");
+        assert_eq!(
+            usage(&r).0,
+            Count::from(0u64),
+            "{cause:?}: a side's bill is not the line"
+        );
         r.money.session_ended(&ctx(1));
-        assert_eq!(usage(&r).0, 90, "{cause:?}: what the session served");
+        assert_eq!(
+            usage(&r).0,
+            Count::from(90u64),
+            "{cause:?}: what the session served"
+        );
     }
 }
 
@@ -1049,9 +1095,9 @@ fn an_abandoned_session_is_billed_by_its_cleanup_and_closes() {
     let _ = r.money.checkpoint(&ctx(1), &reported(55));
     r.money.abandoned(&ctx(1), Ended::AlreadySettled);
     assert_eq!(r.posted.0.load(Ordering::SeqCst), 1);
-    assert_eq!(usage(&r).0, 0);
+    assert_eq!(usage(&r).0, Count::from(0u64));
     r.money.session_ended(&ctx(1));
-    assert_eq!(usage(&r).0, 55);
+    assert_eq!(usage(&r).0, Count::from(55u64));
     assert_eq!(r.money.open_units(), 0);
 }
 
@@ -1071,7 +1117,7 @@ fn a_sessions_line_carries_reported_and_floor_counts_never_an_estimate() {
         ],
     );
     r.money.session_ended(&ctx(1));
-    assert_eq!(usage(&r).0, 7);
+    assert_eq!(usage(&r).0, Count::from(7u64));
 }
 
 #[test]
@@ -1295,10 +1341,14 @@ fn the_checkpoint_check_agrees_with_the_checked_sums() {
         ),
     ];
     for (classes, units) in &cases {
-        let counts: Vec<(u32, u64)> = units.iter().map(|u| (u.class, u.amount)).collect();
+        let counts: Vec<(u32, Count)> = units
+            .iter()
+            .map(|u| (u.class, u.count().unwrap()))
+            .collect();
         assert_eq!(
             super::adds_up(classes, units),
-            super::named(classes, &counts, u64::checked_add).is_some(),
+            super::named(classes, &counts)
+                .is_some_and(|counts| counts.values().all(|n| n.fits_a_64_bit_column())),
             "{classes:?} {counts:?}"
         );
     }
@@ -1404,7 +1454,7 @@ fn admitted_child_prices_nonzero_usage_under_exactly_one_real_fee() {
     r.money.settle_end(UnitKey::new(2), 200);
     assert_eq!(
         usage(&r),
-        (1_000_000, priced + 5),
+        (Count::from(1_000_000u64), priced + 5),
         "one fee and one priced media line"
     );
     assert_eq!(r.money.open_units(), 0);
@@ -1464,7 +1514,7 @@ fn child_cancellation_bills_its_actual_media_once_and_keeps_an_incurred_fee() {
         .cancelled(&ctx(2), &bill(ReasonCode::ClientGone, 70));
     r.money.settle_end(UnitKey::new(1), 503);
     r.money.settle_end(UnitKey::new(2), 499);
-    assert_eq!(usage(&r), (70, 5));
+    assert_eq!(usage(&r), (Count::from(70u64), 5));
     assert_eq!(r.money.open_units(), 0);
 }
 
@@ -1481,7 +1531,7 @@ fn abandoned_child_closes_fee_participation_once_without_inventing_a_refund() {
     r.money
         .cancelled(&ctx(2), &bill(ReasonCode::ClientGone, 40));
     r.money.settle_end(UnitKey::new(2), 503);
-    assert_eq!(usage(&r), (40, 5));
+    assert_eq!(usage(&r), (Count::from(40u64), 5));
     assert_eq!(r.money.open_units(), 0);
 }
 
@@ -1547,7 +1597,7 @@ fn selecting_a_parent_lane_does_not_invalidate_real_admission_provenance() {
     let _ = r.money.checkpoint(&ctx(17), &reported(31));
     r.money.settle_end(UnitKey::new(1), 200);
     r.money.settle_end(UnitKey::new(17), 200);
-    assert_eq!(usage(&r), (31, 5));
+    assert_eq!(usage(&r), (Count::from(31u64), 5));
 }
 
 #[test]
@@ -1794,7 +1844,7 @@ fn reserved_admission_becomes_priced_media_after_the_original_mint_has_settled()
     r.money.session_ended(&ctx(2));
     r.money.settle_end(UnitKey::new(2), 200);
     r.money.settle_end(UnitKey::new(2), 200);
-    assert_eq!(usage(&r), (1_000_000, priced + 5));
+    assert_eq!(usage(&r), (Count::from(1_000_000u64), priced + 5));
     let totals = r
         .gov
         .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
@@ -1900,14 +1950,14 @@ fn rejected_reserved_adoption_returns_the_unchanged_real_token_for_retry_or_clea
             r.money.settle_end(UnitKey::new(3), 503);
             assert_eq!(
                 usage(&r),
-                (7, 5),
+                (Count::from(7u64), 5),
                 "returned authority genuinely adopts once and bills"
             );
         } else {
             drop(reservation);
             assert_eq!(
                 usage(&r),
-                (0, 0),
+                (Count::from(0u64), 0),
                 "returned unused authority cleans up and refunds once"
             );
         }
@@ -2124,7 +2174,11 @@ fn reserved_ticket_adoption_checks_receiving_authority_and_binding() {
                 Checkpoint::Continue
             );
             r.money.settle_end(UnitKey::new(2), 200);
-            assert_eq!(usage(&r).0, 1_000_000, "actual adopted usage priced once");
+            assert_eq!(
+                usage(&r).0,
+                Count::from(1_000_000u64),
+                "actual adopted usage priced once"
+            );
             let total = r
                 .gov
                 .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
@@ -2177,4 +2231,103 @@ fn reserved_ticket_holder_clones_share_one_financial_token() {
     drop(holder);
     drop(clone);
     assert_eq!(usage(&r).1, 0);
+}
+
+#[test]
+fn exact_decimal_checkpoints_survive_settlement_flush_and_governor_reopen() {
+    use crate::cost::{MeteredRow, Tally, STANDARD_TIER_BP};
+    let mut r = rig(None, 0, ExhaustionMode::FinishUnit);
+    let rates = BTreeMap::from([(
+        "m".into(),
+        crate::config::RateEntryCfg {
+            input_utok: 10_000.0,
+            ..Default::default()
+        },
+    )]);
+    r.cost = Arc::new(CostModel::resolve_parts(Some(&rates), 0, &BTreeMap::new()));
+    r.unit.cost = Arc::clone(&r.cost);
+    let mut total = Count::ZERO;
+    let mut tally = Tally::at_card(r.cost.card());
+    for (index, spelling) in ["27.5", "27.1", "27.0", "1e3"].into_iter().enumerate() {
+        let id = index as u64 + 1;
+        r.money.open(UnitKey::new(id), r.unit.clone());
+        let quantity = Count::parse(spelling).unwrap();
+        let report = UnitCount::from_count(INPUT, UNITS_REPORTED, quantity).unwrap();
+        assert_eq!(report.count().unwrap(), quantity);
+        assert_eq!(
+            r.money.checkpoint(&ctx(id), &[report]),
+            Checkpoint::Continue
+        );
+        assert_eq!(usage(&r).0, total, "checkpoint has not settled {spelling}");
+        r.money.served(&ctx(id), "m", "acme");
+        r.money.settle_end(UnitKey::new(id), 200);
+        r.money.settle_end(UnitKey::new(id), 200);
+        total = total.checked_add(quantity).unwrap();
+        tally
+            .row("m", 0, STANDARD_TIER_BP, [("input", quantity)], Count::ZERO)
+            .unwrap();
+        assert_eq!(
+            usage(&r),
+            (total, tally.money().unwrap().minor_i64().unwrap())
+        );
+    }
+    assert_eq!(total, Count::parse("1081.6").unwrap());
+    let expected = tally.money().unwrap();
+    r.gov.flush_budgets();
+    let metering = metering_rows(&r);
+    assert_eq!(metering.len(), 1);
+    let row = &metering[0];
+    assert_eq!(row.scale, 6);
+    assert_eq!(row.tokens_input, 1_081_600_000);
+    assert_eq!(row.requests, 4);
+    let store = r.gov.store();
+    let stored = store.get_usage(&r.key.id, 0).unwrap();
+    let model = stored
+        .models
+        .iter()
+        .find(|model| model.model == "m")
+        .unwrap();
+    assert_eq!(model.scale, 6);
+    assert_eq!(model.usage_units["input"], 1_081_600_000);
+    let metered = MeteredRow::exact("m", model.counts().unwrap(), 0, BTreeMap::new());
+    assert_eq!(
+        metered.spend_micros_at_card(r.cost.card()).unwrap(),
+        expected.micros_i64().unwrap()
+    );
+    let (cost, key_id) = (Arc::clone(&r.cost), r.key.id.clone());
+    drop(tally);
+    drop(r);
+    let reopened = GovState::new(store, None).unwrap();
+    let derived = reopened
+        .derived_bucket_usage(&cost, &key_id, WINDOW_TOTAL, true, NOW)
+        .unwrap();
+    assert_eq!(derived.tokens, total);
+    assert_eq!(derived.spend_cents, expected.minor_i64().unwrap());
+    assert_eq!(
+        reopened
+            .metering_for(crate::governance::metering_bucket(NOW))
+            .unwrap(),
+        metering
+    );
+    assert_eq!(
+        reopened.bucket_model_tokens(&key_id, WINDOW_TOTAL, NOW),
+        vec![("m".into(), BTreeMap::from([("input".into(), total)]))]
+    );
+}
+
+#[test]
+fn exact_store_range_checks_estimates_separately_from_reported_counts() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    let maximum = Count::from_micros(i128::from(i64::MAX));
+    let units = [
+        UnitCount::from_count(INPUT, UNITS_ESTIMATED, maximum).unwrap(),
+        UnitCount::from_count(INPUT, UNITS_REPORTED, maximum).unwrap(),
+    ];
+    assert_eq!(r.money.checkpoint(&ctx(1), &units), Checkpoint::Continue);
+    r.money.settle_end(UnitKey::new(1), 200);
+    assert_eq!(
+        usage(&r).0,
+        maximum,
+        "the estimate is not an additional bill"
+    );
 }

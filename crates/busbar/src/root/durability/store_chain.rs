@@ -112,7 +112,9 @@ pub(super) fn put_record(
     lease: &HeldLease,
     record: &Record,
 ) -> Result<(), String> {
-    if super::usage_recovery::is_recovery_record(record) {
+    if super::usage_recovery::is_recovery_record(record)
+        || super::unit_checkpoint::is_checkpoint_record(record)
+    {
         return put_immutable_record(calls, lease, record);
     }
     let mut audit = match super::audit_heads::prepare(calls, record)? {

@@ -1,5 +1,6 @@
 use super::*;
 use crate::admin_state::AppAdmin as _;
+use crate::v1::service::manifest_schema;
 
 use busbar_kernel::diagnostics::{
     diag_error, diag_warn, ADMIN_AUTH_CHAIN_EMPTY, PLUGIN_ROLLBACK_PIN_PERSIST_FAILED,
@@ -2685,7 +2686,14 @@ pub(crate) async fn plugin_schema(
             &hook_schema_selection(
                 &name,
                 described,
-                loadable.as_ref().and_then(|p| p.settings_schema.as_deref()),
+                (
+                    loadable.as_ref().and_then(|p| p.settings_schema.as_deref()),
+                    if loadable.as_ref().is_some_and(|p| p.linked) {
+                        "statement"
+                    } else {
+                        "manifest"
+                    },
+                ),
                 trust,
                 kind.as_deref(),
                 restart_required_default,
@@ -2704,7 +2712,7 @@ pub(crate) async fn plugin_schema(
             "schema": schema,
             "schema_error": schema_error,
             "trust": trust,
-            "source": "manifest",
+            "source": if loadable.linked { "statement" } else { "manifest" },
             "kind": loadable.kind,
             "restart_required_default": kind_restart_default(&current, &loadable.kind),
         }),
@@ -2714,7 +2722,7 @@ pub(crate) async fn plugin_schema(
 fn hook_schema_selection(
     name: &str,
     described: Option<serde_json::Value>,
-    settings_schema: Option<&str>,
+    (settings_schema, fallback_source): (Option<&str>, &str),
     trust: &str,
     kind: Option<&str>,
     restart_required_default: Option<bool>,
@@ -2723,25 +2731,12 @@ fn hook_schema_selection(
         return json!({ "name": name, "schema": described, "schema_error": null, "trust": trust, "source": "describe", "kind": kind, "restart_required_default": restart_required_default });
     }
     let (schema, schema_error) = manifest_schema(settings_schema);
-    json!({ "name": name, "schema": schema, "schema_error": schema_error, "trust": trust, "source": "manifest", "kind": kind, "restart_required_default": restart_required_default })
+    json!({ "name": name, "schema": schema, "schema_error": schema_error, "trust": trust, "source": fallback_source, "kind": kind, "restart_required_default": restart_required_default })
 }
 
 #[cfg(test)]
 #[path = "tests/schema_fallback.rs"]
 mod schema_fallback;
-
-fn manifest_schema(settings_schema: Option<&str>) -> (Option<serde_json::Value>, Option<String>) {
-    match settings_schema {
-        None => (None, None),
-        Some(s) => match serde_json::from_str::<serde_json::Value>(s) {
-            Ok(v) => (Some(v), None),
-            Err(e) => (
-                None,
-                Some(format!("manifest settings_schema is not valid JSON: {e}")),
-            ),
-        },
-    }
-}
 
 fn verdict_trust(v: &busbar_contract::plugin_rows::Trust) -> &'static str {
     match v {
@@ -3026,14 +3021,14 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ap("/plugins/{file}/schema"),
         json!({
             "get": {
-                "summary": "The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field, which works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)",
+                "summary": "The plugin settings JSON Schema for every kind: canonical Statement first, legacy manifest field only when the Statement carries no schema. Dropped plugins are read from the signed manifest without opening the library; linked plugins publish their Statement. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)",
                 "security": [{"adminToken": []}],
                 "parameters": [{
                     "name": "file", "in": "path", "required": true,
                     "schema": {"type": "string"}
                 }],
                 RESPONSES_KEY: {
-                    "200": {"description": "`{name, schema, schema_error, trust, source}`: `schema` null (with `schema_error` null) when the manifest carries none; a manifest that SET `settings_schema` but failed to parse instead reports `schema_error` (never collapsed into the same null as \"no schema\"). `trust` is `trusted|unverified|rejected` (the catalog vocabulary). `source` is `describe` (a loaded hook answered live) or `manifest`"},
+                    "200": {"description": "`{name, schema, schema_error, trust, source}`: `schema` null (with `schema_error` null) when the manifest carries none; a manifest that SET `settings_schema` but failed to parse instead reports `schema_error` (never collapsed into the same null as \"no schema\"). `trust` is `trusted|unverified|rejected` (the catalog vocabulary). `source` is `describe` (a loaded hook answered live) or `statement` (linked plugin) or `manifest` (signed Statement or legacy manifest field)"},
                 }
             }
         }),
@@ -3629,7 +3624,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "/plugins",
             &[(
                 "type",
-                "Plugin type: `auth` | `hooks` | `store` (required)",
+                "Plugin type: `auth` | `hooks` | `secret` | `store` | `export` | `plane` | `transport` (required)",
                 true,
             )],
         ),
@@ -3801,11 +3796,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             }
         }};
     }
-    /// Sibling of `body!` for the one endpoint whose handler genuinely treats an absent body as the
-    /// type's `Default` — `POST /restart` (see its doc comment: "Absent is the same as `{}`"). Every
-    /// OTHER body-taking endpoint's handler requires the body, so `body!`/`body_raw!` stay
-    /// `"required": true`; this macro exists so a future genuinely-optional body has somewhere to go
-    /// without re-checking every other call site's handler.
+    /// Sibling of `body!` for handlers that accept an absent body: `POST /restart` treats it as
+    /// `{}`, and `POST /auth/cache/flush` flushes every partition. Other body-taking endpoints
+    /// retain `"required": true` through `body!`/`body_raw!`.
     macro_rules! body_optional {
         ($rel:expr, $method:literal, $t:ty) => {{
             let schema = req_gen.subschema_for::<$t>();
@@ -3837,11 +3830,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     use crate::v1::contract::{
         AdminAuthView, AuthView, ConfigValidateView, EffectiveConfigView, GroupView,
         HookHealthView, HookView, InfoView, ModelView, NamedDefView, Page, PluginInstallView,
-        PluginReloadView, PluginView, PoolDetailView, PoolView, ProviderView, UsageView,
+        PluginReloadView, PluginView, PoolDetailView, ProviderView, UsageView,
     };
 
     typed!("/info", "get", "200", InfoView);
-    typed!("/pools", "get", "200", Page<PoolView>);
+    typed!("/pools", "get", "200", sview::PoolListView);
     typed!("/pools/{name}", "get", "200", PoolDetailView);
     typed!("/models", "get", "200", Page<ModelView>);
     typed!("/providers", "get", "200", Page<ProviderView>);
@@ -3983,7 +3976,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     }
 
     body!(PATH_ADMIN_AUTH, "put", PutAuthBody);
-    body!("/auth/cache/flush", "post", FlushCacheReq);
+    body_optional!("/auth/cache/flush", "post", FlushCacheReq);
     body!("/plugins", "post", InstallPluginReq);
     body!(PATH_PLUGINS_INSPECT, "post", InspectPluginReq);
     body!("/plugins/rollback", "post", PluginRollbackReq);
@@ -4109,8 +4102,8 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         let settings = format!("{root}/{{name}}/settings");
         typed!(root.as_ref(), "get", "200", Page<NamedDefView>);
         typed!(&item, "get", "200", NamedDefView);
-        typed!(&item, "put", "200", NamedDefView);
-        typed!(&settings, "patch", "200", NamedDefView);
+        typed!(&item, "put", "200", super::named_map::MutatedDefView);
+        typed!(&settings, "patch", "200", super::named_map::MutatedDefView);
         body_raw!(
             &item,
             "put",
@@ -4214,8 +4207,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                                    omits it (and every schema only it references).",
                 "x-busbar-since": "Added in that release, and answered by the node's \
                                    administrative loop.",
-                "money": "Every money figure is a JSON string holding a decimal integer; every \
-                          count is a JSON number."
+                "money": "Money fields use the representation declared by their schema: ledger \
+                          Amount values are decimal-integer JSON strings; spend_cents and \
+                          spend_micros are JSON integers. Counts are JSON numbers."
             }
         },
         "components": {

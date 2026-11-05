@@ -78,6 +78,56 @@ mod schematized {
     }
 }
 
+mod malformed_schema {
+    busbar_contract::plugin_door! {
+        ops: busbar_contract::abi::secret::Ops,
+        statement: busbar_contract::abi::mechanism::door::Statement {
+            settings_schema: super::schema(b"{broken"),
+            ..busbar_contract::abi::sdk::door::statement("stub-malformed", "1.6.0", 1)
+        },
+        lifecycle: life(super::Stub),
+        kind_ops: { resolve: busbar_contract::abi::sdk::Safe<super::Resolve> },
+    }
+}
+
+#[test]
+fn linked_schema_is_projected_and_malformed_schema_is_refused() {
+    let registry = crate::PluginRegistry::empty()
+        .link(vec![
+            crate::registry::LinkedPlugin::door_of_kind("secret", "stub-public", schematized::door),
+            crate::registry::LinkedPlugin::door_of_kind("secret", "stub-plain", plain::door),
+        ])
+        .unwrap();
+    let schema = busbar_contract::plugin_rows::PluginRows::resolve(&registry, "stub-public")
+        .unwrap()
+        .settings_schema
+        .unwrap();
+    assert_eq!(schema.as_bytes(), SCHEMA);
+    assert!(registry
+        .resolve("stub-public")
+        .unwrap()
+        .manifest
+        .settings_schema
+        .is_none());
+    assert!(
+        busbar_contract::plugin_rows::PluginRows::resolve(&registry, "stub-plain")
+            .unwrap()
+            .settings_schema
+            .is_none()
+    );
+    let rejected = crate::PluginRegistry::empty()
+        .link(vec![crate::registry::LinkedPlugin::door_of_kind(
+            "secret",
+            "stub-malformed",
+            malformed_schema::door,
+        )])
+        .unwrap_err();
+    assert!(
+        rejected.contains("settings_schema is not valid JSON"),
+        "{rejected}"
+    );
+}
+
 mod leaky {
     busbar_contract::plugin_door! {
         ops: busbar_contract::abi::secret::Ops,

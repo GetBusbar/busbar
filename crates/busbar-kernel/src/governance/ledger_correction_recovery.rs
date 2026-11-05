@@ -10,11 +10,15 @@ fn change_unit(debt: &mut ExactUsageDelta, model: &str, unit: &str, change: i128
         return;
     }
     if let Some(row) = debt.models.iter_mut().find(|row| row.model == model) {
-        *row.usage_units.entry(unit.into()).or_default() += change;
+        let slot = row.usage_units.entry(unit.into()).or_default();
+        *slot = slot
+            .checked_add(change)
+            .expect("raw correction debt overflow");
     } else {
         debt.models
             .push(crate::governance::exact_debt::ExactModelDelta {
                 model: model.into(),
+                scale: COUNT_SCALE,
                 usage_units: BTreeMap::from([(unit.into(), change)]),
             });
     }
@@ -166,33 +170,38 @@ fn positive_current(
             return Err(unresolved("common raw model baselines diverged"));
         }
         for (unit, current) in &model.cur {
-            let flushed = model.flushed.get(unit).copied().unwrap_or(0);
-            let mut amount = current.saturating_sub(flushed);
+            let flushed = model.flushed.get(unit).copied().unwrap_or_default();
+            let mut amount = current
+                .checked_sub(flushed)
+                .map_err(|e| unresolved(&e.to_string()))?
+                .max(Count::ZERO);
             if common_only {
                 amount = amount.min(
                     before
                         .models
                         .iter()
                         .find(|raw| raw.model == model.model && raw.era == model.era)
-                        .map_or(0, |raw| {
+                        .map_or(Ok(Count::ZERO), |raw| {
                             raw.cur
                                 .get(unit)
                                 .copied()
-                                .unwrap_or(0)
-                                .saturating_sub(raw.flushed.get(unit).copied().unwrap_or(0))
-                        }),
+                                .unwrap_or_default()
+                                .checked_sub(raw.flushed.get(unit).copied().unwrap_or_default())
+                                .map(|n| n.max(Count::ZERO))
+                        })
+                        .map_err(|e| unresolved(&e.to_string()))?,
                 );
             }
-            if amount == 0 {
+            if amount.is_zero() {
                 continue;
             }
-            change_unit(&mut plain, &model.model, unit, i128::from(amount));
+            change_unit(&mut plain, &model.model, unit, amount.micros());
             if model.era != RawRateEra::legacy(0) {
                 change_unit(
                     &mut dated,
                     &era_model(model.era, &model.model),
                     unit,
-                    i128::from(amount),
+                    amount.micros(),
                 );
             }
             transfers.push((model.model.clone(), model.era, unit.clone(), amount));
@@ -240,7 +249,12 @@ fn positive_current(
         };
         if common_count > 0 {
             plain.billable_requests += common_count;
-            change_unit(&mut dated, &era_tag(era), ERA_FEE_UNIT, common_count);
+            change_unit(
+                &mut dated,
+                &era_tag(era),
+                ERA_FEE_UNIT,
+                common_count * 1_000_000,
+            );
             fee_transfers.insert(era, common_count);
         }
     }
@@ -262,10 +276,14 @@ fn positive_current(
                 .find(|raw| raw.model == *model && raw.era == *era)
                 .ok_or_else(|| unresolved("common raw model missing from one branch"))?;
             let baseline = raw.flushed.entry(unit.clone()).or_default();
-            *baseline = exact(checked_move(*baseline, i128::from(*amount)))?;
+            *baseline = baseline
+                .checked_add(*amount)
+                .map_err(|e| unresolved(&e.to_string()))?;
             if *era != RawRateEra::legacy(0) {
                 let baseline = raw.flushed_era.entry(unit.clone()).or_default();
-                *baseline = exact(checked_move(*baseline, i128::from(*amount)))?;
+                *baseline = baseline
+                    .checked_add(*amount)
+                    .map_err(|e| unresolved(&e.to_string()))?;
             }
         }
         let mut baseline: BTreeMap<_, _> =
@@ -309,14 +327,16 @@ impl From<RawEra> for RawRateEra {
 struct RawModel {
     model: String,
     era: RawEra,
-    current: BTreeMap<String, u64>,
-    flushed: BTreeMap<String, u64>,
-    flushed_era: BTreeMap<String, u64>,
+    current: BTreeMap<String, Count>,
+    flushed: BTreeMap<String, Count>,
+    flushed_era: BTreeMap<String, Count>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawDebt {
+    #[serde(default)]
+    scale: u32,
     requests: String,
     billable_requests: String,
     models: BTreeMap<String, BTreeMap<String, String>>,
@@ -341,6 +361,7 @@ impl RawDebt {
             }
         }
         Ok(Self {
+            scale: COUNT_SCALE,
             requests: debt.requests.to_string(),
             billable_requests: debt.billable_requests.to_string(),
             models,
@@ -362,9 +383,17 @@ impl RawDebt {
                 .map(|(model, units)| {
                     Ok(crate::governance::exact_debt::ExactModelDelta {
                         model,
+                        scale: COUNT_SCALE,
                         usage_units: units
                             .into_iter()
-                            .map(|(unit, count)| Ok((unit, signed(&count)?)))
+                            .map(|(unit, count)| {
+                                Ok((
+                                    unit,
+                                    Count::from_stored(signed(&count)?, self.scale)
+                                        .map_err(|e| unresolved(&e.to_string()))?
+                                        .micros(),
+                                ))
+                            })
                             .collect::<RecordStoreResult<_>>()?,
                     })
                 })
@@ -1028,7 +1057,17 @@ impl Custody {
                         &mut capacity,
                         &model.model,
                         unit,
-                        i128::from(*count) - i128::from(previous),
+                        Count::from_stored(i128::from(*count), model.scale)
+                            .map_err(|e| unresolved(&e.to_string()))?
+                            .checked_sub(
+                                Count::from_stored(
+                                    i128::from(previous),
+                                    before.map_or(COUNT_SCALE, |m| m.scale),
+                                )
+                                .map_err(|e| unresolved(&e.to_string()))?,
+                            )
+                            .map_err(|e| unresolved(&e.to_string()))?
+                            .micros(),
                     );
                 }
             }
@@ -1040,7 +1079,14 @@ impl Custody {
                     .find(|after| after.model == model.model);
                 for (unit, count) in &model.usage_units {
                     if after.is_none_or(|after| !after.usage_units.contains_key(unit)) {
-                        change_unit(&mut capacity, &model.model, unit, -i128::from(*count));
+                        change_unit(
+                            &mut capacity,
+                            &model.model,
+                            unit,
+                            -Count::from_stored(i128::from(*count), model.scale)
+                                .map_err(|e| unresolved(&e.to_string()))?
+                                .micros(),
+                        );
                     }
                 }
             }

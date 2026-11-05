@@ -279,7 +279,7 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
                 got, want,
                 "exact production bytes cause {cause} path {path}"
             );
-            assert_eq!(got.status, status.as_u16());
+            assert_eq!(got.status, u32::from(status.as_u16()));
             let events = captured.0.lock().unwrap();
             assert_eq!(
                 events.len(),
@@ -345,6 +345,7 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
         for token in [None, Some("not-a-valid-signed-key")] {
             let mut scoped = listener.clone();
             scoped.scope = Some(ListenerScope {
+                audit_kind: None,
                 neutral_refuse: None,
                 admission: Arc::new(|_, original| {
                     (original.target == "/v1/messages").then(|| {
@@ -406,6 +407,7 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
     let mut private = listener;
     private.app = Arc::new(elsewhere_app);
     private.scope = Some(ListenerScope {
+        audit_kind: None,
         neutral_refuse: None,
         admission: Arc::new(|_, _| None),
         legacy_fallback: false,

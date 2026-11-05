@@ -1105,7 +1105,7 @@ fn exit_evidence(
             let class = evidence.class.unwrap_or(KERNEL_ACCRUAL_CLASS);
             let lines = vec![UsageLine {
                 class,
-                quantity: amount,
+                quantity: amount.into(),
                 // The figure the plane reported, written as it was told.
                 source: QuantitySource::Count,
                 estimated: flags.contains(PostingFlags::ESTIMATED),

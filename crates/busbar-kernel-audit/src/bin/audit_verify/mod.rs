@@ -3,13 +3,16 @@
 
 use busbar_kernel_audit::digest::{Digest, Framing};
 use busbar_kernel_audit::sign::{SIGNATURE_ALGORITHM, SIGNATURE_DOMAIN};
-use busbar_kernel_audit::{AuditVerifyingKey, DIGEST_RECIPE, DIGEST_RECIPE_V2, DIGEST_RECIPE_V4};
+use busbar_kernel_audit::{
+    AuditVerifyingKey, DIGEST_RECIPE, DIGEST_RECIPE_V2, DIGEST_RECIPE_V4, DIGEST_RECIPE_V6,
+};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 const V2: &str = include_str!("../../../../../docs/audit-chain-digest-v2.md");
 const V4: &str = include_str!("../../../../../docs/audit-chain-digest-v4.md");
 const V5: &str = include_str!("../../../../../docs/audit-chain-digest-v5.md");
+const V6: &str = include_str!("../../../../../docs/audit-chain-digest-v6.md");
 type Result<T> = std::result::Result<T, &'static str>;
 
 #[derive(Clone, Copy)]
@@ -52,6 +55,7 @@ fn recipe(name: &str) -> Result<&'static str> {
         DIGEST_RECIPE_V2 => Ok(V2),
         DIGEST_RECIPE_V4 => Ok(V4),
         DIGEST_RECIPE => Ok(V5),
+        DIGEST_RECIPE_V6 => Ok(V6),
         _ => Err("unsupported audit digest recipe"),
     }
 }
@@ -121,7 +125,7 @@ fn record_digest(record: &Value, default_recipe: &str) -> Result<String> {
         None if default_recipe == DIGEST_RECIPE_V2 => DIGEST_RECIPE_V2,
         None => return Err("a record recipe is absent"),
     };
-    if name == DIGEST_RECIPE {
+    if name == DIGEST_RECIPE || name == DIGEST_RECIPE_V6 {
         let present = text(record, "rate_card_key_present")?;
         let key = text(record, "rate_card_version")?;
         let valid_key = key.len() == 40
@@ -135,6 +139,20 @@ fn record_digest(record: &Value, default_recipe: &str) -> Result<String> {
         };
         if !valid {
             return Err("a keyed rate-card boundary has invalid presence or spelling");
+        }
+    }
+    if name == DIGEST_RECIPE_V6 {
+        for line in record
+            .get("lines")
+            .and_then(Value::as_array)
+            .ok_or("audit lines are absent")?
+        {
+            let raw = text(line, "quantity")?;
+            let count = busbar_contract::count::read_count(raw)
+                .map_err(|_| "invalid exact audit quantity")?;
+            if count.to_decimal_string() != raw {
+                return Err("noncanonical exact audit quantity");
+            }
         }
     }
     let order = fields(recipe(name)?)?;

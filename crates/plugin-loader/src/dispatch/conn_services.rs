@@ -6,10 +6,11 @@ use std::mem::size_of;
 use std::net::IpAddr;
 use std::os::raw::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use futures::FutureExt as _;
+use zeroize::{Zeroize, Zeroizing};
 
 use busbar_contract::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, ReplyIn,
@@ -344,8 +345,10 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                             member,
                             dial_timeout_ms,
                             head: None,
-                            body: Vec::new(),
+                            body: Zeroizing::new(Vec::new()),
                         },
+                        prepared: None,
+                        preparing: false,
                         headed: false,
                         ended: false,
                         reply_timeout_ms: need_timeout_ms,
@@ -530,7 +533,9 @@ impl Drop for Closes {
             let _ = table.close(*owner, dial.conn);
         }
         for stream in self.streams.drain(..) {
-            if let Conn::Open(conn) = &stream.conn {
+            if let Some(prepared) = &stream.prepared {
+                prepared.close();
+            } else if let Conn::Open(conn) = &stream.conn {
                 let (owner, table) = &stream.authority.conn;
                 let _ = table.close(*owner, *conn);
             }
@@ -612,14 +617,28 @@ service!(
         let held = st.streams().remove(&i.stream);
         let waits = st.take_waits(|_, wait| wait.stream == i.stream);
         drop(waits);
+        if let Some(prepared) = held.as_ref().and_then(|s| s.prepared.as_ref()) {
+            prepared.close();
+            return Answered::ready(0, 0);
+        }
         let conn = match held.map(|s| s.conn) {
             // Never opened, or refused: nothing on the table to close.
             // (A request waiting on its auth call drops the call: a client drop.)
             // (A stream being opened outside the lock is closed by the call that opens it.)
-            Some(Conn::Held { .. } | Conn::Failed(_) | Conn::Authing(_) | Conn::Opening) => {
+            Some(
+                Conn::Held { .. }
+                | Conn::Failed(_)
+                | Conn::Authing(_)
+                | Conn::Submitting(_)
+                | Conn::Opening,
+            ) => {
                 return Answered::ready(0, 0);
             }
             Some(Conn::Open(c)) => c,
+            Some(Conn::PreparedOpen(prepared)) => {
+                prepared.close();
+                return Answered::ready(0, 0);
+            }
             None if i.stream & HELD != 0 => return refusal(ConnError::Closed),
             None => ConnId(i.stream),
         };
@@ -750,15 +769,39 @@ service!(
         if i.facts.is_null() {
             return Kept::from(Answered::fault());
         }
-        let conn = match resolve(st, id, table, i.stream) {
+        if let Err(error) = st.wait_reply(head.handle, i.stream) {
+            fail_prepared(st, i.stream, error);
+            return refusal(error).into();
+        }
+        let conn = match prepare_for_facts(st, id, table, i.stream) {
             Ok(c) => c,
             Err(e) => return refusal(e).into(),
         };
+        if let Err(error) = table.landed(id, conn, conn_ticket(head.handle.ticket)) {
+            if error != ConnError::Pending {
+                fail_prepared(st, i.stream, error);
+            }
+            return refusal(error).into();
+        }
         let f = match table.facts(id, conn) {
             Ok(f) => f,
-            Err(e) => return refusal(e).into(),
+            Err(e) => {
+                if e != ConnError::Pending {
+                    fail_prepared(st, i.stream, e);
+                }
+                return refusal(e).into();
+            }
         };
         let hash = f.peer_cert.as_ref().map(|c| c.fingerprint.as_str());
+        if hash.is_some() {
+            if let Some(prepared) = st
+                .streams()
+                .get(&i.stream)
+                .and_then(|s| s.prepared.as_ref())
+            {
+                prepared.require_secure.store(true, Ordering::Release);
+            }
+        }
         let mut all = lock(&st.facts);
         let key = i.stream;
         let written = StreamFacts {
@@ -976,6 +1019,8 @@ impl ConnState {
             need,
             authority: Authority::capture(id, table),
             conn: Conn::Open(conn),
+            prepared: None,
+            preparing: false,
             headed: false,
             ended: false,
             reply_timeout_ms,
@@ -1285,6 +1330,14 @@ struct Head {
     dial_timeout_ms: u64,
 }
 
+impl Drop for Head {
+    fn drop(&mut self) {
+        self.method.zeroize();
+        self.target.zeroize();
+        self.fields.zeroize();
+    }
+}
+
 /// Where a stream is.
 #[derive(Debug)]
 enum Conn {
@@ -1299,10 +1352,14 @@ enum Conn {
         member: String,
         dial_timeout_ms: u64,
         head: Option<Head>,
-        body: Vec<u8>,
+        body: Zeroizing<Vec<u8>>,
     },
     /// Open on the connection table.
     Open(ConnId),
+    /// A committed request on the same prepared transport whose facts were confirmed.
+    PreparedOpen(Arc<Prepared>),
+    /// An uncommitted request whose prepared transport temporarily cannot accept its opening.
+    Submitting(Box<Submission>),
     /// Its open was refused or failed: the reply's failed ack.
     Failed(ConnError),
     /// The request is whole and its member's auth call is in flight: it opens when the fields
@@ -1323,7 +1380,7 @@ struct Authing {
     within: Vec<IpAddr>,
     member: String,
     head: Head,
-    body: Vec<u8>,
+    body: Zeroizing<Vec<u8>>,
 }
 
 impl std::fmt::Debug for Authing {
@@ -1395,11 +1452,43 @@ fn filter_reply_head(
     Ok((n, n..end))
 }
 
+/// Custody of a transport prepared without application bytes. Every exit (including a concurrent
+/// close while a callback is outside the lock) retires it at most once on its creating authority.
+struct Prepared {
+    conn: ConnId,
+    authority: Authority,
+    closed: AtomicBool,
+    require_secure: AtomicBool,
+}
+
+impl std::fmt::Debug for Prepared {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Prepared")
+            .field("conn", &self.conn)
+            .finish_non_exhaustive()
+    }
+}
+impl Prepared {
+    fn close(&self) {
+        if !self.closed.swap(true, Ordering::AcqRel) {
+            let (owner, table) = &self.authority.conn;
+            let _ = table.close(*owner, self.conn);
+        }
+    }
+}
+impl Drop for Prepared {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
 /// What the host keeps for one stream an instance holds.
 #[derive(Debug)]
 struct Stream {
     need: NeedId,
     conn: Conn,
+    prepared: Option<Arc<Prepared>>,
+    preparing: bool,
     reply_timeout_ms: u64,
     /// The reply's head was read.
     headed: bool,
@@ -1416,16 +1505,22 @@ fn install(
     table: &Arc<dyn DeclaredConns>,
     conn: Conn,
 ) {
-    let orphan = {
+    let (orphan, closing) = {
         let mut all = st.streams();
         match all.get_mut(&stream) {
             Some(s) if matches!(s.conn, Conn::Opening) => {
+                let closing = matches!(conn, Conn::Failed(_))
+                    .then(|| s.prepared.clone())
+                    .flatten();
                 s.conn = conn;
-                None
+                (None, closing)
             }
-            _ => Some(conn),
+            _ => (Some(conn), None),
         }
     };
+    if let Some(prepared) = closing {
+        prepared.close();
+    }
     if let Some(Conn::Open(c)) = orphan {
         let _ = table.close(id, c);
     }
@@ -1448,10 +1543,17 @@ fn resolve(
     let (need, target, within, member, dial_timeout_ms) = {
         let mut all = st.streams();
         let s = all.get_mut(&stream).ok_or(ConnError::Closed)?;
+        if matches!(s.conn, Conn::Held { .. }) && (s.preparing || s.prepared.is_some()) {
+            return Err(ConnError::Refused);
+        }
         match &mut s.conn {
             Conn::Open(c) => return Ok(*c),
+            Conn::PreparedOpen(prepared) => return Ok(prepared.conn),
             Conn::Failed(e) => return Err(*e),
-            Conn::Held { head: Some(_), .. } | Conn::Authing(_) | Conn::Opening => {
+            Conn::Held { head: Some(_), .. }
+            | Conn::Authing(_)
+            | Conn::Submitting(_)
+            | Conn::Opening => {
                 return Err(ConnError::Refused);
             }
             Conn::Held {
@@ -1490,6 +1592,124 @@ fn resolve(
         opened.map_or_else(Conn::Failed, Conn::Open),
     );
     opened
+}
+
+/// Prepare only the transport, retaining the complete request plan in Held. No request bytes
+/// cross the table until END, and subsequent facts polls reuse this exact connection.
+fn prepare_for_facts(
+    st: &ConnState,
+    id: InstanceId,
+    table: &Arc<dyn DeclaredConns>,
+    stream: u64,
+) -> Result<ConnId, ConnError> {
+    if stream & HELD == 0 {
+        return Ok(ConnId(stream));
+    }
+    let (need, target, within, member, dial_timeout_ms, timeout_ms, authority) = {
+        let mut all = st.streams();
+        let s = all.get_mut(&stream).ok_or(ConnError::Closed)?;
+        if let Some(prepared) = &s.prepared {
+            return if prepared.closed.load(Ordering::Acquire) {
+                Err(ConnError::Closed)
+            } else {
+                Ok(prepared.conn)
+            };
+        }
+        if s.preparing {
+            return Err(ConnError::Pending);
+        }
+        match &s.conn {
+            Conn::Open(conn) => return Ok(*conn),
+            Conn::PreparedOpen(prepared) => return Ok(prepared.conn),
+            Conn::Failed(error) => return Err(*error),
+            Conn::Held {
+                need,
+                target,
+                within,
+                member,
+                dial_timeout_ms,
+                head,
+                ..
+            } => {
+                s.preparing = true;
+                (
+                    *need,
+                    target.clone(),
+                    within.clone(),
+                    member.clone(),
+                    *dial_timeout_ms,
+                    head.as_ref().map_or(s.reply_timeout_ms, |h| h.timeout_ms),
+                    s.authority.clone(),
+                )
+            }
+            _ => return Err(ConnError::Pending),
+        }
+    };
+    let desc = OpenDesc {
+        target: &target,
+        within: &within,
+        member: &member,
+        timeout_ms,
+        unit: super::services::serving_unit().unwrap_or(0),
+        ..OpenDesc::default()
+    };
+    let prepared = match table.prepare_request(id, need, &desc, dial_timeout_ms) {
+        Ok(conn) => Arc::new(Prepared {
+            conn,
+            authority,
+            closed: AtomicBool::new(false),
+            require_secure: AtomicBool::new(false),
+        }),
+        Err(error) => {
+            if error == ConnError::Pending {
+                if let Some(s) = st.streams().get_mut(&stream) {
+                    s.preparing = false;
+                }
+            } else {
+                fail_prepared(st, stream, error);
+            }
+            return Err(error);
+        }
+    };
+    let installed = {
+        let mut all = st.streams();
+        if let Some(s) = all
+            .get_mut(&stream)
+            .filter(|s| s.preparing && matches!(s.conn, Conn::Held { .. }))
+        {
+            s.preparing = false;
+            s.prepared = Some(prepared.clone());
+            true
+        } else {
+            false
+        }
+    };
+    if installed {
+        Ok(prepared.conn)
+    } else {
+        Err(ConnError::Closed)
+    }
+}
+
+fn fail_prepared(st: &ConnState, stream: u64, error: ConnError) {
+    let retired = {
+        let mut all = st.streams();
+        all.get_mut(&stream)
+            .filter(|s| s.preparing || s.prepared.is_some())
+            .map(|s| {
+                s.preparing = false;
+                (
+                    std::mem::replace(&mut s.conn, Conn::Failed(error)),
+                    s.prepared.clone(),
+                )
+            })
+    };
+    if let Some((held, prepared)) = retired {
+        if let Some(prepared) = prepared {
+            prepared.close();
+        }
+        drop(held);
+    }
 }
 
 fn field_lines(block: &[u8]) -> Result<Vec<(String, Vec<u8>)>, Answered> {
@@ -1545,6 +1765,10 @@ extern "C" fn write_request(
                     "the stream is not a framed request being written; write its bytes",
                 );
             };
+            if s.preparing {
+                return refusal(ConnError::Pending);
+            }
+            let prepared = s.prepared.clone();
             let Conn::Held {
                 need,
                 target,
@@ -1588,6 +1812,13 @@ extern "C" fn write_request(
                             Outcome::Refused,
                             "the request body passed the host's bound",
                         );
+                    }
+                    if body.len().saturating_add(bytes.len()) > body.capacity() {
+                        let mut grown = Zeroizing::new(Vec::with_capacity(
+                            body.len().saturating_add(bytes.len()),
+                        ));
+                        grown.extend_from_slice(body);
+                        *body = grown;
                     }
                     body.extend_from_slice(bytes);
                     Answered::ready(0, bytes.len() as u64)
@@ -1637,9 +1868,18 @@ extern "C" fn write_request(
                         None => Some(b.handle),
                     });
                     let conn = match bound {
-                        None => {
-                            open_with(table, id, need, unit.unwrap_or(0), at, &h, body, &[], None)
-                        }
+                        None => open_with(
+                            table,
+                            id,
+                            need,
+                            unit.unwrap_or(0),
+                            at,
+                            &h,
+                            body,
+                            &[],
+                            None,
+                            prepared.clone(),
+                        ),
                         Some(_) if handle.is_none() => {
                             Conn::Failed(ConnError::CredentialUnavailable)
                         }
@@ -1668,6 +1908,7 @@ extern "C" fn write_request(
                                             body,
                                             &auth,
                                             seal.as_deref(),
+                                            prepared.clone(),
                                         )
                                     }
                                     Some(Fields::Refused) => Conn::Failed(ConnError::AuthRefused),
@@ -1710,10 +1951,12 @@ fn open_with(
     unit: u64,
     (target, within, member): (&str, &[IpAddr], &str),
     h: &Head,
-    body: Vec<u8>,
+    body: Zeroizing<Vec<u8>>,
     auth: &[busbar_contract::auth_calls::AuthField],
     seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
+    prepared: Option<Arc<Prepared>>,
 ) -> Conn {
+    let body = busbar_contract::conn::Bytes::from_owner(body);
     let seal = match (auth.is_empty(), seal) {
         (true, _) => None,
         (false, Some(seal)) => Some(seal),
@@ -1753,7 +1996,7 @@ fn open_with(
         target,
         fields: &fields,
 
-        body: body.into(),
+        body: body.clone(),
         timeout_ms: h.timeout_ms,
         method: &h.method,
         head_target: &h.target,
@@ -1761,6 +2004,28 @@ fn open_with(
         member,
         unit,
     };
+    if let Some(prepared) = prepared {
+        let request = Submission {
+            prepared,
+            unit,
+            target: target.to_owned(),
+            within: within.to_vec(),
+            member: member.to_owned(),
+            head: Head {
+                method: h.method.clone(),
+                target: h.target.clone(),
+                fields: fields
+                    .iter()
+                    .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
+                    .collect(),
+                timeout_ms: h.timeout_ms,
+                dial_timeout_ms: h.dial_timeout_ms,
+            },
+            body,
+            require_secure: auth.iter().any(|f| f.require_secure),
+        };
+        return submit(Box::new(request));
+    }
     table
         .open_request(
             id,
@@ -1770,6 +2035,61 @@ fn open_with(
             h.dial_timeout_ms,
         )
         .map_or_else(Conn::Failed, Conn::Open)
+}
+
+struct Submission {
+    prepared: Arc<Prepared>,
+    unit: u64,
+    target: String,
+    within: Vec<IpAddr>,
+    member: String,
+    head: Head,
+    body: busbar_contract::conn::Bytes,
+    require_secure: bool,
+}
+
+impl std::fmt::Debug for Submission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Submission")
+            .field("conn", &self.prepared.conn)
+            .field("body_len", &self.body.len())
+            .finish_non_exhaustive()
+    }
+}
+
+fn submit(request: Box<Submission>) -> Conn {
+    let prepared = &request.prepared;
+    if prepared.closed.load(Ordering::Acquire) {
+        return Conn::Failed(ConnError::Closed);
+    }
+    let (owner, table) = &prepared.authority.conn;
+    let fields: Vec<_> = request
+        .head
+        .fields
+        .iter()
+        .map(|(n, v)| (n.as_str(), v.as_slice()))
+        .collect();
+    let desc = OpenDesc {
+        target: &request.target,
+        within: &request.within,
+        member: &request.member,
+        fields: &fields,
+        body: request.body.clone(),
+        method: &request.head.method,
+        head_target: &request.head.target,
+        timeout_ms: request.head.timeout_ms,
+        unit: request.unit,
+    };
+    let secure = request.require_secure || prepared.require_secure.load(Ordering::Acquire);
+    let answer = table.commit_request(*owner, prepared.conn, &desc, secure);
+    match answer {
+        Ok(()) => Conn::PreparedOpen(prepared.clone()),
+        Err(ConnError::Pending) => Conn::Submitting(request),
+        Err(error) => {
+            prepared.close();
+            Conn::Failed(error)
+        }
+    }
 }
 
 fn completing(
@@ -1913,6 +2233,7 @@ extern "C" fn read_reply(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
                 if let Some(stream) = st.streams().get_mut(&i.stream) {
                     stream.ended = true;
                 }
+                fail_prepared(st, i.stream, error);
                 return Kept::from(refusal(error));
             }
             let (piece, answer) = reply(ctx, st, id, table, head, i.stream, buf);
@@ -1945,6 +2266,21 @@ fn reply(
     buf: &mut [u8],
 ) -> (Option<ReplyPiece>, Answered) {
     let waker = ticket_waker(ctx, head.handle.ticket);
+    let submitting = {
+        let mut all = st.streams();
+        match all.get_mut(&stream) {
+            Some(s) if matches!(s.conn, Conn::Submitting(_)) => {
+                match std::mem::replace(&mut s.conn, Conn::Opening) {
+                    Conn::Submitting(request) => Some(request),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    };
+    if let Some(request) = submitting {
+        install(st, id, stream, table, submit(request));
+    }
     let authing = {
         let mut all = st.streams();
         match all.get_mut(&stream) {
@@ -1975,6 +2311,7 @@ fn reply(
             }
             std::task::Poll::Ready(f) => f,
         };
+        let prepared = st.streams().get(&stream).and_then(|s| s.prepared.clone());
         let opened = match answered {
             Fields::Ready(auth) => open_with(
                 table,
@@ -1986,6 +2323,7 @@ fn reply(
                 std::mem::take(&mut a.body),
                 &auth,
                 lent_seal(ctx).as_deref(),
+                prepared,
             ),
             Fields::Refused => Conn::Failed(ConnError::AuthRefused),
             Fields::Failed => Conn::Failed(ConnError::AuthFailed),
@@ -1999,6 +2337,8 @@ fn reply(
             authority: Authority::capture(id, table),
             conn: Conn::Open(ConnId(stream)),
             reply_timeout_ms: 0,
+            prepared: None,
+            preparing: false,
             headed: false,
             ended: false,
         });
@@ -2017,8 +2357,8 @@ fn reply(
                 s.ended = true;
                 return (None, refusal(e));
             }
-            Conn::Open(_) => {}
-            Conn::Authing(_) => return (None, refusal(ConnError::Pending)),
+            Conn::Open(_) | Conn::PreparedOpen(_) => {}
+            Conn::Authing(_) | Conn::Submitting(_) => return (None, refusal(ConnError::Pending)),
             Conn::Opening => {
                 return (
                     None,
@@ -2462,8 +2802,10 @@ mod creating_authority_tests {
                         member: String::new(),
                         dial_timeout_ms: 0,
                         head: None,
-                        body: Vec::new(),
+                        body: Zeroizing::new(Vec::new()),
                     },
+                    prepared: None,
+                    preparing: false,
                     headed: false,
                     ended: false,
                     reply_timeout_ms: 0,
@@ -2500,8 +2842,10 @@ mod creating_authority_tests {
                             timeout_ms: 0,
                             dial_timeout_ms: 0,
                         }),
-                        body: Vec::new(),
+                        body: Zeroizing::new(Vec::new()),
                     },
+                    prepared: None,
+                    preparing: false,
                     headed: false,
                     ended: false,
                     reply_timeout_ms: 0,
@@ -2793,8 +3137,10 @@ mod creating_authority_tests {
                         timeout_ms: 0,
                         dial_timeout_ms: 0,
                     }),
-                    body: Vec::new(),
+                    body: Zeroizing::new(Vec::new()),
                 },
+                prepared: None,
+                preparing: false,
                 headed: false,
                 ended: false,
                 reply_timeout_ms: 0,

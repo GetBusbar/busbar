@@ -21,7 +21,7 @@ fn opened(k: &KernelSeal, who: &str) -> Hold {
 fn one_line(quantity: u64) -> Vec<UsageLine> {
     vec![UsageLine {
         class: MeterClassId::new("tokens"),
-        quantity,
+        quantity: quantity.into(),
         source: QuantitySource::Count,
         estimated: false,
     }]

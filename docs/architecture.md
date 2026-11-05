@@ -280,12 +280,13 @@ Management/observability routes (`/stats`, `/healthz`, `/metrics`,
   built-in `keys` signed-token verifier, or a configured identity provider). With an empty chain
   (`chain: []`) the check admits unconditionally and `/metrics` is effectively open, so
   restrict it at the network layer if you need unauthenticated scraping.
-- The admin API (`/api/v1/admin/*`) does not run on the data plane at all. It is served
-  on a **physically separate listener**, `admin_listen` (default `127.0.0.1:8081`, loopback),
+- With `admin_listen` configured (default `127.0.0.1:8081`, loopback), the admin API
+  (`/api/v1/admin/*`) is served on a **physically separate listener**,
   and gated by its own chain, `admin_auth` (default `[admin-tokens]`). An admin token
   arrives as `Authorization: Bearer` or `X-Admin-Token`; no valid admin credential means
-  a 401. Because the socket is separate, a caller on the data port can never reach the
-  control plane. Exposing `admin_listen` off loopback is a boot error unless you set
+  a 401. In that posture the data listener does not expose the admin routes. When
+  `admin_listen` is absent, the approved legacy `/api` mount remains on the data listener,
+  guarded by admin authentication. Exposing `admin_listen` off loopback is a boot error unless you set
   `admin_tls.client_ca` (mTLS on the admin listener) or set the explicit
   `admin_require_mtls: false` waiver (for operators fronting admin with their own mesh).
   (1.5.3 inverted the retired `admin_insecure:` flag into this one, so the safe posture is the default.)
@@ -321,8 +322,9 @@ quota shape: `429` (`insufficient_quota`) for OpenAI / Responses / Anthropic /
 Gemini / Cohere, and `400` (`ServiceQuotaExceededException`) for Bedrock. The flat
 per-request fee is charged at admission; the token counts land on the ledger when
 the response stream completes. Spend itself is never stored: it is derived at read
-time from the accumulated per-model tokens times the current top-level `rate_card`,
-so a rate correction re-prices past and present windows on the next read. See
+time from exact ledger quantities and dated rate-card history. A new card prices
+subsequent arrivals; an attributed backdated correction reprices only its declared window.
+An `as_of` history point reproduces earlier views. See
 [operations.md](operations.md).
 
 ### 4. Pool / lane selection
@@ -532,7 +534,8 @@ Every plane can be in the one binary. Serving MCP or fronting agents is a
 
 **1. One process, no database.** A binary and a config file (with `store: {module: memory}`, which 1.6.0 requires you to state). Virtual keys, budgets
 and breaker state live in memory. This is a complete, working deployment. It
-forgets accrued usage on restart, and nothing else. Suitable for a single node, a
+loses its memory-Store contents on restart, including keys, usage, ledgers, audit and rate-card
+history; a memory base Store also loses the admin config overlay. Suitable for a single node, a
 development environment, or an air-gapped box where a database is a liability
 rather than an asset.
 
@@ -570,10 +573,9 @@ their events, and the MCP tool-call log.
 
 **Never persisted, and each for a reason:**
 
-- **Spend.** There is no money column. Spend is *derived at read time* from
-  accumulated tokens times the current `rate_card`, so correcting a rate re-prices
-  past and present windows on the next read instead of leaving a stale number
-  nobody can recompute.
+- **Spend.** There is no money column. Spend is *derived at read time* from exact
+  class quantities and dated rate history. Forward cards preserve earlier prices;
+  attributed backdated corrections and `as_of` reads keep invoices reproducible.
 - **Prompts, completions, and message content.** No request or response body
   reaches the store on any path. Content leaves Busbar only as its own named
   export stream an operator turns on for one specific sink, or to a plugin under

@@ -40,7 +40,7 @@ fn the_fee_line_is_always_present_even_at_zero() {
     let fee = posted.lines.last().expect("a fee line");
     assert_eq!(
         (fee.class.as_str(), fee.quantity, fee.amount_nanos),
-        (FEE_CLASS, 0, 0)
+        (FEE_CLASS, busbar_contract::Count::ZERO, 0)
     );
     assert_eq!(posted.pre_tier_nanos, 10_000);
 }
@@ -84,7 +84,10 @@ fn a_class_a_present_card_does_not_name_prices_at_zero_and_is_flagged() {
         .iter()
         .find(|l| l.class == "web_search")
         .expect("the line stays visible");
-    assert_eq!((line.quantity, line.amount_nanos), (3, 0));
+    assert_eq!(
+        (line.quantity, line.amount_nanos),
+        (busbar_contract::Count::from(3u64), 0)
+    );
 }
 
 #[test]

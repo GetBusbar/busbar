@@ -814,15 +814,22 @@ impl<'s> DoorSteps<'s> {
         plane_lane(&self.facts.plane, label)
     }
 
-    fn expected_units(&self, expected: &[UnitCount]) -> BTreeMap<String, u64> {
+    fn expected_units(
+        &self,
+        expected: &[UnitCount],
+    ) -> Result<BTreeMap<String, busbar_contract::Count>, Refusal> {
         let mut units = BTreeMap::new();
         for u in expected {
             if let Some(name) = self.facts.classes.get(u.class as usize) {
-                let n = units.entry(name.clone()).or_insert(0u64);
-                *n = n.saturating_add(u.amount);
+                let n = units
+                    .entry(name.clone())
+                    .or_insert(busbar_contract::Count::ZERO);
+                *n = n
+                    .checked_add(u.count().map_err(|_| Refusal::new(ReasonCode::Unpriced))?)
+                    .map_err(|_| Refusal::new(ReasonCode::Unpriced))?;
             }
         }
-        units
+        Ok(units)
     }
 
     fn charge(&self, ctx: &UnitCtx, key: &Arc<VirtualKey>) -> Result<bool, Refusal> {
@@ -833,7 +840,7 @@ impl<'s> DoorSteps<'s> {
             let u = self.lock();
             (u.routed.clone(), u.expected.clone())
         };
-        let units = self.expected_units(&expected);
+        let units = self.expected_units(&expected)?;
         let lanes_of = |routed: &Option<Routed>| -> Vec<String> {
             routed
                 .iter()
@@ -849,8 +856,14 @@ impl<'s> DoorSteps<'s> {
             let pool = self.charged_pool(label);
             let lanes = lanes_of(&routed);
             let models: Vec<&str> = lanes.iter().map(String::as_str).collect();
-            match gov.try_admit_estimated(&self.app.cost, key, &pool, self.arrived, &models, &units)
-            {
+            match gov.try_admit_estimated_counts(
+                &self.app.cost,
+                key,
+                &pool,
+                self.arrived,
+                &models,
+                &units,
+            ) {
                 Ok(grant) => break (grant, pool, lanes),
                 Err(LimitBlocked::Limit {
                     downgrade_to: Some(to),
@@ -1325,20 +1338,22 @@ impl DriverSteps for DoorSteps<'_> {
             .money
             .map(|m| m.last_counts(ctx.key))
             .unwrap_or_default();
-        let mut by_class: BTreeMap<u32, u64> = BTreeMap::new();
+        let mut by_class: BTreeMap<u32, busbar_contract::Count> = BTreeMap::new();
         for u in last.iter().filter(|u| units_bill(u.source)) {
             if self.facts.fee_units.contains(&u.class) {
                 continue;
             }
-            let n = by_class.entry(u.class).or_insert(0);
-            match n.checked_add(u.amount) {
-                Some(sum) => *n = sum,
-                None => return Err(Refusal::new(ReasonCode::Unpriced)),
+            let n = by_class
+                .entry(u.class)
+                .or_insert(busbar_contract::Count::ZERO);
+            match n.checked_add(u.count().map_err(|_| Refusal::new(ReasonCode::Unpriced))?) {
+                Ok(sum) => *n = sum,
+                Err(_) => return Err(Refusal::new(ReasonCode::Unpriced)),
             }
         }
         let lines: Vec<UsageLine> = by_class
             .into_iter()
-            .filter(|(_, quantity)| *quantity > 0)
+            .filter(|(_, quantity)| !quantity.is_zero())
             .filter_map(|(class, quantity)| {
                 let class = *self.facts.meter_classes.get(class as usize)?;
                 Some(UsageLine {
@@ -1377,7 +1392,10 @@ impl DriverSteps for DoorSteps<'_> {
             .is_some_and(|members| members.iter().any(|m| m == member))
     }
 
-    fn decoded(&self, _ctx: &UnitCtx, op: OpClassId, route: u8, pool: Option<&[u8]>) {
+    fn decoded(&self, ctx: &UnitCtx, op: OpClassId, route: u8, pool: Option<&[u8]>) {
+        if let Some(money) = self.money {
+            money.checkpoint_decoded(ctx.key, op);
+        }
         let mut u = self.lock();
         u.op = Some(op);
         u.named = Some((route, pool.map(<[u8]>::to_vec)));
@@ -2725,6 +2743,56 @@ impl busbar_contract::conn::Conns for PresentingConns {
 }
 
 impl busbar_contract::conn::DeclaredConns for PresentingConns {
+    fn landed(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+        ticket: busbar_contract::conn::Ticket,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        self.inner.landed(caller, conn, ticket)
+    }
+
+    fn prepare_request(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        desc: &busbar_contract::conn::OpenDesc<'_>,
+        dial_timeout_ms: u64,
+    ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+        let target = busbar_kernel_egress::trust::net::strip_userinfo(desc.target);
+        self.inner.prepare_request(
+            caller,
+            need,
+            &busbar_contract::conn::OpenDesc {
+                target: &target,
+                ..desc.clone()
+            },
+            dial_timeout_ms,
+        )
+    }
+
+    fn commit_request(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+        desc: &busbar_contract::conn::OpenDesc<'_>,
+        require_secure: bool,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        let target = busbar_kernel_egress::trust::net::strip_userinfo(desc.target);
+        let led = self.userinfo.leading(desc.fields);
+        let fields = led.as_deref().unwrap_or(desc.fields);
+        self.inner.commit_request(
+            caller,
+            conn,
+            &busbar_contract::conn::OpenDesc {
+                target: &target,
+                fields,
+                ..desc.clone()
+            },
+            require_secure,
+        )
+    }
+
     fn open_request(
         &self,
         caller: busbar_contract::conn::InstanceId,

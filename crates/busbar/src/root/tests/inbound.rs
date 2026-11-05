@@ -604,7 +604,7 @@ async fn captured_router_crossing(
         .await
         .expect("the actual response body drains");
     kin::Refusal {
-        status: head.status.as_u16(),
+        status: u32::from(head.status.as_u16()),
         fields: head
             .headers
             .iter()
@@ -839,7 +839,7 @@ async fn actual_admin_body_cap_keeps_legacy_projection_new_verbs_and_authority_s
             .expect("the actual admin router answers");
         let (head, body) = response.into_parts();
         kin::Refusal {
-            status: head.status.as_u16(),
+            status: u32::from(head.status.as_u16()),
             fields: head
                 .headers
                 .iter()
@@ -947,3 +947,7 @@ fn the_roots_line_ids_and_the_kernels_rule_are_one_space() {
 
 #[path = "inbound_close.rs"]
 mod close_tests;
+
+#[cfg(feature = "root-admin")]
+#[path = "operator_admission_identity.rs"]
+mod operator_admission_identity;

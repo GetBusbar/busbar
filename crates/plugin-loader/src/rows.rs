@@ -37,7 +37,7 @@ fn row(p: &LoadablePlugin) -> Row {
         linked: p.linked(),
         needs_prompt: m.needs.prompt,
         needs_user: m.needs.user,
-        settings_schema: m.settings_schema.clone(),
+        settings_schema: p.settings_schema.clone(),
     }
 }
 

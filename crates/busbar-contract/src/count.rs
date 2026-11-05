@@ -46,6 +46,47 @@ pub const fn stored_scale_default() -> u32 {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Count(i128);
 
+impl From<u64> for Count {
+    fn from(value: u64) -> Self {
+        Self(i128::from(value) * SCALE_FACTOR)
+    }
+}
+
+impl PartialEq<u64> for Count {
+    fn eq(&self, other: &u64) -> bool {
+        *self == Count::from(*other)
+    }
+}
+
+impl PartialEq<Count> for u64 {
+    fn eq(&self, other: &Count) -> bool {
+        Count::from(*self) == *other
+    }
+}
+
+impl PartialOrd<u64> for Count {
+    fn partial_cmp(&self, other: &u64) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(&Count::from(*other)))
+    }
+}
+
+impl serde::Serialize for Count {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let number = self
+            .to_decimal_string()
+            .parse::<serde_json::Number>()
+            .map_err(serde::ser::Error::custom)?;
+        serde::Serialize::serialize(&number, serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Count {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let number = <serde_json::Number as serde::Deserialize>::deserialize(deserializer)?;
+        Self::parse(&number.to_string()).map_err(serde::de::Error::custom)
+    }
+}
+
 impl Count {
     /// Nothing measured.
     pub const ZERO: Count = Count(0);
@@ -66,6 +107,17 @@ impl Count {
     #[must_use]
     pub const fn micros(self) -> i128 {
         self.0
+    }
+
+    /// Read an exactly integral nonnegative count without rounding.
+    pub fn whole_u64(self) -> Result<u64, CountError> {
+        if self.is_negative() {
+            return Err(CountError::Negative);
+        }
+        if self.0 % SCALE_FACTOR != 0 {
+            return Err(CountError::NotWhole);
+        }
+        u64::try_from(self.0 / SCALE_FACTOR).map_err(|_| CountError::OutOfRange)
     }
 
     /// A count of `n` whole units.

@@ -15,9 +15,11 @@ repo="${1:?usage: import.sh <owner/repo> [from] [head]}"; from="${2:-dev}"; head
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MCI="${MODERNCI:-$HOME/.local/bin/modernci}"; tenant="${MODERNCI_TENANT:-busbar}"
 t="$(mktemp -d)"; trap 'rm -rf "$t"' EXIT
-python3 -I - "$MCI" "$tenant" "$repo" "$from" "$head" "$t" <<'PY'
-import base64, json, subprocess, sys, tarfile, io, os
-mci, tenant, repo, frm, head, out = sys.argv[1:]
+python3 -I - "$MCI" "$tenant" "$repo" "$from" "$head" "$t" "$root/scripts/conformance" <<'PY'
+import base64, hashlib, json, subprocess, sys, os
+mci, tenant, repo, frm, head, out, helpers = sys.argv[1:]
+sys.path.insert(0, helpers)
+from invocation import validated_verdicts, Refused
 buf, offset, got_head = b"", 0, None
 artifact = None
 while True:
@@ -32,7 +34,9 @@ while True:
     got_head = d["head"]
     if head and got_head != head:
         sys.exit(f"import: ModernCI answered head {got_head}, not {head}")
-    identity = (got_head, d["sha"])
+    identity = (d.get("repo"), got_head, d.get("state"), d["sha"])
+    if identity[0] != repo:
+        sys.exit("import: ModernCI answered another repository")
     if not all(identity):
         sys.exit("import: ModernCI answered without an artifact head and sha")
     if artifact is None:
@@ -44,20 +48,17 @@ while True:
     if not d.get("next"):
         break
     offset = d["next"]
-n = 0
-with tarfile.open(fileobj=io.BytesIO(buf), mode="r:gz") as tf:
-    for m in tf.getmembers():
-        parts = m.name.split("/")
-        if not (m.isfile() and len(parts) >= 2 and parts[-2] == "verdicts" and m.name.endswith(".json")):
-            continue
-        v = json.load(tf.extractfile(m))
-        if v.get("repo") != repo or v.get("commit") != got_head:
-            sys.exit(f"import: {m.name} is stamped {v.get('repo')}@{v.get('commit')}, not {repo}@{got_head}")
-        with open(os.path.join(out, parts[-1]), "w") as f:
-            json.dump(v, f, indent=2, sort_keys=True); f.write("\n")
-        n += 1
-if n == 0:
-    sys.exit(f"import: {repo}@{got_head} carries no conformance verdicts")
+if hashlib.sha256(buf).hexdigest() != artifact[3]:
+    sys.exit("import: artifact bytes do not match the service hash")
+try:
+    verdicts = validated_verdicts(buf, repo=repo, head=got_head, state=artifact[2])
+except Refused as error:
+    sys.exit(f"import: {error}")
+for sid, verdict in verdicts.items():
+    with open(os.path.join(out, sid + ".json"), "w") as stream:
+        json.dump(verdict, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+n = len(verdicts)
 print(f"import: {n} verdict(s) from {repo}@{got_head}")
 PY
 cp "$t"/*.json "$root/conformance/verdicts/"

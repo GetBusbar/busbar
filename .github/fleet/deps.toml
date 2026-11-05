@@ -116,13 +116,19 @@ reason = "the HTTP/1 chunked transfer-coding decoder (parse_chunk_size) a refuse
 # ── Git sources (GetBusbar forks of crates.io crates; Q128 ruling, 2026-10-18) ────────────────────
 # A plugin takes a crates.io crate from a git repository only through a row here: ONE repository, for
 # the plugin repos `repos` names and no other, at ONE pinned commit, with a reviewed `reason`. The key is
-# the crates.io crate the fork replaces. `git` is a repository under https://github.com/GetBusbar/ (no
-# outside repository is ever admitted) and `rev` is a full 40-hex commit (no branch, no tag): anything
-# else refuses the render. `busbar-release plugin sync` renders each row into the listed repos only: its
+# the crates.io crate the fork replaces. `git` is a repository under https://github.com/GetBusbar/;
+# the sole external exception is the exact tungstenite URL/revision/WS-only row below, already
+# approved in core Cargo.lock. `rev` is a full 40-hex commit (no branch, no tag). Every other
+# outside repository, revision or consumer scope refuses the render. `busbar-release plugin sync` renders each row into the listed repos only: its
 # `git` joins deny.toml's [sources] allow-git, and `name = { git, rev }` joins Cargo.toml's
 # [patch.crates-io]. busbar's `cargo xtask plugin-gates gitsources` validates the rows.
-# No rows today: the str0m, dimpl and ring forks were dropped (the webrtc plugin builds from crates.io,
-# OWNER 2026-10-25). A row is added here only under the rules above.
+# The str0m, dimpl and ring forks were dropped (the webrtc plugin builds from crates.io,
+# OWNER 2026-10-25). This row declares the already-pinned WS fork; it adds no new dependency.
+[git-sources.tungstenite]
+git = "https://github.com/MattJackson/tungstenite-rs"
+rev = "1c190f7dda55dc7df4781b7ecea9faa671fc76fd"
+repos = ["busbar-transport-ws"]
+reason = "Existing core-approved tungstenite patch, matching core Cargo.lock and the WS workspace patch at the same full revision."
 
 # ── Extra semver lines (Cargo.lock parity, ARCHITECT 2026-10-05) ──────────────────────────────────
 # Parity is ONE vetted version per semver-compatible line, shared by busbar and its plugins: where busbar's

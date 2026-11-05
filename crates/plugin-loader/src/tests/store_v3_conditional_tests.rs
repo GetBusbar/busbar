@@ -507,3 +507,56 @@ fn correction_validation_op_id_conflict_and_synchronous_bridge_both_ways() {
         });
     }
 }
+
+#[test]
+fn exact_count_wire_witness_refuses_ordinary_money_batches_both_ways() {
+    use busbar_contract::records::{MeteringDelta, ModelTokensDelta, UsageDelta};
+    for dropped in [false, true] {
+        for legacy in [false, true] {
+            let (store, _) = open(dropped, legacy, "applied");
+            assert!(store.facts().exact_counts);
+            runtime().block_on(async {
+                let cells = [(
+                    "key",
+                    0,
+                    UsageDelta {
+                        requests: 1,
+                        billable_requests: 1,
+                        models: vec![ModelTokensDelta {
+                            scale: 6,
+                            model: "model".into(),
+                            usage_units: [("audio_seconds".into(), 123_456)].into(),
+                        }],
+                    },
+                )];
+                let usage_result = StoreCalls::add_usage_batch(&*store, OpId::from_parts(81, 1), &cells).await;
+                assert!(matches!(&usage_result, Err(StoreFailure::Refused(_))),
+                    "ordinary usage: dropped={dropped}, legacy={legacy}, result={usage_result:?}");
+                let rows = [MeteringDelta {
+                    scale: 6,
+                    key_id: "key".into(),
+                    bucket: 0,
+                    model: "model".into(),
+                    provider: "provider".into(),
+                    tokens_input: 0,
+                    tokens_output: 0,
+                    tokens_cache_read: 0,
+                    tokens_cache_write: 0,
+                    requests: 1,
+                    billable_requests: 1,
+                    key_group_at_use: String::new(),
+                    pricing_version: String::new(),
+                    priced_from_ms: 0,
+                    usage_units: [("audio_seconds".into(), 123_456)].into(),
+                }];
+                let metering_result = StoreCalls::add_metering_batch(&*store, OpId::from_parts(81, 2), &rows).await;
+                assert!(matches!(&metering_result, Err(StoreFailure::Refused(_))),
+                    "ordinary metering: dropped={dropped}, legacy={legacy}, result={metering_result:?}");
+                let state = stats(&store).await;
+                assert_eq!(state["tx_calls"], 0);
+                assert_eq!(state["writes"], 0);
+                assert_eq!(state["receipts"], 0);
+            });
+        }
+    }
+}

@@ -434,7 +434,7 @@ def oidc_pin(checkout):
 
 def source_repo(url):
     """Canonical Forgejo and supported historical GitHub Cargo identities name the same repo."""
-    match = re.fullmatch(r"https://(?:github\.com|(?:www\.)?github\.com)/GetBusbar/([A-Za-z0-9_-]+?)(?:\.git)?", url)
+    match = re.fullmatch(r"https://(?:www\.)?github\.com/GetBusbar/([A-Za-z0-9_-]+?)(?:\.git)?", url)
     return match.group(1) if match else None
 
 

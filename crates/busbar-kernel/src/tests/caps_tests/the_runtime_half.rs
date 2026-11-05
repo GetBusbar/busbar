@@ -51,7 +51,7 @@ fn usage_of(k: &Kernel, quantity: u64) -> Usage {
         &k.usage_token(),
         vec![UsageLine {
             class: MeterClassId::new("tokens"),
-            quantity,
+            quantity: quantity.into(),
             source: QuantitySource::Count,
             estimated: false,
         }],
@@ -325,7 +325,7 @@ fn an_estimated_usage_report_flags_the_posting() {
         &k.usage_token(),
         vec![UsageLine {
             class: MeterClassId::new("tokens"),
-            quantity: 100,
+            quantity: 100.into(),
             source: QuantitySource::Count,
             estimated: false,
         }],
@@ -345,7 +345,7 @@ fn a_usage_report_is_bounded_by_the_record_size() {
     let lines: Vec<_> = (0..MAX_USAGE_LINES + 1)
         .map(|_| UsageLine {
             class: MeterClassId::new("class"),
-            quantity: 1,
+            quantity: 1.into(),
             source: QuantitySource::Count,
             estimated: false,
         })

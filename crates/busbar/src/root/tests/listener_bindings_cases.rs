@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::abi::mechanism::door::{Door, DoorFn, DoorParts};
+use busbar_contract::abi::mechanism::door::{Door, DoorFn};
+use busbar_contract::abi::sdk::test_support::RestatedTransport;
 use busbar_contract::abi::transport::listener_bindings::EXT_LISTENER_BINDINGS;
 use busbar_core_connector::framer::FramerDoor;
 
@@ -32,71 +33,36 @@ fn actual_http() -> DoorFn {
 
 // Keep the actual operation table and OPEN lifecycle. Only immutable declaration data is
 // restated, then admitted by the ordinary loader, so no host protocol table selects the bind.
-#[allow(unsafe_code)]
-fn restated(cell: &std::sync::OnceLock<usize>, binding: bool) -> &'static Door {
-    let address = *cell.get_or_init(|| {
-        let actual = actual_http()();
-        // SAFETY: this is the actual linked product's immutable, retained Statement.
-        let mut statement = unsafe { *actual.statement() };
-        assert!(
-            statement.claims_len >= 2,
-            "the actual product has claim aliases"
-        );
-        let claims = Box::leak(
-            (0..statement.claims_len)
-                .map(|index| {
-                    let name: &'static str = match index {
-                        0 => "third-a",
-                        1 => "third-b",
-                        _ => Box::leak(format!("third-extra-{index}").into_boxed_str()),
-                    };
-                    busbar_contract::abi::sdk::door::abi_str(name)
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
-        statement.claims = claims.as_ptr();
-        statement.claims_len = claims.len();
-        // SAFETY: the validated Statement retains all its original extension bytes.
-        let extensions = unsafe {
-            std::slice::from_raw_parts(statement.extensions.ptr, statement.extensions.len)
-        };
-        let mut entries: Vec<_> = busbar_contract::abi::mechanism::extensions::entries(extensions)
-            .map(|(key, value)| (std::str::from_utf8(key).unwrap(), value))
-            .filter(|(key, _)| *key != EXT_LISTENER_BINDINGS)
-            .collect();
-        if binding {
-            entries.push((
-                EXT_LISTENER_BINDINGS,
-                br#"[{"slot":"listen","claim":"third-b"}]"#,
-            ));
-        }
-        let bytes = Box::leak(
-            busbar_contract::abi::mechanism::extensions::encode(&entries).into_boxed_slice(),
-        );
-        statement.extensions.ptr = bytes.as_ptr();
-        statement.extensions.len = bytes.len();
-        let statement = Box::leak(Box::new(statement));
-        // SAFETY: original ops and all original/replaced metadata remain live for the process.
-        let door = unsafe {
-            Door::__from_parts(DoorParts {
-                statement,
-                ..actual.parts()
-            })
-        };
-        Box::into_raw(Box::new(door)) as usize
-    });
-    // SAFETY: the immutable descriptor above is retained for the entire test process.
-    unsafe { &*(address as *const Door) }
+fn restated(cell: &RestatedTransport, binding: bool) -> &'static Door {
+    let source = busbar_transport_http::door::MACRO_DOOR;
+    let facts = crate::root::loader::dispatch::kinds::transport::stated(source.door_fn()).unwrap();
+    assert!(
+        facts.claims.len() >= 2,
+        "the actual product has claim aliases"
+    );
+    let claims: Vec<_> = (0..facts.claims.len())
+        .map(|index| match index {
+            0 => "third-a".into(),
+            1 => "third-b".into(),
+            _ => format!("third-extra-{index}"),
+        })
+        .collect::<Vec<String>>();
+    let names: Vec<_> = claims.iter().map(String::as_str).collect();
+    let mapping = br#"[{"slot":"listen","claim":"third-b"}]"#;
+    cell.get_or_init(
+        source,
+        &names,
+        &[(EXT_LISTENER_BINDINGS, binding.then_some(mapping.as_slice()))],
+    )
 }
 
 extern "C" fn third_binding() -> &'static Door {
-    static CELL: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    static CELL: RestatedTransport = RestatedTransport::new();
     restated(&CELL, true)
 }
 
 extern "C" fn third_without_binding() -> &'static Door {
-    static CELL: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    static CELL: RestatedTransport = RestatedTransport::new();
     restated(&CELL, false)
 }
 
@@ -321,7 +287,7 @@ async fn incompatible_transport_or_owner_reload_retains_the_published_listener_p
     let source = busbar_kernel::inbound::Listener {
         guests: GuestList::default(),
         auths: Default::default(),
-        body_limit: TEST_BODY_LIMIT,
+        body_limit: TEST_BODY_LIMIT as u64,
         app: boot.clone(),
         door_refusals: Vec::new(),
         ids: Vec::new(),

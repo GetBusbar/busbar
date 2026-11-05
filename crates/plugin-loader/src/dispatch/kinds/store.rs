@@ -65,6 +65,8 @@ pub struct StoreFacts {
     pub record_transaction: bool,
     /// Negotiated version-one atomic raw-usage correction support.
     pub usage_correction: bool,
+    /// Quantity records and aggregate persistence use checked six-decimal counts.
+    pub exact_counts: bool,
     /// The settings paths the Statement declares secret (`secret_refs`): taken out of the settings
     /// and lent to `open` as `OpenIn.secrets`, as every other kind's are.
     pub secret_refs: Vec<String>,
@@ -111,6 +113,12 @@ fn store_facts(st: &Statement) -> Result<StoreFacts, String> {
             // SAFETY: bounded static Statement bytes; `lent` also checks the pointer.
             && unsafe { crate::dispatch::validate::lent(st.extensions.ptr, st.extensions.len) }
                 .is_some_and(busbar_contract::abi::sdk::store::correction::supported),
+        exact_counts: st.extensions.fmt == busbar_contract::abi::mechanism::call::BLOB_OCTETS
+            && st.extensions.flags == 0
+            && st.extensions.len as u64 <= busbar_contract::abi::mechanism::check::HARD_MAX_BYTES
+            // SAFETY: bounded static Statement bytes; `lent` also validates the pointer.
+            && unsafe { crate::dispatch::validate::lent(st.extensions.ptr, st.extensions.len) }
+                .is_some_and(|bytes| busbar_contract::abi::mechanism::extensions::get(bytes, "busbar.store.count-scale") == Some(b"6".as_slice())),
         secret_refs,
         credential_rewrap: {
             // SAFETY: the checked Statement owns its static extension bytes.
@@ -129,7 +137,11 @@ impl Kind for Store {
     const TIMEOUT: Outcome = Outcome::Failed;
 
     fn context(st: &Statement) -> Result<Option<Box<crate::dispatch::Context>>, String> {
-        Ok(Some(Box::new(store_facts(st)?)))
+        let facts = store_facts(st)?;
+        if !facts.exact_counts {
+            return Err("the Store does not declare busbar.store.count-scale=6; upgrade the Store before writing exact quantities".into());
+        }
+        Ok(Some(Box::new(facts)))
     }
 
     fn op_name(s: u32) -> &'static str {
@@ -159,6 +171,34 @@ impl Kind for Store {
                 .out::<HostListOut>()
                 .is_ok_and(|o| o.needed_items != 0 || o.needed_bytes != 0),
             _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod exact_count_gate_tests {
+    use super::*;
+
+    #[test]
+    fn actual_store_requires_exact_count_capability_before_binding() {
+        // SAFETY: the actual product helper validates and retains the image and its Statement.
+        let mut statement = unsafe { *crate::store_memory_facts_actual::door().statement() };
+        assert!(Store::context(&statement).is_ok());
+        for entries in [
+            Vec::new(),
+            vec![("busbar.store.count-scale", b"0".as_slice())],
+        ] {
+            let bytes = busbar_contract::abi::mechanism::extensions::encode(&entries);
+            statement.extensions = busbar_contract::abi::mechanism::call::Blob {
+                ptr: bytes.as_ptr(),
+                len: bytes.len(),
+                fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+                flags: 0,
+            };
+            let error = Store::context(&statement)
+                .err()
+                .expect("incompatible Store refused before open");
+            assert!(error.contains("count-scale=6"), "{error}");
         }
     }
 }

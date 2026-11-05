@@ -1623,8 +1623,12 @@ impl GovState {
                 }
                 let era = segment.map_or(metered_era, |index| target.models[index].era);
                 for (class, change) in delta {
-                    let held = segment.map_or(0, |index| {
-                        target.models[index].cur.get(*class).copied().unwrap_or(0)
+                    let held = segment.map_or(Count::ZERO, |index| {
+                        target.models[index]
+                            .cur
+                            .get(*class)
+                            .copied()
+                            .unwrap_or_default()
                     });
                     if moved(held, *change).is_none() {
                         return Ok(Err(AdjustRefused::Exceeds {
@@ -1638,14 +1642,14 @@ impl GovState {
                         &mut plain_after,
                         adj.model,
                         class,
-                        i128::from(*change),
+                        i128::from(*change) * 1_000_000,
                     ))?;
                     if era != RawRateEra::legacy(0) {
                         exact(move_unit(
                             &mut dated_after,
                             &era_model(era, adj.model),
                             class,
-                            i128::from(*change),
+                            i128::from(*change) * 1_000_000,
                         ))?;
                     }
                 }
@@ -1680,7 +1684,7 @@ impl GovState {
                         .expect("adjustment row read"),
                     &slot,
                     class,
-                    i128::from(change.unsigned_abs()),
+                    i128::from(change.unsigned_abs()) * 1_000_000,
                 ))?;
             }
             let request = Request {
@@ -1827,26 +1831,36 @@ fn check_metered(
     }
     let slot = adjustment_slot(adj.key_id, adj.model, era);
     for (class, change) in delta {
-        let adjusted = |ledger: &UsageLedger| {
-            ledger
-                .models
-                .iter()
-                .find(|row| row.model == slot)
-                .and_then(|row| row.usage_units.get(*class))
-                .copied()
-                .unwrap_or(0)
+        let adjusted = |ledger: &UsageLedger| -> Option<Count> {
+            match ledger.models.iter().find(|row| row.model == slot) {
+                Some(row) => Count::from_stored(
+                    i128::from(row.usage_units.get(*class).copied().unwrap_or(0)),
+                    row.scale,
+                )
+                .ok(),
+                None => Some(Count::ZERO),
+            }
         };
         let count = rows
             .iter()
-            .map(|row| i128::from(metered_count(row, class)))
-            .sum::<i128>()
-            + i128::from(adjusted(up))
-            - i128::from(adjusted(down));
-        if count + i128::from(*change) < 0 || count + i128::from(*change) > i128::from(u64::MAX) {
+            .try_fold(Count::ZERO, |n, row| {
+                n.checked_add(metered_count(row, class).ok()?).ok()
+            })
+            .and_then(|n| n.checked_add(adjusted(up)?).ok())
+            .and_then(|n| n.checked_sub(adjusted(down)?).ok());
+        let Some(count) = count else {
             return Err(AdjustRefused::Exceeds {
                 bucket: format!("metering@{day}"),
                 class: (*class).into(),
-                count: u64::try_from(count).unwrap_or(0),
+                count: Count::ZERO,
+                delta: *change,
+            });
+        };
+        if moved(count, *change).is_none() {
+            return Err(AdjustRefused::Exceeds {
+                bucket: format!("metering@{day}"),
+                class: (*class).into(),
+                count,
                 delta: *change,
             });
         }
@@ -1923,7 +1937,7 @@ fn capture_target(
                 &mut combined_dated,
                 &era_tag(*era),
                 ERA_FEE_UNIT,
-                difference,
+                difference * 1_000_000,
             ))?;
         }
         let baseline = durable_cell(plain.clone(), dated.clone(), window)?;
@@ -1970,7 +1984,12 @@ fn capture_target(
 }
 
 fn checked_move(count: u64, change: i128) -> Result<u64, &'static str> {
-    u64::try_from(i128::from(count) + change).map_err(|_| "raw usage correction count out of range")
+    u64::try_from(
+        i128::from(count)
+            .checked_add(change)
+            .ok_or("raw usage correction count overflow")?,
+    )
+    .map_err(|_| "raw usage correction count out of range")
 }
 fn add_difference(
     row: &mut UsageLedger,
@@ -1989,8 +2008,8 @@ fn add_difference(
 fn add_units_difference(
     row: &mut UsageLedger,
     model: &str,
-    current: &BTreeMap<String, u64>,
-    flushed: &BTreeMap<String, u64>,
+    current: &BTreeMap<String, Count>,
+    flushed: &BTreeMap<String, Count>,
 ) -> Result<(), &'static str> {
     for unit in current
         .keys()
@@ -2001,8 +2020,13 @@ fn add_units_difference(
             row,
             model,
             unit,
-            i128::from(current.get(unit).copied().unwrap_or(0))
-                - i128::from(flushed.get(unit).copied().unwrap_or(0)),
+            current
+                .get(unit)
+                .copied()
+                .unwrap_or_default()
+                .checked_sub(flushed.get(unit).copied().unwrap_or_default())
+                .map_err(|_| "count difference overflow")?
+                .micros(),
         )?;
     }
     Ok(())
@@ -2020,8 +2044,25 @@ fn move_unit(
         .models
         .iter()
         .position(|candidate| candidate.model == model);
+    // Normalize the entire touched model once; every unit in a row shares its scale.
+    if let Some(position) = position {
+        let model = &mut row.models[position];
+        let normalized = model
+            .usage_units
+            .iter()
+            .map(|(k, n)| {
+                let count = Count::from_stored(i128::from(*n), model.scale)
+                    .map_err(|_| "invalid stored count scale")?;
+                u64::try_from(count.micros())
+                    .map(|n| (k.clone(), n))
+                    .map_err(|_| "raw usage correction count out of range")
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        model.usage_units = normalized;
+        model.scale = COUNT_SCALE;
+    }
     let count = position
-        .and_then(|position| row.models[position].usage_units.get(unit))
+        .and_then(|i| row.models[i].usage_units.get(unit))
         .copied()
         .unwrap_or(0);
     let next = checked_move(count, change)?;
@@ -2034,6 +2075,7 @@ fn move_unit(
     } else if next != 0 {
         row.models.push(ModelTokens {
             model: model.into(),
+            scale: COUNT_SCALE,
             usage_units: BTreeMap::from([(unit.into(), next)]),
         });
     }

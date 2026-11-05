@@ -125,8 +125,25 @@ pub fn price_dated_raw<'r>(
     price_dated_at(rows, fees, window_start_ms, live, dated, false)
 }
 
-fn price_dated_at<'r>(
-    rows: impl IntoIterator<Item = (&'r str, RawRateEra, &'r BTreeMap<String, u64>)>,
+/// Price exact fractional counts through the same dated lookup and final projection.
+pub fn price_dated_counts_raw<'r>(
+    rows: impl IntoIterator<
+        Item = (
+            &'r str,
+            RawRateEra,
+            &'r BTreeMap<String, crate::cost::Count>,
+        ),
+    >,
+    fees: impl IntoIterator<Item = (RawRateEra, u64)>,
+    window_start_ms: u64,
+    live: &RateCard,
+    dated: Option<DatedHistory<'_>>,
+) -> Result<Money, MoneyError> {
+    price_dated_at(rows, fees, window_start_ms, live, dated, false)
+}
+
+fn price_dated_at<'r, C: Copy + Into<crate::cost::Count> + 'r>(
+    rows: impl IntoIterator<Item = (&'r str, RawRateEra, &'r BTreeMap<String, C>)>,
     fees: impl IntoIterator<Item = (RawRateEra, u64)>,
     window_start_ms: u64,
     live: &RateCard,
@@ -175,7 +192,7 @@ fn price_dated_at<'r>(
             }
         })
     };
-    let mut rows_at: Vec<(usize, &str, &BTreeMap<String, u64>)> = Vec::new();
+    let mut rows_at: Vec<(usize, &str, &BTreeMap<String, C>)> = Vec::new();
     for (lane, era, counts) in rows {
         rows_at.push((tally_for(era)?, lane, counts));
     }
@@ -190,7 +207,9 @@ fn price_dated_at<'r>(
             lane,
             0,
             STANDARD_TIER_BP,
-            counts.iter().map(|(class, n)| (class.as_str(), whole(*n))),
+            counts
+                .iter()
+                .map(|(class, n)| (class.as_str(), (*n).into())),
             whole(0),
         )?;
     }

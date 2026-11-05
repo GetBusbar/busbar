@@ -2480,6 +2480,99 @@ mod transport_pin {
         (far, seen)
     }
 
+    #[test]
+    fn prepared_request_tls_facts_precede_application_bytes_on_same_connection() {
+        worker().block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                use tokio::io::AsyncReadExt;
+                let pki = Pki::new();
+                let leaf = pki.leaf("localhost");
+                crate::tls::install_crypto_provider();
+                let config = rustls::ServerConfig::builder()
+                    .with_no_client_auth()
+                    .with_single_cert(
+                        vec![rustls_pki_types::CertificateDer::from(leaf.der)],
+                        rustls_pki_types::PrivateKeyDer::try_from(leaf.key).unwrap(),
+                    )
+                    .unwrap();
+                let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+                let (listener, target) = far_end().await;
+                let (silent_tx, silent_rx) = tokio::sync::oneshot::channel();
+                let (written_tx, mut written_rx) = tokio::sync::oneshot::channel();
+                let server = tokio::spawn(async move {
+                    let (socket, _) = listener.accept().await.unwrap();
+                    let mut tls = acceptor.accept(socket).await.unwrap();
+                    let mut bytes = [0; 5];
+                    assert!(
+                        tokio::time::timeout(Duration::from_millis(20), tls.read(&mut bytes))
+                            .await
+                            .is_err(),
+                        "TLS preparation sends no empty or partial request"
+                    );
+                    silent_tx.send(()).unwrap();
+                    tls.read_exact(&mut bytes).await.unwrap();
+                    assert_eq!(&bytes, b"first");
+                    written_tx.send(()).unwrap();
+                    // No second socket or second request can stand in for the prepared one.
+                    assert!(
+                        tokio::time::timeout(Duration::from_millis(20), listener.accept())
+                            .await
+                            .is_err()
+                    );
+                    match tls.read(&mut bytes).await {
+                        Ok(0) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {}
+                        other => panic!("only one committed request before close: {other:?}"),
+                    }
+                });
+                let c = trusting(&pki);
+                let desc = OpenDesc {
+                    target: &target,
+                    body: Bytes::from_static(b"first"),
+                    ..OpenDesc::default()
+                };
+                let conn = c.prepare_request(OWNER, NeedId(0), &desc, 1000).unwrap();
+                let facts = loop {
+                    match c.facts(OWNER, conn) {
+                        Ok(facts) => break facts,
+                        Err(ConnError::Pending) => tokio::task::yield_now().await,
+                        other => panic!("prepared TLS facts: {other:?}"),
+                    }
+                };
+                assert_eq!(facts.sni.as_deref(), Some("localhost"));
+                assert!(
+                    facts.peer_cert.is_some(),
+                    "facts must describe the completed TLS handshake"
+                );
+                assert_eq!(facts.peer_key_pin.as_deref(), Some(leaf.pin.as_str()));
+                silent_rx.await.unwrap();
+                c.commit_request(OWNER, conn, &desc, true).unwrap();
+                assert_eq!(
+                    c.commit_request(OWNER, conn, &desc, true),
+                    Err(ConnError::Refused)
+                );
+                // Commit accepts the opening; reads drive any remaining carrier output,
+                // as with open_request. Keep driving until the actual peer observed it.
+                loop {
+                    match written_rx.try_recv() {
+                        Ok(()) => break,
+                        Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+                        Err(error) => {
+                            panic!("the TLS peer observes the committed request: {error}")
+                        }
+                    }
+                    let mut answer = [0; 64];
+                    assert_eq!(c.read(OWNER, conn, 7, &mut answer), Err(ConnError::Pending));
+                    tokio::task::yield_now().await;
+                }
+                c.close(OWNER, conn).unwrap();
+                server.await.unwrap();
+            })
+            .await
+            .expect("TLS prepared request finishes");
+        });
+    }
+
     /// A connector serving a door whose targets ask for connection security under the name
     fn trusting(pki: &Pki) -> Connector {
         trusting_with_policy(pki, false)
@@ -4858,3 +4951,6 @@ fn protected_auth_requires_the_located_security_plan_even_on_private_plaintext_n
         c.close(OWNER, secure).unwrap();
     });
 }
+
+#[path = "prepared_request_tests.rs"]
+mod prepared_request_tests;

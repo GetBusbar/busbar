@@ -4584,7 +4584,7 @@ pub(crate) mod tool_door {
             .expect("unpoisoned")
             .audit_records
             .clone();
-        let counted = |class: &str| -> Vec<u64> {
+        let counted = |class: &str| -> Vec<busbar_contract::Count> {
             records
                 .iter()
                 .flat_map(|r| r.usage.lines.iter())

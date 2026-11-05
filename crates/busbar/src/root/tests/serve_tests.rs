@@ -1018,7 +1018,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         .expect("unpoisoned")
         .audit_records
         .clone();
-    let decided: Vec<u64> = records
+    let decided: Vec<busbar_contract::Count> = records
         .iter()
         .flat_map(|r| r.usage.lines.iter())
         .filter(|l| l.class.as_str() == "decision")
@@ -3687,7 +3687,7 @@ pub(super) mod session_door {
         };
         assert_eq!(
             billed,
-            Some(6),
+            Some(6.into()),
             "six seconds of µ-law the provider read are six billed seconds; sealed: {sealed:?}"
         );
     }
@@ -9911,7 +9911,9 @@ mod pools_door_money {
         }
     }
 
-    fn token_lines(record: &busbar_kernel_audit::AuditRecord) -> Vec<(String, u64)> {
+    fn token_lines(
+        record: &busbar_kernel_audit::AuditRecord,
+    ) -> Vec<(String, busbar_contract::Count)> {
         record
             .usage
             .lines
@@ -9921,11 +9923,13 @@ mod pools_door_money {
             .collect()
     }
 
-    fn reported(record: &busbar_kernel_audit::AuditRecord) -> u64 {
-        token_lines(record)
-            .iter()
-            .map(|(_, quantity)| quantity)
-            .sum()
+    fn reported(record: &busbar_kernel_audit::AuditRecord) -> busbar_contract::Count {
+        busbar_contract::Count::total(
+            token_lines(record)
+                .into_iter()
+                .map(|(_, quantity)| quantity),
+        )
+        .expect("the reported fixture counts fit exactly")
     }
 
     async fn inside_one_minute() {
@@ -10569,8 +10573,8 @@ mod pools_door_money {
         assert_eq!(
             lines,
             vec![
-                (busbar_contract::records::UNIT_INPUT.to_string(), 11),
-                (busbar_contract::records::UNIT_OUTPUT.to_string(), 7)
+                (busbar_contract::records::UNIT_INPUT.to_string(), 11.into()),
+                (busbar_contract::records::UNIT_OUTPUT.to_string(), 7.into())
             ],
             "one line per streamed tier"
         );

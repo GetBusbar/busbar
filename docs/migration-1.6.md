@@ -1,7 +1,7 @@
 # Migrating from 1.5.x to 1.6.0
 
-**Run `busbar --migrate-config` once.** It takes a working 1.5.5 configuration to one that 1.6.0
-boots and serves the same way, and it prints one line for every change it makes, saying what changed
+**Run `busbar --migrate-config` once and review its output.** It converts the supported 1.5.5
+configuration shape for 1.6.0 and prints one line for every change it makes, saying what changed
 and why. Core migrates its own keys; each plugin migrates its own settings section through its own
 `migrate`, and the lines it reports are printed under its name. Every minted key and every durable
 store carries over. What the migration does:
@@ -9,7 +9,9 @@ store carries over. What the migration does:
 - adds the `store:` block a 1.5.5 config left implicit (`store: {module: memory}`);
 - pins, in `plugins.fetch`, the 1.6.0 release of each plugin the config uses that this binary does
   not carry, and rewrites a 1.5.5-era `plugins.fetch` pin to the 1.6.0 release (dropping its stale
-  `sha256`). A 1.5.5 build left in `plugins.dir` beside its 1.6.0 build is skipped with a warning;
+  `sha256`). The operator must authorize replacement native bootstrap/check/migration archives
+  with their exact new base fetch hashes before they execute (see below). A 1.5.5 build left in
+  `plugins.dir` beside its 1.6.0 build is skipped with a warning;
 - prices every billable unit a `rate_card:` entry left out at `0`, which is what 1.5.5 billed;
 - adds to `advanced.allow_destinations` exactly the private or loopback hosts a provider's plane or a
   sign-in plugin reports it dials (never a blanket `block_private_addresses: false`);
@@ -20,17 +22,18 @@ store carries over. What the migration does:
   tighten it;
 - rewrites the old hook spellings `plugin:` and `at:`.
 
-Four things it cannot do for you, each named on this page: rebuild a plugin someone else built for
-1.5.5; invent a provider key whose reference does not resolve where Busbar runs (it prints a TODO
-naming each one); turn a `file:` secret that is a directory, device or pipe into a file; and repoint
-an identity provider whose discovery redirects to a private address. This was
-measured rather than promised — the same configs, requests and plugins were run through the published 1.5.5 binary
-and through 1.6.0, and the differences are the ones named in [the changelog](../CHANGELOG.md)
-under "Improvements", every one additive.
+The migration cannot supply operator authorization for a new native archive. It also cannot
+rebuild a plugin someone else built for 1.5.5, invent a provider key whose reference does not resolve
+where Busbar runs (it prints a TODO naming each one), turn a `file:` secret that is a directory,
+device or pipe into a file, or repoint
+an identity provider whose discovery redirects to a private address. Compatibility must be checked
+against the published 1.5.5 binary with the accepted differences in [the changelog](../CHANGELOG.md)
+and design. This guide does not certify an untested development revision.
 
-The recommended path is the same as for any point release: install the binary, `busbar
---validate`, start. If Busbar boots, you're done. What follows is what you may notice afterwards,
-and what is new to write if you want it.
+Install the intended binary and signed plugin archives, authorize the native archive hashes,
+run migration, validate the migrated file, then start and check readiness and supported flows.
+`--validate` does not open the Store, recover its overlay or prove backend readiness. What follows
+is what you may notice afterwards, and what is new to write if you want it.
 
 ---
 
@@ -61,6 +64,21 @@ with no network needs the 1.6.0 tarball copied into `plugins.dir` instead. A thi
 be rebuilt by its author with [the SDK migration note](plugin-sdk-migration-1.6.md). Your data carries
 over: a rebuilt store plugin opens its own database and upgrades it with its own `migrate()`. See
 [Plugins](plugins.md#plugins-and-160).
+
+### Authorize native bootstrap, checks and migration
+
+Before a dropped-in Store, required secret plugin, transport or early plane grammar probe can
+execute before Store recovery, put the exact SHA-256 of its complete signed `.tar.gz` archive in
+the matching `plugins.fetch[].sha256` entry of the operator's base input. The filename must match
+the archive selected by that fetch entry. The library digest inside the manifest is not this hash.
+Linked plugins are bound to the binary and need no archive pin.
+
+This also applies to dropped native checks in `--validate` and migrators in `--migrate-config`,
+including migrators downloaded from the release index. A release tag or valid signature does not
+replace operator authorization. Missing or mismatched pins refuse execution. Install the intended
+archive and update the base hash together when replacing a bootstrap dependency; an old hash must
+not be carried over to different bytes. On an offline host, copy the same authorized archives into
+`plugins.dir`. See [the bootstrap trust contract](plugins.md#how-plugins-are-secured).
 
 ## 1. No other config changes required
 
@@ -410,7 +428,11 @@ prices only what happens after the edit; it cannot repair a window that is alrea
       for 1.5.5: get its 1.6.0 build from its author.
 - [ ] On a host with no network, copy the 1.6.0 tarball of each plugin `plugins.fetch` pins into
       `plugins.dir` ([a plugin built for 1.5.5 does not load](#a-plugin-built-for-155-does-not-load)).
-- [ ] Install 1.6.0, `busbar --validate` the migrated file, start.
+- [ ] Before dropped native bootstrap/check/migration code executes, authorize each selected
+      archive's complete SHA-256 in the operator base `plugins.fetch` entry. Replace stale hashes
+      when replacing archives; a release-index download does not supply this authorization.
+- [ ] Install the intended 1.6.0 build, `busbar --validate` the migrated file, start, and verify
+      Store recovery, readiness and the supported application flows.
 - [ ] If a log pipeline matches on the leading text of `[error]` / `[warn]` lines, allow for the
       `BUSBAR-NNNN:` prefix.
 - [ ] If any key's traffic routinely fails over to an OpenAI Chat Completions lane while streaming,

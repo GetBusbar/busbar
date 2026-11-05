@@ -4,7 +4,6 @@ use super::*;
 pub struct AdminNode {
     pub(super) kernel: busbar_kernel::teller::Kernel,
     pub(super) units: crate::root::kernel::ProductionUnits,
-    pub(super) next_key: std::sync::atomic::AtomicU64,
 }
 
 #[cfg(feature = "root-admin")]
@@ -14,23 +13,33 @@ impl AdminNode {
         kernel: busbar_kernel::teller::Kernel,
         units: crate::root::kernel::ProductionUnits,
     ) -> Self {
-        AdminNode {
-            kernel,
-            units,
-            next_key: std::sync::atomic::AtomicU64::new(1),
-        }
+        AdminNode { kernel, units }
     }
 
     pub fn next_unit(&self) -> u64 {
-        self.next_key
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        crate::root::plane_node::node().mint().get()
     }
 
     pub fn answer(&self, request: AdminRequest) -> AdminAnswer {
+        self.answer_with_admission(request, None)
+    }
+
+    fn answer_with_admission(
+        &self,
+        request: AdminRequest,
+        admission: Option<busbar_kernel::inbound::RequestAdmission>,
+    ) -> AdminAnswer {
+        if admission
+            .as_ref()
+            .is_some_and(|admission| !admission.begin_execution())
+        {
+            return unavailable_answer();
+        }
         let key = UnitKey::new(request.unit);
 
         let arrived_at = request.at;
         let mut walk = AdminWalk::new(request);
+        walk.admission = admission;
         let ended = decide(&self.units, &mut walk);
         let facts = audit(&walk, &ended);
         let answer = walk
@@ -303,7 +312,11 @@ pub(crate) fn unavailable_answer() -> AdminAnswer {
 }
 
 #[cfg(feature = "root-admin")]
-pub(crate) type Errand = (AdminRequest, std::sync::mpsc::SyncSender<AdminAnswer>);
+pub(crate) type Errand = (
+    AdminRequest,
+    Option<busbar_kernel::inbound::RequestAdmission>,
+    std::sync::mpsc::SyncSender<AdminAnswer>,
+);
 
 #[cfg(feature = "root-admin")]
 pub struct RouterDispatch {
@@ -323,14 +336,14 @@ impl RouterDispatch {
     ) -> Self {
         let (errands, mut inbox) = tokio::sync::mpsc::unbounded_channel::<Errand>();
         runtime.spawn(async move {
-            while let Some((request, reply)) = inbox.recv().await {
+            while let Some((request, admission, reply)) = inbox.recv().await {
                 let inner = inner.clone();
                 let replays = replays.clone();
 
                 tokio::spawn(async move {
                     let unit = request.unit;
                     let answer = busbar_core_admin::restart::UnitDrain::of_unit(unit)
-                        .scoping(call(inner, &request, &replays))
+                        .scoping(call(inner, &request, &replays, admission))
                         .await;
                     let _ = reply.send(answer);
                 });
@@ -345,6 +358,7 @@ async fn call(
     inner: axum::Router,
     request: &AdminRequest,
     replays: &Arc<KeyReplayCache>,
+    admission: Option<busbar_kernel::inbound::RequestAdmission>,
 ) -> AdminAnswer {
     use tower::ServiceExt;
 
@@ -355,6 +369,9 @@ async fn call(
         builder = builder.header(name.as_str(), value.as_str());
     }
     builder = builder.extension(Arc::clone(replays));
+    if let Some(admission) = admission {
+        builder = builder.extension(admission);
+    }
     let Ok(http) = builder.body(axum::body::Body::from(request.body.clone())) else {
         return error_answer(400, "invalid_request");
     };
@@ -375,8 +392,32 @@ async fn call(
 #[cfg(feature = "root-admin")]
 impl AdminDispatch for RouterDispatch {
     fn execute(&self, _verb: KernelVerb, request: &AdminRequest) -> AdminAnswer {
+        self.dispatch(request, None)
+    }
+
+    fn execute_admitted(
+        &self,
+        _verb: KernelVerb,
+        request: &AdminRequest,
+        admission: &busbar_kernel::inbound::RequestAdmission,
+    ) -> AdminAnswer {
+        self.dispatch(request, Some(admission.clone()))
+    }
+}
+
+#[cfg(feature = "root-admin")]
+impl RouterDispatch {
+    fn dispatch(
+        &self,
+        request: &AdminRequest,
+        admission: Option<busbar_kernel::inbound::RequestAdmission>,
+    ) -> AdminAnswer {
         let (reply, answer) = std::sync::mpsc::sync_channel(1);
-        if self.errands.send((request.clone(), reply)).is_err() {
+        if self
+            .errands
+            .send((request.clone(), admission, reply))
+            .is_err()
+        {
             return unavailable_answer();
         }
         answer.recv().unwrap_or_else(|_| unavailable_answer())
@@ -483,12 +524,24 @@ pub fn mount(
                 }
 
                 let (parts, body) = req.into_parts();
+                let admission = parts
+                    .extensions
+                    .get::<busbar_kernel::inbound::RequestAdmission>()
+                    .cloned();
 
                 let Ok(bytes) = axum::body::to_bytes(body, request_body_max_bytes).await else {
+                    if let Some(admission) = &admission {
+                        admission.refuse(
+                            busbar_contract::caps::StepName::Decode,
+                            ReasonCode::DecodeFailed,
+                        );
+                    }
                     return http_response(error_answer(400, "invalid_request"));
                 };
 
-                let unit = node.next_unit();
+                let unit = admission
+                    .as_ref()
+                    .map_or_else(|| node.next_unit(), |admission| admission.unit_key().get());
                 let request = AdminRequest {
                     method: parts.method.as_str().to_string(),
                     path: parts
@@ -505,9 +558,11 @@ pub fn mount(
                 };
 
                 let exit = ExitPath { unit };
-                let answer = tokio::task::spawn_blocking(move || node.answer(request))
-                    .await
-                    .unwrap_or_else(|_| unavailable_answer());
+                let answer = tokio::task::spawn_blocking(move || {
+                    node.answer_with_admission(request, admission)
+                })
+                .await
+                .unwrap_or_else(|_| unavailable_answer());
 
                 let response = http_response(answer);
 

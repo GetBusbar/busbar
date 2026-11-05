@@ -182,7 +182,8 @@ def fetch(client: ModernCI, root: Path, commit: str, out: Path, testkit: str = N
                 if meta2.get("repo") != repo or meta2.get("head") != head:
                     raise CannotRun(f"ModernCI rerun did not return {repo}@{head}")
                 verdicts = verdicts_in(data2)
-                rec["rerun"] = {"core": core, "head": meta2.get("head"), "sha": hashlib.sha256(data2).hexdigest()}
+                rec["rerun"] = {"core": core, "head": meta2.get("head"), "state": meta2.get("state"),
+                                "sha": hashlib.sha256(data2).hexdigest()}
                 data = data2
             except CannotRerun as e:
                 rec["rerun"] = {"core": core, "refused": str(e)}

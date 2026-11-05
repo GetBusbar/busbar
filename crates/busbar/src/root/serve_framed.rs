@@ -100,9 +100,9 @@ pub(super) fn refused(stream: &Shared, rendered: Option<Rendered>) -> Response {
     );
 
     let taken = lock(stream).stream.take();
-    let block = taken.map(|mut s| s.refuse(&body, status, false));
+    let block = taken.map(|mut s| s.refuse_response(&body, status, false));
     match block {
-        Some(Ok(block)) => whole(status, &block),
+        Some(Ok(closing)) => whole(closing.status.unwrap_or(status), &closing.fields),
         _ => stated((status, Vec::new()), Body::empty()),
     }
 }

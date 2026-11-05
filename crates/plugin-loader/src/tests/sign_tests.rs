@@ -1118,6 +1118,69 @@ fn red_the_stated_statement_is_signed_and_must_be_one_whole_rendering() {
 }
 
 #[test]
+fn statement_schema_is_authoritative_and_malformed_material_is_rejected() {
+    use busbar_contract::abi::mechanism::call::{Blob, BLOB_JSON};
+    use busbar_contract::abi::mechanism::rendering::render;
+    use busbar_contract::abi::sdk::door::statement;
+    let make = |bytes: &'static [u8]| {
+        let mut st = statement("busbar-store-x", "1.5.0", 4);
+        st.settings_schema = Blob {
+            ptr: bytes.as_ptr(),
+            len: bytes.len(),
+            fmt: BLOB_JSON,
+            flags: 0,
+        };
+        // SAFETY: every byte and all Statement fields have static storage.
+        let rendering = unsafe { render(&st) }.unwrap();
+        let mut m = manifest("busbar-store-x", "x", "busbar");
+        m.statement = Some(hex::encode(rendering));
+        m.settings_schema = Some("{ invalid legacy schema".into());
+        m
+    };
+    let good = make(br#"{"type":"object","required":["url"]}"#);
+    let original = canonical_manifest_bytes(&good);
+    let schema = good.settings_schema_text().unwrap().unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&schema).unwrap()["required"][0],
+        "url"
+    );
+    assert!(validate_identity(&good, HOST_IDENTITY).is_ok());
+    assert_eq!(
+        canonical_manifest_bytes(&good),
+        original,
+        "projection must not mutate signed bytes"
+    );
+    let absent = make(b"");
+    assert_eq!(
+        absent.settings_schema_text().unwrap(),
+        absent.settings_schema
+    );
+    assert!(
+        validate_identity(&absent, HOST_IDENTITY).is_ok(),
+        "legacy errors remain inspectable"
+    );
+    for bad in [
+        b"\xff".as_slice(),
+        b"{ invalid".as_slice(),
+        b"null".as_slice(),
+    ] {
+        let m = make(bad);
+        assert!(m.settings_schema_text().is_err());
+        assert!(validate_identity(&m, HOST_IDENTITY).is_err());
+        assert!(
+            crate::dispatch::ManifestFacts::read(&m.stated_rendering().unwrap().unwrap()).is_err()
+        );
+    }
+    let mut none = manifest("busbar-store-x", "x", "busbar");
+    assert_eq!(none.settings_schema_text().unwrap(), None);
+    none.settings_schema = Some("false".into());
+    assert_eq!(
+        none.settings_schema_text().unwrap().as_deref(),
+        Some("false")
+    );
+}
+
+#[test]
 fn a_signed_need_retention_policy_must_equal_the_actual_modules_policy() {
     use crate::dispatch::{load_linked, Adopter, Bind, ConnTable, LinkedRow, LoadError, NoSink};
     use busbar_contract::abi::host::conn::connector::{Need, KEEP_ALL_EXCEPT_DENIED, KEEP_NAMED};

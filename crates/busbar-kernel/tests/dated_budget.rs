@@ -271,6 +271,7 @@ fn row(tokens: u64) -> busbar_contract::records::UsageLedger {
         requests: 1,
         billable_requests: 1,
         models: vec![ModelTokens {
+            scale: 0,
             model: "m".to_string(),
             usage_units: BTreeMap::from([("input".to_string(), tokens)]),
         }],
@@ -499,6 +500,7 @@ fn a_plane_fee_edit_prices_each_admission_at_the_plane_fee_in_force() {
 fn metered(store: &dyn RecordStore, key_id: &str, at: u64, n: u64, era: u64) {
     store
         .add_metering(&busbar_contract::records::MeteringDelta {
+            scale: 0,
             key_id: key_id.to_string(),
             bucket: busbar_kernel::governance::metering_bucket(at),
             model: "m".to_string(),

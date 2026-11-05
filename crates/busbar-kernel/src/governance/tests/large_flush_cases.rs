@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 
 const MODEL: &str = "m";
 const HISTORICAL_ERA: u64 = 42;
-const LARGE_INPUT: u64 = i64::MAX as u64 + 100;
+const LARGE_INPUT: u64 = i64::MAX as u64 / 1_000_000 + 100;
 const CONCURRENT_INPUT: u64 = 7;
 const NEXT_INPUT: u64 = 11;
 const GROUP_BUCKET: &str = "group:g@minute";
@@ -119,28 +119,47 @@ impl RecordStore for ChunkStore {
         }
     }
 }
+fn input_count(store: &dyn RecordStore, bucket: &str, window: u64) -> Count {
+    Count::total(
+        store
+            .get_usage(bucket, window)
+            .unwrap()
+            .models
+            .iter()
+            .filter(|row| row.model == MODEL)
+            .map(|row| {
+                Count::from_stored(
+                    i128::from(
+                        row.usage_units
+                            .get(busbar_contract::records::UNIT_INPUT)
+                            .copied()
+                            .unwrap_or(0),
+                    ),
+                    row.scale,
+                )
+                .unwrap()
+            }),
+    )
+    .unwrap()
+}
 fn input(store: &dyn RecordStore, bucket: &str, window: u64) -> u64 {
-    store
-        .get_usage(bucket, window)
-        .unwrap()
-        .models
-        .iter()
-        .filter(|row| row.model == MODEL)
-        .map(|row| {
-            row.usage_units
-                .get(busbar_contract::records::UNIT_INPUT)
-                .copied()
-                .unwrap_or(0)
-        })
-        .sum()
+    input_count(store, bucket, window).whole_for_test()
 }
 fn accrue_dated(gov: &GovState, key: &VirtualKey, count: u64, now: u64) {
+    accrue_exact_dated(gov, key, whole_count(count), now);
+}
+fn accrue_exact_dated(gov: &GovState, key: &VirtualKey, count: Count, now: u64) {
     let window = super::super::budget_window(super::super::WINDOW_TOTAL, now);
     let mut cells = gov.budget.write(&key.id);
     let cell = cells
         .entry(key.id.clone())
         .or_insert_with(|| BudgetCell::fresh(window));
-    cell.accrue(MODEL, HISTORICAL_ERA, &toks(count, 0));
+    cell.accrue_raw(
+        MODEL,
+        RawRateEra::legacy(HISTORICAL_ERA),
+        &BTreeMap::from([("input".into(), count)]),
+    )
+    .unwrap();
     cell.dirty = true;
     cell.last_touch = now;
 }
@@ -155,15 +174,25 @@ fn setup(id: &str) -> (Arc<ChunkStore>, GovState, VirtualKey, u64) {
 
 fn dated_input(store: &dyn RecordStore, bucket: &str, window: u64) -> u64 {
     let dated_model = format!("{HISTORICAL_ERA}{}{}", super::super::ERA_MODEL_SEP, MODEL);
-    store
+    let row = store
         .get_usage(&super::super::era_bucket(bucket), window)
-        .unwrap()
-        .models
+        .unwrap();
+    row.models
         .iter()
         .find(|row| row.model == dated_model)
-        .and_then(|row| row.usage_units.get(busbar_contract::records::UNIT_INPUT))
-        .copied()
-        .unwrap_or(0)
+        .map_or(0, |row| {
+            Count::from_stored(
+                i128::from(
+                    row.usage_units
+                        .get(busbar_contract::records::UNIT_INPUT)
+                        .copied()
+                        .unwrap_or(0),
+                ),
+                row.scale,
+            )
+            .unwrap()
+            .whole_for_test()
+        })
 }
 
 #[test]
@@ -249,10 +278,12 @@ fn raw_entry_identity_survives_unknown_budget_flush_and_later_same_timestamp_cou
             let name = super::super::era_model(era, MODEL);
             let segment = dated.models.iter().find(|row| row.model == name).unwrap();
             assert_eq!(
-                segment
-                    .usage_units
-                    .get(busbar_contract::records::UNIT_INPUT),
-                Some(&expected)
+                Count::from_stored(
+                    i128::from(segment.usage_units[busbar_contract::records::UNIT_INPUT]),
+                    segment.scale
+                )
+                .unwrap(),
+                whole_count(expected)
             );
         }
         assert_eq!(
@@ -375,9 +406,12 @@ fn key_deletion_reconciles_small_unknown_commit_before_purging_usage() {
 #[test]
 fn ordinary_large_positive_debt_flushes_all_chunks_with_historical_counts() {
     let (store, gov, key, now) = setup("vk_large_positive_chunks");
-    accrue_dated(&gov, &key, u64::MAX, now);
+    accrue_exact_dated(&gov, &key, Count::from_micros(i128::from(u64::MAX)), now);
     gov.flush_budgets();
-    assert_eq!(input(store.as_ref(), &key.id, 0), u64::MAX);
+    assert_eq!(
+        input_count(store.as_ref(), &key.id, 0),
+        Count::from_micros(i128::from(u64::MAX))
+    );
     let era = store
         .get_usage(&super::super::era_bucket(&key.id), 0)
         .unwrap();
@@ -405,7 +439,7 @@ fn ordinary_large_positive_debt_flushes_all_chunks_with_historical_counts() {
 #[test]
 fn ordinary_large_negative_debt_uses_the_full_signed_range() {
     let (store, gov, key, now) = setup("vk_large_negative_chunks");
-    accrue_dated(&gov, &key, u64::MAX, now);
+    accrue_exact_dated(&gov, &key, Count::from_micros(i128::from(u64::MAX)), now);
     gov.flush_budgets();
     store.batches.lock().unwrap().clear();
 
@@ -442,7 +476,10 @@ fn confirmed_chunk_is_not_repeated_when_a_later_chunk_fails() {
         .unwrap()
         .extend([Reply::Confirm, Reply::FailBefore]);
     gov.flush_budgets();
-    assert_eq!(input(store.as_ref(), &key.id, 0), i64::MAX as u64);
+    assert_eq!(
+        input_count(store.as_ref(), &key.id, 0),
+        Count::from_micros(i128::from(i64::MAX))
+    );
     let first = store.batches.lock().unwrap().clone();
     assert_eq!(first.len(), 2);
     accrue_dated(&gov, &key, CONCURRENT_INPUT, now);
@@ -465,7 +502,10 @@ fn lost_chunk_commit_reply_keeps_exact_identity_and_later_accrual() {
     accrue_dated(&gov, &key, LARGE_INPUT, now);
     store.replies.lock().unwrap().push_back(Reply::LoseAfter);
     gov.flush_budgets();
-    assert_eq!(input(store.as_ref(), &key.id, 0), i64::MAX as u64);
+    assert_eq!(
+        input_count(store.as_ref(), &key.id, 0),
+        Count::from_micros(i128::from(i64::MAX))
+    );
     accrue_dated(&gov, &key, CONCURRENT_INPUT, now);
     assert!(gov.hydrate_budgets(&model(&[]), now).is_err());
     gov.flush_budgets();

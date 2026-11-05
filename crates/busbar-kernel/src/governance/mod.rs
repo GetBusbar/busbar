@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::count::{Count, CountError, COUNT_SCALE};
 use busbar_kernel_ledger::cost::{EntryId, RawRateEra};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -13,6 +14,8 @@ pub mod recovery;
 use exact_debt::{BudgetFlushFlight, BudgetFlushRunner, ExactUsageDelta};
 mod metering_flush;
 mod raw_recovery;
+pub mod unit_checkpoint;
+mod unit_checkpoint_counts;
 
 use crate::diagnostics::{
     diag_debug, diag_warn, GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION, LIMIT_WINDOW_UNRECOGNIZED,
@@ -77,10 +80,10 @@ struct ModelCell {
     /// (1.6.0 M1b) The name-keyed CURRENT unit counters — the reserved four
     /// (`input`/`output`/`cache_read`/`cache_write`) are ordinary keys beside any open unit, the
     /// sole representation now that `TierTokens` is dissolved. Sparse (a zero unit is absent).
-    cur: std::collections::BTreeMap<String, u64>,
+    cur: std::collections::BTreeMap<String, Count>,
     /// The last durably-ACKNOWLEDGED (flushed) unit counters — the additive-flush baseline.
-    flushed: std::collections::BTreeMap<String, u64>,
-    flushed_era: std::collections::BTreeMap<String, u64>,
+    flushed: std::collections::BTreeMap<String, Count>,
+    flushed_era: std::collections::BTreeMap<String, Count>,
 }
 
 /// In-memory TOKEN-LEDGER cell for a bucket's CURRENT window - the AUTHORITATIVE hot-path
@@ -227,41 +230,56 @@ impl BudgetCell {
 
     #[cfg(test)]
     fn accrue(&mut self, model: &str, era: u64, units: &std::collections::BTreeMap<String, u64>) {
-        self.accrue_raw(model, RawRateEra::legacy(era), units);
+        self.accrue_raw(model, RawRateEra::legacy(era), &whole_counts(units))
+            .expect("test count accrual");
     }
 
     fn accrue_raw(
         &mut self,
         model: &str,
         era: RawRateEra,
-        units: &std::collections::BTreeMap<String, u64>,
-    ) {
-        self.mutate(|cell| {
+        units: &std::collections::BTreeMap<String, Count>,
+    ) -> Result<(), CountError> {
+        fn add(
+            cell: &mut BudgetCell,
+            model: &str,
+            era: RawRateEra,
+            units: &std::collections::BTreeMap<String, Count>,
+        ) -> Result<(), CountError> {
             let at = cell
                 .models
                 .iter()
                 .position(|m| &*m.model == model && m.era == era);
-            let cell = match at {
-                Some(i) => &mut cell.models[i],
-                None => {
-                    cell.models.push(ModelCell {
-                        model: std::sync::Arc::from(model),
-                        era,
-                        cur: std::collections::BTreeMap::new(),
-                        flushed: std::collections::BTreeMap::new(),
-                        flushed_era: std::collections::BTreeMap::new(),
-                    });
-                    cell.models.last_mut().expect("just pushed")
-                }
-            };
+            let mut next = at.map(|i| cell.models[i].cur.clone()).unwrap_or_default();
             for (k, v) in units {
-                if *v == 0 {
-                    continue;
+                if v.is_negative() {
+                    return Err(CountError::Negative);
                 }
-                let slot = cell.cur.entry(k.clone()).or_insert(0);
-                *slot = slot.saturating_add(*v);
+                if !v.is_zero() {
+                    let slot = next.entry(k.clone()).or_default();
+                    *slot = slot.checked_add(*v)?;
+                }
             }
-        });
+            if let Some(i) = at {
+                cell.models[i].cur = next;
+            } else {
+                cell.models.push(ModelCell {
+                    model: model.into(),
+                    era,
+                    cur: next,
+                    flushed: Default::default(),
+                    flushed_era: Default::default(),
+                });
+            }
+            Ok(())
+        }
+        let mut next = self.clone();
+        add(&mut next, model, era, units)?;
+        if let Some(branch) = next.correction.as_mut() {
+            add(&mut branch.accepted, model, era, units)?;
+        }
+        *self = next;
+        Ok(())
     }
 
     fn spend(
@@ -269,25 +287,22 @@ impl BudgetCell {
         cost: &crate::cost::CostModel,
         include_fee: bool,
     ) -> Result<busbar_kernel_ledger::cost::Money, busbar_kernel_ledger::cost::MoneyError> {
-        use busbar_kernel_ledger::usage::{price_dated_raw, DatedHistory};
+        use busbar_kernel_ledger::usage::{price_dated_counts_raw, DatedHistory};
         let history = crate::rate_apply::dated_history();
         let now_ms = crate::store::now_ms();
         let dated = history.as_deref().map(|h| DatedHistory::of(h, now_ms));
         let fees = (self.fee_eras.split(self.billable_requests)).filter(|_| include_fee);
         let rows = self.models.iter().map(|m| (&*m.model, m.era, &m.cur));
         let start_ms = self.window_start.saturating_mul(1_000);
-        price_dated_raw(rows, fees, start_ms, cost.card(), dated)
+        price_dated_counts_raw(rows, fees, start_ms, cost.card(), dated)
     }
 
     fn prune_dead_models(&mut self) {
         if self.correction.is_some() {
             return;
         }
-        self.models.retain(|m| {
-            units_total(&m.cur) != 0
-                || units_total(&m.flushed) != 0
-                || units_total(&m.flushed_era) != 0
-        });
+        self.models
+            .retain(|m| has_units(&m.cur) || has_units(&m.flushed) || has_units(&m.flushed_era));
     }
 
     fn advance_model_baselines(&mut self, acked: &[ModelCell], dated: bool) {
@@ -302,7 +317,7 @@ impl BudgetCell {
                             cell.models[i].flushed = s.cur.clone();
                         }
                     }
-                    None if units_total(&s.cur) != 0 => {
+                    None if has_units(&s.cur) => {
                         cell.models.push(ModelCell {
                             model: s.model.clone(),
                             era: s.era,
@@ -326,14 +341,17 @@ impl BudgetCell {
         });
     }
 
-    fn total_tokens(&self) -> u64 {
+    fn total_tokens(&self) -> Count {
         token_total(self.models.iter().map(|m| &m.cur))
     }
 
-    fn total_tier(&self, unit: &str) -> u64 {
-        self.models.iter().fold(0u64, |acc, m| {
-            acc.saturating_add(m.cur.get(unit).copied().unwrap_or(0))
-        })
+    fn total_tier(&self, unit: &str) -> Count {
+        Count::total(
+            self.models
+                .iter()
+                .map(|m| m.cur.get(unit).copied().unwrap_or_default()),
+        )
+        .expect("total raw counts exceed Count range")
     }
 }
 
@@ -377,12 +395,14 @@ fn dated_delta(delta: &UsageDelta, era: RawRateEra) -> UsageDelta {
         .iter()
         .map(|model| busbar_contract::records::ModelTokensDelta {
             model: era_model(era, &model.model),
+            scale: model.scale,
             usage_units: model.usage_units.clone(),
         })
         .collect();
     if delta.billable_requests != 0 {
         models.push(busbar_contract::records::ModelTokensDelta {
             model: era_tag(era),
+            scale: 0,
             usage_units: std::collections::BTreeMap::from([(
                 ERA_FEE_UNIT.to_string(),
                 delta.billable_requests,
@@ -424,8 +444,8 @@ pub fn is_token_class(class: &str) -> bool {
 
 pub fn token_series(
     lane: &str,
-    counts: &std::collections::BTreeMap<String, u64>,
-) -> Vec<(String, u64)> {
+    counts: &std::collections::BTreeMap<String, Count>,
+) -> Vec<(String, Count)> {
     use crate::plane_driver::registry::{plane_decls, TOKEN_FAMILY};
     let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(lane);
     let owner = plane_decls().iter().find(|d| {
@@ -435,14 +455,19 @@ pub fn token_series(
             d.key == plane
         }
     });
-    let mut series: Vec<(String, u64)> = owner
+    let mut series: Vec<(String, Count)> = owner
         .into_iter()
         .flat_map(|d| {
             (d.billable_classes.iter())
                 .filter(|c| c.family == TOKEN_FAMILY && !d.fee_units.contains(&c.class))
                 .map(|c| c.class)
         })
-        .map(|class| (class.to_string(), counts.get(class).copied().unwrap_or(0)))
+        .map(|class| {
+            (
+                class.to_string(),
+                counts.get(class).copied().unwrap_or_default(),
+            )
+        })
         .collect();
     for (class, n) in counts {
         if is_token_class(class) && !series.iter().any(|(named, _)| named == class) {
@@ -452,14 +477,31 @@ pub fn token_series(
     series
 }
 
-fn token_total<'a>(maps: impl Iterator<Item = &'a std::collections::BTreeMap<String, u64>>) -> u64 {
-    maps.flat_map(|m| m.iter())
-        .filter(|(k, _)| is_token_class(k))
-        .fold(0u64, |acc, (_, v)| acc.saturating_add(*v))
+fn token_total<'a>(
+    maps: impl Iterator<Item = &'a std::collections::BTreeMap<String, Count>>,
+) -> Count {
+    Count::total(
+        maps.flat_map(|m| m.iter())
+            .filter(|(k, _)| is_token_class(k))
+            .map(|(_, n)| *n),
+    )
+    .expect("total raw counts exceed Count range")
 }
 
-fn units_total(units: &std::collections::BTreeMap<String, u64>) -> u64 {
-    units.values().fold(0u64, |acc, v| acc.saturating_add(*v))
+fn has_units(units: &std::collections::BTreeMap<String, Count>) -> bool {
+    units.values().any(|count| !count.is_zero())
+}
+
+fn whole_count(n: u64) -> Count {
+    Count::from_integer(i128::from(n)).expect("u64 whole units fit Count")
+}
+fn whole_counts(
+    units: &std::collections::BTreeMap<String, u64>,
+) -> std::collections::BTreeMap<String, Count> {
+    units
+        .iter()
+        .map(|(k, v)| (k.clone(), whole_count(*v)))
+        .collect()
 }
 
 /// Why an admission was refused by the group limit chain - carried to ingress so the rejection
@@ -650,6 +692,8 @@ pub struct GovState {
     budget: Sharded<BudgetCell>,
 
     recovery_book: recovery::RecoveryBook,
+
+    unit_checkpoints: unit_checkpoint::UnitCheckpointBook,
 
     correction_claims: claims::ClaimSet<String>,
 
@@ -1177,52 +1221,75 @@ pub use busbar_kernel_ledger::cost::PLANE_LANE_SEP;
 #[derive(Default, Clone)]
 pub struct MeterCounts {
     pub requests: u64,
-    pub tokens_input: u64,
-    pub tokens_output: u64,
-    pub tokens_cache_read: u64,
-    pub tokens_cache_write: u64,
-    /// The ledgered classes the token columns do not hold, by class — the budget book's own counts
-    /// (see `busbar_contract::records::MeteringDelta::usage_units`).
-    pub usage_units: std::collections::BTreeMap<String, u64>,
+    pub tokens_input: Count,
+    pub tokens_output: Count,
+    pub tokens_cache_read: Count,
+    pub tokens_cache_write: Count,
+    pub usage_units: std::collections::BTreeMap<String, Count>,
 }
 
 impl MeterCounts {
-    pub fn request(units: &std::collections::BTreeMap<String, u64>) -> Self {
+    pub fn request(units: &std::collections::BTreeMap<String, Count>) -> Self {
         let [input, output, cache_read, cache_write] = busbar_contract::records::RESERVED_UNITS
-            .map(|class| units.get(class).copied().unwrap_or(0));
+            .map(|class| units.get(class).copied().unwrap_or_default());
         Self {
             requests: 1,
             tokens_input: input,
             tokens_output: output,
             tokens_cache_read: cache_read,
             tokens_cache_write: cache_write,
-            usage_units: std::collections::BTreeMap::new(),
+            usage_units: Default::default(),
         }
     }
-
-    pub fn merge(&mut self, other: MeterCounts) {
-        self.requests = self.requests.saturating_add(other.requests);
-        self.tokens_input = self.tokens_input.saturating_add(other.tokens_input);
-        self.tokens_output = self.tokens_output.saturating_add(other.tokens_output);
-        self.tokens_cache_read = self
+    pub fn try_merge(&mut self, other: &Self) -> Result<(), CountError> {
+        other.validate()?;
+        let mut next = self.clone();
+        next.requests = next
+            .requests
+            .checked_add(other.requests)
+            .ok_or(CountError::Overflow)?;
+        next.tokens_input = next.tokens_input.checked_add(other.tokens_input)?;
+        next.tokens_output = next.tokens_output.checked_add(other.tokens_output)?;
+        next.tokens_cache_read = next
             .tokens_cache_read
-            .saturating_add(other.tokens_cache_read);
-        self.tokens_cache_write = self
+            .checked_add(other.tokens_cache_read)?;
+        next.tokens_cache_write = next
             .tokens_cache_write
-            .saturating_add(other.tokens_cache_write);
-        for (class, n) in other.usage_units {
-            let cur = self.usage_units.entry(class).or_insert(0);
-            *cur = cur.saturating_add(n);
+            .checked_add(other.tokens_cache_write)?;
+        for (class, n) in &other.usage_units {
+            let cur = next.usage_units.entry(class.clone()).or_default();
+            *cur = cur.checked_add(*n)?;
+        }
+        *self = next;
+        Ok(())
+    }
+    pub fn merge(&mut self, other: MeterCounts) {
+        self.try_merge(&other)
+            .expect("metering count accumulation exceeds Count range");
+    }
+    fn validate(&self) -> Result<(), CountError> {
+        if [
+            self.tokens_input,
+            self.tokens_output,
+            self.tokens_cache_read,
+            self.tokens_cache_write,
+        ]
+        .iter()
+        .chain(self.usage_units.values())
+        .any(|n| n.is_negative())
+        {
+            Err(CountError::Negative)
+        } else {
+            Ok(())
         }
     }
-
     pub fn is_zero(&self) -> bool {
         self.requests == 0
-            && self.tokens_input == 0
-            && self.tokens_output == 0
-            && self.tokens_cache_read == 0
-            && self.tokens_cache_write == 0
-            && self.usage_units.values().all(|n| *n == 0)
+            && self.tokens_input.is_zero()
+            && self.tokens_output.is_zero()
+            && self.tokens_cache_read.is_zero()
+            && self.tokens_cache_write.is_zero()
+            && self.usage_units.values().all(|n| n.is_zero())
     }
 }
 
@@ -1243,13 +1310,25 @@ pub fn accrue_pending(
     cap: usize,
     warn: &CoalesceWarn,
 ) {
+    accrue_pending_checked(pending, key, add, cap, warn)
+        .expect("metering accumulation exceeds Count range");
+}
+
+fn accrue_pending_checked(
+    pending: &mut HashMap<MeterKey, MeterCounts>,
+    key: MeterKey,
+    add: MeterCounts,
+    cap: usize,
+    warn: &CoalesceWarn,
+) -> Result<(), CountError> {
+    add.validate()?;
     if let Some(cell) = pending.get_mut(&key) {
-        cell.merge(add);
-        return;
+        cell.try_merge(&add)?;
+        return Ok(());
     }
     if pending.len() < cap {
         pending.insert(key, add);
-        return;
+        return Ok(());
     }
 
     let sentinel: MeterKey = (
@@ -1261,7 +1340,7 @@ pub fn accrue_pending(
         String::new(),
         key.6.clone(),
     );
-    pending.entry(sentinel).or_default().merge(add);
+    pending.entry(sentinel).or_default().try_merge(&add)?;
     metrics::counter!(crate::snapshot::METERING_PENDING_COALESCED_TOTAL).increment(1);
 
     if let Some(coalesced) = warn.note(std::time::Instant::now()) {
@@ -1274,6 +1353,7 @@ pub fn accrue_pending(
              recovers"
         );
     }
+    Ok(())
 }
 
 /// The once-per-window throttle on the overflow-coalescing warning: counts coalesced cells and
@@ -1331,17 +1411,22 @@ impl PendingMetering {
     }
 
     pub fn accrue(&self, key: MeterKey, add: MeterCounts) {
+        self.try_accrue(key, add)
+            .expect("metering accumulation exceeds Count range");
+    }
+
+    pub fn try_accrue(&self, key: MeterKey, add: MeterCounts) -> Result<(), CountError> {
         let mut map = self
             .shard_for(&key.0)
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        accrue_pending(
+        accrue_pending_checked(
             &mut map,
             key,
             add,
             MAX_PENDING_METERING_PER_SHARD,
             &self.coalesce_warn,
-        );
+        )
     }
 
     pub fn drain(&self) -> Vec<(MeterKey, MeterCounts)> {
@@ -1421,6 +1506,7 @@ pub fn spawn_budget_flusher(
                     let app = app.clone();
                     tokio::task::spawn_blocking(move || {
                         resume_current_correction_verdicts(&gov, app.as_ref());
+                        let _ = gov.flush_unit_checkpoints();
                         gov.flush_budgets();
                         gov.flush_metering();
                         drop(guard);
@@ -1440,6 +1526,7 @@ pub fn spawn_budget_flusher(
                     let app = app.clone();
                     let _ = tokio::task::spawn_blocking(move || {
                         resume_current_correction_verdicts(&gov, app.as_ref());
+                        let _ = gov.flush_unit_checkpoints();
                         gov.flush_budgets_final();
                         gov.flush_metering_final();
                         drop(guard);
@@ -1574,9 +1661,67 @@ pub struct DerivedUsage {
     /// cents.
     pub spend_cents: i64,
     /// The token count the ledger holds for the bucket.
-    pub tokens: u64,
+    pub tokens: Count,
     /// The admission count the ledger holds for the bucket.
     pub requests: u64,
 }
 
 pub const SECS_PER_DAY: u64 = 86_400;
+
+#[cfg(test)]
+trait TestWholeCount {
+    fn whole_for_test(self) -> u64;
+}
+#[cfg(test)]
+impl TestWholeCount for Count {
+    fn whole_for_test(self) -> u64 {
+        assert_eq!(
+            self.micros() % 1_000_000,
+            0,
+            "expected an exact whole test quantity"
+        );
+        u64::try_from(self.micros() / 1_000_000).expect("nonnegative test count fits u64")
+    }
+}
+
+#[cfg(test)]
+trait TestLedgerCounts {
+    fn tokens_for_whole_test(&self, model: &str) -> Option<u64>;
+    fn total_whole_tokens_for_test(&self) -> u64;
+}
+#[cfg(test)]
+impl TestLedgerCounts for busbar_contract::records::UsageLedger {
+    fn tokens_for_whole_test(&self, model: &str) -> Option<u64> {
+        self.models
+            .iter()
+            .find(|row| row.model == model)
+            .map(|row| {
+                Count::total(
+                    row.usage_units
+                        .values()
+                        .map(|n| Count::from_stored(i128::from(*n), row.scale).unwrap()),
+                )
+                .unwrap()
+                .whole_for_test()
+            })
+    }
+    fn total_whole_tokens_for_test(&self) -> u64 {
+        Count::total(self.models.iter().flat_map(|row| {
+            row.usage_units
+                .iter()
+                .filter(|(name, _)| {
+                    busbar_contract::records::RESERVED_UNITS.contains(&name.as_str())
+                })
+                .map(|(_, n)| Count::from_stored(i128::from(*n), row.scale).unwrap())
+        }))
+        .unwrap()
+        .whole_for_test()
+    }
+}
+
+#[cfg(test)]
+fn stored_whole_for_test(raw: u64, scale: u32) -> u64 {
+    Count::from_stored(i128::from(raw), scale)
+        .unwrap()
+        .whole_for_test()
+}

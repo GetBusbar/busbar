@@ -1085,6 +1085,11 @@ fn session_custody_routes(g: &mut Governed, pools_plane: bool) -> Arc<super::Dat
         }
     }
     Arc::new(super::DataRoutes {
+        live: served
+            .planes
+            .iter()
+            .map(|plane| plane.live.current())
+            .collect(),
         entries: super::arrival_entries(&served),
         served,
         claim_doors: None,
@@ -1343,25 +1348,31 @@ async fn in_bound_nested_whole_and_streamed_replies_keep_their_bytes_and_head_fi
             None
         };
         let response = reply.answer_nested(Box::pin(unit)).await;
-        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let busbar_kernel::host_services::NestReply::Answered {
+            status,
+            fields,
+            body,
+        } = response
+        else {
+            panic!("in-bound nested reply was not answered");
+        };
+        assert_eq!(status, 200);
         assert_eq!(
-            response
-                .headers()
-                .get(FIELD_NAME)
-                .expect("child field")
-                .as_bytes(),
-            FIELD_VALUE
+            fields[0],
+            (FIELD_NAME.as_bytes().to_vec(), FIELD_VALUE.to_vec())
         );
-        assert!(
-            !response
-                .headers()
-                .contains_key(axum::http::header::CONTENT_LENGTH),
-            "whole nested replies retain their previous unlengthened head"
-        );
-        let body = axum::body::to_bytes(response.into_body(), super::NEST_REPLY_MAX)
-            .await
-            .expect("in-bound child reply");
-        assert_eq!(body.as_ref(), PAYLOAD);
+        assert_eq!(fields.len(), if whole { 2 } else { 1 });
+        if whole {
+            assert_eq!(
+                fields[1],
+                (
+                    b"content-length".to_vec(),
+                    PAYLOAD.len().to_string().into_bytes()
+                ),
+                "nested field bytes are opaque even when their name has HTTP meaning"
+            );
+        }
+        assert_eq!(body, PAYLOAD);
     }
 }
 
@@ -2132,3 +2143,6 @@ mod neutral_ingress_tests;
 
 #[path = "governed_upgrade.rs"]
 mod governed_upgrade_tests;
+
+#[path = "serve_nested_neutral.rs"]
+mod nested_neutral_tests;

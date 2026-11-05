@@ -638,8 +638,8 @@ The guarantee is uniform across every plugin kind: a configured plugin that cann
 missing or untrusted tarball, the wrong `kind`, a `dlopen`/ABI failure, or a reference to a plugin
 while `plugins.enabled: false`) is a **hard boot / config-apply error**, named at the flag or file.
 A dropped store, secret backend, identity provider, or security gate never silently disappears or
-degrades to open. `busbar --validate` catches every one of these manifest-only, before boot, so a
-clean validate means a clean load.
+degrades to open. `busbar --validate` catches offline configuration, artifact and trust failures
+before boot. It cannot prove a successful native opening, Store recovery or backend readiness.
 
 ## How plugins are secured
 
@@ -748,7 +748,8 @@ get code executed, and a compromised or replayed plugin must not load.
 8. **Pre-flight checks are shared; boot checks the effective runtime configuration.**
    `busbar --validate` reads the selected config and provider catalog, checks consistency and
    trust policy, scans locally available plugin artifacts, plans their selection, and resolves
-   built-in `env:` / `file:` secret references. It does not download plugins, open a Store,
+   built-in `env:` / `file:` secret references. Authorized native grammar/check callbacks may run;
+   dropped callbacks require the exact operator archive pin described above. It does not download plugins, open a Store,
    recover its admin config overlay, or prove plugin `open`/readiness or backend reachability.
    Boot recovers the overlay from the base Store (unless config is locked or safe mode skips
    recovery), validates the resulting effective configuration, and opens its dependencies. A
@@ -785,9 +786,11 @@ broken.tar.gz                      -                        -            -      
 ```
 
 `--list-plugins` is manifest-only: it never loads plugin code, so it is safe to run against a
-directory full of untrusted artifacts. `busbar --validate` is the gate: it validates
+directory full of untrusted artifacts. `busbar --validate` validates
 `config.yaml`, `providers.yaml`, and every plugin manifest (structure, signature and trust,
-conflicts, ABI, version floors) with zero side effects, exiting 0 only when boot would succeed.
+conflicts, ABI, version floors). It can execute authorized native grammar/check callbacks, but
+does not open the application Store or recover its overlay. Exit 0 means these offline checks
+passed; opening, readiness and backend failures can still prevent boot.
 
 The admin API exposes the same manifest-only catalog (`GET /api/v1/admin/plugins?type=store`) and
 can install or remove tarballs remotely through the identical trust gate; see

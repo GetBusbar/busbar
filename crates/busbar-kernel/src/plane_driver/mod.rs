@@ -1309,8 +1309,8 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
             route::End::Cancel(cause, done) => {
                 let bill = run.cancel(cause, done).await;
                 self.lock().bill = Some(bill);
-                if cause == ReasonCode::OverBudget {
-                    self.cut_frame().await;
+                if matches!(cause, ReasonCode::OverBudget | ReasonCode::Unpriced) {
+                    self.cut_frame(cause).await;
                 }
                 StepAnswer::refuse(token, Refusal::new(cause))
             }
@@ -1322,8 +1322,8 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         answer
     }
 
-    async fn cut_frame(&self) {
-        let rendered = self.render(ReasonCode::OverBudget);
+    async fn cut_frame(&self, reason: ReasonCode) {
+        let rendered = self.render(reason);
         let streamed = std::mem::replace(&mut self.lock().facts.streamed, true);
         if !streamed {
             self.lock().facts.status = rendered.status;

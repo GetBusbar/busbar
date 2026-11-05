@@ -2,8 +2,9 @@
 
 **Busbar 1.6.0 keeps your 1.5.5 deployment and makes it much harder to attack.** Every 1.5.5
 config key still means what it meant. Every key you minted still verifies, and every durable store
-opens on the data it already holds. One command converts your config file, and `busbar --validate`
-tells you before you restart whether anything else needs a step. The short list of those steps is
+opens on the data it already holds. The migration converts supported config shapes, and `busbar --validate`
+checks operator inputs and local artifacts before restart. It does not prove Store recovery or
+backend readiness. The short list of upgrade steps is
 at the end of this page, each one named and explained, so nothing is a surprise.
 
 What you get for the upgrade: a gateway that refuses to be turned against your own network, never
@@ -12,17 +13,24 @@ signed, tamper-evident record you can verify without our software. On top of tha
 planes (MCP tools, A2A agents, realtime voice and decisions), each switched off until you write its
 section.
 
-How we know it carries over: the same configs, the same requests and the same plugins were run
-through the published 1.5.5 binary and through 1.6.0, and every difference was reviewed and signed
-off one by one. The ones you might notice are all on this page.
+Compatibility is judged against the actual published 1.5.5 binary and its immutable inputs,
+with only the recorded owner-approved differences. This overview describes intended behavior;
+qualification remains specific to the tested source and assembled product. See
+[branch results](https://getbusbar.com/certifications/) for the scope of published evidence.
 
 ---
 
-## Your upgrade, in one command
+## Your upgrade
+
+Before executing dropped native bootstrap, check or migration code, install the intended signed
+archives and put each complete archive's SHA-256 in its matching operator base
+`plugins.fetch[].sha256` entry. This includes release-index-downloaded migrators. A release pin or
+signature does not supply that authorization; replace stale hashes when replacing archives.
+Linked plugins need no archive pin. See [the upgrade authorization steps](migration-1.6.md#authorize-native-bootstrap-checks-and-migration).
 
 ```sh
 busbar --migrate-config config.yaml > config-1.6.yaml   # convert the config
-busbar --validate -c config-1.6.yaml                    # check it, with no network and no side effects
+busbar --validate -c config-1.6.yaml                    # offline checks; no application Store opened
 ```
 
 Then install the 1.6.0 binary, point it at the new file and start it.
@@ -63,13 +71,16 @@ What carries over without the migration doing anything:
   read by a migration that is safe to interrupt and rerun.
 - **Your plugin names.** A config that names a first-party plugin by its 1.5.5 name (for example
   `module: busbar-webrequest`) still resolves to the 1.6.0 plugin.
-- **Your environment variables.** The deprecated `BUSBAR_*` variables are honoured exactly as in
-  1.5.5, with the same warning naming the config key that replaces them.
-- **Your CI.** `--validate` reads the same references startup reads, with no network and no side
-  effects, so running the 1.6.0 binary's `--validate` in CI tells you before you deploy whether it
-  will start. The cases it cannot see are marked in the list at the end of this page.
-- **Your log pipeline.** Plugins write their own log files, and every plugin warning and error is
-  also a line of busbar's own log, written as 1.5.5 wrote it.
+- **Your environment variables.** Deprecated operational `BUSBAR_*` inputs remain compatibility
+  inputs with warnings. The legacy overlay selector does not access a file: runtime config is
+  Store-only in 1.6.0, and memory Store contents are ephemeral.
+- **Your CI.** `--validate` checks operator inputs and local artifacts without network access.
+  Authorized native grammar/check callbacks may execute. It does not open the application Store,
+  recover its overlay, or prove plugin opening/readiness and backend reachability. Verify those
+  after starting the actual assembled build.
+- **Your log pipeline.** Plugins write their own log files. Warning and error log records handed
+  to the host are also offered to Busbar's tracing subscriber, whose filter and output policy
+  determine collection; this is not a promise to mirror every diagnostic envelope.
 
 The full step-by-step guide is [Migrating from 1.5.x to 1.6.0](migration-1.6.md).
 
@@ -186,7 +197,8 @@ grants, its budget, hooks, failover pools, circuit breaking, metrics and the aud
   plugin compiled into Busbar and the same plugin dropped in as a signed file behave identically.
 - **Signed, versioned and checked before load.** `busbar --list-plugins` reads the signed manifests
   without running any plugin code, and `busbar --validate` checks signature, trust, version floor and
-  compatibility with no side effects ([plugins](plugins.md)).
+  compatibility. Validation may execute authorized native grammar/check callbacks; it does not
+  prove Store recovery or runtime readiness ([plugins](plugins.md)).
 - **Each plugin gets its own log file**, under `plugins.logs.dir`, with its own level and rotation.
 - **Plugin authors** rebuild against the 1.6.0 SDK with
   [the SDK migration guide](plugin-sdk-migration-1.6.md).
@@ -222,7 +234,7 @@ migration does about it.
 | A config must have a `store:` block. | Nothing. | Yes, `--migrate-config` adds it. |
 | Hook `plugin:` and `at:` keys are the old spellings. | Nothing; they still work. | Yes, `--migrate-config` rewrites them. |
 | A plugin named by its 1.5.5 name. | Nothing. | Yes, the old name still resolves. |
-| 1.5.5 builds of the SQLite, Postgres, MySQL and Valkey stores, the OIDC, GitHub and LDAP sign-in plugins, the Vault secret plugin and the web-request hook do not load in 1.6.0. | Nothing, on a host with network. Your data carries over: the new store plugin opens the same database. On a host with no network, copy the 1.6.0 tarballs into `plugins.dir`. | Yes, `--migrate-config` pins each 1.6.0 release in `plugins.fetch` and rewrites old pins; an old build beside its 1.6.0 build only warns. |
+| 1.5.5 builds of the SQLite, Postgres, MySQL and Valkey stores, the OIDC, GitHub and LDAP sign-in plugins, the Vault secret plugin and the web-request hook do not load in 1.6.0. | Install the intended signed 1.6.0 archives and authorize every dropped native bootstrap/check/migration archive with its complete SHA-256 in the matching operator base fetch entry. On an offline host, copy those same archives into `plugins.dir`. | Release pins are migrated; exact operator archive authorization is your step. An old build beside its 1.6.0 build only warns. |
 | A plugin built by someone else for 1.5.5 does not load. | Its author rebuilds it with [the SDK migration guide](plugin-sdk-migration-1.6.md). | No. |
 | A `rate_card:` must price every billable unit a provider reports, not only tokens. | Nothing, to keep 1.5.5's bill exactly; set real rates when you want to bill those units ([how](migration-1.6.md#a-card-must-configure-every-billable-unit-its-plane-counts)). | Yes, `--migrate-config` adds every unit at `0`. |
 | A provider or identity provider on a private or loopback address (a local ollama or vLLM, an in-cluster gateway, an internal DNS name) is refused by default. `--validate` names a provider URL the guard will refuse; it cannot see an identity provider's. | Nothing. | Yes, `--migrate-config` adds exactly the hosts the provider's plane and the sign-in plugins report to `advanced.allow_destinations`. |
@@ -232,7 +244,7 @@ migration does about it.
 | A `file:` secret that is a directory, device or pipe is refused. | Point it at a regular file. | No. |
 | A signed-in user that your role bindings grant nothing is refused (401). 1.5.5 let such users through with no pool limits and no budget. | Review the binding the migration wrote and tighten it. | Yes, `--migrate-config` writes `role_bindings.<provider>."*": {}` (every pool, no budget) with a warning. |
 | An identity provider reached by a DNS name whose discovery or key URL redirects to a private address fails sign-in. `--validate` does not catch this. | Point the issuer at the address it finally serves from. | No. |
-| Plugin log lines, including the model plane's warnings, go to each plugin's own file under `plugins.logs.dir` (default `logs/plugins/`). | Nothing: every plugin warning and error is also a line of busbar's own log, as in 1.5.5. Add the directory to your log collection for the rest. | Yes. |
+| Plugin log lines, including the model plane's warnings, go to each plugin's own file under `plugins.logs.dir` (default `logs/plugins/`). | Collect that directory. Warning/error log records are also offered to the host tracing subscriber; its filter and output policy apply. | File logging and log-record mirroring are implemented; not every diagnostic envelope is mirrored. |
 
 ### Behaviour you might see, with nothing to change
 

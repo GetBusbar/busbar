@@ -31,7 +31,7 @@
 set -euo pipefail
 
 # Cargo source aliases; reusable-workflow repository identity stays GitHub-specific.
-CORE_SOURCE_PATTERN='https://(github\.com|(www\.)?github\.com)/GetBusbar/busbar(\.git)?'
+CORE_SOURCE_PATTERN='https://(www\.)?github\.com/GetBusbar/busbar(\.git)?'
 
 repin_manifest() {  # repin_manifest <manifest> <sha>; keep each accepted source spelling
   sed -i.repin-bak -E \

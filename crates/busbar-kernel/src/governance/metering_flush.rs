@@ -8,6 +8,8 @@ pub(super) struct MeteringWrite {
     /// The receipt's retention starts at the first attempt, never at a later retry.
     op: Option<MeteringAttempt>,
     delta: MeteringDelta,
+    remainder: MeterCounts,
+    key: MeterKey,
 }
 
 #[derive(Clone, Copy)]
@@ -30,38 +32,94 @@ impl MeteringWrite {
         if counts.is_zero() {
             return None;
         }
-        let (key_id, bucket, model, provider, priced_from_ms, key_group_at_use, pricing_version) =
-            key;
+        let (delta, remainder) = metering_chunk(&key, &counts);
         Some(Self {
             op: None,
-            delta: MeteringDelta {
-                key_id,
-                bucket,
-                model,
-                provider,
-                tokens_input: counts.tokens_input,
-                tokens_output: counts.tokens_output,
-                tokens_cache_read: counts.tokens_cache_read,
-                tokens_cache_write: counts.tokens_cache_write,
-                requests: counts.requests,
-                billable_requests: counts.requests,
-                key_group_at_use,
-                pricing_version,
-                priced_from_ms,
-                usage_units: counts.usage_units,
-            },
+            delta,
+            remainder,
+            key,
         })
     }
 
     #[cfg(test)]
     pub(super) fn counts(&self) -> MeterCounts {
-        MeterCounts {
+        let mut counts = self.remainder.clone();
+        counts.merge(MeterCounts {
             requests: self.delta.requests,
-            tokens_input: self.delta.tokens_input,
-            tokens_output: self.delta.tokens_output,
-            tokens_cache_read: self.delta.tokens_cache_read,
-            tokens_cache_write: self.delta.tokens_cache_write,
-            usage_units: self.delta.usage_units.clone(),
+            tokens_input: Count::from_micros(i128::from(self.delta.tokens_input)),
+            tokens_output: Count::from_micros(i128::from(self.delta.tokens_output)),
+            tokens_cache_read: Count::from_micros(i128::from(self.delta.tokens_cache_read)),
+            tokens_cache_write: Count::from_micros(i128::from(self.delta.tokens_cache_write)),
+            usage_units: self
+                .delta
+                .usage_units
+                .iter()
+                .map(|(k, n)| (k.clone(), Count::from_micros(i128::from(*n))))
+                .collect(),
+        });
+        counts
+    }
+}
+
+/// One representable store operation; the untouched remainder keeps its exact Count range.
+pub(super) fn metering_chunk(key: &MeterKey, counts: &MeterCounts) -> (MeteringDelta, MeterCounts) {
+    fn take(count: Count) -> (u64, Count) {
+        assert!(!count.is_negative(), "negative metering count");
+        let raw = count.micros().min(i128::from(i64::MAX));
+        (
+            u64::try_from(raw).expect("nonnegative bounded metering chunk"),
+            Count::from_micros(count.micros() - raw),
+        )
+    }
+    let (input, input_left) = take(counts.tokens_input);
+    let (output, output_left) = take(counts.tokens_output);
+    let (read, read_left) = take(counts.tokens_cache_read);
+    let (write, write_left) = take(counts.tokens_cache_write);
+    let mut units = std::collections::BTreeMap::new();
+    let mut units_left = std::collections::BTreeMap::new();
+    for (name, n) in &counts.usage_units {
+        let (raw, left) = take(*n);
+        if raw != 0 {
+            units.insert(name.clone(), raw);
+        }
+        if !left.is_zero() {
+            units_left.insert(name.clone(), left);
+        }
+    }
+    (
+        MeteringDelta {
+            key_id: key.0.clone(),
+            bucket: key.1,
+            model: key.2.clone(),
+            provider: key.3.clone(),
+            priced_from_ms: key.4,
+            key_group_at_use: key.5.clone(),
+            pricing_version: key.6.clone(),
+            scale: COUNT_SCALE,
+            requests: counts.requests,
+            billable_requests: counts.requests,
+            tokens_input: input,
+            tokens_output: output,
+            tokens_cache_read: read,
+            tokens_cache_write: write,
+            usage_units: units,
+        },
+        MeterCounts {
+            requests: 0,
+            tokens_input: input_left,
+            tokens_output: output_left,
+            tokens_cache_read: read_left,
+            tokens_cache_write: write_left,
+            usage_units: units_left,
+        },
+    )
+}
+
+fn finish_front(pending: &PendingMetering) {
+    let mut flight = pending.flight.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(done) = flight.pop_front() {
+        if let Some(next) = MeteringWrite::new((done.key, done.remainder)) {
+            flight.push_front(next);
         }
     }
 }
@@ -172,11 +230,7 @@ impl GovState {
                             recovery::RecoveryState::Settled
                                 | recovery::RecoveryState::LandedUnknown
                         ) {
-                            pending
-                                .flight
-                                .lock()
-                                .unwrap_or_else(|p| p.into_inner())
-                                .pop_front();
+                            finish_front(pending);
                             flushed += usize::from(state == recovery::RecoveryState::Settled);
                             self.forget_confirmed_recovery(op.id.0);
                             continue;
@@ -201,12 +255,7 @@ impl GovState {
             };
             match result {
                 Ok(()) => {
-                    let acknowledged = pending
-                        .flight
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .pop_front();
-                    drop(acknowledged);
+                    finish_front(pending);
                     flushed += 1;
                 }
                 Err(error) => {

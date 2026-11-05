@@ -179,12 +179,26 @@ impl<I: AbiIn, O: AbiOut> RawSlot for Ready<I, O> {
         Outcome::Ready
     }
 }
+/// Empty refusal diagnostics mean capacity exhaustion to the host; this witness deliberately
+/// declines unsupported operations, so name that reason instead of reporting overload.
+const UNSUPPORTED_OPERATION: &str = "wire witness does not implement ordinary store operations";
+
+fn refuse_operation(out: &mut OutHead) -> Outcome {
+    out.error = AbiStr {
+        ptr: UNSUPPORTED_OPERATION.as_ptr(),
+        len: UNSUPPORTED_OPERATION.len(),
+    };
+    Outcome::Refused
+}
+
 struct Refuse<I, O>(PhantomData<(I, O)>);
 impl<I: AbiIn, O: AbiOut> RawSlot for Refuse<I, O> {
     type In = I;
     type Out = O;
-    unsafe fn call(_: *mut c_void, _: &I, _: &mut O) -> Outcome {
-        Outcome::Refused
+    unsafe fn call(_: *mut c_void, _: &I, out: &mut O) -> Outcome {
+        // SAFETY: AbiOut guarantees OutHead is the first field (or the whole type).
+        let head = unsafe { &mut *(out as *mut O).cast::<OutHead>() };
+        refuse_operation(head)
     }
 }
 
@@ -333,7 +347,13 @@ const TAIL: StoreTail = StoreTail {
     },
     ..StoreTail::ZERO
 };
+// This is a wire-protocol witness, not an aggregating store. Ordinary quantity slots refuse;
+// correction payloads are validated without transforming their exact counts or fingerprint.
+busbar_contract::statement_extensions!(EXACT_COUNTS_ONLY: [
+    ("busbar.store.count-scale", b"6"),
+]);
 busbar_contract::statement_extensions!(CAP: [
+    ("busbar.store.count-scale", b"6"),
     (conditional::CAPABILITY, b"1"),
     (correction::CAPABILITY, correction::CAPABILITY_VALUE),
 ]);
@@ -346,7 +366,10 @@ impl RawSlot for Correction {
         // SAFETY: the dispatcher retains the immutable input and instance for this crossing.
         let state = unsafe { state(instance) };
         let encoded = unsafe { input.head.extensions.bytes() };
-        let candidate = correction::intent(encoded).unwrap().unwrap();
+        let Ok(Some(candidate)) = correction::intent(encoded) else {
+            // This witness never accepts ordinary usage batches or invalid quantity payloads.
+            return refuse_operation(out);
+        };
         let mut data = state.data.lock().unwrap();
         data.tx_calls += 1;
         data.class = input.head.deadline_class;
@@ -473,5 +496,5 @@ pub mod negotiated {
 }
 pub mod legacy {
     use super::*;
-    witness_door!(Blob::ABSENT);
+    witness_door!(EXACT_COUNTS_ONLY);
 }

@@ -88,13 +88,19 @@ fn ordinary_unknown_result_retries_once(unwind: bool) {
     let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gov.flush_budgets()));
     assert_eq!(first.is_err(), unwind);
     assert_eq!(
-        store.get_usage(&key.id, 0).unwrap().tokens_for(MODEL),
+        store
+            .get_usage(&key.id, 0)
+            .unwrap()
+            .tokens_for_whole_test(MODEL),
         Some(FIRST_INPUT)
     );
     accrue_plain(&gov, &key.id, LATER_INPUT);
     gov.flush_budgets();
     assert_eq!(
-        store.get_usage(&key.id, 0).unwrap().tokens_for(MODEL),
+        store
+            .get_usage(&key.id, 0)
+            .unwrap()
+            .tokens_for_whole_test(MODEL),
         Some(FIRST_INPUT + LATER_INPUT),
         "a committed ordinary flush must not be applied again when its reply was unknown"
     );
@@ -179,7 +185,10 @@ fn ordinary_product_flush_quarantines_old_unknown_and_continues_fresh_positive_u
     accrue_plain(&original, &key.id, FIRST_INPUT);
     original.flush_budgets();
     assert_eq!(
-        store.get_usage(&key.id, 0).unwrap().tokens_for(MODEL),
+        store
+            .get_usage(&key.id, 0)
+            .unwrap()
+            .tokens_for_whole_test(MODEL),
         Some(FIRST_INPUT)
     );
     let intent = original.recovery().list(None, 10).unwrap().pop().unwrap();
@@ -196,7 +205,10 @@ fn ordinary_product_flush_quarantines_old_unknown_and_continues_fresh_positive_u
     accrue_plain(&gov, &key.id, LATER_INPUT);
     gov.flush_budgets();
     assert_eq!(
-        store.get_usage(&key.id, 0).unwrap().tokens_for(MODEL),
+        store
+            .get_usage(&key.id, 0)
+            .unwrap()
+            .tokens_for_whole_test(MODEL),
         Some(FIRST_INPUT + LATER_INPUT)
     );
 
@@ -210,13 +222,17 @@ fn ordinary_product_flush_quarantines_old_unknown_and_continues_fresh_positive_u
                 .find(|model| &*model.model == MODEL)
                 .unwrap()
                 .cur;
-            *units.get_mut("input").unwrap() -= FIRST_INPUT;
+            let n = units.get_mut("input").unwrap();
+            *n = n.checked_sub(whole_count(FIRST_INPUT)).unwrap();
             cell.dirty = true;
         });
     }
     gov.flush_budgets();
     assert_eq!(
-        store.get_usage(&key.id, 0).unwrap().tokens_for(MODEL),
+        store
+            .get_usage(&key.id, 0)
+            .unwrap()
+            .tokens_for_whole_test(MODEL),
         Some(FIRST_INPUT + LATER_INPUT),
         "dependent negative remains quarantined while fresh positive has posted"
     );
@@ -239,7 +255,10 @@ fn ordinary_product_flush_quarantines_old_unknown_and_continues_fresh_positive_u
     assert_eq!(audit["verdict"]["backend_quiesced"], true);
     gov.recovery().resolve(&cost, resolution).unwrap();
     assert_eq!(
-        store.get_usage(&key.id, 0).unwrap().tokens_for(MODEL),
+        store
+            .get_usage(&key.id, 0)
+            .unwrap()
+            .tokens_for_whole_test(MODEL),
         Some(LATER_INPUT)
     );
 }

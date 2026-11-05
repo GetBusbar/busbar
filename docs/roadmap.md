@@ -79,6 +79,10 @@ the next **auth adapters** on a seam that already exists.
 
 ## Shipped in 1.5
 
+This section records the 1.5 feature set. In 1.6.0, the dated-rate-history rule supersedes the
+current-card pricing description below: a new card prices subsequent arrivals, and attributed
+backdated corrections apply only to their declared windows. See [Store-owned rate history](store-card-history.md).
+
 - **The cost model: tokens are the ledger, dollars are derived.** Enforcement accumulates a
   per-(bucket, window, model, tier) token ledger; every spend figure is computed at read time from
   that ledger and the top-level `rate_card` (per-model, per-tier micro-unit rates in an abstract

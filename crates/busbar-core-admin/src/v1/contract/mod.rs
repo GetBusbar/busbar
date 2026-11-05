@@ -502,7 +502,11 @@ pub struct GroupBucketUsageView {
     /// Requests admitted this window (the requests-limit truth: failures are not refunded).
     pub requests: u64,
     /// Total tokens ledgered this window (all tiers).
-    pub tokens: u64,
+    #[cfg_attr(
+        feature = "openapi-schema",
+        schemars(with = "f64", extend("x-busbar-count-scale" = 6))
+    )]
+    pub tokens: busbar_contract::count::Count,
     /// Spend derived at read time (tokens x current rate card), abstract cents.
     pub spend_cents: i64,
     /// The bucket's caps, when configured (absent = uncapped on that metric).
@@ -573,7 +577,7 @@ pub struct HookHealthView {
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct PluginView {
     pub name: String,
-    /// `"auth"`, `"hooks"`, or `"store"`: the plugin TYPE (each a distinct engine contract).
+    /// Plugin kind: `auth`, `hooks`/`hook`, `store`, `secret`, `export`, `plane`, or `transport`.
     pub r#type: &'static str,
     /// `"compiled-in"` or `"plugin"` (a dlopen'd dynamic-library plugin: auth, hook, and store
     /// kinds alike as of 1.5.0's signed plugin ABI).
@@ -592,16 +596,11 @@ pub struct PluginView {
     /// to name. Additive; existing consumers reading only the pre-1.5.1 fields are unaffected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
-    /// `true` iff `GET /plugins/{file}/schema` would resolve this row's `file` to a manifest that
-    /// declares `settings_schema` at all, i.e. iff `schema_url` below is non-null, so a plugin
-    /// catalog can render which rows are configurable in one list call instead of a fetch per row.
-    /// Mirrors `schema_url.is_some()`; kept as its own boolean rather than requiring the
-    /// caller to null-check `schema_url` for the same fact. `false` for compiled-in/external rows
-    /// (no manifest to carry a schema) and for a dynamic-library row whose manifest never set
-    /// `settings_schema`. Additive.
+    /// Whether the plugin publishes a schema at `schema_url`. The canonical Statement schema
+    /// takes precedence over the legacy manifest field. Linked plugins can publish schemas too;
+    /// a malformed legacy schema keeps this true and reports `schema_error`.
     pub has_schema: bool,
-    /// The plugin's semantic version, from its signed sidecar manifest (dynamic-library plugins only).
-    /// `None` for compiled-in/external, or a dynamic plugin with no/invalid manifest.
+    /// The registered plugin version, or the signed manifest version for a dropped-in artifact.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     /// The manifest's declared publisher (dynamic-library plugins with a manifest).
@@ -631,8 +630,8 @@ pub struct PluginView {
     /// manifest declared a `settings_schema` AT ALL, even if it's unparseable (following it then
     /// surfaces `schema_error`: a present-but-corrupt schema is a worse, distinct
     /// condition from "no schema declared", never folded into the same `null`).
-    /// `null` for a compiled-in/external row (no manifest to carry a schema at all) and for any
-    /// dynamic-library row whose manifest never set `settings_schema`.
+    /// Absent when neither the Statement nor the legacy manifest publishes a schema. Linked
+    /// rows use their registered name in this path; they do not need a backing artifact file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema_url: Option<String>,
     /// A manifest that SET `settings_schema` but whose value fails to parse (carried onto the
@@ -895,7 +894,11 @@ pub struct UsageWindow {
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct ClassUsage {
     /// The raw count the plane's ledger lines recorded under the class.
-    pub count: u64,
+    #[cfg_attr(
+        feature = "openapi-schema",
+        schemars(with = "f64", extend("x-busbar-count-scale" = 6))
+    )]
+    pub count: busbar_contract::count::Count,
     /// What the card in force priced that count at, in micro-units.
     pub cost: i64,
 }
@@ -906,10 +909,26 @@ pub struct ClassUsage {
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct UsageBreakdown {
     /// Uncached input tokens (normalized additive-cache convention).
-    pub tokens_input: u64,
-    pub tokens_output: u64,
-    pub tokens_cache_read: u64,
-    pub tokens_cache_creation: u64,
+    #[cfg_attr(
+        feature = "openapi-schema",
+        schemars(with = "f64", extend("x-busbar-count-scale" = 6))
+    )]
+    pub tokens_input: busbar_contract::count::Count,
+    #[cfg_attr(
+        feature = "openapi-schema",
+        schemars(with = "f64", extend("x-busbar-count-scale" = 6))
+    )]
+    pub tokens_output: busbar_contract::count::Count,
+    #[cfg_attr(
+        feature = "openapi-schema",
+        schemars(with = "f64", extend("x-busbar-count-scale" = 6))
+    )]
+    pub tokens_cache_read: busbar_contract::count::Count,
+    #[cfg_attr(
+        feature = "openapi-schema",
+        schemars(with = "f64", extend("x-busbar-count-scale" = 6))
+    )]
+    pub tokens_cache_creation: busbar_contract::count::Count,
     pub requests: u64,
     /// Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -
     /// integer math, sub-cent precise, no float drift), recomputed at read time from the raw token

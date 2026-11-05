@@ -65,7 +65,7 @@ pub mod node {
 
     pub type Lent = (Resolve, u64);
 
-    pub type Reported = (busbar_contract::billing::Usage, u32, String);
+    pub type Reported = (busbar_contract::billing::ExactUsage, u32, String);
 
     pub type Late = Box<dyn FnOnce() -> Option<Reported> + Send>;
 

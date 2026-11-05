@@ -1476,3 +1476,69 @@ fn release_cli_refuses_the_public_retired_root() {
     let error = release_keys(&[("keys".into(), format!("retired:ed25519:{key}"))]).unwrap_err();
     assert!(error.contains("retired"), "{error}");
 }
+
+#[test]
+fn pack_schema_accepts_opaque_secret_slots_without_weakening_privacy() {
+    let dir = std::env::temp_dir().join(format!("busbar-opaque-schema-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("settings.schema.json");
+    let schema = |property: serde_json::Value| {
+        serde_json::json!({
+            "$schema": SCHEMA_2020_12,
+            "type": "object",
+            "properties": {"token": property}
+        })
+    };
+    let opaque = serde_json::json!({"x-busbar-secret": true, "writeOnly": true});
+    let accepted = schema(opaque.clone());
+    std::fs::write(&path, serde_json::to_vec(&accepted).unwrap()).unwrap();
+    let published = read_and_validate_settings_schema(path.to_str().unwrap()).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&published).unwrap(),
+        accepted
+    );
+    let validator = jsonschema::validator_for(&accepted).unwrap();
+    for value in [
+        serde_json::Value::Null,
+        serde_json::json!(42),
+        serde_json::json!({"$secret": 0}),
+        serde_json::json!({"env": "VAULT_TOKEN"}),
+    ] {
+        assert!(validator.is_valid(&serde_json::json!({"token": value})));
+    }
+    assert!(
+        busbar_plugin_loader::settings_schema::public_settings_of_schema(published.as_bytes())
+            .unwrap()
+            .is_empty()
+    );
+    for bad in [
+        serde_json::json!({"writeOnly": true}),
+        serde_json::json!({"x-busbar-secret": true}),
+        serde_json::json!({"x-busbar-secret": true, "writeOnly": false}),
+        serde_json::json!({"x-busbar-secret": true, "writeOnly": true, "x-busbar-public": true}),
+        serde_json::json!({"x-busbar-secret": true, "writeOnly": true, "type": "integer"}),
+        serde_json::json!({"x-busbar-secret": true, "writeOnly": true, "type": "object"}),
+        serde_json::json!({"x-busbar-secret": true, "writeOnly": true, "type": null}),
+        serde_json::json!({"x-busbar-secret": true, "writeOnly": true, "contentEncoding": "base64"}),
+    ] {
+        std::fs::write(&path, serde_json::to_vec(&schema(bad.clone())).unwrap()).unwrap();
+        assert!(
+            read_and_validate_settings_schema(path.to_str().unwrap()).is_err(),
+            "{bad}"
+        );
+    }
+    let nested = serde_json::json!({"properties":{"nested":{"properties":{"token":opaque}}}});
+    assert!(validate_secret_fields(&nested).is_err());
+    std::fs::remove_dir_all(&dir).unwrap();
+    // The lifecycle shape does not weaken the separate user-input reference parser.
+    assert!(
+        serde_json::from_value::<busbar_contract::secret_ref::SecretRef>(serde_json::json!(42))
+            .is_err()
+    );
+    assert!(
+        serde_json::from_value::<busbar_contract::secret_ref::SecretRef>(
+            serde_json::json!({"env":"VAULT_TOKEN"})
+        )
+        .is_ok()
+    );
+}

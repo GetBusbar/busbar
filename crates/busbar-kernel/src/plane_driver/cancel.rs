@@ -17,6 +17,8 @@ use crate::teller::{Ended, UnitCtx};
 pub enum Checkpoint {
     /// The unit runs on.
     Continue,
+    /// The reported quantity cannot be accepted exactly; retain the previous valid report.
+    Unpriced,
     /// The budget is dry under `cut-stream`: the driver cancels the unit and the plane renders the
     /// in-stream error frame through `refusal`.
     Cut,
@@ -94,7 +96,7 @@ pub struct CancelBill {
     /// The reply streamed to the caller (the driver's fact).
     pub streamed: bool,
     /// The far-end-reported cumulative units that bill; empty when nothing bills.
-    pub billed: Vec<(u32, u64)>,
+    pub billed: Vec<(u32, busbar_contract::Count)>,
 }
 
 impl CancelBill {

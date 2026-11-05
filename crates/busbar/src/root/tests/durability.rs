@@ -441,7 +441,7 @@ fn an_audit_record_naming_an_undeclared_class_is_a_restart_finding() {
         let mut inputs = audit_inputs(1);
         inputs.usage.lines.push(UsageLine {
             class: busbar_contract::MeterClassId::new("a_class_this_node_never_registered"),
-            quantity: 3,
+            quantity: 3.into(),
             source: busbar_contract::caps::QuantitySource::Count,
             estimated: false,
         });
@@ -1173,7 +1173,7 @@ fn the_stored_walk_reports_an_audit_body_that_does_not_decode() {
     let mut inputs = audit_inputs(2);
     inputs.usage.lines.push(UsageLine {
         class: busbar_contract::MeterClassId::new("a_class_this_node_never_registered"),
-        quantity: 3,
+        quantity: 3.into(),
         source: busbar_contract::caps::QuantitySource::Count,
         estimated: false,
     });

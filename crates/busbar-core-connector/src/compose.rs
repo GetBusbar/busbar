@@ -1392,6 +1392,41 @@ impl Connection {
         }
     }
 
+    /// Finish connection security and framing without opening an application exchange.
+    pub(crate) fn poll_prepared(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Failure>> {
+        loop {
+            match &self.phase {
+                Phase::Failed(f) => return Poll::Ready(Err(f.clone())),
+                Phase::Ended => return Poll::Ready(Err(Failure::Closed)),
+                _ if self.is_open() && !self.handshaking() && !self.begin_parked() => {
+                    // feed() can finish the local TLS handshake while queueing the
+                    // client's final flight. The peer cannot finish its handshake until
+                    // those bytes reach the carrier, even though rustls is no longer
+                    // handshaking locally. Flush protocol output before publishing facts.
+                    if let Err(f) = self.flush(cx) {
+                        self.fail(f.clone());
+                        return Poll::Ready(Err(f));
+                    }
+                    return if self.out.is_empty()
+                        && self.ends.is_empty()
+                        && !self.unflushed
+                        && !self.carried.flushing()
+                    {
+                        Poll::Ready(Ok(()))
+                    } else {
+                        Poll::Pending
+                    };
+                }
+                _ => {}
+            }
+            match self.drive(cx) {
+                Ok(true) => {}
+                Ok(false) => return Poll::Pending,
+                Err(f) => self.fail(f),
+            }
+        }
+    }
+
     /// Whether a piece (or the end) is ready, without taking it.
     pub fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         loop {

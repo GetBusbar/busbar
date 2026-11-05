@@ -79,6 +79,7 @@ pub fn metering_row(
     usage: Option<&busbar_contract::billing::TokenUsage>,
 ) -> busbar_contract::records::MeteringRow {
     busbar_contract::records::MeteringRow {
+        scale: 0,
         usage_units: Default::default(),
         key_id: key_id.to_owned(),
         model: model.to_owned(),

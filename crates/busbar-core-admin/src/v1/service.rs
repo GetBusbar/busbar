@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::count::Count;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -90,32 +91,40 @@ pub fn derive_spend_micros_row(
     model: &str,
     b: &UsageBreakdown,
 ) -> Result<i64, busbar_kernel::cost::MoneyError> {
-    metered_row(cost, model, b, &std::collections::BTreeMap::new())
-        .spend_micros_at_card(cost.card())
+    metered_row(
+        cost,
+        model,
+        b,
+        &std::collections::BTreeMap::<String, Count>::new(),
+    )
+    .spend_micros_at_card(cost.card())
 }
 
-pub fn derive_spend_micros_row_classes(
+pub fn derive_spend_micros_row_classes<C: Copy + Into<Count>>(
     cost: &busbar_kernel::cost::CostModel,
     model: &str,
     b: &UsageBreakdown,
-    classes: &std::collections::BTreeMap<String, u64>,
+    classes: &std::collections::BTreeMap<String, C>,
 ) -> Result<i64, busbar_kernel::cost::MoneyError> {
     metered_row(cost, model, b, classes).spend_micros_at_card(cost.card())
 }
 
-fn metered_row<'a>(
+fn metered_row<'a, C: Copy + Into<Count>>(
     cost: &'a busbar_kernel::cost::CostModel,
     model: &'a str,
     b: &UsageBreakdown,
-    classes: &'a std::collections::BTreeMap<String, u64>,
+    classes: &std::collections::BTreeMap<String, C>,
 ) -> busbar_kernel::cost::MeteredRow<'a> {
-    busbar_kernel::cost::MeteredRow::new(
+    busbar_kernel::cost::MeteredRow::exact(
         cost.resolve_model_alias(model),
         row_counts(b)
             .map(|(class, quantity)| (class.to_string(), quantity))
             .collect(),
         b.requests,
-        classes,
+        classes
+            .iter()
+            .map(|(class, count)| (class.clone(), (*count).into()))
+            .collect(),
     )
 }
 
@@ -134,6 +143,16 @@ pub fn fold_adjustments(
     rows: &mut [busbar_kernel::governance::MeteringRow],
     adjustments: &[busbar_kernel::governance::UsageAdjustment],
 ) -> Result<(), String> {
+    let mut staged = rows.to_vec();
+    fold_adjustments_inner(&mut staged, adjustments)?;
+    rows.clone_from_slice(&staged);
+    Ok(())
+}
+
+fn fold_adjustments_inner(
+    rows: &mut [busbar_kernel::governance::MeteringRow],
+    adjustments: &[busbar_kernel::governance::UsageAdjustment],
+) -> Result<(), String> {
     fn column<'r>(row: &'r mut busbar_kernel::governance::MeteringRow, class: &str) -> &'r mut u64 {
         match class {
             busbar_contract::records::UNIT_INPUT => &mut row.tokens_input,
@@ -142,6 +161,10 @@ pub fn fold_adjustments(
             busbar_contract::records::UNIT_CACHE_WRITE => &mut row.tokens_cache_write,
             other => row.usage_units.entry(other.to_string()).or_insert(0),
         }
+    }
+    for row in rows.iter_mut() {
+        row.normalize_scale6()
+            .map_err(|e| format!("invalid metering count: {e}"))?;
     }
     for adj in adjustments {
         let slot: Vec<usize> = (0..rows.len())
@@ -168,12 +191,17 @@ pub fn fold_adjustments(
             ));
         };
         for (class, d) in &adj.delta {
-            let magnitude = u64::try_from(d.unsigned_abs())
+            let magnitude = Count::from_integer(*d)
+                .map_err(|_| format!("an adjustment of {class} leaves the range"))?
+                .micros()
+                .unsigned_abs();
+            let magnitude = u64::try_from(magnitude)
                 .map_err(|_| format!("an adjustment of {class} leaves the range"))?;
             if *d >= 0 {
                 let c = column(&mut rows[first], class);
                 *c = c
                     .checked_add(magnitude)
+                    .filter(|n| *n <= i64::MAX as u64)
                     .ok_or_else(|| format!("an adjustment of {class} leaves the range"))?;
                 continue;
             }
@@ -246,7 +274,7 @@ fn row_card<'a>(
         .ok_or(MoneyError::NoCardInForce { at: wall_at })
 }
 
-fn row_counts(b: &UsageBreakdown) -> impl Iterator<Item = (&'static str, u64)> + '_ {
+fn row_counts(b: &UsageBreakdown) -> impl Iterator<Item = (&'static str, Count)> + '_ {
     [
         (busbar_contract::records::UNIT_INPUT, b.tokens_input),
         (busbar_contract::records::UNIT_OUTPUT, b.tokens_output),
@@ -260,7 +288,7 @@ fn row_counts(b: &UsageBreakdown) -> impl Iterator<Item = (&'static str, u64)> +
         ),
     ]
     .into_iter()
-    .filter(|(_, quantity)| *quantity != 0)
+    .filter(|(_, quantity)| !quantity.is_zero())
 }
 
 pub fn derive_spend_micros_row_at_card(
@@ -271,29 +299,34 @@ pub fn derive_spend_micros_row_at_card(
     model: &str,
     b: &UsageBreakdown,
 ) -> Result<i64, busbar_kernel::cost::MoneyError> {
-    metered_row(cost, model, b, &std::collections::BTreeMap::new())
-        .spend_micros_in_view(arrived_ms, view)
+    metered_row(
+        cost,
+        model,
+        b,
+        &std::collections::BTreeMap::<String, Count>::new(),
+    )
+    .spend_micros_in_view(arrived_ms, view)
 }
 
-pub fn derive_spend_micros_row_classes_at_card(
+pub fn derive_spend_micros_row_classes_at_card<C: Copy + Into<Count>>(
     view: &busbar_kernel::cost::HistoryView<'_>,
     arrived_ms: u64,
     _card: &busbar_kernel::cost::RateCard,
     cost: &busbar_kernel::cost::CostModel,
     model: &str,
     b: &UsageBreakdown,
-    classes: &std::collections::BTreeMap<String, u64>,
+    classes: &std::collections::BTreeMap<String, C>,
 ) -> Result<i64, busbar_kernel::cost::MoneyError> {
     metered_row(cost, model, b, classes).spend_micros_in_view(arrived_ms, view)
 }
 
-pub fn derive_spend_micros_row_classes_at_entry(
+pub fn derive_spend_micros_row_classes_at_entry<C: Copy + Into<Count>>(
     seq: busbar_kernel::cost::EntryKey,
     card: &busbar_kernel::cost::RateCard,
     cost: &busbar_kernel::cost::CostModel,
     model: &str,
     b: &UsageBreakdown,
-    classes: &std::collections::BTreeMap<String, u64>,
+    classes: &std::collections::BTreeMap<String, C>,
 ) -> Result<i64, busbar_kernel::cost::MoneyError> {
     metered_row(cost, model, b, classes).spend_micros_at_card_seq(seq, card)
 }
@@ -776,11 +809,23 @@ fn manifest_schema_url_and_error(
         "{}/plugins/{name}/schema",
         crate::v1::contract::ADMIN_PREFIX
     ));
-    match serde_json::from_str::<serde_json::Value>(s) {
-        Ok(_) => (url, None),
-        Err(e) => (
-            url,
-            Some(format!("manifest settings_schema is not valid JSON: {e}")),
+    (url, manifest_schema(Some(s)).1)
+}
+
+pub(crate) fn manifest_schema(text: Option<&str>) -> (Option<serde_json::Value>, Option<String>) {
+    let Some(text) = text else {
+        return (None, None);
+    };
+    if let Err(error) = schema_json_within_bounds(text) {
+        return (None, Some(error));
+    }
+    match serde_json::from_str(text) {
+        Ok(schema) => (Some(schema), None),
+        Err(error) => (
+            None,
+            Some(format!(
+                "manifest settings_schema is not valid JSON: {error}"
+            )),
         ),
     }
 }
@@ -807,19 +852,7 @@ fn inspect_plugin_view(
         Judged::Rejected { .. } => "rejected",
     };
 
-    let (schema, schema_error) = match manifest.settings_schema.as_deref() {
-        None => (None, None),
-        Some(s) => match schema_json_within_bounds(s) {
-            Err(reason) => (None, Some(reason)),
-            Ok(()) => match serde_json::from_str::<serde_json::Value>(s) {
-                Ok(v) => (Some(v), None),
-                Err(e) => (
-                    None,
-                    Some(format!("manifest settings_schema is not valid JSON: {e}")),
-                ),
-            },
-        },
-    };
+    let (schema, schema_error) = manifest_schema(manifest.settings_schema.as_deref());
 
     serde_json::json!({
         "name": manifest.name,
@@ -889,6 +922,7 @@ enum PluginQuery {
     Hooks,
     Store,
     Secret,
+    Catalog(&'static str),
 }
 
 fn plugin_query(ptype: &str) -> Result<PluginQuery, AdminError> {
@@ -897,8 +931,11 @@ fn plugin_query(ptype: &str) -> Result<PluginQuery, AdminError> {
         "hooks" => Ok(PluginQuery::Hooks),
         "store" | "db" => Ok(PluginQuery::Store),
         "secret" => Ok(PluginQuery::Secret),
+        "export" => Ok(PluginQuery::Catalog("export")),
+        "plane" => Ok(PluginQuery::Catalog("plane")),
+        "transport" => Ok(PluginQuery::Catalog("transport")),
         other => Err(AdminError::Validation(format!(
-            "unknown plugin type `{other}`: expected `auth`, `hooks`, `secret`, or `store`"
+            "unknown plugin type `{other}`: expected `auth`, `hooks`, `secret`, `store`, `export`, `plane`, or `transport`"
         ))),
     }
 }

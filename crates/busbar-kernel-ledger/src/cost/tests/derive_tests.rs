@@ -19,7 +19,7 @@ fn bucket_money<'a>(
             STANDARD_TIER_BP,
             lines
                 .iter()
-                .map(|line| (line.class.as_str(), whole(line.quantity))),
+                .map(|line| (line.class.as_str(), line.quantity)),
             whole(0),
         )?;
     }

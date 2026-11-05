@@ -133,6 +133,14 @@ fn built_planes(cfg: &RootCfg) -> Vec<(&'static PlaneDecl, Arc<dyn std::any::Any
         .collect()
 }
 
+fn declared_wire(decl: &PlaneDecl, expected: &str) -> &'static str {
+    (decl.wire_format_names)(decl)
+        .iter()
+        .copied()
+        .find(|wire| *wire == expected)
+        .unwrap_or_else(|| panic!("{} does not declare {expected}", decl.key))
+}
+
 fn jsonrpc_mount(decl: &'static PlaneDecl, sections: &str) -> String {
     let mut cfg = resolved(sections);
     cfg.public_url = Some("https://busbar.example".to_string());
@@ -145,7 +153,7 @@ fn jsonrpc_mount(decl: &'static PlaneDecl, sections: &str) -> String {
         .map(|u| u.path().trim_end_matches('/').to_string());
     let jsonrpc: Vec<String> = (decl.claims)(&*obj)
         .into_iter()
-        .filter(|(_, wire)| *wire == busbar_kernel::plane_driver::dispatch::WIRE_JSONRPC)
+        .filter(|(_, wire)| *wire == declared_wire(decl, "jsonrpc"))
         .map(|(path, _)| path)
         .collect();
     jsonrpc
@@ -505,7 +513,7 @@ async fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
         );
         let claims: Vec<String> = (decl.claims)(&*slot)
             .into_iter()
-            .filter(|(_, wire)| *wire == busbar_kernel::plane_driver::dispatch::WIRE_JSONRPC)
+            .filter(|(_, wire)| *wire == declared_wire(decl, "jsonrpc"))
             .map(|(path, _)| path)
             .collect();
         assert!(

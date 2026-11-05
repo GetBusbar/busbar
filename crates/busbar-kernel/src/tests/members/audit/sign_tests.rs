@@ -57,7 +57,7 @@ fn inputs(unit: u64) -> AuditInputs {
             lines: vec![
                 UsageLine {
                     class: MeterClassId::new("tokens_out"),
-                    quantity: 120,
+                    quantity: 120u64.into(),
                     source: QuantitySource::Locator {
                         direction: ClassDirection::Response,
                         ptr: LocatorPtr::new("/usage/output_tokens"),
@@ -66,7 +66,7 @@ fn inputs(unit: u64) -> AuditInputs {
                 },
                 UsageLine {
                     class: MeterClassId::new("tokens_in"),
-                    quantity: 44,
+                    quantity: 44u64.into(),
                     source: QuantitySource::Count,
                     estimated: true,
                 },

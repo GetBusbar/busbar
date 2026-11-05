@@ -316,9 +316,16 @@ fn allow_all_metadata_admits_metadata_on_the_dial_and_on_dest_judge() {
     );
     for class in [0, 2, 3, 4] {
         assert_eq!(
-            s.judge_dial("169.254.169.254:80", class, Box::new(|_| {})),
+            s.judge_destination(
+                busbar_kernel::host_services::Destination {
+                    authority: "169.254.169.254:80",
+                    secure: true,
+                    egress_class: class,
+                },
+                Box::new(|_| {}),
+            ),
             Some(Err(svc::DEST_METADATA)),
-            "class {class}"
+            "class {class}: metadata policy under independently located secure intent"
         );
     }
     let (_, later) = recorder();
