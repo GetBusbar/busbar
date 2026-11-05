@@ -1248,6 +1248,7 @@ slot!(
 /// [`Op::checkout`](super::Op::checkout).
 /// A final `settings_schema: Blob` argument supplies the settings schema; omitting it keeps
 /// `Statement::settings_schema` absent for existing callers.
+/// An optional trailing `migrate: Migrator<MyMigration>` forwards the existing cold migration slot.
 #[macro_export]
 macro_rules! store_door {
     // Every argument after the max-inflight is optional and keeps this order: the needs it states,
@@ -1255,43 +1256,43 @@ macro_rules! store_door {
     // a `Blob` built by `statement_extensions!`), and the
     // settings paths it declares secret (`secret_refs`, `.`-separated, `*` = any key or index;
     // `busbar_contract::secret_fields`).
-    ($store:ty, $name:expr, $version:expr, $max_inflight:expr $(, settings_schema: $schema:expr)? $(,)?) => {
-        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], ABSENT, &[], $crate::store_door!(@schema $($schema)? ));
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr $(, settings_schema: $schema:expr)? $(, migrate: $migrate:ty)? $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], ABSENT, &[], $crate::store_door!(@schema $($schema)? ) $(, migrate: $migrate)?);
     };
-    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr $(, settings_schema: $schema:expr)? $(,)?) => {
-        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, ABSENT, &[], $crate::store_door!(@schema $($schema)? ));
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr $(, settings_schema: $schema:expr)? $(, migrate: $migrate:ty)? $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, ABSENT, &[], $crate::store_door!(@schema $($schema)? ) $(, migrate: $migrate)?);
     };
-    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, extensions: $ext:expr $(, settings_schema: $schema:expr)? $(,)?) => {
-        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], $ext, &[], $crate::store_door!(@schema $($schema)? ));
-    };
-    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr,
-        extensions: $ext:expr $(, settings_schema: $schema:expr)? $(,)?) => {
-        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, $ext, &[], $crate::store_door!(@schema $($schema)? ));
-    };
-    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, secret_refs: $refs:expr $(, settings_schema: $schema:expr)? $(,)?) => {
-        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], ABSENT, $refs, $crate::store_door!(@schema $($schema)? ));
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, extensions: $ext:expr $(, settings_schema: $schema:expr)? $(, migrate: $migrate:ty)? $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], $ext, &[], $crate::store_door!(@schema $($schema)? ) $(, migrate: $migrate)?);
     };
     ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr,
-        secret_refs: $refs:expr $(, settings_schema: $schema:expr)? $(,)?) => {
-        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, ABSENT, $refs, $crate::store_door!(@schema $($schema)? ));
+        extensions: $ext:expr $(, settings_schema: $schema:expr)? $(, migrate: $migrate:ty)? $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, $ext, &[], $crate::store_door!(@schema $($schema)? ) $(, migrate: $migrate)?);
+    };
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, secret_refs: $refs:expr $(, settings_schema: $schema:expr)? $(, migrate: $migrate:ty)? $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], ABSENT, $refs, $crate::store_door!(@schema $($schema)? ) $(, migrate: $migrate)?);
+    };
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr,
+        secret_refs: $refs:expr $(, settings_schema: $schema:expr)? $(, migrate: $migrate:ty)? $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, ABSENT, $refs, $crate::store_door!(@schema $($schema)? ) $(, migrate: $migrate)?);
     };
     ($store:ty, $name:expr, $version:expr, $max_inflight:expr, extensions: $ext:expr,
-        secret_refs: $refs:expr $(, settings_schema: $schema:expr)? $(,)?) => {
-        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], $ext, $refs, $crate::store_door!(@schema $($schema)? ));
+        secret_refs: $refs:expr $(, settings_schema: $schema:expr)? $(, migrate: $migrate:ty)? $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], $ext, $refs, $crate::store_door!(@schema $($schema)? ) $(, migrate: $migrate)?);
     };
     ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr,
-        extensions: $ext:expr, secret_refs: $refs:expr $(, settings_schema: $schema:expr)? $(,)?) => {
-        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, $ext, $refs, $crate::store_door!(@schema $($schema)? ));
+        extensions: $ext:expr, secret_refs: $refs:expr $(, settings_schema: $schema:expr)? $(, migrate: $migrate:ty)? $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, $ext, $refs, $crate::store_door!(@schema $($schema)? ) $(, migrate: $migrate)?);
     };
     (@schema) => { $crate::abi::mechanism::call::Blob::ABSENT };
     (@schema $schema:expr) => { $schema };
     (@all $store:ty, $name:expr, $version:expr, $max_inflight:expr, $needs:expr, ABSENT,
-        $refs:expr, $schema:expr) => {
+        $refs:expr, $schema:expr $(, migrate: $migrate:ty)?) => {
         $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs,
-            $crate::abi::mechanism::call::Blob::ABSENT, $refs, $schema);
+            $crate::abi::mechanism::call::Blob::ABSENT, $refs, $schema $(, migrate: $migrate)?);
     };
     (@all $store:ty, $name:expr, $version:expr, $max_inflight:expr, $needs:expr, $ext:expr,
-        $refs:expr, $schema:expr) => {
+        $refs:expr, $schema:expr $(, migrate: $migrate:ty)?) => {
         const __BUSBAR_STORE_NEEDS: &[$crate::abi::host::conn::connector::Need] = $needs;
         const __BUSBAR_STORE_SECRET_REFS: &[$crate::abi::mechanism::call::AbiStr] = $refs;
         $crate::store_door!(@door $store, $name, $version, $max_inflight,
@@ -1307,10 +1308,10 @@ macro_rules! store_door {
             } else {
                 __BUSBAR_STORE_SECRET_REFS.as_ptr()
             },
-            __BUSBAR_STORE_SECRET_REFS.len(), $schema);
+            __BUSBAR_STORE_SECRET_REFS.len(), $schema $(, migrate: $migrate)?);
     };
     (@door $store:ty, $name:expr, $version:expr, $max_inflight:expr, $needs:expr, $needs_len:expr,
-        $ext:expr, $refs:expr, $refs_len:expr, $schema:expr) => {
+        $ext:expr, $refs:expr, $refs_len:expr, $schema:expr $(, migrate: $migrate:ty)?) => {
         const __BUSBAR_STORE_TAIL: $crate::abi::store::StoreTail =
             $crate::abi::sdk::store::door::tail::<$store>();
         const __BUSBAR_STORE_DIAGS: [$crate::abi::mechanism::call::AbiStr; 1] =
@@ -1331,7 +1332,8 @@ macro_rules! store_door {
                 secret_refs_len: $refs_len,
                 ..$crate::abi::sdk::door::statement($name, $version, $max_inflight)
             },
-            lifecycle: life($crate::abi::sdk::store::door::Served<$store>),
+            lifecycle: life($crate::abi::sdk::store::door::Served<$store>)
+            $(, migrate: $migrate)?,
             kind_ops: {
                 put_key: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::PutKey<$store>>,
                 get_key: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::GetKey<$store>>,

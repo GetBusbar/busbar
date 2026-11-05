@@ -283,3 +283,19 @@ fn the_allow_if_private_need_is_its_own_word_on_the_wire() {
     );
     assert_eq!(serde_json::from_value::<MigrateNeed>(wire).unwrap(), need);
 }
+
+#[test]
+fn secret_externalization_need_contains_only_the_relative_path() {
+    let need = super::MigrateNeed::ExternalizeSecret {
+        path: vec!["token".into()],
+    };
+    let encoded = serde_json::to_value(&need).unwrap();
+    assert_eq!(
+        encoded,
+        serde_json::json!({"externalize_secret": {"path": ["token"]}})
+    );
+    assert_eq!(
+        serde_json::from_value::<super::MigrateNeed>(encoded).unwrap(),
+        need
+    );
+}

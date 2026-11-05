@@ -55,6 +55,12 @@ pub enum MigrateNeed {
     /// cloud metadata. Core prints a line for every decision, added or not, naming what the host
     /// resolved to.
     AllowDestinationIfPrivate(String),
+    /// Externalize the historical literal secret at this nonempty path relative to
+    /// `Migrated.settings`. The plugin leaves the string in that slot; core writes its exact
+    /// UTF-8 bytes to a private migration artifact and replaces the slot with a SecretRef.
+    /// The need and report must never contain the secret value. Core validates the path and
+    /// refuses unsafe artifact creation before writing the migrated configuration.
+    ExternalizeSecret { path: Vec<String> },
 }
 
 /// A plugin's migrated settings section: the new section, a report line per change, and the needs
