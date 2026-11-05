@@ -902,14 +902,18 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
                 .verify_token(token, busbar_kernel::store::now(), None)
                 .expect("the exchange returns a usable signed key");
             assert_eq!(body["key_id"].as_str(), Some(key.id.as_str()));
-            assert_eq!(key.group.as_deref(), Some("user:oidc:subject"));
+            assert_eq!(
+                key.group.as_deref(),
+                Some("user:oidc-v2:aHR0cHM6Ly9pc3N1ZXIuZTJlLmludmFsaWQ:subject")
+            );
             assert_eq!(
                 gov.all_keys()
                     .unwrap()
                     .into_iter()
                     .filter(|key| key.enabled
                         && key.deleted_at.is_none()
-                        && key.group.as_deref() == Some("user:oidc:subject"))
+                        && key.group.as_deref()
+                            == Some("user:oidc-v2:aHR0cHM6Ly9pc3N1ZXIuZTJlLmludmFsaWQ:subject"))
                     .count(),
                 1
             );
@@ -1143,7 +1147,9 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                     None
                 }
             } else {
-                let mut principal = busbar_kernel::auth::Principal::from_id("oidc:subject");
+                let mut principal = busbar_kernel::auth::Principal::from_id(
+                    "oidc-v2:aHR0cHM6Ly9pc3N1ZXIuZTJlLmludmFsaWQ:subject",
+                );
                 principal.roles = vec!["eng".to_string()];
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(10),
@@ -1174,18 +1180,23 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                     .verify_token(&token, busbar_kernel::store::now(), None)
                     .unwrap();
                 assert_eq!(key.binding_mode.as_deref(), Some(user));
-                assert_eq!(key.group.as_deref(), Some("user:oidc:subject"));
+                assert_eq!(
+                    key.group.as_deref(),
+                    Some("user:oidc-v2:aHR0cHM6Ly9pc3N1ZXIuZTJlLmludmFsaWQ:subject")
+                );
                 assert_eq!(gov.all_keys().unwrap().len(), 1);
                 assert!(handle
                     .load()
                     .groups_registry
-                    .contains_key("user:oidc:subject"));
+                    .contains_key("user:oidc-v2:aHR0cHM6Ly9pc3N1ZXIuZTJlLmludmFsaWQ:subject"));
                 let persisted = overlay
                     .read_required()
                     .expect("the real Store overlay reads")
                     .expect("the allowed mint persisted an actual overlay generation");
                 assert_eq!(
-                    persisted.groups["user:oidc:subject"].parent.as_deref(),
+                    persisted.groups["user:oidc-v2:aHR0cHM6Ly9pc3N1ZXIuZTJlLmludmFsaWQ:subject"]
+                        .parent
+                        .as_deref(),
                     Some("team")
                 );
             } else {
@@ -1194,7 +1205,9 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                     Arc::ptr_eq(&before, &handle.load()),
                     "no group snapshot swap"
                 );
-                assert!(!before.groups_registry.contains_key("user:oidc:subject"));
+                assert!(!before
+                    .groups_registry
+                    .contains_key("user:oidc-v2:aHR0cHM6Ly9pc3N1ZXIuZTJlLmludmFsaWQ:subject"));
                 assert_eq!(
                     overlay.read_bytes().unwrap(),
                     overlay_before,

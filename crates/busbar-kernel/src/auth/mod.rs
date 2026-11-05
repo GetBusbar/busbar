@@ -889,6 +889,15 @@ impl AuthMiddleware {
         self.chain.iter().map(|e| e.name.clone()).collect()
     }
 
+    /// Effective authentication arms in execution order, including built-in keys.
+    pub fn effective_chain_names(&self) -> Vec<String> {
+        let mut names = self.chain_names();
+        if self.keys_in_chain {
+            names.push(crate::config::KEYS_MODULE.to_string());
+        }
+        names
+    }
+
     #[must_use]
     pub fn position_calls(&self, provider: &str) -> Option<std::sync::Arc<dyn AuthCalls>> {
         self.chain

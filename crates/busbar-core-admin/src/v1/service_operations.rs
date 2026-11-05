@@ -1259,9 +1259,9 @@ impl AdminService {
     }
 
     pub(crate) async fn get_auth(&self) -> Result<AuthView, AdminError> {
-        let chain = self.app.auth.chain_names();
+        let chain = self.app.auth.effective_chain_names();
         Ok(AuthView {
-            open: chain.is_empty(),
+            open: self.app.auth.is_open(),
             chain,
             upstream_credentials: match self.app.upstream_creds() {
                 busbar_kernel::auth::UpstreamCreds::Own => "own",

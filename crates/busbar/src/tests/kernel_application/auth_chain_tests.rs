@@ -175,6 +175,8 @@ fn test_keys_in_chain_sets_flag_not_module() {
     )
     .expect("the real auth chain constructs");
     assert!(mw.keys_in_chain, "chain: [keys] must set keys_in_chain");
+    assert_eq!(mw.effective_chain_names(), vec!["keys"]);
+    assert!(!mw.is_open());
     assert!(
         mw.chain_names().is_empty(),
         "keys is engine-handled, never a boxed module"
@@ -187,6 +189,8 @@ fn test_keys_in_chain_sets_flag_not_module() {
     )
     .expect("the real auth chain constructs");
     assert!(!mw.keys_in_chain, "an empty chain must not claim keys");
+    assert!(mw.effective_chain_names().is_empty());
+    assert!(mw.is_open());
 
     let mw = AuthMiddleware::new(
         &chain_cfg(&["keys", "test-groups-module"]),
@@ -196,6 +200,18 @@ fn test_keys_in_chain_sets_flag_not_module() {
     .expect("the real auth chain constructs");
     assert!(mw.keys_in_chain);
     assert_eq!(mw.chain_names(), vec![module.clone()]);
+    assert_eq!(
+        mw.effective_chain_names(),
+        vec![module.clone(), "keys".into()]
+    );
+    assert!(!mw.is_open());
+    let reversed = AuthMiddleware::new(
+        &chain_cfg(&["test-groups-module", "keys"]),
+        &registry,
+        &busbar_kernel::config::secret::SecretResolver::builtins_only(),
+    )
+    .expect("the real auth chain constructs");
+    assert_eq!(reversed.effective_chain_names(), mw.effective_chain_names());
     assert!(mw.validate_token(Some(&common::credentials::token_for(
         "dev",
         &["dev"],

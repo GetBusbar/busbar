@@ -351,7 +351,7 @@ async fn test_admin_v1_auth_read() {
         .json()
         .await
         .unwrap();
-    assert!(body["chain"].is_array());
+    assert_eq!(body["chain"], serde_json::json!([]));
     assert_eq!(body["open"], true, "no explicit chain → open front door");
     assert_eq!(body["upstream_credentials"], "own");
 

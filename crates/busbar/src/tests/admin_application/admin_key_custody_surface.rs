@@ -9,10 +9,10 @@ use busbar_kernel::audit_ring;
 use crate::root::test_plugins as plugins;
 
 #[tokio::test]
-async fn test_admin_v1_auth_read_keys_chain_reports_1_5_5_open() {
+async fn test_admin_v1_auth_read_keys_chain_reports_closed() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_A84111105DC5";
     const WITNESS: &str =
-        "actual root case test_admin_v1_auth_read_keys_chain_reports_1_5_5_open completed";
+        "actual root case test_admin_v1_auth_read_keys_chain_reports_closed completed";
     if std::env::var_os(CHILD).is_none() {
         struct Child(std::process::Child);
         impl Drop for Child {
@@ -78,7 +78,7 @@ async fn test_admin_v1_auth_read_keys_chain_reports_1_5_5_open() {
     );
     manifest.statement = Some(hex::encode(statement));
     let directory =
-        plugins::scratch("test_admin_v1_auth_read_keys_chain_reports_1_5_5_open-actual-store");
+        plugins::scratch("test_admin_v1_auth_read_keys_chain_reports_closed-actual-store");
     let archive = plugins::signed(
         &crate::dist_root_install::release_key(),
         manifest,
@@ -163,8 +163,8 @@ async fn test_admin_v1_auth_read_keys_chain_reports_1_5_5_open() {
         .await
         .unwrap();
     assert_eq!(
-        body, r#"{"chain":[],"upstream_credentials":"own","open":true}"#,
-        "GET /auth under chain: [keys] must be 1.5.5's bytes"
+        body, r#"{"chain":["keys"],"upstream_credentials":"own","open":false}"#,
+        "GET /auth must report the effective closed keys chain"
     );
     handle.abort();
     println!("{WITNESS}");

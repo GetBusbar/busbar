@@ -235,7 +235,7 @@
     {
       "repo": "busbar-auth-oidc",
       "url": "https://github.com/GetBusbar/busbar-auth-oidc",
-      "commit": "99985d5c5748ae1642ffc72d18244970aa9eff0d",
+      "commit": "03295f7fa4c4f1f92bfcc4c72bf6cccee27ee06c",
       "package": "busbar-auth-oidc-plugin",
       "kind": "auth",
       "alias": "oidc",
