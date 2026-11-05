@@ -3,8 +3,11 @@
 **Run `busbar --migrate-config` once and review its output.** It converts the supported 1.5.5
 configuration shape for 1.6.0 and prints one line for every change it makes, saying what changed
 and why. Core migrates its own keys; each plugin migrates its own settings section through its own
-`migrate`, and the lines it reports are printed under its name. Every minted key and every durable
-store carries over. What the migration does:
+`migrate`, and the lines it reports are printed under its name. Existing keys and durable Store
+state require the principal-continuity procedure when an auth plugin changes its principal format;
+see [principal transition](operations/principal-transition.md)
+before starting an OIDC-v2 deployment against a retained 1.5.5 Store. Configuration migration
+does not authorize that identity transition. What the migration does:
 
 - adds the `store:` block a 1.5.5 config left implicit (`store: {module: memory}`);
 - pins, in `plugins.fetch`, the 1.6.0 release of each plugin the config uses that this binary does
