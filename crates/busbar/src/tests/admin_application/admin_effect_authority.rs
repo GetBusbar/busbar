@@ -259,17 +259,18 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
         config_transaction(&delegated_handle, |txn| {
             let snapshot = txn.app().clone();
             Ok(txn.read_store(move || {
-                busbar_kernel::build_app_from_config(
-                    cfg,
-                    unsafe_plugins,
-                    None,
-                    Default::default(),
-                    Default::default(),
-                    (None, None),
-                    Some(&snapshot),
-                    &snapshot.root_rules,
-                )
-                .map_err(TxnError::Validation)?;
+                let (_unexpected_app, _unexpected_rotate, _uncommitted_limits) =
+                    busbar_kernel::build_app_from_config(
+                        cfg,
+                        unsafe_plugins,
+                        None,
+                        Default::default(),
+                        Default::default(),
+                        (None, None),
+                        Some(&snapshot),
+                        &snapshot.root_rules,
+                    )
+                    .map_err(TxnError::Validation)?;
                 Ok(Outcome::Value(()))
             }))
         }),

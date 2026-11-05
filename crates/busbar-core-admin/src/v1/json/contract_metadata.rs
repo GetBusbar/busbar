@@ -180,7 +180,10 @@ fn exact_metadata(value: &mut Value) {
                 })
             {
                 let format = map["format"].as_str().unwrap().to_string();
-                map.insert("x-busbar-exact-number".into(), json!({"representation":"json-integer-token","integer_format":format,"client":"lossless-number-token-v1; preserve raw token before binary64 conversion"}));
+                // Input forms already declare their exact sign and width. A conventional
+                // generator format supplements that contract; it must not replace it.
+                map.entry("x-busbar-exact-number")
+                    .or_insert_with(|| json!({"representation":"json-integer-token","integer_format":format,"client":"lossless-number-token-v1; preserve raw token before binary64 conversion"}));
             }
             for child in map.values_mut() {
                 exact_metadata(child);
@@ -276,6 +279,15 @@ mod tests {
                 }
                 _ => {}
             }
+        }
+        for name in ["ConfigSettingsView", "ConfigDocumentMutationView"] {
+            let version = &schemas[name]["properties"]["config_version"];
+            assert_eq!(version["type"], "integer", "{name}");
+            assert_eq!(version["format"], "uint64", "{name}");
+            assert_eq!(
+                version["x-busbar-exact-number"]["integer_format"], "uint64",
+                "{name} must preserve the same exact config generation in both mutation arms"
+            );
         }
         let mut count = 0;
         check(&doc["components"], &doc, &mut count);

@@ -660,10 +660,7 @@ async fn physical_routers_share_publication_but_keep_handlers_and_refusals_separ
         Arc::new(move |refusal| {
             Some(
                 Response::builder()
-                    .status(
-                        u16::try_from(refusal.status)
-                            .expect("the HTTP fixture renders an HTTP status"),
-                    )
+                    .status(refusal.status)
                     .body(Body::from(label))
                     .unwrap(),
             )

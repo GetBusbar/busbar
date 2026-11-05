@@ -23,16 +23,21 @@ async fn actual_admin_doors_refuse_sender_downgrade_and_preserve_service_and_sco
     // Seal a neutral line over the same actual opened auth products. The admin HTTP adapter
     // below covers both admin carriers; the generic neutral listener uses the default inbound
     // carriers and separately covers the receipt projection boundary with Authorization.
-    assert!(app
-        .auth
-        .carriers()
-        .iter()
-        .any(|name| name == "authorization"));
-    assert!(!app
-        .auth
-        .carriers()
-        .iter()
-        .any(|name| name == "x-admin-token"));
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::AUTHORIZATION,
+        http::HeaderValue::from_static("Bearer carrier-probe"),
+    );
+    assert_eq!(
+        app.auth.extract_client_token(&headers).as_deref(),
+        Some("carrier-probe")
+    );
+    headers.clear();
+    headers.insert(
+        "x-admin-token",
+        http::HeaderValue::from_static("carrier-probe"),
+    );
+    assert_eq!(app.auth.extract_client_token(&headers), None);
     let line = |methods| Line {
         route: Route {
             methods,

@@ -316,7 +316,7 @@ pub(super) fn response_schema() -> serde_json::Value {
         "type": "object", "required": ["applied", "persisted", "config_version", "configuration"],
         "properties": {
             "applied": {"type": "boolean"}, "persisted": {"type": "boolean"},
-            "config_version": {"type": "integer", "minimum": 0},
+            "config_version": {"type": "integer", "format": "uint64", "minimum": 0},
             "configuration": {"type": "object", "description": "Sanitized installed configuration, bound to config_version/ETag. Configured values are not an acknowledgement of physical listener, Store, or asynchronous plugin activation."},
             "reload_to_apply": {"type": "array", "items": {"type": "string"}},
             "note": {"type": "string"}
