@@ -985,8 +985,11 @@ pub fn public_settings(stated: &[u8], words: &[&str]) -> Result<Option<PublicSet
     use busbar_contract::abi::mechanism::door::REWRITE_ALIAS;
     let r: Read = read(stated)
         .map_err(|e| format!("a Statement rendering does not read back at byte {}", e.at))?;
-    let public = crate::settings_schema::public_settings_of_schema(&r.settings_schema.bytes)
-        .map_err(|e| format!("plugin '{}': {e}", r.name))?;
+    let public = crate::settings_schema::public_settings_of_statement(
+        &r.settings_schema.bytes,
+        &r.secret_refs,
+    )
+    .map_err(|e| format!("plugin '{}': {e}", r.name))?;
     if public.is_empty() {
         return Ok(None);
     }

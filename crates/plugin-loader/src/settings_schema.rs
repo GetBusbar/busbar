@@ -46,8 +46,28 @@ pub fn public_settings_of_schema(
     }
     let value: serde_json::Value = serde_json::from_slice(bytes)
         .map_err(|e| format!("its settings schema is not valid JSON: {e}"))?;
-    validate_secret_fields(&value).map_err(|e| format!("its settings schema: {e}"))?;
+    validate_public_fields(&value).map_err(|e| format!("its settings schema: {e}"))?;
     Ok(busbar_contract::settings_public::public_settings(&value))
+}
+
+/// Project a Statement schema without exposing any root containing a declared secret path.
+pub fn public_settings_of_statement(
+    bytes: &[u8],
+    secret_refs: &[String],
+) -> Result<BTreeSet<String>, String> {
+    let public = public_settings_of_schema(bytes)?;
+    for name in &public {
+        if secret_refs.iter().any(|path| {
+            path.split('.')
+                .next()
+                .is_some_and(|root| root == name || root == "*")
+        }) {
+            return Err(format!(
+                "its settings schema: field '{name}' contains a declared secret path and cannot be public"
+            ));
+        }
+    }
+    Ok(public)
 }
 
 struct Resolution<'a> {
@@ -188,8 +208,7 @@ fn check_public(
 ///      This schema does not replace config-time `SecretRef` validation.
 ///   3. An UNMARKED field (at any depth) whose name matches [`SECRET_NAME_HINTS`] is a hard
 ///      error too — the mitigation against a third-party plugin silently shipping a plaintext-
-///      credential field with no marker at all. The exact provider endpoint names `token_url`
-///      and `token_uri` are destinations rather than credential payloads; they remain sensitive.
+///      credential field with no marker at all.
 pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
     let empty = serde_json::Map::new();
     let defs = root
@@ -261,10 +280,7 @@ pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
                 )?;
                 if !marked {
                     let lower = name.to_ascii_lowercase();
-                    // Provider token endpoints name destinations, not credential payloads.
-                    // They remain sensitive: check_public above still rejects a public marker.
-                    let endpoint = matches!(name.as_str(), "token_url" | "token_uri");
-                    if !endpoint && SECRET_NAME_HINTS.iter().any(|hint| lower.contains(hint)) {
+                    if SECRET_NAME_HINTS.iter().any(|hint| lower.contains(hint)) {
                         return Err(format!(
                             "field '{name}' looks like a secret (matches one of {SECRET_NAME_HINTS:?}, \
                              case-insensitive) but is not marked `x-busbar-secret: true` — mark it \
@@ -330,5 +346,228 @@ pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
         resolution.scanned.insert(key);
         Ok(())
     }
-    scan(root, &mut resolution, &public, Position::Root, 0)
+    scan(root, &mut resolution, &public, Position::Root, 0)?;
+    validate_public_fields(root)
+}
+
+// Privacy follows every reachable original branch: schema keyword precedence must never hide a
+// secret in another branch. Secret resolution belongs to Statement.secret_refs, not these markers.
+fn validate_public_fields(root: &serde_json::Value) -> Result<(), String> {
+    struct Walk<'a> {
+        root: &'a serde_json::Value,
+        public: BTreeSet<String>,
+        active: HashSet<usize>,
+        seen: HashSet<(usize, Position, bool, bool, u32)>,
+    }
+    impl Walk<'_> {
+        fn scan(
+            &mut self,
+            node: &serde_json::Value,
+            at: Position,
+            exposed: bool,
+            allow_public: bool,
+            depth: u32,
+        ) -> Result<(), String> {
+            if depth > 64 {
+                return Err("settings_schema nests deeper than 64 levels".into());
+            }
+            let identity = std::ptr::from_ref(node) as usize;
+            let key = (identity, at, exposed, allow_public, depth);
+            if self.seen.contains(&key) {
+                return Ok(());
+            }
+            if !self.active.insert(identity) {
+                return Err("cyclic $ref in settings_schema".into());
+            }
+            let Some(obj) = node.as_object() else {
+                self.active.remove(&identity);
+                return if node.is_boolean() {
+                    Ok(())
+                } else {
+                    Err("settings_schema must contain schema objects or booleans".into())
+                };
+            };
+            // Only document-local JSON Pointer references are supported. Reject other
+            // reference mechanisms and nested resource scopes rather than inspect the wrong target.
+            for keyword in ["$dynamicRef", "$recursiveRef"] {
+                if obj.contains_key(keyword) {
+                    return Err(format!("settings_schema has an unsupported {keyword}"));
+                }
+            }
+            if !std::ptr::eq(node, self.root) && (obj.contains_key("$id") || obj.contains_key("id"))
+            {
+                return Err("settings_schema has an unsupported nested resource id".into());
+            }
+            if let Some(mark) = obj.get(busbar_contract::settings_public::PUBLIC_MARK) {
+                if mark != &serde_json::Value::Bool(true) || !allow_public {
+                    return Err("x-busbar-public: true is only allowed on an explicitly marked direct root-level property".into());
+                }
+            }
+            if exposed
+                && (obj.get("x-busbar-secret") == Some(&serde_json::Value::Bool(true))
+                    || obj.get("writeOnly") == Some(&serde_json::Value::Bool(true)))
+            {
+                return Err("a secret or write-only field is always sensitive, including inside a public ancestor".into());
+            }
+            if let Some(reference) = obj.get("$ref") {
+                let reference = reference
+                    .as_str()
+                    .ok_or("settings_schema $ref must be a string")?;
+                let pointer = reference
+                    .strip_prefix('#')
+                    .ok_or("settings_schema has an unsupported external $ref")?;
+                if pointer.contains('%') {
+                    return Err(
+                        "settings_schema has an unsupported encoded reference fragment".into(),
+                    );
+                }
+                // A pointer may jump below an unvisited resource declaration. Check every
+                // crossed ancestor, not only the final schema, before interpreting its references
+                // against this document root. Schema-map entries named `id` are not resource ids.
+                let mut target = self.root;
+                if !pointer.is_empty() {
+                    let path = pointer
+                        .strip_prefix('/')
+                        .ok_or("settings_schema has an unsupported reference fragment")?;
+                    for (index, segment) in path.split('/').enumerate() {
+                        if index >= 64 {
+                            return Err(
+                                "settings_schema reference pointer is deeper than 64 levels".into(),
+                            );
+                        }
+                        target = target
+                            .pointer(&format!("/{segment}"))
+                            .ok_or("settings_schema has a dangling $ref")?;
+                        if ["$id", "id"].iter().any(|keyword| {
+                            target
+                                .get(*keyword)
+                                .is_some_and(serde_json::Value::is_string)
+                        }) {
+                            return Err("settings_schema reference crosses an unsupported nested resource id".into());
+                        }
+                    }
+                }
+                self.scan(target, at, exposed, allow_public, depth + 1)?;
+            }
+            if let Some(properties) = obj.get("properties") {
+                for (name, property) in properties
+                    .as_object()
+                    .ok_or("settings_schema properties must be an object")?
+                {
+                    let declared = at == Position::Root && self.public.contains(name);
+                    let child_exposed = exposed || declared;
+                    if let Some(property) = property.as_object() {
+                        check_public(
+                            name,
+                            property,
+                            declared,
+                            property.get("x-busbar-secret") == Some(&serde_json::Value::Bool(true)),
+                        )?;
+                    }
+                    if child_exposed
+                        && SECRET_NAME_HINTS
+                            .iter()
+                            .any(|hint| name.to_ascii_lowercase().contains(hint))
+                    {
+                        return Err(format!(
+                            "field '{name}' looks like a credential and is always sensitive"
+                        ));
+                    }
+                    let child = if at == Position::Root {
+                        Position::RootProperty
+                    } else {
+                        Position::Nested
+                    };
+                    self.scan(property, child, child_exposed, declared, depth + 1)?;
+                }
+            }
+            for keyword in ["allOf", "anyOf", "oneOf"] {
+                if let Some(branches) = obj.get(keyword) {
+                    for branch in branches
+                        .as_array()
+                        .ok_or("settings_schema combinator must be an array")?
+                    {
+                        self.scan(branch, at, exposed, allow_public, depth + 1)?;
+                    }
+                }
+            }
+            for keyword in ["if", "then", "else", "not"] {
+                if let Some(branch) = obj.get(keyword) {
+                    self.scan(branch, at, exposed, allow_public, depth + 1)?;
+                }
+            }
+            for keyword in [
+                "items",
+                "contains",
+                "additionalProperties",
+                "unevaluatedProperties",
+                "unevaluatedItems",
+                "contentSchema",
+                "propertyNames",
+            ] {
+                if let Some(child) = obj.get(keyword) {
+                    let child_exposed = exposed
+                        || (at == Position::Root
+                            && !self.public.is_empty()
+                            && matches!(keyword, "additionalProperties" | "unevaluatedProperties"));
+                    self.scan(child, Position::Nested, child_exposed, false, depth + 1)?;
+                }
+            }
+            if let Some(items) = obj.get("prefixItems") {
+                for child in items
+                    .as_array()
+                    .ok_or("settings_schema prefixItems must be an array")?
+                {
+                    self.scan(child, Position::Nested, exposed, false, depth + 1)?;
+                }
+            }
+            for keyword in ["patternProperties", "dependentSchemas"] {
+                if let Some(children) = obj.get(keyword) {
+                    for child in children
+                        .as_object()
+                        .ok_or("settings_schema schema map must be an object")?
+                        .values()
+                    {
+                        if keyword == "dependentSchemas" {
+                            self.scan(child, at, exposed, allow_public, depth + 1)?;
+                        } else {
+                            let child_exposed =
+                                exposed || (at == Position::Root && !self.public.is_empty());
+                            self.scan(child, Position::Nested, child_exposed, false, depth + 1)?;
+                        }
+                    }
+                }
+            }
+            // Draft-07 dependencies can carry schemas at the current instance position.
+            // Property-name arrays impose requirements only and contain no schema annotations.
+            if let Some(dependencies) = obj.get("dependencies") {
+                for dependency in dependencies
+                    .as_object()
+                    .ok_or("settings_schema dependencies must be an object")?
+                    .values()
+                {
+                    if let Some(names) = dependency.as_array() {
+                        if !names.iter().all(serde_json::Value::is_string) {
+                            return Err(
+                                "settings_schema property dependencies must be string arrays"
+                                    .into(),
+                            );
+                        }
+                    } else {
+                        self.scan(dependency, at, exposed, allow_public, depth + 1)?;
+                    }
+                }
+            }
+            self.active.remove(&identity);
+            self.seen.insert(key);
+            Ok(())
+        }
+    }
+    Walk {
+        root,
+        public: busbar_contract::settings_public::public_settings(root),
+        active: HashSet::new(),
+        seen: HashSet::new(),
+    }
+    .scan(root, Position::Root, false, false, 0)
 }

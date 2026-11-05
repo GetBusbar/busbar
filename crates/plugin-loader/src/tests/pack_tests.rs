@@ -1561,63 +1561,282 @@ fn pack_checks_the_settings_profile_in_the_actual_statement() {
 }
 
 #[test]
-fn token_endpoint_settings_remain_sensitive_without_becoming_secret_references() {
+fn statement_schema_privacy_uses_declared_paths_without_legacy_pack_shape_rules() {
     use busbar_plugin_loader::settings_schema::{
-        public_settings_of_schema, validate_secret_fields,
+        public_settings_of_statement, validate_secret_fields,
     };
-
-    for name in ["token_url", "token_uri"] {
-        // Header auth accepts arbitrary values for these forwarded, ignored provider fields.
-        let mut schema = serde_json::json!({
-            "type": "object",
-            "properties": {(name): {}},
-            "additionalProperties": false
-        });
-        validate_secret_fields(&schema).unwrap();
-        let validator = jsonschema::validator_for(&schema).unwrap();
-        for value in [
-            serde_json::Value::Null,
-            serde_json::json!(false),
-            serde_json::json!([]),
-            serde_json::json!({}),
-            serde_json::json!(42),
-            serde_json::json!("https://issuer.example/token"),
-        ] {
-            assert!(validator.is_valid(&serde_json::json!({(name): value})));
+    let schema = serde_json::json!({
+        "$defs": {"Nested": {"type": "object", "properties": {
+            "secret": {"x-busbar-secret": true, "writeOnly": true}
+        }}},
+        "type": "object", "properties": {
+            "subject_token_type": {"type": ["string", "null"]},
+            "token_endpoint": {"type": ["string", "null"]},
+            "default_max_tokens": {"type": "integer"},
+            "bind_service_password": {"type": "null", "writeOnly": true},
+            "upstream_credentials": {"enum": ["own", "passthrough", null]},
+            "entries": {"type": "array", "items": {"$ref": "#/$defs/Nested"}},
+            "region": {"type": "string", "x-busbar-public": true}
         }
-        assert!(
-            public_settings_of_schema(&serde_json::to_vec(&schema).unwrap())
-                .unwrap()
-                .is_empty()
-        );
-        schema["properties"][name]["type"] = "string".into();
-        validate_secret_fields(&schema).unwrap();
-        schema["properties"][name]["x-busbar-public"] = true.into();
-        assert!(validate_secret_fields(&schema)
-            .unwrap_err()
-            .contains("always sensitive"));
-        schema["properties"][name] = serde_json::json!({"x-busbar-secret": true});
-        assert!(
-            validate_secret_fields(&schema).is_err(),
-            "explicit markers still validate"
-        );
-    }
+    });
+    let refs = vec![
+        "entries.*.secret".to_owned(),
+        "bind_service_password".to_owned(),
+    ];
+    let bytes = serde_json::to_vec(&schema).unwrap();
+    assert_eq!(
+        public_settings_of_statement(&bytes, &refs).unwrap(),
+        ["region".to_owned()].into_iter().collect()
+    );
+    assert!(
+        validate_secret_fields(&schema).is_err(),
+        "legacy pack contract stays strict"
+    );
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(validator.is_valid(&serde_json::json!({"subject_token_type":"urn:ietf:params:oauth:token-type:access_token", "token_endpoint":null, "bind_service_password":null, "default_max_tokens":42, "upstream_credentials":"own"})));
+    assert!(!validator.is_valid(&serde_json::json!({"bind_service_password":"literal"})));
+    assert!(!validator.is_valid(&serde_json::json!({"subject_token_type":42})));
 
-    // The exception is exact, never a suffix/prefix rule for secret-bearing fields.
-    for name in [
-        "token",
-        "api_token",
-        "token_url_secret",
-        "access_token_uri",
-        "TOKEN_URL",
-    ] {
-        let schema = serde_json::json!({"properties": {(name): {}}});
-        assert!(validate_secret_fields(&schema).is_err(), "{name}");
+    for property in ["subject_token_type", "entries", "bind_service_password"] {
+        let mut leaky = schema.clone();
+        leaky["properties"][property]["x-busbar-public"] = true.into();
+        assert!(
+            public_settings_of_statement(&serde_json::to_vec(&leaky).unwrap(), &refs).is_err(),
+            "{property}"
+        );
     }
+    for path in ["region", "region.child", "*.child"] {
+        assert!(
+            public_settings_of_statement(&bytes, &[path.to_owned()]).is_err(),
+            "{path}"
+        );
+    }
+    for bad in [
+        serde_json::json!({"properties":{"region":{"x-busbar-public":false}}}),
+        serde_json::json!({"properties":{"region":{"x-busbar-public":true,"x-busbar-secret":true}}}),
+        serde_json::json!({"properties":{"region":{"x-busbar-public":true,"properties":{"password":{}}}}}),
+        serde_json::json!({"properties":{"region":{"x-busbar-public":true,"items":{"x-busbar-secret":true}}}}),
+        serde_json::json!({"properties":{"region":{"properties":{"nested":{"x-busbar-public":true}}}}}),
+        serde_json::json!({"properties":{"region":{"$ref":"https://external.invalid/schema"}}}),
+        serde_json::json!({"properties":{"region":{"$ref":"#/$defs/Missing"}}}),
+        serde_json::json!({"$defs":{"Cycle":{"$ref":"#/$defs/Cycle"}},"properties":{"region":{"$ref":"#/$defs/Cycle"}}}),
+    ] {
+        assert!(
+            public_settings_of_statement(&serde_json::to_vec(&bad).unwrap(), &[]).is_err(),
+            "{bad}"
+        );
+    }
+    // A previously scanned private definition must be rechecked when a public field refers to it.
+    let reused = serde_json::json!({"$defs":{"Shared":{"properties":{"password":{}}}}, "properties":{
+        "a_private":{"$ref":"#/$defs/Shared"}, "z_public":{"$ref":"#/$defs/Shared","x-busbar-public":true}
+    }});
+    assert!(public_settings_of_statement(&serde_json::to_vec(&reused).unwrap(), &[]).is_err());
     assert!(
         serde_json::from_value::<busbar_contract::secret_ref::SecretRef>(serde_json::json!(
-            "https://issuer.example/token"
+            "literal"
         ))
         .is_err()
+    );
+}
+
+#[test]
+fn statement_schema_privacy_unions_original_reference_and_combinator_branches() {
+    use busbar_plugin_loader::settings_schema::{
+        public_settings_of_statement, validate_secret_fields,
+    };
+    let hidden = serde_json::json!({"properties":{"foo":{"properties":{"bar":{"x-busbar-secret":true,"writeOnly":true}}}}});
+    for schema in [
+        serde_json::json!({"properties":{"foo":{"type":"object","x-busbar-public":true}},"allOf":[hidden.clone()]}),
+        serde_json::json!({"properties":{"foo":{"type":"object","x-busbar-public":true}},"$ref":"#/$defs/Base","$defs":{"Base":hidden}}),
+    ] {
+        assert!(public_settings_of_statement(&serde_json::to_vec(&schema).unwrap(), &[]).is_err());
+        assert!(validate_secret_fields(&schema).is_err());
+    }
+    let unreachable = serde_json::json!({"properties":{"region":{"type":"string","x-busbar-public":true}},"$defs":{"Unused":{"x-busbar-secret":true,"properties":{"password":{}}}}});
+    assert_eq!(
+        public_settings_of_statement(&serde_json::to_vec(&unreachable).unwrap(), &[]).unwrap(),
+        ["region".to_owned()].into_iter().collect()
+    );
+}
+
+#[test]
+fn statement_schema_privacy_admits_the_34_pinned_product_schemas() {
+    use busbar_plugin_loader::settings_schema::public_settings_of_statement;
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/statement_schema_privacy.json")).unwrap();
+    let rows = corpus.as_array().unwrap();
+    assert_eq!(rows.len(), 34);
+    for row in rows {
+        let refs: Vec<String> = serde_json::from_value(row["secret_refs"].clone()).unwrap();
+        let schema = serde_json::to_vec(&row["schema"]).unwrap();
+        let public = public_settings_of_statement(&schema, &refs)
+            .unwrap_or_else(|e| panic!("{} at {}: {e}", row["repo"], row["commit"]));
+        assert_eq!(
+            public,
+            busbar_contract::settings_public::public_settings(&row["schema"])
+        );
+    }
+}
+
+#[test]
+fn statement_schema_privacy_rejects_unsupported_reference_scopes() {
+    use busbar_plugin_loader::settings_schema::{
+        public_settings_of_statement, validate_secret_fields,
+    };
+    for keyword in ["$dynamicRef", "$recursiveRef"] {
+        for target in ["#/$defs/Hidden", "https://example.invalid/hidden"] {
+            let schema = serde_json::json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$defs": {"Hidden": {"type":"string", "writeOnly":true, "x-busbar-secret":true}},
+                "properties": {"foo": {"x-busbar-public":true, (keyword):target}}
+            });
+            let refusal = public_settings_of_statement(&serde_json::to_vec(&schema).unwrap(), &[])
+                .unwrap_err();
+            assert!(refusal.contains(keyword), "{refusal}");
+            assert!(validate_secret_fields(&schema).is_err());
+        }
+    }
+    for id in ["$id", "id"] {
+        for inner in [
+            serde_json::json!({}),
+            serde_json::json!({"writeOnly":true, "x-busbar-secret":true}),
+        ] {
+            let schema = serde_json::json!({
+                "$id":"https://example.test/root",
+                "$defs":{"Hidden":{}},
+                "properties":{"foo":{
+                    (id):"https://example.test/nested", "x-busbar-public":true,
+                    "$defs":{"Hidden":inner}, "$ref":"#/$defs/Hidden"
+                }}
+            });
+            let refusal = public_settings_of_statement(&serde_json::to_vec(&schema).unwrap(), &[])
+                .unwrap_err();
+            assert!(refusal.contains("nested resource id"), "{refusal}");
+            assert!(validate_secret_fields(&schema).is_err());
+        }
+    }
+    // URI decoding would select Hidden; a literal JSON Pointer lookup would select %48idden.
+    let encoded = serde_json::json!({
+        "$defs":{"Hidden":{"x-busbar-secret":true}, "%48idden":{}},
+        "properties":{"foo":{"x-busbar-public":true,"$ref":"#/$defs/%48idden"}}
+    });
+    assert!(
+        public_settings_of_statement(&serde_json::to_vec(&encoded).unwrap(), &[])
+            .unwrap_err()
+            .contains("encoded reference fragment")
+    );
+    assert!(validate_secret_fields(&encoded).is_err());
+    let ordinary = serde_json::json!({
+        "$id":"https://example.test/root", "$defs":{"Text":{"type":"string"}},
+        "properties":{"region":{"x-busbar-public":true,"$ref":"#/$defs/Text"}}
+    });
+    assert_eq!(
+        public_settings_of_statement(&serde_json::to_vec(&ordinary).unwrap(), &[]).unwrap(),
+        ["region".to_owned()].into_iter().collect()
+    );
+}
+
+#[test]
+fn statement_schema_privacy_checks_legacy_schema_dependencies() {
+    use busbar_plugin_loader::settings_schema::{
+        public_settings_of_statement, validate_secret_fields,
+    };
+    let schema = serde_json::json!({
+        "$schema":"http://json-schema.org/draft-07/schema#",
+        "properties":{"foo":{"x-busbar-public":true}},
+        "dependencies":{"foo":{"properties":{"foo":{"writeOnly":true,"x-busbar-secret":true}}}}
+    });
+    assert!(public_settings_of_statement(&serde_json::to_vec(&schema).unwrap(), &[]).is_err());
+    assert!(validate_secret_fields(&schema).is_err());
+    for dependency in [
+        serde_json::json!(["required_peer"]),
+        serde_json::json!({"required":["required_peer"]}),
+        serde_json::json!(true),
+    ] {
+        let mut harmless = schema.clone();
+        harmless["dependencies"]["foo"] = dependency;
+        assert_eq!(
+            public_settings_of_statement(&serde_json::to_vec(&harmless).unwrap(), &[]).unwrap(),
+            ["foo".to_owned()].into_iter().collect()
+        );
+    }
+    for dependency in [
+        serde_json::json!([42]),
+        serde_json::json!("not a schema"),
+        serde_json::json!(42),
+    ] {
+        let mut malformed = schema.clone();
+        malformed["dependencies"]["foo"] = dependency;
+        assert!(
+            public_settings_of_statement(&serde_json::to_vec(&malformed).unwrap(), &[]).is_err()
+        );
+    }
+}
+
+#[test]
+fn statement_schema_privacy_checks_resource_scope_along_pointer_ancestors() {
+    use busbar_plugin_loader::settings_schema::{
+        public_settings_of_statement, validate_secret_fields,
+    };
+    for defs in ["$defs", "definitions"] {
+        for id in ["$id", "id"] {
+            let mut schema = serde_json::json!({
+                "$id":"https://example.test/root",
+                (defs): {
+                    "Hidden":{},
+                    "Scoped": {
+                        (id):"https://example.test/nested",
+                        (defs):{"Hidden":{"writeOnly":true,"x-busbar-secret":true}},
+                        "properties":{"slot":{"$ref":format!("#/{defs}/Hidden")}}
+                    }
+                },
+                "properties":{"foo":{"x-busbar-public":true,"$ref":format!("#/{defs}/Scoped/properties/slot")}}
+            });
+            let refusal = public_settings_of_statement(&serde_json::to_vec(&schema).unwrap(), &[])
+                .unwrap_err();
+            assert!(
+                refusal.contains("crosses an unsupported nested resource id"),
+                "{refusal}"
+            );
+            assert!(validate_secret_fields(&schema).is_err());
+
+            // Without a nested resource, the same pointer correctly uses the document definition.
+            schema[defs]["Scoped"].as_object_mut().unwrap().remove(id);
+            schema[defs]["Hidden"] = serde_json::json!({"type":"string"});
+            assert_eq!(
+                public_settings_of_statement(&serde_json::to_vec(&schema).unwrap(), &[]).unwrap(),
+                ["foo".to_owned()].into_iter().collect()
+            );
+        }
+    }
+    let array_ancestor = serde_json::json!({
+        "$defs":{"Hidden":{}, "Scopes":{"allOf":[{
+            "$id":"https://example.test/nested",
+            "$defs":{"Hidden":{"writeOnly":true}},
+            "properties":{"slot":{"$ref":"#/$defs/Hidden"}}
+        }]}},
+        "properties":{"foo":{"x-busbar-public":true,"$ref":"#/$defs/Scopes/allOf/0/properties/slot"}}
+    });
+    assert!(
+        public_settings_of_statement(&serde_json::to_vec(&array_ancestor).unwrap(), &[])
+            .unwrap_err()
+            .contains("crosses an unsupported nested resource id")
+    );
+
+    // Schema map keys and escaped pointer tokens do not establish a resource scope.
+    let ordinary = serde_json::json!({
+        "$id":"https://example.test/root",
+        "$defs":{"id":{"type":"string"}, "$id":{"type":"string"}, "slash/name":{"type":"string"}},
+        "properties":{
+            "a":{"x-busbar-public":true,"$ref":"#/$defs/id"},
+            "b":{"x-busbar-public":true,"$ref":"#/$defs/$id"},
+            "c":{"x-busbar-public":true,"$ref":"#/$defs/slash~1name"}
+        }
+    });
+    assert_eq!(
+        public_settings_of_statement(&serde_json::to_vec(&ordinary).unwrap(), &[]).unwrap(),
+        ["a".to_owned(), "b".to_owned(), "c".to_owned()]
+            .into_iter()
+            .collect()
     );
 }
