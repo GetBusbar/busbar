@@ -737,10 +737,10 @@ impl MutatedDefView {
             // reading a raw plane blob or guessing which of its fields are public.
             NamedMapSection::Plane(_) => None,
         };
-        if let Some(settings) = settings {
+        if let (Some(settings), Some(module)) = (settings, self.def.module.as_deref()) {
             self.configuration = Some(configured_settings(
                 app.config_version,
-                &self.def.module,
+                module,
                 settings,
                 !self.reload_to_apply.is_empty(),
                 &busbar_kernel::config::settings_public::public,

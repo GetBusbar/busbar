@@ -432,7 +432,7 @@ fn view_of(
         .and_then(serde_yaml::Value::as_mapping);
     crate::api::NamedDefView {
         name: name.to_string(),
-        module: String::new(),
+        module: None,
         settings_keys: Vec::new(),
         max_admin_scope: None,
         token_configured: None,

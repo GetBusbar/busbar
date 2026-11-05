@@ -409,6 +409,9 @@ fn a_registration_view_reads_the_kernel_owned_trust_keys() {
     .unwrap();
     let v = view_of("zed", &pinned, keys);
     assert_eq!(v.name, "zed");
+    assert!(v.module.is_none());
+    let body = serde_json::to_value(&v).unwrap();
+    assert!(body.get("module").is_none(), "{body}");
     assert_eq!(v.pin_mechanism.as_deref(), Some("jws"));
     assert_eq!(v.fingerprint_pinned, Some(true));
     assert_eq!(v.reverify_ttl.as_deref(), Some("1m"));

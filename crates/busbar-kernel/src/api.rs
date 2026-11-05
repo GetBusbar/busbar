@@ -10,12 +10,12 @@ pub fn ap(rel: &str) -> String {
     format!("{ADMIN_PREFIX}{rel}")
 }
 
-/// ONE definition of ONE 1.5.3 named-DEFINITION map: the read shape of the GENERIC named-map CRUD
+/// One definition in a named-definition map: the read shape of the generic named-map CRUD
 /// (`GET /api/v1/admin/identity-providers[/{name}]`, `GET /api/v1/admin/export[/{name}]`, and
-/// `tools:`/`agents:` when they land).
+/// plane-owned named definitions).
 ///
-/// Deliberately ONE view for every section rather than one per kind: the sections share the frozen
-/// `{module, settings}` spine and differ only by optional kind-specific fields, which are
+/// One view serves every section: plugin instances name their backing module, while plane-owned
+/// definitions can describe remote endpoints without a module. Kind-specific fields are
 /// `skip_serializing_if`-omitted for a section that has none. So `/export` serves exactly
 /// `{name, module, settings_keys}` while `/identity-providers` additionally carries its ceiling,
 /// and a new section adds fields here (additive) instead of a parallel view + a parallel handler.
@@ -33,17 +33,12 @@ pub fn ap(rel: &str) -> String {
 pub struct NamedDefView {
     /// The instance NAME: the map key, and the token every reference site uses.
     pub name: String,
-    /// The `module:` backing this instance (a built-in name or a signed-plugin name/alias).
-    ///
-    /// ALWAYS present, matching 1.5.5's wire shape byte-for-byte (`required` includes `module`,
-    /// schema type `"string"`, never nullable): 1.5.5 had no named-map section whose entries
-    /// carried no module, so it has no representation for one, and the ruling is 1:1 with 1.5.5
-    /// rather than inventing a new shape. EMPTY-STRINGED, not omitted, for a section whose entries
-    /// are not plugin instances -- today `agents:`, whose entries describe endpoints somebody else
-    /// runs (`NamedMapSection::requires_module`). Every section that HAS a module requires it to be
-    /// non-empty, so an empty string is unambiguous for "no module" without a `skip_serializing_if`
-    /// that would shrink `required` below 1.5.5's.
-    pub module: String,
+    /// The `module:` backing this plugin instance (a built-in name or signed-plugin name/alias).
+    /// Omitted for definitions that do not instantiate a module, such as remote agents, and for
+    /// an unparseable stored definition that has no string-valued module to project.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi-schema", schemars(with = "String"))]
+    pub module: Option<String>,
     /// The KEY NAMES of the module's opaque settings bag, sorted, WITHOUT their values, the
     /// redacted projection of `settings:`. Operator/API-owned and never interpreted here, but also
     /// never a place a VALUE can leak from: a settings value may be a credential (see the type doc),

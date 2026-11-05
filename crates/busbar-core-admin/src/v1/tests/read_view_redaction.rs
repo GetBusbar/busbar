@@ -52,6 +52,15 @@ fn test_admin_v1_named_map_reads_project_settings_keys_never_values() {
                 .cloned()
                 .unwrap_or(json);
             assert_eq!(
+                def["module"],
+                match section {
+                    "identity-providers" => "acme-idp",
+                    "export" => "generic-webhook",
+                    _ => unreachable!(),
+                },
+                "{url} must identify the backing module"
+            );
+            assert_eq!(
                 def["settings_keys"],
                 serde_json::json!(keys),
                 "{url} must project the settings KEY NAMES (sorted), so `what is configured` \
@@ -109,6 +118,53 @@ fn test_admin_v1_hook_reads_project_settings_keys_never_values() {
         assert!(
             view.get("settings").is_none(),
             "the raw hook settings bag must not be projected at all: {view}"
+        );
+    }
+}
+
+#[test]
+fn unparseable_named_definitions_project_only_an_actual_module() {
+    for (raw, module) in [
+        (
+            serde_json::json!({"url": "https://agent.example.com"}),
+            None,
+        ),
+        (serde_json::json!({"module": null}), None),
+        (serde_json::json!({"module": 7}), None),
+        (
+            serde_json::json!({"module": "acme-export"}),
+            Some("acme-export"),
+        ),
+    ] {
+        let entry = busbar_kernel::config::overlay::UnparseableNamedDef {
+            raw,
+            error: "invalid stored definition".to_string(),
+        };
+        let view = super::named_def_views::unparseable_def_view("pending", &entry);
+        assert_eq!(view.module.as_deref(), module);
+        let body = serde_json::to_value(view).unwrap();
+        assert_eq!(
+            body.get("module").and_then(serde_json::Value::as_str),
+            module
+        );
+        assert_eq!(body.get("module").is_some(), module.is_some());
+        assert_eq!(body["unparseable"], "invalid stored definition");
+    }
+}
+
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn named_definition_module_schema_matches_omitted_or_string_output() {
+    let doc = super::json::openapi_doc();
+    for name in ["NamedDefView", "MutatedDefView"] {
+        let schema = &doc["components"]["schemas"][name];
+        assert_eq!(schema["properties"]["module"]["type"], "string", "{name}");
+        assert!(
+            !schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("module")),
+            "{name}"
         );
     }
 }
