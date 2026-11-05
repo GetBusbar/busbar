@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE GATE-FIRST HOOK ORDER (spec Part 3 section 12 "Hooks": the hook stages run "in the hook
-//! order 1.5.5 used for that plane (per attachment where 1.5.5 differed)"). A plane whose tail
-//! states `abi::plane::TAIL_HOOKS_GATED` runs its request-stage hooks as the previous release ran
-//! them for a plane that screened an invocation:
+//! Gate-first request hooks. A plane whose tail states `abi::plane::TAIL_HOOKS_GATED`
+//! screens the invocation before admission, using its current configured policy:
 //!
 //! 1. THE DECISION GATES attached to the entry the plane's `arrive` named, as the kernel recorded
 //!    it at decode (its `project` must name the same entry, or the unit is refused), screen the
@@ -15,7 +13,7 @@
 //!    applies it and projects again.
 //!
 //! Both run at the unit's SCREEN, before the door admits it (`teller::RouteAwait::screen`): a
-//! refusal admits nothing and is answered before any budget refusal, as 1.5.5 answered it.
+//! refusal admits nothing and is answered before any budget refusal.
 //!
 //! No stage tap and no route policy fires: the routed order (the rewrite chain, the request taps,
 //! the route decision) is the default ([`HookOrder::Routed`]). The kernel names no plane: which
