@@ -1614,7 +1614,7 @@ fn cold_principal_transition_role_policy_is_lossless_fenced_and_restart_replayab
     let mut overlay = crate::config::overlay::OverlayDoc::default();
     overlay.version = crate::config::overlay::OVERLAY_VERSION;
     overlay.document_patch = Some(serde_json::from_value(prior_patch).unwrap());
-    f.overlay.update(|doc| *doc = overlay.clone()).unwrap();
+    crate::config::overlay::write(&f.overlay, &overlay).unwrap();
     let plan = prepare(
         spec,
         f.store.as_ref(),

@@ -1383,7 +1383,7 @@ fn exact_scale_six_adjustment_survives_store_readback() {
     assert_eq!(raw.scale, 6);
     assert_eq!(
         raw.usage_units[busbar_contract::records::UNIT_INPUT],
-        INITIAL_INPUT * 1_000_000 - 1
+        i128::from(INITIAL_INPUT) * 1_000_000 - 1
     );
     let restarted = GovState::new(store, None).unwrap();
     let adjustments = restarted
