@@ -248,7 +248,7 @@ fn object_request_schema(
             .and_then(|name| schemas.get(name))
             .is_some_and(|target| object_request_schema(target, schemas, depth + 1, object));
     }
-    if let Some(branches) = schema.get("oneOf") {
+    if let Some(branches) = schema.get("oneOf").or_else(|| schema.get("anyOf")) {
         return branches.as_array().is_some_and(|branches| {
             !branches.is_empty()
                 && branches
@@ -272,6 +272,32 @@ fn object_request_schema(
         });
     }
     object
+}
+
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_object_body_unions_reject_scalar_and_missing_branches() {
+    let schemas = serde_json::json!({
+        "Object": {"type": "object"},
+        "Scalar": {"type": "string"}
+    });
+    let schemas = schemas.as_object().unwrap();
+    for keyword in ["oneOf", "anyOf"] {
+        let mut union = serde_json::json!({
+            (keyword): [{"$ref": "#/components/schemas/Object"}, {"type": "object"}]
+        });
+        assert!(object_request_schema(&union, schemas, 0, false));
+        for invalid in [
+            serde_json::json!({"$ref": "#/components/schemas/Scalar"}),
+            serde_json::json!({"$ref": "#/components/schemas/Missing"}),
+            serde_json::json!({"type": "string"}),
+        ] {
+            union[keyword][1] = invalid;
+            assert!(!object_request_schema(&union, schemas, 0, false));
+        }
+        union[keyword] = serde_json::json!([]);
+        assert!(!object_request_schema(&union, schemas, 0, false));
+    }
 }
 
 #[cfg(feature = "openapi-schema")]
