@@ -10,6 +10,7 @@ use std::sync::{Arc, RwLock};
 type RawFeeEras = busbar_kernel_ledger::usage::FeeEras<RawRateEra>;
 
 mod exact_debt;
+pub mod principal_transition;
 pub mod recovery;
 use exact_debt::{BudgetFlushFlight, BudgetFlushRunner, ExactUsageDelta};
 mod metering_flush;
@@ -721,6 +722,8 @@ pub struct GovState {
     mutation_claims: claims::ClaimSet<MutationKey>,
 
     self_mint_holds: std::sync::atomic::AtomicBool,
+
+    transition_self_holds: RwLock<std::collections::BTreeSet<String>>,
 
     store_calls: std::sync::OnceLock<Arc<dyn busbar_contract::store_calls::StoreCalls>>,
 

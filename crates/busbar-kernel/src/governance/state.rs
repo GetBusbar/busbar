@@ -224,6 +224,7 @@ impl GovState {
             self_mint_holds: std::sync::atomic::AtomicBool::new(
                 SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE,
             ),
+            transition_self_holds: RwLock::new(Default::default()),
             store_calls: std::sync::OnceLock::new(),
             amendments: Arc::default(),
         })
@@ -232,6 +233,14 @@ impl GovState {
     #[must_use]
     pub fn amendments(&self) -> &Arc<crate::audit::amend::NodeAmendments> {
         &self.amendments
+    }
+
+    /// Installed only from the durable completed transition receipt before this state is served.
+    pub fn install_transition_self_holds(&self, holds: std::collections::BTreeSet<String>) {
+        *self
+            .transition_self_holds
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = holds;
     }
 
     pub fn attach_store_calls(

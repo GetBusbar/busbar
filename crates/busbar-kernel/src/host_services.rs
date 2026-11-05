@@ -571,6 +571,7 @@ pub const RESERVED_RECORD_KINDS: &[&str] = &[
     crate::governance::TICKET_RECORD_KIND,
     crate::host_work::WORK_SCHEMA.as_str(),
     crate::host_record_bootstrap::RECEIPT_SCHEMA.as_str(),
+    crate::governance::principal_transition::SCHEMA.as_str(),
     crate::host_chains::CHAIN_LIFE_SCHEMA.as_str(),
 ];
 
@@ -1652,7 +1653,9 @@ impl KernelServices {
         kind: &str,
         before: u64,
     ) -> RecordStoreResult<u64> {
-        if kind == crate::host_record_bootstrap::RECEIPT_SCHEMA.as_str() {
+        if kind == crate::host_record_bootstrap::RECEIPT_SCHEMA.as_str()
+            || kind == crate::governance::principal_transition::SCHEMA.as_str()
+        {
             return Err(busbar_contract::records::RecordStoreError(
                 "cold bootstrap receipts must remain durable".into(),
             ));

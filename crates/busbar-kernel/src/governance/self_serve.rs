@@ -45,6 +45,14 @@ impl GovState {
     }
 
     fn self_mint_refusal(&self, user_sub: &str, provider: &str) -> Option<SelfMintRefusal> {
+        if self
+            .transition_self_holds
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(user_sub)
+        {
+            return Some(SelfMintRefusal::Disabled);
+        }
         if !self.self_mint_holds() {
             return None;
         }

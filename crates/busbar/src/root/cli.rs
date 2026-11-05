@@ -50,6 +50,21 @@ USAGE:
                         mechanically convert a 1.4.x config to the 1.5.0 shape: prints the new
                         YAML to stdout (with TODO/WARNING comments where a human must decide)
                         and a change summary to stderr; ZERO side effects, nothing is written
+    busbar --principal-transition <spec-or-plan.json>
+           --transition-action inspect|prepare|check|apply|verify|initialize-fresh|
+                               initialize-fresh-and-serve|reauthorize
+           [--transition-attestation <attestation.json>]
+                        principal maintenance using the configured Store.
+                        inspect requires --principal-transition - (no input) and prints only
+                        config, key, group, overlay and receipt hashes plus admitted auth bindings.
+                        prepare reads a specification and prints a plan; initialize-fresh reads
+                        a namespace creation receipt. apply requires a fresh cold attestation.
+                        initialize-fresh-and-serve requires an explicit exclusive ephemeral-instance
+                        creation receipt, initializes that opened Store, then runs ordinary boot.
+                        All other actions exit after maintenance; initialize-fresh requires a
+                        durable namespace witness and never authorizes an ephemeral instance.
+                        reauthorize requires explicit evidence that a new artifact/settings
+                        vector leaves all principal outputs unchanged; never infers issuer continuity.
     busbar --generate-signing-key
                         mint a fresh ed25519 signing key (64 hex chars) to stdout with a paste-
                         ready auth.signing_key snippet on stderr; ZERO side effects, nothing is
@@ -164,6 +179,14 @@ pub(crate) fn is_plane_flag(planes: &[&[super::linked::CliHelpRow]], arg: &str) 
 
 pub(crate) fn handle_cli_flags() -> Option<i32> {
     let supplied: Vec<String> = std::env::args().skip(1).collect();
+    match super::principal_transition::command(supplied.iter().cloned()) {
+        Ok(Some(_)) => return None,
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("busbar: {error}. Try 'busbar --help'.");
+            return Some(EXIT_USAGE);
+        }
+    }
     let mut values = supplied.iter();
     while let Some(arg) = values.next() {
         if arg == OPTION_MIGRATE_CONFIG {
@@ -580,7 +603,13 @@ pub(crate) fn value_flag(
             }
         } else if matches!(
             a.as_str(),
-            OPTION_MIGRATE_CONFIG | OPTION_CONFIG | OPTION_CONFIG_SHORT | OPTION_PROVIDERS
+            OPTION_MIGRATE_CONFIG
+                | OPTION_CONFIG
+                | OPTION_CONFIG_SHORT
+                | OPTION_PROVIDERS
+                | super::principal_transition::INPUT_FLAG
+                | super::principal_transition::ACTION_FLAG
+                | super::principal_transition::ATTESTATION_FLAG
         ) {
             iter.next();
         }

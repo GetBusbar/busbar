@@ -36,6 +36,7 @@ pub mod observe;
 pub mod plane_node;
 pub mod plugin_fetch;
 pub mod policy;
+pub mod principal_transition;
 pub mod registry;
 pub mod serve;
 pub mod settings_public;

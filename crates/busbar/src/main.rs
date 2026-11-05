@@ -576,13 +576,27 @@ async fn run(
     let config_path =
         std::path::PathBuf::from(root::cli::resolve_config_path(cli_config.as_deref()));
     let safe_mode = safe_mode_requested(std::env::args());
+    let principal_transition = root::principal_transition::command(std::env::args().skip(1))
+        .unwrap_or_else(|error| die(error));
+    let boot_error = |context: &str, detail: String| {
+        if principal_transition.is_some() {
+            context.to_owned()
+        } else {
+            detail
+        }
+    };
     let loaded = load_config_from_disk(
         &config_path,
         providers_override.as_deref(),
         safe_mode,
         config::EnvSubst::Strict,
     )
-    .unwrap_or_else(|e| die(e));
+    .unwrap_or_else(|e| {
+        die(boot_error(
+            "principal transition configuration load refused",
+            e,
+        ))
+    });
     let LoadedConfig {
         mut deploy,
         mut defs,
@@ -594,12 +608,24 @@ async fn run(
         unset_env_vars: _,
     } = loaded;
 
-    let base_cfg = config::resolve(&deploy, &defs)
-        .unwrap_or_else(|errors| die(format!("base config errors: {}", errors.join("; "))));
-    config_validate::validate(&base_cfg)
-        .unwrap_or_else(|errors| die(format!("base config errors: {}", errors.join("; "))));
-    let base_store_settings = serde_json::to_value(&base_cfg.store)
-        .unwrap_or_else(|error| die(format!("base Store settings: {error}")));
+    let base_cfg = config::resolve(&deploy, &defs).unwrap_or_else(|errors| {
+        die(boot_error(
+            "principal transition base configuration refused",
+            format!("base config errors: {}", errors.join("; ")),
+        ))
+    });
+    config_validate::validate(&base_cfg).unwrap_or_else(|errors| {
+        die(boot_error(
+            "principal transition base configuration refused",
+            format!("base config errors: {}", errors.join("; ")),
+        ))
+    });
+    let base_store_settings = serde_json::to_value(&base_cfg.store).unwrap_or_else(|error| {
+        die(boot_error(
+            "principal transition base Store configuration refused",
+            format!("base Store settings: {error}"),
+        ))
+    });
     let dest = BootstrapDestJudge::new(root::connector::dest_judge(&base_cfg));
     let commit_guard: Arc<dyn busbar_kernel::host_services::DestJudge> = dest.clone();
     let (credentials, credential_handle) = root::credentials::AppCredentials::late();
@@ -610,8 +636,12 @@ async fn run(
             .values()
             .map(|provider| provider.base_url.clone()),
     );
-    root::boot::check_bootstrap_transports(&deploy.plugins)
-        .unwrap_or_else(|error| die(format!("bootstrap transport archive admission: {error}")));
+    root::boot::check_bootstrap_transports(&deploy.plugins).unwrap_or_else(|error| {
+        die(boot_error(
+            "principal transition bootstrap transport admission refused",
+            format!("bootstrap transport archive admission: {error}"),
+        ))
+    });
     let _connector = root::connector::boot(
         LINKED_TRANSPORT_DOORS,
         &root::policy::client_settings(&base_cfg.limits),
@@ -619,15 +649,35 @@ async fn run(
         &[base_cfg.listen.as_str(), base_cfg.admin_listen.as_str()],
     );
     let anchor_store = busbar_kernel::appbuild::bootstrap_config_store(&base_cfg, &deploy.plugins)
-        .unwrap_or_else(|error| die(format!("base Store overlay anchor: {error}")));
+        .unwrap_or_else(|error| {
+            die(boot_error(
+                "principal transition base Store opening refused",
+                format!("base Store overlay anchor: {error}"),
+            ))
+        });
+    // Even safe-mode must observe a pending transition in the anchor namespace before
+    // overlay recovery or application construction can open another effective Store.
+    if principal_transition.is_none() {
+        busbar_kernel::governance::principal_transition::pending_guard(
+            anchor_store
+                .calls
+                .clone()
+                .unwrap_or_else(|| die("base Store has no typed principal transition calls")),
+        )
+        .unwrap_or_else(|error| die(error));
+    }
     let floor_calls = anchor_store
         .calls
         .as_ref()
         .cloned()
         .unwrap_or_else(|| die("base Store has no typed plugin-floor calls"));
-    root::boot::bind_plugin_floor(floor_calls)
-        .unwrap_or_else(|error| die(format!("Store plugin-floor authority: {error}")));
-    let mut overlay_path = if config_locked {
+    root::boot::bind_plugin_floor(floor_calls).unwrap_or_else(|error| {
+        die(boot_error(
+            "principal transition Store plugin-floor authority refused",
+            format!("Store plugin-floor authority: {error}"),
+        ))
+    });
+    let mut overlay_path = if config_locked && principal_transition.is_none() {
         None
     } else {
         let calls = anchor_store
@@ -635,7 +685,14 @@ async fn run(
             .as_ref()
             .cloned()
             .unwrap_or_else(|| die("base Store has no typed config-overlay calls"));
-        Some(config::overlay::OverlayStore::new(calls).unwrap_or_else(|error| die(error)))
+        Some(
+            config::overlay::OverlayStore::new(calls).unwrap_or_else(|error| {
+                die(boot_error(
+                    "principal transition Store overlay unavailable",
+                    error,
+                ))
+            }),
+        )
     };
     let overlay_doc = if safe_mode {
         None
@@ -644,7 +701,12 @@ async fn run(
             .as_ref()
             .map(|store| store.read_required())
             .transpose()
-            .unwrap_or_else(|error| die(format!("Store config overlay recovery refused: {error}")))
+            .unwrap_or_else(|error| {
+                die(boot_error(
+                    "principal transition Store overlay recovery refused",
+                    format!("Store config overlay recovery refused: {error}"),
+                ))
+            })
             .flatten()
     };
 
@@ -663,8 +725,13 @@ async fn run(
             doc.document_patch.as_ref(),
             doc.providers_patch.as_ref(),
         )
-        .unwrap_or_else(|error| die(format!("Store document overlay refused: {error}")));
-        if patched.config_locked {
+        .unwrap_or_else(|error| {
+            die(boot_error(
+                "principal transition Store document overlay refused",
+                format!("Store document overlay refused: {error}"),
+            ))
+        });
+        if patched.config_locked && principal_transition.is_none() {
             overlay_path = None;
         }
         deploy = patched.deploy;
@@ -681,6 +748,57 @@ async fn run(
 
     if let Some(doc) = overlay_doc.as_ref() {
         config::overlay::apply_root_to_deploy(&mut deploy, doc);
+    }
+
+    if let Some(command) = principal_transition.as_ref() {
+        command
+            .validate_overlay_mode(config_locked, overlay_doc.is_some())
+            .unwrap_or_else(|error| die(error));
+        let transition_source_sha256 = root::principal_transition::source_fingerprint(
+            &config_path,
+            &providers_path,
+            deploy.document_source_fingerprints,
+        )
+        .unwrap_or_else(|error| die(error));
+        // This branch precedes governors, usage recovery, correction tasks and listeners.
+        // Reconstruct the same effective config that normal application boot consumes.
+        let mut effective = config::resolve(&deploy, &defs)
+            .unwrap_or_else(|_| die("principal transition effective configuration refused"));
+        if let Some(doc) = overlay_doc.as_ref() {
+            config::overlay::merge_into(&mut effective, doc.clone());
+        }
+        config_validate::validate(&effective)
+            .unwrap_or_else(|_| die("principal transition effective configuration invalid"));
+        let result = root::principal_transition::execute(
+            command,
+            &effective,
+            &deploy.plugins,
+            &anchor_store,
+            &base_store_settings,
+            &transition_source_sha256,
+            overlay_doc.as_ref(),
+        )
+        .unwrap_or_else(|_| die("principal transition refused; input or bound Store state does not satisfy cold transition requirements"));
+        println!(
+            "{}",
+            serde_json::to_string(&result)
+                .unwrap_or_else(|_| die("principal transition output failed"))
+        );
+        if !command.continues_serving() {
+            return;
+        }
+        // The explicit fresh-instance action resumes every ordinary admission below. The same
+        // anchor is handed to appbuild; it must never be reopened as a new ephemeral namespace.
+        busbar_kernel::governance::principal_transition::pending_guard(
+            anchor_store
+                .calls
+                .clone()
+                .unwrap_or_else(|| die("fresh Store has no typed principal transition calls")),
+        )
+        .unwrap_or_else(|_| die("fresh principal baseline is not ready for serving"));
+        if config_locked {
+            overlay_path = None;
+        }
     }
 
     // Data workers are created after Store recovery, on their own runtimes. The
@@ -845,6 +963,12 @@ async fn run(
     {
         Some(anchor_store)
     } else {
+        if principal_transition
+            .as_ref()
+            .is_some_and(root::principal_transition::Command::continues_serving)
+        {
+            die("fresh principal initialization lost its bootstrap Store binding");
+        }
         None
     };
 

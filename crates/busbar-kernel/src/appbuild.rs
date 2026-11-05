@@ -968,6 +968,9 @@ pub fn build_app_from_config_with_store(
         admit(&plugin_registry, &plugins_cfg)?;
     }
 
+    let transition_requirements =
+        governance::principal_transition::requirements(&cfg, plugin_registry.as_ref())?;
+
     let secret_resolver = Arc::new(build_secret_resolver(
         plugin_registry.clone(),
         &cfg.secrets,
@@ -1239,6 +1242,21 @@ pub fn build_app_from_config_with_store(
     let mut rotated_digest: Option<Option<String>> = None;
     let governance = if let Some(p) = prior {
         if let Some(gs) = p.governance.clone() {
+            let transition_holds = match gs.store_calls() {
+                Some(calls) => governance::principal_transition::guard(
+                    calls,
+                    &governance::principal_transition::store_fingerprint(&cfg.store)?,
+                    &transition_requirements,
+                )?,
+                None if transition_requirements.iter().all(|r| r.format.is_empty()) => {
+                    Default::default()
+                }
+                None => {
+                    return Err("auth principal format requires a Store receipt capability".into())
+                }
+            };
+            // This is deny-only state from a completed receipt, never an authority grant.
+            gs.install_transition_self_holds(transition_holds);
             let auth = cfg.auth.as_ref();
             let declares_operator = auth.is_some_and(|a| {
                 a.admin_auth
@@ -1321,6 +1339,17 @@ pub fn build_app_from_config_with_store(
                 diag_warn!(STATEFUL_PLANE_EPHEMERAL_STORE, "{msg}");
             }
         }
+        let transition_holds = match opened.calls.as_ref() {
+            Some(calls) => governance::principal_transition::guard(
+                calls.clone(),
+                &governance::principal_transition::store_fingerprint(&cfg.store)?,
+                &transition_requirements,
+            )?,
+            None if transition_requirements.iter().all(|r| r.format.is_empty()) => {
+                Default::default()
+            }
+            None => return Err("auth principal format requires a Store receipt capability".into()),
+        };
         let store: Arc<dyn governance::RecordStore> = opened.records;
         let store_calls = opened.calls;
 
@@ -1338,6 +1367,7 @@ pub fn build_app_from_config_with_store(
             signer,
         ) {
             Ok(gs) => {
+                gs.install_transition_self_holds(transition_holds);
                 let gs = Arc::new(gs);
 
                 if let Some(calls) = store_calls {
