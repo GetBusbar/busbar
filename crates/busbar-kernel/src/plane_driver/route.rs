@@ -205,7 +205,7 @@ pub trait FarEnd: Sync {
 
     fn attempt_span(&self, token: &Pass<Route>) -> tracing::Span {
         let _ = token;
-        tracing::Span::none()
+        super::timing::attempt_span()
     }
 
     fn judged(&self, token: &Pass<Route>, fault: u8) {
@@ -1017,6 +1017,20 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         run: &mut Pumping<'_>,
         turn: Option<&session::Turn<'_>>,
     ) -> End {
+        use tracing::Instrument as _;
+        // A separate parent per pump keeps retries together, including repeated session turns
+        // whose unit id is the same and whose attempt ordinal restarts at one.
+        let span = tracing::span!(
+            target: "busbar::proxy::engine::walk",
+            crate::observability::HOTPATH_LEVEL,
+            "request_attempts",
+            unit_id = run.ctx.key.get(),
+            request_id = run.lock().request_id,
+        );
+        self.attempts_inner(run, turn).instrument(span).await
+    }
+
+    async fn attempts_inner(&self, run: &mut Pumping<'_>, turn: Option<&session::Turn<'_>>) -> End {
         let mut attempt_no = 0;
 
         let mut failed: Option<&'static str> = None;
@@ -1025,7 +1039,9 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             if let Some(t) = turn {
                 t.held.send_replace(false);
             }
+            let route_started = std::time::Instant::now();
             let picked = turn_wait(run, turn, self.far.member(run.token, attempt_no)).await;
+            let route_wait = route_started.elapsed();
             let ((member, pool), terminal) = match picked {
                 Ok(Pick::Member { name, .. }) if turn.is_some_and(|t| !t.within(&name)) => {
                     continue 'attempt;
@@ -1093,6 +1109,12 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             } else {
                 tracing::Span::none()
             };
+            let mut timing = super::timing::AttemptTiming::new(
+                attempt_span.clone(),
+                run.ctx.key.get(),
+                attempt_no,
+                route_wait,
+            );
             let mut request = OutboundRequest {
                 member,
                 pool,
@@ -1130,9 +1152,15 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 let mut toward = Toward::FarEnd(&mut request);
                 for piece in pieces {
                     match self.push(run, *piece, &mut toward).await {
-                        Step::End(end) => return end,
+                        Step::End(end) => {
+                            timing.ended(&end, run.lock().facts.cut);
+                            return end;
+                        }
 
-                        Step::Retry if far_bound => continue 'attempt,
+                        Step::Retry if far_bound => {
+                            timing.finish("retry");
+                            continue 'attempt;
+                        }
                         _ => {}
                     }
                     if matches!(toward, Toward::Caller) {
@@ -1142,6 +1170,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 matches!(toward, Toward::Caller)
             };
             if local {
+                timing.finish("answered_locally");
                 return End::Done;
             }
             if !far_bound {
@@ -1170,9 +1199,13 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
 
                 Ok(false) => {
                     failed = self.far.failure(run.token);
+                    timing.finish("retry");
                     continue 'attempt;
                 }
-                Err(end) => return end,
+                Err(end) => {
+                    timing.ended(&end, run.lock().facts.cut);
+                    return end;
+                }
             }
             let mut first = true;
             loop {
@@ -1186,11 +1219,16 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         last: true,
                         ..FarPiece::default()
                     },
-                    Err(end) => return end,
+                    Err(end) => {
+                        timing.ended(&end, run.lock().facts.cut);
+                        return end;
+                    }
                 };
 
+                timing.piece(&piece);
                 if piece.fail_over && !run.lock().facts.streamed {
                     failed = self.far.failure(run.token);
+                    timing.finish("retry");
                     continue 'attempt;
                 }
                 {
@@ -1228,12 +1266,19 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     reason: 0,
                 };
                 match self.push(run, far, &mut Toward::Caller).await {
-                    Step::End(end) => return end,
+                    Step::End(end) => {
+                        timing.ended(&end, run.lock().facts.cut);
+                        return end;
+                    }
                     Step::Retry => {
                         failed = self.far.failure(run.token);
+                        timing.finish("retry");
                         continue 'attempt;
                     }
-                    Step::Answered(done) if done || piece.last => return End::Done,
+                    Step::Answered(done) if done || piece.last => {
+                        timing.ended(&End::Done, run.lock().facts.cut);
+                        return End::Done;
+                    }
                     Step::Answered(_) => {}
                 }
             }

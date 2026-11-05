@@ -322,3 +322,31 @@ fn duplicate_trace_keys_preserve_first_key_order_and_last_values() {
         serde_json::json!([{"key":"x","value":3},{"key":"y","value":2}])
     );
 }
+
+static TIMING_CLOSE: std::sync::Mutex<Vec<Value>> = std::sync::Mutex::new(Vec::new());
+
+fn capture_timing_close(_: &[(ExportField, Value)], span: Option<&Value>) {
+    TIMING_CLOSE.lock().unwrap().extend(span.cloned());
+}
+
+#[test]
+fn request_timing_export_includes_termination_after_the_last_transport_poll() {
+    let subscriber = tracing_subscriber::registry().with(Producer(capture_timing_close, records));
+    let finished = tracing::subscriber::with_default(subscriber, || {
+        let span =
+            tracing::debug_span!("forward_once", producer_complete_us = tracing::field::Empty);
+        span.in_scope(|| {});
+        let finished = now_ns();
+        span.record("producer_complete_us", 123_u64);
+        drop(span);
+        finished
+    });
+    let records = std::mem::take(&mut *TIMING_CLOSE.lock().unwrap());
+    assert_eq!(records.len(), 1);
+    assert!(records[0]["end_ns"].as_u64().unwrap() >= finished);
+    assert!(records[0]["attributes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|field| field["key"] == "producer_complete_us" && field["value"] == "123"));
+}

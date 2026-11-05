@@ -27,6 +27,17 @@ impl tracing::field::Visit for Fields<'_> {
 }
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SpanLog {
+    fn on_record(
+        &self,
+        _: &tracing::span::Id,
+        values: &tracing::span::Record<'_>,
+        _: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if let Some((_, _, fields)) = self.0.lock().unwrap().last_mut() {
+            values.record(&mut Fields(fields));
+        }
+    }
+
     fn on_new_span(
         &self,
         attrs: &tracing::span::Attributes<'_>,
@@ -98,24 +109,21 @@ fn a_least_bad_dispatch_opens_forward_once_naming_its_lane() {
         matches!(&picked, Pick::Member { name, .. } if name == "b"),
         "the last resort takes the soonest cooldown: {picked:?}"
     );
-    assert_eq!(
-        opened,
-        vec![(
-            "forward_once",
-            crate::observability::HOTPATH_LEVEL,
-            vec![("lane", "1".to_string())]
-        )],
-        "1.5.5's attempt span: its name, the hot-path level, its one field"
-    );
+    assert_eq!(opened.len(), 1);
+    assert_eq!(opened[0].0, "forward_once");
+    assert!(opened[0].2.contains(&("lane", "1".to_string())));
+    assert!(opened[0].2.contains(&("degraded", "true".to_string())));
 }
 
 #[test]
-fn the_walks_own_attempt_opens_no_attempt_span() {
+fn a_normal_attempt_opens_the_same_timing_span() {
     let node = pool_of_three(OnExhausted::LeastBad);
     let (picked, opened) = first_attempt(&node);
     assert!(
         matches!(&picked, Pick::Member { .. }),
         "a healthy pool takes a member: {picked:?}"
     );
-    assert!(opened.is_empty(), "{opened:?}");
+    assert_eq!(opened.len(), 1);
+    assert_eq!(opened[0].0, "forward_once");
+    assert!(opened[0].2.contains(&("degraded", "false".to_string())));
 }

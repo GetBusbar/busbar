@@ -2194,21 +2194,14 @@ impl FarEnd for EgressFarEnd<'_> {
     }
 
     fn attempt_span(&self, _token: &Pass<Route>) -> tracing::Span {
-        let lane = self
-            .lock()
-            .live
-            .as_ref()
-            .filter(|l| l.degraded)
-            .map(|l| l.member.destination.get());
-        match lane {
-            Some(lane) => tracing::span!(
-                target: "busbar::proxy::engine::walk",
-                crate::observability::HOTPATH_LEVEL,
-                "forward_once",
-                lane = lane
-            ),
-            None => tracing::Span::none(),
-        }
+        let w = self.lock();
+        let Some(live) = w.live.as_ref() else {
+            return tracing::Span::none();
+        };
+        let span = super::timing::attempt_span();
+        span.record("lane", live.member.destination.get());
+        span.record("degraded", live.degraded);
+        span
     }
 
     fn send<'a>(

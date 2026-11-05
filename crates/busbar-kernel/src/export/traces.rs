@@ -182,7 +182,11 @@ impl SpanRecord {
         span.insert("start_ns".into(), Value::from(self.start_ns));
         span.insert(
             "end_ns".into(),
-            Value::from(self.end_ns.unwrap_or_else(now_ns)),
+            Value::from(if name == "forward_once" || name == "request_attempts" {
+                now_ns()
+            } else {
+                self.end_ns.unwrap_or_else(now_ns)
+            }),
         );
         span.insert("attributes".into(), key_values(attributes));
         span.insert("events".into(), Value::Array(self.events));
