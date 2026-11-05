@@ -43,6 +43,15 @@ pub trait MigrateHost {
         Ok(None)
     }
 
+    /// Resolve the released 1.5.5 JWT credential filename convention once, without
+    /// returning credential material to the configuration migrator. None means inline JSON.
+    fn legacy_jwt_credential_file(
+        &self,
+        _credential: &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<Option<busbar_contract::secret_ref::SecretRef>, String> {
+        Err("credential resolution is unavailable during migration".into())
+    }
+
     fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, String> {
         Err(format!("no resolver is at hand for '{host}'"))
     }

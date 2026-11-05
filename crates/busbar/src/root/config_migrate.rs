@@ -561,6 +561,19 @@ impl MigrateHost for RootHost {
         }
     }
 
+    fn legacy_jwt_credential_file(
+        &self,
+        credential: &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<Option<busbar_contract::secret_ref::SecretRef>, String> {
+        let scope = busbar_contract::config_time::ConfigScope::config_time();
+        let resolved =
+            busbar_kernel::config::secret::resolve_linked_string_at_config(credential, &scope)
+                .map_err(|_| "the original credential source could not be resolved".to_string())?;
+        let cwd = std::env::current_dir()
+            .map_err(|_| "the original process working directory is unavailable".to_string())?;
+        legacy_jwt_file_reference(resolved.expose(&busbar_kernel::seal::lend()), &cwd)
+    }
+
     fn resolve(&self, host: &str) -> Result<Vec<std::net::IpAddr>, String> {
         use std::net::ToSocketAddrs;
         (host, 0)
@@ -581,6 +594,41 @@ impl MigrateHost for RootHost {
             .by_module(kind, module)
             .and_then(IndexPlugin::pin_for_this_core))
     }
+}
+
+/// 1.5.5 resolved the outer SecretRef as text (trimming trailing CR/LF), then
+/// read a non-JSON credential as an exact path relative to the process cwd, not
+/// the config or providers catalog directory. Keep that distinction on output.
+fn legacy_jwt_file_reference(
+    credential: &str,
+    cwd: &Path,
+) -> Result<Option<busbar_contract::secret_ref::SecretRef>, String> {
+    if credential.trim_start().starts_with('{') {
+        return Ok(None);
+    }
+    if credential.is_empty() {
+        return Err("the original credential is empty".into());
+    }
+    let path = cwd.join(credential);
+    let path_text = path
+        .to_str()
+        .ok_or("the credential filename is not UTF-8")?;
+    // Verify the filename before making it public configuration. An arbitrary
+    // non-JSON secret must not accidentally become a path in migrated YAML.
+    let content = busbar_contract::redacted::Secret::new(
+        std::fs::read(&path).map_err(|_| "the original credential file could not be read")?,
+    );
+    let seal = busbar_kernel::seal::lend();
+    let text = std::str::from_utf8(content.expose(&seal))
+        .map_err(|_| "the original credential file is not JSON")?;
+    if !text.trim_start().starts_with('{')
+        || serde_json::from_str::<serde::de::IgnoredAny>(text).is_err()
+    {
+        return Err("the original credential file is not JSON".into());
+    }
+    Ok(Some(busbar_contract::secret_ref::SecretRef::file(
+        path_text,
+    )))
 }
 
 #[cfg(test)]

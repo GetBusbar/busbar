@@ -1911,7 +1911,7 @@ fn validate_providers_with(
                 errors.push(format!(
                     "provider '{provider_name}' uses auth: {style} but declares \
                      `api_key: none`; that grant signs its assertion WITH the credential (the \
-                     service-account JSON or key file), so there is nothing to declare keyless"
+                     resolved service-account JSON), so there is nothing to declare keyless"
                 ));
             }
             let config_time = busbar_contract::config_time::ConfigScope::config_time();
@@ -1922,22 +1922,9 @@ fn validate_providers_with(
             .unwrap_or_default();
 
             let seal = crate::seal::lend();
-            let cred = match service_account_json(cred.expose(&seal).clone().into_bytes(), |file| {
-                crate::config::secret::SecretResolver::builtins_only()
-                    .resolve_at_config(file, &config_time)
-                    .map(|held| held.expose(&seal).clone())
-            }) {
-                Ok(json) => String::from_utf8(json).unwrap_or_default(),
-                Err(e) => {
-                    errors.push(format!(
-                        "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
-                        provider_cfg.api_key.describe()
-                    ));
-                    String::new()
-                }
-            };
+            let cred = cred.expose(&seal).as_str();
             if !cred.trim().is_empty() {
-                let vetted = service_account_token_uri(&cred).map_or(Ok(()), |uri| {
+                let vetted = service_account_token_uri(cred).map_or(Ok(()), |uri| {
                     vet_token_uri(
                         &uri,
                         &MetadataPosture {
@@ -1956,7 +1943,7 @@ fn validate_providers_with(
                         }
                         outbound_credential_refusals(
                             style,
-                            &cred,
+                            cred,
                             &serde_json::Value::Object(params),
                         )
                     }
@@ -2081,26 +2068,6 @@ fn redact_credential(mut text: String, needles: &[String]) -> String {
         }
     }
     text
-}
-
-pub fn service_account_json(
-    credential: Vec<u8>,
-    read_file: impl FnOnce(&busbar_contract::secret_ref::SecretRef) -> Result<Vec<u8>, String>,
-) -> Result<Vec<u8>, String> {
-    let named = match std::str::from_utf8(&credential) {
-        Ok(text) if !text.trim_start().starts_with('{') && !text.trim().is_empty() => {
-            text.trim().to_string()
-        }
-        _ => return Ok(credential),
-    };
-    let file = busbar_contract::secret_ref::SecretRef::file(named.clone());
-    read_file(&file).map_err(|e| {
-        let why = e.split_once(" cannot resolve: ").map_or_else(
-            || e.replace(&named, "<key file>"),
-            |(_, why)| why.to_string(),
-        );
-        format!("could not read service-account key file named by this lane's credential: {why}")
-    })
 }
 
 pub fn service_account_token_uri(credential: &str) -> Result<String, String> {

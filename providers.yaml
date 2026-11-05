@@ -849,8 +849,9 @@ gemini:
 # Google Vertex AI (Gemini) speaks the SAME gemini protocol, but at a project/location-scoped URL and
 # with OAuth (`auth: jwt-bearer` — a signed service-account JWT exchanged for an auto-refreshed bearer)
 # instead of an API key. project + location are per-account, so it is not shipped as a live entry -
-# copy this template into your config.yaml providers map and fill in your values. `api_key_env` holds
-# the service-account JSON (inline) OR a path to the key file. Vertex returns Google's `google.rpc`
+# copy this template into your config.yaml providers map and fill in your values. `api_key` resolves
+# to the service-account JSON. For a key file use `api_key: { file: /absolute/key.json }`.
+# Vertex returns Google's `google.rpc`
 # error codes (same `status` tokens as native gemini), so the error_map mirrors gemini's.
 #
 #   gemini-vertex:
@@ -858,7 +859,7 @@ gemini:
 #     base_url: https://us-central1-aiplatform.googleapis.com
 #     path_base: /v1/projects/YOUR_PROJECT/locations/us-central1/publishers/google/models
 #     auth: jwt-bearer
-#     api_key_env: VERTEX_SA_KEY                       # SA JSON (inline) or a path to the key file
+#     api_key: { env: VERTEX_SA_KEY }                  # resolves to service-account JSON
 #     error_map:
 #       RESOURCE_EXHAUSTED: rate_limit
 #
@@ -871,7 +872,7 @@ gemini:
 #     base_url: https://us-central1-aiplatform.googleapis.com
 #     path_base: /v1/projects/YOUR_PROJECT/locations/us-central1/publishers/anthropic/models
 #     auth: jwt-bearer
-#     api_key_env: VERTEX_SA_KEY
+#     api_key: { env: VERTEX_SA_KEY }
 #     error_map: {}
 
 # -- AWS Bedrock protocol (Converse / ConverseStream) ---------------------------------------------

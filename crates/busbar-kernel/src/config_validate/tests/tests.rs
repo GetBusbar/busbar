@@ -1621,35 +1621,20 @@ fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
 }
 
 #[test]
-fn a_service_account_key_file_is_read_through_the_file_source_at_config_time() {
-    let json = br#"{"client_email":"a@b","private_key":"k"}"#.to_vec();
-    let mut asked = Vec::new();
-    let read = super::service_account_json(b"/keys/sa.json\n".to_vec(), |file| {
-        asked.push(file.file_path().map(str::to_string));
-        Ok(json.clone())
-    })
-    .expect("the key file reads");
-    assert_eq!(read, json);
-    assert_eq!(asked, vec![Some("/keys/sa.json".to_string())]);
-
-    let inline = super::service_account_json(json.clone(), |_| {
-        panic!("an inline service account opens no file")
-    })
-    .expect("inline");
-    assert_eq!(inline, json);
-}
-
-#[test]
-fn an_unreadable_service_account_key_file_refuses_in_1_5_5s_words_without_the_path() {
-    let refused = super::service_account_json(b"/keys/secret-name.json".to_vec(), |_| {
-        Err("secret file:/keys/secret-name.json cannot resolve: No such file or directory (os error 2)".to_string())
-    })
-    .expect_err("an unreadable key file refuses");
+fn service_account_endpoint_requires_resolved_json() {
+    let inline =
+        r#"{"client_email":"a@b","private_key":"k","token_uri":"https://issuer.example/token"}"#;
     assert_eq!(
-        refused,
-        "could not read service-account key file named by this lane's credential: No such file or directory (os error 2)"
+        super::service_account_token_uri(inline).unwrap(),
+        "https://issuer.example/token"
     );
-    assert!(!refused.contains("secret-name"), "{refused}");
+    for path in [
+        "/keys/secret-name.json",
+        "key.json",
+        "file:/keys/secret-name.json",
+    ] {
+        assert!(super::service_account_token_uri(path).is_err());
+    }
 }
 
 #[test]

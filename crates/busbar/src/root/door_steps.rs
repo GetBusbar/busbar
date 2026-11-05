@@ -3848,22 +3848,6 @@ pub fn member_routes(
             flags & busbar_contract::abi::auth::STYLE_ENDPOINT_FROM_CREDENTIAL != 0
         });
         let seal = busbar_kernel::seal::lend();
-        let credential = if from_credential {
-            busbar_contract::redacted::Secret::new(
-                busbar_kernel::config_validate::service_account_json(
-                    credential.expose(&seal).clone(),
-                    |file| {
-                        reach
-                            .secrets
-                            .resolve_at_config(file, scope)
-                            .map(|held| held.expose(&seal).clone())
-                    },
-                )
-                .map_err(|e| format!("provider '{}' ({} auth): {e}", r.name, r.style))?,
-            )
-        } else {
-            credential
-        };
         let credential = credential.expose(&seal);
         let settings =
             sealed_params(&r.name, &r.style, from_credential, r.provider, credential)?.to_json();

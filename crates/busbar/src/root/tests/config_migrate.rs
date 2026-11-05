@@ -212,3 +212,67 @@ fn the_root_hands_the_catalog_boot_reads_to_the_plane_migrations() {
         serde_json::json!("http://10.9.8.7/oauth2/token")
     );
 }
+
+#[test]
+fn legacy_jwt_filename_migration_preserves_cwd_and_exact_spaces() {
+    let directory = super::FetchedDir::create_in(&std::env::temp_dir()).unwrap();
+    let name = " key.json ";
+    let json = r#"{"client_email":"test@example.com","private_key":"SECRET_KEY_CONTENT"}"#;
+    std::fs::write(directory.0.join(name), json).unwrap();
+    let migrated = super::legacy_jwt_file_reference(name, &directory.0)
+        .unwrap()
+        .unwrap();
+    assert_eq!(migrated.file_path(), directory.0.join(name).to_str());
+    let absolute = super::legacy_jwt_file_reference(
+        migrated.file_path().unwrap(),
+        std::path::Path::new("/unrelated/config/directory"),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(absolute, migrated);
+    assert!(super::legacy_jwt_file_reference(json, &directory.0)
+        .unwrap()
+        .is_none());
+    let serialized = serde_json::to_string(&migrated).unwrap();
+    assert!(!serialized.contains("SECRET_KEY_CONTENT"));
+    assert!(!serialized.contains("client_email"));
+}
+
+#[test]
+fn legacy_jwt_filename_migration_preserves_refs_on_unverified_secret_values() {
+    let directory = super::FetchedDir::create_in(&std::env::temp_dir()).unwrap();
+    let secret = "SECRET_NON_JSON_VALUE";
+    let error = super::legacy_jwt_file_reference(secret, &directory.0).unwrap_err();
+    assert!(!error.contains(secret));
+    std::fs::write(directory.0.join("not-json"), secret).unwrap();
+    let error = super::legacy_jwt_file_reference("not-json", &directory.0).unwrap_err();
+    assert!(!error.contains(secret));
+    assert!(!error.contains("not-json"));
+}
+
+#[test]
+fn legacy_jwt_source_resolution_converts_nested_file_once_and_keeps_json_reference() {
+    crate::dist_root_install::install();
+    let directory = super::FetchedDir::create_in(&std::env::temp_dir()).unwrap();
+    let key = directory.0.join("key.json");
+    let pointer = directory.0.join("old-credential");
+    std::fs::write(
+        &key,
+        r#"{"client_email":"test@example.com","private_key":"SYNTHETIC_KEY"}"#,
+    )
+    .unwrap();
+    std::fs::write(&pointer, format!("{}\r\n", key.display())).unwrap();
+    let host = super::RootHost::for_document("{}", &directory.0.join("elsewhere/config.yaml"));
+    let original = busbar_contract::secret_ref::SecretRef::file(pointer.to_str().unwrap());
+    let migrated = host.legacy_jwt_credential_file(&original).unwrap().unwrap();
+    assert_eq!(migrated.file_path(), key.to_str());
+    assert!(host
+        .legacy_jwt_credential_file(&migrated)
+        .unwrap()
+        .is_none());
+    let absent = busbar_contract::secret_ref::SecretRef::file(
+        directory.0.join("secret-absent").to_str().unwrap(),
+    );
+    let error = host.legacy_jwt_credential_file(&absent).unwrap_err();
+    assert!(!error.contains("secret-absent"));
+}

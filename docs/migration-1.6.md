@@ -460,3 +460,24 @@ prices only what happens after the edit; it cannot repair a window that is alrea
       `amend-rate-history` correction for booked usage, and pass `?as_of=<history_seq>` to read money
       as of a past history point ([§7](#7-rate-cards-became-a-dated-history-and-get-adminusage-prices-by-it)).
 - [ ] Want MCP, A2A or voice? Add the section; see the guide in the table above.
+
+### JWT service-account credential references
+
+Runtime OAuth credentials must resolve to service-account JSON. A resolved filename is no
+longer opened as a second credential source. Use `api_key: { file: /absolute/key.json }`
+when the JSON lives in a file; an environment reference containing the JSON remains valid.
+
+The one-shot 1.5.5 configuration migration recognizes `auth: jwt-bearer`, including the
+original providers catalog's auth default. It resolves the deployment's original credential
+reference and converts a verified filename to an explicit file reference. Run it with the
+same secret sources and working directory as the 1.5.5 process: historical relative filenames
+were relative to that directory, not to the configuration or catalog file. Exact spaces in
+filenames are preserved. Only the file reference is written; JSON and private keys are never
+copied into the output or report. Inline JSON sources remain unchanged. If the original source
+or file cannot be resolved, the original reference is retained with a migration TODO; resolve
+that TODO before starting 1.6. Dropped-in secret sources unavailable to the migration resolver
+require an explicit file reference from the operator.
+
+This historical conversion lives in the one-shot configuration migrator because the current
+OAuth plugin has no outbound-binding migration entry; its generic auth migration surface
+receives identity-provider settings, not deployment credential references.

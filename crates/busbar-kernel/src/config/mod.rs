@@ -16,6 +16,7 @@ pub mod groups;
 
 pub mod migrate;
 pub mod migrate_catalog;
+mod migrate_credentials;
 pub mod migrate_export;
 pub mod migrate_plugins;
 
