@@ -58,6 +58,7 @@ pub fn install<C: Connections>() {
     busbar_kernel::auth::login::seam::install(hosted_login::SEAM);
     busbar_kernel::oauth_as::seam::install_as_plane_seam(
         busbar_kernel::oauth_as::seam::AsPlaneSeam {
+            input_schema: config::input_schema,
             check: config::seam_check,
             build: plane::seam_build::<C>,
             mount: routes::seam_mount,

@@ -47,6 +47,13 @@ pub(super) fn complete(paths: &mut Map<String, Value>, schemas: &mut Map<String,
         },"required":["operation_id","operation","actor","target","fingerprint","reason_hash","effect","applied","retry","recovery","count_scale"],
         "description":"Durable caller-action receipt. A known rejection can have a non-2xx status with this body; unknown is HTTP 409. Effect and recovery are authoritative, not the HTTP status alone. applied is true exactly when effect=applied. Unknown effects require ledger recovery and never authorize a second delta. This projection intentionally does not echo raw counts or reason."
     }));
+    schemas.insert("AdjustmentActionInFlightError".into(), json!({
+        "type":"object", "properties":{
+            "error":{"type":"object","properties":{"code":{"const":"action_in_flight"},"message":{"type":"string"}},"required":["code","message"]},
+            "operation_id":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+            "effect":{"const":"unknown"},"recovery":{"const":"reconcile_ledger_recovery"}
+        },"required":["error","operation_id","effect","recovery"]
+    }));
     if let Some(legacy) = schemas.get("AdjustReq").cloned() {
         let mut exact = legacy;
         exact["properties"]["delta"] = json!({"type":"object","minProperties":1,"additionalProperties":{
@@ -82,9 +89,10 @@ pub(super) fn complete(paths: &mut Map<String, Value>, schemas: &mut Map<String,
         adjust[RESPONSES_KEY]["200"]["content"]["application/json"]["schema"] =
             reference("AdjustmentResponse");
         for status in ["400", "409"] {
-            adjust[RESPONSES_KEY][status] = json!({"description":"Typed refusal or durable action outcome. An action outcome body carries effect and reconciliation identity; unknown effect requires recovery, never a new automatic delta.","content":{"application/json":{"schema":{"anyOf":[reference("Error"),reference("AdjustmentActionView")]}}}});
+            adjust[RESPONSES_KEY][status] = json!({"description":"Typed refusal or durable action outcome. An action outcome body carries effect and reconciliation identity; unknown effect requires recovery, never a new automatic delta.","content":{"application/json":{"schema":{"anyOf":[reference("Error"),reference("AdjustmentActionView"),reference("AdjustmentActionInFlightError")]}}}});
         }
         for status in ["200", "400", "409"] {
+            adjust[RESPONSES_KEY][status]["headers"]["x-busbar-adjust-effect"] = json!({"description":"Host-created applied/not_applied/unknown effect classification when an action outcome is available; not derived from a request header.","schema":{"enum":["applied","not_applied","unknown"]}});
             adjust[RESPONSES_KEY][status]["headers"]["x-busbar-receipt-durable"] = json!({"description":"false when the effect is known in this process but final receipt persistence was not confirmed. After restart the retained pre-effect receipt may remain unknown; reconcile before any new action.","schema":{"const":"false"}});
         }
         adjust["description"] = json!("Correct counts at the original card epoch. With Idempotency-Key, the durable exact-Count profile binds actor/action to exact bytes and returns AdjustmentActionView. Without it, retain legacy signed-integer/nonretryable semantics. Applied, not_applied and unknown are distinct outcomes; never infer no effect from a failed response.");

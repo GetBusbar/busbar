@@ -40,6 +40,9 @@ type AsDpopVerifyFn =
     fn(&Arc<dyn Any + Send + Sync>, DpopPresentation) -> Pin<Box<dyn Future<Output = bool> + Send>>;
 
 pub struct AsPlaneSeam {
+    /// Owner-produced raw oauth_as user-input schema; separate from resolved server state.
+    pub input_schema: fn() -> serde_json::Value,
+
     pub check: AsPlaneCheckFn,
 
     pub build: AsPlaneBuildFn,
@@ -66,6 +69,11 @@ pub fn install_as_plane_seam(seam: AsPlaneSeam) {
         SEAM.set(seam).is_ok(),
         "install_as_plane_seam called twice: there is one composition root, and it registers once"
     );
+}
+
+/// The installed owner's raw user-input grammar, absent when this build has no OAuth owner.
+pub fn input_schema() -> Option<serde_json::Value> {
+    SEAM.get().map(|owner| (owner.input_schema)())
 }
 
 pub(crate) fn seam() -> Option<&'static AsPlaneSeam> {

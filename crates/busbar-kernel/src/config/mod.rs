@@ -1100,6 +1100,10 @@ pub use busbar_kernel::config::sections::{Destinations, SecurityCfg};
 /// A plugin is a plugin: store, auth, and hook plugins share this one block (one directory, one
 /// trust model, one master switch); the manifest `kind` inside each signed tarball selects which
 /// engine subsystem consumes it.
+#[cfg_attr(
+    feature = "openapi-schema",
+    derive(schemars::JsonSchema, serde::Serialize)
+)]
 #[derive(Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct PluginsCfg {
@@ -1154,6 +1158,10 @@ pub struct PluginsCfg {
 /// `levels`, `rotate_mb` (unset: never rotate; the host's rename rotation) and `keep` (default 5).
 /// Every default and every refusal is the plugin log configuration's own; the binary resolves this
 /// block at boot, so a bad value fails the boot naming its key.
+#[cfg_attr(
+    feature = "openapi-schema",
+    derive(schemars::JsonSchema, serde::Serialize)
+)]
 #[derive(Deserialize, Clone, Default, Debug)]
 #[serde(deny_unknown_fields, default)]
 pub struct PluginLogsCfg {
@@ -1171,6 +1179,10 @@ pub struct PluginLogsCfg {
 /// lowercase-hex integrity pin: it is BOTH the download-skip cache key (a file in `dir` already
 /// hashing to it ⇒ no network) and the verify-before-write gate. Per-variant `deny_unknown_fields`
 /// so a typo'd key can't be silently reinterpreted as a different variant.
+#[cfg_attr(
+    feature = "openapi-schema",
+    derive(schemars::JsonSchema, serde::Serialize)
+)]
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum PluginFetch {
@@ -1185,6 +1197,10 @@ pub enum PluginFetch {
 /// The `{ github, sha256? }` fetch shape. `deny_unknown_fields` on each variant struct is what gives
 /// the untagged enum real typo rejection: an entry with a stray key matches NO variant and errors,
 /// rather than being silently reinterpreted.
+#[cfg_attr(
+    feature = "openapi-schema",
+    derive(schemars::JsonSchema, serde::Serialize)
+)]
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct GithubFetch {
@@ -1194,6 +1210,10 @@ pub struct GithubFetch {
 }
 
 /// The `{ url, sha256? }` fetch shape.
+#[cfg_attr(
+    feature = "openapi-schema",
+    derive(schemars::JsonSchema, serde::Serialize)
+)]
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct UrlFetch {
@@ -1203,6 +1223,10 @@ pub struct UrlFetch {
 }
 
 /// The `{ env }` fetch shape (the VAR's value is a url, optionally `url@sha256`).
+#[cfg_attr(
+    feature = "openapi-schema",
+    derive(schemars::JsonSchema, serde::Serialize)
+)]
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EnvFetch {
@@ -1315,6 +1339,10 @@ impl Default for PluginsCfg {
 /// verifies against the EMBEDDED release key; a third-party plugin verifies against `publishers`;
 /// anything else (unsigned, tampered, unknown publisher) is UNTRUSTED and, by DEFAULT, logged and
 /// SKIPPED (never `dlopen`ed) unless the matching opt-in flag is set.
+#[cfg_attr(
+    feature = "openapi-schema",
+    derive(schemars::JsonSchema, serde::Serialize)
+)]
 #[derive(Deserialize, Clone, Default, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct PluginsTrustCfg {
@@ -1335,6 +1363,10 @@ pub struct PluginsTrustCfg {
 }
 
 /// One allowlisted plugin publisher: a name and its hex ed25519 public key.
+#[cfg_attr(
+    feature = "openapi-schema",
+    derive(schemars::JsonSchema, serde::Serialize)
+)]
 #[derive(Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct PluginPublisher {

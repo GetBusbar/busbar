@@ -404,6 +404,7 @@ dependencies = [
  "futures",
  "http",
  "http-body-util",
+ "jsonschema",
  "oauth-as",
  "psl",
  "reqwest",

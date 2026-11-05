@@ -7,6 +7,7 @@
 use serde_json::{json, Value};
 
 mod core;
+mod host;
 #[cfg(test)]
 mod integer_token;
 #[cfg(test)]
@@ -38,6 +39,7 @@ fn object(properties: Value) -> Value {
 pub(super) fn schema_document() -> Value {
     let mut definitions = tables::definitions();
     core::definitions(&mut definitions);
+    host::definitions(&mut definitions);
     let mut secret = busbar_contract::secret_ref::oneof_schema();
     secret["writeOnly"] = json!(true);
     secret["description"] = json!("Core user-input SecretRef grammar. Plugin-declared shorthand is resolved separately; use explicit module/settings for portable forms. Never an inline credential.");
@@ -160,6 +162,8 @@ pub(super) fn schema_document() -> Value {
             "providers":dictionary(reference("ProviderDeployment")),
             "models":dictionary(reference("Model")),
             "pools":reference("Pools"),
+            "plugins":reference("Plugins"),
+            "oauth_as":nullable(reference("OAuthAS")),
             "groups":dictionary(reference("Group")),
             "hooks":dictionary(reference("HookDefinition")),
             "store":nullable(reference("Store")),
@@ -242,6 +246,8 @@ pub(super) fn extension() -> Value {
         "declared_plane_scope_kinds":scope_kinds,
         "admin_verbs":crate::verb::admin_rows().map(|row|json!({"name":row.name,"scope":row.scope.as_str(),"bound":row.bound})).collect::<Vec<_>>(),
         "ownership":{
+            "plugins":"host PluginsCfg loader, trust/fetch/logs policy; runtime-only first_party_floors excluded",
+            "oauth_as":"installed authorization-server owner input_schema; absence is explicitly unsupported",
             "groups":"host GroupCfg, compact LimitCfg and ChildDefault; runtime validation owns tree and pool references",
             "hooks":"deploy HookDefCfg; admin POST/PUT use distinct HookCfg schema",
             "auth":"host AuthDeployCfg and policy prepass",

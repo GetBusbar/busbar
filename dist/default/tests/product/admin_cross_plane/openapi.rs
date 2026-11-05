@@ -273,3 +273,32 @@ fn object_request_schema(
     }
     object
 }
+
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_host_authoring_uses_installed_oauth_owner_and_loader_parser() {
+    let doc = openapi_doc_seamed();
+    let definitions = &doc["x-busbar-config-schemas"]["schema"]["$defs"];
+    let oauth = &definitions["OAuthAS"];
+    assert_eq!(
+        oauth["x-busbar-input-owner"],
+        "busbar-core-oauth2::config::OauthAsCfg/AsIdentity"
+    );
+    for field in [
+        "issuer",
+        "signing_key",
+        "key_id",
+        "default_grant",
+        "access_token_ttl_secs",
+        "refresh_token_ttl_secs",
+        "fapi2",
+        "clients",
+    ] {
+        assert!(oauth["properties"].get(field).is_some(), "{field}");
+    }
+    let plugins = &definitions["Plugins"];
+    for field in ["enabled", "dir", "trust", "min_versions", "fetch", "logs"] {
+        assert!(plugins["properties"].get(field).is_some(), "{field}");
+    }
+    assert!(plugins["properties"].get("first_party_floors").is_none());
+}

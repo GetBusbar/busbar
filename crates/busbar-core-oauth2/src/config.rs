@@ -574,3 +574,11 @@ pub(crate) fn secret_refs(identity: &AsIdentity) -> Vec<(String, &SecretRef)> {
 }
 
 pub(crate) const SIGNING_KEY_PATH: &str = "oauth_as.signing_key";
+
+#[path = "config_schema.rs"]
+mod authoring_schema;
+
+/// The raw `oauth_as:` grammar, authored by the same owner that validates and resolves it.
+pub fn input_schema() -> serde_json::Value {
+    authoring_schema::schema()
+}
