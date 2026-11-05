@@ -222,8 +222,8 @@ advanced:                       # internal tuning (normally omitted)  → #advan
     upstream_http1_only: false, upstream_h2_prior_knowledge: false,
     response_headers: { server_timing: false, route_policy: false },  # opt-in headers → observability.md#response-headers
     block_private_addresses: true, allow_destinations: [] }  # the destination guard → #advanced
-config:                         # config-management policy (durable-by-default)  → #config
-  { locked: false, overlay: { file: busbar-overlay.json } }
+config:                         # config-management policy (persistence follows Store) → #config
+  { locked: false }
 providers_file: providers.yaml  # provider catalog pointer (overridden by the --providers flag)
 ```
 

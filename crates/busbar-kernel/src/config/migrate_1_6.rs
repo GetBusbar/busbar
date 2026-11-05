@@ -6,9 +6,18 @@ use serde_yaml::{Mapping, Value};
 const LEGACY_UNPRICED_BILLABLE_UNIT_RATE: i32 = 0;
 
 pub(super) fn migrate(root: &mut Mapping, changes: &mut Vec<String>, warnings: &mut Vec<String>) {
+    drop_overlay_selector(root, changes);
     drop_hostless_metadata_entries(root, changes);
     price_open_units(root, changes);
     bind_ungoverned_principals(root, changes, warnings);
+}
+
+fn drop_overlay_selector(root: &mut Mapping, changes: &mut Vec<String>) {
+    if let Some(config) = mapping_mut(root, "config") {
+        if config.remove(Value::from("overlay")).is_some() {
+            changes.push("config.overlay removed; current management uses config.locked and the configured Store".into());
+        }
+    }
 }
 
 fn mapping_mut<'a>(m: &'a mut Mapping, key: &str) -> Option<&'a mut Mapping> {
@@ -177,3 +186,38 @@ fn bind_ungoverned_principals(
 #[cfg(test)]
 #[path = "tests/migrate_1_6_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod config_management_tests {
+    use super::*;
+
+    #[test]
+    fn one_shot_migration_drops_old_selectors_and_preserves_locked_policy() {
+        for locked in [false, true] {
+            for selector in ["false", "true", "{file: /old/overlay.json}", "{}", "null"] {
+                let mut root: Mapping = serde_yaml::from_str(&format!(
+                    "config: {{locked: {locked}, overlay: {selector}}}\n"
+                ))
+                .unwrap();
+                let mut changes = Vec::new();
+                drop_overlay_selector(&mut root, &mut changes);
+                let config = root[Value::from("config")].as_mapping().unwrap();
+                assert!(!config.contains_key(Value::from("overlay")));
+                assert_eq!(config[Value::from("locked")], Value::Bool(locked));
+                assert_eq!(changes.len(), 1);
+                drop_overlay_selector(&mut root, &mut changes);
+                assert_eq!(changes.len(), 1, "retry is idempotent");
+            }
+        }
+    }
+
+    #[test]
+    fn dropping_selector_does_not_invent_lock_policy_or_discard_other_keys() {
+        let mut root: Mapping =
+            serde_yaml::from_str("config: {overlay: false, unknown: retained}\n").unwrap();
+        drop_overlay_selector(&mut root, &mut Vec::new());
+        let config = root[Value::from("config")].as_mapping().unwrap();
+        assert!(!config.contains_key(Value::from("locked")));
+        assert_eq!(config[Value::from("unknown")], Value::from("retained"));
+    }
+}

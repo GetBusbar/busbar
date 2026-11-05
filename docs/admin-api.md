@@ -597,7 +597,7 @@ The `groups:` limit tree, where every limit lives (keys are pure auth), is fully
 
 **Base groups are file-owned.** A group defined in config.yaml answers every mutation with a terminal `409 conflict`: the API cannot silently shadow operator file config (mirrors hooks). Edit config.yaml and reload instead.
 
-All group mutations honor `If-Match` against the config-plane ETag, are audited (including rejections), recorded in version history, and overlay-persisted. They are durable by default (1.5.3), so they survive a restart with no extra configuration (see the Persistence section above; use `config.overlay.file` in config.yaml — the old `BUSBAR_CONFIG_OVERLAY` env var is deprecated but still honoured in 1.6.0, with a `BUSBAR-3021` boot warning naming the replacement key).
+All group mutations honor `If-Match` against the config-plane ETag, are audited (including rejections), recorded in version history, and persisted through the configured Store. A durable Store preserves them across restart; a memory Store is ephemeral. `config.overlay` is no longer a current configuration field, and serving does not read `BUSBAR_CONFIG_OVERLAY`.
 
 ```bash
 # Raise one group's limits without touching the rest of its definition
@@ -615,19 +615,26 @@ curl -s -H "x-admin-token: $TOK" http://localhost:8081/api/v1/admin/groups/growt
 
 Busbar's config plane is live: an authenticated write takes effect immediately, with no restart and without disturbing in-flight requests. Under the hood an apply atomically swaps the running config snapshot: new requests see the new config; requests already in flight finish on the old one; and surviving lanes keep their learned health (breakers, latency) **by identity**. Config-plane mutations are serialized internally, so concurrent writes can never silently lose one.
 
-**Persistence (durable by default, 1.5.3).** API-applied changes are durable out of the box: Busbar writes hook-, group-, and root-surface changes to a busbar-owned overlay (`busbar-overlay.json` next to `config.yaml` by default) and re-applies it at boot on top of your hand-written `config.yaml` (which it never touches). So a group or hook provisioned over the admin API **survives a restart** with no extra configuration. That is the fix for "provisioned config vanished on restart". Configure where it persists (or run immutable) via the top-level `config:` block:
+**Persistence follows the configured Store.** API-applied hooks, groups and root settings are
+persisted through the base `store:` and recovered before serving. A durable Store preserves them
+across restart; the memory Store is ephemeral. Busbar leaves the source `config.yaml` unchanged.
+The current management grammar is:
 
 ```yaml
 config:
-  locked: false                 # false = mutable (this section applies); true = immutable
-  overlay:
-    file: busbar-overlay.json    # default = next to config.yaml
+  locked: false                 # mutable; true selects immutable/GitOps management
 ```
 
-- **`config.locked: true`** marks an immutable/GitOps deployment: every config-mutating admin call is **refused** (`400`, "config mutation refused: … config.locked: true"). Change config by editing `config.yaml` and calling `POST /config/reload`. There is no "apply in memory only" mode any more: a mutable config is always durable, a locked config always refuses, and the old silent-loss outcome is gone.
-- **Boot invariant**: a *mutable* config with no writable overlay (you set `config.overlay: false`, or the config directory is read-only) **refuses to boot** with an actionable message. This is what makes "applied but lost on restart" unreachable. (Migrating a read-only-config deployment? See the [upgrade note](migration-1.5.md#153-config-consolidation).)
+`config.locked: true` refuses config-mutating admin calls; edit the source configuration and reload
+instead. Mutable management requires the Store's atomic conditional-record capability. A mutation
+must persist before its new generation is published; a failed persistence operation refuses it.
+A read-only config directory does not prevent Store persistence.
 
-A missing or corrupt overlay is ignored at boot: a bad overlay can never brick startup. An overlay written by a NEWER Busbar is refused instead of ignored. It is intact and meaningful, so starting without it would silently drop your API-registered hooks and groups (security gates included); upgrade, or boot `--safe-mode` to run on `config.yaml` alone with the overlay left untouched. `GET /info` reports `config_persistence` (`true` = mutable + durable; `false` = locked) so tooling knows which mode it's in. *(The `BUSBAR_CONFIG_OVERLAY` env var is deprecated but still honoured in 1.6.0 — set `config.overlay.file` in config.yaml at your convenience; a boot warning, `BUSBAR-3021`, names the replacement key.)*
+An unavailable, incomplete, corrupt or newer Store overlay refuses recovery. Boot with
+`--safe-mode` to quarantine it and use the base configuration without deleting overlay records.
+`config.overlay` file and boolean selectors are refused by current parsing. One-time migration
+removes the old selector while preserving `config.locked` and imports old file state separately;
+serving never reads `BUSBAR_CONFIG_OVERLAY`. See [the migration guide](migration-1.6.md).
 
 ### The config plane
 

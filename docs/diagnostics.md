@@ -209,26 +209,26 @@ A plane journal scope that had been evicted from the in-memory cache was read ba
 ## 3xxx — Config
 
 <a id="config-overlay-not-writable"></a>
-### BUSBAR-3001 — Config overlay backend is not writable (admin-API config mutations refused)
+### BUSBAR-3001 — Config overlay backend is not writable (admin-API config mutations refused) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `config-overlay-not-writable`
 
-The config overlay backend is NOT writable at boot (typically the config directory is mounted read-only), so busbar starts WITHOUT a durable config overlay: it serves traffic normally, but every admin-API config mutation is refused, because a change that cannot be persisted would silently revert on restart.
+RETIRED. No current runtime path emits this code. Runtime config persists through Store; config-directory writability and the retired config.overlay.file selector do not choose a backend.
 
-**What to do:** If a read-only config is intended, set `config.locked: true` to say so and silence this warning. If you want a mutable config, point `config.overlay.file` at a writable path (mount a writable volume and set e.g. `config.overlay.file: /var/lib/busbar/busbar-overlay.json`).
+**What to do:** Configure the deployment Store and config.locked policy. Use one-time migration to import old file state; see docs/migration-1.6.md.
 
 <a id="config-overlay-probe-leak"></a>
-### BUSBAR-3002 — Overlay writability probe file could not be removed (may be left behind)
+### BUSBAR-3002 — Overlay writability probe file could not be removed (may be left behind) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `config-overlay-probe-leak`
 
-After creating a temporary probe file to test overlay writability, busbar could not remove it. The probe name is pid-scoped, so a leaked probe is never reclaimed by a later boot and slowly accumulates stray files in the config directory. Minor, but surfaced rather than swallowed.
+RETIRED. Current overlay management does not probe or write the config directory; it persists through Store. No current runtime path emits this code.
 
-**What to do:** Remove the leaked probe file(s) from the config directory and investigate why unlink failed there (permissions, a network filesystem without delete-on-close). Overlay writes still work; only the probe cleanup failed.
+**What to do:** No current overlay probe needs cleanup. Preserve old files until migration is complete; see docs/migration-1.6.md.
 
 <a id="config-overlay-corrupt-refuse-write"></a>
 ### BUSBAR-3003 — Config overlay unreadable/corrupt on apply (refusing to overwrite)

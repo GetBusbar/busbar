@@ -1423,8 +1423,7 @@ pub use busbar_kernel::config::sections::{
 };
 
 pub use busbar_kernel::config::sections::{
-    rate_entry_per_mtok, ConfigMgmtCfg, ExportDefCfg, ExportDefs, OverlayBackend, OverlayCfg,
-    RateEntryCfg,
+    rate_entry_per_mtok, ConfigMgmtCfg, ExportDefCfg, ExportDefs, RateEntryCfg,
 };
 
 fn default_per_request_fee() -> i64 {

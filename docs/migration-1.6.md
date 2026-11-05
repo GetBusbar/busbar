@@ -161,8 +161,10 @@ including the old string `false`. These are migration rules; serving uses the co
 Remove the retired variables from launchers after conversion. The current `--providers` flag remains
 supported. A missing selected catalog remains an error during normal validation/startup.
 
-`BUSBAR_CONFIG_OVERLAY` selects old file-overlay migration input only; 1.6 runtime configuration
-is persisted through Store. Follow the overlay import instructions below before serving old state.
+`BUSBAR_CONFIG_OVERLAY` selects old file-overlay migration input only; serving never reads it.
+The old `config.overlay` file/boolean field is refused by current configuration parsing. One-time
+migration removes that field while preserving `config.locked`; use `locked: true` to keep an
+immutable/GitOps deployment. 1.6 runtime configuration is persisted through Store. Follow the overlay import instructions below before serving old state.
 `BUSBAR_CONFIG`, explicit secret `{ env: NAME }` references, `RUST_LOG` and the
 `TOKIO_WORKER_THREADS` fallback are unchanged. Preserve existing signing-key material and Store
 records when upgrading 1.5.5: existing signed keys do not need to be reminted merely for this upgrade.

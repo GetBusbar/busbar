@@ -59,10 +59,10 @@ config:
   runtime (edit config.yaml and `POST /config/reload` instead). The overlay is ignored.
 - Mutable management requires the Store's atomic conditional-record capability. Every mutation
   persists before its config generation is published. Failed persistence refuses the mutation.
-- A read-only config directory has no effect on Store persistence. `overlay: false` still requires
-  `locked: true`. Legacy `config.overlay.file` and `BUSBAR_CONFIG_OVERLAY` selectors are accepted
-  with a deprecation warning; they never read, probe, create, update or remove an overlay file.
-  Existing legacy files remain untouched and are not silently imported or used as fallback state.
+- A read-only config directory has no effect on Store persistence. `config.overlay` file/boolean
+  selectors are refused by current configuration parsing. The one-time migrator removes the old
+  selector and preserves `config.locked`; old file state is imported by the migration procedure.
+  Serving does not read `BUSBAR_CONFIG_OVERLAY` or use files as fallback overlay state.
 - The operator's base `store:` is the overlay anchor for the deployment. Boot validates the base
   inputs, initializes its connector with base transport settings, opens that Store and recovers the
   complete overlay before opening effective hooks, planes or exporters. The recovered destination

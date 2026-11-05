@@ -320,37 +320,10 @@ pub fn default_response_headers_route_policy() -> bool {
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigMgmtCfg {
-    /// `false` (default) ⇒ MUTABLE: the admin API may change config, and every change persists to the
-    /// `overlay` backend. `true` ⇒ IMMUTABLE (GitOps posture): admin-API config mutations are refused
-    /// at runtime; `overlay` is irrelevant and ignored. Edit config.yaml + POST /config/reload to
-    /// change a locked deployment.
+    /// `false` (default) permits admin config mutations persisted through the configured Store.
+    /// `true` selects immutable/GitOps management: edit config.yaml and reload instead.
     #[serde(default)]
     pub locked: bool,
-    /// Absent selects the configured Store. `false` requires locked management. Legacy
-    /// `{ file: <path> }` remains accepted as a deprecated compatibility selector only; Busbar
-    /// never reads, probes, creates, writes or removes that file and still uses the Store.
-    #[serde(default)]
-    pub overlay: Option<OverlayCfg>,
-}
-
-/// Management disable or a legacy compatibility selector. Runtime state is always Store-owned.
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(untagged)]
-pub enum OverlayCfg {
-    /// `overlay: false` ⇒ no writable overlay backend. Only `false` is meaningful; `true` is rejected
-    /// at boot (it names no backend). Reachable-to-boot only with `locked: true`.
-    Disabled(bool),
-    /// Deprecated file selector; the selected state remains in the configured Store.
-    Backend(OverlayBackend),
-}
-
-/// Legacy selector shape, retained without filesystem access.
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
-#[serde(deny_unknown_fields)]
-pub struct OverlayBackend {
-    /// Legacy path text. Never used as a storage address or opened by overlay management.
-    #[serde(default)]
-    pub file: Option<String>,
 }
 
 /// One top-level `rate_card:` entry: the four per-token rates in MICRO-units (1e-6 abstract cost

@@ -100,25 +100,27 @@ retired = true
 
 [[diagnostic]]
 name = "CONFIG_OVERLAY_NOT_WRITABLE"
-doc = "The config overlay backend is not writable at boot; busbar serves but refuses config mutations."
+doc = "RETIRED in 1.6.0: config overlays are Store-owned and no file probe is performed."
 code = 3001
 class = "Config"
 slug = "config-overlay-not-writable"
-title = "Config overlay backend is not writable (admin-API config mutations refused)"
+title = "Config overlay backend is not writable (admin-API config mutations refused) — RETIRED"
 severity = "Actionable"
-summary = "The config overlay backend is NOT writable at boot (typically the config directory is mounted read-only), so busbar starts WITHOUT a durable config overlay: it serves traffic normally, but every admin-API config mutation is refused, because a change that cannot be persisted would silently revert on restart."
-action = "If a read-only config is intended, set `config.locked: true` to say so and silence this warning. If you want a mutable config, point `config.overlay.file` at a writable path (mount a writable volume and set e.g. `config.overlay.file: /var/lib/busbar/busbar-overlay.json`)."
+summary = "RETIRED. No current runtime path emits this code. Runtime config persists through Store; config-directory writability and the retired config.overlay.file selector do not choose a backend."
+action = "Configure the deployment Store and config.locked policy. Use one-time migration to import old file state; see docs/migration-1.6.md."
+retired = true
 
 [[diagnostic]]
 name = "CONFIG_OVERLAY_PROBE_LEAK"
-doc = "The overlay writability probe file could not be removed after being created; it may leak."
+doc = "RETIRED in 1.6.0: config overlays are Store-owned and no file probe is performed."
 code = 3002
 class = "Config"
 slug = "config-overlay-probe-leak"
-title = "Overlay writability probe file could not be removed (may be left behind)"
+title = "Overlay writability probe file could not be removed (may be left behind) — RETIRED"
 severity = "Actionable"
-summary = "After creating a temporary probe file to test overlay writability, busbar could not remove it. The probe name is pid-scoped, so a leaked probe is never reclaimed by a later boot and slowly accumulates stray files in the config directory. Minor, but surfaced rather than swallowed."
-action = "Remove the leaked probe file(s) from the config directory and investigate why unlink failed there (permissions, a network filesystem without delete-on-close). Overlay writes still work; only the probe cleanup failed."
+summary = "RETIRED. Current overlay management does not probe or write the config directory; it persists through Store. No current runtime path emits this code."
+action = "No current overlay probe needs cleanup. Preserve old files until migration is complete; see docs/migration-1.6.md."
+retired = true
 
 [[diagnostic]]
 name = "CONFIG_OVERLAY_CORRUPT_REFUSE_WRITE"

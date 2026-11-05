@@ -3,10 +3,7 @@
 
 pub use super::overlay_legacy::{decode_legacy_overlay, parse_legacy_overlay};
 pub use super::overlay_store::OverlayStore;
-use super::{
-    ConfigMgmtCfg, DeployCfg, GroupCfg, HookCfg, OverlayCfg, RateEntryCfg, RootCfg, StoreCfg,
-    TlsCfg,
-};
+use super::{ConfigMgmtCfg, DeployCfg, GroupCfg, HookCfg, RateEntryCfg, RootCfg, StoreCfg, TlsCfg};
 use crate::diagnostics::{diag_error, CONFIG_OVERLAY_PATCH_UNPARSABLE};
 use busbar_contract::plugin::Kind;
 use serde::{Deserialize, Serialize};
@@ -35,27 +32,13 @@ pub fn resolve_backend_with_env(
     env_override: Option<&Path>,
     _probe_fs: bool,
 ) -> Result<OverlayResolution, String> {
-    if cfg.locked {
-        return Ok(OverlayResolution {
-            locked: true,
-            enabled: false,
-        });
-    }
-    match &cfg.overlay {
-        Some(OverlayCfg::Disabled(_)) => return Err("mutable config requires its configured Store-backed overlay; set config.locked: true to disable runtime mutations".into()),
-        Some(OverlayCfg::Backend(backend)) if backend.file.is_none() => return Err("config.overlay names no backend".into()),
-        _ => {}
-    }
-    if env_override.is_some() || matches!(&cfg.overlay, Some(OverlayCfg::Backend(_))) {
-        tracing::warn!(
-            "legacy config overlay file selector is deprecated and does not select a file; runtime config persists exclusively in the configured Store"
-        );
-    }
+    let _ = env_override;
     Ok(OverlayResolution {
-        locked: false,
-        enabled: true,
+        locked: cfg.locked,
+        enabled: !cfg.locked,
     })
 }
+
 pub const OVERLAY_VERSION: u32 = 2;
 fn default_overlay_version() -> u32 {
     1

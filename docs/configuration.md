@@ -88,7 +88,7 @@ config:
 
 - **`locked: true`**: admin-API config mutations are refused at runtime; change config by editing `config.yaml` + `POST /config/reload`. The overlay is ignored.
 - Mutable management requires the Store's atomic conditional-record capability. Persistence must succeed before a new config generation is published; failure refuses the mutation.
-- A read-only config directory has no effect on Store persistence. `overlay: false` requires `locked: true`. Legacy `config.overlay.file` and `BUSBAR_CONFIG_OVERLAY` selectors are deprecated compatibility inputs: they never read, write or import an overlay file.
+- A read-only config directory has no effect on Store persistence. `config.overlay` (including file and boolean selectors) is not part of the current grammar and is refused. One-time migration removes that selector while preserving `config.locked` and imports old file state separately. Serving does not read `BUSBAR_CONFIG_OVERLAY`.
 - Boot recovers the complete overlay from the base Store before opening effective application plugins. An unavailable, incomplete, corrupt or newer overlay refuses recovery. `--safe-mode` explicitly quarantines it without deleting its Store records. `--validate` does not open a Store or recover its overlay. See [Operations](operations.md#config-mutability-locked--overlay) for recovery and anchor changes.
 
 ---

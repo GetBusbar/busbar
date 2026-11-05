@@ -113,17 +113,11 @@ docker run -d -p 8080:8080 \
 
 The provider catalog ships inside the image at `/etc/busbar/providers.yaml`, so you only mount `config.yaml` (written in [Step 2](#step-2-write-a-minimal-config)). Pin an exact version (`getbusbar/busbar:1.5.3`) or ride `latest`. **On 64-bit ARM the same two-build choice applies as for the binary** (see the table above): the multi-arch image's `linux/arm64` entry is the default (ARMv8.1+) build, right for every cloud ARM host and the Raspberry Pi 5 — and for Raspberry Pi 4-class boards there is a first-class compat image under the `armv8.0` tag: `getbusbar/busbar:armv8.0` (or pin `getbusbar/busbar:X.Y.Z-armv8.0`). **If you want keys/usage/ledgers/audit to survive a restart, "a writable volume" is not the whole recipe** — see [Durable store: giving persistence a writable volume](#durable-store-giving-persistence-a-writable-volume) below for the complete four-key config plus the plugin tarball.
 
-The `:ro` on that mount is deliberate, and it has one consequence worth knowing up front: Busbar keeps admin-API config changes in an overlay file written next to `config.yaml`, so a read-only config directory means there is nowhere to persist them. Busbar starts and serves traffic normally, logs a warning saying so, and refuses admin-API config mutations rather than applying a change that would silently revert on the next restart. That is the right default for a container you deploy from a file you version-control. If you want to drive this Busbar through the admin API instead, give the overlay a writable path:
-
-```bash
-docker run -d -p 8080:8080 \
-  -e ANTHROPIC_KEY \
-  -v "$PWD/config.yaml:/etc/busbar/config.yaml:ro" \
-  -v busbar-data:/var/lib/busbar \
-  getbusbar/busbar
-```
-
-with `config.overlay.file: /var/lib/busbar/busbar-overlay.json` in your `config.yaml`. Or set `config.locked: true` to declare the read-only posture deliberately and silence the warning.
+The `:ro` mount keeps the source configuration read-only. In 1.6, admin-API config changes persist
+through the configured `store:`; the config directory does not need to be writable. Use a durable
+Store to preserve those changes across restart, as described below. A memory Store is ephemeral.
+Set `config.locked: true` for an immutable/GitOps deployment that refuses admin config mutations.
+The old `config.overlay.file` selector is migration input and is refused by current parsing.
 
 **Or build from source** (requires Rust 1.97+):
 
@@ -401,8 +395,8 @@ Prometheus scrape exposition. Like `/stats`, `/metrics` is subject to the auth m
 **A `store:` block is required in 1.6.0.** `busbar --validate` refuses a config without one, and
 `busbar --migrate-config` inserts `store: {module: memory}` into a config that lacks it. The `memory` store keeps keys, usage counters, ledgers and the
 audit trail in RAM, so they are gone on restart — Busbar logs one WARN at boot saying so. The
-admin-API config overlay (Step 1's `busbar-overlay.json`) is a *separate* thing and persists on its
-own writable path; it does not make keys/usage/ledgers durable.
+admin-API config overlay uses the same configured Store; a memory Store also loses those changes
+on restart. Use one-time migration to import an old file overlay before serving an existing deployment.
 
 A durable store ships as a **signed plugin**, not code baked into the binary or the Docker image —
 `sqlite`, `postgres`, `mysql` and `valkey` are each a separate release from their own repo

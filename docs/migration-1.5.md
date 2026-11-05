@@ -486,9 +486,10 @@ purpose.
 
 **For a deployment moving to 1.6.0:** runtime config persists exclusively through the operator's
 base Store, not the overlay files described in this historical 1.5.3 section. A durable Store
-preserves runtime changes across restart; memory is ephemeral. Legacy `config.overlay.file` and
-`BUSBAR_CONFIG_OVERLAY` inputs only warn and never read, write or import those files. A read-only
-config directory has no effect on Store persistence. Set `config.locked: true` to refuse runtime
+preserves runtime changes across restart; memory is ephemeral. `config.overlay` file/boolean
+selectors are refused by current parsing, and serving does not read `BUSBAR_CONFIG_OVERLAY`.
+One-time migration removes the old selector while preserving `config.locked` and imports old file
+state separately. A read-only config directory has no effect on Store persistence. Set `config.locked: true` to refuse runtime
 mutations, or use a Store with the required atomic conditional-record support. Failed Store
 persistence refuses the mutation before generation publication; failed overlay recovery refuses
 boot unless explicitly quarantined with `--safe-mode`. See [current operations](operations.md#config-mutability-locked--overlay).

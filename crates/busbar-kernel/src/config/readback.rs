@@ -48,7 +48,6 @@ impl ConfiguredView {
             "config".into(),
             json!({
                 "locked": deploy.config.locked,
-                "legacy_overlay_configured": deploy.config.overlay.is_some(),
             }),
         );
         view.sections.insert(

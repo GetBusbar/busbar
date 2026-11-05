@@ -12,10 +12,7 @@ fn mutable_management_selects_store_and_locked_refuses_mutation() {
     assert!(mutable.enabled);
     assert!(!mutable.locked);
     let locked = resolve_backend(
-        &ConfigMgmtCfg {
-            locked: true,
-            overlay: None,
-        },
+        &ConfigMgmtCfg { locked: true },
         Path::new("/missing/config.yaml"),
         true,
     )

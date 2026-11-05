@@ -27,8 +27,6 @@ pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
 
 pub const ENV_PROVIDERS: &str = "BUSBAR_PROVIDERS";
 
-pub const ENV_CONFIG_OVERLAY: &str = "BUSBAR_CONFIG_OVERLAY";
-
 pub const ENV_UPSTREAM_H2_PRIOR_KNOWLEDGE: &str = "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE";
 
 pub const ENV_UPSTREAM_HTTP1_ONLY: &str = "BUSBAR_UPSTREAM_HTTP1_ONLY";
@@ -340,17 +338,8 @@ pub fn load_config_from_disk_compacting_document_patches(
                 .map_err(|e| format!("providers.yaml: invalid YAML: {e}"))?
         };
 
-    let env_overlay = std::env::var(ENV_CONFIG_OVERLAY)
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(std::path::PathBuf::from);
-    let probe_fs = matches!(env_mode, config::EnvSubst::Strict);
-    let resolution = config::overlay::resolve_backend_with_env(
-        &deploy.config,
-        config_path,
-        env_overlay.as_deref(),
-        probe_fs,
-    )?;
+    let resolution =
+        config::overlay::resolve_backend_with_env(&deploy.config, config_path, None, false)?;
     let overlay_path = None;
     let config_locked = resolution.locked;
     let config_read_only = false;

@@ -430,9 +430,9 @@ pub fn dispatch_latched() -> bool {
 #[cfg(test)]
 mod store_overlay_management {
     use busbar_kernel::config::overlay::{persist_root, resolve_backend_with_env, RootSettings};
-    use busbar_kernel::config::{ConfigMgmtCfg, OverlayBackend, OverlayCfg};
+    use busbar_kernel::config::ConfigMgmtCfg;
     #[test]
-    fn legacy_overlay_file_is_untouched_and_store_remains_writable() {
+    fn retired_overlay_env_argument_is_untouched_and_store_remains_writable() {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -445,14 +445,9 @@ mod store_overlay_management {
         let legacy = dir.join("overlay.json");
         let original = b"operator-owned legacy input";
         std::fs::write(&legacy, original).unwrap();
-        let cfg = ConfigMgmtCfg {
-            locked: false,
-            overlay: Some(OverlayCfg::Backend(OverlayBackend {
-                file: Some(legacy.to_string_lossy().into_owned()),
-            })),
-        };
+        let cfg = ConfigMgmtCfg { locked: false };
         assert!(
-            resolve_backend_with_env(&cfg, &dir.join("config.yaml"), None, true)
+            resolve_backend_with_env(&cfg, &dir.join("config.yaml"), Some(&legacy), true)
                 .unwrap()
                 .enabled
         );

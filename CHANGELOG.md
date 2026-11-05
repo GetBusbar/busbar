@@ -727,8 +727,12 @@ with the old deployment's environment and working directory before starting 1.6.
 old effective values into `providers_file:` and the corresponding `advanced` keys, preserving
 old precedence, false/empty upstream settings and worker-count fallback/capping. Launch-relative
 provider overrides become absolute paths. The `--providers` flag remains supported. Remove the
-retired variables from the launcher after conversion. Old file-overlay selection is migration input;
-runtime configuration is persisted through Store. See [the migration guide](docs/migration-1.6.md).
+retired variables from the launcher after conversion. **Breaking:** the old `config.overlay`
+file/boolean selector is refused by current parsing, and serving does not read
+`BUSBAR_CONFIG_OVERLAY`. One-time migration removes the field while preserving `config.locked`
+and imports old file-overlay state; runtime configuration is persisted through Store.
+The obsolete `configuration.values.sections.config.legacy_overlay_configured` readback leaf
+is removed; `config.locked` remains the management policy. See [the migration guide](docs/migration-1.6.md).
 `BUSBAR_CONFIG`, explicit secret `{ env: NAME }` references, `RUST_LOG`, and the
 `TOKIO_WORKER_THREADS` fallback remain supported. Migration reports the actual target version and
 no longer incorrectly tells 1.5.5 operators to replace their existing signed keys.
