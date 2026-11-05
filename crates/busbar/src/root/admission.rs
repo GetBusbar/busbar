@@ -429,35 +429,16 @@ pub fn dispatch_latched() -> bool {
 
 #[cfg(test)]
 mod store_overlay_management {
-    use busbar_kernel::config::overlay::{persist_root, resolve_backend_with_env, RootSettings};
+    use busbar_kernel::config::overlay::{persist_root, resolve_backend, RootSettings};
     use busbar_kernel::config::ConfigMgmtCfg;
     #[test]
-    fn retired_overlay_env_argument_is_untouched_and_store_remains_writable() {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "busbar-overlay-input-{}-{stamp}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let legacy = dir.join("overlay.json");
-        let original = b"operator-owned legacy input";
-        std::fs::write(&legacy, original).unwrap();
+    fn mutable_management_persists_to_the_configured_store() {
         let cfg = ConfigMgmtCfg { locked: false };
-        assert!(
-            resolve_backend_with_env(&cfg, &dir.join("config.yaml"), Some(&legacy), true)
-                .unwrap()
-                .enabled
-        );
+        assert!(resolve_backend(&cfg).enabled);
         let store =
             busbar_kernel::config::overlay::OverlayStore::new(crate::root::real_store::store())
                 .expect("the actual configured Store supports conditional overlay persistence");
         persist_root(Some(&store), &RootSettings::default()).unwrap();
         assert!(store.read_bytes().unwrap().is_some());
-        assert_eq!(std::fs::read(&legacy).unwrap(), original);
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }

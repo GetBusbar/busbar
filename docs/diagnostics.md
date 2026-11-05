@@ -208,28 +208,6 @@ A plane journal scope that had been evicted from the in-memory cache was read ba
 
 ## 3xxx — Config
 
-<a id="config-overlay-not-writable"></a>
-### BUSBAR-3001 — Config overlay backend is not writable (admin-API config mutations refused) — RETIRED *(retired)*
-
-- **Severity:** actionable
-- **Since:** 1.6.0
-- **Slug:** `config-overlay-not-writable`
-
-RETIRED. No current runtime path emits this code. Runtime config persists through Store; config-directory writability and the retired config.overlay.file selector do not choose a backend.
-
-**What to do:** Configure the deployment Store and config.locked policy. Use one-time migration to import old file state; see docs/migration-1.6.md.
-
-<a id="config-overlay-probe-leak"></a>
-### BUSBAR-3002 — Overlay writability probe file could not be removed (may be left behind) — RETIRED *(retired)*
-
-- **Severity:** actionable
-- **Since:** 1.6.0
-- **Slug:** `config-overlay-probe-leak`
-
-RETIRED. Current overlay management does not probe or write the config directory; it persists through Store. No current runtime path emits this code.
-
-**What to do:** No current overlay probe needs cleanup. Preserve old files until migration is complete; see docs/migration-1.6.md.
-
 <a id="config-overlay-corrupt-refuse-write"></a>
 ### BUSBAR-3003 — Config overlay unreadable/corrupt on apply (refusing to overwrite)
 

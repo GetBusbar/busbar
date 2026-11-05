@@ -8,7 +8,6 @@ use crate::diagnostics::{diag_error, CONFIG_OVERLAY_PATCH_UNPARSABLE};
 use busbar_contract::plugin::Kind;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
 
 pub const NO_WRITABLE_OVERLAY_MSG: &str = "config mutation refused: this busbar has no writable Store-backed config overlay; edit config.yaml and reload a locked deployment";
 
@@ -18,25 +17,11 @@ pub struct OverlayResolution {
     pub locked: bool,
     pub enabled: bool,
 }
-#[cfg(test)]
-pub fn resolve_backend(
-    cfg: &ConfigMgmtCfg,
-    config_path: &Path,
-    probe_fs: bool,
-) -> Result<OverlayResolution, String> {
-    resolve_backend_with_env(cfg, config_path, None, probe_fs)
-}
-pub fn resolve_backend_with_env(
-    cfg: &ConfigMgmtCfg,
-    _config_path: &Path,
-    env_override: Option<&Path>,
-    _probe_fs: bool,
-) -> Result<OverlayResolution, String> {
-    let _ = env_override;
-    Ok(OverlayResolution {
+pub fn resolve_backend(cfg: &ConfigMgmtCfg) -> OverlayResolution {
+    OverlayResolution {
         locked: cfg.locked,
         enabled: !cfg.locked,
-    })
+    }
 }
 
 pub const OVERLAY_VERSION: u32 = 2;

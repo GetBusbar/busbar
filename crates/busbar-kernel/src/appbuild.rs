@@ -338,8 +338,7 @@ pub fn load_config_from_disk_compacting_document_patches(
                 .map_err(|e| format!("providers.yaml: invalid YAML: {e}"))?
         };
 
-    let resolution =
-        config::overlay::resolve_backend_with_env(&deploy.config, config_path, None, false)?;
+    let resolution = config::overlay::resolve_backend(&deploy.config);
     let overlay_path = None;
     let config_locked = resolution.locked;
     let config_read_only = false;

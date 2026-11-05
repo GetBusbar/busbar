@@ -216,30 +216,6 @@
     "retired": false
   },
   {
-    "code": "BUSBAR-3001",
-    "number": 3001,
-    "class": "config",
-    "slug": "config-overlay-not-writable",
-    "title": "Config overlay backend is not writable (admin-API config mutations refused) — RETIRED",
-    "severity": "actionable",
-    "summary": "RETIRED. No current runtime path emits this code. Runtime config persists through Store; config-directory writability and the retired config.overlay.file selector do not choose a backend.",
-    "action": "Configure the deployment Store and config.locked policy. Use one-time migration to import old file state; see docs/migration-1.6.md.",
-    "since": "1.6.0",
-    "retired": true
-  },
-  {
-    "code": "BUSBAR-3002",
-    "number": 3002,
-    "class": "config",
-    "slug": "config-overlay-probe-leak",
-    "title": "Overlay writability probe file could not be removed (may be left behind) — RETIRED",
-    "severity": "actionable",
-    "summary": "RETIRED. Current overlay management does not probe or write the config directory; it persists through Store. No current runtime path emits this code.",
-    "action": "No current overlay probe needs cleanup. Preserve old files until migration is complete; see docs/migration-1.6.md.",
-    "since": "1.6.0",
-    "retired": true
-  },
-  {
     "code": "BUSBAR-3003",
     "number": 3003,
     "class": "config",

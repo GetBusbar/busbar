@@ -3,28 +3,15 @@
 
 use super::*;
 #[test]
-fn missing_or_readonly_input_paths_never_probe_or_degrade_store_management() {
-    for probe in [false, true] {
-        let resolution = resolve_backend(
-            &ConfigMgmtCfg::default(),
-            Path::new("/nonexistent/read-only/config.yaml"),
-            probe,
-        )
-        .unwrap();
-        assert!(resolution.enabled);
-        assert!(!resolution.locked);
-    }
-}
-#[test]
-fn retired_environment_argument_is_ignored_without_filesystem_access() {
+fn current_management_serialization_contains_only_locked_policy() {
     for locked in [false, true] {
-        let resolution = resolve_backend_with_env(
-            &ConfigMgmtCfg { locked },
-            Path::new("/config.yaml"),
-            Some(Path::new("/also/nonexistent")),
-            true,
-        )
-        .unwrap();
+        let policy = ConfigMgmtCfg { locked };
+        let encoded = serde_yaml::to_value(&policy).unwrap();
+        let expected: serde_yaml::Value =
+            serde_yaml::from_str(&format!("locked: {locked}\n")).unwrap();
+        assert_eq!(encoded, expected);
+        let restored: ConfigMgmtCfg = serde_yaml::from_value(encoded).unwrap();
+        let resolution = resolve_backend(&restored);
         assert_eq!(resolution.locked, locked);
         assert_eq!(resolution.enabled, !locked);
     }

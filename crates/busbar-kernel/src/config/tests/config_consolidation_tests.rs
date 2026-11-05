@@ -3,20 +3,10 @@
 use super::*;
 #[test]
 fn mutable_management_selects_store_and_locked_refuses_mutation() {
-    let mutable = resolve_backend(
-        &ConfigMgmtCfg::default(),
-        Path::new("/missing/config.yaml"),
-        true,
-    )
-    .unwrap();
+    let mutable = resolve_backend(&ConfigMgmtCfg::default());
     assert!(mutable.enabled);
     assert!(!mutable.locked);
-    let locked = resolve_backend(
-        &ConfigMgmtCfg { locked: true },
-        Path::new("/missing/config.yaml"),
-        true,
-    )
-    .unwrap();
+    let locked = resolve_backend(&ConfigMgmtCfg { locked: true });
     assert!(locked.locked);
     assert!(!locked.enabled);
 }
