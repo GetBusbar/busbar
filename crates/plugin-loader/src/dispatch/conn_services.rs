@@ -2102,6 +2102,8 @@ fn submit(request: Box<Submission>) -> Conn {
     }
 }
 
+type HeaderLines = Vec<(Vec<u8>, Vec<u8>)>;
+
 fn completing(
     table: &Arc<dyn DeclaredConns>,
     id: InstanceId,
@@ -2109,7 +2111,7 @@ fn completing(
     target: &str,
     h: &Head,
     body: &[u8],
-) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ConnError> {
+) -> Result<HeaderLines, ConnError> {
     Ok(table
         .request_head(id, need, target, h.timeout_ms)?
         .completing(
