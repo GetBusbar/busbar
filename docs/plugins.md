@@ -498,6 +498,36 @@ never generated, at pack time:
   own, proof of anything). See `crates/plugin-loader/src/registry.rs`'s existing refusal to derive a
   trust label from it.
 
+### Integer tokens and the Busbar settings profile
+
+JSON Schema's `type: integer` describes a mathematical value: `1`, `1.0` and `1e0`
+all satisfy it. Several lifecycle parsers require an integer JSON token. Their schemas declare
+`"x-busbar-settings-profile": "integer-token-v1"` at the root and
+`"x-busbar-integer-token": "unsigned"` or `"signed"` on the affected `type: integer`
+subschema. Standard JSON Schema validators ignore these extension keywords; a standard-only
+validation result is not proof that a lifecycle parser accepts the submitted bytes.
+
+The profile evaluates `unsigned` using the native JSON value's `as_u64()` and `signed` using
+`as_i64()`. Decimal and exponent representations are refused, including mathematically integral
+values. The native parser also determines negative-zero handling. The standard `minimum` and
+`maximum` constraints still apply; zero is accepted only when those constraints permit it.
+Nullable fields may use `type: ["integer", "null"]` with the annotation on that subschema,
+or place the annotation on an integer alternative. The keyword accepts null only when its own
+`type` includes null. Genuine `type: number` fields and
+opaque settings are unaffected. The profile does not replace lifecycle checks for relationships
+between fields or deployment-wide constraints.
+
+The tooling's canonical implementation is `busbar-release/template/settings/integer_token.rs`,
+rendered byte-for-byte to `testing/settings/integer_token.rs`. Pack tooling compiles the declared
+profile both for `--settings-schema-file` and for the actual Statement schema. Tests pair the
+profile with the real lifecycle parser using original JSON bytes, before any normalization.
+The parser, numeric runtime and SDK ABI are unchanged.
+
+Editors must emit canonical integer tokens and preserve their exact values. JavaScript clients
+must use lossless integer parsing and serialization when values exceed `Number.MAX_SAFE_INTEGER`;
+rounding a u64 into a JavaScript `Number` changes the submitted setting. Raw JSON validation must
+retain the original number representation rather than normalize `1.0` or `1e0` before checking.
+
 ### `x-busbar-secret`: marking a field as a secret
 
 `x-busbar-secret: true` on a property means the field's value is a **reference**, never a plain

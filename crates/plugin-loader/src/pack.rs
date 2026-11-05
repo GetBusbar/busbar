@@ -707,7 +707,7 @@ fn read_and_validate_settings_schema(path: &str) -> Result<String, String> {
              2020-12, an older/missing draft can silently misrender"
         ));
     }
-    jsonschema::validator_for(&value).map_err(|e| {
+    busbar_plugin_loader::settings_profile::validator(&value).map_err(|e| {
         format!("--settings-schema-file '{path}' is not a valid JSON Schema document: {e}")
     })?;
     validate_secret_fields(&value).map_err(|e| format!("--settings-schema-file '{path}': {e}"))?;
@@ -723,12 +723,21 @@ fn read_declares(path: &str) -> Result<Declares, String> {
 fn read_rendering(
     rendering: &[u8],
 ) -> Result<busbar_contract::abi::mechanism::rendering::Read, String> {
-    busbar_contract::abi::mechanism::rendering::read(rendering).map_err(|e| {
+    let stated = busbar_contract::abi::mechanism::rendering::read(rendering).map_err(|e| {
         format!(
             "the Statement rendering does not read back: byte {} is not {}",
             e.at, e.what
         )
-    })
+    })?;
+    if let Some(schema) =
+        busbar_plugin_loader::settings_schema::statement_schema(&stated.settings_schema)?
+    {
+        let value =
+            serde_json::from_str(&schema).map_err(|e| format!("Statement settings schema: {e}"))?;
+        busbar_plugin_loader::settings_profile::validator(&value)
+            .map_err(|e| format!("Statement settings schema: {e}"))?;
+    }
+    Ok(stated)
 }
 
 pub(crate) fn stated_version(rendering: &[u8]) -> Result<String, String> {
@@ -858,7 +867,7 @@ fn pack(args: &[String]) -> ExitCode {
                 return Err(format!(
                     "missing required --version: --lib '{lib_path}' states no Statement to read \
                      the plugin's version from"
-                ))
+                ));
             }
             None => manifest.version.clone(),
         };

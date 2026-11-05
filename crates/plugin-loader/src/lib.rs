@@ -44,6 +44,9 @@ mod needs_restated;
 #[path = "tests/ordinary_load_negatives.rs"]
 mod ordinary_load_negatives;
 
+#[cfg(feature = "pack")]
+#[path = "../../../testing/settings/integer_token.rs"]
+pub mod settings_profile;
 pub mod settings_schema;
 pub mod sign;
 #[allow(unsafe_code)]

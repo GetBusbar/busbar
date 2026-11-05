@@ -1542,3 +1542,20 @@ fn pack_schema_accepts_opaque_secret_slots_without_weakening_privacy() {
         .is_ok()
     );
 }
+
+#[test]
+fn pack_checks_the_settings_profile_in_the_actual_statement() {
+    use busbar_contract::abi::mechanism::call::Blob;
+    for (schema, accepted) in [
+        (&br#"{"x-busbar-settings-profile":"integer-token-v1","type":"integer","x-busbar-integer-token":"unsigned"}"#[..], true),
+        (&br#"{"type":"integer","x-busbar-integer-token":"unsigned"}"#[..], false),
+        (&br#"{"x-busbar-settings-profile":"future"}"#[..], false),
+        (&br#"{"x-busbar-settings-profile":"integer-token-v1","type":"integer","x-busbar-integer-token":true}"#[..], false),
+    ] {
+        let mut statement = busbar_contract::abi::sdk::door::statement("profile-witness", "1.6.0", 1);
+        statement.settings_schema = Blob::json(schema);
+        // SAFETY: the Statement contains static strings and static schema bytes.
+        let rendering = unsafe { busbar_contract::abi::mechanism::rendering::render(&statement) }.unwrap();
+        assert_eq!(read_rendering(&rendering).is_ok(), accepted);
+    }
+}
