@@ -38,7 +38,6 @@ serde_json = { workspace = true }
 hex = { workspace = true }
 serde = { workspace = true }
 getrandom = { workspace = true }
-libc = { workspace = true }
 arc-swap = { workspace = true }
 tower = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }

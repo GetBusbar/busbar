@@ -194,6 +194,7 @@ pub fn migrate_config_with(
     let mut changes: Vec<String> = Vec::new();
     let mut todos: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
 
     migrate_governance(&mut root, &mut changes, &mut todos);
     migrate_auth(&mut root, &mut changes, &mut todos, &mut warnings);
@@ -234,8 +235,12 @@ pub fn migrate_config_with(
         &mut super::migrate_plugins::Ledger {
             changes: &mut changes,
             todos: &mut todos,
+            failures: &mut failures,
         },
     );
+    if !failures.is_empty() {
+        return Err(failures.join("; "));
+    }
 
     migrate_store_required(&mut root, &mut changes);
 
@@ -266,6 +271,41 @@ pub fn migrate_config_with(
         }
     }
     yaml.push_str(&body);
+    Ok(MigrateOutput {
+        yaml,
+        changes,
+        todos,
+        warnings,
+    })
+}
+
+/// The released file overlay already contains resolved hook/group definitions. Only settings
+/// migrations and the current root-unit/security conversion apply; older YAML grammar rewrites
+/// must not drop overlay-only signals/default flags or turn global hooks into a pools section.
+pub fn migrate_overlay_fragment(
+    raw: &str,
+    host: &dyn super::migrate_plugins::MigrateHost,
+) -> Result<MigrateOutput, String> {
+    let mut root: Mapping =
+        serde_yaml::from_str(raw).map_err(|_| "overlay fragment is not a mapping")?;
+    let (mut changes, mut todos, mut warnings, mut failures) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    migrate_store_module(&mut root, &mut changes, &mut todos);
+    super::migrate_plugins::migrate(
+        &mut root,
+        host,
+        &mut super::migrate_plugins::Ledger {
+            changes: &mut changes,
+            todos: &mut todos,
+            failures: &mut failures,
+        },
+    );
+    if !failures.is_empty() {
+        return Err(failures.join("; "));
+    }
+    upgrade_1_6::migrate(&mut root, &mut changes, &mut warnings);
+    let yaml = serde_yaml::to_string(&Value::Mapping(root))
+        .map_err(|_| "cannot serialize converted overlay fragment")?;
     Ok(MigrateOutput {
         yaml,
         changes,

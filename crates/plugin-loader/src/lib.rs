@@ -26,6 +26,8 @@ pub mod highwater;
 #[allow(unsafe_code)]
 pub mod hook_door;
 mod host;
+#[allow(unsafe_code)]
+pub mod migration_secrets;
 pub mod observe;
 pub mod open_once;
 pub mod registry;

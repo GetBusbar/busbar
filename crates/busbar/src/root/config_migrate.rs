@@ -474,6 +474,50 @@ impl RootHost {
 }
 
 impl MigrateHost for RootHost {
+    fn validate_migrated(
+        &self,
+        kind: &str,
+        module: &str,
+        settings: &serde_json::Value,
+    ) -> Result<(), String> {
+        // Planes receive an owned-plus-borrowed migration envelope, not their lifecycle
+        // settings blob. Full effective plane validation remains the ordinary boot reader's.
+        if kind == busbar_contract::abi::mechanism::kind::PLANE
+            || (kind == busbar_contract::abi::mechanism::kind::AUTH
+                && busbar_kernel::config::is_builtin_identity_module(module))
+        {
+            return Ok(());
+        }
+        if let Some((_, door)) = Self::linked_door(kind, module) {
+            return crate::root::loader::dispatch::migrate::validate_migrated_door(
+                crate::root::loader::dispatch::load::raw(door),
+                settings,
+            );
+        }
+        let local = self.local();
+        if let Some(row) = local
+            .resolve(module)
+            .filter(|row| row.manifest.kind == kind)
+        {
+            return row.validate_migrated(settings);
+        }
+        let fetched = self.fetch(kind, module)?;
+        let row = fetched
+            .resolve(module)
+            .filter(|row| row.manifest.kind == kind)
+            .ok_or("current migration plugin is unavailable for validation")?;
+        row.validate_migrated(settings)
+    }
+
+    fn externalize_secret(
+        &self,
+        site: &str,
+        path: &[String],
+        bytes: &[u8],
+    ) -> Result<String, String> {
+        crate::root::migration_secrets::externalize(&self.config, site, path, bytes)
+    }
+
     fn migrate(
         &self,
         kind: &str,

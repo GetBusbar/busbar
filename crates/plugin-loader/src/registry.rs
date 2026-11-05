@@ -174,6 +174,14 @@ impl LoadablePlugin {
             )
     }
 
+    pub fn validate_migrated(&self, settings: &serde_json::Value) -> Result<(), String> {
+        use crate::dispatch::migrate::{validate_migrated_door, validate_migrated_library};
+        match self.door() {
+            Some(door) => validate_migrated_door(door, settings),
+            None => validate_migrated_library(&self.lib_bytes, &self.file, settings),
+        }
+    }
+
     pub fn migrate(
         &self,
         settings: &serde_json::Value,

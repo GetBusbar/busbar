@@ -17,6 +17,27 @@ const LOCALHOST_SUFFIX: &str = ".localhost";
 pub const FROM_DEFAULT: &str = "1.5.5";
 
 pub trait MigrateHost {
+    /// Cold migration only: save an old literal and return its private absolute file path.
+    /// The default refuses rather than printing a purportedly migrated literal credential.
+    fn externalize_secret(
+        &self,
+        _site: &str,
+        _path: &[String],
+        _bytes: &[u8],
+    ) -> Result<String, String> {
+        Err("this migration host cannot externalize historical literal secrets".into())
+    }
+
+    /// Validate converted current settings before emitting them. No instance is opened.
+    fn validate_migrated(
+        &self,
+        _kind: &str,
+        _module: &str,
+        _settings: &serde_json::Value,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     fn migrating_from(&self) -> &str {
         FROM_DEFAULT
     }
@@ -80,6 +101,7 @@ impl MigrateHost for NoPlugins {
 pub(super) struct Ledger<'a> {
     pub changes: &'a mut Vec<String>,
     pub todos: &'a mut Vec<String>,
+    pub failures: &'a mut Vec<String>,
 }
 
 struct Site {
@@ -127,7 +149,14 @@ pub(super) fn migrate_over(
     for site in sites(root, planes, host, ledger) {
         wanted.push((site.kind.clone(), site.module.clone()));
         match host.migrate(&site.kind, &site.module, &site.settings, &from) {
-            Ok(None) => {}
+            Ok(None) => {
+                if host
+                    .validate_migrated(&site.kind, &site.module, &site.settings)
+                    .is_err()
+                {
+                    ledger.failures.push(format!("{}: current plugin validation refused unchanged settings; install the current plugin or resolve its migration prerequisites before retrying", site.path));
+                }
+            }
             Ok(Some((plugin, migrated))) => apply(root, host, &site, &plugin, migrated, ledger),
             Err(why) => ledger.todos.push(format!(
                 "{}: the {} plugin '{}' could not migrate its settings ({why}); they were left as \
@@ -368,12 +397,41 @@ fn apply(
     ledger: &mut Ledger<'_>,
 ) {
     let Migrated {
-        settings,
-        report,
+        mut settings,
+        mut report,
         needs,
     } = migrated;
+    let lifted_secret = needs
+        .iter()
+        .any(|need| matches!(need, MigrateNeed::ExternalizeSecret { .. }));
+    // Complete secret lifting before any configuration is emitted. An unsuccessful lift is a
+    // failed migration, not a TODO beside a literal that current runtime cannot safely consume.
+    for need in &needs {
+        let MigrateNeed::ExternalizeSecret { path } = need else {
+            continue;
+        };
+        let result = externalize_secret(&mut settings, &mut report, path, host, &site.path);
+        if result.is_err() {
+            ledger.failures.push(format!(
+                "{}: the plugin '{plugin}' requires secure literal-secret migration; ensure the old credential is nonempty without trailing CR/LF and the private migration directory is writable, or supply an explicit private file SecretRef; no converted configuration was emitted",
+                site.path
+            ));
+            return;
+        }
+    }
+    if host
+        .validate_migrated(&site.kind, &site.module, &settings)
+        .is_err()
+    {
+        ledger.failures.push(format!("{}: current plugin validation refused the migrated settings; no converted configuration was emitted", site.path));
+        return;
+    }
     if settings != site.settings {
         if let Err(why) = write_back(root, site, settings) {
+            if lifted_secret {
+                ledger.failures.push(format!("{}: migrated secret settings could not be installed; no converted configuration was emitted", site.path));
+                return;
+            }
             ledger.todos.push(format!(
                 "{}: the plugin '{plugin}' answered a migration that cannot be written ({why}); \
                  the settings were left as written",
@@ -388,6 +446,7 @@ fn apply(
     let mut decided: Vec<String> = Vec::new();
     for need in needs {
         match need {
+            MigrateNeed::ExternalizeSecret { .. } => {}
             MigrateNeed::AllowDestination(host) => allow_destination(root, plugin, &host, ledger),
 
             MigrateNeed::AllowDestinationIfPrivate(h) => {
@@ -401,8 +460,117 @@ fn apply(
     }
 }
 
+fn externalize_secret(
+    settings: &mut serde_json::Value,
+    report: &mut [String],
+    path: &[String],
+    host: &dyn MigrateHost,
+    site: &str,
+) -> Result<(), String> {
+    use zeroize::Zeroize;
+    if path.is_empty() || path.len() > 32 || path.iter().any(|p| p.is_empty() || p.len() > 256) {
+        return Err("invalid migration secret path".into());
+    }
+    let mut slot = settings;
+    for part in path {
+        slot = slot
+            .as_object_mut()
+            .and_then(|map| map.get_mut(part))
+            .ok_or("migration secret path is not an existing settings field")?;
+    }
+    let serde_json::Value::String(secret) = slot else {
+        return Err("migration secret path is not a historical literal".into());
+    };
+    if secret.is_empty() || secret.ends_with(['\r', '\n']) {
+        return Err("the current text secret resolver cannot preserve this literal exactly".into());
+    }
+    let file = host.externalize_secret(site, path, secret.as_bytes())?;
+    for line in report {
+        if !secret.is_empty() && line.contains(secret.as_str()) {
+            *line = line.replace(secret.as_str(), "[REDACTED]");
+        }
+    }
+    secret.zeroize();
+    *slot = serde_json::json!({"file": file});
+    Ok(())
+}
+
+/// Convert plugin JSON into real YAML scalars. serde_json arbitrary_precision exposes a
+/// private map marker through generic serializers, which would corrupt numeric settings.
+/// Refuse integers outside YAML's exact range instead of silently rounding their value.
+pub fn yaml_value(value: &serde_json::Value) -> Result<Value, String> {
+    use serde_json::Value as Json;
+    Ok(match value {
+        Json::Null => Value::Null,
+        Json::Bool(value) => Value::Bool(*value),
+        Json::String(value) => Value::String(value.clone()),
+        Json::Number(value) => {
+            if let Some(value) = value.as_u64() {
+                Value::Number(value.into())
+            } else if let Some(value) = value.as_i64() {
+                Value::Number(value.into())
+            } else {
+                let text = value.to_string();
+                if !text.contains(['.', 'e', 'E']) {
+                    return Err("plugin migration integer exceeds the exact YAML range".into());
+                }
+                let value = value
+                    .as_f64()
+                    .filter(|value| value.is_finite())
+                    .ok_or("plugin migration number is not a finite YAML scalar")?;
+                let replay = serde_json::Number::from_f64(value)
+                    .ok_or("plugin migration number is not finite")?
+                    .to_string();
+                if decimal_value(&text) != decimal_value(&replay) {
+                    return Err(
+                        "plugin migration decimal cannot be represented exactly in YAML".into(),
+                    );
+                }
+                Value::Number(value.into())
+            }
+        }
+        Json::Array(values) => {
+            Value::Sequence(values.iter().map(yaml_value).collect::<Result<_, _>>()?)
+        }
+        Json::Object(values) => Value::Mapping(
+            values
+                .iter()
+                .map(|(key, value)| Ok((Value::String(key.clone()), yaml_value(value)?)))
+                .collect::<Result<_, String>>()?,
+        ),
+    })
+}
+
+fn decimal_value(text: &str) -> Option<(bool, String, i64)> {
+    let (negative, text) = text
+        .strip_prefix('-')
+        .map_or((false, text), |text| (true, text));
+    let (coefficient, exponent) =
+        text.split_once(['e', 'E'])
+            .map_or(Some((text, 0_i64)), |(coefficient, exponent)| {
+                exponent
+                    .parse()
+                    .ok()
+                    .map(|exponent| (coefficient, exponent))
+            })?;
+    let decimals = coefficient
+        .split_once('.')
+        .map_or(0, |(_, fraction)| fraction.len());
+    let mut digits = coefficient.replace('.', "");
+    digits = digits.trim_start_matches('0').to_owned();
+    if digits.is_empty() {
+        return Some((false, "0".into(), 0));
+    }
+    let trailing = digits.len() - digits.trim_end_matches('0').len();
+    digits.truncate(digits.len() - trailing);
+    let exponent = exponent
+        .checked_sub(i64::try_from(decimals).ok()?)?
+        .checked_add(i64::try_from(trailing).ok()?)?;
+    Some((negative, digits, exponent))
+}
+
 fn write_back(root: &mut Mapping, site: &Site, settings: serde_json::Value) -> Result<(), String> {
-    let value = |v: &serde_json::Value| serde_yaml::to_value(v).map_err(|e| e.to_string());
+    let value = yaml_value;
     if site.kind == busbar_contract::abi::mechanism::kind::PLANE {
         let serde_json::Value::Object(sections) = settings else {
             return Err("a plane answers its sections as one object".into());

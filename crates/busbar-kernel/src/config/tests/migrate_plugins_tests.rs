@@ -374,13 +374,14 @@ fn run(yaml: &str, host: &Witness) -> (serde_yaml::Value, Vec<String>, Vec<Strin
     let serde_yaml::Value::Mapping(mut root) = serde_yaml::from_str(yaml).expect("YAML") else {
         panic!("a mapping");
     };
-    let (mut changes, mut todos) = (Vec::new(), Vec::new());
+    let (mut changes, mut todos, mut failures) = (Vec::new(), Vec::new(), Vec::new());
     migrate_over(
         &mut root,
         host,
         &mut Ledger {
             changes: &mut changes,
             todos: &mut todos,
+            failures: &mut failures,
         },
         &[witness()],
     );
@@ -734,4 +735,112 @@ fn the_private_destinations_fixture_allows_exactly_its_private_upstreams() {
 
     assert!(!changes.iter().any(|c| c.contains("vllm.example.com")));
     assert!(d["advanced"]["block_private_addresses"].is_null());
+}
+
+struct SecretLift {
+    refuse: bool,
+    observed: std::cell::RefCell<Vec<u8>>,
+}
+impl MigrateHost for SecretLift {
+    fn migrate(
+        &self,
+        _: &str,
+        module: &str,
+        settings: &serde_json::Value,
+        _: &str,
+    ) -> Result<Option<(String, Migrated)>, String> {
+        if module != "secret-lift-test" {
+            return Ok(None);
+        }
+        Ok(Some((
+            module.into(),
+            Migrated {
+                settings: settings.clone(),
+                report: vec![format!(
+                    "old literal {}",
+                    settings["token"].as_str().unwrap()
+                )],
+                needs: vec![MigrateNeed::ExternalizeSecret {
+                    path: vec!["token".into()],
+                }],
+            },
+        )))
+    }
+    fn externalize_secret(&self, _: &str, path: &[String], bytes: &[u8]) -> Result<String, String> {
+        assert_eq!(path, ["token"]);
+        if self.refuse {
+            return Err("private writer refusal".into());
+        }
+        *self.observed.borrow_mut() = bytes.to_vec();
+        Ok("/private/migration-secret".into())
+    }
+    fn repin(&self, _: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    fn release_for(&self, _: &str, _: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn cold_secret_lift_consumes_need_before_emitting_configuration_and_redacts_report() {
+    let host = SecretLift {
+        refuse: false,
+        observed: Default::default(),
+    };
+    let literal = "${DO_NOT_EXPAND}\nsecret Unicode λ";
+    let raw = format!(
+        "store:\n  module: secret-lift-test\n  settings:\n    token: {}\n    keep: 7\n",
+        serde_json::to_string(literal).unwrap()
+    );
+    let migrated = migrate_config_with(&raw, &host).unwrap();
+    assert_eq!(host.observed.borrow().as_slice(), literal.as_bytes());
+    let parsed: serde_yaml::Value = serde_yaml::from_str(&migrated.yaml).unwrap();
+    assert_eq!(
+        parsed["store"]["settings"]["token"]["file"].as_str(),
+        Some("/private/migration-secret")
+    );
+    assert_eq!(parsed["store"]["settings"]["keep"].as_u64(), Some(7));
+    assert!(!migrated.yaml.contains("DO_NOT_EXPAND"));
+    assert!(!migrated.changes.join("\n").contains("DO_NOT_EXPAND"));
+    assert!(migrated.changes.join("\n").contains("[REDACTED]"));
+    assert!(raw.contains("DO_NOT_EXPAND"));
+}
+
+#[test]
+fn cold_secret_lift_refusal_emits_no_configuration_or_literal() {
+    let host = SecretLift {
+        refuse: true,
+        observed: Default::default(),
+    };
+    let raw = "store: { module: secret-lift-test, settings: { token: private-canary } }";
+    let error = migrate_config_with(raw, &host)
+        .err()
+        .expect("migration must refuse");
+    assert!(error.contains("no converted configuration"));
+    assert!(!error.contains("private-canary"));
+    assert!(host.observed.borrow().is_empty());
+}
+
+#[test]
+fn plugin_migration_numbers_remain_scalars_and_refuse_lossy_values() {
+    for number in [
+        "7",
+        "9007199254740993",
+        "18446744073709551615",
+        "-9223372036854775808",
+        "27.0",
+        "1e2",
+    ] {
+        let json: serde_json::Value = serde_json::from_str(number).unwrap();
+        let yaml = super::yaml_value(&json).unwrap();
+        assert!(yaml.is_number(), "{number}");
+        assert!(!serde_yaml::to_string(&yaml)
+            .unwrap()
+            .contains("private::Number"));
+    }
+    for number in ["18446744073709551616", "1.00000000000000001", "1e999"] {
+        let json: serde_json::Value = serde_json::from_str(number).unwrap();
+        assert!(super::yaml_value(&json).is_err(), "{number}");
+    }
 }

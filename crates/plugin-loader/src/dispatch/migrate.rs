@@ -21,8 +21,8 @@ pub fn migrate_door(
     let Some(op) = (unsafe { Door::read_migrate(p) }) else {
         return Ok(None);
     };
-    let section = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
-    let mut answer = vec![0u8; ANSWER_CAP];
+    let section = zeroize::Zeroizing::new(serde_json::to_vec(settings).map_err(|e| e.to_string())?);
+    let mut answer = zeroize::Zeroizing::new(vec![0u8; ANSWER_CAP]);
     let mut head = super::in_head();
     head.size = size_of::<ValidateIn>() as u32;
     head.op = slot::MIGRATE;
@@ -68,6 +68,72 @@ pub fn migrate_door(
         return Err("its migrate named an answer outside the host's buffer".to_string());
     };
     read_answer(outcome, bytes).map(Some)
+}
+
+/// Pure current-settings validation after a cold migration, before the host emits configuration.
+/// The plugin gets no instance. Refusal details are deliberately not copied into migration logs.
+pub fn validate_migrated_door(door: RawDoorFn, settings: &serde_json::Value) -> Result<(), String> {
+    use busbar_contract::abi::mechanism::call::Outcome;
+    let p = super::load::enter_door(door);
+    let admitted =
+        super::load::validate_any(p).map_err(|_| "current migration plugin admission failed")?;
+    let op = admitted.slots[slot::VALIDATE as usize];
+    let section = zeroize::Zeroizing::new(
+        serde_json::to_vec(settings).map_err(|_| "cannot encode migrated settings")?,
+    );
+    let mut answer = zeroize::Zeroizing::new(vec![0u8; ANSWER_CAP]);
+    let mut head = super::in_head();
+    head.size = size_of::<ValidateIn>() as u32;
+    head.op = slot::VALIDATE;
+    let input = ValidateIn {
+        head,
+        settings: Blob {
+            ptr: section.as_ptr(),
+            len: section.len(),
+            fmt: BLOB_JSON,
+            flags: 0,
+        },
+        err_buf: answer.as_mut_ptr(),
+        err_cap: answer.len(),
+    };
+    let mut out = super::out_head();
+    let called = crate::ffi_thread::on_plugin_thread(|| {
+        // SAFETY: admission checked this lifecycle slot; VALIDATE is pure and receives no
+        // instance. All input/output buffers remain live for the complete native call.
+        unsafe {
+            op(
+                std::ptr::null_mut(),
+                std::ptr::from_ref(&input).cast(),
+                std::ptr::from_mut(&mut out).cast(),
+            )
+        }
+    })
+    .map_err(|_| "current plugin validation panicked")?;
+    if called.outcome() == Outcome::Ready {
+        Ok(())
+    } else {
+        Err("current plugin validation refused migrated settings".into())
+    }
+}
+
+pub fn validate_migrated_library(
+    bytes: &[u8],
+    display: &str,
+    settings: &serde_json::Value,
+) -> Result<(), String> {
+    let (lib, staged) = crate::stage::load_library_from_bytes(bytes, display)?;
+    // SAFETY: the admitted library stays open for the complete call; DOOR_SYMBOL has RawDoorFn ABI.
+    let door = unsafe {
+        lib.get::<RawDoorFn>(busbar_contract::abi::mechanism::DOOR_SYMBOL)
+            .map(|symbol| *symbol)
+    };
+    let result = match door {
+        Ok(door) => validate_migrated_door(door, settings),
+        Err(_) => Err("current migration plugin has no door".into()),
+    };
+    crate::dlclose_on_worker(lib);
+    drop(staged);
+    result
 }
 
 pub fn migrate_library(

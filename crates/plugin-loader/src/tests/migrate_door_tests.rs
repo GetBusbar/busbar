@@ -39,10 +39,19 @@ mod witness {
     use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
     use busbar_contract::abi::secret::{ResolveIn, ResolveOut};
 
+    pub static OPENS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     pub struct L;
     impl Life for L {
         const CANCEL: u32 = 0;
+        fn validate(settings: &[u8]) -> Result<(), Refusal> {
+            let settings: serde_json::Value = serde_json::from_slice(settings).unwrap();
+            if settings.get("reject-current").is_some() {
+                return Err(Refusal::refused("PRIVATE-REFUSAL-CANARY"));
+            }
+            Ok(())
+        }
         fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+            OPENS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(Self)
         }
         fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
@@ -161,4 +170,20 @@ fn a_refused_migration_preserves_the_plugins_reason() {
     )
     .expect_err("a refused MIGRATE must not become an unchanged or migrated section");
     assert_eq!(refused, witness::REFUSAL);
+}
+
+#[test]
+fn current_migration_validation_calls_real_slot_without_open_and_redacts_refusal() {
+    super::validate_migrated_door(
+        raw(witness::with::door),
+        &serde_json::json!({"token":{"file":"/private/token"}}),
+    )
+    .unwrap();
+    let error = super::validate_migrated_door(
+        raw(witness::with::door),
+        &serde_json::json!({"reject-current":true}),
+    )
+    .unwrap_err();
+    assert!(!error.contains("PRIVATE-REFUSAL-CANARY"));
+    assert_eq!(witness::OPENS.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
