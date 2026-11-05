@@ -203,7 +203,7 @@ mod recovered_worker_tests {
             let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let finished_work = finished.clone();
             // The effective Store value replaces the bootstrap budget, on the actual scheduler.
-            let workers = recovered_data_workers(Some(3), None, None, 1);
+            let workers = recovered_data_workers(Some(3), None, 1);
             let data = spawn_multithread_data(workers, shutdown_rx, async move {
                 assert_eq!(tokio::runtime::Handle::current().metrics().num_workers(), 3);
                 let tracker = busbar_kernel::detached::worker_detached().unwrap();
