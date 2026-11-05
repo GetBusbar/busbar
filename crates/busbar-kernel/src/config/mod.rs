@@ -1614,8 +1614,6 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
         prompt: def.prompt.unwrap_or_default(),
         user: def.user.unwrap_or_default(),
         priority: def.priority.unwrap_or(0),
-
-        at: None,
         on_empty: def.on_empty.clone(),
         settings: def.settings.clone(),
 

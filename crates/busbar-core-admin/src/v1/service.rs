@@ -1042,7 +1042,10 @@ pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[Strin
             },
             priority: cfg.priority,
 
-            at: cfg.at.map(HookStage::as_str),
+            at: match cfg.resolved_stages().as_slice() {
+                [stage] => Some(stage.as_str()),
+                _ => None,
+            },
             phase: cfg.phase.iter().copied().map(HookStage::as_str).collect(),
             fires_at: cfg
                 .resolved_stages()

@@ -66,7 +66,7 @@ pub(super) fn definitions(defs: &mut Map<String, Value>) {
 
     let phase = json!({"type":"array","items":{"enum":["request","candidate","routing","response"]},"default":[]});
     let mut runtime = object(json!({
-        "kind":{"enum":["tap","gate"]},"module":{"type":"string"},"plugin":{"type":"string","deprecated":true},
+        "kind":{"enum":["tap","gate"]},"module":{"type":"string"},
         "timeout_ms":unsigned(),"on_error":{"type":"string","default":"nothing"},
         "prompt":{"enum":["no","ro","rw"],"default":"no"},"user":{"enum":["no","ro"],"default":"no"},
         "priority":{"type":"integer","minimum":0,"maximum":65535,"x-busbar-integer-token":"unsigned","default":0},
@@ -78,10 +78,9 @@ pub(super) fn definitions(defs: &mut Map<String, Value>) {
         "groups":strings(),"phase":phase
     }));
     runtime["properties"]["timeout_ms"]["default"] = json!(1);
-    runtime["required"] = json!(["kind"]);
-    runtime["oneOf"] = json!([{"required":["module"],"not":{"required":["plugin"]}},{"required":["plugin"],"not":{"required":["module"]}}]);
+    runtime["required"] = json!(["kind", "module"]);
     runtime["description"] = json!(
-        "HookCfg accepted by admin POST/PUT and overlay. module is canonical; plugin is the legacy input alias. This differs from the deploy HookDefinition wrapper. Settings may contain hidden values and must never be reconstructed from HookView."
+        "Admin hook POST/PUT input. A single at stage is normalized into phase before storage; a non-empty phase takes precedence. module is required. This differs from the deploy HookDefinition wrapper. Settings may contain hidden values and must never be reconstructed from HookView."
     );
     runtime["x-busbar-runtime-validation"] = json!([
         "module resolves to admitted hook",
@@ -100,7 +99,7 @@ pub(super) fn definitions(defs: &mut Map<String, Value>) {
     }));
     authored["required"] = json!(["module"]);
     authored["description"] = json!(
-        "Actual top-level hooks named-definition input (HookDefCfg). Admin POST/PUT consumes Hook instead. default, signals, global and legacy at are runtime HookCfg fields, not accepted by this deploy wrapper."
+        "Actual top-level hooks named-definition input (HookDefCfg). Admin POST/PUT consumes Hook instead. default, signals, global and single-stage at are accepted by admin writes, not by this deploy wrapper."
     );
     authored["x-busbar-runtime-validation"] = json!([
         "module resolution and settings after secret resolution",
@@ -203,6 +202,8 @@ mod tests {
             json!({"module":"h","kind":"gate"}),
             json!({"module":"h","kind":"gate","on_empty":"first","default":true,"signals":["candidate_route_cost"]}),
             json!({"plugin":"legacy","kind":"tap","at":"response"}),
+            json!({"module":"h","kind":"tap","at":"response"}),
+            json!({"module":"h","kind":"tap","at":"request","phase":["response"]}),
             json!({"module":"h","plugin":"h","kind":"gate"}),
             json!({"module":"h","kind":null}),
             json!({"module":"h","kind":"gate","timeout_ms":null}),
@@ -214,7 +215,8 @@ mod tests {
         ] {
             assert_eq!(
                 runtime.is_valid(&case),
-                serde_json::from_value::<busbar_kernel::config::HookCfg>(case.clone()).is_ok(),
+                serde_json::from_value::<super::super::super::hook_input::HookInput>(case.clone())
+                    .is_ok(),
                 "runtime {case}"
             );
             assert_eq!(

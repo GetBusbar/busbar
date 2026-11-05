@@ -14,7 +14,6 @@ async fn test_admin_v1_hook_health_best_effort() {
         user: busbar_kernel::config::UserAccess::No,
         priority: 0,
         settings: serde_json::Map::new(),
-        at: None,
         on_empty: None,
         global: false,
         default: false,

@@ -280,14 +280,8 @@ pub struct HookCfg {
     /// `socket`/`webhook` out-of-process transports: a hook now runs in-process behind the frozen
     /// plugin ABI. Required and non-empty.
     ///
-    /// FREEZE BLOCKER: the WIRE name is `module`, matching the locked grammar's one word for "which
-    /// plugin backs this instance" everywhere (`hooks.<n>.module`, `identity-providers.<n>.module`,
-    /// `export.<n>.module`, `store.module`). The Rust field keeps the older `plugin` spelling only
-    /// because it is referenced at ~100 internal sites; nothing user-facing says `plugin:` any more.
-    /// 1.6.0 owner rule: a 1.5.5 config/overlay must still parse byte-for-byte, so `alias = "plugin"`
-    /// is RESTORED as READ-ONLY back-compat — a config overlay written by an earlier build still
-    /// loads. Serialization always emits `module`.
-    #[serde(rename = "module", alias = "plugin")]
+    /// Serialized as `module`, matching the other plugin-backed configuration sections.
+    #[serde(rename = "module")]
     pub plugin: String,
 
     /// Hard wall-clock deadline for a gate decision, in milliseconds (default 1). An in-process gate
@@ -325,16 +319,6 @@ pub struct HookCfg {
     /// reconcile.
     #[serde(default)]
     pub on_empty: Option<PolicyOnError>,
-    /// TAP observation stage (`request`/`route`/`attempt`/`completion`; unset = `request`).
-    /// `request` observes the (post-rewrite) request; `route` the post-reconcile candidate set;
-    /// `attempt` every dispatch attempt (the failover story); `completion` the outcome — including
-    /// the SYNTHETIC rejected completion, so audit taps see denials. Inert on a gate.
-    /// 1.6.0 owner rule: a 1.5.5 hook definition carrying the legacy single `at:` key must still
-    /// parse and behave byte-for-byte, so this field is RESTORED (`fires_at_stage` precedence
-    /// below).
-    #[serde(default)]
-    pub at: Option<HookStage>,
-
     /// OPAQUE settings map pushed to the hook via the `configure` op: sent to the plugin at
     /// load and re-pushed (commit-on-ack) by `PATCH /api/v1/admin/hooks/{name}/settings`. Busbar
     /// never interprets the contents.
@@ -374,37 +358,21 @@ pub struct HookCfg {
     /// [`caller_in_hook_groups`]. Immutable after registration.
     #[serde(default)]
     pub groups: Vec<String>,
-    /// 1.5.3 named-hook PHASE set: the pipeline stages this hook fires at. GENERALIZES the single
-    /// tap `at:` to a list. EMPTY (the default) falls back to `at:`, which pins exactly one stage and
-    /// so preserves 1.5.5 single-stage behavior byte-for-byte; with BOTH omitted the hook fires at
-    /// THE FOUR CORE STAGES and only those — the frozen meaning of an omitted `phase:`, see FREEZE
-    /// BLOCKER on [`CORE_HOOK_PHASES`]. (`--migrate-config` still writes an EXPLICIT `phase:
-    /// [request]` onto a legacy tap that carried neither, so migrating never widens one, but the
-    /// legacy `at:` rung stays live so an un-migrated 1.5.5 overlay keeps behaving exactly as it did.)
-    /// Consulted by [`HookCfg::fires_at_stage`]. Inert on a gate (gates fire at every decision point).
+    /// The pipeline stages this hook observes. An empty list selects the fixed core stages.
+    /// Migration and admin input normalize a single-stage selection into this list.
     #[serde(default)]
     pub phase: Vec<HookStage>,
 }
 
 impl HookCfg {
-    /// Whether this hook observes at `stage` (freeze blocker — see [`CORE_HOOK_PHASES`]).
-    ///
-    /// Precedence, frozen (1.6.0 owner rule: 1.5.5 must be felt byte-for-byte, so the legacy single
-    /// `at:` rung is RESTORED):
-    /// 1. a non-empty `phase:` LIST is authoritative — the hook fires at exactly those stages;
-    /// 2. otherwise the legacy single `at:` (the admin-API registration surface still carries it),
-    ///    which pins one stage;
-    /// 3. otherwise — BOTH omitted — the hook fires at THE FOUR CORE STAGES, and only those. Never
-    ///    "every stage that will ever exist": a stage added by a later release is not in
-    ///    [`CORE_HOOK_PHASES`], so it cannot retroactively widen a hook that already shipped.
+    /// Whether this hook observes at `stage`.
     pub fn fires_at_stage(&self, stage: HookStage) -> bool {
-        if !self.phase.is_empty() {
-            return self.phase.contains(&stage);
-        }
-        match self.at {
-            Some(at) => at == stage,
-            None => CORE_HOOK_PHASES.contains(&stage),
-        }
+        let phases = if self.phase.is_empty() {
+            CORE_HOOK_PHASES
+        } else {
+            &self.phase
+        };
+        phases.contains(&stage)
     }
 
     pub fn resolved_stages(&self) -> Vec<HookStage> {

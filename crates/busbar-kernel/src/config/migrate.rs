@@ -1310,9 +1310,12 @@ fn hook_entry_to_def(name: &str, entry: &Value, todos: &mut Vec<String>) -> Valu
             def.insert(k.into(), v.clone());
         }
     }
-    if let Some(phase) = m.get(Value::from(field::AT)).and_then(at_to_phase) {
+    let phase = m.get(Value::from(field::PHASE));
+    if let Some(phase) = phase.filter(|p| !p.as_sequence().is_some_and(Vec::is_empty)) {
+        def.insert(field::PHASE.into(), phase.clone());
+    } else if let Some(phase) = m.get(Value::from(field::AT)).and_then(at_to_phase) {
         def.insert(field::PHASE.into(), phase);
-    } else if let Some(phase) = m.get(Value::from(field::PHASE)) {
+    } else if let Some(phase) = phase {
         def.insert(field::PHASE.into(), phase.clone());
     } else if m.get(Value::from(field::KIND)).and_then(|v| v.as_str()) == Some(LEGACY_TAP_HOOK_KIND)
     {
@@ -2323,5 +2326,56 @@ fn migrate_identity_providers(
     root.insert(field::AUTH.into(), Value::Mapping(auth));
     if !defs.is_empty() {
         root.insert(Kind::Auth.root().into(), Value::Mapping(defs));
+    }
+}
+
+#[cfg(test)]
+mod hook_migration_tests {
+    use super::*;
+    use crate::config::{HookDefCfg, HookStage};
+
+    #[test]
+    fn legacy_hook_conversion_preserves_the_selected_stages() {
+        for (input, expected) in [
+            (
+                "{kind: tap, module: observer, at: request, phase: [response]}",
+                vec![HookStage::Response],
+            ),
+            (
+                "{kind: tap, module: observer, at: response, phase: []}",
+                vec![HookStage::Response],
+            ),
+            (
+                "{kind: tap, module: observer, at: response}",
+                vec![HookStage::Response],
+            ),
+            ("{kind: tap, module: observer}", vec![HookStage::Request]),
+        ] {
+            let entry = serde_yaml::from_str(input).unwrap();
+            let mut todos = Vec::new();
+            let value = hook_entry_to_def("observer", &entry, &mut todos);
+            assert!(todos.is_empty(), "{todos:?}");
+            let definition: HookDefCfg = serde_yaml::from_value(value).unwrap();
+            assert_eq!(definition.phase, expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn named_hook_migration_is_idempotent_and_keeps_a_single_stage() {
+        let mut root: Mapping =
+            serde_yaml::from_str("hooks: {observer: {kind: tap, plugin: observer, at: response}}")
+                .unwrap();
+        let mut changes = Vec::new();
+        migrate_hook_def_keys(&mut root, &mut changes);
+        assert_eq!(changes.len(), 2);
+        let converted = root.clone();
+        changes.clear();
+        migrate_hook_def_keys(&mut root, &mut changes);
+        assert!(changes.is_empty());
+        assert_eq!(root, converted);
+        let definition: HookDefCfg =
+            serde_yaml::from_value(root["hooks"]["observer"].clone()).unwrap();
+        assert_eq!(definition.module, "observer");
+        assert_eq!(definition.phase, vec![HookStage::Response]);
     }
 }

@@ -623,14 +623,14 @@ pub(crate) async fn get_config(State(handle): State<Arc<AppHandle>>) -> Response
 #[derive(serde::Deserialize)]
 pub(crate) struct RegisterHookReq {
     name: String,
-    config: busbar_kernel::config::HookCfg,
+    config: super::hook_input::HookInput,
 }
 
 /// The `PUT /api/v1/admin/hooks/{name}` body: the replacement definition (the name rides the path;
 /// optimistic concurrency rides `If-Match`).
 #[derive(serde::Deserialize)]
 pub(crate) struct PutHookReq {
-    config: busbar_kernel::config::HookCfg,
+    config: super::hook_input::HookInput,
 }
 
 /// The `POST /api/v1/admin/groups` request body: the group name + its definition (a `GroupCfg`
@@ -718,7 +718,7 @@ pub(crate) async fn register_hook(
     let req: RegisterHookReq = ok_or_respond!(boxed json_body(&body, "hook"));
     let name = req.name.clone();
     let resource = format!("hook:{name}");
-    let cfg = req.config;
+    let cfg = busbar_kernel::config::HookCfg::from(req.config);
 
     let txn_name = name.clone();
     let out = config_transaction(&handle, move |txn| {
@@ -795,7 +795,7 @@ pub(crate) async fn put_hook(
     let expected = ok_or_respond!(if_match_version(&headers));
     let req: PutHookReq = ok_or_respond!(boxed json_body(&body, "hook"));
     let resource = format!("hook:{name}");
-    let cfg = req.config;
+    let cfg = busbar_kernel::config::HookCfg::from(req.config);
     let txn_name = name.clone();
     let out = config_transaction(&handle, move |txn| {
         let current = txn.app();

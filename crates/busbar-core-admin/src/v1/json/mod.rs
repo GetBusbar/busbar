@@ -458,6 +458,7 @@ mod config_forms;
 #[cfg(feature = "openapi-schema")]
 mod contract_metadata;
 mod handlers;
+mod hook_input;
 #[cfg(feature = "openapi-schema")]
 mod replay_metadata;
 mod settings_edit;

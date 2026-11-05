@@ -21,7 +21,6 @@ fn hook(module: &str, kind: HookKind, global: bool) -> HookCfg {
         priority: 0,
         settings: serde_json::from_value(serde_json::json!({"url":"http://127.0.0.1:1/hook"}))
             .unwrap(),
-        at: None,
         on_empty: None,
         global,
         default: false,
