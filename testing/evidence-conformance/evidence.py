@@ -17,7 +17,7 @@ at $CONFORMANCE_OUT/verdict.json (testing/conformance/run.sh holds it to the sch
 `pass` only when all three held; anything else is `fail` (armed) with every reason named.
 
 audit  The judge is an INDEPENDENT verifier of busbar's audit chain (chain.py + ed25519.py), written
-       from docs/audit-chain-digest-v4.md alone: no busbar code, library or constant. Control: the
+       from docs/audit-chain-digest-v{2,4,5,6}.md: no busbar code, library or constant. Control: the
        page's own worked example and a chain the rig seals itself. Negative: that chain tampered
        with, a record deleted, two reordered, the tail truncated, the signatures re-keyed. Subject:
        the chain a booted busbar seals for its admin traffic, read through `/audit/range`,
@@ -83,7 +83,7 @@ oidf = _load("oidf", os.path.join(REPO, "testing", "oidf-conformance", "oidf.py"
 SUITES = {
     "audit": ("evidence-audit-trail",
               "Audit trail: hash-chained, Ed25519-signed, tamper-evident action log",
-              "an independent verifier (from docs/audit-chain-digest-v4.md alone) over /audit/range: the "
+              "an independent verifier (from docs/audit-chain-digest-v{2,4,5,6}.md) over /audit/range: the "
               "live chain verifies; tampered, deleted, reordered and truncated records are each refused"),
     "rbac": ("evidence-rbac",
              "Scope-based RBAC: least-privilege admin scopes, per-verb grants, admin/data-plane separation",
@@ -193,7 +193,9 @@ class Busbar:
 
     def __init__(self, binary, work, name, cfg):
         self.dir = os.path.join(work, name)
-        os.makedirs(self.dir, exist_ok=True)
+        # Only these OIDC fixtures require explicit same-open ephemeral initialization.
+        principal_fixture = name in ("rbac", "rbac-capped")
+        os.makedirs(self.dir, exist_ok=not principal_fixture)
         self.log = os.path.join(self.dir, "busbar.log")
         self.cfg = cfg
         conf = os.path.join(self.dir, "config.yaml")
@@ -206,7 +208,22 @@ class Busbar:
         env = {k: v for k, v in os.environ.items()
                if k not in ("NOTIFY_SOCKET", "INVOCATION_ID", "BUSBAR_ADMIN_TOKEN", "LISTEN_FDS", "LISTEN_PID")}
         env["BUSBAR_CONFIG"] = conf
-        self.proc = subprocess.Popen([binary], cwd=self.dir, env=env, stdin=subprocess.DEVNULL,
+        argv = [binary]
+        if principal_fixture:
+            if cfg.get("store", {}).get("module") != "memory":
+                raise Refused("the fresh OIDC conformance fixture must use its dedicated ephemeral Memory store")
+            out = os.environ["CONFORMANCE_OUT"]
+            creation = os.path.join(out, name + "-fixture-created.json")
+            with open(creation, "x") as stream:
+                json.dump({"newly_created_namespace": True, "sender_quiesced": True,
+                           "backend_quiesced": True, "ephemeral_instance": True,
+                           "exclusive_instance": True, "actor": "evidence-rbac-native-fixture",
+                           "reason": "new exclusive OIDC scope-matrix fixture before any caller dispatch",
+                           "fixture_dir": self.dir, "fixture_name": name}, stream, indent=2)
+                stream.write("\n")
+            argv = _load("fresh_start").prepare(binary, conf, prov,
+                                               os.path.join(out, name + "-principal-startup"), creation)
+        self.proc = subprocess.Popen(argv, cwd=self.dir, env=env, stdin=subprocess.DEVNULL,
                                      stdout=open(self.log, "wb"), stderr=subprocess.STDOUT,
                                      start_new_session=True)
         self.data = int(cfg["listen"].rsplit(":", 1)[1])
@@ -702,6 +719,102 @@ def rbac_config(data, admin, plugins, issuer, ca_pem, signing_key_file, verb_nam
                     "signing_key": {"file": signing_key_file}, "role_bindings": {"rig": bind}}})
 
 
+def judge_data_admin_isolation(data, admin, full, vkey, key_id):
+    """Observe listener isolation with denied credentials and a legitimate live data key.
+
+    The bounded audit windows observe dispatch effects; they do not verify audit cryptography.
+    The empty bracket controls for the observer's own /audit/head operation. Any missing or
+    ambiguous observation fails this check rather than proving isolation from status alone.
+    """
+    why, observed = [], {"scope": "bounded data/admin listener isolation", "requests": []}
+
+    def ask(port, method, path, headers, body=None, label="observer"):
+        try:
+            status, reply = request(port, method, path, headers=headers, body=body)
+        except (OSError, http.client.HTTPException) as e:
+            observed["requests"].append({"label": label, "method": method, "path": path,
+                                         "error": f"{type(e).__name__}: {e}"})
+            raise Refused(f"{label}: no answer ({e})") from e
+        observed["requests"].append({"label": label, "method": method, "path": path,
+                                     "status": status, "body": reply})
+        return status, reply
+
+    def position(value):
+        if isinstance(value, bool) or not (isinstance(value, int) or
+                isinstance(value, str) and re.fullmatch(r"0|[1-9][0-9]*", value)):
+            raise Refused("the dispatch observer received a noncanonical audit position")
+        number = int(value)
+        if not 0 <= number < 2 ** 64:
+            raise Refused("the dispatch observer received an out-of-range audit position")
+        return number
+
+    def head():
+        st, view = ask(admin, "GET", ADMIN + "/audit/head", full())
+        if st != 200 or not isinstance(view, dict):
+            raise Refused("the dispatch observer could not read audit/head")
+        return position(view["head"]["seq"]) if view.get("head") else 0
+
+    def window(lo, hi):
+        st, view = ask(admin, "GET", ADMIN + f"/audit/range?from={lo + 1}&to={hi}", full())
+        records = view.get("records") if isinstance(view, dict) else None
+        if st != 200 or not isinstance(records, list) or [position(r.get("seq")) for r in records] != list(range(lo + 1, hi + 1)):
+            raise Refused("the dispatch observer did not receive its complete bounded audit window")
+        return records
+
+    def keys():
+        st, view = ask(admin, "GET", ADMIN + "/keys?include=tombstoned", full())
+        if st != 200 or not isinstance(view, dict) or not isinstance(view.get("items"), list) or view.get("next_cursor"):
+            raise Refused("the isolation check requires a complete protected key-list snapshot")
+        return sorted(view["items"], key=lambda item: item["id"])
+
+    try:
+        before = keys()
+        observed["protected_keys_before"] = before
+        if not any(item.get("id") == key_id for item in before):
+            raise Refused("the legitimately minted data key is absent from the protected snapshot")
+        a, b = head(), head()
+        control = window(a, b)
+        if len(control) != 1 or control[0].get("op_class") != "admin_read":
+            raise Refused("empty dispatch bracket did not observe exactly its own admin_read")
+        observed["empty_bracket"] = control
+        lo = head()
+        for name, mint, expected in (
+                ("no credential", lambda: {}, 401),
+                ("an invalid credential", lambda: {"authorization": "Bearer invalid-isolation-probe"}, 401),
+                ("an admin-only credential", full, 401),
+                ("a live data-plane key", lambda: {"authorization": f"Bearer {vkey}"}, 404)):
+            for method in ("GET", "POST"):
+                st, reply = ask(data, method, ADMIN + "/keys", mint(),
+                                {"name": "rbac-data-admin-mutation-probe"} if method == "POST" else None,
+                                label=name)
+                if st != expected:
+                    why.append(f"subject: data {method} /keys with {name}: wanted {expected}, got {st}")
+                error_only = reply in (None, "", b"") or (
+                    isinstance(reply, dict) and set(reply) == {"error"})
+                if not error_only:
+                    why.append(f"subject: data {method} /keys with {name} returned a non-error/protected body")
+                encoded = json.dumps(reply, default=str)
+                if key_id in encoded or vkey in encoded or "rbac-data-admin-mutation-probe" in encoded:
+                    why.append(f"subject: data {method} /keys with {name} disclosed protected probe material")
+        hi = head()
+        attempt = window(lo, hi)
+        observed["probe_bracket"] = attempt
+        if len(attempt) != len(control) or [r.get("op_class") for r in attempt] != [r.get("op_class") for r in control]:
+            why.append("subject: data/admin probes caused sealed dispatch activity beyond the observer control")
+        after = keys()
+        observed["protected_keys_after"] = after
+        if before != after:
+            why.append("subject: data/admin probes mutated the protected key catalog")
+    except (Refused, KeyError, TypeError, ValueError) as e:
+        why.append(f"subject: data/admin isolation could not be established: {e}")
+    finally:
+        observed["findings"] = why
+        with open(os.path.join(os.environ["CONFORMANCE_OUT"], "data-admin-isolation.json"), "w") as f:
+            json.dump(observed, f, indent=2)
+            f.write("\n")
+    return why
+
+
 def suite_rbac(work, log):
     why = []
     pkidir = os.path.join(work, "pki")
@@ -806,6 +919,7 @@ def suite_rbac(work, log):
                 elif st not in (401, 404):
                     why.append(f"subject: the data route /stats on the admin listener answered {name} {st}")
                 say(f"subject: GET /stats on the admin listener with {name}: {st}")
+            why += judge_data_admin_isolation(data, admin, full, vkey, minted["id"])
             st, body = request(admin, "POST", ADMIN + f"/keys/{minted.get('id')}/revoke", headers=full(), body={})
             if st >= 300:
                 why.append(f"subject: revoking the virtual key answered {st} {str(body)[:120]}")
@@ -813,9 +927,6 @@ def suite_rbac(work, log):
                 st, body = request(data, "GET", "/stats", headers={"authorization": f"Bearer {vkey}"})
                 if st != 401:
                     why.append(f"subject: data plane GET /stats with a revoked key: wanted 401, got {st}")
-            st, _ = request(data, "GET", ADMIN + "/keys", headers=full())
-            if st != 404:
-                why.append(f"subject: an admin path on the data listener answered {st}, not 404")
             if issuer.hits == 0:
                 why.append("subject: busbar never fetched the issuer's JWKS, so no role token was verified")
         finally:

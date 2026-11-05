@@ -12,10 +12,10 @@
 #   2. NEGATIVE CONTROL  a deliberately weak server (SSLv3/TLS 1.0/1.1, 3DES/RC4/export ciphers, RSA 1024:
 #                        the old OpenSSL s_server bundled in the pinned testssl.sh image) MUST be refused,
 #                        and for the right reasons: min_protocol, ciphers_allowed and key_size must fail.
-#   3. SUBJECT           examples/tls_subject.rs of crates/busbar-core-connector: a run-time self-signed
-#                        certificate read back through tls::build_server_config, bound with
-#                        Listening::bind, the identity test framer (core-only, no plugin). It must meet
-#                        every assertion. The chain is judged against the subject's own certificate
+#   3. SUBJECT           dist/default's shipped busbar binary, booted through the evidence rig's
+#                        normal product fixture with tls.cert/key file references. This supplies the
+#                        production composition's real linked file-secret module and HTTP transport.
+#                        It must meet every assertion. The chain is judged against its own certificate
 #                        (testssl --add-ca), so "trusted" means the served chain is well formed and
 #                        verifies to that anchor; the public-CA chain is the released-image assessment's.
 # All three always run. `pass` only when all three hold; a subject that cannot be built or booted is
@@ -50,7 +50,7 @@ out, ver, why = sys.argv[1], sys.argv[2], sys.argv[3:]
 v = {"suite": "tls", "status": "fail" if why else "pass", "armed": True,
      "standard": "TLS server posture: protocol floor, cipher allow-list, chain, key size, expiry, no HIGH/CRITICAL findings",
      "plan": "testssl.sh against the connector's rustls listener on loopback, named assertions of scripts/release/tls-assert.json",
-     "spec_version": f"testssl.sh {ver}; rustls via busbar-core-connector"}
+     "spec_version": f"testssl.sh {ver}; rustls via dist/default busbar"}
 if why: v["reason"] = "; ".join(why)
 json.dump(v, open(out, "w"), indent=2); open(out, "a").write("\n")
 print(json.dumps(v))
@@ -165,18 +165,23 @@ if [ -s "$W/weak/cert.pem" ] && cid="$(docker run -d --network host --user "$(id
 else why+=("the weak server could not be started, so the negative control did not run: $(tail -c 300 "$W/weak/mkcert.log" 2>/dev/null | tr '\n' ' ')$([ -n "${cid:-}" ] && docker logs "$cid" 2>&1 | tail -3 | tr '\n' ' ')"); fi
 
 # ── leg 3: SUBJECT ──────────────────────────────────────────────────────────────────────────────────
-say "=== leg 3: subject (busbar-core-connector's TLS listener)"
+say "=== leg 3: subject (dist/default busbar's production TLS listener)"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$repo/target}"
-if (cd "$repo" && cargo build -p busbar-core-connector --example tls_subject) >&2; then
-  bin="$CARGO_TARGET_DIR/debug/examples/tls_subject"
-  mkdir -p "$W/subject"; "$bin" "$W/subject" >"$W/subject-server.log" 2>&1 & pids+=($!)
-  for _ in $(seq 1 60); do [ -s "$W/subject/addr" ] && break; sleep 1; done
-  if [ -s "$W/subject/addr" ]; then
-    port="$(sed 's/.*://' "$W/subject/addr")"
-    sum="$( (sha256sum "$bin" 2>/dev/null || shasum -a 256 "$bin") | cut -d' ' -f1)"
-    assess subject "$port" "$W/subject/cert.pem" "sha256:$sum" || why+=("the subject failed the assertions: $(grep -E '^FAIL' "$W/subject.log" | head -8 | tr '\n' '|')")
-  else why+=("the subject (tls_subject) did not start: $(tail -2 "$W/subject-server.log" | tr '\n' ' ')"); fi
-else why+=("the subject (crates/busbar-core-connector example tls_subject) did not build"); fi
+subject_target="$CARGO_TARGET_DIR/dist-default"
+if (cd "$repo" && cargo build --locked --manifest-path dist/default/Cargo.toml --target-dir "$subject_target" --bin busbar) >&2; then
+  bin="$subject_target/debug/busbar"
+  if mkcert "$W/subject" ec; then
+    python3 -I "$H/subject.py" "$bin" "$W/subject" >"$W/subject-server.log" 2>&1 & pids+=($!)
+    for _ in $(seq 1 120); do [ -s "$W/subject/addr" ] && break; sleep 1; done
+    if [ -s "$W/subject/addr" ]; then
+      port="$(sed 's/.*://' "$W/subject/addr")"
+      sum="$( (sha256sum "$bin" 2>/dev/null || shasum -a 256 "$bin") | cut -d' ' -f1)"
+      assess subject "$port" "$W/subject/cert.pem" "sha256:$sum" || why+=("the subject failed the assertions: $(grep -E '^FAIL' "$W/subject.log" | head -8 | tr '\n' '|')")
+    else why+=("the subject (dist/default busbar) did not start: $(tail -2 "$W/subject-server.log" | tr '\n' ' ')"); fi
+  else why+=("the subject certificate could not be generated"); fi
+else why+=("the subject (dist/default busbar) did not build"); fi
 
 mkdir -p "$CONFORMANCE_OUT/evidence" && cp -R "$W/out/." "$CONFORMANCE_OUT/evidence/" 2>/dev/null; cp "$W"/*.log "$CONFORMANCE_OUT/evidence/" 2>/dev/null
+cp "$W/subject/product/busbar.log" "$CONFORMANCE_OUT/evidence/subject-busbar.log" 2>/dev/null || true
+cp "$W/subject/product/config.yaml" "$CONFORMANCE_OUT/evidence/subject-config.yaml" 2>/dev/null || true
 final
