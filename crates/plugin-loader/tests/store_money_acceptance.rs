@@ -34,7 +34,7 @@ fn subjects() -> Vec<Subject> {
     .collect()
 }
 
-fn delta(requests: i64, billable: i64, model: &str, units: &[(&str, i64)]) -> UsageDelta {
+fn delta(requests: i64, billable: i64, model: &str, units: &[(&str, i128)]) -> UsageDelta {
     UsageDelta {
         requests,
         billable_requests: billable,
@@ -64,8 +64,8 @@ fn meter(
         bucket,
         model: model.to_string(),
         provider: provider.to_string(),
-        tokens_input: input,
-        tokens_output: input.saturating_mul(2),
+        tokens_input: i128::from(input),
+        tokens_output: i128::from(input) * 2,
         tokens_cache_read: 0,
         tokens_cache_write: 0,
         requests: reqs,
@@ -77,12 +77,22 @@ fn meter(
     }
 }
 
-fn tier(ledger: &UsageLedger, model: &str, unit: &str) -> u64 {
+fn whole(raw: i128, scale: u32) -> i128 {
+    let count = busbar_contract::Count::from_stored(raw, scale).expect("valid stored quantity");
+    assert_eq!(
+        count.micros() % 1_000_000,
+        0,
+        "whole-unit fixture has a fraction"
+    );
+    count.micros() / 1_000_000
+}
+
+fn tier(ledger: &UsageLedger, model: &str, unit: &str) -> i128 {
     ledger
         .models
         .iter()
         .find(|m| m.model == model)
-        .map_or(0, |m| m.tier(unit))
+        .map_or(0, |m| whole(m.tier(unit), m.scale))
 }
 
 fn sorted(mut rows: Vec<MeteringRow>) -> Vec<MeteringRow> {
@@ -130,7 +140,7 @@ fn add_usage_is_additive_across_flushes() {
 #[test]
 fn nodes_flushing_one_cell_sum_to_the_fleet_total() {
     for s in subjects() {
-        for node in 0..3i64 {
+        for node in 0..3i128 {
             for _ in 0..4 {
                 s.store
                     .add_usage("team", DAY, &delta(1, 1, "m", &[(UNIT_OUTPUT, node + 1)]))
@@ -194,9 +204,21 @@ fn settle_accrues_per_model_and_per_unit() {
             "{} open class kept",
             s.door
         );
-        assert_eq!(got.total_input(), 103, "{}", s.door);
         assert_eq!(
-            got.total_tokens(),
+            tier(&got, "m-a", UNIT_INPUT) + tier(&got, "m-b", UNIT_INPUT),
+            103,
+            "{}",
+            s.door
+        );
+        assert_eq!(
+            got.models
+                .iter()
+                .flat_map(|model| {
+                    [UNIT_INPUT, UNIT_OUTPUT, UNIT_CACHE_READ, UNIT_CACHE_WRITE]
+                        .map(|unit| whole(model.tier(unit), model.scale))
+                })
+                .try_fold(0i128, |sum, count| sum.checked_add(count))
+                .expect("fixture total fits"),
             118,
             "{} open class is not a token",
             s.door
@@ -284,7 +306,8 @@ fn put_usage_sets_absolutely_and_add_usage_adds_on_top() {
             .add_usage("k", DAY, &delta(7, 7, "m", &[(UNIT_INPUT, 70)]))
             .expect("a");
         let mut set = UsageLedger::default();
-        set.apply_delta(&delta(2, 1, "m", &[(UNIT_INPUT, 20)]));
+        set.checked_apply_delta(&delta(2, 1, "m", &[(UNIT_INPUT, 20)]))
+            .expect("exact fixture");
         s.store.put_usage("k", DAY, &set).expect("set");
         assert_eq!(
             s.store.get_usage("k", DAY).expect("read"),
@@ -330,32 +353,29 @@ fn one_coalesced_usage_delta_equals_its_singles() {
 }
 
 #[test]
-fn usage_counters_saturate_not_wrap() {
+fn usage_quantities_keep_full_i128_range_and_refuse_overflow_atomically() {
     for s in subjects() {
+        let mut wide = delta(i64::MAX, 1, "m", &[(UNIT_INPUT, i128::MAX - 1)]);
+        wide.models[0].scale = 6;
+        s.store.add_usage("k", DAY, &wide).expect("wide quantity");
+        let mut one = delta(i64::MAX, 1, "m", &[(UNIT_INPUT, 1)]);
+        one.models[0].scale = 6;
+        s.store.add_usage("k", DAY, &one).expect("exact maximum");
         s.store
-            .add_usage(
-                "k",
-                DAY,
-                &delta(i64::MAX, 0, "m", &[(UNIT_INPUT, i64::MAX)]),
-            )
-            .expect("a");
-        s.store
-            .add_usage(
-                "k",
-                DAY,
-                &delta(i64::MAX, 0, "m", &[(UNIT_INPUT, i64::MAX)]),
-            )
-            .expect("b");
-        s.store
-            .add_usage(
-                "k",
-                DAY,
-                &delta(i64::MAX, 0, "m", &[(UNIT_INPUT, i64::MAX)]),
-            )
-            .expect("c");
-        let got = s.store.get_usage("k", DAY).expect("read");
-        assert_eq!(got.requests, u64::MAX, "{}", s.door);
-        assert_eq!(tier(&got, "m", UNIT_INPUT), u64::MAX, "{}", s.door);
+            .add_usage("k", DAY, &delta(i64::MAX, 0, "m", &[]))
+            .expect("request counts retain saturation");
+        let before = s.store.get_usage("k", DAY).expect("read");
+        assert_eq!(before.requests, u64::MAX, "{}", s.door);
+        assert_eq!(before.models[0].scale, 6);
+        assert_eq!(before.models[0].tier(UNIT_INPUT), i128::MAX, "{}", s.door);
+        one.models[0].usage_units.insert("a_valid".into(), 1);
+        assert!(s.store.add_usage("k", DAY, &one).is_err(), "{}", s.door);
+        assert_eq!(
+            s.store.get_usage("k", DAY).expect("read"),
+            before,
+            "{} overflow must preserve every quantity and request counter",
+            s.door
+        );
     }
 }
 
@@ -372,7 +392,15 @@ fn a_coalesced_metering_delta_counts_every_response() {
         assert_eq!(rows.len(), 1, "{}", s.door);
         let r = &rows[0];
         assert_eq!((r.requests, r.billable_requests), (4, 4), "{}", s.door);
-        assert_eq!((r.tokens_input, r.tokens_output), (40, 80), "{}", s.door);
+        assert_eq!(
+            (
+                whole(r.tokens_input, r.scale),
+                whole(r.tokens_output, r.scale)
+            ),
+            (40, 80),
+            "{}",
+            s.door
+        );
     }
 }
 
@@ -458,7 +486,7 @@ fn metering_rows_keep_each_groups_and_versions_counts() {
             .map(|row| {
                 (
                     (row.key_group_at_use, row.pricing_version),
-                    (row.requests, row.usage_units["audio"]),
+                    (row.requests, whole(row.usage_units["audio"], row.scale)),
                 )
             })
             .collect();
@@ -502,23 +530,40 @@ fn list_metering_answers_only_the_bucket_asked() {
 }
 
 #[test]
-fn metering_counters_add_and_saturate() {
+fn metering_quantities_keep_full_i128_range_and_refuse_overflow_atomically() {
     for s in subjects() {
-        let mut big = meter("k", DAY, "m", "p", u64::MAX, 1);
-        big.usage_units.insert("tool_calls".into(), u64::MAX - 1);
-        let mut small = meter("k", DAY, "m", "p", 1, 1);
-        small.usage_units.insert("tool_calls".into(), 5);
+        let mut big = meter("k", DAY, "m", "p", 0, 1);
+        big.scale = 6;
+        big.tokens_input = i128::MAX - 1;
+        big.usage_units.insert("tool_calls".into(), i128::MAX - 2);
+        let mut small = meter("k", DAY, "m", "p", 0, 1);
+        small.scale = 6;
+        small.tokens_input = 1;
+        small.usage_units.insert("tool_calls".into(), 2);
         s.store.add_metering(&big).expect("big");
         s.store.add_metering(&small).expect("small");
-        let r = &s.store.list_metering(DAY).expect("list")[0];
-        assert_eq!(r.tokens_input, u64::MAX, "{}", s.door);
+        let before = s.store.list_metering(DAY).expect("list");
+        let row = &before[0];
+        assert_eq!(row.scale, 6);
+        assert_eq!(row.tokens_input, i128::MAX, "{}", s.door);
+        assert_eq!(row.usage_units["tool_calls"], i128::MAX, "{}", s.door);
+        assert_eq!(row.requests, 2, "{}", s.door);
+        assert!(s.store.add_metering(&small).is_err(), "{}", s.door);
         assert_eq!(
-            r.usage_units.get("tool_calls"),
-            Some(&u64::MAX),
-            "{}",
+            s.store.list_metering(DAY).expect("list"),
+            before,
+            "{} overflow must preserve every quantity and request counter",
             s.door
         );
-        assert_eq!(r.requests, 2, "{}", s.door);
+        small.tokens_input = 0;
+        small.tokens_output = 1;
+        assert!(s.store.add_metering(&small).is_err(), "{}", s.door);
+        assert_eq!(
+            s.store.list_metering(DAY).expect("list"),
+            before,
+            "{} open-class overflow must also roll back reserved quantities",
+            s.door
+        );
     }
 }
 
@@ -564,7 +609,9 @@ fn field_names(v: &serde_json::Value, out: &mut Vec<String>) {
 
 fn money_record_fields() -> Vec<String> {
     let mut ledger = UsageLedger::default();
-    ledger.apply_delta(&delta(1, 1, "m", &[(UNIT_INPUT, 1), ("tool_calls", 1)]));
+    ledger
+        .checked_apply_delta(&delta(1, 1, "m", &[(UNIT_INPUT, 1), ("tool_calls", 1)]))
+        .expect("exact fixture");
     let mut md = meter("k", DAY, "m", "p", 1, 1);
     md.usage_units.insert("tool_calls".into(), 1);
     md.key_group_at_use = "g".into();
