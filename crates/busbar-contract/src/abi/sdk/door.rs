@@ -350,30 +350,6 @@ unsafe impl<S: RawSlot> Entry for S {
     }
 }
 
-/// The deprecated raw slot spelling. Its body requires the same explicit caller proof as
-#[deprecated(note = "implement `RawSlot` (`unsafe fn call`, same body) or `SafeSlot`")]
-pub trait Slot {
-    /// The slot's `in`.
-    type In: AbiIn;
-    /// The slot's `out`.
-    type Out: AbiOut;
-    /// The body, as [`RawSlot::call`]'s.
-    ///
-    /// # Safety
-    /// The caller must uphold [`RawSlot::call`]'s complete instance and nested input contract.
-    unsafe fn call(instance: *mut c_void, input: &Self::In, out: &mut Self::Out) -> Outcome;
-}
-
-#[allow(deprecated)]
-impl<S: Slot> RawSlot for S {
-    type In = S::In;
-    type Out = S::Out;
-    unsafe fn call(instance: *mut c_void, input: &S::In, out: &mut S::Out) -> Outcome {
-        // SAFETY: the caller provides RawSlot::call's identical ownership contract.
-        unsafe { S::call(instance, input, out) }
-    }
-}
-
 /// THE TRAMPOLINE every table entry is: `S`'s body behind the SDK's checks (the module doc), under
 /// the call capture `H` keeps. `INDEX` is the slot's index in its kind's table; an `in.op` naming
 /// another slot is a fault.

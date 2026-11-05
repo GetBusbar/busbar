@@ -877,6 +877,10 @@ impl VerifyPlugin for Sig {
         };
         verdict.into()
     }
+
+    fn reload(&self, _: &[u8], _: &[&[u8]]) -> Result<u64, crate::abi::sdk::life::Refusal> {
+        Ok(0)
+    }
 }
 
 impl OutboundPlugin for Sig {

@@ -34,7 +34,10 @@ struct ReleaseGate {
 
 pub struct Probe;
 impl VerifyPlugin for Probe {
-    fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
+    fn open_refusing(
+        _: &[u8],
+        _: &[&[u8]],
+    ) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
         Ok(Self)
     }
 
@@ -45,6 +48,14 @@ impl VerifyPlugin for Probe {
             ..Default::default()
         })
         .into()
+    }
+
+    fn reload(
+        &self,
+        _: &[u8],
+        _: &[&[u8]],
+    ) -> Result<u64, busbar_contract::abi::sdk::life::Refusal> {
+        Ok(0)
     }
 }
 

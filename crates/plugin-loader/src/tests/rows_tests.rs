@@ -71,6 +71,14 @@ impl busbar_contract::abi::sdk::auth_door::VerifyPlugin for Door {
     ) -> busbar_contract::abi::sdk::auth_door::Answer {
         busbar_contract::abi::sdk::auth_door::Verdict::Pass.into()
     }
+
+    fn reload(
+        &self,
+        _: &[u8],
+        _: &[&[u8]],
+    ) -> Result<u64, busbar_contract::abi::sdk::life::Refusal> {
+        Ok(0)
+    }
 }
 
 const SECRET_REFS: &[busbar_contract::abi::mechanism::call::AbiStr] =

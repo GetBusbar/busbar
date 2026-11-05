@@ -54,6 +54,14 @@ mod plugin {
         fn verify(&self, _: &VerifyView<'_>) -> Answer {
             Verdict::Pass.into()
         }
+
+        fn reload(
+            &self,
+            _: &[u8],
+            _: &[&[u8]],
+        ) -> Result<u64, busbar_contract::abi::sdk::life::Refusal> {
+            Ok(0)
+        }
     }
 
     type Inst = Held<Verifier<Outbound>>;

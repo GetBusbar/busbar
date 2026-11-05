@@ -49,18 +49,12 @@ pub trait SyncStore: RecordStore + Sized + Send + Sync + 'static {
     /// [`StoreSlots::validate`].
     fn validate(settings: &[u8]) -> Result<(), String>;
 
-    /// [`StoreSlots::open`].
-    fn open(settings: &[u8], host: Option<Host>) -> Result<Self, String>;
-
-    /// [`StoreSlots::open_with_secrets`], defaulting to opening without declared secrets.
+    /// [`StoreSlots::open_with_secrets`], including every resolved secret declared by the store.
     fn open_with_secrets(
         settings: &[u8],
         secrets: &[&[u8]],
         host: Option<Host>,
-    ) -> Result<Self, String> {
-        let _ = secrets;
-        Self::open(settings, host)
-    }
+    ) -> Result<Self, String>;
 
     /// [`StoreSlots::purge_usage_before`], refused when the backend does not implement it.
     fn purge_usage_before(&self, before: u64) -> RecordStoreResult<u64> {
@@ -130,10 +124,6 @@ impl<T: SyncStore> StoreSlots for T {
 
     fn validate(settings: &[u8]) -> Result<(), String> {
         <T as SyncStore>::validate(settings)
-    }
-
-    fn open(settings: &[u8], host: Option<Host>) -> Result<Self, String> {
-        <T as SyncStore>::open(settings, host)
     }
 
     fn open_with_secrets(

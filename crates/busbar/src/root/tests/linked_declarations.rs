@@ -34,6 +34,14 @@ mod auth {
         fn open_refusing(_: &[u8], _: &[&[u8]]) -> Result<Self, Refusal> {
             panic!("cataloguing a disabled auth row must never open it")
         }
+
+        fn reload(
+            &self,
+            _: &[u8],
+            _: &[&[u8]],
+        ) -> Result<u64, busbar_contract::abi::sdk::life::Refusal> {
+            Ok(0)
+        }
     }
 
     busbar_contract::statement_extensions!(

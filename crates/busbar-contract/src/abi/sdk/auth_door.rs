@@ -327,16 +327,8 @@ pub trait VerifyPlugin: Send + Sync + Sized + 'static {
         Ok(())
     }
 
-    /// Build the plugin from its settings blob (one JSON document) and its resolved secrets (one
-    fn open_refusing(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, Refusal> {
-        Self::open(settings, secrets).map_err(Refusal::failed)
-    }
-
-    /// [`VerifyPlugin::open_refusing`] with a fixed text, answered FAILED: the earlier kit's form,
-    fn open(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, &'static str> {
-        let _ = (settings, secrets);
-        Err(OPENS_NOTHING)
-    }
+    /// Build the plugin from its settings JSON and resolved secrets, preserving typed refusals.
+    fn open_refusing(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, Refusal>;
 
     /// Judge the request at one point: the verdict, the decision and the lines to strip (a bare
     fn verify(&self, request: &VerifyView<'_>) -> Answer {
@@ -350,16 +342,9 @@ pub trait VerifyPlugin: Send + Sync + Sized + 'static {
         Poll::Ready(self.verify(request))
     }
 
-    /// A reload (the admin cache flush is one with unchanged settings): drop the inbound cache and
-    fn reload(&self, settings: &[u8], secrets: &[&[u8]]) -> Result<u64, Refusal> {
-        Ok(self.refresh(settings, secrets))
-    }
-
-    /// [`VerifyPlugin::reload`] that cannot refuse: the earlier kit's form, kept so a plugin built
-    fn refresh(&self, settings: &[u8], secrets: &[&[u8]]) -> u64 {
-        let _ = (settings, secrets);
-        0
-    }
+    /// Reload settings and resolved secrets, flushing the inbound cache and returning its count.
+    /// Refuse changes that cannot be applied to this instance without reopening it.
+    fn reload(&self, settings: &[u8], secrets: &[&[u8]]) -> Result<u64, Refusal>;
 }
 
 /// [`VerifyPlugin::validate`] for a plugin whose `open` needs no secret: open over `settings` with
@@ -373,10 +358,6 @@ pub(crate) fn carrier_extensions(plugin: &impl VerifyPlugin) -> Vec<u8> {
         crate::abi::mechanism::extensions::encode(&[(crate::abi::auth::EXT_CARRIERS, &value)])
     })
 }
-
-/// What [`VerifyPlugin::open`]'s default answers: the plugin implements neither open.
-pub const OPENS_NOTHING: &str =
-    "the auth plugin implements neither `open` nor `open_refusing`: it cannot open";
 
 /// THE AUTH KIND'S [`Life`] over a [`VerifyPlugin`] `T`: the instance state the shared lifecycle
 pub struct Verifier<T>(T);

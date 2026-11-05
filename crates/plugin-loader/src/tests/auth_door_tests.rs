@@ -468,6 +468,14 @@ impl VerifyPlugin for Keyed {
     fn verify(&self, _: &VerifyView<'_>) -> Answer {
         Verdict::Pass.into()
     }
+
+    fn reload(
+        &self,
+        _: &[u8],
+        _: &[&[u8]],
+    ) -> Result<u64, busbar_contract::abi::sdk::life::Refusal> {
+        Ok(0)
+    }
 }
 
 mod keyed {
@@ -1112,6 +1120,14 @@ mod ticketed {
                 Verdict::reject("the proof is not the held secret").into()
             })
         }
+
+        fn reload(
+            &self,
+            _: &[u8],
+            _: &[&[u8]],
+        ) -> Result<u64, busbar_contract::abi::sdk::life::Refusal> {
+            Ok(0)
+        }
     }
 
     mod door {
@@ -1615,6 +1631,14 @@ mod reasons {
             _: &[&[u8]],
         ) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
             Ok(Says)
+        }
+
+        fn reload(
+            &self,
+            _: &[u8],
+            _: &[&[u8]],
+        ) -> Result<u64, busbar_contract::abi::sdk::life::Refusal> {
+            Ok(0)
         }
     }
 

@@ -150,7 +150,16 @@ impl<const CONDITIONAL: bool> StoreSlots for Canned<CONDITIONAL> {
     fn validate(_: &[u8]) -> Result<(), String> {
         Ok(())
     }
-    fn open(_: &[u8], _: Option<Host>) -> Result<Self, String> {
+    fn open_with_secrets(
+        settings: &[u8],
+        secrets: &[&[u8]],
+        _: Option<Host>,
+    ) -> Result<Self, String> {
+        if settings == br#"{"require_secret":true}"#
+            && secrets != [b"resolved-store-secret".as_slice()]
+        {
+            return Err("the declared store secret was not supplied".into());
+        }
         Ok(Self {
             snapshot_rows: std::sync::Mutex::default(),
         })
@@ -512,6 +521,35 @@ fn open() -> *mut c_void {
     );
     assert!(!out.instance.is_null());
     out.instance
+}
+
+#[test]
+fn store_open_receives_resolved_secrets() {
+    let t = ops();
+    let mut input: OpenIn = zeroed();
+    input.head = in_head::<OpenIn>(life::OPEN);
+    input.settings = octets(br#"{"require_secret":true}"#);
+    let mut out: OpenOut = zeroed();
+    out.head = out_head::<OpenOut>();
+    assert_eq!(
+        call(t.head.open, ptr::null_mut(), &input, &mut out),
+        Outcome::Failed
+    );
+    assert!(out.instance.is_null());
+
+    let secret = Blob {
+        fmt: busbar_contract::abi::mechanism::call::BLOB_SECRET,
+        ..octets(b"resolved-store-secret")
+    };
+    input.secrets = ptr::from_ref(&secret);
+    input.secrets_len = 1;
+    out.head = out_head::<OpenOut>();
+    assert_eq!(
+        call(t.head.open, ptr::null_mut(), &input, &mut out),
+        Outcome::Ready
+    );
+    assert!(!out.instance.is_null());
+    close_store(out.instance);
 }
 
 fn text(t: AbiStr) -> String {

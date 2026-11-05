@@ -113,28 +113,12 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
     /// PARSE the operator's settings (the section's JSON) and nothing more: `validate` never opens,
     fn validate(settings: &[u8]) -> Result<(), String>;
 
-    /// Open an instance from the operator's settings (the section's JSON) and the host tables
-    #[deprecated(
-        note = "implement `open_with_secrets`: a declared secret is lent there, not in the settings"
-    )]
-    fn open(settings: &[u8], host: Option<Host>) -> Result<Self, String> {
-        let _ = (settings, host);
-        Err(
-            "this store implements neither `StoreSlots::open_with_secrets` nor `StoreSlots::open`"
-                .to_string(),
-        )
-    }
-
-    /// Open an instance from the operator's settings, its resolved `secrets` and the host tables
+    /// Open an instance from the operator's settings, its resolved `secrets` and the host tables.
     fn open_with_secrets(
         settings: &[u8],
         secrets: &[&[u8]],
         host: Option<Host>,
-    ) -> Result<Self, String> {
-        let _ = secrets;
-        #[allow(deprecated)]
-        Self::open(settings, host)
-    }
+    ) -> Result<Self, String>;
 
     /// THE CONNECT STEP of `open`: what the store reaches
     fn connect(&self, cx: &mut Op<'_>) -> Step<Result<(), String>> {
