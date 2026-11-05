@@ -1,0 +1,32 @@
+# Add these named checks to protected QA/main branch configuration. This is a
+# check-map fragment, not a replacement for existing checks or promotion policy.
+# Protected controller values below are NOT candidate-controlled environment.
+# Its trusted, digest-pinned tools directory is outside the candidate checkout.
+checks:
+  provenance-qa-prepare:
+    run: |
+      set -eu
+      : "${BUSBAR_PROVENANCE_TOOLS:?trusted producer directory}"
+      : "${BUSBAR_QA_PROVENANCE_INVENTORY:?protected native output inventory}"
+      : "${BUSBAR_QA_PROVENANCE_INVENTORY_SHA256:?protected inventory digest}"
+      python3 "$BUSBAR_PROVENANCE_TOOLS/provenance_stage.py" prepare qa \
+        --manifest "$BUSBAR_QA_PROVENANCE_INVENTORY" \
+        --manifest-sha256 "$BUSBAR_QA_PROVENANCE_INVENTORY_SHA256"
+  provenance-qa-verify:
+    run: |
+      set -eu
+      : "${BUSBAR_PROVENANCE_TOOLS:?trusted verifier directory}"
+      : "${BUSBAR_QA_PROVENANCE_INVENTORY:?protected native output inventory}"
+      : "${BUSBAR_QA_PROVENANCE_INVENTORY_SHA256:?protected inventory digest}"
+      python3 "$BUSBAR_PROVENANCE_TOOLS/provenance_stage.py" verify qa \
+        --manifest "$BUSBAR_QA_PROVENANCE_INVENTORY" \
+        --manifest-sha256 "$BUSBAR_QA_PROVENANCE_INVENTORY_SHA256"
+  provenance-main-verify:
+    run: |
+      set -eu
+      : "${BUSBAR_PROVENANCE_TOOLS:?trusted verifier directory}"
+      : "${BUSBAR_MAIN_PROVENANCE_INVENTORY:?protected native output inventory}"
+      : "${BUSBAR_MAIN_PROVENANCE_INVENTORY_SHA256:?protected inventory digest}"
+      python3 "$BUSBAR_PROVENANCE_TOOLS/provenance_stage.py" verify main \
+        --manifest "$BUSBAR_MAIN_PROVENANCE_INVENTORY" \
+        --manifest-sha256 "$BUSBAR_MAIN_PROVENANCE_INVENTORY_SHA256"
