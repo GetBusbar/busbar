@@ -754,6 +754,7 @@ async fn run(
         config::overlay::apply_root_to_deploy(&mut deploy, doc);
     }
 
+    let mut fresh_record_bootstrap = None;
     if let Some(command) = principal_transition.as_ref() {
         command
             .validate_overlay_mode(config_locked, overlay_doc.is_some())
@@ -785,9 +786,10 @@ async fn run(
         .unwrap_or_else(|_| die("principal transition refused; input or bound Store state does not satisfy cold transition requirements"));
         println!(
             "{}",
-            serde_json::to_string(&result)
+            serde_json::to_string(&result.report)
                 .unwrap_or_else(|_| die("principal transition output failed"))
         );
+        fresh_record_bootstrap = result.record_bootstrap;
         if !command.continues_serving() {
             return;
         }
@@ -1022,6 +1024,23 @@ async fn run(
         &app.demotion_record,
         &planes,
     );
+
+    // Explicit same-open ephemeral initialization uses its newly committed principal baseline
+    // as a real Store witness. It follows exactly the ordinary receipt consumer before admission.
+    if let Some(receipt) = fresh_record_bootstrap {
+        if std::env::var_os(busbar_kernel::host_record_bootstrap::RECEIPT_ENV).is_some() {
+            die("fresh record bootstrap and a cold receipt file are mutually exclusive");
+        }
+        let fingerprint =
+            busbar_kernel::host_record_bootstrap::store_fingerprint(&record_bootstrap_store);
+        let kernel = late_services
+            .kernel()
+            .unwrap_or_else(|| die("record bootstrap has no installed kernel"));
+        tokio::task::spawn_blocking(move || kernel.arm_record_bootstrap(receipt, &fingerprint))
+            .await
+            .unwrap_or_else(|error| die(format!("fresh record bootstrap failed: {error}")))
+            .unwrap_or_else(|error| die(format!("fresh record bootstrap refused: {error}")));
+    }
 
     // Only the process operator can provide this cold-start receipt. Reload never reads it.
     // Consumption is durable in the attached store and must finish before any plane admission.

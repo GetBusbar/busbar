@@ -77,3 +77,29 @@ This capability proves authorization for the supported cold procedure. The plugi
 owns the durable initializing gate, exact counter/task predicates, bounded complete
 listing, replay handling, and transition to ready. It does not permit an online rebuild
 beside old prepared writes, and it does not grant unrelated instances any authority.
+
+## Explicit new ephemeral instance
+
+A genuinely new, exclusively owned ephemeral Store has no preboot namespace in which an
+operator can place a witness. Use the existing creation attestation and same-open initializer,
+with an explicit selection of the one plugin instance whose records need initialization:
+
+```sh
+busbar --config CONFIG --providers PROVIDERS \
+  --principal-transition fresh.json --transition-action initialize-fresh-and-serve \
+  --fresh-record-bootstrap a2a
+```
+
+`fresh.json` is the creation receipt documented in [principal-transition.md](principal-transition.md).
+The actual admitted Store must be ephemeral; creation, exclusivity, sender quiescence and backend
+quiescence must be explicitly attested. Neither a Memory module name nor an empty scan proves
+freshness. The initializer refuses an existing or pending principal baseline and continues with
+the same opened Store. A durable Store must use the ordinary cold receipt procedure above.
+
+The newly committed principal baseline becomes the exact public Store witness for a fresh,
+one-use cold-record receipt. Before plane admission, the host consumes it through the same
+conditional transaction, Store binding and caller-generation checks as an operator receipt file.
+The selected plugin still performs its own normal quota initialization and conditional writes.
+No grant is issued unless `--fresh-record-bootstrap` is present. It cannot be combined with
+`BUSBAR_RECORD_BOOTSTRAP_RECEIPT`, and it is accepted only with `initialize-fresh-and-serve`.
+Every newly created ephemeral process needs its own creation attestation and initialization.

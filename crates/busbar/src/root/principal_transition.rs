@@ -14,6 +14,7 @@ use serde::de::DeserializeOwned;
 pub const INPUT_FLAG: &str = "--principal-transition";
 pub const ACTION_FLAG: &str = "--transition-action";
 pub const ATTESTATION_FLAG: &str = "--transition-attestation";
+pub const RECORD_BOOTSTRAP_FLAG: &str = "--fresh-record-bootstrap";
 const MAX_INPUT_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +34,7 @@ pub struct Command {
     input: PathBuf,
     action: Action,
     attestation: Option<PathBuf>,
+    record_bootstrap: Option<String>,
 }
 
 impl Command {
@@ -68,13 +70,17 @@ pub fn command(args: impl Iterator<Item = String>) -> Result<Option<Command>, &'
     let mut input = None;
     let mut action = None;
     let mut attestation = None;
+    let mut record_bootstrap = None;
     let mut other = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let (flag, assigned) = arg
             .split_once('=')
             .map_or((arg.as_str(), None), |(k, v)| (k, Some(v)));
-        if matches!(flag, INPUT_FLAG | ACTION_FLAG | ATTESTATION_FLAG) {
+        if matches!(
+            flag,
+            INPUT_FLAG | ACTION_FLAG | ATTESTATION_FLAG | RECORD_BOOTSTRAP_FLAG
+        ) {
             let value = assigned.or_else(|| iter.next().map(String::as_str));
             let value = value
                 .filter(|value| {
@@ -85,6 +91,7 @@ pub fn command(args: impl Iterator<Item = String>) -> Result<Option<Command>, &'
             let slot = match flag {
                 INPUT_FLAG => &mut input,
                 ACTION_FLAG => &mut action,
+                RECORD_BOOTSTRAP_FLAG => &mut record_bootstrap,
                 _ => &mut attestation,
             };
             if slot.replace(value.to_owned()).is_some() {
@@ -102,7 +109,7 @@ pub fn command(args: impl Iterator<Item = String>) -> Result<Option<Command>, &'
             other = true;
         }
     }
-    if input.is_none() && action.is_none() && attestation.is_none() {
+    if input.is_none() && action.is_none() && attestation.is_none() && record_bootstrap.is_none() {
         return Ok(None);
     }
     if other {
@@ -132,10 +139,14 @@ pub fn command(args: impl Iterator<Item = String>) -> Result<Option<Command>, &'
     if (action == Action::Apply) != attestation.is_some() {
         return Err("--transition-attestation is required only for apply");
     }
+    if record_bootstrap.is_some() && action != Action::InitializeFreshAndServe {
+        return Err("--fresh-record-bootstrap requires initialize-fresh-and-serve");
+    }
     Ok(Some(Command {
         input: input.into(),
         action,
         attestation: attestation.map(PathBuf::from),
+        record_bootstrap,
     }))
 }
 
@@ -300,6 +311,20 @@ fn check_groups(plan: &transition::Plan, cfg: &config::RootCfg) -> Result<(), St
 }
 
 /// All context is from the real boot reconstruction. No Store is reopened or selected by a plan.
+pub struct Execution {
+    pub report: serde_json::Value,
+    pub record_bootstrap: Option<busbar_kernel::host_record_bootstrap::ColdRecordReceipt>,
+}
+
+impl From<serde_json::Value> for Execution {
+    fn from(report: serde_json::Value) -> Self {
+        Self {
+            report,
+            record_bootstrap: None,
+        }
+    }
+}
+
 pub fn execute(
     command: &Command,
     cfg: &config::RootCfg,
@@ -308,7 +333,7 @@ pub fn execute(
     anchor_settings: &serde_json::Value,
     source_sha256: &str,
     overlay: Option<&OverlayDoc>,
-) -> Result<serde_json::Value, String> {
+) -> Result<Execution, String> {
     let effective_store = serde_json::to_value(&cfg.store)
         .map_err(|_| "cannot fingerprint effective Store configuration")?;
     if &effective_store != anchor_settings {
@@ -403,7 +428,7 @@ pub fn execute(
             "requirements": required,
             "groups_sha256": transition::digest(&cfg.groups)?,
             "overlay_sha256": transition::digest(&overlay)?,
-        }));
+        }).into());
     }
     if matches!(
         command.action,
@@ -413,6 +438,21 @@ pub fn execute(
         let action = if command.continues_serving() {
             let ephemeral = effective_ephemeral
                 .ok_or("principal initialization requires admitted Store durability metadata")?;
+            if let Some(instance) = &command.record_bootstrap {
+                let record_bootstrap = transition::initialize_ephemeral_with_record_bootstrap(
+                    &receipt,
+                    calls,
+                    &store_sha256,
+                    &required,
+                    ephemeral,
+                    instance,
+                    &busbar_kernel::host_record_bootstrap::store_fingerprint(&effective_store),
+                )?;
+                return Ok(Execution {
+                    report: serde_json::json!({"ok": true, "action": "initialize-fresh-and-serve"}),
+                    record_bootstrap: Some(record_bootstrap),
+                });
+            }
             transition::initialize_ephemeral_fresh(
                 &receipt,
                 calls,
@@ -425,7 +465,7 @@ pub fn execute(
             transition::initialize_fresh(&receipt, calls, &store_sha256, &required)?;
             "initialize-fresh"
         };
-        return Ok(serde_json::json!({"ok": true, "action": action}));
+        return Ok(serde_json::json!({"ok": true, "action": action}).into());
     }
     let overlay_store = config::overlay::OverlayStore::new(calls.clone())
         .map_err(|_| "principal transition requires a durable Store overlay")?;
@@ -437,7 +477,7 @@ pub fn execute(
     if command.action == Action::Reauthorize {
         let receipt: transition::Reauthorization = input(&command.input)?;
         transition::reauthorize(&receipt, calls, &store_sha256, &required)?;
-        return Ok(serde_json::json!({"ok": true, "action": "reauthorize"}));
+        return Ok(serde_json::json!({"ok": true, "action": "reauthorize"}).into());
     }
     let check_binding = |spec: &transition::Specification, effective: &str| -> Result<(), String> {
         if spec.store_config_sha256 != store_sha256 || spec.requirements != required {
@@ -463,6 +503,7 @@ pub fn execute(
             overlay.cloned(),
         )?;
         return serde_json::to_value(plan)
+            .map(Execution::from)
             .map_err(|_| "cannot encode principal transition plan".into());
     }
     let plan: transition::Plan = input(&command.input)?;
@@ -513,7 +554,7 @@ pub fn execute(
             unreachable!("handled above")
         }
     };
-    Ok(serde_json::json!({"ok": true, "action": action, "plan_sha256": transition::digest(&plan)?}))
+    Ok(serde_json::json!({"ok": true, "action": action, "plan_sha256": transition::digest(&plan)?}).into())
 }
 
 #[cfg(test)]

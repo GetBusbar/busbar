@@ -1969,6 +1969,59 @@ pub fn initialize_ephemeral_fresh(
     initialize_namespace(receipt, calls, store_sha256, required, true)
 }
 
+/// Explicit operator-selected record initialization on the SAME newly created ephemeral Store.
+/// No receipt is returned for retained state or a durable Store. The newly committed principal
+/// baseline is the exact public witness consumed by the existing cold record bootstrap path.
+pub fn initialize_ephemeral_with_record_bootstrap(
+    receipt: &FreshNamespace,
+    calls: Arc<dyn StoreCalls>,
+    store_sha256: &str,
+    required: &[Requirement],
+    effective_ephemeral: bool,
+    instance: &str,
+    record_store_sha256: &str,
+) -> Result<crate::host_record_bootstrap::ColdRecordReceipt, String> {
+    if instance.is_empty()
+        || instance.len() > usize::from(u16::MAX)
+        || instance.chars().any(char::is_control)
+        || !hash(record_store_sha256)
+        || receipt.actor.len() > 256
+        || receipt.reason.len() > 4096
+    {
+        return Err("invalid fresh record bootstrap binding".into());
+    }
+    initialize_ephemeral_fresh(
+        receipt,
+        calls.clone(),
+        store_sha256,
+        required,
+        effective_ephemeral,
+    )?;
+    let (head, bytes) = read_head(&StoreRows(calls))?
+        .ok_or("fresh principal baseline disappeared before record bootstrap")?;
+    if !head.fresh || !head.complete || head.plan_sha256 != digest(receipt)? {
+        return Err("fresh principal baseline changed before record bootstrap".into());
+    }
+    let mut epoch = [0u8; 16];
+    getrandom::fill(&mut epoch).map_err(|_| "fresh record bootstrap entropy unavailable")?;
+    Ok(crate::host_record_bootstrap::ColdRecordReceipt {
+        version: 1,
+        epoch: hex::encode(epoch),
+        instance: instance.into(),
+        namespace_hex: hex::encode(crate::host_records::record_key(instance, &[])),
+        store_config_sha256: record_store_sha256.into(),
+        store_witness: StoreWitness {
+            schema: SCHEMA.as_str().into(),
+            key_hex: hex::encode(HEAD),
+            value_hex: hex::encode(bytes),
+        },
+        sender_quiesced: receipt.sender_quiesced,
+        backend_quiesced: receipt.backend_quiesced,
+        actor: receipt.actor.clone(),
+        reason: receipt.reason.clone(),
+    })
+}
+
 fn initialize_namespace(
     receipt: &FreshNamespace,
     calls: Arc<dyn StoreCalls>,

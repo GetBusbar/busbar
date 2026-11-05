@@ -330,3 +330,38 @@ fn cold_role_inventory_cannot_be_omitted_or_changed_and_own_overlay_remains_boun
     plan.specification.role_dispositions.clear();
     assert!(check_roles(&plan.specification, &cfg, true).is_err());
 }
+
+#[test]
+fn record_bootstrap_is_explicit_and_only_allowed_on_same_open_fresh_start() {
+    let args = [
+        INPUT_FLAG,
+        "fresh.json",
+        ACTION_FLAG,
+        "initialize-fresh-and-serve",
+        RECORD_BOOTSTRAP_FLAG,
+        "a2a",
+    ];
+    let parsed = parse(&args).unwrap().unwrap();
+    assert_eq!(parsed.record_bootstrap.as_deref(), Some("a2a"));
+    assert!(parse(&[RECORD_BOOTSTRAP_FLAG, "a2a"]).is_err());
+    for action in [
+        "inspect",
+        "initialize-fresh",
+        "prepare",
+        "verify",
+        "reauthorize",
+    ] {
+        assert!(parse(&[
+            INPUT_FLAG,
+            "fresh.json",
+            ACTION_FLAG,
+            action,
+            RECORD_BOOTSTRAP_FLAG,
+            "a2a"
+        ])
+        .is_err());
+    }
+    let mut duplicate = args.to_vec();
+    duplicate.extend([RECORD_BOOTSTRAP_FLAG, "another"]);
+    assert!(parse(&duplicate).is_err());
+}

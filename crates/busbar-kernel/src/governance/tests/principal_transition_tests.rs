@@ -1681,3 +1681,137 @@ fn cold_principal_transition_role_policy_refuses_missing_proof_and_collisions_be
     assert!(f.overlay.read_required().unwrap().is_none());
     assert!(read_head(&StoreRows(f.store.clone())).unwrap().is_none());
 }
+
+fn fresh_record_creation_receipt() -> super::FreshNamespace {
+    super::FreshNamespace {
+        version: 1,
+        store_config_sha256: sha(),
+        requirements: vec![],
+        witness: None,
+        ephemeral_instance: true,
+        exclusive_instance: true,
+        creation_evidence_sha256: sha(),
+        newly_created_namespace: true,
+        sender_quiesced: true,
+        backend_quiesced: true,
+        actor: "exclusive test Store owner".into(),
+        reason: "newly created test Store with no senders and settled backend".into(),
+    }
+}
+
+#[test]
+fn fresh_record_bootstrap_refuses_durable_unattested_existing_and_wrong_store() {
+    let store = crate::real_store::store();
+    let mut receipt = fresh_record_creation_receipt();
+    assert!(super::initialize_ephemeral_with_record_bootstrap(
+        &receipt,
+        store.clone(),
+        &sha(),
+        &[],
+        false,
+        "a2a",
+        &sha()
+    )
+    .is_err());
+    receipt.newly_created_namespace = false;
+    assert!(super::initialize_ephemeral_with_record_bootstrap(
+        &receipt,
+        store.clone(),
+        &sha(),
+        &[],
+        true,
+        "a2a",
+        &sha()
+    )
+    .is_err());
+    receipt.newly_created_namespace = true;
+    receipt.backend_quiesced = false;
+    assert!(super::initialize_ephemeral_with_record_bootstrap(
+        &receipt,
+        store.clone(),
+        &sha(),
+        &[],
+        true,
+        "a2a",
+        &sha()
+    )
+    .is_err());
+    receipt.backend_quiesced = true;
+    assert!(super::initialize_ephemeral_with_record_bootstrap(
+        &receipt,
+        store.clone(),
+        &sha(),
+        &[],
+        true,
+        "",
+        &sha()
+    )
+    .is_err());
+    assert!(read_head(&StoreRows(store.clone())).unwrap().is_none());
+    let bootstrap = super::initialize_ephemeral_with_record_bootstrap(
+        &receipt,
+        store.clone(),
+        &sha(),
+        &[],
+        true,
+        "a2a",
+        &sha(),
+    )
+    .unwrap();
+    assert!(super::initialize_ephemeral_with_record_bootstrap(
+        &receipt,
+        store.clone(),
+        &sha(),
+        &[],
+        true,
+        "a2a",
+        &sha()
+    )
+    .is_err());
+    let other = crate::real_store::store();
+    assert!(
+        crate::host_record_bootstrap::Bootstrap::consume(bootstrap, &sha(), &StoreRows(other))
+            .is_err()
+    );
+}
+
+#[test]
+fn fresh_record_bootstrap_consumes_real_baseline_witness_once_and_scopes_caller() {
+    let store = crate::real_store::store();
+    let receipt = fresh_record_creation_receipt();
+    let bootstrap = super::initialize_ephemeral_with_record_bootstrap(
+        &receipt,
+        store.clone(),
+        &sha(),
+        &[],
+        true,
+        "a2a",
+        &sha(),
+    )
+    .unwrap();
+    let replay = serde_json::from_value(serde_json::to_value(&bootstrap).unwrap()).unwrap();
+    let mut grant = crate::host_record_bootstrap::Bootstrap::consume(
+        bootstrap,
+        &sha(),
+        &StoreRows(store.clone()),
+    )
+    .unwrap();
+    assert!(
+        crate::host_record_bootstrap::Bootstrap::consume(replay, &sha(), &StoreRows(store))
+            .is_err()
+    );
+    let caller = busbar_contract::services::Caller {
+        instance: Arc::from("a2a"),
+        plugin: Arc::from("a2a"),
+        kind: busbar_contract::abi::mechanism::KindCode::Plane,
+    };
+    assert!(!grant.accepts(&caller));
+    grant.bind_caller(&caller).unwrap();
+    assert!(grant.accepts(&caller));
+    let replacement = busbar_contract::services::Caller {
+        instance: Arc::from("a2a"),
+        plugin: Arc::from("a2a"),
+        kind: busbar_contract::abi::mechanism::KindCode::Plane,
+    };
+    assert!(!grant.accepts(&replacement));
+}
