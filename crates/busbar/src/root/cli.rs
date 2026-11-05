@@ -47,9 +47,10 @@ USAGE:
                         manifest-only inventory of the plugins dir (name/alias/kind/version,
                         signature verdict, load status + exact reason); never loads plugin code
     busbar --migrate-config <old-config.yaml>
-                        mechanically convert a 1.4.x config to the 1.5.0 shape: prints the new
-                        YAML to stdout (with TODO/WARNING comments where a human must decide)
-                        and a change summary to stderr; ZERO side effects, nothing is written
+                        convert supported historical configuration to the current 1.6 shape;
+                        prints YAML to stdout and a change summary to stderr. Source files
+                        remain unchanged; literal secrets may create protected, retry-safe
+                        secret files beside the source configuration. Review reported decisions
     busbar --config <migrated.yaml> --migrate-overlay <old-config.yaml>
                         offline import of the actual 1.5.5 overlay into the configured durable Store;
                         source files remain unchanged; matching retries are safe; exits without serving

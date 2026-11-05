@@ -616,6 +616,7 @@ pub fn bootstrap_config_store(
 ) -> Result<busbar_contract::store_calls::OpenedStore, String> {
     // This is a Store-only bootstrap projection. Overlay definitions do not exist yet;
     // the composition root validates the complete effective configuration after recovery.
+    config_validate::validate_bootstrap_security(cfg).map_err(|errors| errors.join("; "))?;
     if plugins.enabled && !plugins.fetch.is_empty() {
         fetch_config_plugins(plugins, cfg, true)?;
     }

@@ -40,6 +40,39 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     validate_with_plugins(cfg, unset_env_vars, false)
 }
 
+/// Validate the metadata policy used before Store recovery or plugin fetching. Listener,
+/// authentication and application definitions are validated after overlay recovery.
+pub fn validate_bootstrap_security(cfg: &RootCfg) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    reject_cidr_metadata_entries(
+        "security.blocked_metadata_hosts",
+        &cfg.blocked_metadata_hosts,
+        &mut errors,
+    );
+    reject_cidr_metadata_entries(
+        "security.allow_metadata_hosts",
+        &cfg.allow_metadata_hosts,
+        &mut errors,
+    );
+
+    reject_unmappable_metadata_entries(
+        "security.blocked_metadata_hosts",
+        &cfg.blocked_metadata_hosts,
+        &mut errors,
+    );
+    reject_unmappable_metadata_entries(
+        "security.allow_metadata_hosts",
+        &cfg.allow_metadata_hosts,
+        &mut errors,
+    );
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
 pub(super) fn validate_with_plugins(
     cfg: &RootCfg,
     unset_env_vars: &[String],
@@ -47,27 +80,9 @@ pub(super) fn validate_with_plugins(
 ) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
 
-    reject_cidr_metadata_entries(
-        "security.blocked_metadata_hosts",
-        &cfg.blocked_metadata_hosts,
-        &mut errors,
-    );
-    reject_cidr_metadata_entries(
-        "security.allow_metadata_hosts",
-        &cfg.allow_metadata_hosts,
-        &mut errors,
-    );
-
-    reject_unmappable_metadata_entries(
-        "security.blocked_metadata_hosts",
-        &cfg.blocked_metadata_hosts,
-        &mut errors,
-    );
-    reject_unmappable_metadata_entries(
-        "security.allow_metadata_hosts",
-        &cfg.allow_metadata_hosts,
-        &mut errors,
-    );
+    if let Err(security_errors) = validate_bootstrap_security(cfg) {
+        errors.extend(security_errors);
+    }
 
     {
         let b = cfg.limits.reasoning_effort_budgets;

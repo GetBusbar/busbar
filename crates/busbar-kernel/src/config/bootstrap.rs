@@ -32,7 +32,9 @@ pub fn resolve_store_bootstrap(deploy: &DeployCfg) -> Result<RootCfg, Vec<String
         auth.role_bindings.clear();
         auth
     });
-    super::resolve(&bootstrap, &Default::default())
+    let cfg = super::resolve(&bootstrap, &Default::default())?;
+    crate::config_validate::validate_bootstrap_security(&cfg)?;
+    Ok(cfg)
 }
 
 #[cfg(test)]
@@ -74,5 +76,25 @@ mod tests {
             [super::super::HookStage::Response]
         );
         assert!(!cfg.groups["restricted"].enabled);
+    }
+    #[test]
+    fn store_bootstrap_checks_security_before_opening_without_requiring_overlay_tls() {
+        let deploy: DeployCfg =
+            serde_yaml::from_str("store: { module: memory }\nadmin_require_mtls: true\n").unwrap();
+        let cfg = resolve_store_bootstrap(&deploy).unwrap();
+        assert!(crate::config_validate::validate_bootstrap_security(&cfg).is_ok());
+        for field in ["blocked_metadata_hosts", "allow_metadata_hosts"] {
+            for invalid in ["169.254.0.0/16", "not-an-ip.123"] {
+                let raw = format!(
+                    "store: {{ module: memory }}\nsecurity: {{ {field}: ['{invalid}'] }}\n"
+                );
+                let deploy: DeployCfg = serde_yaml::from_str(&raw).unwrap();
+                let errors = resolve_store_bootstrap(&deploy).unwrap_err();
+                assert!(
+                    errors.iter().any(|error| error.contains(field)),
+                    "{errors:?}"
+                );
+            }
+        }
     }
 }
