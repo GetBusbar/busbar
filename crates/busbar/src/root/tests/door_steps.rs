@@ -1904,6 +1904,10 @@ type HeadFields = Vec<(String, Vec<u8>)>;
 #[derive(Default)]
 pub(crate) struct TokenEndpoint {
     slab: busbar_contract::conn::ConnSlab<()>,
+    /// Explicit transport facts of this scripted endpoint, never inferred from its URL.
+    secure: bool,
+    prepared:
+        std::sync::Mutex<std::collections::HashMap<busbar_contract::conn::ConnId, PreparedToken>>,
     declared: std::sync::Mutex<Vec<(u32, u32, Option<String>)>>,
     opened: std::sync::Mutex<Vec<Opened>>,
     /// Each open's head fields, as the table received them.
@@ -1921,7 +1925,59 @@ pub(crate) struct TokenEndpoint {
     closing: tokio::sync::Notify,
 }
 
+struct PreparedToken {
+    need: busbar_contract::conn::NeedId,
+    target: String,
+    timeout_ms: u64,
+}
+
 impl TokenEndpoint {
+    fn secure() -> Self {
+        Self {
+            secure: true,
+            ..Self::default()
+        }
+    }
+
+    fn answer_request(
+        &self,
+        id: busbar_contract::conn::ConnId,
+        need: busbar_contract::conn::NeedId,
+        desc: &busbar_contract::conn::OpenDesc<'_>,
+    ) {
+        use busbar_contract::conn::PieceKind;
+        self.fields.lock().unwrap().push(
+            desc.fields
+                .iter()
+                .map(|(n, v)| ((*n).to_string(), v.to_vec()))
+                .collect(),
+        );
+        let mut opened = self.opened.lock().unwrap();
+        opened.push((
+            need.0,
+            desc.target.to_owned(),
+            desc.head_target.to_vec(),
+            String::from_utf8_lossy(&desc.body).into_owned(),
+        ));
+        let n = opened.len();
+        let body = match self.answer {
+            Some(answer) => answer(&opened[n - 1].3),
+
+            None => format!(
+                r#"{{"access_token":"oracle-minted-{n}","expires_in":{}}}"#,
+                if n == 1 { 10 } else { 3600 }
+            ),
+        };
+        self.replies.lock().unwrap().insert(
+            id,
+            std::collections::VecDeque::from([
+                (reply_piece(PieceKind::Fields, 0), Vec::new()),
+                (reply_piece(PieceKind::Body, body.len()), body.into_bytes()),
+                (reply_piece(PieceKind::Completion, 0), Vec::new()),
+            ]),
+        );
+    }
+
     async fn closed(&self, n: usize) {
         loop {
             let notified = self.closing.notified();
@@ -1960,6 +2016,52 @@ fn reply_piece(kind: busbar_contract::conn::PieceKind, len: usize) -> busbar_con
 }
 
 impl busbar_contract::conn::DeclaredConns for TokenEndpoint {
+    fn prepare_request(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        desc: &busbar_contract::conn::OpenDesc<'_>,
+        dial_timeout_ms: u64,
+    ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+        assert!(desc.fields.is_empty() && desc.body.is_empty() && desc.method.is_empty());
+        self.bounds
+            .lock()
+            .unwrap()
+            .push((dial_timeout_ms, desc.timeout_ms, false));
+        let id = self.slab.insert(caller, need, ())?;
+        self.prepared.lock().unwrap().insert(
+            id,
+            PreparedToken {
+                need,
+                target: desc.target.to_owned(),
+                timeout_ms: desc.timeout_ms,
+            },
+        );
+        Ok(id)
+    }
+
+    fn commit_request(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        id: busbar_contract::conn::ConnId,
+        desc: &busbar_contract::conn::OpenDesc<'_>,
+        require_secure: bool,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        use busbar_contract::conn::ConnError;
+        self.slab.get(caller, id)?;
+        let mut prepared = self.prepared.lock().unwrap();
+        let pending = prepared.get(&id).ok_or(ConnError::Refused)?;
+        if pending.target != desc.target || pending.timeout_ms != desc.timeout_ms {
+            return Err(ConnError::Refused);
+        }
+        if require_secure && !self.secure {
+            return Err(ConnError::AuthRefused);
+        }
+        let pending = prepared.remove(&id).expect("the same prepared connection");
+        self.answer_request(id, pending.need, desc);
+        Ok(())
+    }
+
     fn open_request(
         &self,
         caller: busbar_contract::conn::InstanceId,
@@ -2014,6 +2116,92 @@ impl busbar_contract::conn::DeclaredConns for TokenEndpoint {
 }
 
 #[test]
+fn token_endpoint_prepares_without_sending_and_commits_only_on_its_secured_connection() {
+    use busbar_contract::conn::{ConnError, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc};
+    const OWNER: InstanceId = InstanceId(99);
+    const NEED: NeedId = NeedId(0);
+    let prepared = OpenDesc {
+        target: "https://tokens.test/mint",
+        timeout_ms: 900,
+        ..Default::default()
+    };
+    let request = OpenDesc {
+        method: b"POST",
+        body: b"credential=fixture-secret".to_vec().into(),
+        ..prepared.clone()
+    };
+    for secure in [false, true] {
+        let endpoint = TokenEndpoint {
+            secure,
+            ..Default::default()
+        };
+        endpoint.slab.declare(OWNER, NEED);
+        let id = endpoint
+            .prepare_request(OWNER, NEED, &prepared, 123)
+            .unwrap();
+        assert!(
+            endpoint.opened.lock().unwrap().is_empty(),
+            "prepare sends nothing"
+        );
+        assert_eq!(
+            endpoint.facts(OWNER, id).unwrap().peer_cert.is_some(),
+            secure,
+            "an https spelling alone grants no secure transport facts"
+        );
+        assert!(matches!(
+            endpoint.commit_request(InstanceId(100), id, &request, true),
+            Err(ConnError::NotOwner)
+        ));
+        let wrong_target = OpenDesc {
+            target: "https://other.test/mint",
+            ..request.clone()
+        };
+        assert_eq!(
+            endpoint.commit_request(OWNER, id, &wrong_target, true),
+            Err(ConnError::Refused)
+        );
+        let wrong_timeout = OpenDesc {
+            timeout_ms: 901,
+            ..request.clone()
+        };
+        assert_eq!(
+            endpoint.commit_request(OWNER, id, &wrong_timeout, true),
+            Err(ConnError::Refused)
+        );
+        assert!(endpoint.opened.lock().unwrap().is_empty());
+        if secure {
+            endpoint.commit_request(OWNER, id, &request, true).unwrap();
+            assert_eq!(endpoint.opened.lock().unwrap().len(), 1);
+            assert!(
+                endpoint.replies.lock().unwrap().contains_key(&id),
+                "reply belongs to the prepared connection"
+            );
+            assert_eq!(
+                endpoint.commit_request(OWNER, id, &request, true),
+                Err(ConnError::Refused)
+            );
+            assert_eq!(
+                endpoint.opened.lock().unwrap().len(),
+                1,
+                "no duplicate delivery"
+            );
+        } else {
+            assert_eq!(
+                endpoint.commit_request(OWNER, id, &request, true),
+                Err(ConnError::AuthRefused)
+            );
+            assert!(
+                endpoint.opened.lock().unwrap().is_empty(),
+                "no credential crosses insecure transport"
+            );
+        }
+        endpoint.close(OWNER, id).unwrap();
+        assert!(endpoint.prepared.lock().unwrap().is_empty());
+        assert!(matches!(endpoint.facts(OWNER, id), Err(ConnError::Closed)));
+    }
+}
+
+#[test]
 fn presenting_a_request_preserves_its_independent_bounds_and_secure_delivery_requirement() {
     use busbar_contract::conn::{ConnError, DeclaredConns, InstanceId, NeedId, OpenDesc};
     use std::sync::Arc;
@@ -2063,39 +2251,9 @@ impl busbar_contract::conn::Conns for TokenEndpoint {
         need: busbar_contract::conn::NeedId,
         desc: &busbar_contract::conn::OpenDesc<'_>,
     ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
-        use busbar_contract::conn::PieceKind;
         self.slab.check_need(caller, need)?;
-        self.fields.lock().unwrap().push(
-            desc.fields
-                .iter()
-                .map(|(n, v)| ((*n).to_string(), v.to_vec()))
-                .collect(),
-        );
-        let mut opened = self.opened.lock().unwrap();
-        opened.push((
-            need.0,
-            desc.target.to_owned(),
-            desc.head_target.to_vec(),
-            String::from_utf8_lossy(&desc.body).into_owned(),
-        ));
-        let n = opened.len();
-        let body = match self.answer {
-            Some(answer) => answer(&opened[n - 1].3),
-
-            None => format!(
-                r#"{{"access_token":"oracle-minted-{n}","expires_in":{}}}"#,
-                if n == 1 { 10 } else { 3600 }
-            ),
-        };
         let id = self.slab.insert(caller, need, ())?;
-        self.replies.lock().unwrap().insert(
-            id,
-            std::collections::VecDeque::from([
-                (reply_piece(PieceKind::Fields, 0), Vec::new()),
-                (reply_piece(PieceKind::Body, body.len()), body.into_bytes()),
-                (reply_piece(PieceKind::Completion, 0), Vec::new()),
-            ]),
-        );
+        self.answer_request(id, need, desc);
         Ok(id)
     }
     fn write(
@@ -2136,16 +2294,28 @@ impl busbar_contract::conn::Conns for TokenEndpoint {
     }
     fn facts(
         &self,
-        _: busbar_contract::conn::InstanceId,
-        _: busbar_contract::conn::ConnId,
+        caller: busbar_contract::conn::InstanceId,
+        id: busbar_contract::conn::ConnId,
     ) -> Result<busbar_contract::transport::ConnFacts, busbar_contract::conn::ConnError> {
-        Err(busbar_contract::conn::ConnError::Closed)
+        self.slab.get(caller, id)?;
+        Ok(busbar_contract::transport::ConnFacts {
+            peer_cert: self
+                .secure
+                .then(|| busbar_contract::transport::wire::CertFacts {
+                    subject: "scripted token endpoint".into(),
+                    issuer: "scripted test authority".into(),
+                    fingerprint: "ab".repeat(32),
+                }),
+            ..Default::default()
+        })
     }
     fn close(
         &self,
         c: busbar_contract::conn::InstanceId,
         id: busbar_contract::conn::ConnId,
     ) -> Result<(), busbar_contract::conn::ConnError> {
+        self.slab.get(c, id)?;
+        self.prepared.lock().unwrap().remove(&id);
         self.replies.lock().unwrap().remove(&id);
         let closed = self.slab.remove(c, id).map(|_| ());
         *self.closes.lock().unwrap() += 1;
@@ -2233,7 +2403,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
             },
         )]
         .into();
-        let table = std::sync::Arc::new(TokenEndpoint::default());
+        let table = std::sync::Arc::new(TokenEndpoint::secure());
         let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
             std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
         let reach = super::DoorReach {
@@ -2439,7 +2609,7 @@ fn jwt_bearer_routes(
 async fn a_member_under_jwt_bearer_mints_at_its_service_accounts_token_uri() {
     use busbar_contract::auth_calls::FieldsRequest;
     const TOKEN_URI: &str = "https://oauth2.example.com/token";
-    let table = std::sync::Arc::new(TokenEndpoint::default());
+    let table = std::sync::Arc::new(TokenEndpoint::secure());
     let routes = jwt_bearer_routes(
         TOKEN_URI,
         busbar_kernel::config_validate::MetadataPosture::default(),
@@ -2492,7 +2662,7 @@ async fn a_service_account_token_uri_userinfo_rides_the_mint_as_1_5_5_sent_it() 
     use busbar_contract::auth_calls::FieldsRequest;
     const TOKEN_URI: &str = "https://oauth2.example.com/token";
     let written = TOKEN_URI.replacen("://", "://svcuser:hunter2-P4ss@", 1);
-    let table = std::sync::Arc::new(TokenEndpoint::default());
+    let table = std::sync::Arc::new(TokenEndpoint::secure());
     let routes = jwt_bearer_routes(
         &written,
         busbar_kernel::config_validate::MetadataPosture::default(),
@@ -3577,7 +3747,7 @@ pub(crate) mod tool_door {
                         .unwrap_or_default();
                     format!(r#"{{"access_token":"tok-{scope}","expires_in":3600}}"#)
                 }),
-                ..super::TokenEndpoint::default()
+                ..super::TokenEndpoint::secure()
             });
             let auths = crate::root::door_steps::OutboundAuths::new(
                 Arc::clone(&dispatcher),
