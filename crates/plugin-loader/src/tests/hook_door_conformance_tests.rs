@@ -90,17 +90,52 @@ extern "C" fn ranking_door() -> &'static busbar_contract::abi::mechanism::door::
 #[allow(unsafe_code)]
 fn ranking_decide(p: &Plugin<Hook>, with_costs: bool) -> String {
     use busbar_contract::abi::hook::{
-        CandidateDynamic, CandidateStatic, CANDIDATE_HAS_COST_PER_MTOK,
+        CandidateDynamic, CandidateStatic, SignalEntry, SignalValue, CANDIDATE_HAS_COST_PER_MTOK,
+        SIGNAL_TAG_BOOL, SIGNAL_TAG_F64, SIGNAL_TAG_STR,
     };
     // SAFETY: these wire structs contain only integers, floats and pointers; zero is valid.
     let mut candidates: [CandidateStatic; 2] = unsafe { std::mem::zeroed() };
     // SAFETY: CandidateDynamic likewise consists entirely of zero-valid wire fields.
-    let dynamics: [CandidateDynamic; 2] = unsafe { std::mem::zeroed() };
+    let mut dynamics: [CandidateDynamic; 2] = unsafe { std::mem::zeroed() };
     candidates[1].idx = 1;
+    // The legacy scalar favors the opposite order and cannot supply a missing recipe.
+    for (candidate, cost) in candidates.iter_mut().zip([2.0, 9.0]) {
+        candidate.cost_per_mtok = cost;
+        candidate.present = CANDIDATE_HAS_COST_PER_MTOK;
+    }
+    // route_cost's v1 stream: marker, class, price per unit, expected units.
+    // Both these arrays and their static class string remain live through DECIDE.
+    let id = busbar_contract::signal::Signal::CandidateRouteCost.bit();
+    let signals = [9.0, 2.0].map(|cost| {
+        [
+            SignalEntry {
+                id,
+                tag: SIGNAL_TAG_BOOL,
+                value: SignalValue { boolean: 1 },
+            },
+            SignalEntry {
+                id,
+                tag: SIGNAL_TAG_STR,
+                value: SignalValue {
+                    str_: busbar_contract::abi::sdk::door::abi_str("work"),
+                },
+            },
+            SignalEntry {
+                id,
+                tag: SIGNAL_TAG_F64,
+                value: SignalValue { f64_: cost },
+            },
+            SignalEntry {
+                id,
+                tag: SIGNAL_TAG_F64,
+                value: SignalValue { f64_: 1.0 },
+            },
+        ]
+    });
     if with_costs {
-        for (candidate, cost) in candidates.iter_mut().zip([9.0, 2.0]) {
-            candidate.cost_per_mtok = cost;
-            candidate.present = CANDIDATE_HAS_COST_PER_MTOK;
+        for (dynamic, entries) in dynamics.iter_mut().zip(&signals) {
+            dynamic.signals = entries.as_ptr();
+            dynamic.signals_len = entries.len();
         }
     }
     let mut order = [u32::MAX; 2];

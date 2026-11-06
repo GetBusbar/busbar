@@ -1338,13 +1338,27 @@ async fn a_linked_and_a_dropped_in_hook_open_through_the_axis_and_decide_identic
                     weight: 1,
                     context_max: None,
                     tier: None,
-                    cost_per_mtok: with_costs.then_some(cost),
+                    // A conflicting legacy scalar never substitutes for the recipe.
+                    cost_per_mtok: Some(11.0 - cost),
                     tags: &[],
                     latency_ms: None,
                     available_concurrency: 1,
                     budget_remaining: None,
                     rate_headroom: None,
-                    signals: SignalBag::new(),
+                    signals: {
+                        let mut signals = SignalBag::new();
+                        if with_costs {
+                            busbar_contract::signal::route_cost::append(
+                                &mut signals,
+                                [busbar_contract::signal::route_cost::Term {
+                                    class: "work",
+                                    price_per_unit: Some(cost),
+                                    expected_units: 1.0,
+                                }],
+                            );
+                        }
+                        signals
+                    },
                 })
                 .collect::<Vec<_>>();
             let ctx = RoutingContext {
