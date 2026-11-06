@@ -1100,7 +1100,7 @@ impl Connector {
                 // A datagram association obtains its peer description over a separately
                 // framed exchange. Its own door has no request-head locate operation.
                 let door = if door.facts().datagram {
-                    self.rendezvous_exchange(target)?.0
+                    self.rendezvous_exchange(target)?.door
                 } else {
                     door
                 };
@@ -1119,10 +1119,7 @@ impl Connector {
 
     /// The ordinary exchange carrying a datagram association's peer description.
     /// Both head completion and opening resolve the same target-selected framer.
-    fn rendezvous_exchange(
-        &self,
-        target: &str,
-    ) -> Result<(Arc<dyn FramerDoor>, Vec<Vec<u8>>), ConnError> {
+    fn rendezvous_exchange(&self, target: &str) -> Result<registry::Entry, ConnError> {
         let scheme = target
             .split_once("://")
             .map(|(scheme, _)| scheme)
@@ -1132,7 +1129,7 @@ impl Connector {
         if served.entry.door.facts().datagram {
             return Err(ConnError::Refused);
         }
-        Ok((Arc::clone(&served.entry.door), served.entry.alpn.clone()))
+        Ok(served.entry.clone())
     }
 
     /// Where `target` goes, per the entry `door` serves: its authority, security and name.
@@ -2884,7 +2881,10 @@ impl Connector {
         if pairing.closed() {
             return Err(ConnError::Refused);
         }
-        let (exchange, alpn) = self.rendezvous_exchange(target)?;
+        let registry::Entry {
+            door: exchange,
+            alpn,
+        } = self.rendezvous_exchange(target)?;
 
         let port = udp::bind(&SocketAddr::new(pairing.local().ip(), 0).to_string())
             .and_then(udp::ReadyPort::open)
