@@ -144,6 +144,9 @@ fn manifest(name: &str, declares: Declares) -> Manifest {
     .expect("the actual file manifest parses");
     m.name = name.into();
     m.alias = name.into();
+    // Both paths exercise the same first-party identity, irrespective of the input
+    // manifest's qualification publisher. Explicit third-party cases override it.
+    m.publisher = crate::sign::FIRST_PARTY_PUBLISHER.into();
     m.declares = declares;
     m
 }
@@ -654,7 +657,7 @@ fn a_sink_validates_its_settings_the_same_through_either_door() {
  serde_json::json!({"manifest": Manifest { sha256: String::new(), signature: String::new(), ..row.manifest.clone() },
  "alias_resolves_to": registry.resolve(&row.manifest.alias).map(|alias| alias.manifest.name.clone()) }).to_string() }, transcript)
     });
-    let line = "export.tail.settings: invalid type: integer `7`, expected a string";
+    let line = "export.tail.settings: invalid type: number, expected a string";
     let streams = [ExportStream::Logs as u8];
     assert_eq!(
         linked.1,
