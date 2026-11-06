@@ -50,13 +50,39 @@ impl FreshApplicationStore {
         }
     }
 
+    /// Commit only the public witness of this provisioner's genuine exclusive Store creation.
+    /// This does not initialize an authentication format or grant any runtime quota.
+    pub fn commit_creation_witness(
+        &self,
+    ) -> Result<busbar_kernel::host_record_bootstrap::StoreWitness, String> {
+        use busbar_kernel::host_records::{RecordRows, StoreRows};
+        let calls = self
+            .opened
+            .calls
+            .clone()
+            .expect("the actual fixture Store exposes typed calls");
+        let schema = busbar_contract::ids::RecordSchemaId::new("test.fixture.principal-creation");
+        StoreRows(calls)
+            .record_put(
+                schema,
+                b"namespace",
+                &busbar_contract::kinds::RecordBytes::new(self.evidence_sha256.as_bytes().to_vec())
+                    .expect("the public fixture witness fits one record"),
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(busbar_kernel::host_record_bootstrap::StoreWitness {
+            schema: schema.as_str().into(),
+            key_hex: hex::encode(b"namespace"),
+            value_hex: hex::encode(self.evidence_sha256.as_bytes()),
+        })
+    }
+
     pub fn initialize_principal_format(
         self,
         cfg: &busbar_kernel::config::RootCfg,
         plugins: &busbar_kernel::config::PluginsCfg,
     ) -> Result<busbar_contract::store_calls::OpenedStore, String> {
         use busbar_kernel::governance::principal_transition as transition;
-        use busbar_kernel::host_records::{RecordRows, StoreRows};
         let store_sha256 = transition::store_fingerprint(&cfg.store)?;
         if store_sha256 != self.store_sha256 {
             return Err(
@@ -76,29 +102,17 @@ impl FreshApplicationStore {
             requirements.iter().any(|r| !r.format.is_empty()),
             "this explicit fixture initializer is for admitted marked-auth deployments"
         );
+        let witness = self.commit_creation_witness()?;
         let calls = self
             .opened
             .calls
             .clone()
             .expect("the actual fixture Store exposes typed calls");
-        let schema = busbar_contract::ids::RecordSchemaId::new("test.fixture.principal-creation");
-        StoreRows(calls.clone())
-            .record_put(
-                schema,
-                b"namespace",
-                &busbar_contract::kinds::RecordBytes::new(self.evidence_sha256.as_bytes().to_vec())
-                    .expect("the public fixture witness fits one record"),
-            )
-            .map_err(|error| error.to_string())?;
         let receipt = transition::FreshNamespace {
             version: 1,
             store_config_sha256: store_sha256.clone(),
             requirements: requirements.clone(),
-            witness: Some(busbar_kernel::host_record_bootstrap::StoreWitness {
-                schema: schema.as_str().into(),
-                key_hex: hex::encode(b"namespace"),
-                value_hex: hex::encode(self.evidence_sha256.as_bytes()),
-            }),
+            witness: Some(witness),
             ephemeral_instance: false,
             exclusive_instance: false,
             creation_evidence_sha256: self.evidence_sha256,

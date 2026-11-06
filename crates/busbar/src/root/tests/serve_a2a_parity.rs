@@ -1056,9 +1056,13 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
     let store_fingerprint = busbar_kernel::host_record_bootstrap::store_fingerprint(
         &serde_json::to_value(&config.store).expect("the actual effective Store selection"),
     );
-    let opened =
-        crate::root::test_plugins::bootstrap_fresh_application_store(&config, &plugins, &directory)
-            .expect("exclusively provision and initialize the real durable principal namespace");
+    let fresh =
+        crate::root::test_plugins::provision_fresh_application_store(&config, &plugins, &directory)
+            .expect("exclusively provision the real durable Store");
+    fresh
+        .commit_creation_witness()
+        .expect("commit the actual exclusive Store creation witness");
+    let opened = fresh.opened();
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugins,
@@ -1087,6 +1091,8 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         step(&ctx);
     }
     let app = Arc::new(app);
+    busbar_kernel::boot::hydrate_all(&app)
+        .expect("normal startup hydrates the actual durable admin audit stream");
     let gov = app
         .governance
         .as_ref()
