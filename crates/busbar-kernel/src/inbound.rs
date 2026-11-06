@@ -2519,6 +2519,7 @@ impl Inbound {
             let candidate = original.as_ref().and_then(|head| {
                 crate::auth::inbound_candidate(&table.listener.app, &header_map(head))
             });
+            let mut resume_head_after_reader = false;
 
             let unfinished = me
                 .with_state(target, |u| {
@@ -2577,6 +2578,10 @@ impl Inbound {
                         let faulted = verifying.faulted();
                         match signed_reader_step(answer, faulted) {
                             SignedReaderStep::Pass(strips) => {
+                                // The reader reserved the earlier HEAD step while it needed
+                                // the body. Its Pass releases the ordinary chain, including
+                                // still-unanswered HEAD providers, in the original order.
+                                resume_head_after_reader = true;
                                 me.with_state(target, |u| {
                                     u.signed_pending = false;
                                     for strip in strips {
@@ -2704,19 +2709,36 @@ impl Inbound {
                     }
                     PositionKind::Plugin(Some(calls)) => Arc::clone(calls),
                 };
-                if !calls.inbound_points().has(point) {
+                let provider_points = calls.inbound_points();
+                let verify_point = if provider_points.has(point) {
+                    point
+                } else if resume_head_after_reader
+                    && point == AuthPoint::HeadBody
+                    && provider_points.has(AuthPoint::Head)
+                {
+                    AuthPoint::Head
+                } else {
                     continue;
-                }
+                };
+                let verify_head = if verify_point != point {
+                    original.as_ref().unwrap_or(&head)
+                } else {
+                    &head
+                };
                 let unit_id = match target {
                     Target::Unit(u) => u,
                     Target::Peer(_) => 0,
                 };
                 let req = verify_request(
-                    &head,
-                    point,
+                    verify_head,
+                    verify_point,
                     conn,
                     unit_id,
-                    body.as_ref().map(|b| b.as_slice()),
+                    if verify_point == AuthPoint::HeadBody {
+                        body.as_ref().map(|b| b.as_slice())
+                    } else {
+                        None
+                    },
                     candidate.as_ref(),
                 );
                 let mut verifying = calls.verify(req);
