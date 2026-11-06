@@ -116,7 +116,8 @@ async fn real_session_framer(
             fields: Vec::new(),
             rung: 0,
         },
-        claimant: Claimant::Plane("ordinary-session-capability".into()),
+        // These routes are owned by the root router adapter, not a mounted plane.
+        claimant: Claimant::Clean("ordinary-session-capability".into()),
         dialect: 0,
         auth: LineAuth::None,
         upgrade: Some("ws".into()),

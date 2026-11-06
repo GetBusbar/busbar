@@ -106,7 +106,8 @@ async fn real_framer() -> (tokio::sync::MutexGuard<'static, ()>, DataFramer) {
             fields: Vec::new(),
             rung: 0,
         },
-        claimant: Claimant::Plane("real-session-fixture".into()),
+        // These routes are owned by the root router adapter, not a mounted plane.
+        claimant: Claimant::Clean("real-session-fixture".into()),
         dialect: 0,
         auth: LineAuth::None,
         upgrade: Some("ws".into()),
