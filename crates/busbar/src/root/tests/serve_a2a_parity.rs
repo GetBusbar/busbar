@@ -139,8 +139,11 @@ fn canonical(value: &serde_json::Value) -> String {
 
 fn peer_card(endpoint: &str, issuer: &ed25519_dalek::SigningKey) -> serde_json::Value {
     let mut card = serde_json::json!({
-        "name": "Vendor", "description": "the conformance agent", "url": endpoint,
-        "version": "1.0.0", "protocolVersion": "0.3.0", "capabilities": {},
+        "name": "Vendor", "description": "the conformance agent", "version": "1.0.0",
+        "supportedInterfaces": [{
+            "url": endpoint, "protocolBinding": "JSONRPC", "protocolVersion": "1.0",
+        }],
+        "capabilities": {},
         "defaultInputModes": ["text/plain"], "defaultOutputModes": ["text/plain"],
         "skills": [{"id": "reply", "name": "reply", "description": "replies", "tags": ["reply"]}]
     });
@@ -1259,7 +1262,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         assert_eq!(status, 200, "{preview}");
         let fingerprint = preview["fingerprint"]
             .as_str()
-            .expect("the authenticated card has a fingerprint");
+            .unwrap_or_else(|| panic!("the authenticated card has a fingerprint: {preview}"));
         let (status, approved) = http_bytes(
             &admin,
             "/api/v1/admin/agents/vendor/approve",
