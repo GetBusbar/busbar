@@ -92,7 +92,7 @@
     {
       "repo": "busbar-plane-llm",
       "url": "https://github.com/GetBusbar/busbar-plane-llm",
-      "commit": "f85a6ab8217d91c372801578a8312db97747cc01",
+      "commit": "5e35781db18b42ae1d0467e86985a5237882dbc3",
       "package": "busbar-plane-llm-plugin",
       "kind": "plane",
       "alias": "llm",
@@ -147,7 +147,7 @@
     {
       "repo": "busbar-transport-grpc",
       "url": "https://github.com/GetBusbar/busbar-transport-grpc",
-      "commit": "8e91bb251b7ee31dacdcc5fd419588d3ca08b538",
+      "commit": "7209450294404b492ae7870ce5bd4447c06fd981",
       "package": "busbar-transport-grpc-plugin",
       "kind": "transport",
       "alias": "grpc",
@@ -202,7 +202,7 @@
     {
       "repo": "busbar-transport-ws",
       "url": "https://github.com/GetBusbar/busbar-transport-ws",
-      "commit": "96aa890d6453624f06ebe3758161ceb76bacdade",
+      "commit": "5bc50e282fd81eb9bc314d8838957dc989560f22",
       "package": "busbar-transport-ws-plugin",
       "kind": "transport",
       "alias": "ws",
@@ -257,7 +257,7 @@
     {
       "repo": "busbar-export-webhook",
       "url": "https://github.com/GetBusbar/busbar-export-webhook",
-      "commit": "ee89e82fd633f8748adb12c078fbd24b0cfc3845",
+      "commit": "9821aae7964769782fc7c35688250c8d50c56f8c",
       "package": "busbar-export-webhook-plugin",
       "kind": "export",
       "alias": "webhook",
@@ -279,7 +279,7 @@
     {
       "repo": "busbar-plane-a2a",
       "url": "https://github.com/GetBusbar/busbar-plane-a2a",
-      "commit": "4164e8c75d20806e4f8fe023d5ab6aedbe862835",
+      "commit": "4675ee89a3be4dec948a15f63d6b28d8fd242d19",
       "package": "busbar-plane-a2a-plugin",
       "kind": "plane",
       "alias": "a2a",
@@ -290,7 +290,7 @@
     {
       "repo": "busbar-plane-decisions",
       "url": "https://github.com/GetBusbar/busbar-plane-decisions",
-      "commit": "da93326b25186af4a118f95061f0932fd1716d33",
+      "commit": "43b5789326378c2b25ec9a3f7a06234190d22602",
       "package": "busbar-plane-decisions-plugin",
       "kind": "plane",
       "alias": "decisions",
