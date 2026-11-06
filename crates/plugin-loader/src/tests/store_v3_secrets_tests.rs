@@ -4,9 +4,10 @@
 use crate::dispatch::kinds::store::Store;
 use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink};
 use crate::store_v3::LoadedStore;
-use busbar_contract::abi::mechanism::call::RawOutcome;
+use busbar_contract::abi::mechanism::call::{AbiStr, RawOutcome};
 use busbar_contract::abi::mechanism::door::{Door, DoorParts};
 use busbar_contract::abi::mechanism::lifecycle::OpenIn;
+use busbar_contract::abi::sdk::door::abi_str;
 use busbar_contract::abi::store::{OpId, Ops};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -43,14 +44,21 @@ extern "C" fn observing_door() -> &'static Door {
     static DOOR: OnceLock<usize> = OnceLock::new();
     let ptr = *DOOR.get_or_init(|| {
         let actual = *actual_store::door();
+        const REFS: &[AbiStr] = &[abi_str("license_key")];
+        // SAFETY: the retained actual SQLite descriptor has a validated Statement.
+        let mut statement = unsafe { *actual.statement() };
+        statement.secret_refs = REFS.as_ptr();
+        statement.secret_refs_len = REFS.len();
+        let statement = Box::leak(Box::new(statement));
         // SAFETY: actual_store retains a validated immutable actual SQLite image.
         let mut ops = unsafe { actual.ops().cast::<Ops>().read_unaligned() };
         ops.head.open = Some(observed_open);
         let ops = Box::leak(Box::new(ops));
-        // SAFETY: every descriptor field is genuine; only OPEN is observed and
-        // forwarded unchanged to the same original SDK instance and live frames.
+        // SAFETY: only retained declaration metadata and a passive OPEN observer
+        // differ; the genuine SQLite operations receive the original live frames.
         let door = unsafe {
             Door::__from_parts(DoorParts {
+                statement,
                 ops: std::ptr::from_ref(ops).cast(),
                 ..actual.parts()
             })
@@ -66,14 +74,14 @@ fn mint() -> OpId {
 
 #[test]
 fn a_declared_store_secret_reaches_open_as_a_secret_never_in_its_settings() {
-    let rendering = crate::dispatch::rendering_of(actual_store::door)
-        .expect("the actual SQLite artifact renders its Statement");
+    let rendering = crate::dispatch::rendering_of(observing_door)
+        .expect("the observed SQLite descriptor renders its Statement");
     let stated = busbar_contract::abi::mechanism::rendering::read(&rendering)
-        .expect("the actual SQLite artifact's Statement reads");
+        .expect("the observed SQLite Statement reads");
     assert_eq!(
         stated.secret_refs,
         vec!["license_key".to_string()],
-        "the qualified artifact must declare the exact secret field supplied below"
+        "the boundary fixture declares the exact secret field supplied below"
     );
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let p = load_linked::<Store>(

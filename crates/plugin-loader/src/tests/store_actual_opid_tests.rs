@@ -199,9 +199,12 @@ fn provided_metering_id_replays_across_handles_and_refuses_changed_counts() {
     let rows = RecordStore::list_metering(&reopened, 60).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].requests, 1);
-    assert_eq!(rows[0].tokens_input, 3);
-    assert_eq!(rows[0].tokens_output, 5);
-    assert_eq!(rows[0].usage_units.get("bytes"), Some(&13));
+    assert_eq!(rows[0].scale, busbar_contract::count::SCALE_MICRO_UNITS);
+    assert_eq!(rows[0].tokens_input, 3_000_000);
+    assert_eq!(rows[0].tokens_output, 5_000_000);
+    assert_eq!(rows[0].tokens_cache_read, 7_000_000);
+    assert_eq!(rows[0].tokens_cache_write, 11_000_000);
+    assert_eq!(rows[0].usage_units.get("bytes"), Some(&13_000_000));
     assert_eq!(rows[0].priced_from_ms, 123);
     assert_eq!(rows[0].pricing_version, "historical-version");
     assert_eq!(rows[0].key_group_at_use, "historical-group");

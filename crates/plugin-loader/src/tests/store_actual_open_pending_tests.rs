@@ -35,11 +35,11 @@ extern "C" fn open_pending(
         let key = (head.host.handle, head.ticket);
         let kept = KEPT.get_or_init(Default::default);
         if head.flags & FLAG_RESUME != 0 {
-            if let Some(instance) = kept.lock().unwrap().remove(&key) {
+            if let Some(answer) = kept.lock().unwrap().remove(&key) {
                 let output = &mut *out.cast::<OpenOut>();
-                *output = crate::dispatch::lifecycle::open_out();
-                output.instance = instance as *mut c_void;
-                output.head.outcome = RawOutcome::of(Outcome::Ready);
+                // Recover the whole READY answer, including its leased instance metadata.
+                // The retained instance and answer lease have remained live while pending.
+                *output = *Box::from_raw(answer as *mut OpenOut);
                 RESUMED.fetch_add(1, Ordering::SeqCst);
                 return RawOutcome::of(Outcome::Ready);
             }
@@ -48,11 +48,17 @@ extern "C" fn open_pending(
         OPEN_CALLS.fetch_add(1, Ordering::SeqCst);
         let answer = (ops.head.open.expect("actual SQLite OPEN"))(instance, input, out);
         let output = &mut *out.cast::<OpenOut>();
-        if answer != RawOutcome::of(Outcome::Ready) || output.head.lease != 0 {
+        if answer != RawOutcome::of(Outcome::Ready) {
             return answer;
         }
-        kept.lock().unwrap().insert(key, output.instance as usize);
-
+        let opened_instance = output.instance;
+        kept.lock()
+            .unwrap()
+            .insert(key, Box::into_raw(Box::new(*output)) as usize);
+        // PENDING transfers the instance, but not READY's lease or metadata. Retain
+        // those together until RESUME, when the production host consumes/releases them.
+        *output = crate::dispatch::lifecycle::open_out();
+        output.instance = opened_instance;
         output.head.outcome = RawOutcome::of(Outcome::Pending);
         output.head.wake_at_ns = crate::dispatch::now_ns().saturating_add(1_000_000);
         RawOutcome::of(Outcome::Pending)
@@ -115,6 +121,11 @@ fn a_store_pending_in_open_completes_the_load_and_serves() {
         RESUMED.load(Ordering::SeqCst) - before.1,
         1,
         "the actual loader resumed exactly one injected pending OPEN"
+    );
+    assert_eq!(
+        busbar_contract::store_calls::StoreCalls::ephemeral(&store),
+        Some(false),
+        "the resumed OPEN retains SQLite's leased durable-instance metadata"
     );
     RecordStore::add_denylist(&store, "carol", "test").expect("the opened Store serves");
     assert_eq!(

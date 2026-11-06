@@ -148,7 +148,7 @@ fn the_store_host_lends_nothing_and_hands_the_settings_as_resolved() {
         crate::store_v3::LoadedStore::open(plugin, dispatcher, &settings, actual_store::mint)
             .expect("the production Store host opens its actual SQLite database");
 
-    assert_eq!(*OPENED.lock().unwrap(), Some((settings, vec![Vec::new()])));
+    assert_eq!(*OPENED.lock().unwrap(), Some((settings, Vec::new())));
     drop(opened);
 }
 
