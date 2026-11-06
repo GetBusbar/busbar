@@ -239,9 +239,14 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
             .await
             .unwrap();
     assert_eq!(
-        schema["schema"]["properties"]["timeout_ms"]["type"], "integer",
+        schema["schema"]["properties"]["timeout_ms"]["type"],
+        serde_json::json!(["integer", "null"]),
         "describe schema extracted, single nest: {schema}"
     );
+    let timeout = &schema["schema"]["properties"]["timeout_ms"];
+    assert_eq!(timeout["minimum"], 0);
+    assert_eq!(timeout["maximum"], serde_json::json!(u64::MAX));
+    assert_eq!(timeout["x-busbar-integer-token"], "unsigned");
 
     handle.abort();
     println!("{WITNESS}");

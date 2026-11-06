@@ -357,7 +357,10 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
             .expect("the actual raw usage flush persists");
         assert_eq!(ledger.requests, 2);
         assert_eq!(ledger.billable_requests, 2);
-        assert_eq!(ledger.tokens_for(LANE), Some(i128::from(TOKENS) * 2));
+        assert_eq!(
+            ledger.tokens_for(LANE),
+            Some(i128::from(TOKENS) * 2 * 10_i128.pow(busbar_contract::count::COUNT_SCALE))
+        );
     }
     let router = busbar_kernel::build_router(Arc::new(app));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

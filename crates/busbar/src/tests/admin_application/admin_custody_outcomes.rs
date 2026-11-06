@@ -158,7 +158,10 @@ impl RecordStore for Store {
     }
 
     fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        let replay = record.kind == busbar_core_admin::idempotency::durable::REPLAY_KIND;
+        // A request binding is written before the mutation. Only its outcome row
+        // proves settlement and permits the abandoned caller's retry.
+        let replay = record.kind == busbar_core_admin::idempotency::durable::REPLAY_KIND
+            && !record.id.starts_with("binding:");
         self.inner.upsert_plane_record(record)?;
         if replay {
             self.settled.notify_one();
@@ -509,7 +512,9 @@ fn audit_rows(actor: &str, action: &str, outcome: &str) -> usize {
             None,
         )
         .iter()
-        .filter(|entry| entry.principal == format!("oidc:{actor}") && entry.outcome == outcome)
+        .filter(|entry| {
+            entry.principal == common::credentials::principal_id(actor) && entry.outcome == outcome
+        })
         .count()
 }
 
@@ -537,7 +542,10 @@ async fn abandoned_mint_finishes_replay_and_durable_settlement() {
     assert!(matches!(
         busbar_core_admin::idempotency::durable::claim(
             &*store,
-            &("oidc:custody:mint".into(), create_replay_key("mint")),
+            &(
+                common::credentials::principal_id("custody:mint"),
+                create_replay_key("mint")
+            ),
             busbar_kernel::store::now(),
         ),
         Err(busbar_core_admin::idempotency::durable::Refused::Applied(_))
@@ -810,7 +818,7 @@ async fn committed_mint_refresh_failure_is_truthful_and_same_idempotency_cannot_
     );
     assert!(matches!(busbar_core_admin::idempotency::durable::claim(
         &*store,
-        &("oidc:custody:applied-refresh".into(), create_replay_key("applied-refresh")),
+        &(common::credentials::principal_id("custody:applied-refresh"), create_replay_key("applied-refresh")),
         busbar_kernel::store::now(),
     ), Err(busbar_core_admin::idempotency::durable::Refused::Applied(what)) if what == format!("key:{id}")));
     store.fail_list.store(false, Ordering::SeqCst);
@@ -826,7 +834,12 @@ async fn committed_mint_refresh_failure_is_truthful_and_same_idempotency_cannot_
     )
     .await;
     assert_eq!(retry.status(), StatusCode::CONFLICT);
-    assert!(body(retry).await.to_string().contains("already ran"));
+    let retry = body(retry).await;
+    assert_eq!(retry["error"]["code"], "mutation_applied");
+    assert_eq!(retry["effect"], "applied");
+    assert_eq!(retry["resource"], format!("key:{id}"));
+    assert_eq!(retry["credential_recoverable"], false);
+    assert!(retry.get("token").is_none());
     assert_eq!(store.inner.list_keys().unwrap().len(), 1);
     println!("custody assertions completed");
 }
@@ -853,7 +866,7 @@ async fn a_store_error_cannot_spoof_the_typed_committed_mint_outcome() {
         busbar_core_admin::idempotency::durable::claim(
             &*store,
             &(
-                "oidc:custody:spoofed-applied".into(),
+                common::credentials::principal_id("custody:spoofed-applied"),
                 create_replay_key("spoofed-applied")
             ),
             busbar_kernel::store::now(),

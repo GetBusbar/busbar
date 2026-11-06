@@ -510,12 +510,15 @@ async fn auto_provision_stops_at_the_group_ceiling() {
         rotate();
     }
 
-    const ACTOR: &str = "oidc:test:ceiling-audit";
+    const SUBJECT: &str = "test:ceiling-audit";
     static ACCEPTED: std::sync::OnceLock<
         std::sync::Mutex<Option<tokio::sync::oneshot::Sender<audit_ring::AuditEntry>>>,
     > = std::sync::OnceLock::new();
     fn accepted(entry: &audit_ring::AuditEntry) {
-        if entry.action == "key.create" && entry.resource == "key:-" && entry.principal == ACTOR {
+        if entry.action == "key.create"
+            && entry.resource == "key:-"
+            && entry.principal == common::credentials::principal_id(SUBJECT)
+        {
             if let Some(sender) = ACCEPTED.get().and_then(|slot| slot.lock().unwrap().take()) {
                 let _ = sender.send(entry.clone());
             }

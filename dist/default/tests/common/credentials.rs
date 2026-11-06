@@ -104,6 +104,15 @@ pub fn settings(audience: &str) -> serde_json::Map<String, serde_json::Value> {
     .clone()
 }
 
+/// Exact issuer-qualified identity emitted by the pinned OIDC verifier for this IdP.
+pub fn principal_id(sub: &str) -> String {
+    use base64::Engine as _;
+    format!(
+        "oidc-v2:{}:{sub}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(ISSUER)
+    )
+}
+
 pub fn token_for(sub: &str, roles: &[&str], aud: &str) -> String {
     token_with_claims(sub, roles, aud, serde_json::json!({}))
 }

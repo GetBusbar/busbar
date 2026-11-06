@@ -286,7 +286,7 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
             .iter()
             .any(|e| e["resource"] == "overlay:groups"
                 && e["outcome"] == "applied"
-                && e["principal"] == "oidc:audit-overlay-groups"),
+                && e["principal"] == common::credentials::principal_id("audit-overlay-groups")),
         "the applied reset is audited"
     );
     let versions: serde_json::Value =

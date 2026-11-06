@@ -333,7 +333,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
             .iter()
             .any(|e| e["resource"] == "config:settings"
                 && e["outcome"] == "applied"
-                && e["principal"] == "oidc:audit-settings-roundtrip"),
+                && e["principal"] == common::credentials::principal_id("audit-settings-roundtrip")),
         "the applied PUT is audited"
     );
 
