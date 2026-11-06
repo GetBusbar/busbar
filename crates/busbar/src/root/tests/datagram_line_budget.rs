@@ -21,6 +21,7 @@ fn limit() -> usize {
 async fn a_finite_real_channel_preserves_messages_in_both_directions() {
     let mut pair = Pair::with_limit(limit()).await;
     assert_eq!(pair.caller.read().await, Some(Vec::new()));
+    let before = pair.pairing.publication_outcome();
     for n in 0..16_u8 {
         let mut bytes = vec![n; FRAME_CAP];
         bytes[..8].copy_from_slice(&(n as u64).to_be_bytes());
@@ -41,7 +42,35 @@ async fn a_finite_real_channel_preserves_messages_in_both_directions() {
         );
         assert!(pair.pairing.published().await.failure.is_none());
     }
-    assert_eq!(pair.framer.emitted.lock().unwrap().len(), 16);
+    let emitted = pair.framer.emitted.lock().unwrap().clone();
+    eprintln!("actual ABI Emit lengths (including empty same-operation recalls): {emitted:?}");
+    assert!(
+        emitted.iter().all(|&len| len == 0 || len == FRAME_CAP),
+        "every crossing is one full source or an empty recall: {emitted:?}"
+    );
+    assert_eq!(
+        emitted.iter().filter(|&&len| len != 0).count(),
+        16,
+        "each accepted source crosses exactly once: {emitted:?}"
+    );
+    let outcome = pair.pairing.published().await;
+    let accepted_bytes = 16 * FRAME_CAP as u64;
+    assert_eq!(
+        outcome.original_bytes - before.original_bytes,
+        accepted_bytes
+    );
+    assert_eq!(
+        outcome.original_handed_bytes - before.original_handed_bytes,
+        accepted_bytes
+    );
+    assert_eq!(
+        outcome.original_cancelled_bytes,
+        before.original_cancelled_bytes
+    );
+    assert_eq!(
+        outcome.original_uncertain_bytes,
+        before.original_uncertain_bytes
+    );
     assert!(!pair.pairing.closed());
     assert!(pair.pairing.memory_account().used() <= limit());
 }
