@@ -326,8 +326,10 @@ mod tests {
     fn expanded_locked_deployment_requires_no_overlay_capture() {
         const KEY: &str = "BUSBAR_TEST_MIGRATE_OVERLAY_LOCKED_20261105";
         std::env::set_var(KEY, "true");
+        // An unquoted interpolation scalar uses block YAML: braces in `${...}` are
+        // flow-map syntax before expansion, while migration also reads the raw document.
         let raw =
-            format!("config: {{ locked: ${{{KEY}}}, overlay: {{ file: /missing/overlay.json }} }}");
+            format!("config:\n  locked: ${{{KEY}}}\n  overlay:\n    file: /missing/overlay.json\n");
         let result = capture_store(&raw, Path::new("/missing/config.yaml"));
         let locked = old_document(&raw).unwrap()["config"]["locked"].as_bool();
         let quoted = old_document(&format!("config: {{locked: '${{{KEY}}}'}}")).unwrap()["config"]
