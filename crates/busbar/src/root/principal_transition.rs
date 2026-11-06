@@ -107,6 +107,11 @@ pub fn command(args: impl Iterator<Item = String>) -> Result<Option<Command>, &'
             if slot.replace(value.to_owned()).is_some() {
                 return Err("duplicate principal transition flag");
             }
+        } else if arg == "--migrate-config" {
+            // This command owns its next argument, even when the filename looks like
+            // one of our flags. It still cannot be combined with maintenance.
+            iter.next();
+            other = true;
         } else if matches!(flag, "--config" | "-c" | "--providers") {
             if flag == "-c" && assigned.is_some() {
                 return Err("use -c <path> or --config=<path>");

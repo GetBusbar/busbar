@@ -8,6 +8,44 @@ fn parse(args: &[&str]) -> Result<Option<Command>, &'static str> {
 }
 
 #[test]
+fn config_migration_owns_its_literal_path_without_admitting_mixed_maintenance() {
+    for path in [
+        "--config",
+        "--providers",
+        "-c",
+        INPUT_FLAG,
+        ACTION_FLAG,
+        ATTESTATION_FLAG,
+    ] {
+        assert_eq!(parse(&["--migrate-config", path]), Ok(None), "{path}");
+        assert_eq!(
+            parse(&["--migrate-config", path, "--providers", "catalog.yaml"]),
+            Ok(None),
+            "{path}"
+        );
+        assert!(parse(&["--migrate-config", path, "--providers"]).is_err());
+        assert!(parse(&[
+            "--migrate-config",
+            path,
+            INPUT_FLAG,
+            "plan.json",
+            ACTION_FLAG,
+            "check"
+        ])
+        .is_err());
+        assert!(parse(&[
+            INPUT_FLAG,
+            "plan.json",
+            ACTION_FLAG,
+            "check",
+            "--migrate-config",
+            path
+        ])
+        .is_err());
+    }
+}
+
+#[test]
 fn cold_flags_accept_config_locations_and_require_a_fresh_apply_attestation() {
     let parsed = parse(&[
         "--config",
