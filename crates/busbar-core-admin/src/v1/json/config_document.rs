@@ -477,10 +477,12 @@ mod tests {
 
     #[test]
     fn document_edits_refuse_shadowed_values_without_removing_typed_overrides() {
-        let mut doc = OverlayDoc::default();
-        doc.root = Some(
-            serde_json::from_value(json!({"limits": {"request_body_max_bytes": 12}})).unwrap(),
-        );
+        let mut doc = OverlayDoc {
+            root: Some(
+                serde_json::from_value(json!({"limits": {"request_body_max_bytes": 12}})).unwrap(),
+            ),
+            ..Default::default()
+        };
         let edit = |path: &str| DocumentPatch::from_value(json!({"set": {path: 19}})).unwrap();
         assert_eq!(
             shadowed_path(&doc, &edit("/limits/request_body_max_bytes"))

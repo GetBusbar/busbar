@@ -143,9 +143,19 @@ fn exact_opening_and_same_timestamp_cards_survive_later_day_and_restart() {
         assert_eq!(key_read, group_read);
         (key_read.tokens, key_read.requests, key_read.spend_cents)
     };
-    assert_eq!(reads(&gov), (3 * RAW_COUNT, 3, TOTAL_CENTS));
+    assert_eq!(
+        reads(&gov),
+        (busbar_contract::Count::from(3 * RAW_COUNT), 3, TOTAL_CENTS)
+    );
     gov.refund_charge(opening_grant.charge());
-    assert_eq!(reads(&gov), (3 * RAW_COUNT, 3, TOTAL_CENTS - OPENING_FEE));
+    assert_eq!(
+        reads(&gov),
+        (
+            busbar_contract::Count::from(3 * RAW_COUNT),
+            3,
+            TOTAL_CENTS - OPENING_FEE
+        )
+    );
     gov.flush_budgets();
     gov.flush_metering_final();
     let rows = gov.metering_for(metering_bucket(later)).unwrap();
@@ -180,23 +190,45 @@ fn exact_opening_and_same_timestamp_cards_survive_later_day_and_restart() {
         Err(busbar_kernel::governance::AdjustRefused::FutureEpoch { at, now })
             if at == future_epoch_ms && now < future_epoch_ms
     ));
-    assert_eq!(reads(&gov), (3 * RAW_COUNT, 3, TOTAL_CENTS - OPENING_FEE));
+    assert_eq!(
+        reads(&gov),
+        (
+            busbar_contract::Count::from(3 * RAW_COUNT),
+            3,
+            TOTAL_CENTS - OPENING_FEE
+        )
+    );
     assert!(gov
         .adjust_usage(&second, &ambiguous)
         .unwrap_err()
         .to_string()
         .contains("multiple raw rate entries"));
-    assert_eq!(reads(&gov), (3 * RAW_COUNT, 3, TOTAL_CENTS - OPENING_FEE));
+    assert_eq!(
+        reads(&gov),
+        (
+            busbar_contract::Count::from(3 * RAW_COUNT),
+            3,
+            TOTAL_CENTS - OPENING_FEE
+        )
+    );
     drop(gov);
     let restarted = GovState::new_with_signer(store.clone(), None, None).unwrap();
     assert_eq!(
         reads(&restarted),
-        (3 * RAW_COUNT, 3, TOTAL_CENTS - OPENING_FEE)
+        (
+            busbar_contract::Count::from(3 * RAW_COUNT),
+            3,
+            TOTAL_CENTS - OPENING_FEE
+        )
     );
     restarted.hydrate_budgets(&second, later).unwrap();
     assert_eq!(
         reads(&restarted),
-        (3 * RAW_COUNT, 3, TOTAL_CENTS - OPENING_FEE)
+        (
+            busbar_contract::Count::from(3 * RAW_COUNT),
+            3,
+            TOTAL_CENTS - OPENING_FEE
+        )
     );
 
     let legacy = team_key(store.as_ref(), "vk_legacy_zero");
@@ -378,7 +410,7 @@ fn open_route_cancel_and_session_cleanup_keep_the_admissions_original_entry() {
             disposition: CANCEL_OK_PARTIAL,
             far_end_answered: true,
             streamed: true,
-            billed: vec![(INPUT_INDEX, RAW_COUNT)],
+            billed: vec![(INPUT_INDEX, RAW_COUNT.into())],
         },
     );
     money.settle_end(
@@ -393,7 +425,7 @@ fn open_route_cancel_and_session_cleanup_keep_the_admissions_original_entry() {
     let usage = gov.usage_for(&current, &key.id, arrived).unwrap().unwrap();
     assert_eq!(
         (usage.tokens, usage.requests, usage.spend_cents),
-        (4 * RAW_COUNT, 4, 81)
+        (busbar_contract::Count::from(4 * RAW_COUNT), 4, 81)
     );
     gov.flush_budgets_final();
     gov.flush_metering_final();
@@ -522,9 +554,9 @@ fn scoped_pool_and_ancestor_buckets_keep_exact_raw_counts_and_partial_correction
         assert_eq!(
             (read.tokens, read.requests, read.spend_cents),
             if other {
-                (0, 0, 0)
+                (busbar_contract::Count::ZERO, 0, 0)
             } else {
-                (CORRECTED_COUNT, 1, 9)
+                (busbar_contract::Count::from(CORRECTED_COUNT), 1, 9)
             }
         );
     }
@@ -542,6 +574,6 @@ fn scoped_pool_and_ancestor_buckets_keep_exact_raw_counts_and_partial_correction
         .unwrap();
     assert_eq!(
         (usage.tokens, usage.requests, usage.spend_cents),
-        (CORRECTED_COUNT, 1, 9)
+        (busbar_contract::Count::from(CORRECTED_COUNT), 1, 9)
     );
 }

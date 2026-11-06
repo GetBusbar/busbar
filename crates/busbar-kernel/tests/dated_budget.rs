@@ -273,7 +273,7 @@ fn row(tokens: u64) -> busbar_contract::records::UsageLedger {
         models: vec![ModelTokens {
             scale: 0,
             model: "m".to_string(),
-            usage_units: BTreeMap::from([("input".to_string(), tokens)]),
+            usage_units: BTreeMap::from([("input".to_string(), i128::from(tokens))]),
         }],
     }
 }
@@ -505,7 +505,7 @@ fn metered(store: &dyn RecordStore, key_id: &str, at: u64, n: u64, era: u64) {
             bucket: busbar_kernel::governance::metering_bucket(at),
             model: "m".to_string(),
             provider: String::new(),
-            tokens_input: n,
+            tokens_input: i128::from(n),
             tokens_output: 0,
             tokens_cache_read: 0,
             tokens_cache_write: 0,
@@ -591,12 +591,12 @@ fn a_correction_lands_in_its_units_own_window_and_card_entry() {
     };
     assert_eq!(
         window(yesterday),
-        (200_000, 400),
+        (busbar_contract::Count::from(200_000u64), 400),
         "yesterday's window holds the corrected unit, priced at A"
     );
     assert_eq!(
         window(today),
-        (100_000, 100),
+        (busbar_contract::Count::from(100_000u64), 100),
         "today's window is not the unit's: untouched"
     );
     let key_read = gov
@@ -605,7 +605,7 @@ fn a_correction_lands_in_its_units_own_window_and_card_entry() {
         .expect("the key exists");
     assert_eq!(
         (key_read.tokens, key_read.spend_cents),
-        (300_000, 500),
+        (busbar_contract::Count::from(300_000u64), 500),
         "200,000 at A and 100,000 at B (600 = the correction taken off B's segment)"
     );
     assert_eq!(
@@ -655,7 +655,14 @@ fn a_correction_whose_window_no_longer_holds_its_segment_is_refused_and_moves_no
             .expect("priced");
         (key_read.tokens, team_read.tokens, team_read.spend_cents)
     };
-    assert_eq!(reads(&gov), (1_000, 1_000, 2));
+    assert_eq!(
+        reads(&gov),
+        (
+            busbar_contract::Count::from(1_000u64),
+            busbar_contract::Count::from(1_000u64),
+            2
+        )
+    );
 
     let delta = BTreeMap::from([("input".to_string(), -500i64)]);
     let correction = Adjustment {
@@ -680,7 +687,15 @@ fn a_correction_whose_window_no_longer_holds_its_segment_is_refused_and_moves_no
     );
 
     gov.flush_budgets();
-    assert_eq!(reads(&gov), (1_000, 1_000, 2), "no count moved");
+    assert_eq!(
+        reads(&gov),
+        (
+            busbar_contract::Count::from(1_000u64),
+            busbar_contract::Count::from(1_000u64),
+            2
+        ),
+        "no count moved"
+    );
     let gone = store
         .get_usage(&team.bucket_id, budget_window(team.window, yesterday))
         .unwrap();

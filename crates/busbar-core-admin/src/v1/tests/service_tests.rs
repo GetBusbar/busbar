@@ -1486,7 +1486,6 @@ fn full_range_free_usage_projects_all_classes_and_exact_inverse() {
                 cache_read_utok: 0.0,
                 cache_write_utok: 0.0,
                 units: BTreeMap::from([("seconds".into(), Default::default())]),
-                ..Default::default()
             },
         )])),
         0,

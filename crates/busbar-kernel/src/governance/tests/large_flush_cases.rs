@@ -129,12 +129,10 @@ fn input_count(store: &dyn RecordStore, bucket: &str, window: u64) -> Count {
             .filter(|row| row.model == MODEL)
             .map(|row| {
                 Count::from_stored(
-                    i128::from(
-                        row.usage_units
-                            .get(busbar_contract::records::UNIT_INPUT)
-                            .copied()
-                            .unwrap_or(0),
-                    ),
+                    row.usage_units
+                        .get(busbar_contract::records::UNIT_INPUT)
+                        .copied()
+                        .unwrap_or(0),
                     row.scale,
                 )
                 .unwrap()
@@ -182,12 +180,10 @@ fn dated_input(store: &dyn RecordStore, bucket: &str, window: u64) -> u64 {
         .find(|row| row.model == dated_model)
         .map_or(0, |row| {
             Count::from_stored(
-                i128::from(
-                    row.usage_units
-                        .get(busbar_contract::records::UNIT_INPUT)
-                        .copied()
-                        .unwrap_or(0),
-                ),
+                row.usage_units
+                    .get(busbar_contract::records::UNIT_INPUT)
+                    .copied()
+                    .unwrap_or(0),
                 row.scale,
             )
             .unwrap()
@@ -279,7 +275,7 @@ fn raw_entry_identity_survives_unknown_budget_flush_and_later_same_timestamp_cou
             let segment = dated.models.iter().find(|row| row.model == name).unwrap();
             assert_eq!(
                 Count::from_stored(
-                    i128::from(segment.usage_units[busbar_contract::records::UNIT_INPUT]),
+                    segment.usage_units[busbar_contract::records::UNIT_INPUT],
                     segment.scale
                 )
                 .unwrap(),

@@ -1633,47 +1633,6 @@ fn validate_config_blocking(
     ConfigValidateView { ok, errors }
 }
 
-#[cfg(test)]
-mod exact_usage_rollup_tests {
-    use super::*;
-
-    #[test]
-    fn class_cost_and_overflow_are_projected_only_after_aggregation() {
-        let row = UsageRollup {
-            usage: UsageBreakdown {
-                classes: std::collections::BTreeMap::from([(
-                    "seconds".into(),
-                    ClassUsage {
-                        count: Count::parse("0.5").unwrap(),
-                        cost: 0,
-                    },
-                )]),
-                ..Default::default()
-            },
-            exact: 500_000_000,
-            class_exact: std::collections::BTreeMap::from([("seconds".into(), 500_000_000)]),
-        };
-        let mut total = UsageRollup::default();
-        total.add(&row).unwrap();
-        total.add(&row).unwrap();
-        let view = total.project().unwrap();
-        assert_eq!(view.spend_micros, 1);
-        assert_eq!(view.classes["seconds"].cost, 1);
-        assert_eq!(view.classes["seconds"].count, Count::ONE);
-        assert!(UsageRollup {
-            exact: i128::MAX,
-            ..Default::default()
-        }
-        .project()
-        .is_err());
-        let mut overflow = UsageRollup {
-            exact: i128::MAX,
-            ..Default::default()
-        };
-        assert!(overflow.add(&row).is_err());
-    }
-}
-
 fn read_guarded_archive(
     path: &Path,
     file: &str,
@@ -1741,4 +1700,45 @@ fn archive_path_segment(file: &str) -> String {
         }
     }
     encoded
+}
+
+#[cfg(test)]
+mod exact_usage_rollup_tests {
+    use super::*;
+
+    #[test]
+    fn class_cost_and_overflow_are_projected_only_after_aggregation() {
+        let row = UsageRollup {
+            usage: UsageBreakdown {
+                classes: std::collections::BTreeMap::from([(
+                    "seconds".into(),
+                    ClassUsage {
+                        count: Count::parse("0.5").unwrap(),
+                        cost: 0,
+                    },
+                )]),
+                ..Default::default()
+            },
+            exact: 500_000_000,
+            class_exact: std::collections::BTreeMap::from([("seconds".into(), 500_000_000)]),
+        };
+        let mut total = UsageRollup::default();
+        total.add(&row).unwrap();
+        total.add(&row).unwrap();
+        let view = total.project().unwrap();
+        assert_eq!(view.spend_micros, 1);
+        assert_eq!(view.classes["seconds"].cost, 1);
+        assert_eq!(view.classes["seconds"].count, Count::ONE);
+        assert!(UsageRollup {
+            exact: i128::MAX,
+            ..Default::default()
+        }
+        .project()
+        .is_err());
+        let mut overflow = UsageRollup {
+            exact: i128::MAX,
+            ..Default::default()
+        };
+        assert!(overflow.add(&row).is_err());
+    }
 }

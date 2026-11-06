@@ -147,13 +147,15 @@ mod tests {
     fn old_overlay_import_survives_reopen_and_never_replays_over_admin_changes() {
         let calls = crate::real_store::store();
         let source = Sha256::digest(b"old deployment and overlay").into();
-        let mut doc = OverlayDoc::default();
-        doc.deleted = vec!["removed-security-hook".into()];
-        doc.deleted_groups = vec!["removed-grant".into()];
-        doc.root = Some(super::super::super::overlay::RootSettings {
-            per_request_fee: Some(7),
+        let doc = OverlayDoc {
+            deleted: vec!["removed-security-hook".into()],
+            deleted_groups: vec!["removed-grant".into()],
+            root: Some(super::super::super::overlay::RootSettings {
+                per_request_fee: Some(7),
+                ..Default::default()
+            }),
             ..Default::default()
-        });
+        };
         let store = OverlayStore::new(calls.clone()).unwrap();
         assert!(store.import_once(source, &doc).unwrap());
         let restarted = OverlayStore::new(calls.clone()).unwrap();

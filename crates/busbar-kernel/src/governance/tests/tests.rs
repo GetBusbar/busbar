@@ -3756,7 +3756,7 @@ mod metering_fanout {
             .map(|row| {
                 (
                     row.key_group_at_use,
-                    Count::from_stored(i128::from(row.usage_units["search_units"]), row.scale)
+                    Count::from_stored(row.usage_units["search_units"], row.scale)
                         .unwrap()
                         .whole_for_test(),
                 )
@@ -5860,7 +5860,7 @@ fn a_planes_request_fee_charges_its_requests_and_the_pools_fee_charges_the_pools
         .find(|m| m.model == lane)
         .expect("fee lane");
     assert_eq!(
-        Count::from_stored(i128::from(row.usage_units[PER_REQUEST]), row.scale).unwrap(),
+        Count::from_stored(row.usage_units[PER_REQUEST], row.scale).unwrap(),
         whole_count(3)
     );
     let restarted = GovState::new(store, None).unwrap();
@@ -5925,7 +5925,7 @@ fn a_planes_refund_returns_its_own_fee_unit_never_the_flat_base() {
         .expect("fee lane");
     assert_eq!(
         Count::from_stored(
-            i128::from(row.usage_units[busbar_kernel_ledger::cost::PER_REQUEST]),
+            row.usage_units[busbar_kernel_ledger::cost::PER_REQUEST],
             row.scale
         )
         .unwrap(),
@@ -6006,7 +6006,7 @@ fn the_metering_row_carries_every_class_the_budget_book_holds() {
             .map(|r| {
                 (
                     r.requests,
-                    Count::from_stored(i128::from(r.tokens_input), r.scale)
+                    Count::from_stored(r.tokens_input, r.scale)
                         .unwrap()
                         .whole_for_test(),
                     r.usage_units
@@ -6014,9 +6014,7 @@ fn the_metering_row_carries_every_class_the_budget_book_holds() {
                         .map(|(k, n)| {
                             (
                                 k.clone(),
-                                Count::from_stored(i128::from(*n), r.scale)
-                                    .unwrap()
-                                    .whole_for_test(),
+                                Count::from_stored(*n, r.scale).unwrap().whole_for_test(),
                             )
                         })
                         .collect(),
@@ -6069,7 +6067,7 @@ fn a_served_units_open_class_lands_on_its_providers_row() {
     assert_eq!(
         row.usage_units
             .get("unitemized_tokens")
-            .map(|n| Count::from_stored(i128::from(*n), row.scale).unwrap()),
+            .map(|n| Count::from_stored(*n, row.scale).unwrap()),
         Some(whole_count(3)),
         "the open class rides its provider's row"
     );
@@ -6464,7 +6462,7 @@ fn metering_open_units_keep_the_pinned_keys_historical_group() {
             );
             (
                 row.key_group_at_use,
-                Count::from_stored(i128::from(row.usage_units["search_units"]), row.scale)
+                Count::from_stored(row.usage_units["search_units"], row.scale)
                     .unwrap()
                     .whole_for_test(),
             )

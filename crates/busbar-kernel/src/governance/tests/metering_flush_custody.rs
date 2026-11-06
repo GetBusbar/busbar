@@ -148,11 +148,9 @@ fn unknown_and_unwound_flushes_keep_exact_same_timestamp_entry_identity() {
     assert_eq!(rows.len(), 2);
     assert_eq!(
         rows.iter()
-            .map(
-                |row| Count::from_stored(i128::from(row.tokens_input), row.scale)
-                    .unwrap()
-                    .whole_for_test()
-            )
+            .map(|row| Count::from_stored(row.tokens_input, row.scale)
+                .unwrap()
+                .whole_for_test())
             .sum::<u64>(),
         8
     );
@@ -181,7 +179,7 @@ fn ordinary_refusal_requeues_the_original_exact_provenance() {
             .find(|row| row.pricing_version == era.entry_id.unwrap().metering_version())
             .unwrap();
         assert_eq!(
-            Count::from_stored(i128::from(row.tokens_input), row.scale).unwrap(),
+            Count::from_stored(row.tokens_input, row.scale).unwrap(),
             whole_count(count)
         );
         assert_eq!(row.requests, 1);
@@ -219,7 +217,7 @@ fn lost_ack_then_unknown_replays_exact_body_before_fresh_arrivals() {
     assert_eq!(calls[0], calls[1]);
     assert_eq!(calls[0], calls[2]);
     assert_eq!(
-        Count::from_stored(i128::from(calls[0].1[0].tokens_input), calls[0].1[0].scale).unwrap(),
+        Count::from_stored(calls[0].1[0].tokens_input, calls[0].1[0].scale).unwrap(),
         whole_count(3)
     );
     assert_eq!(calls[0].1[0].priced_from_ms, 123);
@@ -231,7 +229,7 @@ fn lost_ack_then_unknown_replays_exact_body_before_fresh_arrivals() {
     assert_eq!(rows.len(), 2, "historical pricing instants remain distinct");
     assert_eq!(
         rows.iter()
-            .map(|r| Count::from_stored(i128::from(r.tokens_input), r.scale)
+            .map(|r| Count::from_stored(r.tokens_input, r.scale)
                 .unwrap()
                 .whole_for_test())
             .sum::<u64>(),

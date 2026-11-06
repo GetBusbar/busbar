@@ -116,14 +116,17 @@ fn a_swept_unit_hands_back_its_line_under_its_reported_class_and_its_audit_pass(
         swept.line,
         busbar_contract::caps::UsageLine {
             class: REPORTED,
-            quantity: 42,
+            quantity: 42u64.into(),
             source: busbar_contract::caps::QuantitySource::Count,
             estimated: false,
         },
         "the line is written under the class the unit reported, never the kernel's own"
     );
     assert_eq!(
-        swept.end.posted().map(|p| p.quantity()),
+        swept
+            .end
+            .posted()
+            .map(|p| busbar_contract::Count::from(p.quantity())),
         Ok(swept.line.quantity),
         "the money the posting settled is the line handed back"
     );

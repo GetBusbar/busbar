@@ -35,12 +35,10 @@ fn input(row: &UsageLedger) -> u64 {
         .filter(|row| row.model == MODEL)
         .map(|row| {
             Count::from_stored(
-                i128::from(
-                    row.usage_units
-                        .get(busbar_contract::records::UNIT_INPUT)
-                        .copied()
-                        .unwrap_or(0),
-                ),
+                row.usage_units
+                    .get(busbar_contract::records::UNIT_INPUT)
+                    .copied()
+                    .unwrap_or(0),
                 row.scale,
             )
             .unwrap()
@@ -206,9 +204,7 @@ fn correction_acceptance_durably_captures_unflushed_raw_counts_and_fee_epochs() 
                 && model
                     .usage_units
                     .get(super::super::ERA_FEE_UNIT)
-                    .is_some_and(
-                        |n| Count::from_stored(i128::from(*n), model.scale).unwrap() == Count::ONE
-                    )));
+                    .is_some_and(|n| Count::from_stored(*n, model.scale).unwrap() == Count::ONE)));
     }
 }
 
@@ -1235,7 +1231,7 @@ fn independent_entry_refund_posts_while_only_the_matching_entry_negative_is_quar
             .find(|row| row.model == model)
             .map(|row| {
                 Count::from_stored(
-                    i128::from(row.usage_units.get(PER_SESSION).copied().unwrap_or(0)),
+                    row.usage_units.get(PER_SESSION).copied().unwrap_or(0),
                     row.scale,
                 )
                 .unwrap()

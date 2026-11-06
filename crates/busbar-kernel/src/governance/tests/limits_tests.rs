@@ -1846,12 +1846,9 @@ fn minute_row(store: &dyn RecordStore, bucket: &str, at: u64) -> (u64, u64, u64,
     let m = row.models.iter().find(|m| m.model == "m");
     let unit = |u: &str| {
         m.map(|m| {
-            Count::from_stored(
-                i128::from(m.usage_units.get(u).copied().unwrap_or(0)),
-                m.scale,
-            )
-            .unwrap()
-            .whole_for_test()
+            Count::from_stored(m.usage_units.get(u).copied().unwrap_or(0), m.scale)
+                .unwrap()
+                .whole_for_test()
         })
         .unwrap_or(0)
     };

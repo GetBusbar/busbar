@@ -351,9 +351,8 @@ async fn malformed_hook_replies_apply_on_error_and_never_erase_a_reject() {
         true,
         false,
     );
-    if let ResolvedPolicy::Policy { on_empty, .. } = &mut invalid_restriction[0].1 {
-        *on_empty = crate::config::PolicyOnError::Weighted;
-    }
+    let ResolvedPolicy::Policy { on_empty, .. } = &mut invalid_restriction[0].1;
+    *on_empty = crate::config::PolicyOnError::Weighted;
     assert!(
         matches!(
             decide(&invalid_restriction, &tool_subject(&facts)).await,
