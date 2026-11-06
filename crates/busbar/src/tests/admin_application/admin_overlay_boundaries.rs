@@ -1204,27 +1204,28 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
 
-    let candidate_module = busbar_kernel::config::migrated_store_module();
+    let candidate_module = module.as_str();
+    let staged_plugins = crate::root::test_plugins::trusted_config(&directory);
     let build = busbar_kernel::preflight::root_rows()
         .registry_build
         .expect("the actual root installs its registry builder");
     let linked = build(
         busbar_kernel::preflight::RegistryIn {
             linked: busbar_kernel::preflight::linked_rows(),
-            plugins: None,
+            plugins: Some(&staged_plugins),
             data_dir: None,
             inventory_only: true,
         },
         &mut |_| {},
     )
-    .expect("the actual linked registry resolves");
+    .expect("the actual staged Store registry resolves");
     assert!(
         linked
             .secret_slots(candidate_module)
             .into_iter()
             .chain(linked.reference_slots(candidate_module))
-            .any(|slot| slot == "token"),
-        "the staged actual Store declares its token credential reference"
+            .any(|slot| slot == "db_path"),
+        "the staged actual Store declares its database-path reference"
     );
     let var = format!("BUSBAR_TEST_STORE_SECRET_MISSING_{}", std::process::id());
     std::env::remove_var(&var);
@@ -1235,7 +1236,7 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
-                "store": { "module": candidate_module, "settings": { "token": { "env": var } } }
+                "store": { "module": candidate_module, "settings": { "db_path": { "env": var } } }
             })
             .to_string(),
         )
@@ -1254,7 +1255,7 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
         doc.root
             .as_ref()
             .and_then(|r| r.store.as_ref())
-            .is_some_and(|s| s.settings.contains_key("token")),
+            .is_some_and(|s| s.settings.get("db_path") == Some(&serde_json::json!({"env": var}))),
         "the staged reference reaches the overlay"
     );
 

@@ -673,31 +673,31 @@ async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_sto
     let target_version = secret.version;
     let major: u64 = target_version.split('.').next().unwrap().parse().unwrap();
     let base_floor = format!("{}.0.0", major.checked_add(1).unwrap());
-    let anchor = busbar_kernel::config::migrated_store_module();
+    let anchor = module.as_str();
     let build = busbar_kernel::preflight::root_rows()
         .registry_build
         .expect("the actual root installs its registry builder");
     let linked = build(
         busbar_kernel::preflight::RegistryIn {
             linked: busbar_kernel::preflight::linked_rows(),
-            plugins: None,
+            plugins: Some(&app.plugins_cfg),
             data_dir: None,
             inventory_only: true,
         },
         &mut |_| {},
     )
-    .expect("the actual linked registry resolves");
+    .expect("the actual staged Store registry resolves");
     assert!(
         linked
             .secret_slots(anchor)
             .into_iter()
             .chain(linked.reference_slots(anchor))
-            .any(|path| path == "token"),
-        "the actual memory Store must declare the token credential reference used by this dependency test"
+            .any(|path| path == "db_path"),
+        "the actual Store must declare the database-path reference used by this dependency test"
     );
     manifest = plugins::manifest("secret", &target_name, "acme");
     manifest.statement = Some(hex::encode(secret_statement));
-    document["store"] = serde_json::json!({"module":busbar_kernel::config::migrated_store_module(), "settings":{"token":{"module":target_alias, "settings":{}}}});
+    document["store"] = serde_json::json!({"module":module, "settings":{"db_path":{"module":target_alias, "settings":{}}}});
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let publisher_key = plugins::key(68);
     let publisher_hex = hex::encode(publisher_key.verifying_key().to_bytes());
