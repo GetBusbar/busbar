@@ -275,6 +275,110 @@ fn pinned() -> String {
     EXCHANGE.trim_end_matches('\n').replace('\n', "\r\n")
 }
 
+#[derive(Debug, PartialEq)]
+struct DecodedExchange {
+    status: String,
+    headers: std::collections::BTreeMap<String, String>,
+    json: serde_json::Value,
+}
+
+fn decoded_exchange(wire: &str) -> Result<DecodedExchange, String> {
+    let (head, body) = wire.split_once("\r\n\r\n").ok_or("incomplete HTTP head")?;
+    let mut lines = head.split("\r\n");
+    let status = lines.next().ok_or("missing status line")?.to_owned();
+    let mut headers = std::collections::BTreeMap::new();
+    for line in lines {
+        let (name, value) = line.split_once(':').ok_or("malformed response header")?;
+        if name.is_empty()
+            || headers
+                .insert(name.to_ascii_lowercase(), value.trim().to_owned())
+                .is_some()
+        {
+            return Err("empty or duplicate response header".into());
+        }
+    }
+    let decoded = match (
+        headers.remove("content-length"),
+        headers.remove("transfer-encoding"),
+    ) {
+        (Some(length), None) => {
+            let length = length
+                .parse::<usize>()
+                .map_err(|_| "invalid content length")?;
+            if body.len() != length {
+                return Err("response length does not match content length".into());
+            }
+            body.as_bytes().to_vec()
+        }
+        (None, Some(coding)) if coding.eq_ignore_ascii_case("chunked") => {
+            decode_chunks(body.as_bytes())?
+        }
+        _ => return Err("exactly one supported response framing is required".into()),
+    };
+    let value = serde_json::from_slice(&decoded)
+        .map_err(|error| format!("invalid response JSON: {error}"))?;
+    Ok(DecodedExchange {
+        status,
+        headers,
+        json: value,
+    })
+}
+
+fn assert_current_exchange(wire: &str) {
+    assert_eq!(
+        decoded_exchange(wire).expect("complete current HTTP response"),
+        decoded_exchange(&pinned()).expect("the retained fixture is complete HTTP"),
+        "full status, non-framing headers and JSON value must match the retained exchange"
+    );
+}
+
+fn decode_chunks(mut wire: &[u8]) -> Result<Vec<u8>, &'static str> {
+    let mut body = Vec::new();
+    loop {
+        let end = wire
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .ok_or("missing chunk size")?;
+        let size = wire[..end]
+            .split(|b| *b == b';')
+            .next()
+            .ok_or("missing size")?;
+        if size.is_empty() || !size.iter().all(u8::is_ascii_hexdigit) {
+            return Err("invalid chunk size");
+        }
+        let size =
+            usize::from_str_radix(std::str::from_utf8(size).map_err(|_| "invalid size")?, 16)
+                .map_err(|_| "chunk size overflow")?;
+        wire = &wire[end + 2..];
+        if size == 0 {
+            loop {
+                let end = wire
+                    .windows(2)
+                    .position(|w| w == b"\r\n")
+                    .ok_or("incomplete trailers")?;
+                if end == 0 {
+                    return if wire.len() == 2 {
+                        Ok(body)
+                    } else {
+                        Err("bytes after final chunk")
+                    };
+                }
+                if !wire[..end].contains(&b':') {
+                    return Err("invalid trailer");
+                }
+                wire = &wire[end + 2..];
+            }
+        }
+        let chunk = wire.get(..size).ok_or("truncated chunk")?;
+        let rest = wire.get(size..).ok_or("truncated chunk")?;
+        if !rest.starts_with(b"\r\n") {
+            return Err("missing chunk delimiter");
+        }
+        body.extend_from_slice(chunk);
+        wire = &rest[2..];
+    }
+}
+
 #[test]
 fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
     let (lib, key) = transport_cdylib();
@@ -285,7 +389,7 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
 
     if linked {
         let (served, kernel, through) = serve_once(&dir, data_port, WORKERS);
-        assert_eq!(served, pinned(), "the linked build's exchange");
+        assert_current_exchange(&served);
         assert!(
             kernel,
             "the linked build's data door is the kernel's own socket"
@@ -304,14 +408,13 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
         let out = refused(&dir);
         assert_duplicate_transport(&out, key);
     } else {
-        let (served, _, _) = serve_once(&dir, data_port, WORKERS);
-        assert_eq!(served, pinned(), "no layer waits on the unlinked key");
+        let (baseline, _, _) = serve_once(&dir, data_port, WORKERS);
+        assert_current_exchange(&baseline);
 
         drop_in(&dir, &lib);
         let (served, _, through) = serve_once(&dir, data_port, WORKERS);
         assert_eq!(
-            served,
-            pinned(),
+            served, baseline,
             "the dropped-in build's exchange is the linked build's"
         );
 
@@ -331,8 +434,7 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
         drop_in_as(&dir, &neutral, "a-neutral-framer");
         let (served, _, through) = serve_once(&dir, data_port, WORKERS);
         assert_eq!(
-            served,
-            pinned(),
+            served, baseline,
             "a framer beside the carrier moves no byte"
         );
         assert_eq!(through, WORKERS);
@@ -349,4 +451,37 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
         assert_duplicate_transport(&out, key);
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn exchange_comparison_preserves_values_and_rejects_truncated_framing() {
+    let body = r#"{"object":"list","data":[{"id":"test-model","object":"model","created":0,"owned_by":"busbar"}]}"#;
+    let chunked = |body: &str| {
+        format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\ntransfer-encoding: chunked\r\ndate: <masked>\r\n\r\n{:X}\r\n{body}\r\n0\r\n\r\n", body.len()
+    )
+    };
+    let wire = chunked(body);
+    assert_current_exchange(&wire);
+    let changed = chunked(&body.replace("test-model", "evil-model"));
+    assert_ne!(
+        decoded_exchange(&changed).unwrap(),
+        decoded_exchange(&pinned()).unwrap()
+    );
+    let changed = chunked(&body.replace("\"created\":0", "\"created\":9007199254740993"));
+    assert_ne!(
+        decoded_exchange(&changed).unwrap(),
+        decoded_exchange(&pinned()).unwrap()
+    );
+    for missing in 1..=5 {
+        assert!(decoded_exchange(&wire[..wire.len() - missing]).is_err());
+    }
+    let fixed_length = pinned();
+    assert!(decoded_exchange(&fixed_length[..fixed_length.len() - 1]).is_err());
+    assert!(decoded_exchange(&(wire.clone() + "trailing")).is_err());
+    let ambiguous = wire.replace(
+        "transfer-encoding: chunked\r\n",
+        "transfer-encoding: chunked\r\ncontent-length: 95\r\n",
+    );
+    assert!(decoded_exchange(&ambiguous).is_err());
 }
