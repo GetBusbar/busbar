@@ -556,6 +556,12 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
+    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+        &config,
+        &plugin_config,
+        &directory,
+    )
+    .expect("the new fixture Store initializes the admitted OIDC principal namespace");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -567,7 +573,7 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
         (None, None),
         None,
         &rules,
-        None,
+        Some(anchor),
         true,
     )
     .expect("the actual product builds the session deployment");
@@ -599,7 +605,10 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
         );
     }
     let (principal, context) = session(app.clone(), Some(&token)).await.unwrap();
-    assert_eq!(principal.actor_id(), "oidc:static-chain");
+    assert_eq!(
+        principal.actor_id(),
+        common::credentials::principal_id("static-chain")
+    );
     let key = context
         .key()
         .expect("the bound OIDC role supplies a governed key");
@@ -674,6 +683,12 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
+    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+        &config,
+        &plugin_config,
+        &directory,
+    )
+    .expect("the new fixture Store initializes the admitted OIDC principal namespace");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -685,7 +700,7 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
         (None, None),
         None,
         &rules,
-        None,
+        Some(anchor),
         true,
     )
     .expect("the actual product builds the session deployment");
@@ -717,7 +732,10 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
         );
     }
     let (principal, context) = session(app.clone(), Some(&token)).await.unwrap();
-    assert_eq!(principal.actor_id(), "oidc:static-chain");
+    assert_eq!(
+        principal.actor_id(),
+        common::credentials::principal_id("static-chain")
+    );
     let key = context
         .key()
         .expect("the bound OIDC role supplies a governed key");

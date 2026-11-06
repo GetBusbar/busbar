@@ -643,7 +643,7 @@ async fn forbidden_admin_requests_audit_once_per_window() {
             .unwrap()
             .as_nanos()
     );
-    let principal_id = format!("oidc:{unique}");
+    let principal_id = common::credentials::principal_id(&unique);
     let token =
         common::credentials::token_for(&unique, &[unique.as_str()], "api://auth-self-groups");
     let router = busbar_kernel::build_router(app);

@@ -249,7 +249,7 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
             panic!("the real signed JWT must identify: {warm:?}");
         };
 
-        assert_eq!(identity.subject, "oidc:alice");
+        assert_eq!(identity.subject, common::credentials::principal_id("alice"));
         assert_eq!(identity.groups, ["reader", "writer"]);
         let mut transcript = Vec::new();
         for token in [
@@ -311,7 +311,7 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
             let Verified::Identity(identity) = &answer.verified else {
                 panic!("every real wide JWT judgment must identify: {answer:?}");
             };
-            assert_eq!(identity.subject, "oidc:alice");
+            assert_eq!(identity.subject, common::credentials::principal_id("alice"));
             assert_eq!(identity.groups.len(), 300);
             assert_eq!(identity.groups[299], "group-299");
             assert_eq!(identity.groups, groups);
