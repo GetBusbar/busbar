@@ -885,7 +885,7 @@ busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webh
 # failure is the system's words alone, no op prefix), moved past
 # 12b0783's behaviour in its own PR with its own oracle verdict (FLEET.md transport-http rule). The
 # door claims `https` again (the transport fold's row).
-busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "a9ca3ab1a62e79b5a2d60df224c6cbd58cb4be98" }
+busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "cb1f96e5c09988bcfd81088583472cfd912faa09" }
 # THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
 # links on the transport-door axis (the gRPC module left busbar-transport-http for it).
 busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "0cf1cbc20cccd3aa3b1e1d8d4ae465e75e87992d" }
@@ -895,8 +895,8 @@ busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws"
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "ac759a7d1fece817a27cefef5c75ced4b525c7e4" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
-busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "a6504781a3f472bcaed232a44be32e6185f7e9b1" }
-busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "a6504781a3f472bcaed232a44be32e6185f7e9b1" }
+busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "a967c529d7ac271abea1f30d332f4b68f9c6d681" }
+busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "a967c529d7ac271abea1f30d332f4b68f9c6d681" }
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
 # (feature `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split). The pin ranks
 # 1.5.5's `bearer` and `api-key` first (arch-audit u29 F1, busbar-auth-header #35).
