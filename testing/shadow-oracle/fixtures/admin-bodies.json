@@ -1177,6 +1177,25 @@
    "restart": false,
    "scope": "read-only"
   },
+  "GetTelemetry": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "200 bounded request-phase telemetry snapshot when collection is enabled; Cache-Control: no-store. Disabled or unavailable collection is an explicit 503, never a fabricated zero snapshot. Requires read-only admin scope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/telemetry",
+   "restart": false,
+   "scope": "read-only"
+  },
   "GetTools": {
    "bad_body": null,
    "idempotent": false,

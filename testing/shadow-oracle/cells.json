@@ -55,16 +55,16 @@
     }
   ],
   "counts": {
-    "total": 2596,
+    "total": 2598,
     "by_plane": {
       "a2a": 468,
-      "core": 1013,
+      "core": 1015,
       "llm": 203,
       "mcp": 912
     },
     "by_family": {
       "a2a": 469,
-      "admin.ops": 333,
+      "admin.ops": 335,
       "admin.plugins": 7,
       "auth.lifecycle": 4,
       "billing": 16,
@@ -7912,6 +7912,38 @@
       "request": {
         "method": "GET",
         "path": "/api/v1/admin/providers",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|GetTelemetry|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/telemetry",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "200 bounded request-phase telemetry snapshot when collection is enabled; Cache-Control: no-store. Disabled or unavailable collection is an explicit 503, never a fabricated zero snapshot. Requires read-only admin scope."
+    },
+    {
+      "id": "admin.ops|GetTelemetry|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/telemetry",
         "headers": {},
         "body": null,
         "auth": "none",

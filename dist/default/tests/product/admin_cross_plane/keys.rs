@@ -1752,10 +1752,29 @@ async fn drive_keys_error_surface() {
     }
     let committed = std::fs::read_to_string(KEYS_ERROR_GOLDEN)
         .unwrap_or_else(|e| panic!("read {KEYS_ERROR_GOLDEN}: {e}"));
+    // The outer object is fixture bookkeeping, not HTTP bytes. Keep each response
+    // body as an exact string while ignoring only that wrapper's member order.
+    let committed: serde_json::Value =
+        serde_json::from_str(&committed).expect("parse committed wire fixture wrapper");
+    let fresh: serde_json::Value =
+        serde_json::from_str(&fresh).expect("parse observed wire fixture wrapper");
     assert_eq!(
         committed, fresh,
         "the keys error WIRE changed — status/content-type/body bytes on a FROZEN surface. If this \
          is deliberate, regenerate with `UPDATE_KEYS_ERROR_GOLDEN=1`."
+    );
+    let mut changed_body = fresh.clone();
+    let body = fresh["list_bad_cursor"]["body"].as_str().unwrap();
+    let changed = format!("{body} ");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::from_str::<serde_json::Value>(&changed).unwrap(),
+        "the negative control changes bytes without changing JSON meaning"
+    );
+    changed_body["list_bad_cursor"]["body"] = serde_json::Value::String(changed);
+    assert_ne!(
+        committed, changed_body,
+        "fixture comparison must detect even one extra byte in an HTTP body"
     );
 }
 
@@ -1874,15 +1893,24 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
             .expect("the actual admin deployment resolves");
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let plugin_config = super::plugins::trusted_config(&directory);
+        let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+            &cfg,
+            &plugin_config,
+            &directory,
+        )
+        .expect("the new fixture Store initializes the admitted OIDC principal namespace");
+        let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             cfg,
-            super::plugins::trusted_config(&directory),
+            plugin_config,
             None,
             Default::default(),
             Default::default(),
             (None, None),
             None,
             &rules,
+            Some(anchor),
+            true,
         )
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
