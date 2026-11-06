@@ -155,6 +155,20 @@ impl ClaimDoor {
     fn answer(&self, answered: Answered, now: Instant) {
         for (id, answer) in answered {
             let leg = lock(&self.legs).get(&id).cloned();
+            match &answer {
+                Ok(yielded) => tracing::trace!(
+                    leg_present = leg.is_some(),
+                    pieces = yielded.pieces.len(),
+                    field_pieces = yielded.pieces.iter().filter(|piece| piece.fields).count(),
+                    continuing = yielded.continuing,
+                    "datagram caller admission yielded"
+                ),
+                Err(error) => tracing::debug!(
+                    leg_present = leg.is_some(),
+                    outcome = ?error.outcome,
+                    "datagram caller admission failed"
+                ),
+            }
             match (leg, answer) {
                 (Some(leg), Ok(y)) => leg.yielded_batch(y, now),
                 (Some(leg), Err(_)) => leg.failed(),

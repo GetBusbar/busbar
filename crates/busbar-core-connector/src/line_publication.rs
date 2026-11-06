@@ -599,6 +599,21 @@ impl Pairing {
             if schedule {
                 state.publications.running = true;
             }
+            tracing::trace!(
+                leg = ?leg,
+                opening_pending = state.bridge.opening_pending,
+                caller_media = state.bridge.caller.len(),
+                caller_channels = state.bridge.channels.len(),
+                recall_caller = state.publications.recall[0],
+                recall_upstream = state.publications.recall[1],
+                queued = !state.publications.queue.is_empty(),
+                running = state.publications.running,
+                waiting_attachment = state.publications.waiting_attachment,
+                upstream_attached = state.upstream.is_some(),
+                schedule,
+                session_pieces = session.len(),
+                "datagram pairing publication state"
+            );
             (session, owners, schedule, state.caller.clone())
         };
         drop(retired);

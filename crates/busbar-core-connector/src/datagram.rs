@@ -1948,6 +1948,10 @@ impl PortAssociations {
                     return std::task::Poll::Ready(Err(fault("the association is closing")));
                 }
                 if out.publishing {
+                    tracing::trace!(
+                        reason = "publication_barrier",
+                        "datagram caller continuation pending"
+                    );
                     return std::task::Poll::Pending;
                 }
                 match out.continuing.take() {
@@ -1955,7 +1959,13 @@ impl PortAssociations {
                         let owed = (!f.continuing()).then(|| out.owed.pop_front()).flatten();
                         (f, owed)
                     }
-                    None => return std::task::Poll::Pending,
+                    None => {
+                        tracing::trace!(
+                            reason = "producer_custody",
+                            "datagram caller continuation pending"
+                        );
+                        return std::task::Poll::Pending;
+                    }
                 }
             } else {
                 let Some(f) = assocs.framings.remove(&id) else {
@@ -2046,6 +2056,17 @@ impl PortAssociations {
                 Ok(_) => Err(fault("the association closed during publication")),
             });
         }
+        tracing::trace!(
+            result = match &result {
+                Ok(LineStep::Complete) => "complete",
+                Ok(LineStep::Credit) => "credit",
+                Ok(LineStep::Batch { .. }) => "batch",
+                Err(_) => "failed",
+            },
+            input_present = input.is_some(),
+            continuing = f.continuing(),
+            "datagram caller continuation crossed"
+        );
         if matches!(result, Ok(LineStep::Complete)) {
             let out = assocs
                 .out
@@ -2778,6 +2799,14 @@ impl Pairing {
             changed.as_mut().enable();
             {
                 let state = self.lock();
+                tracing::trace!(
+                    closed = state.closed,
+                    opening_pending = state.bridge.opening_pending,
+                    caller_media = state.bridge.caller.len(),
+                    caller_channels = state.bridge.channels.len(),
+                    upstream_attached = state.upstream.is_some(),
+                    "datagram upstream opening readiness"
+                );
                 if state.closed {
                     return Err(busbar_contract::conn::ConnError::Closed);
                 }
