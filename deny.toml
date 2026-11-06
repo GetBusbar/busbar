@@ -154,7 +154,7 @@ allow-git = [
     # Authorized release-line fixes; exact revisions remain in root/dist manifests and locks.
     # h2 d6146a5c425e55653cdfebc5660e52d87430c588 (upstream hyperium/h2#996).
     "https://github.com/MattJackson/h2",
-    # tungstenite 1c190f7dda55dc7df4781b7ecea9faa671fc76fd (snapview/tungstenite-rs#574).
+    # tungstenite 893a21f1f98011a2665840231330c473836c9a0a (1014 fix plus streaming diagnostic formatting).
     "https://github.com/MattJackson/tungstenite-rs",
     "https://github.com/MattJackson/jobserver-rs",
     "https://github.com/MattJackson/rust-stringprep",

@@ -1213,7 +1213,7 @@ stringprep = { git = "https://github.com/MattJackson/rust-stringprep", rev = "da
 dunce = { git = "https://github.com/MattJackson/dunce", rev = "bb4757b8dffd9bdc619ce1fda1a147bd53e7b29d" }
 fs_extra = { git = "https://github.com/MattJackson/fs_extra", rev = "70f47864db8ae763979f47cde6785449cd790dad" }
 h2 = { git = "https://github.com/MattJackson/h2", rev = "d6146a5c425e55653cdfebc5660e52d87430c588" }
-tungstenite = { git = "https://github.com/MattJackson/tungstenite-rs", rev = "1c190f7dda55dc7df4781b7ecea9faa671fc76fd" }
+tungstenite = { git = "https://github.com/MattJackson/tungstenite-rs", rev = "893a21f1f98011a2665840231330c473836c9a0a" }
 
 [profile.release]
 # Tuned for the shipped "deploy-and-done" binary: max optimization and smallest size,

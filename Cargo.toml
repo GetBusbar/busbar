@@ -131,7 +131,7 @@ unicode-normalization = "0.1.25"
 [patch.'https://github.com/GetBusbar/busbar']
 busbar-contract = { path = "crates/busbar-contract" }
 
-# Exact release-line fixes submitted upstream: h2 sensitive indexed fields and WebSocket 1014.
+# Pinned dependency fixes: h2 sensitive fields, WebSocket 1014 and bounded frame diagnostics.
 [patch.crates-io]
 # Dependency patches are effective only at the consuming workspace root.
 mysql_common = { git = "https://github.com/GetBusbar/busbar-store-mysql", rev = "7a8ecfdaba8c4184bd51404bcda3eac5cd04cca5" }
@@ -142,7 +142,7 @@ stringprep = { git = "https://github.com/MattJackson/rust-stringprep", rev = "da
 dunce = { git = "https://github.com/MattJackson/dunce", rev = "bb4757b8dffd9bdc619ce1fda1a147bd53e7b29d" }
 fs_extra = { git = "https://github.com/MattJackson/fs_extra", rev = "70f47864db8ae763979f47cde6785449cd790dad" }
 h2 = { git = "https://github.com/MattJackson/h2", rev = "d6146a5c425e55653cdfebc5660e52d87430c588" }
-tungstenite = { git = "https://github.com/MattJackson/tungstenite-rs", rev = "1c190f7dda55dc7df4781b7ecea9faa671fc76fd" }
+tungstenite = { git = "https://github.com/MattJackson/tungstenite-rs", rev = "893a21f1f98011a2665840231330c473836c9a0a" }
 
 [profile.release]
 opt-level = 3        # opt-3 for the CPU-bound in-process work (parse/translate/serialize on the hot
