@@ -1462,11 +1462,18 @@ impl busbar_kernel::plane_driver::CallerEnd for ActorCaller {
 
 impl busbar_kernel::plane_driver::SessionCaller for ActorCaller {
     async fn read(&self) -> Option<Vec<u8>> {
-        self.body
+        let first = self
+            .body
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-            .map(|body| body.to_vec())
+            .take();
+        if let Some(body) = first {
+            return Some(body.to_vec());
+        }
+        // Request-body completion does not close the response-side session.
+        // Stream cancellation aborts its inflow task; connection closure drops the receiver.
+        self.out.tx.closed().await;
+        None
     }
 }
 impl crate::root::serve::Stated for ActorCaller {
