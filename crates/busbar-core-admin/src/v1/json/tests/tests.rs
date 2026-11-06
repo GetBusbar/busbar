@@ -241,11 +241,23 @@ fn openapi_documents_the_loops_503_on_every_operation_it_walks() {
             let documented = &op[OAS_OPERATION_STATUSES]["503"];
             if loop_walks || op.get("x-busbar-plane").is_some() {
                 walked += 1;
+                let expected_schema = if method == "post"
+                    && path == &format!("{}/adjust", crate::v1::contract::ADMIN_PREFIX)
+                {
+                    // The durable adjustment profile also returns a typed action outcome.
+                    // Its pre-admission refusal still uses the ordinary Error envelope.
+                    json!({"anyOf": [
+                        {"$ref": "#/components/schemas/Error"},
+                        {"$ref": "#/components/schemas/AdjustmentActionView"},
+                        {"$ref": "#/components/schemas/AdjustmentActionInFlightError"}
+                    ]})
+                } else {
+                    json!({"$ref": "#/components/schemas/Error"})
+                };
                 assert_eq!(
-                    documented["content"]["application/json"]["schema"]["$ref"],
-                    "#/components/schemas/Error",
+                    documented["content"]["application/json"]["schema"], expected_schema,
                     "{method} {path}: the loop can answer `503 unavailable`, so the operation \
-                     documents it in the one Error envelope"
+                     documents the Error envelope alongside any durable action outcomes"
                 );
             } else {
                 assert!(
@@ -500,6 +512,16 @@ fn openapi_summaries_do_not_advertise_forbidden_body_fields() {
                 .map(|p| p.keys().map(String::as_str).collect())
                 .unwrap_or_default();
             let summary = op["summary"].as_str().unwrap_or("");
+            // Restart applies these already-stored config fields; they are not body keys.
+            // Exclude only that exact lifecycle clause, retaining every other field check.
+            let summary = if reference == "RestartReq" {
+                summary.replace(
+                    "restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_require_mtls, store)",
+                    "",
+                )
+            } else {
+                summary.to_owned()
+            };
             for name in &known {
                 if declared.contains(&name.as_str()) {
                     continue;
@@ -624,7 +646,8 @@ fn openapi_existing_sdk_routes_named_mutations_include_restart_metadata() {
     for section in busbar_kernel::config::named_map::NamedMapSection::sections() {
         let root = section.path_root();
         for (suffix, method, expected) in [
-            ("/{name}", "get", "NamedDefView"),
+            // GET reports the same installed definition/restart metadata as mutations.
+            ("/{name}", "get", "MutatedDefView"),
             ("/{name}", "put", "MutatedDefView"),
             ("/{name}/settings", "patch", "MutatedDefView"),
         ] {
