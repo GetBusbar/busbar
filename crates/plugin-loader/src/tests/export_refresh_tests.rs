@@ -935,7 +935,10 @@ fn refresh_enters_at_full_export_capacity_old_batches_resume_and_new_batches_wai
     for dropped in [false, true] {
         let mut config = DispatchConfig::default();
         config.budgets.lifecycle = Duration::from_secs(60);
-        let d = Arc::new(Dispatcher::new(config));
+        let d = Arc::new(Dispatcher::with_services(
+            config,
+            crate::dispatch::services::clock_for_tests(),
+        ));
         let far = Arc::new(Far::default());
         assert!(far.waker.set(d.conn_waker()).is_ok());
         let plugin = loaded(dropped, &d, far.clone());
@@ -1127,7 +1130,10 @@ fn worker_delivery_releases_inline_refresh_waiter_after_unlock_both_doors() {
     for dropped in [false, true] {
         let mut config = DispatchConfig::default();
         config.budgets.write_behind = CROSSING_WATCHDOG_BUDGET;
-        let dispatcher = Arc::new(Dispatcher::new(config));
+        let dispatcher = Arc::new(Dispatcher::with_services(
+            config,
+            crate::dispatch::services::clock_for_tests(),
+        ));
         let worker_ticket = dispatcher
             .mint(PROBE_WORKER_INDEX)
             .expect("probe worker slot");
