@@ -1097,6 +1097,13 @@ impl Connector {
         need.ok_or(ConnError::Refused)
             .and_then(|(door, declared)| {
                 let target = declared.as_deref().unwrap_or(target);
+                // A datagram association obtains its peer description over a separately
+                // framed exchange. Its own door has no request-head locate operation.
+                let door = if door.facts().datagram {
+                    self.rendezvous_exchange(target)?.0
+                } else {
+                    door
+                };
                 if door.facts().role == ROLE_CARRIER {
                     self.located(&door, target).ok_or(ConnError::Refused)
                 } else {
@@ -1108,6 +1115,24 @@ impl Connector {
                 lines: located.defaults,
                 states_length: located.states_length,
             })
+    }
+
+    /// The ordinary exchange carrying a datagram association's peer description.
+    /// Both head completion and opening resolve the same target-selected framer.
+    fn rendezvous_exchange(
+        &self,
+        target: &str,
+    ) -> Result<(Arc<dyn FramerDoor>, Vec<Vec<u8>>), ConnError> {
+        let scheme = target
+            .split_once("://")
+            .map(|(scheme, _)| scheme)
+            .ok_or(ConnError::Refused)?;
+        let view = self.transports.read().expect("transports");
+        let served = view.serving(scheme).ok_or(ConnError::Refused)?;
+        if served.entry.door.facts().datagram {
+            return Err(ConnError::Refused);
+        }
+        Ok((Arc::clone(&served.entry.door), served.entry.alpn.clone()))
     }
 
     /// Where `target` goes, per the entry `door` serves: its authority, security and name.
@@ -2859,18 +2884,7 @@ impl Connector {
         if pairing.closed() {
             return Err(ConnError::Refused);
         }
-        let scheme = target
-            .split_once("://")
-            .map(|(s, _)| s)
-            .ok_or(ConnError::Refused)?;
-        let (exchange, alpn) = {
-            let view = self.transports.read().expect("transports");
-            let served = view.serving(scheme).ok_or(ConnError::Refused)?;
-            (Arc::clone(&served.entry.door), served.entry.alpn.clone())
-        };
-        if exchange.facts().datagram {
-            return Err(ConnError::Refused);
-        }
+        let (exchange, alpn) = self.rendezvous_exchange(target)?;
 
         let port = udp::bind(&SocketAddr::new(pairing.local().ip(), 0).to_string())
             .and_then(udp::ReadyPort::open)
