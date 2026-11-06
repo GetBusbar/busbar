@@ -193,7 +193,8 @@ None of these need action; they are listed so what you see is expected.
   appear once a request has been sent to them.
 - **Admin views gained fields.** Hook objects carry `fires_at`, `groups` and `phase`; the
   unknown-overlay-section 400 lists the sections that now exist; `openapi.json` describes the new planes.
-  Every 1.5.5 field, including the lane `limit` alias on `/stats`, is still there.
+  Supported existing fields, including the lane `limit` alias on `/stats`, remain. The retired
+  mutation fields listed below require the documented client updates.
 - **`--help` is longer and `--version` prints two lines** (the second is a `build:` provenance
   stamp). `-c`/`--config` and `--providers` are new, additive flags.
 - **Streams through a fallback or least-bad hop to an OpenAI Chat Completions lane are now
@@ -455,9 +456,11 @@ prices only what happens after the edit; it cannot repair a window that is alrea
       `BUSBAR-NNNN:` prefix.
 - [ ] If any key's traffic routinely fails over to an OpenAI Chat Completions lane while streaming,
       expect its spend to rise to what it actually used.
-- [ ] Deprecated env vars: none need moving today; each warns (three with BUSBAR-3021) until you do.
+- [ ] Convert retired environment overrides using the migration command with the old environment,
+      then remove those variables from launchers; serving uses the resulting configuration.
 - [ ] Hooks spelled `plugin:` or `at:` in config.yaml: run `busbar --migrate-config` once
-      (overlays migrate themselves at boot).
+      and explicitly import old persisted overlays before serving. Ordinary Store reads do not
+      rewrite retired fields.
 - [ ] If a dashboard or reconciliation relied on `GET /admin/usage` totals recalculating after a
       rate-card edit: they no longer do (a card prices only what follows it). Post an
       `amend-rate-history` correction for booked usage, and pass `?as_of=<history_seq>` to read money
