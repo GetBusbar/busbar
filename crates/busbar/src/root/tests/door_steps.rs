@@ -3745,7 +3745,14 @@ pub(crate) mod tool_door {
                         .split('&')
                         .find_map(|pair| pair.strip_prefix("scope="))
                         .unwrap_or_default();
-                    format!(r#"{{"access_token":"tok-{scope}","expires_in":3600}}"#)
+                    // RFC 8693 replies declare both the issued kind and its presentation type.
+                    serde_json::json!({
+                        "access_token": format!("tok-{scope}"),
+                        "token_type": "Bearer",
+                        "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+                        "expires_in": 3600,
+                    })
+                    .to_string()
                 }),
                 ..super::TokenEndpoint::secure()
             });
