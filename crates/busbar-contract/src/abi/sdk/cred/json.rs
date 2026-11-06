@@ -73,17 +73,23 @@ impl std::error::Error for JsonReplyError {}
 
 /// Read a JSON reply `body` into `T`. Every [`Cred`] member of `T` is captured as it is read (from
 pub fn json_reply<T: DeserializeOwned>(body: &[u8]) -> Result<T, JsonReplyError> {
-    use serde_json::error::Category;
-    serde_json::from_slice(body).map_err(|e| JsonReplyError {
-        failure: match e.classify() {
-            Category::Io => JsonFailure::Io,
-            Category::Syntax => JsonFailure::Syntax,
-            Category::Data => JsonFailure::Data,
-            Category::Eof => JsonFailure::Eof,
-        },
-        line: e.line(),
-        column: e.column(),
-    })
+    serde_json::from_slice(body).map_err(JsonReplyError::from)
+}
+
+impl From<serde_json::Error> for JsonReplyError {
+    fn from(e: serde_json::Error) -> Self {
+        use serde_json::error::Category;
+        Self {
+            failure: match e.classify() {
+                Category::Io => JsonFailure::Io,
+                Category::Syntax => JsonFailure::Syntax,
+                Category::Data => JsonFailure::Data,
+                Category::Eof => JsonFailure::Eof,
+            },
+            line: e.line(),
+            column: e.column(),
+        }
+    }
 }
 
 impl Cred {

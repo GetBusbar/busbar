@@ -51,6 +51,7 @@
 mod floor;
 mod form;
 mod form_body;
+pub(crate) mod protected_json;
 pub mod record;
 mod resolved;
 mod settings;
@@ -61,6 +62,7 @@ use zeroize::{Zeroize, Zeroizing};
 pub use floor::{AuthFloor, PgAuth, RequireAuth};
 pub use form::{CredUrl, MysqlUrl, PasswordAt, PostgresUrl, UserinfoUrl, ValkeyUrl};
 pub use form_body::{FormBody, FormValue};
+pub use protected_json::{select_json, settings_document, SelectedJson, SettingsValue};
 pub use resolved::{resolved, EMPTY_VALUE};
 pub use settings::{settings, SettingsError};
 pub use settings::{settings_lent, SECRET_MARKER};
