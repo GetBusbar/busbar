@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::conn::{DeclaredConns, PollConns};
+use busbar_contract::count::Count;
 use busbar_contract::hooks::{
     Candidate, PolicyResult, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy,
     RoutingRequest, TransformOutcome,
@@ -1493,7 +1494,13 @@ async fn accrued(rig: &DoorRig) -> Accrued {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_walks_tap_and_the_meter_step_make_one_posting_between_them() {
     let _one = PUBLISHING.lock().await;
-    let row = format!("m0 in={SPLIT_INPUT} out={SPLIT_OUTPUT} cr=0 cw=0 req=1 billable=1");
+    let input = Count::from_integer(i128::from(SPLIT_INPUT))
+        .expect("fixture input fits Count")
+        .micros();
+    let output = Count::from_integer(i128::from(SPLIT_OUTPUT))
+        .expect("fixture output fits Count")
+        .micros();
+    let row = format!("m0 in={input} out={output} cr=0 cw=0 req=1 billable=1");
     for (instance, streamed) in [
         ("serve-hook-seats-one-posting-buffered", false),
         ("serve-hook-seats-one-posting-streamed", true),
@@ -1559,8 +1566,18 @@ async fn a_served_units_usage_is_accrued_exactly_once() {
     assert_eq!(status, 200, "the live lane serves the request");
     let books = accrued(&rig).await;
     let split = BTreeMap::from([
-        ("input".to_string(), i128::from(SPLIT_INPUT)),
-        ("output".to_string(), i128::from(SPLIT_OUTPUT)),
+        (
+            "input".to_string(),
+            Count::from_integer(i128::from(SPLIT_INPUT))
+                .expect("fixture input fits Count")
+                .micros(),
+        ),
+        (
+            "output".to_string(),
+            Count::from_integer(i128::from(SPLIT_OUTPUT))
+                .expect("fixture output fits Count")
+                .micros(),
+        ),
     ]);
     assert_eq!(
         books.tokens,

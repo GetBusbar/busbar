@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::store::OpId;
+use busbar_contract::count::Count;
 use busbar_contract::records::{
     MeteringDelta, MeteringRow, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta,
     UsageLedger, VirtualKey,
@@ -211,7 +212,11 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
     let operation_id = observed_backend_operations[0].0;
     assert_eq!(
         inner.get_usage(&key.id, 0).unwrap().tokens_for(MODEL),
-        Some(i128::from(INPUT))
+        Some(
+            Count::from_integer(i128::from(INPUT))
+                .expect("fixture input fits Count")
+                .micros()
+        )
     );
     let initial = first
         .recovery()
@@ -372,7 +377,11 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
     assert_eq!(boundary.committed.lock().unwrap().len(), 1);
     assert_eq!(
         inner.get_usage(&key.id, 0).unwrap().tokens_for(MODEL),
-        Some(i128::from(INPUT))
+        Some(
+            Count::from_integer(i128::from(INPUT))
+                .expect("fixture input fits Count")
+                .micros()
+        )
     );
 
     let durable = if compatibility_history {

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::caps::StepName;
+use busbar_contract::count::Count;
 use busbar_contract::records::{
     MeteringDelta, MeteringRow, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta,
     UsageLedger, VirtualKey, UNIT_INPUT,
@@ -358,12 +359,16 @@ async fn shutdown_flushes_allow_runtime_progress_and_wait_for_each_store_write()
             .get_usage(SHUTDOWN_KEY, 0)
             .expect("usage reads")
             .total_input(),
-        i128::from(INPUT_USED)
+        Count::from_integer(i128::from(INPUT_USED))
+            .expect("fixture input fits Count")
+            .micros()
     );
     let rows = store.list_metering(bucket).expect("metering reads");
     assert_eq!(
         rows.iter().map(|row| row.tokens_input).sum::<i128>(),
-        i128::from(INPUT_USED)
+        Count::from_integer(i128::from(INPUT_USED))
+            .expect("fixture input fits Count")
+            .micros()
     );
     assert!(!budget.timed_out.load(std::sync::atomic::Ordering::Acquire));
     assert!(!metering
@@ -459,7 +464,9 @@ fn a_panicking_budget_flush_is_logged_and_metering_and_journal_still_drain() {
             .iter()
             .map(|row| row.tokens_input)
             .sum::<i128>(),
-        i128::from(INPUT_USED)
+        Count::from_integer(i128::from(INPUT_USED))
+            .expect("fixture input fits Count")
+            .micros()
     );
     assert_eq!(
         lane.pending(),
