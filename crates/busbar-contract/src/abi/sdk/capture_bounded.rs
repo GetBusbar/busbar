@@ -28,6 +28,10 @@ impl Bounded {
         &self.text
     }
 
+    pub(super) fn was_truncated(&self) -> bool {
+        self.truncated
+    }
+
     pub(super) fn into_string(self) -> String {
         self.text
     }

@@ -262,7 +262,11 @@ impl Subscriber for Capture {
             "{}: {}{}",
             meta.target(),
             render.message.as_str(),
-            render.fields.as_str()
+            if render.message.was_truncated() {
+                ""
+            } else {
+                render.fields.as_str()
+            }
         );
         let text = text.into_string();
         let mut held = self.lock();
