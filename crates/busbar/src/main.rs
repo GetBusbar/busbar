@@ -779,8 +779,12 @@ async fn run(
         if let Some(doc) = overlay_doc.as_ref() {
             config::overlay::merge_into(&mut effective, doc.clone());
         }
-        config_validate::validate(&effective)
-            .unwrap_or_else(|_| die("principal transition effective configuration invalid"));
+        config_validate::validate(&effective).unwrap_or_else(|errors| {
+            die(format!(
+                "principal transition effective configuration errors: {}",
+                errors.join("; ")
+            ))
+        });
         let result = root::principal_transition::execute(
             command,
             &effective,
