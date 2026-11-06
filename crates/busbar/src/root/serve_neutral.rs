@@ -11,6 +11,10 @@ use busbar_kernel::plane_routes::{FramedSession, SessionPipe};
 
 pub(crate) trait Output: SessionCaller + Stated + Send + Sync + 'static {
     fn trailers(&self, fields: HeadFields);
+    /// A complete response with no body or later trailers.
+    fn complete_head(&self, status: u32, fields: HeadFields) {
+        self.head(status, fields);
+    }
     fn write_owned(&self, bytes: Bytes) -> impl std::future::Future<Output = bool> + Send {
         async move { self.write(&bytes).await }
     }
@@ -211,7 +215,11 @@ impl DataRoutes {
         caller: &C,
         rendered: Rendered,
     ) {
-        caller.head(rendered.status, rendered.fields);
+        if rendered.body.is_empty() {
+            caller.complete_head(rendered.status, rendered.fields);
+        } else {
+            caller.head(rendered.status, rendered.fields);
+        }
         if !rendered.body.is_empty() && !caller.write(&rendered.body).await {
             admission.refuse(
                 busbar_contract::caps::StepName::Encode,
@@ -367,8 +375,12 @@ impl DataRoutes {
                 let response = Arc::clone(&self)
                     .open_datagram_neutral((framer, carrier), door, arrival)
                     .await;
-                caller.head(response.status, response.fields);
-                let _ = caller.write_owned(response.body).await;
+                if response.body.is_empty() {
+                    caller.complete_head(response.status, response.fields);
+                } else {
+                    caller.head(response.status, response.fields);
+                    let _ = caller.write_owned(response.body).await;
+                }
                 return None;
             }
             if let Some(framer) = framed_by(&carrier, |_| Some(Arc::clone(&framer))) {
@@ -405,7 +417,7 @@ impl DataRoutes {
                                 refusal_status(ReasonCode::DecodeFailed),
                                 false,
                             ) {
-                                caller.head(
+                                caller.complete_head(
                                     closing.status.unwrap_or_else(|| {
                                         refusal_status(ReasonCode::DecodeFailed)
                                     }),
@@ -469,9 +481,11 @@ fn target_of(head: &busbar_kernel::inbound::Head) -> Vec<u8> {
     target
 }
 
-pub(crate) async fn render<C: CallerEnd>(caller: &C, rendered: Rendered) {
-    caller.head(rendered.status, rendered.fields);
-    if !rendered.body.is_empty() {
+pub(crate) async fn render<C: Output>(caller: &C, rendered: Rendered) {
+    if rendered.body.is_empty() {
+        caller.complete_head(rendered.status, rendered.fields);
+    } else {
+        caller.head(rendered.status, rendered.fields);
         let _ = caller.write(&rendered.body).await;
     }
 }
@@ -525,7 +539,7 @@ impl<C: Output> FramedOutput<C> {
                     self.inner.trailers(closing.fields);
                 } else {
                     self.inner
-                        .head(closing.status.unwrap_or(rendered.status), closing.fields);
+                        .complete_head(closing.status.unwrap_or(rendered.status), closing.fields);
                 }
             }
         }

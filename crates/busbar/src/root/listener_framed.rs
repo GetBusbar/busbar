@@ -1437,8 +1437,13 @@ struct ActorCaller {
     ended: std::sync::atomic::AtomicBool,
 }
 
-impl busbar_kernel::plane_driver::CallerEnd for ActorCaller {
-    fn head(&self, status: u32, fields: busbar_kernel::plane_driver::HeadFields) {
+impl ActorCaller {
+    fn response_head(
+        &self,
+        status: u32,
+        fields: busbar_kernel::plane_driver::HeadFields,
+        end: bool,
+    ) {
         let mut stated = self
             .stated
             .lock()
@@ -1447,13 +1452,22 @@ impl busbar_kernel::plane_driver::CallerEnd for ActorCaller {
             return;
         }
         *stated = Some(status);
+        if end {
+            self.ended.store(true, std::sync::atomic::Ordering::Release);
+        }
         let (done, _) = oneshot::channel();
         self.out.send(Op::Head {
             status,
             fields: neutral_fields(&fields),
-            end: false,
+            end,
             done,
         });
+    }
+}
+
+impl busbar_kernel::plane_driver::CallerEnd for ActorCaller {
+    fn head(&self, status: u32, fields: busbar_kernel::plane_driver::HeadFields) {
+        self.response_head(status, fields, false);
     }
     async fn write(&self, bytes: &[u8]) -> bool {
         self.out.data(Bytes::copy_from_slice(bytes), false).await
@@ -1505,6 +1519,9 @@ impl crate::root::serve::Stated for ActorCaller {
     }
 }
 impl crate::root::serve::neutral::Output for ActorCaller {
+    fn complete_head(&self, status: u32, fields: busbar_kernel::plane_driver::HeadFields) {
+        self.response_head(status, fields, true);
+    }
     async fn write_owned(&self, bytes: Bytes) -> bool {
         self.out.data(bytes, false).await
     }
@@ -1722,3 +1739,7 @@ use operator::{field_block, head_block, respond};
 #[cfg(test)]
 #[path = "tests/listener_framed_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/listener_empty_response_tests.rs"]
+mod empty_response_tests;
