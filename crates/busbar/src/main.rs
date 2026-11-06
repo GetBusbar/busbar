@@ -1412,13 +1412,13 @@ async fn run(
         });
     }
 
-    if let Some(gov) = app_handle.load().governance.clone() {
-        std::mem::drop(busbar_kernel::governance::spawn_budget_flusher(
+    let budget_flusher = app_handle.load().governance.clone().map(|gov| {
+        busbar_kernel::governance::spawn_budget_flusher(
             gov,
             shutdown_tx.subscribe(),
             Some(app_handle.clone()),
-        ));
-    }
+        )
+    });
 
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
 
@@ -1433,7 +1433,14 @@ async fn run(
         .await;
         control_work.drain().await;
         let gov = app_handle.load().governance.clone();
-        root::shutdown::tail(gov, &late_services, book.as_ref().map(|b| &b.durability)).await;
+        root::shutdown::tail_after_flusher(
+            gov,
+            &late_services,
+            book.as_ref().map(|b| &b.durability),
+            &shutdown_tx,
+            budget_flusher,
+        )
+        .await;
         std::process::exit(code);
     }
 
@@ -1596,7 +1603,14 @@ async fn run(
     control_work.drain().await;
 
     let gov = app_handle.load().governance.clone();
-    root::shutdown::tail(gov, &late_services, book.as_ref().map(|b| &b.durability)).await;
+    root::shutdown::tail_after_flusher(
+        gov,
+        &late_services,
+        book.as_ref().map(|b| &b.durability),
+        &shutdown_tx,
+        budget_flusher,
+    )
+    .await;
 }
 
 #[cfg(unix)]

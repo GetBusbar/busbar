@@ -480,3 +480,91 @@ fn a_panicking_budget_flush_is_logged_and_metering_and_journal_still_drain() {
         1
     );
 }
+
+async fn background_flusher_finishes_before_journal_retirement(signal_first: bool) {
+    let budget = Arc::new(FlushGate::default());
+    let store = Arc::new(FlushStore {
+        budget: Some(budget.clone()),
+        ..FlushStore::new(FlushOutcome::Commit)
+    });
+    let (gov, bucket) = accrued_governance(store.clone());
+    let slots = RecordSlots::new();
+    let (book, lane) = store_book(&slots);
+    let (shutdown, receiver) = tokio::sync::broadcast::channel(1);
+    let flusher = busbar_kernel::governance::spawn_budget_flusher(gov.clone(), receiver, None);
+    if signal_first {
+        shutdown.send(()).expect("flusher receives shutdown");
+        tokio::time::timeout(WAIT, budget.entered.notified())
+            .await
+            .expect("background writer owns the dirty budget cell");
+    }
+    let mut task = tokio::spawn(async move {
+        tail_after_flusher(
+            Some(gov),
+            &LateServices::new(),
+            Some(&book),
+            &shutdown,
+            Some(flusher),
+        )
+        .await;
+    });
+    if !signal_first {
+        tokio::time::timeout(WAIT, budget.entered.notified())
+            .await
+            .expect("EOF shutdown wakes the background writer");
+    }
+    let pending = tokio::time::timeout(std::time::Duration::from_millis(30), &mut task)
+        .await
+        .is_err();
+    let journal_alive = lane.healthy().is_ok();
+    let requests_before = store
+        .get_usage(SHUTDOWN_KEY, 0)
+        .expect("usage reads")
+        .requests;
+    budget.release();
+    if pending {
+        tokio::time::timeout(WAIT, task)
+            .await
+            .expect("shutdown finishes after the writer")
+            .expect("shutdown joins");
+    }
+    assert!(
+        pending,
+        "shutdown must join the writer holding the dirty cell"
+    );
+    assert!(
+        journal_alive,
+        "the journal must stay writable until accounting finishes"
+    );
+    assert_eq!(requests_before, 0);
+    let usage = store.get_usage(SHUTDOWN_KEY, 0).expect("usage reads");
+    assert_eq!(
+        usage.requests, 1,
+        "the completed request persists exactly once"
+    );
+    assert_eq!(
+        usage.total_input(),
+        Count::from_integer(i128::from(INPUT_USED))
+            .unwrap()
+            .micros()
+    );
+    assert!(!store
+        .list_metering(bucket)
+        .expect("metering reads")
+        .is_empty());
+    assert!(
+        lane.healthy().is_err(),
+        "only the completed tail retires the journal"
+    );
+    assert!(!budget.timed_out.load(std::sync::atomic::Ordering::Acquire));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn shutdown_joins_inflight_background_accounting_before_retiring_journal() {
+    background_flusher_finishes_before_journal_retirement(true).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn line_eof_stops_and_joins_background_accounting_before_retiring_journal() {
+    background_flusher_finishes_before_journal_retirement(false).await;
+}

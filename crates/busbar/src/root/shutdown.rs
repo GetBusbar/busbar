@@ -27,6 +27,29 @@ use busbar_kernel::governance::GovState;
 use crate::root::durability::Durability;
 use crate::root::serve::{drain_records, LateServices, RECORD_DRAIN};
 
+/// Join the periodic writer before the final drain can retire its journal. The writer may
+/// already own dirty accounting cells, which the final flush cannot claim a second time.
+/// Sending shutdown here also covers line-serving EOF without an external shutdown signal.
+pub async fn tail_after_flusher(
+    governance: Option<Arc<GovState>>,
+    late: &LateServices,
+    journal: Option<&Arc<Mutex<Durability>>>,
+    shutdown: &tokio::sync::broadcast::Sender<()>,
+    flusher: Option<tokio::task::JoinHandle<()>>,
+) {
+    let _ = shutdown.send(());
+    if let Some(flusher) = flusher {
+        if let Err(error) = flusher.await {
+            tracing::error!(
+                panicked = error.is_panic(),
+                cancelled = error.is_cancelled(),
+                "background accounting flusher failed before final shutdown drain"
+            );
+        }
+    }
+    tail(governance, late, journal).await;
+}
+
 pub async fn tail(
     governance: Option<Arc<GovState>>,
     late: &LateServices,
