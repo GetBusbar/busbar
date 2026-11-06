@@ -305,8 +305,7 @@ fn same_id(got: &Value, sent: &Value) -> bool {
 }
 
 /// Compare decimal values exactly, without rounding or expanding an exponent into zeros.
-fn numeric_id(number: &serde_json::Number) -> (bool, String, num_bigint::BigInt) {
-    use num_bigint::BigInt;
+fn numeric_id(number: &serde_json::Number) -> (bool, String, String) {
     let text = number.to_string();
     let negative = text.starts_with('-');
     let unsigned = text.strip_prefix('-').unwrap_or(&text);
@@ -317,15 +316,65 @@ fn numeric_id(number: &serde_json::Number) -> (bool, String, num_bigint::BigInt)
     let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
     let significant = digits.trim_start_matches('0');
     if significant.is_empty() {
-        return (false, String::new(), BigInt::from(0));
+        return (false, String::new(), "0".to_owned());
     }
     let normalized = significant.trim_end_matches('0');
-    let shift = exponent
-        .parse::<BigInt>()
-        .expect("a JSON number's exponent")
-        - BigInt::from(fraction_len)
-        + BigInt::from(significant.len() - normalized.len());
+    let trailing = significant.len() - normalized.len();
+    let shift = shifted_exponent(
+        exponent,
+        fraction_len > trailing,
+        fraction_len.abs_diff(trailing),
+    );
     (negative, normalized.to_owned(), shift)
+}
+
+/// Add the mantissa's bounded digit offset in linear time, even for enormous exponents.
+fn shifted_exponent(exponent: &str, subtract: bool, offset: usize) -> String {
+    let negative = exponent.starts_with('-');
+    let magnitude = exponent
+        .trim_start_matches(['-', '+'])
+        .trim_start_matches('0');
+    let magnitude = if magnitude.is_empty() { "0" } else { magnitude };
+    let offset = offset.to_string();
+    let (left, right, negative, add) = if negative == subtract {
+        (magnitude, offset.as_str(), negative, true)
+    } else if (magnitude.len(), magnitude) >= (offset.len(), offset.as_str()) {
+        (magnitude, offset.as_str(), negative, false)
+    } else {
+        (offset.as_str(), magnitude, subtract, false)
+    };
+    let mut digits = Vec::with_capacity(left.len().max(right.len()) + 1);
+    let mut a = left.bytes().rev();
+    let mut b = right.bytes().rev();
+    let mut carry = 0i16;
+    loop {
+        let x = a.next();
+        let y = b.next();
+        if x.is_none() && y.is_none() {
+            break;
+        }
+        let x = i16::from(x.map_or(0, |v| v - b'0'));
+        let y = i16::from(y.map_or(0, |v| v - b'0'));
+        let value = if add { x + y + carry } else { x - y - carry };
+        if add {
+            carry = value / 10;
+            digits.push(b'0' + (value % 10) as u8);
+        } else {
+            carry = i16::from(value < 0);
+            digits.push(b'0' + value.rem_euclid(10) as u8);
+        }
+    }
+    if add && carry != 0 {
+        digits.push(b'0' + carry as u8);
+    }
+    while digits.len() > 1 && digits.last() == Some(&b'0') {
+        digits.pop();
+    }
+    if negative && digits != b"0" {
+        digits.push(b'-');
+    }
+    digits.reverse();
+    String::from_utf8(digits).expect("decimal exponent digits")
 }
 
 /// The JSON-RPC error envelope, as a value.

@@ -5,6 +5,46 @@
 
 use super::*;
 
+#[test]
+fn exponent_shifts_preserve_sign_carry_borrow_and_unbounded_digits() {
+    for exponent in -1000i128..=1000 {
+        for offset in [0, 1, 9, 10, 99, 100, 1001, usize::MAX] {
+            for subtract in [false, true] {
+                let expected = if subtract {
+                    exponent - offset as i128
+                } else {
+                    exponent + offset as i128
+                };
+                assert_eq!(
+                    shifted_exponent(&exponent.to_string(), subtract, offset),
+                    expected.to_string()
+                );
+            }
+        }
+    }
+    let nines = "9".repeat(100_000);
+    let power = format!("1{}", "0".repeat(100_000));
+    assert_eq!(shifted_exponent(&nines, false, 1), power);
+    assert_eq!(shifted_exponent(&power, true, 1), nines);
+    assert_eq!(shifted_exponent("-000", false, 0), "0");
+    assert_eq!(shifted_exponent("+001", true, 2), "-1");
+}
+
+#[test]
+fn enormous_negative_exponents_are_uncorrelated_without_expansion() {
+    let response: Value = serde_json::from_str(&format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":1e-{},\"result\":null}}",
+        "9".repeat(500_000)
+    ))
+    .unwrap();
+    assert_eq!(
+        read_response(&response, &serde_json::json!(1))
+            .unwrap_err()
+            .kind,
+        NotAnAnswerKind::Uncorrelated
+    );
+}
+
 fn read_ok(v: serde_json::Value) -> Envelope {
     read(&v).unwrap_or_else(|e| panic!("expected a valid envelope, got {e:?}"))
 }
