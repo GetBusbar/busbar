@@ -809,7 +809,6 @@ async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
     std::fs::remove_dir(&catalog_dir).unwrap();
     std::fs::write(&catalog_dir, b"not a directory").unwrap();
     assert!(std::fs::read_dir(&catalog_dir).is_err());
-    let mut errors = Vec::new();
     for _ in 0..2 {
         let response = client
             .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
@@ -818,17 +817,15 @@ async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
             .await
             .unwrap();
         let view: serde_json::Value = response.json().await.unwrap();
-        let row = view["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|p| p["loader"] == "dynamic-library")
-            .expect("an unreadable real directory surfaces an invalid row");
-        assert_eq!(row["valid"], false);
-        assert!(row["error"].as_str().unwrap().starts_with("INVALID:"));
-        errors.push(row["error"].clone());
+        assert!(
+            view["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|p| p["type"] == "store" && p["loader"] != "dynamic-library"),
+            "an unclassified directory error does not acquire Store ownership"
+        );
     }
-    assert_eq!(errors[0], errors[1]);
     assert_eq!(
         observed.scans.load(Ordering::SeqCst),
         3,
@@ -1077,22 +1074,29 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
         .unwrap();
     assert_eq!(
         response.status().as_u16(),
-        200,
-        "a panicking blocking scan falls back gracefully"
+        500,
+        "a panicking scan reports an explicit failure, never a partial successful catalog"
     );
-    let view: serde_json::Value = response.json().await.unwrap();
-    let rows = view["items"].as_array().unwrap();
-    let stores = busbar_kernel::preflight::root_rows().stores;
-    assert_eq!(
-        rows.len(),
-        stores.len(),
-        "fallback contains exactly the actual linked Store rows"
-    );
-    for (row, store) in rows.iter().zip(stores) {
-        assert_eq!(row["name"], store.0);
-        assert_eq!(row["loader"], "compiled-in");
-    }
+    let error: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(error["error"]["code"], "internal");
     assert_eq!(observed.scans.load(Ordering::SeqCst), 1);
+    let response = client
+        .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let view: serde_json::Value = response.json().await.unwrap();
+    assert!(
+        view["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| { row["name"] == module && row["loader"] == "dynamic-library" }),
+        "a later scan succeeds after the panicking worker releases its fence"
+    );
+    assert_eq!(observed.scans.load(Ordering::SeqCst), 2);
 
     server.abort();
 }
@@ -1230,10 +1234,14 @@ async fn list_plugins_store_scan_does_not_park_the_reactor() {
         "a 50ms sibling timer took {elapsed:?} while the real inventory was blocked"
     );
     let page = scanner.await.unwrap();
+    let rows = page["items"].as_array().unwrap();
+    assert!(rows.iter().all(|row| row["type"] == "store"));
     assert!(
-        page["items"].as_array().unwrap().len() > 2000,
-        "the actual inventory returned all rows"
+        rows.iter()
+            .any(|row| { row["name"] == module && row["loader"] == "dynamic-library" }),
+        "the real Store is returned while unclassified malformed archives stay out of its catalog"
     );
+    assert_eq!(observed.scans.load(Ordering::SeqCst), 1);
 
     server.abort();
 }

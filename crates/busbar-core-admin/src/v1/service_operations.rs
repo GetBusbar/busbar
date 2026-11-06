@@ -432,14 +432,7 @@ impl AdminService {
     /// Called inside the config transaction: inventory and archive hashes share the mutation fence.
     pub(crate) fn list_plugins_current(&self, ptype: &str) -> Result<Page<PluginView>, AdminError> {
         plugin_query(ptype)?;
-        let mut catalog = linked_store_rows();
-        if let Ok(admission) = admission(&self.app) {
-            catalog.extend(Self::scan_store_plugin_rows(
-                &self.app.plugins_dir,
-                admission,
-                &self.app.plugins_cfg,
-            ));
-        }
+        let catalog = self.store_plugin_catalog();
         self.list_plugins_from_catalog(ptype, catalog)
     }
 
@@ -622,7 +615,11 @@ impl AdminService {
 
         static FINGERPRINT_WARNED: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
-        let before = match plugins_dir_fingerprint(&self.app.plugins_dir) {
+        let before = match plugins_dir_fingerprint(
+            &self.app.plugins_dir,
+            &|file| admission.is_tarball(file),
+            admission.max_tarball_bytes(),
+        ) {
             Ok(fp) => {
                 FINGERPRINT_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
                 Some(fp)
@@ -651,6 +648,7 @@ impl AdminService {
         if let Some(before) = before {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             before.hash(&mut hasher);
+            (admission as *const dyn PluginAdmission as *const ()).hash(&mut hasher);
             format!("{:?}", self.app.plugins_cfg).hash(&mut hasher);
             let key = hasher.finish();
 
@@ -667,8 +665,12 @@ impl AdminService {
                 &self.app.plugins_cfg,
             );
 
-            if matches!(plugins_dir_fingerprint(&self.app.plugins_dir), Ok(after) if after == before)
-            {
+            let after = plugins_dir_fingerprint(
+                &self.app.plugins_dir,
+                &|file| admission.is_tarball(file),
+                admission.max_tarball_bytes(),
+            );
+            if matches!(after, Ok(after) if after == before) {
                 let mut cache = catalog_cache().lock().unwrap();
                 let misses = cache
                     .get(&self.app.plugins_dir)
@@ -1674,7 +1676,7 @@ fn check_archive_preimage(expected: Option<&str>, bytes: &[u8]) -> Result<(), Ad
     Ok(())
 }
 
-fn read_archive_bounded(path: &Path, cap: u64) -> std::io::Result<Vec<u8>> {
+pub(super) fn read_archive_bounded(path: &Path, cap: u64) -> std::io::Result<Vec<u8>> {
     use std::io::Read as _;
     let mut bytes = Vec::new();
     std::fs::File::open(path)?

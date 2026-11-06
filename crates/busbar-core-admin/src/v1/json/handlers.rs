@@ -148,7 +148,11 @@ pub(crate) async fn list_plugins(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     let ptype = q.get("type").cloned().unwrap_or_default();
+    let (entered, started) = tokio::sync::oneshot::channel();
     let scan = busbar_kernel::config::transaction::config_reload_transaction(&handle, move |txn| {
+        // Bound waiting for the mutation fence, not the scan that owns it. The
+        // blocking transaction retains that fence even if this caller disconnects.
+        let _ = entered.send(());
         let snapshot = txn.app().clone();
         Ok(txn.read_store(move || {
             Ok(Outcome::Value(
@@ -156,11 +160,16 @@ pub(crate) async fn list_plugins(
             ))
         }))
     });
-    let out = match tokio::time::timeout(std::time::Duration::from_secs(5), scan).await {
-        Ok(out) => out,
-        Err(_) => Err(AdminError::Unavailable(
-            "the plugin catalog scan is taking too long; try again shortly".into(),
-        )),
+    tokio::pin!(scan);
+    let out = tokio::select! {
+        biased;
+        out = &mut scan => out,
+        _ = started => scan.await,
+        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+            Err(AdminError::Unavailable(
+                "the plugin catalog scan is taking too long; try again shortly".into(),
+            ))
+        }
     };
     respond(StatusCode::OK, out)
 }

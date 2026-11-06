@@ -362,12 +362,13 @@ fn plugins_dir_fingerprint_treats_a_missing_dir_as_ok_empty() {
         !missing.exists(),
         "precondition: the directory must genuinely not exist"
     );
-    let fp = plugins_dir_fingerprint(&missing).expect("a missing dir must not I/O-error");
+    let fp = plugins_dir_fingerprint(&missing, &|_| true, 1024)
+        .expect("a missing dir must not I/O-error");
 
     let empty = tmp_plugins_dir("fingerprint-really-empty");
     std::fs::create_dir_all(&empty).unwrap();
-    let empty_fp =
-        plugins_dir_fingerprint(&empty).expect("a real empty dir must not I/O-error either");
+    let empty_fp = plugins_dir_fingerprint(&empty, &|_| true, 1024)
+        .expect("a real empty dir must not I/O-error either");
     assert_eq!(
         fp, empty_fp,
         "a missing dir's fingerprint must equal a real empty dir's fingerprint, not some \
@@ -375,11 +376,38 @@ fn plugins_dir_fingerprint_treats_a_missing_dir_as_ok_empty() {
     );
 
     std::fs::write(empty.join("something"), b"x").unwrap();
-    let nonempty_fp = plugins_dir_fingerprint(&empty).expect("a populated dir must not error");
+    let nonempty_fp =
+        plugins_dir_fingerprint(&empty, &|_| true, 1024).expect("a populated dir must not error");
     assert_ne!(
         fp, nonempty_fp,
         "a populated dir's fingerprint must differ from the empty one"
     );
+}
+
+#[test]
+fn catalog_fingerprint_tracks_archive_bytes_and_ignores_unrelated_writes() {
+    let dir = tmp_plugins_dir("fingerprint-archive-bytes");
+    let archive = dir.join("plugin.tar.gz");
+    std::fs::write(&archive, b"first").unwrap();
+    let before_time = std::fs::metadata(&archive).unwrap().modified().unwrap();
+    let fingerprint =
+        || plugins_dir_fingerprint(&dir, &|name| name.ends_with(".tar.gz"), 1024).unwrap();
+    let before = fingerprint();
+    std::fs::write(dir.join("store.db"), b"changed journal").unwrap();
+    assert_eq!(fingerprint(), before);
+    std::fs::write(&archive, b"other").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&archive)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(before_time))
+        .unwrap();
+    assert_ne!(
+        fingerprint(),
+        before,
+        "same-size and same-mtime replacement is fresh"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

@@ -404,22 +404,33 @@ static CATALOG_SCAN_GATE: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 
 const CATALOG_SCAN_GATE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
-fn plugins_dir_fingerprint(dir: &Path) -> std::io::Result<u64> {
-    let mut entries: Vec<(std::ffi::OsString, u64, u128)> = Vec::new();
+// Hash only archives the admission scans. Unrelated files (including a Store's
+// journal) must not invalidate inventory; archive bytes must, even with preserved
+// size and mtime. This runs on the transaction's blocking worker.
+fn plugins_dir_fingerprint(
+    dir: &Path,
+    is_tarball: &dyn Fn(&str) -> bool,
+    max_bytes: u64,
+) -> std::io::Result<u64> {
+    let mut entries = Vec::new();
     match std::fs::read_dir(dir) {
         Ok(rd) => {
             for entry in rd {
                 let entry = entry?;
-                let meta = entry.metadata()?;
-                let mtime = meta
-                    .modified()?
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0);
-                entries.push((entry.file_name(), meta.len(), mtime));
+                let name = entry.file_name();
+                let file = name.to_str().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "non-UTF-8 plugin filename",
+                    )
+                })?;
+                if !is_tarball(file) || !entry.path().metadata()?.is_file() {
+                    continue;
+                }
+                let bytes = operations::read_archive_bounded(&entry.path(), max_bytes)?;
+                entries.push((name, busbar_contract::redacted::sha256_hex(&bytes)));
             }
         }
-
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
     }
