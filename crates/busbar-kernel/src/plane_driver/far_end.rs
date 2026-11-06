@@ -1466,6 +1466,7 @@ impl EgressFarEnd<'_> {
             e.caller,
             need,
             &OpenDesc {
+                completed_head: None,
                 target: &url,
                 fields: &borrowed,
 

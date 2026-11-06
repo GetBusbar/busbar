@@ -1323,6 +1323,7 @@ pub const REQUEST_HELD_MAX: usize = 16 * 1024 * 1024;
 /// A request's head, held until its end.
 #[derive(Debug, Clone)]
 struct Head {
+    completed: Option<Arc<busbar_contract::conn::CompletedHead>>,
     method: Vec<u8>,
     target: Vec<u8>,
     fields: Vec<(String, Vec<u8>)>,
@@ -1798,6 +1799,7 @@ extern "C" fn write_request(
                         Err(refused) => return refused,
                     };
                     *head = Some(Head {
+                        completed: None,
                         method: method.to_vec(),
                         target: words.to_vec(),
                         fields: lines,
@@ -1863,11 +1865,11 @@ extern "C" fn write_request(
                             return Answered::ready(0, 0);
                         }
                     };
-                    h.fields.extend(
-                        defaults.into_iter().map(|(name, value)| {
-                            (String::from_utf8_lossy(&name).into_owned(), value)
-                        }),
-                    );
+                    h.fields
+                        .extend(defaults.fields().iter().map(|(name, value)| {
+                            (String::from_utf8_lossy(name).into_owned(), value.clone())
+                        }));
+                    h.completed = Some(Arc::new(defaults));
                     let unit = super::services::serving_unit();
                     let at = (target.as_str(), within.as_slice(), member.as_str());
 
@@ -2005,6 +2007,7 @@ fn open_with(
     let desc = OpenDesc {
         target,
         fields: &fields,
+        completed_head: h.completed.as_deref(),
 
         body: body.clone(),
         timeout_ms: h.timeout_ms,
@@ -2022,6 +2025,7 @@ fn open_with(
             within: within.to_vec(),
             member: member.to_owned(),
             head: Head {
+                completed: h.completed.clone(),
                 method: h.method.clone(),
                 target: h.target.clone(),
                 fields: fields
@@ -2084,6 +2088,7 @@ fn submit(request: Box<Submission>) -> Conn {
         within: &request.within,
         member: &request.member,
         fields: &fields,
+        completed_head: request.head.completed.as_deref(),
         body: request.body.clone(),
         method: &request.head.method,
         head_target: &request.head.target,
@@ -2102,8 +2107,6 @@ fn submit(request: Box<Submission>) -> Conn {
     }
 }
 
-type HeaderLines = Vec<(Vec<u8>, Vec<u8>)>;
-
 fn completing(
     table: &Arc<dyn DeclaredConns>,
     id: InstanceId,
@@ -2111,20 +2114,22 @@ fn completing(
     target: &str,
     h: &Head,
     body: &[u8],
-) -> Result<HeaderLines, ConnError> {
-    Ok(table
-        .request_head(id, need, target, h.timeout_ms)?
-        .completing(
-            |name| {
-                h.fields
-                    .iter()
-                    .any(|(n, _)| n.as_bytes().eq_ignore_ascii_case(name))
-            },
-            body.len(),
-        )
-        .into_iter()
-        .filter(|(name, _)| !busbar_contract::conn::is_sealed_query_field(name))
-        .collect())
+) -> Result<busbar_contract::conn::CompletedHead, ConnError> {
+    let mut defaults = table.request_head(id, need, target, h.timeout_ms)?;
+    defaults
+        .lines
+        .retain(|(name, _)| !busbar_contract::conn::is_sealed_query_field(name));
+    defaults.completed_for(
+        id,
+        need,
+        target,
+        |name| {
+            h.fields
+                .iter()
+                .any(|(n, _)| n.as_bytes().eq_ignore_ascii_case(name))
+        },
+        body.len(),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2848,6 +2853,7 @@ mod creating_authority_tests {
                         member: "member".into(),
                         dial_timeout_ms: 0,
                         head: Some(Head {
+                            completed: None,
                             method: b"GET".to_vec(),
                             target: b"/".to_vec(),
                             fields: Vec::new(),
@@ -3143,6 +3149,7 @@ mod creating_authority_tests {
                     member: "member".to_owned(),
                     dial_timeout_ms: 0,
                     head: Some(Head {
+                        completed: None,
                         method: b"POST".to_vec(),
                         target: b"/rpc".to_vec(),
                         fields: Vec::new(),

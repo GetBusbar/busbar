@@ -497,6 +497,7 @@ unsafe extern "C" fn host_open(
                 host.instance,
                 NeedId(need),
                 &OpenDesc {
+                    completed_head: None,
                     target: text(d.target)?.unwrap_or(""),
                     fields: &fields,
                     body: crate::conn::Bytes::copy_from_slice(bytes(d.body, d.body_len)?),

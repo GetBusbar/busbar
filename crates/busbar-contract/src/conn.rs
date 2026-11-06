@@ -38,6 +38,8 @@ pub struct OpenDesc<'a> {
     pub target: &'a str,
     /// Head fields, in order.
     pub fields: &'a [(&'a str, &'a [u8])],
+    /// Host-completed protocol defaults; never accepted from a plugin ABI descriptor.
+    pub completed_head: Option<&'a CompletedHead>,
     /// The body sent with the opening message: frozen once by the opener, so a connector that
     /// keeps it (and a retry that opens again) takes a reference, never a copy.
     pub body: Bytes,
@@ -479,10 +481,104 @@ pub struct HeadDefaults {
     pub states_length: bool,
 }
 
+/// Provenance for the exact protocol defaults the host appended before authentication.
+/// This host-side Rust value has no plugin ABI representation or public fields.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CompletedHead {
+    caller: InstanceId,
+    need: NeedId,
+    target: String,
+    body_len: usize,
+    defaults: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+impl std::fmt::Debug for CompletedHead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompletedHead")
+            .field("default_count", &self.defaults.len())
+            .field("body_len", &self.body_len)
+            .finish_non_exhaustive()
+    }
+}
+
+impl CompletedHead {
+    /// The exact suffix authentication must observe and submission must preserve.
+    pub fn fields(&self) -> &[(Vec<u8>, Vec<u8>)] {
+        &self.defaults
+    }
+
+    /// Validate custody and return the prefix still subject to caller-field restrictions.
+    pub fn caller_field_count(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+    ) -> Option<usize> {
+        if caller != self.caller
+            || need != self.need
+            || desc.target != self.target
+            || desc.body.len() != self.body_len
+        {
+            return None;
+        }
+        let count = desc.fields.len().checked_sub(self.defaults.len())?;
+        let (prefix, suffix) = desc.fields.split_at(count);
+        if !suffix
+            .iter()
+            .zip(&self.defaults)
+            .all(|((name, value), (n, v))| name.as_bytes() == n && *value == v.as_slice())
+            || prefix.iter().any(|(name, _)| {
+                self.defaults
+                    .iter()
+                    .any(|(n, _)| name.as_bytes().eq_ignore_ascii_case(n))
+            })
+        {
+            return None;
+        }
+        Some(count)
+    }
+}
+
 /// The one line the host states for a framer whose head states the body's length.
 pub const CONTENT_LENGTH: &[u8] = b"content-length";
 
 impl HeadDefaults {
+    /// Complete a host-selected framer's head, binding its defaults to this request.
+    /// Call only with the result of the connection table's `request_head`, before auth.
+    pub fn completed_for(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        target: &str,
+        carried: impl Fn(&[u8]) -> bool,
+        body_len: usize,
+    ) -> Result<CompletedHead, ConnError> {
+        let defaults = self.completing(carried, body_len);
+        let breaks = |bytes: &[u8]| bytes.iter().any(|b| matches!(b, b'\r' | b'\n' | b'\0'));
+        for (index, (name, value)) in defaults.iter().enumerate() {
+            if name.is_empty()
+                || name.trim_ascii() != name
+                || breaks(name)
+                || breaks(value)
+                || name.eq_ignore_ascii_case(b"transfer-encoding")
+                || defaults[..index]
+                    .iter()
+                    .any(|(n, _)| n.eq_ignore_ascii_case(name))
+                || name.eq_ignore_ascii_case(CONTENT_LENGTH)
+                    && (!self.states_length || value != body_len.to_string().as_bytes())
+            {
+                return Err(ConnError::Refused);
+            }
+        }
+        Ok(CompletedHead {
+            caller,
+            need,
+            target: target.to_owned(),
+            body_len,
+            defaults,
+        })
+    }
+
     /// THE LINES THE HOST ADDS to a request head (THE DESIGN section 6, step 5: nothing is added
     #[must_use]
     pub fn completing(

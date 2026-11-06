@@ -290,6 +290,7 @@ fn start_need(c: &Connector, need: NeedId, url: &str) -> ConnId {
         OWNER,
         need,
         &OpenDesc {
+            completed_head: None,
             target: url,
             fields: &[("content-type", b"application/json")],
             body: busbar_contract::conn::Bytes::from_static(b"{\"model\":\"m\"}"),
@@ -643,6 +644,7 @@ async fn the_http1_only_key_offers_http1_alone() {
             OWNER,
             NEED,
             &OpenDesc {
+                completed_head: None,
                 target: &url,
                 fields: &[],
                 body: busbar_contract::conn::Bytes::from_static(b""),

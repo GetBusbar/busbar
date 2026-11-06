@@ -233,7 +233,7 @@ fn pended_verdict(v: Verdict) -> ConnError {
     }
 }
 
-/// THE HEAD A PLUGIN WROTE, held to 1.5.5's rule for a plugin-described request (v1.5.5
+/// Caller-owned request fields cannot set framing or override host-held authority.
 fn head_is_refused(desc: &OpenDesc<'_>, authority_held: bool) -> bool {
     const FRAMING: [&str; 2] = ["content-length", "transfer-encoding"];
     const AUTHORITY: &str = "host";
@@ -248,6 +248,27 @@ fn head_is_refused(desc: &OpenDesc<'_>, authority_held: bool) -> bool {
                 || FRAMING.iter().any(|f| name_is(f))
                 || (authority_held && name_is(AUTHORITY))
         })
+}
+
+/// Host defaults remain in the signed wire head, but cannot authorize caller framing fields.
+fn request_head_is_refused(
+    caller: InstanceId,
+    need: NeedId,
+    desc: &OpenDesc<'_>,
+    authority_held: bool,
+) -> bool {
+    let Some(completed) = desc.completed_head else {
+        return head_is_refused(desc, authority_held);
+    };
+    let Some(count) = completed.caller_field_count(caller, need, desc) else {
+        return true;
+    };
+    let caller_head = OpenDesc {
+        fields: &desc.fields[..count],
+        completed_head: None,
+        ..desc.clone()
+    };
+    head_is_refused(&caller_head, authority_held)
 }
 
 /// What the connector holds for one declared need: the entry serving its transport, resolved once
@@ -2340,7 +2361,7 @@ impl DeclaredConns for Connector {
             .lock()
             .expect("authority held")
             .contains(&caller);
-        if head_is_refused(desc, authority_held) {
+        if request_head_is_refused(caller, need, desc, authority_held) {
             return Err(ConnError::Refused);
         }
         {
@@ -3116,7 +3137,7 @@ impl Connector {
             .lock()
             .expect("authority held")
             .contains(&caller);
-        if head_is_refused(desc, authority_held) {
+        if request_head_is_refused(caller, need, desc, authority_held) {
             return Err(ConnError::Refused);
         }
 
@@ -3679,3 +3700,7 @@ mod support;
 #[cfg(test)]
 #[path = "tests/refresh_binding_tests.rs"]
 mod refresh_binding_tests;
+
+#[cfg(test)]
+#[path = "tests/completed_head_tests.rs"]
+mod completed_head_tests;
