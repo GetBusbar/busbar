@@ -264,7 +264,10 @@ impl EnvelopeSink for Tape {
 }
 
 fn dispatcher() -> Arc<Dispatcher> {
-    Arc::new(Dispatcher::new(DispatchConfig::default()))
+    Arc::new(Dispatcher::with_services(
+        DispatchConfig::default(),
+        crate::dispatch::services::clock_for_tests(),
+    ))
 }
 
 const REFUSED_TARGET: &str = "refused.example";
@@ -830,7 +833,7 @@ fn a_sink_starts_and_checks_the_same_through_either_door() {
         })
         .collect();
     let t = &transcripts[0];
-    assert!(t.starts_with("Some([]) Some([]) Some([\"the largest settings.max_inflight_deliveries among `module: request-log-webhook` export instances must be >= 1"), "{t}");
+    assert!(t.starts_with("Some([]) Some([]) Some([\"export.audit: settings.max_inflight_deliveries must be >= 1"), "{t}");
     assert!(
         t.contains("sets settings.delivery_timeout_secs: 0 — it must be >= 1")
             && t.ends_with(" None"),

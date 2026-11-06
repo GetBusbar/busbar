@@ -25,6 +25,7 @@ const TICKET: Ticket = Ticket {
 /// destination starting `now:`, and otherwise pends, holding its [`Later`] for the test.
 #[derive(Default)]
 struct Provider {
+    clock: Option<std::time::Instant>,
     judged: AtomicUsize,
     held: Mutex<Vec<Later>>,
     /// Every caller-scoped call, as `(instance, service, first argument)`.
@@ -64,6 +65,12 @@ impl HostServices for Provider {
     }
 
     fn now(&self) -> Reading {
+        if let Some(clock) = self.clock {
+            return Reading {
+                wall_ns: 1_700_000_000_000_000_000,
+                mono_ns: u64::try_from(clock.elapsed().as_nanos()).expect("test clock fits u64"),
+            };
+        }
         Reading {
             wall_ns: 1_700_000_000_000_000_000,
             mono_ns: 42,
@@ -3525,4 +3532,12 @@ fn work_status_routes_the_instance_without_a_serving_unit_and_returns_no_payload
             b"0123456789abcdef0123456789abcdef".to_vec()
         ),]
     );
+}
+
+/// Real elapsed time for deadline-bearing actual-product conformance tests.
+pub(super) fn clock_provider() -> Arc<dyn HostServices> {
+    Arc::new(Provider {
+        clock: Some(std::time::Instant::now()),
+        ..Provider::default()
+    })
 }

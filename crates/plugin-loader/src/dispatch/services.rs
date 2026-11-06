@@ -2457,3 +2457,8 @@ mod inspection_store;
 
 #[path = "conditional_store.rs"]
 mod conditional_store;
+
+#[cfg(test)]
+pub(crate) fn clock_for_tests() -> Arc<dyn HostServices> {
+    tests::clock_provider()
+}
