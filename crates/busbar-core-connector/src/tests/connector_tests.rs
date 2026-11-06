@@ -4954,3 +4954,118 @@ fn protected_auth_requires_the_located_security_plan_even_on_private_plaintext_n
 
 #[path = "prepared_request_tests.rs"]
 mod prepared_request_tests;
+
+/// A datagram producer can deliberately implement no Locate operation: its HTTP rendezvous,
+/// rather than its media association, owns the request defaults needed before authentication.
+#[test]
+fn datagram_head_defaults_use_rendezvous_exchange_without_locate() {
+    use crate::framer::{Call, Crossed, DoorFacts};
+    use crate::support::Knobs;
+    use busbar_contract::abi::mechanism::call::Outcome;
+
+    struct NoLocate {
+        facts: DoorFacts,
+        locate_calls: AtomicU64,
+    }
+    impl FramerDoor for NoLocate {
+        fn facts(&self) -> &DoorFacts {
+            &self.facts
+        }
+        fn cross(&self, call: Call<'_>) -> Crossed {
+            assert!(
+                matches!(call, Call::Locate(..)),
+                "head completion performs no media or network operation"
+            );
+            self.locate_calls.fetch_add(1, Ordering::SeqCst);
+            Crossed {
+                outcome: Outcome::Refused,
+                error: None,
+            }
+        }
+    }
+    let mut facts = TestDoor::identity("webrtc")
+        .with_role(busbar_contract::abi::transport::ROLE_FRAMER)
+        .facts()
+        .clone();
+    facts.datagram = true;
+    let media = Arc::new(NoLocate {
+        facts,
+        locate_calls: AtomicU64::new(0),
+    });
+    let exchange = Arc::new(TestDoor::new(
+        "http",
+        &["http", "https"],
+        &[],
+        Knobs {
+            authority: Some("127.0.0.1:9"),
+            head_lines: Some(b"accept: application/sdp\r\n"),
+            states_length: true,
+            ..Knobs::default()
+        },
+    ));
+    let view = Transports::new(vec![
+        Entry {
+            door: media.clone(),
+            alpn: Vec::new(),
+        },
+        Entry {
+            door: exchange.clone(),
+            alpn: Vec::new(),
+        },
+    ])
+    .unwrap();
+    let connector =
+        Connector::serving(view, loopback_literals(), None, Arc::new(|_, _: Ticket| {}));
+    connector.declare_over(OWNER, NeedId(0), "webrtc").unwrap();
+    connector
+        .declare_need_to(
+            OWNER,
+            NeedId(1),
+            "webrtc",
+            DEFAULT_CLASS,
+            "http://127.0.0.1:9/v1/realtime/calls",
+        )
+        .unwrap();
+    connector.declare_over(OWNER, NeedId(2), "http").unwrap();
+
+    for (need, target) in [
+        (NeedId(0), "http://127.0.0.1:9/v1/realtime/calls"),
+        (NeedId(0), "https://127.0.0.1:9/v1/realtime/calls"),
+        (NeedId(1), ""),
+        (NeedId(2), "http://127.0.0.1:9/ordinary"),
+    ] {
+        let defaults = connector.head_defaults(OWNER, need, target, 100).expect(
+            "datagram head defaults must use the ordinary rendezvous exchange, not NoLocate",
+        );
+        assert_eq!(
+            defaults.lines,
+            vec![(b"accept".to_vec(), b"application/sdp".to_vec())]
+        );
+        assert!(defaults.states_length);
+    }
+    assert_eq!(exchange.count("locate"), 4);
+    assert_eq!(media.locate_calls.load(Ordering::SeqCst), 0);
+    for target in [
+        "missing://127.0.0.1:9/call",
+        "webrtc://127.0.0.1:9/call",
+        "127.0.0.1:9",
+    ] {
+        assert!(
+            matches!(
+                connector.head_defaults(OWNER, NeedId(0), target, 100),
+                Err(ConnError::Refused)
+            ),
+            "unknown, recursive datagram, and missing schemes cannot choose a rendezvous exchange"
+        );
+    }
+    assert_eq!(
+        exchange.count("locate"),
+        4,
+        "invalid targets never cross the exchange"
+    );
+    assert_eq!(
+        media.locate_calls.load(Ordering::SeqCst),
+        0,
+        "invalid targets never fall back to datagram Locate"
+    );
+}
