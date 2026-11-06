@@ -3620,3 +3620,47 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
             .expect("the owned real TLS peer completes all actual verifier requests");
     }
 }
+
+#[tokio::test]
+async fn request_body_completion_keeps_response_session_open_until_connection_closes() {
+    use busbar_kernel::plane_driver::{CallerEnd as _, SessionCaller as _};
+    use bytes::Bytes;
+    use std::future::{poll_fn, Future as _};
+    use std::pin::pin;
+    use std::sync::{atomic::AtomicBool, Mutex};
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let caller = super::ActorCaller {
+        out: super::Emitter { stream: 7, tx },
+        stated: Mutex::new(None),
+        body: Mutex::new(Some(Bytes::from_static(b"request"))),
+        ended: AtomicBool::new(false),
+    };
+    assert_eq!(caller.read().await, Some(b"request".to_vec()));
+    let mut next = pin!(caller.read());
+    poll_fn(|cx| {
+        assert!(
+            next.as_mut().poll(cx).is_pending(),
+            "finishing the request must not report caller EOF to a response session"
+        );
+        Poll::Ready(())
+    })
+    .await;
+
+    let (written, ()) = tokio::join!(caller.write(b"later notification"), async {
+        let (stream, op) = rx.recv().await.expect("response remains writable");
+        assert_eq!(stream, 7);
+        match op {
+            super::Op::Data { bytes, end, done } => {
+                assert_eq!(bytes.as_ref(), b"later notification");
+                assert!(!end);
+                done.send(true)
+                    .expect("the response writer is still waiting");
+            }
+            _ => panic!("expected response data"),
+        }
+    });
+    assert!(written);
+    drop(rx);
+    assert_eq!(next.await, None, "connection closure ends the caller leg");
+}
