@@ -83,7 +83,7 @@ pub fn signing_secret_crossing() -> (String, String) {
     let index = facts
         .secret_refs
         .iter()
-        .position(|path| path == "signing-secret")
+        .position(|path| path == busbar_auth_webhook_signature::SECRET_REF)
         .expect("the actual webhook declares its signing secret");
     (
         format!("abi:host->plugin:op:open.secrets[{index}]"),
@@ -326,7 +326,7 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
     s.insert("variant".into(), "twilio".into());
     s.insert("origin".into(), "wss://edge.canary.invalid".into());
     s.insert(
-        "signing-secret".into(),
+        busbar_auth_webhook_signature::SECRET_REF.into(),
         source(
             SECRET_MODULE_FILE,
             serde_json::json!({"path": secret_file.display().to_string()}),

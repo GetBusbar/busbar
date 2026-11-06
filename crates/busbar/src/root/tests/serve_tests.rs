@@ -10530,8 +10530,12 @@ mod pools_door_money {
             mine,
             vec![format!(
                 "m0 in={} out={} cr=0 cw=0 req=1 billable=1",
-                11 * busbar_contract::count::COUNT_SCALE,
-                7 * busbar_contract::count::COUNT_SCALE,
+                busbar_contract::Count::from_integer(11)
+                    .expect("eleven whole input units fit")
+                    .micros(),
+                busbar_contract::Count::from_integer(7)
+                    .expect("seven whole output units fit")
+                    .micros(),
             )]
         );
         drop(streamed);
