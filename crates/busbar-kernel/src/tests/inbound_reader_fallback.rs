@@ -3,6 +3,11 @@
 
 //! Exercise the actual inbound host's two-point dispatch, not its decision helpers.
 use super::*;
+use crate::guest::{Claimant, Route};
+use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
+use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
+use busbar_contract::auth_calls::Verifying;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Seen {
@@ -90,26 +95,209 @@ fn probe(
     })
 }
 
+const OWNER: u64 = 7;
+const GEN: u64 = 3;
+const MESSAGES: &str = "/v1/messages";
+const SIGNED_LINE: &str = "x-signed-credential";
+struct Kit {
+    inbound: Arc<Inbound>,
+}
+fn test_mac(t: &UnitTag) -> Option<u64> {
+    let mut h: u64 = 0x9e37_79b9_7f4a_7c15;
+    for v in [
+        t.secret[0],
+        t.secret[1],
+        t.generation,
+        t.owner,
+        u64::from(t.line),
+        t.unit,
+    ] {
+        h = (h ^ v).wrapping_mul(0x0100_0000_01b3).rotate_left(29);
+    }
+    Some(h)
+}
+
+fn identity(subject: &str, credential: &str) -> Verified {
+    Verified::Identity(VerifiedIdentity {
+        subject: subject.to_string(),
+        credential: Some(Secret::new(credential.to_string())),
+        ..VerifiedIdentity::default()
+    })
+}
+
+fn signed_head() -> Head {
+    Head {
+        method: "POST".into(),
+        target: MESSAGES.into(),
+        authority: "a.example".into(),
+        query: None,
+        fields: vec![(SIGNED_LINE.into(), b"signature".to_vec())],
+    }
+}
+impl Kit {
+    fn id(&self, path: &str) -> u64 {
+        assert_eq!(path, MESSAGES);
+        self.inbound.specs(OWNER, GEN).unwrap()[0].auth
+    }
+    fn hand_in(&self, path: &str, line_path: &str, unit: UnitRef, head: Head) -> (u32, UnitRef) {
+        assert_eq!(line_path, MESSAGES);
+        self.inbound
+            .hand_in(HandIn {
+                owner: OWNER,
+                generation: GEN,
+                auth: self.id(path),
+                unit,
+                line: 0,
+                conn: 1,
+                stream: 1,
+                framing: Some(1),
+                head,
+            })
+            .unwrap()
+    }
+    async fn call_async(
+        &self,
+        path: &str,
+        unit: UnitRef,
+        point: u32,
+        head: Head,
+    ) -> Result<Answer, &'static str> {
+        let (sent, received) = tokio::sync::oneshot::channel();
+        let answer = self.inbound.auth_call(
+            Call {
+                owner: OWNER,
+                generation: GEN,
+                auth: self.id(path),
+                unit,
+                point,
+                conn: 1,
+                stream: 1,
+                framing: 1,
+                head,
+                body: (point == POINT_HEAD_BODY).then(|| b"{}".to_vec()),
+                deadline: None,
+            },
+            Box::new(move |answer| {
+                let _ = sent.send(answer);
+            }),
+        );
+        match answer {
+            Some(answer) => answer,
+            None => received.await.expect("the asynchronous auth call answers"),
+        }
+    }
+}
 fn mixed(reader: Arc<Probe>, providers: &[Arc<Probe>]) -> Kit {
-    let gov = signing_gov();
-    let mut k = reader_kit(&gov, reader, true);
-    let mut listener = k.inbound.table(OWNER, GEN).unwrap().listener.clone();
+    let registry: Arc<dyn busbar_contract::plugin_rows::PluginRows> =
+        Arc::new(busbar_plugin_loader::registry::PluginRegistry::empty());
+    let secret_resolver = Arc::new(crate::config::secret::SecretResolver::builtins_only());
+    let admin_modules = Arc::new(
+        crate::auth::AdminAuthChain::build(
+            &crate::config::AuthCfg::default_none(),
+            &registry,
+            &secret_resolver,
+        )
+        .expect("the configured empty admin chain needs no provider"),
+    );
+    let app = Arc::new(crate::state::App::from_test_parts(crate::state::AppParts {
+        fallback_runtime_key: "",
+        serve_tables: Default::default(),
+        root_rules: Arc::new(crate::appbuild::AcceptAll),
+        config_projection: Default::default(),
+        config_tables: Default::default(),
+        store: Arc::new(crate::store::HealthState::new(Vec::new())),
+        limits: Default::default(),
+        session_store: Arc::new(crate::session::SessionStore::new(1024, None)),
+        incremental_scan: Default::default(),
+        plane_pools: Default::default(),
+        auth: Arc::new(crate::auth::AuthMiddleware::inbound_reader_fixture(
+            reader,
+            SIGNED_LINE,
+        )),
+        rewrite_hooks: Default::default(),
+        tap_hooks: Default::default(),
+        tap_hooks_candidate: Default::default(),
+        tap_hooks_routing: Default::default(),
+        tap_hooks_response: Default::default(),
+        global_gates: Default::default(),
+        pool_orderings: Default::default(),
+        pool_decision_gates: Default::default(),
+        pool_rewrite_chains: Default::default(),
+        plane_gates: Default::default(),
+        plane_rewrites: Default::default(),
+        hook_env: crate::hooks::HookEnv::new(registry, secret_resolver.clone()).unwrap(),
+        hook_registry: Default::default(),
+        requested_signals: Default::default(),
+        any_content_hook: Default::default(),
+        global_hooks: Default::default(),
+        base_hook_names: Default::default(),
+        groups_registry: Default::default(),
+        base_group_names: Default::default(),
+        identity_providers: Default::default(),
+        export_defs: Default::default(),
+        admin: Default::default(),
+        admin_chain: Default::default(),
+        admin_modules,
+        public_url: Default::default(),
+        oauth_as: Default::default(),
+        demotion_record: Default::default(),
+        amendments: Default::default(),
+        planes: Default::default(),
+        plane_slots: Default::default(),
+        plane_sections: Default::default(),
+        auth_scope_caps: Default::default(),
+        role_bindings: Default::default(),
+        config_path: Default::default(),
+        providers_path: Default::default(),
+        overlay_path: Default::default(),
+        config_version: Default::default(),
+        max_keys_per_principal: Default::default(),
+        max_auto_provisioned_groups: Default::default(),
+        governance: None,
+        secret_resolver,
+        cost: Arc::new(crate::cost::CostModel::flat(1)),
+        plugins_dir: Default::default(),
+        plugins_cfg: Default::default(),
+        plugin_admission: Default::default(),
+        self_key_ttl_secs: crate::governance::mint_policy::DEFAULT_KEY_TTL_SECS,
+        mint_policy: Default::default(),
+        request_id_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+        plugin_routes: Arc::new(crate::plugin_routes::PluginRouteTable::empty()),
+        boot_route_paths: Default::default(),
+        planes_awaiting_restart: Default::default(),
+    }));
+
     let mut names: Vec<_> = providers.iter().map(|p| p.name.to_string()).collect();
     names.push(crate::config::KEYS_MODULE.into());
-    let chain = LineAuth::Chain(names, AuthPoints(POINT_HEAD | POINT_HEAD_BODY));
-    listener.guests = GuestList::seal(vec![
-        line(MESSAGES, METHOD_POST, chain.clone()),
-        line(OTHER, METHOD_POST, chain),
-        line(HEALTHZ, METHOD_GET, LineAuth::None),
-    ])
-    .unwrap();
-    listener.auths = providers
-        .iter()
-        .map(|p| (p.name.to_string(), p.clone() as Arc<dyn AuthCalls>))
-        .collect();
+    let listener = Listener {
+        guests: GuestList::seal(vec![Line {
+            route: Route {
+                methods: METHOD_POST,
+                path_form: PATH_EXACT,
+                path: MESSAGES.into(),
+                fields: Vec::new(),
+                rung: 0,
+            },
+            claimant: Claimant::Clean("reader-fallback-fixture".into()),
+            dialect: 0,
+            auth: LineAuth::Chain(names, AuthPoints(POINT_HEAD | POINT_HEAD_BODY)),
+            upgrade: None,
+            offered: AuthPoints(POINT_HEAD | POINT_HEAD_BODY),
+        }])
+        .unwrap(),
+        auths: providers
+            .iter()
+            .map(|p| (p.name.to_string(), p.clone() as Arc<dyn AuthCalls>))
+            .collect(),
+        body_limit: 16,
+        app,
+        door_refusals: Vec::new(),
+        ids: vec![7000],
+        signed_ingress: Arc::new(|_, _| true),
+        scope: None,
+    };
     let next = Arc::new(AtomicU64::new(100));
-    let refused = k.refused.clone();
-    k.inbound = Inbound::new(
+    let inbound = Inbound::new(
         Seals {
             mint: Arc::new(move || next.fetch_add(1, Ordering::SeqCst)),
             mac: Arc::new(test_mac),
@@ -117,12 +305,12 @@ fn mixed(reader: Arc<Probe>, providers: &[Arc<Probe>]) -> Kit {
         Arc::new(|work| {
             tokio::spawn(work);
         }),
-        Arc::new(move |r| refused.lock().unwrap().push(r.clone())),
+        Arc::new(|_| {}),
     );
-    k.inbound.install_at(OWNER, 71, GEN, listener).unwrap();
-    k.inbound.framing_started(OWNER, 71, 1, GEN).unwrap();
-    k.inbound.grant_stream(OWNER, 1, 1, GEN).unwrap();
-    k
+    inbound.install_at(OWNER, 71, GEN, listener).unwrap();
+    inbound.framing_started(OWNER, 71, 1, GEN).unwrap();
+    inbound.grant_stream(OWNER, 1, 1, GEN).unwrap();
+    Kit { inbound }
 }
 
 async fn two_points(k: &Kit, seen: &Arc<Mutex<Vec<Seen>>>) -> Answer {

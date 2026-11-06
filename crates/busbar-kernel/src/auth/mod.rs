@@ -2782,3 +2782,27 @@ mod ticket_admission_policy;
 #[cfg(test)]
 #[path = "tests/verified_caller_policy.rs"]
 mod verified_caller_policy;
+
+// Script only the plugin boundary; the regression runs the ordinary inbound host.
+#[cfg(test)]
+impl AuthMiddleware {
+    pub(crate) fn inbound_reader_fixture(
+        calls: std::sync::Arc<dyn AuthCalls>,
+        carrier: &'static str,
+    ) -> Self {
+        let carrier = HeaderName::from_static(carrier);
+        Self {
+            keys_in_chain: true,
+            chain: Vec::new(),
+            readers: vec![CredentialReader {
+                name: "reader".into(),
+                calls,
+                kinds: Vec::new(),
+                carriers: vec![carrier.clone()],
+                issued: None,
+            }],
+            carriers: vec![carrier],
+            issued: None,
+        }
+    }
+}

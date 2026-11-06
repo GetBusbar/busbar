@@ -3312,3 +3312,7 @@ mod handin_owner_policies;
 #[cfg(test)]
 #[path = "tests/inbound_signed_order_policies.rs"]
 mod signed_order_policies;
+
+#[cfg(test)]
+#[path = "tests/inbound_reader_fallback.rs"]
+mod reader_fallback;
