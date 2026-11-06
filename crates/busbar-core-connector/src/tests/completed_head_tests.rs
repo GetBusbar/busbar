@@ -133,6 +133,27 @@ fn completion_rejects_altered_missing_reordered_and_duplicated_fields() {
         ("content-length", b"3".as_slice()),
     ];
     assert!(refused(&fields, b"abcd", &completed));
+    let disguised = [
+        ("Host ", b"other.example".as_slice()),
+        ("host", b"sink.example".as_slice()),
+        ("content-length", b"3".as_slice()),
+    ];
+    assert!(
+        request_head_is_refused(
+            OWNER,
+            NEED,
+            &OpenDesc {
+                target: TARGET,
+                fields: &disguised,
+                body: Bytes::from_static(b"abc"),
+                completed_head: Some(&completed),
+                ..OpenDesc::default()
+            },
+            false
+        ),
+        "a generated authority cannot be duplicated through whitespace"
+    );
+
     let desc = OpenDesc {
         target: TARGET,
         fields: &fields,

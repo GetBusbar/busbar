@@ -530,7 +530,7 @@ impl CompletedHead {
             || prefix.iter().any(|(name, _)| {
                 self.defaults
                     .iter()
-                    .any(|(n, _)| name.as_bytes().eq_ignore_ascii_case(n))
+                    .any(|(n, _)| name.trim_ascii().as_bytes().eq_ignore_ascii_case(n))
             })
         {
             return None;
