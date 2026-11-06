@@ -37,6 +37,7 @@ const ANSWER: &[u8] = br##"{"jsonrpc":"2.0","id":1,"result":{"role":"agent","mes
 const ANSWER_OUT: &[u8] = br##"{"jsonrpc":"2.0","id":1,"result":{"role":"agent","messageId":"a1","parts":[{"text":"the agent's reply, that buffer that holds the whole request takes the answer in several writes. the agent's reply, long enough that a buffer that holds the whole request takes the answer in several writes. the agent's reply, long enough that a buffer that holds the whole request takes the answer in several writes. ","kind":"text"}],"kind":"message","contextId":"ctx-7"}}"##;
 const REFUSAL: &[u8] = br##"{"jsonrpc":"2.0","id":null,"error":{"code":-32004,"message":"denied","data":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","domain":"a2a-protocol.org","reason":"UNSUPPORTED_OPERATION"}]}}"##;
 const ADMIN_TOKEN: &str = "a2a-parity-operator-token";
+const PARITY_CASES: &str = "BUSBAR_A2A_PARITY_CASES";
 const CAP: usize = 32;
 const OPEN_CLAIMS: &[(&str, &str)] = &[
     ("POST", "/a2a/message:send"),
@@ -84,8 +85,9 @@ const REFRESH_CLAIMS: &[(&str, &str)] = &[
     ("POST", "/a2a"),
     ("POST", "/a2a/"),
     ("POST", "/lf.a2a.v1.A2AService/{method}"),
-    ("POST", "/a2a/agents/other/"),
+    // Configured agent order is preserved by the plane.
     ("POST", "/a2a/agents/vendor/"),
+    ("POST", "/a2a/agents/other/"),
 ];
 
 #[derive(Clone, Copy, Debug)]
@@ -912,56 +914,62 @@ fn isolated_a2a_case() -> bool {
             let _ = self.0.wait();
         }
     }
-    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-    command
-        .args(["--exact", &name, "--nocapture"])
-        .env(CHILD, &name)
-        .stdout(std::process::Stdio::piped());
-    let mut settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .expect("actual Store settings");
-    if settings.get("db_path").is_some() {
-        let directory = crate::root::test_plugins::scratch("a2a-parity-child-store");
-        settings["db_path"] = serde_json::json!(directory.join("governance.sqlite"));
-        command.env(
-            "BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS",
-            settings.to_string(),
-        );
-    }
-    let mut child = Child(
-        command
-            .spawn()
-            .expect("start the exact isolated A2A parity case"),
-    );
+    // Keep each linked/dropped pair together, with fresh application state for cancellation.
+    // Each child performs eight real admin mutations, inside the unchanged config-rate budget.
     let until = std::time::Instant::now() + std::time::Duration::from_secs(90);
-    loop {
-        if let Some(status) = child.0.try_wait().unwrap() {
-            use std::io::Read;
-            let mut output = String::new();
-            child
-                .0
-                .stdout
-                .take()
-                .unwrap()
-                .read_to_string(&mut output)
-                .unwrap();
-            assert!(
-                status.success(),
-                "the actual A2A parity child failed: {status}: {output}"
+    for cases in ["relay", "cancel"] {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", &name, "--nocapture"])
+            .env(CHILD, &name)
+            .env(PARITY_CASES, cases)
+            .stdout(std::process::Stdio::piped());
+        let mut settings: serde_json::Value = serde_json::from_str(
+            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+        )
+        .expect("actual Store settings");
+        if settings.get("db_path").is_some() {
+            let directory = crate::root::test_plugins::scratch("a2a-parity-child-store");
+            settings["db_path"] = serde_json::json!(directory.join("governance.sqlite"));
+            command.env(
+                "BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS",
+                settings.to_string(),
             );
-            assert!(
-                output.contains(WITNESS),
-                "the exact child did not complete its assertions: {output}"
-            );
-            return true;
         }
-        assert!(
-            std::time::Instant::now() < until,
-            "the actual A2A parity child timed out"
+        let mut child = Child(
+            command
+                .spawn()
+                .expect("start the exact isolated A2A parity case"),
         );
-        std::thread::park_timeout(std::time::Duration::from_millis(5));
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                use std::io::Read;
+                let mut output = String::new();
+                child
+                    .0
+                    .stdout
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut output)
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "the actual A2A parity child failed: {status}: {output}"
+                );
+                assert!(
+                    output.contains(WITNESS),
+                    "the exact child did not complete its assertions: {output}"
+                );
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "the actual A2A parity child timed out"
+            );
+            std::thread::park_timeout(std::time::Duration::from_millis(5));
+        }
     }
+    true
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1176,12 +1184,12 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
     });
 
     let mut auxiliary_parity = None;
-    let cases = [
-        (Origin::Linked, false),
-        (Origin::Dropped, false),
-        (Origin::Linked, true),
-        (Origin::Dropped, true),
-    ];
+    let cancelling = match std::env::var(PARITY_CASES).as_deref() {
+        Ok("relay") => false,
+        Ok("cancel") => true,
+        other => panic!("the isolated child must name its parity cases: {other:?}"),
+    };
+    let cases = [(Origin::Linked, cancelling), (Origin::Dropped, cancelling)];
     // First migrate every actual namespace through a real signed request. Ordinary hosts are
     // then opened without a bootstrap grant, so raw rebind/refresh/cancel assertions stay real.
     for (initializing, (origin, cancelling)) in [true, false]
