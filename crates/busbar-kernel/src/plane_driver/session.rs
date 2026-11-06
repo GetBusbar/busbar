@@ -250,6 +250,7 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
             self.close(&mut far_run, end, &ended).await
         };
         let (near, far) = tokio::join!(near_side, far_side);
+        tracing::debug!(near = ?near, far = ?far, "session pump completed");
         near.and(far)
     }
 
