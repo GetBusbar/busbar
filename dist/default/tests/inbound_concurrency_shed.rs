@@ -277,30 +277,116 @@ fn post_chat(port: u16) -> Response {
 }
 
 fn parse_response(raw: &[u8]) -> Response {
-    let text = String::from_utf8_lossy(raw);
-    let Some(split) = text.find("\r\n\r\n") else {
+    let Some(split) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
         return Response {
             status: 0,
             headers: Vec::new(),
             body: String::new(),
         };
     };
-    let (head, rest) = text.split_at(split);
-    let body = rest[4..].to_string();
+    let head = std::str::from_utf8(&raw[..split]).expect("response headers are UTF-8");
+    let body = &raw[split + 4..];
     let mut lines = head.lines();
     let status = lines
         .next()
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    let headers = lines
+    let headers: Vec<(String, String)> = lines
         .filter_map(|l| l.split_once(':'))
         .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
         .collect();
+    let encodings: Vec<_> = headers
+        .iter()
+        .filter(|(name, _)| name == "transfer-encoding")
+        .flat_map(|(_, value)| {
+            value
+                .split(',')
+                .map(|coding| coding.trim().to_ascii_lowercase())
+        })
+        .collect();
+    let body = if encodings.is_empty() {
+        body.to_vec()
+    } else {
+        assert_eq!(encodings, ["chunked"], "unsupported transfer coding");
+        decode_chunks(body).expect("complete, valid chunked response framing")
+    };
     Response {
         status,
         headers,
-        body,
+        body: String::from_utf8(body).expect("response JSON is UTF-8"),
+    }
+}
+
+fn decode_chunks(mut wire: &[u8]) -> Result<Vec<u8>, &'static str> {
+    let mut body = Vec::new();
+    loop {
+        let end = wire
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .ok_or("missing chunk size")?;
+        let size = wire[..end]
+            .split(|b| *b == b';')
+            .next()
+            .ok_or("missing size")?;
+        if size.is_empty() || !size.iter().all(u8::is_ascii_hexdigit) {
+            return Err("invalid chunk size");
+        }
+        let size =
+            usize::from_str_radix(std::str::from_utf8(size).map_err(|_| "invalid size")?, 16)
+                .map_err(|_| "chunk size overflow")?;
+        wire = &wire[end + 2..];
+        if size == 0 {
+            loop {
+                let end = wire
+                    .windows(2)
+                    .position(|w| w == b"\r\n")
+                    .ok_or("incomplete trailers")?;
+                if end == 0 {
+                    return if wire.len() == 2 {
+                        Ok(body)
+                    } else {
+                        Err("bytes after final chunk")
+                    };
+                }
+                if !wire[..end].contains(&b':') {
+                    return Err("invalid trailer");
+                }
+                wire = &wire[end + 2..];
+            }
+        }
+        let chunk = wire.get(..size).ok_or("truncated chunk")?;
+        let rest = wire.get(size..).ok_or("truncated chunk")?;
+        if !rest.starts_with(b"\r\n") {
+            return Err("missing chunk delimiter");
+        }
+        body.extend_from_slice(chunk);
+        wire = &rest[2..];
+    }
+}
+
+#[test]
+fn response_parser_preserves_chunked_json_and_rejects_truncated_framing() {
+    let response = parse_response(b"HTTP/1.1 503 Service Unavailable\r\nTransfer-Encoding: Chunked\r\nContent-Type: application/json\r\n\r\n3;fixture=yes\r\n{\"e\r\n4\r\n\":1}\r\n0\r\nTrace: test\r\n\r\n");
+    assert_eq!(response.status, 503);
+    assert_eq!(
+        response.header("content-type").as_deref(),
+        Some("application/json")
+    );
+    assert_eq!(response.body, r#"{"e":1}"#);
+    for malformed in [
+        b"3\r\n{}".as_slice(),
+        b"2\r\n{}XX0\r\n\r\n",
+        b"2\r\n{}\r\n",
+        b"0\r\n",
+        b"0\r\n\r\nextra",
+        b"+2\r\n{}\r\n0\r\n\r\n",
+        b"FFFFFFFFFFFFFFFFFFFFFFFF\r\n",
+    ] {
+        assert!(
+            decode_chunks(malformed).is_err(),
+            "must reject {malformed:?}"
+        );
     }
 }
 
