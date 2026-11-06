@@ -112,7 +112,9 @@ fn inbound_cap_sheds_the_excess_and_serves_the_admitted() {
         assert_eq!(
             r.header("retry-after").as_deref(),
             Some("1"),
-            "a shed must name a concrete backoff so a client can retry sanely"
+            "a shed must name a concrete backoff so a client can retry sanely; headers={:?}, body={:?}",
+            r.headers,
+            r.body
         );
         assert_eq!(
             r.header("content-type").as_deref(),
