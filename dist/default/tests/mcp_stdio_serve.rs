@@ -240,7 +240,7 @@ fn the_catalog_sections_are_required_only_when_a_linked_plane_requires_them() {
         "listen: \"127.0.0.1:0\"\nstore: {module: memory}\n",
     )
     .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let out = Command::new(common::boot::exe())
         .arg("--validate")
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))

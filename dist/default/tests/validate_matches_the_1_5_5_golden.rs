@@ -3,6 +3,8 @@
 
 #![cfg(linked_axis_export_doors)]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -57,7 +59,7 @@ fn validate(dir: &Path, case: &str) -> String {
         ),
     )
     .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let out = Command::new(common::boot::exe())
         .arg("--validate")
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))

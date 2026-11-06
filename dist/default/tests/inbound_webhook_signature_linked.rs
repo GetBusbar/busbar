@@ -3,6 +3,8 @@
 
 #![cfg(linked_every_auth)]
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -35,7 +37,7 @@ fn a_chain_naming_the_webhook_signature_plugin_resolves_to_the_linked_row() {
         ),
     )
     .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let out = Command::new(common::boot::exe())
         .arg("--validate")
         .env(
             "BUSBAR_SIGNING_KEY",

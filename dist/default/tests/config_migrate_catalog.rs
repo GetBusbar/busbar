@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -31,7 +33,7 @@ fn workdir() -> PathBuf {
 #[test]
 fn a_stray_catalog_key_is_removed_into_a_catalog_the_migrated_config_names() {
     let dir = workdir();
-    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let out = Command::new(common::boot::exe())
         .arg("--migrate-config")
         .arg(dir.join("config.yaml"))
         .env_remove("BUSBAR_PROVIDERS")
@@ -66,7 +68,7 @@ fn a_stray_catalog_key_is_removed_into_a_catalog_the_migrated_config_names() {
         "the migrated config names the migrated catalog:\n{stdout}"
     );
     std::fs::write(dir.join("config.migrated.yaml"), &stdout).unwrap();
-    let v = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let v = Command::new(common::boot::exe())
         .arg("--validate")
         .env("BUSBAR_CONFIG", dir.join("config.migrated.yaml"))
         .env_remove("BUSBAR_PROVIDERS")
@@ -110,7 +112,7 @@ advanced:
 ",
     )
     .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let out = Command::new(common::boot::exe())
         .current_dir(&launch)
         .arg("--migrate-config")
         .arg(dir.join("config.yaml"))
@@ -138,7 +140,7 @@ advanced:
     assert_eq!(doc["auth"]["signing_key"]["env"], "EXISTING_SIGNING_KEY");
     std::fs::write(dir.join("config.migrated.yaml"), &out.stdout).unwrap();
     // Retired runtime input cannot redirect a validated deployment back to another catalog.
-    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let out = Command::new(common::boot::exe())
         .arg("--validate")
         .arg("--config")
         .arg(dir.join("config.migrated.yaml"))

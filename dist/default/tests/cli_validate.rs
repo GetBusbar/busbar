@@ -40,7 +40,7 @@ fn the_production_pgo_trainer_configuration_validates() {
         "{}",
         String::from_utf8_lossy(&generated.stderr)
     );
-    let validated = std::process::Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let validated = std::process::Command::new(common::boot::exe())
         .arg("--validate")
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
@@ -140,7 +140,7 @@ fn write_tools_only_configs(dir: &Path, extra: &str) {
 const UNSET_INTERPOLATION_VAR: &str = "BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR";
 
 fn command(dir: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_busbar"));
+    let mut command = Command::new(common::boot::exe());
     command
         .env_remove(UNSET_INTERPOLATION_VAR)
         .env("MOCK_KEY", "test-key-value")
@@ -763,7 +763,7 @@ fn migrate_config_prints_changes_and_warnings_sections_when_non_empty() {
     )
     .unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let out = Command::new(common::boot::exe())
         .args(["--migrate-config", legacy.to_str().unwrap()])
         .output()
         .expect("run busbar --migrate-config");
@@ -792,7 +792,7 @@ fn migrate_config_omits_changes_and_warnings_sections_when_empty() {
     )
     .unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let out = Command::new(common::boot::exe())
         .args(["--migrate-config", legacy.to_str().unwrap()])
         .output()
         .expect("run busbar --migrate-config");
@@ -924,7 +924,7 @@ fn validate_ok_when_keys_chain_has_signing_key_and_writes_no_file() {
 #[test]
 fn generate_signing_key_emits_a_usable_referenced_key() {
     let dir = fixture_dir("sk-gen");
-    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let out = Command::new(common::boot::exe())
         .args(["--generate-signing-key"])
         .output()
         .expect("run busbar --generate-signing-key");
@@ -995,7 +995,7 @@ fn overlay_validation_tree(dir: &Path) -> std::collections::BTreeMap<PathBuf, Op
 #[cfg(linked_section_pools)]
 fn run_busbar_with_overlay(dir: &Path, overlay: &Path, args: &[&str]) -> (i32, String, String) {
     write_legacy_overlay_selector(dir, overlay);
-    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let out = Command::new(common::boot::exe())
         .current_dir(dir)
         .args(args)
         .env("MOCK_KEY", "test-key-value")
@@ -1163,7 +1163,7 @@ fn validate_fails_on_unresolvable_browser_login_client_secret() {
              \x20   - admin-tokens\n"
         ),
     );
-    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let out = Command::new(common::boot::exe())
         .arg("--validate")
         .env_remove(UNSET_VAR)
         .env("MOCK_KEY", "test-key-value")
@@ -1273,7 +1273,7 @@ fn run_cli(
     args: &[&str],
     extra_env: &[(&str, &str)],
 ) -> (i32, String, String) {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_busbar"));
+    let mut c = Command::new(common::boot::exe());
     c.args(args).env("MOCK_KEY", "test-key-value").env(
         "BUSBAR_SIGNING_KEY",
         "0000000000000000000000000000000000000000000000000000000000000001",
@@ -1986,7 +1986,7 @@ fn validate_and_boot_refuse_a_reference_at_an_undeclared_plugin_field() {
     assert_eq!(code, 1, "--validate must refuse: {all}");
     assert!(refused(&all), "--validate's sentence: {all}");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let mut child = Command::new(common::boot::exe())
         .env("MOCK_KEY", "test-key-value")
         .env(
             "BUSBAR_SIGNING_KEY",

@@ -51,7 +51,7 @@ fn corpus_files() -> Vec<PathBuf> {
 }
 
 fn migrate(path: &Path) -> Result<(String, String), String> {
-    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let out = Command::new(common::boot::exe())
         .arg("--migrate-config")
         .arg(path)
         .arg("--providers")
@@ -249,7 +249,7 @@ providers_file: /etc/busbar/providers.yaml
 fn validate(yaml: &str, tmp: &Path, providers: &Path) -> Result<String, String> {
     std::fs::write(tmp, yaml).map_err(|e| format!("write temp config: {e}"))?;
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_busbar"));
+    let mut cmd = Command::new(common::boot::exe());
 
     cmd.arg("--validate")
         .arg("--providers")

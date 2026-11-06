@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+mod common;
+
 mod linked;
 
 use std::path::{Path, PathBuf};
@@ -29,7 +31,7 @@ fn workdir(tag: &str) -> PathBuf {
 }
 
 fn validate(dir: &Path, config: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_busbar"))
+    Command::new(common::boot::exe())
         .arg("--validate")
         .arg("--providers")
         .arg(dir.join("providers.yaml"))
@@ -41,7 +43,7 @@ fn validate(dir: &Path, config: &Path) -> Output {
 }
 
 fn migrate(path: &Path) -> (String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let out = Command::new(common::boot::exe())
         .arg("--migrate-config")
         .arg(path)
         .env_remove("BUSBAR_T_UPGRADE_UNSET_KEY")

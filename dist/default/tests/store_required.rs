@@ -9,6 +9,8 @@
 //! 2. `busbar --migrate-config` inserts `store: {module: memory}` and says so.
 //! 3. The migrated config validates.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -43,7 +45,7 @@ fn workdir(tag: &str) -> PathBuf {
 }
 
 fn validate(dir: &Path, config: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_busbar"))
+    Command::new(common::boot::exe())
         .arg("--validate")
         .arg("--providers")
         .arg(dir.join("providers.yaml"))
@@ -77,7 +79,7 @@ fn validate_refuses_a_config_without_a_store_block() {
 #[test]
 fn migrate_inserts_the_memory_store_and_the_result_validates() {
     let dir = workdir("migrate");
-    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let out = Command::new(common::boot::exe())
         .arg("--migrate-config")
         .arg(FIXTURE)
         .output()

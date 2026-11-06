@@ -31,6 +31,8 @@
 
 #![cfg(linked_operator_auth)]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -124,7 +126,7 @@ fn run_validate(config_path: &Path, providers_path: &Path) -> (i32, String, Stri
     };
     let effective = rewritten.as_deref().unwrap_or(config_path);
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_busbar"));
+    let mut cmd = Command::new(common::boot::exe());
 
     cmd.arg("--validate")
         .arg("--providers")
