@@ -346,14 +346,117 @@ fn a_door_states_its_actual_registry_facts_and_judges_its_section() {
     );
 }
 
+mod lifecycle_connections {
+    use busbar_contract::abi::mechanism::rendering::ReadNeed;
+    use busbar_contract::conn::{
+        ConnError, ConnId, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, Piece, Program,
+        Ticket,
+    };
+    use busbar_contract::transport::ConnFacts;
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    /// Empty MCP configuration performs no connector I/O, but serving still binds every
+    /// actual declared need. Probe mode intentionally omits those generation bindings.
+    #[derive(Default)]
+    pub(super) struct Table(Mutex<HashSet<(InstanceId, NeedId)>>);
+
+    impl Conns for Table {
+        fn open(&self, _: InstanceId, _: NeedId, _: &OpenDesc<'_>) -> Result<ConnId, ConnError> {
+            panic!("empty lifecycle configuration must not open a connection")
+        }
+        fn write(
+            &self,
+            _: InstanceId,
+            _: ConnId,
+            _: &[u8],
+            _: bool,
+            _: bool,
+        ) -> Result<usize, ConnError> {
+            panic!("empty lifecycle configuration must not write a connection")
+        }
+        fn read(
+            &self,
+            _: InstanceId,
+            _: ConnId,
+            _: Ticket,
+            _: &mut [u8],
+        ) -> Result<Piece, ConnError> {
+            panic!("empty lifecycle configuration must not read a connection")
+        }
+        fn wait(&self, _: InstanceId, _: &[ConnId], _: Ticket) -> Result<usize, ConnError> {
+            panic!("empty lifecycle configuration must not wait on a connection")
+        }
+        fn facts(&self, _: InstanceId, _: ConnId) -> Result<ConnFacts, ConnError> {
+            panic!("empty lifecycle configuration has no connection facts")
+        }
+        fn close(&self, _: InstanceId, _: ConnId) -> Result<(), ConnError> {
+            panic!("empty lifecycle configuration must not close a connection")
+        }
+    }
+
+    impl DeclaredConns for Table {
+        fn declare(
+            &self,
+            owner: InstanceId,
+            need: NeedId,
+            spec: &ReadNeed,
+            _: Option<&str>,
+            _: Option<&str>,
+        ) -> Result<(), ConnError> {
+            assert!(self.serves_scheme(&spec.transport));
+            assert!(
+                !spec.target_from.is_empty(),
+                "the actual MCP need is settings-bound"
+            );
+            self.0.lock().unwrap().insert((owner, need));
+            Ok(())
+        }
+        fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>> {
+            self.0
+                .lock()
+                .unwrap()
+                .contains(&(owner, need))
+                .then_some(Ok(()))
+        }
+        fn serves_scheme(&self, transport: &str) -> bool {
+            matches!(transport, "http" | "stdio")
+        }
+        fn declare_member_programs(
+            &self,
+            owner: InstanceId,
+            need: NeedId,
+            spec: &ReadNeed,
+            programs: &[(String, Program)],
+        ) -> Result<(), ConnError> {
+            assert!(
+                programs.is_empty(),
+                "the fixture has no configured programs"
+            );
+            self.declare(owner, need, spec, None, None)
+        }
+        fn forget(&self, owner: InstanceId) {
+            self.0
+                .lock()
+                .unwrap()
+                .retain(|(declared, _)| *declared != owner);
+        }
+    }
+}
+
+fn served_lifecycle_binding(dispatcher: &Arc<crate::dispatch::Dispatcher>) -> Bind {
+    Bind {
+        dispatcher: dispatcher.adopter(),
+        conns: ConnTable::Host(Arc::new(lifecycle_connections::Table::default())),
+        ..binding()
+    }
+}
+
 fn served_lifecycle_plane(
     dropped_image: bool,
     dispatcher: &Arc<crate::dispatch::Dispatcher>,
 ) -> Plugin<Plane> {
-    let binding = Bind {
-        dispatcher: dispatcher.adopter(),
-        ..binding()
-    };
+    let binding = served_lifecycle_binding(dispatcher);
     if dropped_image {
         load_dropped::<Plane>(
             &crate::actual_mcp::cdylib(),
@@ -540,15 +643,7 @@ fn served_refresh_keeps_active_result_custody_past_its_queue_deadline() {
     let actual = validated.slots[slot::REFRESH as usize];
     validated.slots[slot::REFRESH as usize] = held_refresh;
     let plugin = Arc::new(
-        Plugin::<Plane>::bind(
-            validated,
-            None,
-            Bind {
-                dispatcher: dispatcher.adopter(),
-                ..binding()
-            },
-        )
-        .unwrap(),
+        Plugin::<Plane>::bind(validated, None, served_lifecycle_binding(&dispatcher)).unwrap(),
     );
     open_door(&plugin, b"{}", b"{}", None).unwrap();
     let (entered, crossing) = mpsc::channel();
