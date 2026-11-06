@@ -13,6 +13,10 @@ use tracing_core::subscriber::{Interest, Subscriber};
 use tracing_core::{Dispatch, Event, Level, LevelFilter, Metadata};
 use tracing_log::NormalizeEvent as _;
 
+#[path = "capture_bounded.rs"]
+mod bounded;
+use bounded::Bounded;
+
 use crate::abi::mechanism::call::{
     AbiStr, Diag, Envelope, DIAG_LOG, DIAG_LOG_DROPPED, MAX_ENVELOPE_ENTRIES, MAX_TEXT,
     SEVERITY_DEBUG, SEVERITY_ERROR, SEVERITY_INFO, SEVERITY_TRACE, SEVERITY_WARN,
@@ -186,36 +190,36 @@ fn severity(level: &Level) -> u8 {
 /// An event's fields as text: the message, then every other field as ` key=value`. The fields
 /// `tracing-log` adds to a `log` record (`log.target`, `log.file`, ...) are not rendered; the
 /// target they carry is the record's own target.
-#[derive(Default)]
 struct Render {
-    message: String,
-    fields: String,
+    message: Bounded,
+    fields: Bounded,
+}
+
+impl Default for Render {
+    fn default() -> Self {
+        Self {
+            message: Bounded::new(MAX_TEXT),
+            fields: Bounded::new(MAX_TEXT),
+        }
+    }
 }
 
 impl Visit for Render {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         match field.name() {
             "message" => {
-                let _ = write!(self.message, "{value:?}");
+                if !self.message.is_full() {
+                    let _ = write!(self.message, "{value:?}");
+                }
             }
             name if name.starts_with("log.") => {}
             name => {
-                let _ = write!(self.fields, " {name}={value:?}");
+                if !self.fields.is_full() {
+                    let _ = write!(self.fields, " {name}={value:?}");
+                }
             }
         }
     }
-}
-
-/// `text` cut to at most [`MAX_TEXT`] bytes, on a character boundary.
-fn bounded(mut text: String) -> String {
-    if text.len() > MAX_TEXT {
-        let mut end = MAX_TEXT;
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        text.truncate(end);
-    }
-    text
 }
 
 impl Subscriber for Capture {
@@ -252,12 +256,15 @@ impl Subscriber for Capture {
         let meta = normalized.as_ref().unwrap_or_else(|| event.metadata());
         let mut render = Render::default();
         event.record(&mut render);
-        let text = bounded(format!(
+        let mut text = Bounded::new(MAX_TEXT);
+        let _ = write!(
+            text,
             "{}: {}{}",
             meta.target(),
-            render.message,
-            render.fields
-        ));
+            render.message.as_str(),
+            render.fields.as_str()
+        );
+        let text = text.into_string();
         let mut held = self.lock();
         if held.records.len() >= MAX_ENVELOPE_ENTRIES {
             held.dropped += 1;
