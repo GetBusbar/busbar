@@ -1004,7 +1004,11 @@ mod tests {
         assert!(write(&backend, &OverlayDoc::default()).is_err());
         assert_eq!(
             serde_json::to_value(backend.read_required().unwrap().unwrap()).unwrap(),
-            serde_json::to_value(doc).unwrap()
+            serde_json::to_value(OverlayDoc {
+                version: super::super::overlay::OVERLAY_VERSION,
+                ..doc
+            })
+            .unwrap()
         );
     }
 

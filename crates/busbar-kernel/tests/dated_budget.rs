@@ -206,7 +206,14 @@ fn a_card_edit_mid_window_prices_every_budget_read_and_the_gate_at_the_card_in_f
     let window = busbar_kernel::governance::budget_window(team.window, now);
     let row = store.get_usage(&team.bucket_id, window).unwrap();
     assert_eq!(row.models.len(), 1, "{row:?}");
-    assert_eq!(row.models[0].usage_units.get("input"), Some(&1_200_000));
+    assert_eq!(
+        row.models[0].scale,
+        busbar_contract::count::SCALE_MICRO_UNITS
+    );
+    assert_eq!(
+        row.models[0].usage_units.get("input"),
+        Some(&busbar_contract::Count::from(1_200_000u64).micros())
+    );
 }
 
 fn edit_card(holder: &Holder, card: RateCard) {

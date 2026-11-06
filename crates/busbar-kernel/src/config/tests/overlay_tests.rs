@@ -694,7 +694,11 @@ fn overlays_larger_than_record_bound_round_trip_without_a_content_cap() {
     write(&backend, &doc).unwrap();
     assert_eq!(
         serde_json::to_value(backend.read_required().unwrap().unwrap()).unwrap(),
-        serde_json::to_value(doc).unwrap()
+        serde_json::to_value(OverlayDoc {
+            version: OVERLAY_VERSION,
+            ..doc
+        })
+        .unwrap()
     );
 }
 

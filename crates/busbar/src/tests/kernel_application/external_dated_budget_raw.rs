@@ -166,7 +166,11 @@ fn exact_opening_and_same_timestamp_cards_survive_later_day_and_restart() {
             .find(|row| row.pricing_version == era.entry_id.unwrap().metering_version())
             .unwrap();
         assert_eq!(row.priced_from_ms, era.effective_from);
-        assert_eq!(row.tokens_input, i128::from(RAW_COUNT));
+        assert_eq!(row.scale, busbar_contract::count::SCALE_MICRO_UNITS);
+        assert_eq!(
+            row.tokens_input,
+            busbar_contract::Count::from(RAW_COUNT).micros()
+        );
         assert_eq!(row.requests, 1);
     }
     let delta = BTreeMap::from([(UNIT_INPUT.to_string(), -1)]);
@@ -437,7 +441,11 @@ fn open_route_cancel_and_session_cleanup_keep_the_admissions_original_entry() {
             .find(|row| row.pricing_version == era.entry_id.unwrap().metering_version())
             .unwrap();
         assert_eq!(row.requests, requests);
-        assert_eq!(row.tokens_input, i128::from(requests * RAW_COUNT));
+        assert_eq!(row.scale, busbar_contract::count::SCALE_MICRO_UNITS);
+        assert_eq!(
+            row.tokens_input,
+            busbar_contract::Count::from(requests * RAW_COUNT).micros()
+        );
     }
 }
 
@@ -515,9 +523,10 @@ fn scoped_pool_and_ancestor_buckets_keep_exact_raw_counts_and_partial_correction
     gov.flush_metering_final();
     let metered = gov.metering_for(metering_bucket(now)).unwrap();
     assert_eq!(metered.len(), 1);
+    assert_eq!(metered[0].scale, busbar_contract::count::SCALE_MICRO_UNITS);
     assert_eq!(
         metered[0].usage_units.get(OPEN_UNIT),
-        Some(&i128::from(OPEN_COUNT))
+        Some(&busbar_contract::Count::from(OPEN_COUNT).micros())
     );
     assert_eq!(
         metered[0].pricing_version,
