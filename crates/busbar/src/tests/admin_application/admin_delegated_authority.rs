@@ -1064,8 +1064,8 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
     // These are separately configured instances of the actual loaded OIDC module.
     let identify = |token: &str| {
         let headers = axum::http::HeaderMap::from_iter([(
-            axum::http::HeaderName::from_static("x-admin-token"),
-            token.parse().unwrap(),
+            axum::http::HeaderName::from_static("authorization"),
+            format!("Bearer {token}").parse().unwrap(),
         )]);
         let door =
             busbar_kernel::auth::admin_verdict(&app, "GET", "/api/v1/admin/info", &headers).door;
@@ -1093,7 +1093,7 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
     for (connector, token) in [("A", &token_a), ("B", &token_b)] {
         let allowed = client
             .get(format!("http://{addr}/api/v1/admin/info"))
-            .header("x-admin-token", token)
+            .bearer_auth(token)
             .send()
             .await
             .unwrap();
@@ -1105,7 +1105,7 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
         );
         let denied_read = client
             .get(format!("http://{addr}/api/v1/admin/keys"))
-            .header("x-admin-token", token)
+            .bearer_auth(token)
             .send()
             .await
             .unwrap();
@@ -1117,7 +1117,7 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
         );
         let denied_mint = client
             .post(format!("http://{addr}/api/v1/admin/keys"))
-            .header("x-admin-token", token)
+            .bearer_auth(token)
             .json(&serde_json::json!({"name":"must-not-mint"}))
             .send()
             .await
@@ -1130,7 +1130,7 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
         );
         let denied_escalation = client
             .put(format!("http://{addr}/api/v1/admin/admin-auth"))
-            .header("x-admin-token", token)
+            .bearer_auth(token)
             .json(&serde_json::json!({"admin_auth":[operator]}))
             .send()
             .await
@@ -1165,7 +1165,7 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
     for attempt in 0..2 {
         let a = client
             .get(format!("http://{addr}/api/v1/admin/info"))
-            .header("x-admin-token", &token_a)
+            .bearer_auth(&token_a)
             .send()
             .await
             .unwrap();
@@ -1177,7 +1177,7 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
         );
         let b = client
             .get(format!("http://{addr}/api/v1/admin/info"))
-            .header("x-admin-token", &token_b)
+            .bearer_auth(&token_b)
             .send()
             .await
             .unwrap();
@@ -1189,7 +1189,7 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
         );
         let b_denied = client
             .get(format!("http://{addr}/api/v1/admin/keys"))
-            .header("x-admin-token", &token_b)
+            .bearer_auth(&token_b)
             .send()
             .await
             .unwrap();
