@@ -1245,7 +1245,8 @@ fn closing_after_partial_feedback_preserves_accepted_handed_and_cancelled_truth(
 #[test]
 fn connector_holds_datagram_writes_until_the_signalling_exchange_finishes() {
     use crate::compose::{Dial, Planned, EXCHANGE_STREAM};
-    use busbar_contract::conn::{ConnError, Conns, InstanceId, NeedId, Piece, PieceKind, StreamId};
+    use busbar_contract::conn::{ConnError, Conns, InstanceId, NeedId, Piece, PieceKind};
+    use busbar_contract::ids::StreamId;
     use tokio::io::AsyncReadExt;
 
     crate::support::worker().block_on(async {
