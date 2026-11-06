@@ -80,10 +80,10 @@ headings: Added / Changed / Fixed / Security). `cargo xtask gate changelog --req
 ## Preparing a version (on `dev`)
 
 ```
-python3 .github/scripts/bump_cargo.py 1.6.0 crates/busbar/Cargo.toml
+python3 scripts/release/bump_cargo.py 1.6.0 crates/busbar/Cargo.toml
 cargo update -p busbar --precise 1.6.0
 UPDATE_OPENAPI=1 cargo test -p busbar -p busbar-kernel -p busbar-core-admin --features openapi-schema openapi_json_matches_committed_file
-python3 .github/scripts/roll_changelog.py 1.6.0 CHANGELOG.md
+python3 scripts/release/roll_changelog.py 1.6.0 CHANGELOG.md
 ```
 
 That bumps `crates/busbar/Cargo.toml` + `Cargo.lock`, regenerates the committed OpenAPI schema, and

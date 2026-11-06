@@ -15,7 +15,7 @@
 # allocated (busbar-contract abi/host/hook.rs HostBuf, abi/host/service.rs caller-sized buffers).
 # A build that sets RUSTFLAGS itself bypasses this table (cargo's precedence), so the release
 # scripts carry the same flag (scripts/release-build.sh, scripts/pgo-build.sh: CRT_FLAG), and the
-# `runtime_deps` row of .github/artifact-contract.json asserts it on the shipped bytes.
+# `runtime_deps` row of release/artifact-contract.json asserts it on the shipped bytes.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
 

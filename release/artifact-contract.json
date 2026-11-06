@@ -24,7 +24,7 @@
     "fixture it flags and a GREEN twin it passes: a row nobody has watched fail is not a row.",
     "",
     "`applies_when` is the ONLY way a row may be conditional, it is matched against the target's",
-    "own declaration in .github/release-targets.json, and a row that applies to a target CANNOT be",
+    "own declaration in release/release-targets.json, and a row that applies to a target CANNOT be",
     "skipped for any other reason -- there is no waiver field and no exception list. Every target",
     "now builds and verifies on a NATIVE runner, so `exec: true` rows run for every platform,",
     "Windows included; nothing is statically approximated because a runner could not execute it.",
@@ -186,7 +186,7 @@
         "THIS target, and record a non-zero merged-profile size and .profraw count -- and it is bound",
         "to the shipped archive's digest by `build_evidence`, so it certifies these bytes and not",
         "some other build's.",
-        "`applies_when` is checked against .github/release-targets.json, and that file carries a",
+        "`applies_when` is checked against release/release-targets.json, and that file carries a",
         "`pgo_floor` scripts/tests/test_release_contract.py enforces, so a target cannot quietly flip `pgo` to false to",
         "make this row stop applying to it."
       ]

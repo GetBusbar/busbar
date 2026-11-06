@@ -1,9 +1,3 @@
----
-name: Bug report
-about: Report a problem with Busbar
-title: "[bug] "
-labels: bug
----
 
 **Describe the bug**
 A clear description of what went wrong.

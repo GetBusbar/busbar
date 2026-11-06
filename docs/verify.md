@@ -175,7 +175,7 @@ documents every rule it applies:
 
 ```
 candidate.json   {"version","commit","repo","test_kit":{"tag","commit"},"plugins":[{"repo","version","tag","commit"}]}
-artifacts/       busbar-<target>.<archive> per published target in .github/release-targets.json; busbar-openapi-v<V>.json;
+artifacts/       busbar-<target>.<archive> per published target in release/release-targets.json; busbar-openapi-v<V>.json;
                  plugin-index.json (rendered from candidate.json's plugins and their tarballs' manifests)
 plugins/         <repo>-<version>-<target>.tar.gz, UNSIGNED, per plugins.yaml entry and plugin target
 sboms/           busbar-v<V>-<target>.cdx.json per published target and image platform

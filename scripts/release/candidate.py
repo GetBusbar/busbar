@@ -9,7 +9,7 @@ plugin is packed UNSIGNED, and the owner signs later on his hardware keys. A mis
 by the gate, which refuses by rule name; a mistake is never shipped.
 
   candidate.py core <target> --out DIR
-      scripts/release-build.sh for one row of .github/release-targets.json. A published row goes
+      scripts/release-build.sh for one row of release/release-targets.json. A published row goes
       to DIR/artifacts; an image-feeding musl row goes to DIR/internal. Then its CycloneDX SBOM goes
       to DIR/sboms (named by the target, or by the image platform the row feeds).
   candidate.py pgo-train <target> --out DIR
@@ -83,7 +83,7 @@ def target_row(target: str) -> dict:
     for t in pg.release_targets(ROOT):
         if t["target"] == target:
             return t
-    sys.exit(f"candidate: {target} is not a row of .github/release-targets.json")
+    sys.exit(f"candidate: {target} is not a row of release/release-targets.json")
 
 
 def sbom(triple: str, name: str, out: Path, package: str = "busbar") -> None:
@@ -101,7 +101,7 @@ def sbom(triple: str, name: str, out: Path, package: str = "busbar") -> None:
 def cmd_pgo_train(target: str, out: Path) -> None:
     row = target_row(target)
     if not row.get("pgo"):
-        sys.exit(f"candidate: {target} does not declare pgo in .github/release-targets.json")
+        sys.exit(f"candidate: {target} does not declare pgo in release/release-targets.json")
     out.mkdir(parents=True, exist_ok=True)
     prof = out / f"{target}.profdata"
     env = {"BUSBAR_RELEASE_PUBKEY": pg.commit_key_list(ROOT), "PGO_TRAIN_ONLY": str(prof),
@@ -269,7 +269,7 @@ def require_buildkit() -> None:
 def cmd_image(arch: str, out: Path) -> None:
     rows = [t for t in pg.release_targets(ROOT) if t.get("kind") == "binary" and t.get("packaged_into") == f"image-linux-{arch}"]
     if len(rows) != 1:
-        sys.exit(f"candidate: no single musl row feeds image-linux-{arch} in .github/release-targets.json")
+        sys.exit(f"candidate: no single musl row feeds image-linux-{arch} in release/release-targets.json")
     t = rows[0]
     base = rust_alpine()
     require_buildkit()

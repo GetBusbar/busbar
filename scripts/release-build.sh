@@ -15,7 +15,7 @@
 # mac, but it does the same thing for each no way for 1 to be different".
 #
 # So there is one build step in the removed build-artifact.yml and it runs this script. Every
-# target's difference is a FIELD in .github/release-targets.json read below -- never a different
+# target's difference is a FIELD in release/release-targets.json read below -- never a different
 # step, never an `if:`, never a second action. The env block that carries the release public key is
 # written once and applies to all five targets because there is only one step for it to be on.
 #
@@ -63,13 +63,13 @@ PY=python3
 command -v python3 >/dev/null 2>&1 || PY=python
 command -v "$PY" >/dev/null 2>&1 || { echo "release-build.sh: no python interpreter on PATH" >&2; exit 1; }
 
-MANIFEST=.github/release-targets.json
+MANIFEST=release/release-targets.json
 # Every per-target difference arrives here, as data, from the one file that declares the platforms.
 # A target that is not in the manifest cannot be built: an artifact nothing declares is an artifact
 # nothing verifies.
 eval "$("$PY" - "$TARGET" <<'PY'
 import json, shlex, sys
-spec = json.load(open(".github/release-targets.json"))
+spec = json.load(open("release/release-targets.json"))
 want = sys.argv[1]
 for t in spec["targets"]:
     if t["target"] == want:
@@ -87,7 +87,7 @@ for t in spec["targets"]:
         print("SPEC_GLIBC_MAX=%s" % shlex.quote(str(t.get("glibc_max", ""))))
         break
 else:
-    sys.exit("release-build.sh: target %r is not declared in .github/release-targets.json. Add it "
+    sys.exit("release-build.sh: target %r is not declared in release/release-targets.json. Add it "
              "there -- that file is what the build matrix, the verify matrix and the asset list are "
              "all derived from, so a target added anywhere else is built and never verified." % want)
 PY
@@ -122,7 +122,7 @@ RECEIPT_SOURCE="$(env -u GIT_INDEX_FILE -u GIT_DIR -u GIT_WORK_TREE git -C "$(pw
 # anywhere in scripts/ or .github/ - a named guard nobody ran, next to a copy nobody knew was a
 # copy. Two copies of a shape check drift, and the half that drifts is the one that is never
 # exercised. The guard is the implementation now; its `assert-embedded` half is the output side,
-# re-asserted against the shipped bytes by the `release_pubkey` row of .github/artifact-contract.json.
+# re-asserted against the shipped bytes by the `release_pubkey` row of release/artifact-contract.json.
 echo "[release-build] asserting the release key before compiling $TARGET"
 scripts/release-key-guard.sh require
 echo "[release-build] target=$TARGET triple=$SPEC_TRIPLE pgo=$SPEC_PGO baseline=$SPEC_BASELINE archive=$SPEC_ARCHIVE key=${BUSBAR_RELEASE_PUBKEY:0:12}…"
@@ -141,7 +141,7 @@ fi
 # refuses to start on RHEL 8, Debian 11 or Ubuntu 22.04, with no build error and no warning. The
 # linux-gnu rows therefore build inside the pinned baseline image (release-targets.json
 # `linux_build_image`, via scripts/release/in-baseline.sh), and this refuses any other host. The
-# output half is the `runtime_deps` row of .github/artifact-contract.json, which reads the shipped
+# output half is the `runtime_deps` row of release/artifact-contract.json, which reads the shipped
 # bytes' version needs.
 if [ -n "$SPEC_GLIBC_MAX" ]; then
   HOST_GLIBC="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')"
@@ -163,7 +163,7 @@ rm -f "$EVIDENCE_DIR/artifact.sha256" "$EVIDENCE_DIR/busbar.pgo-verified"
 # at a path this script then packages identically, and both inherit the same environment, the same
 # key assertion above and the same evidence below. Every target now runs on a NATIVE runner, so the
 # reason the cross targets could not train a profile is gone; the one target that still declares
-# pgo:false says why, in .github/release-targets.json, next to the flag.
+# pgo:false says why, in release/release-targets.json, next to the flag.
 if [ "$SPEC_PGO" = "true" ]; then
   # THE COMMITTED PROFILE (owner decision D4, 2026-10-26): the release builds from the profile
   # committed for this target, never from a fresh training run, so a second builder gets the same

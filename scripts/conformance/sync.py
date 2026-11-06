@@ -187,7 +187,7 @@ def shipped_pins(root):
     lock = root / "dist" / "default" / "Cargo.lock"
     if lock.is_file():
         for repo, sha in sorted(set(re.findall(
-                r'source = "git\+https://github\.com/GetBusbar/([A-Za-z0-9._-]+?)(?:\.git)?'
+                r'source = "git\+https://(?:github\.com|git\.getbusbar\.dev)/GetBusbar/([A-Za-z0-9._-]+?)(?:\.git)?'
                 r'(?:\?[^#"]*)?#([0-9a-f]{40})"', lock.read_text()))):
             if repo != "busbar":
                 put(repo, sha, "dist/default/Cargo.lock")

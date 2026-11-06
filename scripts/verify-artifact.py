@@ -22,7 +22,7 @@ Three structural faults let that happen, and this file exists to close the secon
      `verify-artifact` matrix is enumerated from the SAME `targets` job that produced the build
      matrix, and whose `verify-set-equality` job fails if the two sets differ in either direction.
 
-THE ROWS ARE DATA, IN .github/artifact-contract.json, AND THIS FILE IMPLEMENTS THEM.
+THE ROWS ARE DATA, IN release/artifact-contract.json, AND THIS FILE IMPLEMENTS THEM.
 
 Adding a property is one row there plus one function here. It then applies to every target
 automatically -- there is no per-target list a platform can be forgotten from, which is exactly how
@@ -32,7 +32,7 @@ implementation is a hard failure rather than a silently-skipped property, and an
 with no row is a check nobody can see.
 
 THERE IS NO SKIP, NO WAIVER AND NO EXCEPTION LIST. A row either applies to a target (via the row's
-`applies_when`, matched against that target's own declaration in .github/release-targets.json) or it
+`applies_when`, matched against that target's own declaration in release/release-targets.json) or it
 does not. `--rows` restricts a run to named rows for local diagnosis: it reports the verdict PARTIAL and
 exits 2, never 0, so a partial run can never be mistaken for a green one and cannot be wired into
 CI as a pass.
@@ -68,7 +68,7 @@ import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-DEFAULT_TARGETS = os.path.join(ROOT, ".github", "release-targets.json")
+DEFAULT_TARGETS = os.path.join(ROOT, "release", "release-targets.json")
 DEFAULT_CONTRACT = os.path.join(ROOT, ".github", "artifact-contract.json")
 
 # Below any real busbar archive by a wide margin and far above a header-only or empty upload.
@@ -369,7 +369,7 @@ def child_serves(proc, log_path: str, listen: str) -> bool:
 # =================================================================================================
 # THE CONTRACT ROWS
 #
-# One function per row id in .github/artifact-contract.json. Each raises RowFailure with an
+# One function per row id in release/artifact-contract.json. Each raises RowFailure with an
 # operator-facing explanation, or returns a one-line note on success. `_assert_contract_is_whole`
 # proves the two sets are identical, so this docstring cannot drift from the data file.
 # =================================================================================================
@@ -1222,7 +1222,7 @@ def row_coverage(rows: list, targets: dict) -> dict:
     implemented, set equality satisfied, and FIVE of them run against nothing, ever.
 
     The five `kind: image` rows apply only to targets whose `kind` is `image`. Both such targets in
-    .github/release-targets.json carry `published: false`, and release-stage.yml's `targets` job
+    release/release-targets.json carry `published: false`, and release-stage.yml's `targets` job
     built the verify matrix from the PUBLISHED targets only (deliberately — `cargo build --target
     image-linux-amd64` is not a thing). So `image_boots_documented_quickstart`,
     `image_runs_as_nonroot`, `image_release_pubkey`, `image_version_anchored` and

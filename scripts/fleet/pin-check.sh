@@ -2,17 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # THE PIN CHECK every first-party plugin repo runs (plugin-ci.yml's `pin` job, and `busbar-release plugin
-# check` reads the same rules). A plugin repo names the busbar it builds against in FOUR places, and
+# check` reads the same rules). A plugin repo names the busbar it builds against in three places, and
 # they must agree, or what CI proves is not what the release builds:
 #
 #   .busbar-ref          "<40-hex sha> <version>", the record the release and the repin read;
 #   every Cargo.toml     each `busbar-* = { git = "https://github.com/GetBusbar/busbar", rev = ... }`;
 #   Cargo.lock           the resolved `git+https://github.com/GetBusbar/busbar?rev=<sha>#<sha>`;
-#   .github/workflows    each `uses: GetBusbar/busbar/.github/workflows/<file>@<ref>` (the reusable
-#                        workflows are taken at the pin, so the CI logic and the contract move together).
 #
 # A C plugin (PIN_CHECK_LANG=c; plugin-ci.yml's `plugin_lang: c`, BUSBAR-1.6.0.md decision #84)
-# builds from busbar_plugin.h alone: it names busbar in .busbar-ref and its workflows only, and a
+# builds from busbar_plugin.h alone: it names busbar in .busbar-ref only, and a
 # Cargo.toml or Cargo.lock in it is refused (no Rust, no busbar crate).
 #
 # THE TRANSPORT FRAMERS a networked plugin's conformance host takes as dev-dependencies (rendered by
@@ -51,15 +49,6 @@ check() (
   trap 'if [ -n "$block_tmp" ]; then rm -f -- "$block_tmp"; fi' EXIT
   root="$(cd "$root" && pwd -P)" || return 1
   err() { echo "::error::pin-check: $*" >&2; fail=1; }
-  workflows() {  # every busbar reusable workflow a workflow takes is taken at the pin
-    if [ -d "$1/.github/workflows" ]; then
-      local refs r
-      refs="$(grep -rhoE 'GetBusbar/busbar/\.github/workflows/[A-Za-z0-9_.-]+@[^[:space:]]+' "$1/.github/workflows" | sed 's/.*@//' | sort -u || true)"
-      for r in $refs; do
-        [ "$r" = "$2" ] || err "a workflow takes a busbar reusable workflow at '$r', not the pin $2"
-      done
-    fi
-  }
   [ -f "$root/.busbar-ref" ] || { err ".busbar-ref is missing"; return 1; }
   local pin ver
   pin="$(awk '{print $1; exit}' "$root/.busbar-ref")"
@@ -72,8 +61,8 @@ check() (
   if [ "${PIN_CHECK_LANG:-rust}" = c ]; then
     [ "${#manifests[@]}" = 0 ] || err "a C plugin carries Cargo.toml (${manifests[*]}): it builds from busbar_plugin.h alone"
     [ ! -f "$root/Cargo.lock" ] || err "a C plugin carries Cargo.lock: it builds from busbar_plugin.h alone"
-    workflows "$root" "$pin"
-    [ "$fail" = 0 ] && echo "pin-check: ok — busbar ${pin} ${ver} (C: .busbar-ref, workflows)"
+
+    [ "$fail" = 0 ] && echo "pin-check: ok — busbar ${pin} ${ver} (C: .busbar-ref)"
     return "$fail"
   fi
   [ "${#manifests[@]}" -gt 0 ] || err "no Cargo.toml under $root"
@@ -148,9 +137,8 @@ check() (
     err "Cargo.lock is missing (a release builds --locked)"
   fi
 
-  workflows "$root" "$pin"
 
-  [ "$fail" = 0 ] && echo "pin-check: ok — busbar ${pin} ${ver} (${#manifests[@]} manifest(s), Cargo.lock, workflows)"
+  [ "$fail" = 0 ] && echo "pin-check: ok — busbar ${pin} ${ver} (${#manifests[@]} manifest(s), Cargo.lock)"
   return "$fail"
 )
 
@@ -158,19 +146,17 @@ selftest() {
   local tmp rc=0 ran=0 pin=0123456789abcdef0123456789abcdef01234567 other=89abcdef0123456789abcdef0123456789abcdef
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
   mk() {  # a clean fixture repo
-    rm -rf "$tmp/r"; mkdir -p "$tmp/r/logic" "$tmp/r/adapter" "$tmp/r/.github/workflows"
+    rm -rf "$tmp/r"; mkdir -p "$tmp/r/logic" "$tmp/r/adapter"
     printf '%s 1.6.0\n' "$pin" > "$tmp/r/.busbar-ref"
     printf '[workspace]\nmembers = ["logic", "adapter"]\n' > "$tmp/r/Cargo.toml"
     printf '[package]\nname = "l"\n[dependencies]\nbusbar-contract = { git = "%s", rev = "%s" }\n' "$SRC" "$pin" > "$tmp/r/logic/Cargo.toml"
     printf '[package]\nname = "a"\n[dependencies]\nl = { path = "../logic" }\n[dev-dependencies]\nbusbar-plugin-loader = { git = "%s", rev = "%s" }\n' "$SRC" "$pin" > "$tmp/r/adapter/Cargo.toml"
     printf '[[package]]\nname = "busbar-contract"\nsource = "git+%s?rev=%s#%s"\n' "$SRC" "$pin" "$pin" > "$tmp/r/Cargo.lock"
-    printf 'jobs:\n  ci:\n    uses: GetBusbar/busbar/.github/workflows/plugin-ci.yml@%s\n' "$pin" > "$tmp/r/.github/workflows/ci.yml"
   }
   mkc() {  # a clean C fixture repo: sources, .busbar-ref, the CI caller; no Cargo
-    rm -rf "$tmp/r"; mkdir -p "$tmp/r/secret-c" "$tmp/r/.github/workflows"
+    rm -rf "$tmp/r"; mkdir -p "$tmp/r/secret-c"
     printf '%s 1.6.0\n' "$pin" > "$tmp/r/.busbar-ref"
     printf '#include "busbar_plugin.h"\n' > "$tmp/r/secret-c/door.c"
-    printf 'jobs:\n  ci:\n    uses: GetBusbar/busbar/.github/workflows/plugin-ci.yml@%s\n' "$pin" > "$tmp/r/.github/workflows/ci.yml"
   }
   expect() {  # expect <label> <ok|red> [needle]   (PIN_CHECK_LANG as the caller sets it)
     ran=$((ran + 1))
@@ -193,10 +179,8 @@ selftest() {
   mk; printf '[[package]]\nname = "busbar-transport-http"\nsource = "git+%s-transport-http?rev=%s#%s"\n' "$SRC" "$other" "$other" >> "$tmp/r/Cargo.lock"; PIN_CHECK_BUSBAR_LOCK="$tmp/busbar.lock" expect "a transport framer at the rev busbar's lock records passes (not busbar's own source)" ok
   mk; printf '[[package]]\nname = "busbar-transport-http"\nsource = "git+%s-transport-http?rev=%s#%s"\n' "$SRC" "$pin" "$pin" >> "$tmp/r/Cargo.lock"; PIN_CHECK_BUSBAR_LOCK="$tmp/busbar.lock" expect "a transport framer at another rev than busbar's lock records is refused" red "not the rev busbar's lock at the pin records"
   mk; printf '[[package]]\nname = "busbar-transport-grpc"\nsource = "git+%s-transport-grpc?rev=%s#%s"\n' "$SRC" "$other" "$other" >> "$tmp/r/Cargo.lock"; PIN_CHECK_BUSBAR_LOCK="$tmp/busbar.lock" expect "a transport framer busbar does not link is refused" red "links no busbar-transport-grpc"
-  mk; sed -i.bak "s/@$pin/@dev/" "$tmp/r/.github/workflows/ci.yml"; expect "a reusable workflow taken at a branch, not the pin, is refused" red "not the pin"
   mkc; PIN_CHECK_LANG=c expect "a C plugin with no Cargo passes (control)" ok
   mkc; printf '[workspace]\n' > "$tmp/r/Cargo.toml"; PIN_CHECK_LANG=c expect "a C plugin carrying a Cargo.toml is refused" red "carries Cargo.toml"
-  mkc; sed -i.bak "s/@$pin/@$other/" "$tmp/r/.github/workflows/ci.yml"; PIN_CHECK_LANG=c expect "a C plugin's workflow off the pin is refused" red "not the pin"
   mkc; expect "a C plugin checked as Rust is refused (no Cargo.toml)" red "no Cargo.toml"
   # Canonical/historical URLs are aliases for the same source, never an escape from pin checks.
   local alias
@@ -213,7 +197,7 @@ selftest() {
   PIN_CHECK_BUSBAR_LOCK="$tmp/busbar.lock" expect "historical framer alias matches canonical lock" ok
   sed -i.bak "s/rev=$other#/rev=$pin#/" "$tmp/r/Cargo.lock"
   PIN_CHECK_BUSBAR_LOCK="$tmp/busbar.lock" expect "historical framer mismatch is refused against canonical lock" red "not the rev busbar's lock at the pin records"
-  [ "$ran" = 26 ] || { echo "pin-check selftest: only $ran of 26 cases ran"; return 1; }
+  [ "$ran" = 24 ] || { echo "pin-check selftest: only $ran of 24 cases ran"; return 1; }
   [ "$rc" = 0 ] && echo "pin-check selftest: every refusal fires on its planted defect" || echo "pin-check selftest: FAILED"
   return "$rc"
 }

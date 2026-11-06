@@ -5,7 +5,7 @@
 # static libc answers every dlopen with "Dynamic loading not supported". So this image no longer
 # carries a static musl build on a scratch base (which could load no dropped-in plugin, whatever was
 # put in /lib). It packages the published busbar-<arch>-unknown-linux-gnu binary, byte for byte
-# (`image_matches_packaged_binary` in .github/artifact-contract.json), built on the glibc 2.28
+# (`image_matches_packaged_binary` in release/artifact-contract.json), built on the glibc 2.28
 # baseline with every Rust/C dependency (TLS, crypto, jemalloc) linked in, so all it needs from the
 # image is glibc, its loader and libgcc_s. The image and the tarball are one artifact, and a plugin
 # built for linux-gnu loads in both (`image_dropin_loads` proves it on every release).

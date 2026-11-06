@@ -119,7 +119,7 @@ class ModernCI:
                           "core-pin override to re-run a plugin's conformance against the release commit")
 
     def dev_head(self, repo: str) -> str:
-        p = subprocess.run(["git", "ls-remote", f"https://github.com/{repo}.git", "refs/heads/dev"],
+        p = subprocess.run(["git", "ls-remote", f"https://git.getbusbar.dev/{repo}.git", "refs/heads/dev"],
                            capture_output=True, text=True)
         m = re.match(r"([0-9a-f]{40})\s", p.stdout)
         if p.returncode != 0 or not m:

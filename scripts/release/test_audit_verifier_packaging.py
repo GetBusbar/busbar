@@ -50,8 +50,8 @@ class AuditVerifierPackaging(unittest.TestCase):
                 root = Path(tmp)
                 (root / "scripts").mkdir()
                 shutil.copy(script, root / "scripts/release-build.sh")
-                (root / ".github").mkdir()
-                (root / ".github/release-targets.json").write_text(json.dumps({"targets": [dict(target=triple, kind="binary", published=True, pgo=False, archive=ext, exe=exe)]}))
+                (root / "release").mkdir()
+                (root / "release/release-targets.json").write_text(json.dumps({"targets": [dict(target=triple, kind="binary", published=True, pgo=False, archive=ext, exe=exe)]}))
                 (root / "docs").mkdir()
                 (root / "docs/audit-verify.md").write_text("Offline verifier instructions.\n")
                 guard = root / "scripts/release-key-guard.sh"
