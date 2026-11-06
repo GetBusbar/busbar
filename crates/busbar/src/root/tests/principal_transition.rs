@@ -320,10 +320,13 @@ fn cold_role_inventory_cannot_be_omitted_or_changed_and_own_overlay_remains_boun
         .plugin_versions
         .insert("other".into(), "1.0.0".into());
     assert!(plan_effective_fingerprint("source", Some(&changed_overlay), &plan).is_err());
-    let mut empty_overlay = OverlayDoc::default();
-    empty_overlay.document_patch = Some(
-        config::document_patch::DocumentPatch::from_value(serde_json::json!({"set": {}})).unwrap(),
-    );
+    let empty_overlay = OverlayDoc {
+        document_patch: Some(
+            config::document_patch::DocumentPatch::from_value(serde_json::json!({"set": {}}))
+                .unwrap(),
+        ),
+        ..OverlayDoc::default()
+    };
     plan.overlay_before = Some(empty_overlay);
     assert!(transition::after_overlay(&plan).is_ok());
     plan.specification.role_bindings_before.clear();

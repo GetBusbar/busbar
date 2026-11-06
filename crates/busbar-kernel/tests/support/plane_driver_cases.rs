@@ -1862,28 +1862,30 @@ mod timing_cases;
 
 #[tokio::test]
 async fn caller_transport_deadline_cancels_idle_work_and_settles_once() {
-    let r = rig(super::Way::Double, BufferCaps::default(), Book::default());
-    let (steps, far, caller) = (
-        TestUnits::passing(),
-        Far::new(&["hang"], CHUNKS),
-        Caller {
-            stop_after: Some(Duration::from_millis(20)),
-            ..Caller::default()
-        },
-    );
-    // No driver deadline: only the caller transport can wake this idle admitted unit.
-    let units = r
-        .driver
-        .unit(&steps, &far, &caller, arrival("/call", b"x"), 0);
-    let outcome = tokio::time::timeout(Duration::from_secs(2), drive(&units))
-        .await
-        .expect("the caller transport's failure wakes the unit");
-    assert!(matches!(
-        outcome,
-        Outcome::Failed(StepName::Route, ReasonCode::DeadlineExceeded)
-    ));
-    let bills = r.book.bills();
-    assert_eq!(bills.len(), 1);
-    assert_eq!(bills[0].cause, ReasonCode::DeadlineExceeded);
-    assert_eq!(r.stats()[stat::CANCELS], 1);
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), Book::default());
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["hang"], CHUNKS),
+            Caller {
+                stop_after: Some(Duration::from_millis(20)),
+                ..Caller::default()
+            },
+        );
+        // No driver deadline: only the caller transport can wake this idle admitted unit.
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/call", b"x"), 0);
+        let outcome = tokio::time::timeout(Duration::from_secs(2), drive(&units))
+            .await
+            .expect("the caller transport's failure wakes the unit");
+        assert!(matches!(
+            outcome,
+            Outcome::Failed(StepName::Route, ReasonCode::DeadlineExceeded)
+        ));
+        let bills = r.book.bills();
+        assert_eq!(bills.len(), 1);
+        assert_eq!(bills[0].cause, ReasonCode::DeadlineExceeded);
+        assert_eq!(r.stats()[stat::CANCELS], 1);
+    }
 }
