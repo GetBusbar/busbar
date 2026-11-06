@@ -227,7 +227,13 @@ impl ClaimDoor {
             let answered = match woke {
                 Woke::Read(Ok((datagram, from))) => self
                     .assocs
-                    .raw_datagram(from, &datagram, now, &|to, d| self.send(to, d))
+                    .raw_datagram_with_publication(
+                        from,
+                        &datagram,
+                        now,
+                        &|to, d| self.send(to, d),
+                        |answered| self.answer(answered, now),
+                    )
                     .into_answered(),
 
                 Woke::Read(Err(_)) => Vec::new(),

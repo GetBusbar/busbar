@@ -53,6 +53,39 @@ impl PortAssociations {
         }
     }
 
+    /// Admit raw input after helping at most four ready producer batches. The datagram
+    /// remains borrowed throughout: busy producers and exhausted output credit never queue it.
+    /// `publish` must publish each checked batch and release its publication barrier before
+    /// returning; an unreleased barrier simply prevents further progress in this turn.
+    pub fn raw_datagram_with_publication(
+        &self,
+        from: SocketAddr,
+        bytes: &[u8],
+        now: Instant,
+        send: &dyn Fn(SocketAddr, &[u8]),
+        mut publish: impl FnMut(Answered),
+    ) -> RawIngress {
+        use super::LineStep;
+        use std::task::Poll;
+
+        let Some(id) = self.lock().find(from, bytes) else {
+            return RawIngress::Unrouted;
+        };
+        // Bound work on the shared UDP port even when a framer keeps recalling.
+        for _ in 0..4 {
+            match self.poll_line_inner(id, None, None, false, now, send) {
+                Poll::Ready(Ok(LineStep::Batch { yielded, .. })) => {
+                    publish(vec![(id, Ok(yielded))]);
+                }
+                Poll::Ready(Err(error)) => {
+                    return RawIngress::Answered(vec![(id, Err(error))]);
+                }
+                Poll::Ready(Ok(LineStep::Complete | LineStep::Credit)) | Poll::Pending => break,
+            }
+        }
+        self.raw_datagram(from, bytes, now, send)
+    }
+
     /// Newly received raw datagrams discarded because their association was not receive-ready,
     #[must_use]
     pub fn raw_busy_dropped(&self) -> u64 {

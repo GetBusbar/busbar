@@ -244,6 +244,13 @@ fn credit_before_secure_ingest_leaves_the_datagram_unaccepted_and_raw_readiness_
         RawIngress::BusyDropped
     ));
     assert_eq!(port.raw_busy_dropped(), 1);
+    assert!(matches!(
+        port.raw_datagram_with_publication(far.addr, &sealed, now, &|_, _| {}, |_| {
+            panic!("a no-credit association has no checked continuation to publish");
+        }),
+        RawIngress::BusyDropped
+    ));
+    assert_eq!(port.raw_busy_dropped(), 2);
     assert_eq!(received(&port, id), before);
     assert!(door.st.lock().unwrap().secured.is_empty());
     assert!(
@@ -251,4 +258,112 @@ fn credit_before_secure_ingest_leaves_the_datagram_unaccepted_and_raw_readiness_
         "preaccept refusal creates no continuation or queued copy"
     );
     port.remove(id);
+}
+
+#[test]
+fn ready_secure_continuation_precedes_the_next_raw_datagram() {
+    let (host, mut far, door, now) = established();
+    let host_addr: SocketAddr = host.local.parse().unwrap();
+    let mut first = packet(&mut far, host_addr, b"first channel message");
+    // Two valid records force another checked secure batch before fresh admission.
+    first.extend(packet(&mut far, host_addr, b"continued channel message"));
+    let second = packet(&mut far, host_addr, b"second channel message");
+    let before = host.secure.as_ref().unwrap().ingest_calls();
+    let port = PortAssociations::new();
+    let id = port.add(host).unwrap();
+    let first = answered(port.raw_datagram(far.addr, &first, now, &|_, _| {}), id);
+    assert_eq!(first.pieces.len(), 1);
+    assert_eq!(first.pieces[0].bytes, b"first channel message");
+    drop(first);
+    port.published(id);
+    {
+        let associations = port.lock();
+        let out = associations.out.get(&id).unwrap();
+        assert!(!out.publishing);
+        assert!(out.continuing.is_some());
+        assert!(out.owed.is_empty());
+    }
+    // The Pairing continuation is runnable but deliberately has not been polled.
+    let mut continued = Vec::new();
+    let second = answered(
+        port.raw_datagram_with_publication(far.addr, &second, now, &|_, _| {}, |batches| {
+            for (owner, batch) in batches {
+                assert_eq!(owner, id);
+                let batch = batch.unwrap();
+                continued.extend(batch.pieces.iter().map(|piece| piece.bytes.clone()));
+                drop(batch);
+                port.published(owner);
+            }
+        }),
+        id,
+    );
+    assert_eq!(continued, vec![b"continued channel message".to_vec()]);
+    assert_eq!(second.pieces.len(), 1);
+    assert_eq!(second.pieces[0].bytes, b"second channel message");
+    drop(second);
+    port.published(id);
+    assert!(matches!(poll(&port, id, now), LineStep::Complete));
+    assert_eq!(received(&port, id), before + 2);
+    assert_eq!(
+        door.st.lock().unwrap().secured,
+        vec![
+            b"first channel message".to_vec(),
+            b"continued channel message".to_vec(),
+            b"second channel message".to_vec()
+        ]
+    );
+    assert_eq!(port.raw_busy_dropped(), 0);
+    port.remove(id);
+    assert!(port.is_empty());
+}
+
+#[test]
+fn ready_secure_service_is_bounded_and_does_not_queue_fresh_raw_input() {
+    let (mut host, mut far, door, now) = established();
+    let memory = Memory::new(None);
+    host.memory(Arc::clone(&memory));
+    let host_addr: SocketAddr = host.local.parse().unwrap();
+    let mut first = packet(&mut far, host_addr, b"first");
+    for _ in 0..6 {
+        first.extend(packet(&mut far, host_addr, b"continued"));
+    }
+    let second = packet(&mut far, host_addr, b"fresh");
+    let before = host.secure.as_ref().unwrap().ingest_calls();
+    let port = PortAssociations::new();
+    let id = port.add(host).unwrap();
+    drop(answered(
+        port.raw_datagram(far.addr, &first, now, &|_, _| {}),
+        id,
+    ));
+    port.published(id);
+    let mut batches = 0;
+    let raw = port.raw_datagram_with_publication(far.addr, &second, now, &|_, _| {}, |output| {
+        for (owner, batch) in output {
+            assert_eq!(owner, id);
+            assert!(port.lock().out.get(&id).unwrap().publishing);
+            let batch = batch.unwrap();
+            assert_eq!(batch.pieces.len(), 1);
+            assert_eq!(batch.pieces[0].bytes, b"continued");
+            batches += 1;
+            drop(batch);
+            port.published(owner);
+        }
+    });
+    assert!(matches!(raw, RawIngress::BusyDropped));
+    assert_eq!(batches, 4, "one shared-port turn has a fixed work budget");
+    assert_eq!(
+        received(&port, id),
+        before + 1,
+        "fresh raw input was not ingested"
+    );
+    no_original_queued(&port, id);
+    assert_eq!(port.raw_busy_dropped(), 1);
+    assert_eq!(door.st.lock().unwrap().secured.len(), 5);
+    port.remove(id);
+    assert!(port.is_empty());
+    assert_eq!(
+        memory.used(),
+        0,
+        "cancellation retires every retained batch"
+    );
 }

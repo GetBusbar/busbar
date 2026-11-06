@@ -1936,11 +1936,28 @@ impl PortAssociations {
         now: Instant,
         send: &dyn Fn(SocketAddr, &[u8]),
     ) -> std::task::Poll<Result<LineStep, Refused>> {
+        self.poll_line_inner(id, Some(cx), input, text, now, send)
+    }
+
+    // A serving turn may help only a parked producer. It must neither create a fresh
+    // operation after racing the Pairing actor nor replace that actor's registered waker.
+    fn poll_line_inner(
+        &self,
+        id: u64,
+        cx: Option<&mut std::task::Context<'_>>,
+        input: Option<&Across>,
+        text: bool,
+        now: Instant,
+        send: &dyn Fn(SocketAddr, &[u8]),
+    ) -> std::task::Poll<Result<LineStep, Refused>> {
+        let ready_only = cx.is_none();
         let emission = self.lock().emissions.get(&id).cloned();
         let Some(emission) = emission else {
             return std::task::Poll::Ready(Err(fault("the association is closed")));
         };
-        emission.wake.register(cx.waker());
+        if let Some(cx) = cx {
+            emission.wake.register(cx.waker());
+        }
         let (f, owed) = {
             let mut assocs = self.lock();
             if let Some(out) = assocs.out.get_mut(&id) {
@@ -1968,6 +1985,9 @@ impl PortAssociations {
                     }
                 }
             } else {
+                if ready_only {
+                    return std::task::Poll::Ready(Ok(LineStep::Complete));
+                }
                 let Some(f) = assocs.framings.remove(&id) else {
                     return std::task::Poll::Ready(Err(fault("the association is closed")));
                 };
