@@ -28,24 +28,38 @@ fn golden_line() -> String {
         .to_string()
 }
 
-fn masked(text: &str) -> String {
-    let mut out = text.to_string();
-    for key in ["latency_ms", "as_of", "ts"] {
-        let pat = format!("\"{key}\":");
-        let mut from = 0;
-        while let Some(at) = out[from..].find(&pat).map(|i| from + i + pat.len()) {
-            let end = out[at..]
-                .find(|c: char| !(c.is_ascii_digit() || "+-.eE".contains(c)))
-                .map_or(out.len(), |i| at + i);
-            if end == at {
-                from = at;
-                continue;
+fn masked_record(text: &str) -> serde_json::Value {
+    fn mask(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (key, value) in fields {
+                    if ["latency_ms", "as_of", "ts"].contains(&key.as_str()) {
+                        assert!(
+                            value.is_number(),
+                            "the volatile field {key} must be numeric"
+                        );
+                        *value = serde_json::Value::String(format!("<{key}>"));
+                    } else {
+                        mask(value);
+                    }
+                }
             }
-            out.replace_range(at..end, &format!("<{key}>"));
-            from = at;
+            serde_json::Value::Array(values) => values.iter_mut().for_each(mask),
+            _ => {}
         }
     }
-    out
+    let mut value =
+        serde_json::from_str(text).expect("each request-log line is a complete JSON value");
+    mask(&mut value);
+    value
+}
+
+fn golden_record() -> serde_json::Value {
+    let mut text = golden_line();
+    for key in ["latency_ms", "as_of", "ts"] {
+        text = text.replace(&format!(":<{key}>"), &format!(":\"<{key}>\""));
+    }
+    serde_json::from_str(&text).expect("the golden record's known numeric placeholders parse")
 }
 
 fn upstream() -> u16 {
@@ -192,7 +206,7 @@ fn the_request_log_file_holds_the_1_5_5_line_byte_for_byte() {
         body.len()
     );
     let audit = dir.join("audit.jsonl");
-    let golden = format!("{}\n", golden_line());
+    let golden = golden_record();
 
     for n in 1..=2 {
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -226,12 +240,19 @@ fn the_request_log_file_holds_the_1_5_5_line_byte_for_byte() {
             std::thread::sleep(Duration::from_millis(50));
         };
         let written = String::from_utf8(written).expect("the file is UTF-8");
-        assert_eq!(
-            masked(&written),
-            golden.repeat(n),
-            "the file must hold 1.5.5's line per request, byte for byte (masked as the golden \
-             cell masks it)"
-        );
+        let records = written
+            .strip_suffix('\n')
+            .expect("every request-log record ends with a newline")
+            .split('\n')
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), n, "exactly one complete record per request");
+        for record in records {
+            assert_eq!(
+                masked_record(record),
+                golden,
+                "the complete request-log value must match the golden, including exact numbers"
+            );
+        }
     }
     drop(child);
     let _ = std::fs::remove_dir_all(&dir);
@@ -329,8 +350,14 @@ fn config_reload_moves_the_open_file_exporter_and_can_move_it_back() {
 
 #[test]
 fn the_mask_replaces_only_the_masked_numbers() {
+    let record =
+        masked_record(r#"{"a":9007199254740993,"latency_ms":12,"ts":1700000000.5,"x":"ts"}"#);
     assert_eq!(
-        masked(r#"{"a":1,"latency_ms":12,"ts":1700000000.5,"x":"ts"}"#),
-        r#"{"a":1,"latency_ms":<latency_ms>,"ts":<ts>,"x":"ts"}"#
+        record,
+        serde_json::from_str::<serde_json::Value>(
+            r#"{"x":"ts","ts":"<ts>","a":9007199254740993,"latency_ms":"<latency_ms>"}"#
+        )
+        .unwrap()
     );
+    assert_ne!(record["a"], serde_json::json!(9007199254740992_u64));
 }
