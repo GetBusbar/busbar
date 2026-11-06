@@ -180,13 +180,11 @@ fn write_node_config(
         format!(
             "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:{}\"\n\
              mockfile:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:{}\"\n\
-             mockuser:\n  protocol: anthropic\n  base_url: \"http://{USERINFO_USER}:{}@127.0.0.1:{}\"\n\
-             mockdead:\n  protocol: anthropic\n  base_url: \"http://{USERINFO_USER}:{}@127.0.0.1:9\"\n",
+             mockuser:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:{}\"\n\
+             mockdead:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n",
             port("mock"),
             port("mockfile"),
-            c.userinfo.value,
             port("mockuser"),
-            c.userinfo_dead.value,
         ),
     )
     .expect("providers.yaml");
@@ -220,9 +218,9 @@ providers:
   mockfile:
     api_key: {{ file: "{keyfile}" }}
   mockuser:
-    api_key: {{ env: MOCK_KEY }}
+    api_key: {{ env: CANARY_USERINFO_REF }}
   mockdead:
-    api_key: {{ env: MOCK_KEY }}
+    api_key: {{ env: CANARY_USERINFO_DEAD_REF }}
 models:
   m-env: {{ provider: mock }}
   m-file: {{ provider: mockfile }}
@@ -254,6 +252,8 @@ fn env_of(cmd: &mut Command, dir: &Path, c: &NodeCanaries) {
         .env_remove("BUSBAR_PROVIDERS")
         .env("MOCK_KEY", "not-a-canary")
         .env("CANARY_ENV_REF", &c.env_ref.value)
+        .env("CANARY_USERINFO_REF", &c.userinfo.value)
+        .env("CANARY_USERINFO_DEAD_REF", &c.userinfo_dead.value)
         .env("CANARY_INTERP", &c.interp.value)
         .env("CANARY_ADMIN_TOKEN", &c.admin_token.value)
         .env("RUST_BACKTRACE", "1")
@@ -285,6 +285,58 @@ pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
     let ports: Vec<(&str, u16)> = ends.iter().map(|(n, f)| (*n, f.port)).collect();
     let (data, admin) = (common::boot::free_port(), common::boot::free_port());
     let reqlog = write_node_config(&dir, c, &ports, data, admin);
+
+    // Endpoint userinfo is forbidden. Exercise both original planted URL secrets on that
+    // refusal path, then serve those same secrets as supported provider credentials so the
+    // admin/log/export sweep and the far-end delivery witness still run.
+    let providers_path = dir.join("providers.yaml");
+    let valid_providers = std::fs::read_to_string(&providers_path).expect("valid providers");
+    let user_endpoint = format!("http://127.0.0.1:{}", ends[2].1.port);
+    assert_eq!(valid_providers.matches(&user_endpoint).count(), 1);
+    assert_eq!(valid_providers.matches("http://127.0.0.1:9\"").count(), 1);
+    let forbidden_providers = valid_providers
+        .replace(
+            &user_endpoint,
+            &format!(
+                "http://{USERINFO_USER}:{}@127.0.0.1:{}",
+                c.userinfo.value, ends[2].1.port
+            ),
+        )
+        .replace(
+            "http://127.0.0.1:9\"",
+            &format!(
+                "http://{USERINFO_USER}:{}@127.0.0.1:9\"",
+                c.userinfo_dead.value
+            ),
+        );
+    std::fs::write(&providers_path, forbidden_providers).expect("forbidden URL providers");
+    let mut invalid = Command::new(common::boot::exe());
+    invalid.arg("--validate");
+    env_of(&mut invalid, &dir, c);
+    let refused = invalid.output().expect("validate forbidden URL userinfo");
+    assert!(
+        !refused.status.success(),
+        "endpoint userinfo must be refused"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stderr).trim(),
+        concat!(
+            "[error] BUSBAR-3015: config validation failed:\n",
+            "  - provider 'mockuser' base_url claim 'http': userinfo is not permitted in an endpoint\n",
+            "  - provider 'mockdead' base_url claim 'http': userinfo is not permitted in an endpoint"
+        ),
+        "the refusal names both providers and never echoes their credentials"
+    );
+    sinks.push(Sink::text(
+        "validate:forbidden-userinfo",
+        "busbar --validate",
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&refused.stdout),
+            String::from_utf8_lossy(&refused.stderr)
+        ),
+    ));
+    std::fs::write(&providers_path, valid_providers).expect("restore valid providers");
 
     let mut v = Command::new(common::boot::exe());
     v.arg("--validate");

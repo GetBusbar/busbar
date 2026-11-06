@@ -283,7 +283,7 @@ fn validate_reports_a_dropped_in_sinks_settings_errors_in_its_own_words() {
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(!refused.status.success(), "stderr:\n{stderr}");
     assert!(
-        stderr.contains("export.tail.settings: invalid type: integer `7`, expected a string"),
+        stderr.contains("export.tail.settings: invalid type: number, expected a string"),
         "stderr:\n{stderr}"
     );
     let accepted = validate(&format!(

@@ -1449,7 +1449,7 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
     let approve = |key: &'static str| {
         let node = node.clone();
         async move {
-            over_as(
+            over_as_json(
                 &node,
                 "POST",
                 "/api/v1/admin/trust/approve",
@@ -1460,24 +1460,24 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
         }
     };
     let row = |state: &str, approved: &str, seen: &str| {
-        format!(
+        serde_json::from_str::<serde_json::Value>(&format!(
             r#"{{"approved":{approved},"counterparty":"peer","instance":"inst","item":null,"key":"inst/peer","seen":{seen},"state":"{state}"}}"#
-        )
+        ))
+        .expect("the complete expected trust row is JSON")
     };
 
     assert_eq!(
-        over_as(&node, "GET", "/api/v1/admin/trust", "", op).await,
+        over_as_json(&node, "GET", "/api/v1/admin/trust", "", op).await,
         (
             200,
-            format!(r#"{{"keys":[{}]}}"#, row("new", "null", "null"))
+            serde_json::json!({"keys": [row("new", "null", "null")]})
         )
     );
     assert_eq!(
         approve("inst/peer").await,
         (
             409,
-            r#"{"error":{"code":"conflict","message":"trust key `inst/peer` was never sighted"}}"#
-                .to_string()
+            serde_json::from_str::<serde_json::Value>(r#"{"error":{"code":"conflict","message":"trust key `inst/peer` was never sighted"}}"#).expect("the complete expected error is JSON")
         )
     );
 
@@ -1492,10 +1492,10 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
     sight("h2");
     assert_eq!(served(), Err(Distrust::Quarantined));
     assert_eq!(
-        over_as(&node, "GET", "/api/v1/admin/trust", "", op).await,
+        over_as_json(&node, "GET", "/api/v1/admin/trust", "", op).await,
         (
             200,
-            format!(r#"{{"keys":[{}]}}"#, row("drifted", r#""h1""#, r#""h2""#))
+            serde_json::json!({"keys": [row("drifted", r#""h1""#, r#""h2""#)]})
         )
     );
     assert_eq!(
@@ -1505,7 +1505,7 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
     assert_eq!(served(), Ok(()));
 
     assert_eq!(
-        over_as(
+        over_as_json(
             &node,
             "POST",
             "/api/v1/admin/trust/revoke",
@@ -1521,15 +1521,20 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
         approve("inst/stranger").await,
         (
             404,
-            r#"{"error":{"code":"not_found","message":"trust key `inst/stranger` not found"}}"#
-                .to_string()
+            serde_json::from_str::<serde_json::Value>(
+                r#"{"error":{"code":"not_found","message":"trust key `inst/stranger` not found"}}"#
+            )
+            .expect("the complete expected error is JSON")
         )
     );
     assert_eq!(
-        over_as(&node, "POST", "/api/v1/admin/trust/revoke", "{}", op).await,
+        over_as_json(&node, "POST", "/api/v1/admin/trust/revoke", "{}", op).await,
         (
             400,
-            r#"{"error":{"code":"invalid_request","message":"key is required"}}"#.to_string()
+            serde_json::from_str::<serde_json::Value>(
+                r#"{"error":{"code":"invalid_request","message":"key is required"}}"#
+            )
+            .expect("the complete expected error is JSON")
         )
     );
 
@@ -1685,6 +1690,23 @@ async fn over_as(
     )
 }
 
+// These operation tests compare complete JSON values; the recording-surface tests above
+// separately prove that the admin wrapper returns the surface's exact bytes.
+#[cfg(feature = "root-admin")]
+async fn over_as_json(
+    router: &axum::Router,
+    method: &str,
+    path: &str,
+    body: &str,
+    credential: Option<&str>,
+) -> (u16, serde_json::Value) {
+    let (status, body) = over_as(router, method, path, body, credential).await;
+    (
+        status,
+        serde_json::from_str(&body).expect("the administrative answer is JSON"),
+    )
+}
+
 #[cfg(feature = "root-admin")]
 fn the_q71_verbs() -> [(&'static str, &'static str, String); 4] {
     [
@@ -1716,8 +1738,9 @@ async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
     let (status, body) = over_as(&node, "GET", "/api/v1/admin/verify", "", op).await;
     assert_eq!(status, 200, "verify is served: {body}");
     assert_eq!(
-        body,
-        r#"{"book_verified":false,"checkpoints":0,"discrepancies":0,"findings":[],"identity_holds":true,"ok":true,"since":null}"#
+        serde_json::from_str::<serde_json::Value>(&body).expect("verify answers JSON"),
+        serde_json::json!({"book_verified": false, "checkpoints": 0, "discrepancies": 0,
+            "findings": [], "identity_holds": true, "ok": true, "since": null})
     );
 
     let (status, body) = over_as(
