@@ -269,7 +269,7 @@ async fn neutral_auth_refusal(target: &str, expected_status: u32) {
     }));
     let mut hook = serde_json::to_value(&g.screen_hook).unwrap();
     hook["kind"] = serde_json::json!("tap");
-    hook["at"] = serde_json::json!("response");
+    hook["phase"] = serde_json::json!(["response"]);
     hook["settings"]["url"] = serde_json::json!(endpoint);
     let registry = [(
         "completion".to_owned(),

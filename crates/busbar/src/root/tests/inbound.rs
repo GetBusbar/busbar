@@ -818,13 +818,6 @@ async fn retained_listener_refusals_keep_the_actual_llm_producer_after_its_claim
     );
 
     let (next_app, next_config, next_book) = app(false);
-    let generic = kin::Refusal::of(busbar_kernel::router::fallback_error_response(
-        &next_app.planes,
-        &head.target,
-        axum::http::StatusCode::NOT_FOUND,
-        busbar_contract::protocol::ERR_TYPE_NOT_FOUND,
-        "the requested resource was not found",
-    ));
     let next = actual_listener(next_app, &next_config, &next_book, false);
     assert!(
         matches!(
@@ -842,8 +835,13 @@ async fn retained_listener_refusals_keep_the_actual_llm_producer_after_its_claim
     );
     let current = refuse(GEN + 1, REFUSE_NO_ROUTE, LINE_NONE, head);
     assert_eq!(
-        current, generic,
-        "the current no-claim listener uses the normal generic builder"
+        current,
+        kin::Refusal {
+            status: 404,
+            fields: Vec::new(),
+            body: Vec::new(),
+        },
+        "the current no-claim listener has no producer and returns the exact neutral refusal"
     );
     assert_ne!(
         retained, current,

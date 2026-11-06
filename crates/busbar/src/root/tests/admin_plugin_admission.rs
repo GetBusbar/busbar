@@ -1192,10 +1192,15 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
         .find(|p| p["name"] == "acme-store-schemaurl")
         .expect("the schema-carrying row is present");
     let schema_url = row["schema_url"].as_str().expect("schema_url is non-null");
+    let digest = crate::root::loader::sign::sha256_hex(&tarball);
     assert_eq!(
-        schema_url, "/api/v1/admin/plugins/acme-store-schemaurl/schema",
-        "always the admin-prefixed relative path — never absolute, never a catalog URL"
+        schema_url,
+        format!(
+            "/api/v1/admin/plugins/acme-store-schemaurl.tar.gz/schema?source=installed_archive&expected_archive_sha256={digest}"
+        ),
+        "the admin-relative URL binds the exact installed archive, never a catalog URL"
     );
+    assert_eq!(row["archive_sha256"], digest);
     assert_eq!(row["schema_error"], serde_json::Value::Null);
 
     let followed: serde_json::Value = client
@@ -1208,6 +1213,8 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
         .await
         .unwrap();
     assert_eq!(followed["schema"], schema);
+    assert_eq!(followed["source"], "installed_archive");
+    assert_eq!(followed["archive_sha256"], digest);
 
     let memory_row = list["items"]
         .as_array()
@@ -1686,6 +1693,7 @@ async fn a_bootstrap_archive_upload_and_rollback_refuse_a_changed_base_pin_befor
     std::fs::write(&providers, "{}\n").unwrap();
     let write_base = |hash: &str| {
         let document = serde_json::json!({"providers":{},"models":{},
+            "providers_file": providers,
             "store":{"module":"anchor","settings":{}},
             "plugins":{"enabled":true,"dir":dir,
                 "trust":{"publishers":[{"name":"acme","public_key":hex::encode(key.verifying_key().to_bytes())}]},

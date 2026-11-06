@@ -1425,6 +1425,13 @@ async fn a_session_decode_refusal_uses_the_bound_live_facts() {
     let mut g = governed("session-live-facts", false);
     let routes = session_custody_routes(&mut g, false);
     let live_kind = busbar_contract::OpClassId::new("session_live_generation");
+    let before_generation = routes.live[0].generation;
+    routes.served.planes[0].live.apply(&g.app);
+    assert_eq!(
+        routes.served.planes[0].live.current().generation,
+        before_generation + 1,
+        "the actual plane refresh publishes a new generation"
+    );
     {
         let mut current = routes.served.planes[0]
             .live
@@ -1432,11 +1439,15 @@ async fn a_session_decode_refusal_uses_the_bound_live_facts() {
             .write()
             .expect("unpoisoned");
         Arc::get_mut(&mut current)
-            .expect("no unit has borrowed the generation")
+            .expect("the new current generation is not pinned by the old routes")
             .facts
             .audit_kind = live_kind;
     }
     assert_ne!(routes.served.planes[0].facts.audit_kind, live_kind);
+    assert_ne!(
+        routes.live[0].facts.audit_kind, live_kind,
+        "the listener's pinned old generation remains unchanged"
+    );
     let (door, arrival, _) = routes.arrived(0, 2, session_custody_request(&g, "/framed/refuse"));
     let (verdict, said) = tokio::sync::oneshot::channel();
     Arc::clone(&routes)
@@ -2113,12 +2124,18 @@ async fn a_root_reservation_rejects_a_different_full_key_and_an_exited_loaded_ge
         .unwrap();
     source.money.settle_end(source.unit, 200);
     source.owner.custody.terminal(source.unit, true);
-    {
-        let mut current = g.served.planes[0].live.live.write().unwrap();
-        Arc::get_mut(&mut current)
-            .expect("the idle actual generation has one owner")
-            .ticket_nonce = Arc::new(());
-    }
+    let before = g.served.planes[0].live.current();
+    g.served.planes[0].live.apply(&g.app);
+    let current = g.served.planes[0].live.current();
+    assert_eq!(
+        current.generation,
+        before.generation + 1,
+        "the actual plane refresh replaces the reservation's loaded generation"
+    );
+    assert!(
+        !Arc::ptr_eq(&current.ticket_nonce, &before.ticket_nonce),
+        "the replacement generation has its own custody identity"
+    );
     assert!(
         source.owner.custody.claim(&identity).is_none(),
         "old loaded generation refuses before durable spend"

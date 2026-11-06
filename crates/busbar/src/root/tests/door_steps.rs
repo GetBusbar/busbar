@@ -10978,7 +10978,7 @@ fn oauth_settings_validate_before_open_with_no_credential_or_host_secrets() {
             max_inflight_cap: 1,
             sink: std::sync::Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: ConnTable::NoNeeds,
+            conns: ConnTable::Probe,
         },
     )
     .expect("bind without OPEN");
