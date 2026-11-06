@@ -757,7 +757,6 @@ pub const MAX_LINES: u64 = 1024;
 ///
 /// A non-NULL `i.lines` is the host's own table of `i.lines_len` live entries.
 pub unsafe fn check_lines(i: &super::BeginIn) -> Result<(), Fault> {
-    use crate::abi::auth::check_points;
     use crate::abi::host::service::LINE_NONE;
     listed(i.lines, i.lines_len, "begin.lines")?;
     if i.side == super::SIDE_DIAL && i.lines_len != 0 {
@@ -781,11 +780,20 @@ pub unsafe fn check_lines(i: &super::BeginIn) -> Result<(), Fault> {
         if l.auth.is_none() {
             return Err(fault(Rule::Missing, "line.auth"));
         }
-        check_points(l.points, false)?;
+        check_line_points(l.points)?;
         if (l.points & POINT_HEAD_BODY != 0) != (l.body_limit != 0) {
             return Err(fault(Rule::Contradiction, "line.body_limit"));
         }
         check_route(&l.route)?;
+    }
+    Ok(())
+}
+
+/// A guest line schedules the union of its providers' points. Distinct providers may
+/// need HEAD and HEAD_BODY on the same line; an individual auth style still cannot.
+pub(crate) const fn check_line_points(points: u32) -> Result<(), Fault> {
+    if points & !(POINT_PEER | POINT_HEAD | POINT_HEAD_BODY) != 0 {
+        return Err(fault(Rule::UnknownCode, "line.points"));
     }
     Ok(())
 }

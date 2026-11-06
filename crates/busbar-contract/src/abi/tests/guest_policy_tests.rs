@@ -45,6 +45,44 @@ fn a_policy_preserves_match_order_routes_binary_predicates_and_generation() {
 }
 
 #[test]
+fn a_mixed_auth_chain_preserves_each_required_point_without_relaxing_provider_rules() {
+    use crate::abi::auth::{check_points, POINT_FRAME, POINT_HEAD, POINT_PEER};
+    for points in [
+        POINT_HEAD | POINT_HEAD_BODY,
+        POINT_PEER | POINT_HEAD | POINT_HEAD_BODY,
+    ] {
+        let mixed = GuestLine { points, ..line() };
+        let bytes = encode(17, 3, &[mixed.clone()]).unwrap();
+        assert_eq!(decode(&bytes).unwrap().lines, vec![mixed.clone()]);
+        assert!(
+            check_points(points, true).is_err(),
+            "a provider cannot declare both head points"
+        );
+        assert!(encode(
+            17,
+            3,
+            &[GuestLine {
+                body_limit: 0,
+                ..mixed
+            }]
+        )
+        .is_err());
+    }
+    for forbidden in [POINT_FRAME, 1 << 31] {
+        let mut malformed = line();
+        malformed.points |= forbidden;
+        assert!(encode(17, 3, &[malformed]).is_err());
+        let mut bytes = encode(17, 3, &[line()]).unwrap();
+        // Version/listener/generation/count occupy 24 bytes; line id precedes points.
+        bytes[28..32].copy_from_slice(&(POINT_HEAD_BODY | forbidden).to_le_bytes());
+        assert!(
+            decode(&bytes).is_err(),
+            "a peer cannot smuggle an unsupported point"
+        );
+    }
+}
+
+#[test]
 fn truncated_unknown_and_trailing_policy_data_never_becomes_an_open_list() {
     let bytes = encode(17, 3, &[line()]).unwrap();
     for end in 0..bytes.len() {

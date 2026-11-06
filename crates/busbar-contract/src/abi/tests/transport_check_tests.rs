@@ -1460,6 +1460,8 @@ fn a_begin_line_table_is_checked() {
         line(2, POINT_HEAD, 0),
         line(3, POINT_HEAD_BODY, 1 << 20),
         line(4, POINT_PEER, 0),
+        line(5, POINT_HEAD | POINT_HEAD_BODY, 1 << 20),
+        line(6, POINT_PEER | POINT_HEAD | POINT_HEAD_BODY, 1 << 20),
     ];
     assert_eq!(check(&begin_with(SIDE_ACCEPT, &good)), Ok(()));
     assert_eq!(check(&begin_with(SIDE_ACCEPT_STREAM, &good)), Ok(()));
@@ -1489,14 +1491,17 @@ fn a_begin_line_table_is_checked() {
         check(&begin_with(SIDE_ACCEPT, &[anonymous])),
         f(Rule::Missing, "line.auth")
     );
+    assert!(
+        crate::abi::auth::check_points(POINT_HEAD | POINT_HEAD_BODY, true).is_err(),
+        "individual provider declarations remain strict"
+    );
+    assert!(check(&begin_with(SIDE_ACCEPT, &[line(1, 1 << 31, 0)])).is_err());
     assert_eq!(
         check(&begin_with(
             SIDE_ACCEPT,
-            &[line(1, POINT_HEAD | POINT_HEAD_BODY, 1)]
-        ))
-        .unwrap_err()
-        .rule,
-        Rule::Contradiction
+            &[line(1, POINT_HEAD | POINT_HEAD_BODY, 0)]
+        )),
+        f(Rule::Contradiction, "line.body_limit")
     );
     assert_eq!(
         check(&begin_with(SIDE_ACCEPT, &[line(1, POINT_FRAME, 0)]))
@@ -1531,6 +1536,12 @@ fn a_begin_binding_is_checked() {
     i.points = POINT_HEAD;
     i.auth = bound;
     assert_eq!(check_binding(&i), Ok(()));
+    i.points = POINT_HEAD | POINT_HEAD_BODY;
+    assert_eq!(
+        check_binding(&i),
+        f(Rule::Contradiction, "points.points_overlap"),
+        "a dial binding remains an individual provider declaration"
+    );
     i.points = POINT_HEAD_BODY;
     assert_eq!(check_binding(&i), Ok(()));
     i.auth = AuthRef::NONE;

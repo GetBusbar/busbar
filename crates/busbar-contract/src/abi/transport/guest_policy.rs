@@ -3,9 +3,9 @@
 
 //! A live stream asks for its policy through the existing operation extension blobs.
 
-use super::check::{check_route_view, MAX_LINES};
+use super::check::{check_line_points, check_route_view, MAX_LINES};
 use super::route::{RouteView, FIELD_PRESENT, FIELD_VALUE_PREFIX};
-use crate::abi::auth::{check_points, POINT_HEAD_BODY};
+use crate::abi::auth::POINT_HEAD_BODY;
 use crate::abi::host::service::LINE_NONE;
 use std::collections::HashSet;
 
@@ -99,7 +99,8 @@ impl Identity {
 pub struct GuestLine {
     /// The line's id, as the kernel numbers it.
     pub line: u32,
-    /// The auth points its auth needs (`POINT_*`); `0` for a line whose auth is `none`.
+    /// The union of its providers' auth points (`POINT_*`), including HEAD and HEAD_BODY
+    /// together when different providers need them; `0` for a line whose auth is `none`.
     pub points: u32,
     /// Its auth handle, owner-scoped to the listener's transport.
     pub auth: crate::abi::host::service::AuthRef,
@@ -137,7 +138,7 @@ fn valid(lines: &[GuestLine]) -> Result<(), &'static str> {
         if line.line == LINE_NONE || !ids.insert(line.line) || line.auth.is_none() {
             return Err("the policy has an absent or repeated line or auth handle");
         }
-        check_points(line.points, false).map_err(|_| "the policy has invalid auth points")?;
+        check_line_points(line.points).map_err(|_| "the policy has invalid auth points")?;
         if (line.points & POINT_HEAD_BODY != 0) != (line.body_limit != 0) {
             return Err("the policy body limit disagrees with its auth points");
         }
