@@ -6887,11 +6887,8 @@ mod upstream_ask_relay {
         assert_eq!(status, 400, "a spent state is refused: {body}");
 
         let (status, body) = call(&rig, &retry("forged")).await;
-        assert_eq!(status, 403, "a forged state is refused: {body}");
-        assert_eq!(
-            body["error"]["data"]["reason"], "ask_unsolicited_state",
-            "{body}"
-        );
+        assert_eq!(status, 400, "a forged state is refused: {body}");
+        assert_eq!(body["error"]["data"]["reason"], "state_malformed", "{body}");
         server.close().await;
     }
 

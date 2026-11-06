@@ -223,7 +223,7 @@ __attribute__((constructor)) static void mark_loaded(void) {
             "advanced":{"worker_threads":1},"tls":{"cert":secret,"key":secret},
             "plugins":{"enabled":true,"dir":plugins,"fetch":fetch}
         });
-        std::fs::write(&config, serde_yaml::to_string(&document).unwrap()).unwrap();
+        std::fs::write(&config, serde_json::to_string_pretty(&document).unwrap()).unwrap();
         let marker = dir.join(format!("{tag}.marker"));
         let output = constructor_output(std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact","root::boot::bootstrap_pin_tests::offline_secret_checker_archive_pins_refuse_before_native_constructors","--nocapture"])

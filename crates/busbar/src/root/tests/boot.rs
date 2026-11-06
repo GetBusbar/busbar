@@ -860,7 +860,10 @@ fn red_3g_deals_a_root_pool_named_after_a_knob_as_a_pool() {
     let seats = [("p-pools", Seat::of(Kind::Plane, &pools, "p-pools"))];
     let mut seen = Vec::new();
     validate_dealt(&doc, seats, |instance, blob| {
-        seen.push((instance, String::from_utf8(blob.to_vec()).unwrap()));
+        seen.push((
+            instance,
+            serde_json::from_slice::<serde_json::Value>(blob).expect("the section is JSON"),
+        ));
         Ok(())
     })
     .expect("nothing refuses");
@@ -868,8 +871,10 @@ fn red_3g_deals_a_root_pool_named_after_a_knob_as_a_pool() {
         seen,
         [(
             "p-pools",
-            r#"{"pools":{"tier":{"members":[{"model":"m"}]},"work":{"members":[{"model":"m"}]}}}"#
-                .to_owned()
+            serde_json::json!({"pools": {
+                "tier": {"members": [{"model": "m"}]},
+                "work": {"members": [{"model": "m"}]},
+            }})
         )]
     );
 }
@@ -1099,7 +1104,7 @@ __attribute__((constructor)) static void mark_loaded(void) {
                 "min_versions":floors,
                 "fetch":fetch}
         });
-        std::fs::write(&config, serde_yaml::to_string(&document).unwrap()).unwrap();
+        std::fs::write(&config, serde_json::to_string_pretty(&document).unwrap()).unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",

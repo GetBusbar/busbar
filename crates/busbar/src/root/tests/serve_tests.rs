@@ -6133,16 +6133,22 @@ mod tools_door {
         assert!(wait > 0, "the open cell's wait: {headers:?}");
         assert_eq!(status.as_u16(), 503, "{headers:?} {body}");
         assert_eq!(
-            body,
-            format!(
-                "{{\"error\":{{\"code\":-32030,\"data\":{{\"reason\":\"upstream_unavailable\",\
-                 \"retry_after_ms\":{},\"server\":\"flaky\"}},\"message\":\"{}\"}},\"id\":41,\
-                 \"jsonrpc\":\"2.0\"}}",
-                wait * 1000,
-                sentence("tripped_server_message")
-                    .replace("{server}", "flaky")
-                    .replace("{wait}", &wait.to_string())
-            ),
+            serde_json::from_str::<serde_json::Value>(&body).expect("the error is JSON"),
+            serde_json::json!({
+                "error": {
+                    "code": -32030,
+                    "data": {
+                        "reason": "upstream_unavailable",
+                        "retry_after_ms": wait * 1000,
+                        "server": "flaky",
+                    },
+                    "message": sentence("tripped_server_message")
+                        .replace("{server}", "flaky")
+                        .replace("{wait}", &wait.to_string()),
+                },
+                "id": 41,
+                "jsonrpc": "2.0",
+            }),
             "{headers:?}"
         );
         assert!(drain(&mut heard).is_empty(), "nothing reached the server");
@@ -6191,8 +6197,20 @@ mod tools_door {
         let body = String::from_utf8_lossy(&body).to_string();
         assert_eq!(status.as_u16(), 503, "{headers:?} {body}");
         assert_eq!(
-            body,
-            r#"{"error":{"code":-32030,"data":{"reason":"upstream_unavailable","retry_after_ms":2000,"server":"stall"},"message":"MCP server `stall` is unavailable: it did not answer this call within the server's timeout; busbar dispatched it and stopped waiting. Retry after 2s."},"id":41,"jsonrpc":"2.0"}"#,
+            serde_json::from_str::<serde_json::Value>(&body).expect("the error is JSON"),
+            serde_json::json!({
+                "error": {
+                    "code": -32030,
+                    "data": {
+                        "reason": "upstream_unavailable",
+                        "retry_after_ms": 2000,
+                        "server": "stall",
+                    },
+                    "message": "MCP server `stall` is unavailable: it did not answer this call within the server's timeout; busbar dispatched it and stopped waiting. Retry after 2s.",
+                },
+                "id": 41,
+                "jsonrpc": "2.0",
+            }),
             "the in-flight unit retains its original generation and dispatched timeout"
         );
         assert_eq!(
@@ -9992,7 +10010,7 @@ mod pools_door_money {
             billed, 0,
             "a whole answer dropped mid-relay bills no tokens"
         );
-        let record = sealed_as(&rig, busbar_kernel_audit::FinishClass::Partial).await;
+        let record = sealed_as(&rig, busbar_kernel_audit::FinishClass::Error).await;
         assert_eq!(
             reported(&record),
             0,
@@ -10045,7 +10063,7 @@ mod pools_door_money {
             )
             .await;
         assert_eq!(rig.tokens_after().await, 0, "no reported usage, no charge");
-        let record = sealed_as(&rig, busbar_kernel_audit::FinishClass::Partial).await;
+        let record = sealed_as(&rig, busbar_kernel_audit::FinishClass::Error).await;
         assert_eq!(
             reported(&record),
             0,
@@ -10069,7 +10087,7 @@ mod pools_door_money {
             )
             .await;
         assert_eq!(rig.tokens_after().await, 1590, "the far end's own report");
-        let _ = sealed_as(&rig, busbar_kernel_audit::FinishClass::Partial).await;
+        let _ = sealed_as(&rig, busbar_kernel_audit::FinishClass::Error).await;
     }
 
     fn chat_160() -> serde_json::Value {
@@ -10483,6 +10501,7 @@ mod pools_door_money {
             .iter()
             .filter(|row| row.key_id == streamed.key_id)
             .map(|row| {
+                assert_eq!(row.scale, busbar_contract::count::COUNT_SCALE);
                 format!(
                     "{} in={} out={} cr={} cw={} req={} billable={}",
                     row.model,
@@ -10497,7 +10516,11 @@ mod pools_door_money {
             .collect();
         assert_eq!(
             mine,
-            vec!["m0 in=11 out=7 cr=0 cw=0 req=1 billable=1".to_string()]
+            vec![format!(
+                "m0 in={} out={} cr=0 cw=0 req=1 billable=1",
+                11 * busbar_contract::count::COUNT_SCALE,
+                7 * busbar_contract::count::COUNT_SCALE,
+            )]
         );
         drop(streamed);
 

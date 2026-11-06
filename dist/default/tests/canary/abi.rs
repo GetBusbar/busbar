@@ -395,7 +395,7 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
             .expect("the real OIDC verification answers")
     });
     assert!(
-        matches!(answer.verified, Verified::Identity(ref identity) if identity.subject == "oidc:canary"),
+        matches!(answer.verified, Verified::Identity(ref identity) if identity.subject == common::credentials::principal_id("canary")),
         "the observed dropped-in door verifies a signed token over the real TLS connection: {:?}; host service errors: {:?}; host trace: {}",
         answer.verified,
         recorder::failures(),
