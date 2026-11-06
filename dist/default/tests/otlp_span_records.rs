@@ -186,6 +186,12 @@ fn real_producer_span_records_survive_both_otlp_doors() {
             .filter(|span| span.name == "forward")
             .collect::<Vec<_>>()
     };
+    let attempts = |path| {
+        common::otlp::spans(&common::otlp::requests(&seen, Some(path)))
+            .into_iter()
+            .filter(|span| span.name == "request_attempts")
+            .collect::<Vec<_>>()
+    };
     let parents = |path| {
         common::otlp::spans(&common::otlp::requests(&seen, Some(path)))
             .into_iter()
@@ -232,6 +238,8 @@ fn real_producer_span_records_survive_both_otlp_doors() {
         let deadline = Instant::now() + Duration::from_secs(30);
         while forwards(LINKED_PATH).len() < served
             || forwards(DROPPED_PATH).len() < served
+            || attempts(LINKED_PATH).len() < served
+            || attempts(DROPPED_PATH).len() < served
             || (has_parent && (parents(LINKED_PATH).len() < 3 || parents(DROPPED_PATH).len() < 3))
         {
             assert!(
@@ -255,7 +263,17 @@ fn real_producer_span_records_survive_both_otlp_doors() {
         let dropped = forwards(DROPPED_PATH);
         let linked_parents = parents(LINKED_PATH);
         let dropped_parents = parents(DROPPED_PATH);
+        let linked_attempts = attempts(LINKED_PATH);
+        let dropped_attempts = attempts(DROPPED_PATH);
         for span in &linked {
+            assert_eq!(
+                attribute(&span.attributes, "op"),
+                Some(
+                    &opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                        "chat".into()
+                    )
+                )
+            );
             if has_parent {
                 assert_full_record(span);
                 let parent = linked_parents
@@ -287,8 +305,41 @@ fn real_producer_span_records_survive_both_otlp_doors() {
                     span.parent_span_id.is_empty(),
                     "bare OpenAI ingress opens no arrival parent: {span:?}"
                 );
-                assert_record_fields_and_events(span);
+                assert_record_fields(span);
             }
+            let children: Vec<_> = linked_attempts
+                .iter()
+                .filter(|child| {
+                    child.parent_span_id == span.span_id && child.trace_id == span.trace_id
+                })
+                .collect();
+            assert_eq!(
+                children.len(),
+                1,
+                "each forward owns exactly one request-attempts record"
+            );
+            let child = children[0];
+            assert_record_fields(child);
+            assert!(child.start_time_unix_nano >= span.start_time_unix_nano);
+            assert!(child.end_time_unix_nano <= span.end_time_unix_nano);
+            assert_eq!(
+                attribute(&child.attributes, "request_id"),
+                attribute(&span.attributes, "request_id")
+            );
+            assert_warning_events(child);
+            let child_peers: Vec<_> = dropped_attempts
+                .iter()
+                .filter(|peer| peer.span_id == child.span_id)
+                .collect();
+            assert_eq!(
+                child_peers.len(),
+                1,
+                "both doors receive the same child identity once"
+            );
+            assert_eq!(
+                child, child_peers[0],
+                "both doors preserve the complete child record and warning events"
+            );
             let peer = dropped
                 .iter()
                 .find(|peer| peer.span_id == span.span_id)
@@ -344,10 +395,10 @@ fn attribute<'a>(
 
 fn assert_full_record(span: &opentelemetry_proto::tonic::trace::v1::Span) {
     assert_eq!(span.parent_span_id.len(), 8);
-    assert_record_fields_and_events(span);
+    assert_record_fields(span);
 }
 
-fn assert_record_fields_and_events(span: &opentelemetry_proto::tonic::trace::v1::Span) {
+fn assert_record_fields(span: &opentelemetry_proto::tonic::trace::v1::Span) {
     use opentelemetry_proto::tonic::common::v1::any_value::Value;
     assert_eq!((span.trace_id.len(), span.span_id.len()), (16, 8));
     assert!(span.trace_id.iter().any(|byte| *byte != 0));
@@ -367,12 +418,12 @@ fn assert_record_fields_and_events(span: &opentelemetry_proto::tonic::trace::v1:
             "missing typed full-span attribute {key}: {span:?}"
         );
     }
-    assert_eq!(
-        attribute(&span.attributes, "op"),
-        Some(&Value::StringValue("chat".into()))
-    );
     assert_eq!(span.status.as_ref().expect("full span status").code, 0);
     assert_eq!(span.status.as_ref().unwrap().message, "");
+}
+
+fn assert_warning_events(span: &opentelemetry_proto::tonic::trace::v1::Span) {
+    use opentelemetry_proto::tonic::common::v1::any_value::Value;
     assert!(
         !span.events.is_empty(),
         "cross-dialect warning events were lost: {span:?}"
