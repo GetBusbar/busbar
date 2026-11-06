@@ -299,27 +299,33 @@ pub fn read_response(value: &Value, sent_id: &Value) -> Result<Reply, NotAnAnswe
 fn same_id(got: &Value, sent: &Value) -> bool {
     match (got, sent) {
         (Value::String(a), Value::String(b)) => a == b,
-        (Value::Number(a), Value::Number(b)) => {
-            a == b
-                || match (a.is_f64(), b.is_f64()) {
-                    (false, true) => integer_matches_float(a, b),
-                    (true, false) => integer_matches_float(b, a),
-                    _ => false,
-                }
-        }
+        (Value::Number(a), Value::Number(b)) => a == b || numeric_id(a) == numeric_id(b),
         _ => false,
     }
 }
 
-fn integer_matches_float(integer: &serde_json::Number, float: &serde_json::Number) -> bool {
-    let integer = integer
-        .as_i64()
-        .map(i128::from)
-        .or_else(|| integer.as_u64().map(i128::from));
-    match (integer, float.as_f64()) {
-        (Some(integer), Some(float)) => float.fract() == 0.0 && float as i128 == integer,
-        _ => false,
+/// Compare decimal values exactly, without rounding or expanding an exponent into zeros.
+fn numeric_id(number: &serde_json::Number) -> (bool, String, num_bigint::BigInt) {
+    use num_bigint::BigInt;
+    let text = number.to_string();
+    let negative = text.starts_with('-');
+    let unsigned = text.strip_prefix('-').unwrap_or(&text);
+    let (mantissa, exponent) = unsigned
+        .split_once(['e', 'E'])
+        .map_or((unsigned, "0"), |parts| parts);
+    let fraction_len = mantissa.split_once('.').map_or(0, |(_, f)| f.len());
+    let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
+    let significant = digits.trim_start_matches('0');
+    if significant.is_empty() {
+        return (false, String::new(), BigInt::from(0));
     }
+    let normalized = significant.trim_end_matches('0');
+    let shift = exponent
+        .parse::<BigInt>()
+        .expect("a JSON number's exponent")
+        - BigInt::from(fraction_len)
+        + BigInt::from(significant.len() - normalized.len());
+    (negative, normalized.to_owned(), shift)
 }
 
 /// The JSON-RPC error envelope, as a value.

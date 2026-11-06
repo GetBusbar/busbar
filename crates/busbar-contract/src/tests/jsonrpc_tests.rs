@@ -237,6 +237,12 @@ fn distinct_large_numeric_ids_do_not_correlate_in_either_direction() {
         ("9223372036854775807", "9223372036854775808.0"),
         ("18446744073709551615", "18446744073709551616.0"),
         ("1", "1.5"),
+        ("1.00000000000000000001", "1.00000000000000000002"),
+        ("1e400", "1e401"),
+        (
+            "1e999999999999999999999999999999999999999",
+            "2e999999999999999999999999999999999999999",
+        ),
     ] {
         for (request, response) in [(left, right), (right, left)] {
             let request_id: Value = serde_json::from_str(request).unwrap();
@@ -272,6 +278,14 @@ fn exact_numeric_ids_correlate_without_restricting_the_integer_range() {
         ("-9223372036854775808", "-9223372036854775808.0"),
         ("9223372036854775808", "9223372036854775808.0"),
         ("1.5", "1.50"),
+        ("1.5e2", "150.00"),
+        ("100e-2", "1"),
+        ("-0e400", "0.000"),
+        ("1e400", "10e399"),
+        (
+            "1e999999999999999999999999999999999999999",
+            "10e999999999999999999999999999999999999998",
+        ),
     ] {
         for (request, response) in [(left, right), (right, left)] {
             let request_id: Value = serde_json::from_str(request).unwrap();

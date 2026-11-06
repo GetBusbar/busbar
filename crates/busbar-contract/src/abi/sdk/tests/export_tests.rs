@@ -342,10 +342,10 @@ fn settings_are_refused_in_serdes_words_empty_reading_as_an_object() {
         refused(br#"{"path":"/x","rotate":1}"#),
         "settings: unknown field `rotate`, expected `path`"
     );
-    assert_eq!(
-        refused(br#"{"path":1}"#),
-        "settings: invalid type: integer `1`, expected a string"
-    );
+    let wrong_type = serde_json::from_value::<ProbeSettings>(serde_json::json!({"path": 1}))
+        .err()
+        .expect("a number is not a path");
+    assert_eq!(refused(br#"{"path":1}"#), format!("settings: {wrong_type}"));
     let eof = serde_json::from_slice::<serde_json::Value>(b"{").expect_err("not JSON");
     assert_eq!(refused(b"{"), format!("settings: {eof}"));
     assert!(settings_as::<ProbeSettings>(br#"{"path":"/x"}"#).is_ok());
