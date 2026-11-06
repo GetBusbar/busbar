@@ -721,8 +721,13 @@ fn concurrent_flush_driver_cannot_lend_the_same_chunk_twice() {
     }));
     gov.flush_budgets();
     assert_eq!(input(store.as_ref(), &key.id, 0), LARGE_INPUT);
-    assert_eq!(store.batches.lock().unwrap().len(), 2);
+    assert_eq!(dated_input(store.as_ref(), &key.id, 0), LARGE_INPUT);
+    // Usage counts now fit the full signed Count range in one wire operation.
+    // The reentrant driver above must not submit that same operation again.
+    assert_eq!(store.batches.lock().unwrap().len(), 1);
     assert!(gov.budget_flushes.lock().unwrap().is_empty());
+    assert_eq!(gov.flush_budgets(), 0);
+    assert_eq!(store.batches.lock().unwrap().len(), 1);
 }
 
 fn final_flush_joins_active_ordinary_runner(reply: Reply, legacy: bool) {
