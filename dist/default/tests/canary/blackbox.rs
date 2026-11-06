@@ -318,13 +318,21 @@ pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
         !refused.status.success(),
         "endpoint userinfo must be refused"
     );
+    let refusal = String::from_utf8_lossy(&refused.stderr);
+    let mut lines = refusal.trim().lines();
     assert_eq!(
-        String::from_utf8_lossy(&refused.stderr).trim(),
-        concat!(
-            "[error] BUSBAR-3015: config validation failed:\n",
-            "  - provider 'mockuser' base_url claim 'http': userinfo is not permitted in an endpoint\n",
-            "  - provider 'mockdead' base_url claim 'http': userinfo is not permitted in an endpoint"
-        ),
+        lines.next(),
+        Some("[error] BUSBAR-3015: config validation failed:")
+    );
+    // Provider validation walks a HashMap; require the exact diagnostics without its iteration order.
+    let mut details: Vec<_> = lines.collect();
+    details.sort_unstable();
+    assert_eq!(
+        details,
+        [
+            "  - provider 'mockdead' base_url claim 'http': userinfo is not permitted in an endpoint",
+            "  - provider 'mockuser' base_url claim 'http': userinfo is not permitted in an endpoint",
+        ],
         "the refusal names both providers and never echoes their credentials"
     );
     sinks.push(Sink::text(
