@@ -5267,9 +5267,52 @@ impl DataRoutes {
         (door, arrival, body)
     }
 
+    // Only the host line carrier can supply this typed session identity. Client fields
+    // still pass through arrived() and its reserved-field filter before this is added.
+    fn arrived_on_line(
+        &self,
+        plane: usize,
+        claim: u32,
+        req: DoorRequest,
+        session: std::num::NonZeroU64,
+    ) -> (SessionDoor, Arrival, Bytes) {
+        let (door, mut arrival, body) = self.arrived(plane, claim, req);
+        arrival.fields.push((
+            busbar_contract::abi::host::service::CARRIER_SESSION_FIELD
+                .as_bytes()
+                .to_vec(),
+            session.get().to_string().into_bytes(),
+        ));
+        (door, arrival, body)
+    }
+
     async fn answer(self: Arc<Self>, plane: usize, claim: u32, req: DoorRequest) -> Response {
+        self.answer_with_session(plane, claim, req, None).await
+    }
+
+    async fn answer_on_line(
+        self: Arc<Self>,
+        plane: usize,
+        claim: u32,
+        req: DoorRequest,
+        session: std::num::NonZeroU64,
+    ) -> Response {
+        self.answer_with_session(plane, claim, req, Some(session))
+            .await
+    }
+
+    async fn answer_with_session(
+        self: Arc<Self>,
+        plane: usize,
+        claim: u32,
+        req: DoorRequest,
+        session: Option<std::num::NonZeroU64>,
+    ) -> Response {
         let scheme = req.scheme;
-        let (door, arrival, body) = self.arrived(plane, claim, req);
+        let (door, arrival, body) = match session {
+            Some(session) => self.arrived_on_line(plane, claim, req, session),
+            None => self.arrived(plane, claim, req),
+        };
 
         let framed = self.served.planes[plane]
             .snapshot

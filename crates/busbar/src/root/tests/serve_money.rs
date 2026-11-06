@@ -2146,3 +2146,67 @@ mod governed_upgrade_tests;
 
 #[path = "serve_nested_neutral.rs"]
 mod nested_neutral_tests;
+
+#[tokio::test]
+async fn only_the_host_line_carrier_adds_a_session_after_external_fields_are_filtered() {
+    use axum::http::HeaderValue;
+    use busbar_contract::abi::host::service::CARRIER_SESSION_FIELD;
+    let _one = PUBLISHING.lock().await;
+    let mut g = governed("line-session-custody", false);
+    let routes = session_custody_routes(&mut g, false);
+    let kernel = busbar_kernel::host_services::KernelServices::new();
+    let session = std::num::NonZeroU64::new(kernel.open_carrier_session(
+        "line-session-custody",
+        "fixture-principal",
+        Arc::new(|_: &[u8]| true),
+    ))
+    .expect("the real host session is nonzero");
+    let request = || {
+        let mut req = session_custody_request(&g, "/open");
+        req.headers.append(
+            CARRIER_SESSION_FIELD,
+            HeaderValue::from_static("spoofed-first"),
+        );
+        req.headers.append(
+            CARRIER_SESSION_FIELD,
+            HeaderValue::from_static("spoofed-second"),
+        );
+        req.headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer private-fixture"),
+        );
+        req.headers
+            .insert("x-permitted", HeaderValue::from_static("kept"));
+        req
+    };
+    let (_, external, _) = routes.arrived(0, 1, request());
+    assert!(
+        external.fields.iter().all(|(name, _)| !name
+            .eq_ignore_ascii_case(CARRIER_SESSION_FIELD.as_bytes())
+            && !name.eq_ignore_ascii_case(b"authorization")),
+        "external reserved fields stay stripped"
+    );
+    let (_, trusted, _) = routes.arrived_on_line(0, 1, request(), session);
+    let sessions: Vec<_> = trusted
+        .fields
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case(CARRIER_SESSION_FIELD.as_bytes()))
+        .map(|(_, value)| value.as_slice())
+        .collect();
+    let actual = session.get().to_string();
+    assert_eq!(
+        sessions,
+        [actual.as_bytes()],
+        "only the actual host-owned session survives"
+    );
+    assert!(trusted
+        .fields
+        .iter()
+        .any(|(name, value)| name == b"x-permitted" && value == b"kept"));
+    assert!(trusted
+        .fields
+        .iter()
+        .all(|(name, _)| !name.eq_ignore_ascii_case(b"authorization")));
+    assert_eq!(trusted.body, external.body);
+    kernel.close_carrier_session(session.get());
+}

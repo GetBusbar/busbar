@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::host::service::CARRIER_SESSION_FIELD;
 use busbar_kernel::plane_driver::{CallerEnd, HeadFields, SessionCaller};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
@@ -296,15 +295,14 @@ where
             |k| k.id.clone(),
         );
         let sink_out = caller.out.clone();
-        let number = kernel.open_carrier_session(
+        let session = std::num::NonZeroU64::new(kernel.open_carrier_session(
             &instance,
             &principal,
             Arc::new(move |bytes: &[u8]| sink_out.send(terminated(bytes)).is_ok()),
-        );
-        let session_field = axum::http::HeaderValue::from(number);
+        ))
+        .expect("kernel carrier sessions are minted above zero");
         let answer = move |line: Vec<u8>| {
-            let mut headers = axum::http::HeaderMap::new();
-            headers.insert(CARRIER_SESSION_FIELD, session_field.clone());
+            let headers = axum::http::HeaderMap::new();
             let req = DoorRequest {
                 method: axum::http::Method::POST,
                 uri: axum::http::Uri::try_from(target.as_str())
@@ -327,14 +325,14 @@ where
             let routes = Arc::clone(&routes);
             let caller = Arc::clone(&caller);
             async move {
-                let response = routes.answer(plane, claim, req).await;
+                let response = routes.answer_on_line(plane, claim, req, session).await;
                 let body = collect(response).await;
                 if !body.is_empty() {
                     let _ = caller.write(&body).await;
                 }
             }
         };
-        (answer, move || kernel.close_carrier_session(number))
+        (answer, move || kernel.close_carrier_session(session.get()))
     })
     .await
 }
