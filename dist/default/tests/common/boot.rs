@@ -8,8 +8,20 @@ use std::sync::OnceLock;
 pub fn exe() -> &'static str {
     static WARM: OnceLock<String> = OnceLock::new();
     WARM.get_or_init(|| {
-        let path = option_env!("CARGO_BIN_EXE_busbar")
-            .map(str::to_owned)
+        let path = std::env::var_os("BUSBAR_TEST_PRODUCT_BIN")
+            .map(|value| {
+                let binary = std::path::PathBuf::from(value);
+                assert!(
+                    binary.is_absolute() && binary.is_file(),
+                    "BUSBAR_TEST_PRODUCT_BIN must name an existing absolute product binary: {}",
+                    binary.display()
+                );
+                binary
+                    .into_os_string()
+                    .into_string()
+                    .expect("BUSBAR_TEST_PRODUCT_BIN is UTF-8")
+            })
+            .or_else(|| option_env!("CARGO_BIN_EXE_busbar").map(str::to_owned))
             .unwrap_or_else(|| {
                 let test = std::env::current_exe().expect("current test executable");
                 let profile = test
