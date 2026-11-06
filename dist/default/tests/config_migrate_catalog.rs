@@ -98,6 +98,11 @@ models: {}
 auth:
   chain: [keys]
   signing_key: { env: EXISTING_SIGNING_KEY }
+  admin_auth: [admin-tokens]
+identity-providers:
+  admin-tokens:
+    module: admin-tokens
+    token: { env: EXISTING_ADMIN_TOKEN }
 advanced:
   worker_threads: 7
   upstream_http1_only: true
@@ -139,6 +144,7 @@ advanced:
         .arg(dir.join("config.migrated.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("does-not-exist.yaml"))
         .env("EXISTING_SIGNING_KEY", "77".repeat(32))
+        .env("EXISTING_ADMIN_TOKEN", "existing-admin-token")
         .output()
         .unwrap();
     assert!(

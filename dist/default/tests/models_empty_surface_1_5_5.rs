@@ -6,8 +6,6 @@
 
 mod common;
 
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
@@ -91,31 +89,31 @@ fn exchange(
     headers: &str,
     body: &str,
 ) -> Option<(u16, String)> {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
+    // Use a real HTTP client so either content-length or chunked framing is decoded
+    // before comparing the same status and JSON body recorded by the oracle.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
         .ok()?;
-    let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{headers}Content-Length: {}\r\n\
-         Connection: close\r\n\r\n{body}",
-        body.len()
-    );
-    stream.write_all(request.as_bytes()).ok()?;
-    let mut raw = Vec::new();
-    stream.read_to_end(&mut raw).ok()?;
-    let text = String::from_utf8_lossy(&raw).into_owned();
-    let status = text
-        .lines()
-        .next()?
-        .split_whitespace()
-        .nth(1)?
-        .parse()
-        .ok()?;
-    let body = text
-        .split_once("\r\n\r\n")
-        .map_or("", |(_, b)| b)
-        .to_string();
-    Some((status, body))
+    runtime.block_on(async {
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .ok()?;
+        let mut request = client.request(
+            reqwest::Method::from_bytes(method.as_bytes()).ok()?,
+            format!("http://127.0.0.1:{port}{path}"),
+        );
+        for header in headers.lines().filter(|line| !line.is_empty()) {
+            let (name, value) = header.split_once(':')?;
+            request = request.header(name.trim(), value.trim());
+        }
+        let response = request.body(body.to_owned()).send().await.ok()?;
+        let status = response.status().as_u16();
+        let body = response.text().await.ok()?;
+        Some((status, body))
+    })
 }
 
 fn log_of(dir: &Path) -> String {

@@ -142,7 +142,8 @@ fn default_config_makes_no_outbound_connection() {
     let log_err = log.try_clone().unwrap();
     let mut child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", repo_root().join("providers.yaml"))
+        .arg("--providers")
+        .arg(repo_root().join("providers.yaml"))
         .env("BUSBAR_ADMIN_TOKEN", "default-config-no-outbound-admin")
         .env("ANTHROPIC_KEY", "sk-not-a-real-key")
         .current_dir(&dir)

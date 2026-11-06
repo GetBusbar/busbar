@@ -188,7 +188,10 @@ fn a_missing_config_or_provider_flag_value_is_a_usage_error_before_boot() {
     ] {
         let (code, _, error) = run_busbar(&dir, &args);
         assert_eq!(code, 2, "{args:?}: {error}");
-        assert!(error.contains("requires a value"), "{args:?}: {error}");
+        assert!(
+            error.contains("require explicit values"),
+            "{args:?}: {error}"
+        );
     }
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -249,12 +252,12 @@ fn commands_after_boot_options_exit_without_starting_the_gateway() {
         .args(["--config", "--version"])
         .output()
         .unwrap();
-    assert_eq!(missing.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&missing.stderr).contains("--version"));
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("require explicit values"));
     assert!(!String::from_utf8_lossy(&missing.stdout).starts_with("busbar "));
     let (code, output, error) = run_busbar(&dir, &["--config", "--version", "--version"]);
-    assert_eq!(code, 0, "{error}");
-    assert!(output.starts_with("busbar "));
+    assert_eq!(code, 2, "{error}");
+    assert!(!output.starts_with("busbar "));
 
     let legacy = dir.join("legacy.yaml");
     std::fs::write(&legacy, "listen: '127.0.0.1:0'\nstore: {module: memory}\n").unwrap();
@@ -756,7 +759,7 @@ fn migrate_config_prints_changes_and_warnings_sections_when_non_empty() {
     let legacy = dir.join("legacy.yaml");
     std::fs::write(
         &legacy,
-        "governance:\n  db_path: \"old.db\"\nauth:\n  chain:\n    - oidc\n  group_map:\n    full:\n      allowed_pools: []\n",
+        "auth:\n  chain:\n    - oidc\n  group_map:\n    full:\n      allowed_pools: []\n",
     )
     .unwrap();
 
@@ -767,7 +770,7 @@ fn migrate_config_prints_changes_and_warnings_sections_when_non_empty() {
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert_eq!(out.status.code(), Some(0), "stderr={stderr}");
     assert!(
-        stderr.contains("CHANGES (") && stderr.contains("governance.db_path"),
+        stderr.contains("CHANGES (") && stderr.contains("auth.group_map"),
         "a non-empty changes list must print the CHANGES section: {stderr}"
     );
     assert!(
@@ -1013,7 +1016,7 @@ fn run_busbar_with_overlay(dir: &Path, overlay: &Path, args: &[&str]) -> (i32, S
 
 #[cfg(linked_section_pools)]
 #[test]
-fn validate_keeps_legacy_overlay_files_outside_the_store_only_root() {
+fn validate_refuses_retired_overlay_selectors_without_file_effects() {
     let dir = fixture_dir("rootovl");
     write_configs(&dir, "");
     let overlay = dir.join("overlay.json");
@@ -1024,12 +1027,12 @@ fn validate_keeps_legacy_overlay_files_outside_the_store_only_root() {
     write_legacy_overlay_selector(&dir, &overlay);
     for args in [vec!["--validate"], vec!["--validate", "--safe-mode"]] {
         let before = overlay_validation_tree(&dir);
-        let (code, stdout, stderr) = run_busbar_with_overlay(&dir, &overlay, &args);
+        let (code, _, stderr) = run_busbar_with_overlay(&dir, &overlay, &args);
         assert_eq!(
-            code, 0,
+            code, 1,
             "a retired file selector cannot replace the configured Store: {stderr}"
         );
-        assert!(stdout.contains("ok: config valid"), "{stdout}");
+        assert!(stderr.contains("unknown field `overlay`"), "{stderr}");
         assert_eq!(
             overlay_validation_tree(&dir),
             before,
@@ -1040,30 +1043,25 @@ fn validate_keeps_legacy_overlay_files_outside_the_store_only_root() {
         &dir,
         "limits:\n  reasoning_effort_budgets: {minimal: 16384, low: 8192, medium: 4096, high: 1024}\n",
     );
-    write_legacy_overlay_selector(&dir, &overlay);
     for args in [vec!["--validate"], vec!["--validate", "--safe-mode"]] {
         let before = overlay_validation_tree(&dir);
-        let (code, _, stderr) = run_busbar_with_overlay(&dir, &overlay, &args);
+        let (code, _, stderr) = run_busbar(&dir, &args);
         assert_eq!(
             code, 1,
-            "an invalid actual root config must still fail: {stderr}"
+            "an invalid current root config still fails: {stderr}"
         );
         assert!(
             stderr.contains("reasoning_effort_budgets") && stderr.contains("ascending"),
-            "the actual root was validated even in safe mode: {stderr}"
+            "{stderr}"
         );
-        assert_eq!(
-            overlay_validation_tree(&dir),
-            before,
-            "a refused native validation has no file effects"
-        );
+        assert_eq!(overlay_validation_tree(&dir), before);
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[cfg(linked_section_pools)]
 #[test]
-fn validate_ok_on_valid_root_overlay() {
+fn validate_refuses_even_a_well_formed_legacy_overlay_selector() {
     let dir = fixture_dir("rootovlok");
     write_configs(&dir, "");
     let overlay = dir.join("overlay.json");
@@ -1072,9 +1070,15 @@ fn validate_ok_on_valid_root_overlay() {
         r#"{"version":1,"root":{"per_request_fee":9,"limits":{"max_inbound_concurrent":256}}}"#,
     )
     .unwrap();
-    let (code, stdout, stderr) = run_busbar_with_overlay(&dir, &overlay, &["--validate"]);
-    assert_eq!(code, 0, "a valid root overlay validates clean: {stderr}");
-    assert!(stdout.contains("ok: config valid"), "got {stdout}");
+    write_legacy_overlay_selector(&dir, &overlay);
+    let before = overlay_validation_tree(&dir);
+    let (code, _, stderr) = run_busbar_with_overlay(&dir, &overlay, &["--validate"]);
+    assert_eq!(
+        code, 1,
+        "the retired YAML selector requires migration: {stderr}"
+    );
+    assert!(stderr.contains("unknown field `overlay`"), "{stderr}");
+    assert_eq!(overlay_validation_tree(&dir), before);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1375,52 +1379,24 @@ fn providers_flag_overrides_providers_file_and_default() {
 
 #[cfg(linked_section_pools)]
 #[test]
-fn busbar_providers_env_is_deprecated_but_honored() {
+fn retired_busbar_providers_env_does_not_override_the_config_catalog() {
     let dir = fixture_dir("provenvdep");
     write_configs(&dir, "");
     let config = dir.join("config.yaml");
     let bogus = dir.join("bogus-providers.yaml");
-
     let (code, stdout, stderr) = run_cli(
         Some(&config),
         &["--validate"],
         &[("BUSBAR_PROVIDERS", bogus.to_str().unwrap())],
     );
-    assert_eq!(
-        code, 1,
-        "BUSBAR_PROVIDERS is still honored; the bogus env value must fail the load: \
-         stdout={stdout} stderr={stderr}"
-    );
-    let warn =
-        "[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead \
-                (it is honored for now).";
+    assert_eq!(code, 0, "the retired selector is ignored: {stderr}");
+    assert!(stdout.contains("ok: config valid"), "{stdout}");
     assert!(
-        stderr.contains(warn),
-        "the deprecation warning must be printed verbatim: {stderr}"
+        stdout.contains(dir.join("providers.yaml").to_str().unwrap()),
+        "{stdout}"
     );
-    let err = format!("cannot read providers file '{}': ", bogus.to_str().unwrap());
-    assert!(
-        stderr.contains(&err)
-            && stderr.contains("(set `providers_file:` in config.yaml, or BUSBAR_PROVIDERS)"),
-        "the load error must name the env-selected path and the remediation: {stderr}"
-    );
-    assert!(
-        stderr.find(warn).unwrap() < stderr.find(&err).unwrap(),
-        "the deprecation warning must precede the load error: {stderr}"
-    );
-
-    let real = dir.join("providers.yaml");
-    let (code, stdout, stderr) = run_cli(
-        Some(&config),
-        &["--validate"],
-        &[("BUSBAR_PROVIDERS", real.to_str().unwrap())],
-    );
-    assert_eq!(code, 0, "a real BUSBAR_PROVIDERS path validates: {stderr}");
-    assert!(stdout.contains("ok: config valid"), "got {stdout}");
-    assert!(
-        stderr.contains(warn),
-        "the deprecation warning fires whenever the var is set: {stderr}"
-    );
+    assert!(!stdout.contains(bogus.to_str().unwrap()), "{stdout}");
+    assert!(!stderr.contains("BUSBAR_PROVIDERS"), "{stderr}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1768,7 +1744,7 @@ fn validate_orders_a_webhook_sinks_refusals_among_the_limits_as_before() {
         refusal,
         [
             "  - limits.upstream_request_timeout_secs must be >= 1 (0 would time out every upstream call instantly)",
-            "  - the largest settings.max_inflight_deliveries among `module: request-log-webhook` export instances must be >= 1",
+            "  - export.hook: settings.max_inflight_deliveries must be >= 1",
             "  - limits.max_honored_retry_after_secs must be >= 1 (a 0 ceiling would clamp every honored Retry-After to 0)",
             "  - export.hook: the `module: request-log-webhook` export instance targeting 'https://siem.example/***' (#0) sets settings.delivery_timeout_secs: 0 — it must be >= 1",
         ],
@@ -1975,7 +1951,7 @@ fn validate_refuses_a_malformed_jwt_bearer_service_account_as_boot_does() {
 
 #[cfg(all(linked_section_pools, linked_every_auth))]
 #[test]
-fn validate_names_an_unreadable_jwt_bearer_key_file_in_1_5_5s_words() {
+fn validate_refuses_an_unmigrated_jwt_bearer_filename_credential() {
     let (code, out) = validate_lane(
         "unreadable-key",
         "{ file: \"{dir}/pair.txt\" }",
@@ -1985,8 +1961,9 @@ fn validate_names_an_unreadable_jwt_bearer_key_file_in_1_5_5s_words() {
     assert_eq!(code, 1, "{out}");
     assert!(
         out.contains("provider 'mock' jwt-bearer credential (from file:")
-            && out.contains(") is invalid: could not read service-account key file"),
-        "the unreadable key file is refused in 1.5.5's words: {out}"
+            && out.contains(") is invalid: service-account JSON is invalid:")
+            && out.contains("api_key: {file: <path>}"),
+        "the historical filename credential requires an explicit JSON file reference: {out}"
     );
 }
 

@@ -62,7 +62,23 @@ fn bounded_bytes(path: &Path) -> Result<Vec<u8>, String> {
 }
 
 fn old_document(raw: &str) -> Result<serde_yaml::Value, String> {
-    let expanded = zeroize::Zeroizing::new(config::interpolate_env(raw)?);
+    // Missing credentials elsewhere in the old document must not block overlay discovery.
+    // Its management selectors still require their actual values, never placeholders.
+    let document: serde_yaml::Value =
+        serde_yaml::from_str(raw).map_err(|_| "old configuration is not valid YAML")?;
+    if let Some(management) = document.get("config") {
+        let selector = zeroize::Zeroizing::new(
+            serde_yaml::to_string(management).map_err(|_| "cannot encode old overlay selector")?,
+        );
+        let _resolved_selector = zeroize::Zeroizing::new(config::interpolate_env(&selector)?);
+    }
+    // Expand the original text, preserving quoted versus unquoted scalar semantics.
+    // This document is used only for selection; the migrator receives the original text.
+    let expanded = zeroize::Zeroizing::new(config::interpolate_env_with(
+        raw,
+        config::EnvSubst::Lenient,
+        &mut Vec::new(),
+    )?);
     serde_yaml::from_str(&expanded).map_err(|_| "old configuration is not valid YAML".into())
 }
 
@@ -287,6 +303,26 @@ mod tests {
     }
 
     #[test]
+    fn overlay_discovery_does_not_resolve_unrelated_legacy_credentials() {
+        let raw = "auth: {client_tokens: ['${BUSBAR_TEST_ABSENT_LEGACY_TOKEN_20261106}']}\n";
+        old_document(raw).unwrap();
+        old_document(&format!("{raw}config: {{locked: false}}\n")).unwrap();
+        assert_eq!(
+            source_path(Path::new("/deployment/config.yaml"), raw, None).unwrap(),
+            PathBuf::from("/deployment/busbar-overlay.json")
+        );
+        assert!(
+            source_path(
+                Path::new("/deployment/config.yaml"),
+                "config: {overlay: {file: '${BUSBAR_TEST_ABSENT_OVERLAY_PATH_20261106}'}}",
+                None,
+            )
+            .is_err(),
+            "the selected overlay path must still resolve strictly"
+        );
+    }
+
+    #[test]
     fn expanded_locked_deployment_requires_no_overlay_capture() {
         const KEY: &str = "BUSBAR_TEST_MIGRATE_OVERLAY_LOCKED_20261105";
         std::env::set_var(KEY, "true");
@@ -294,7 +330,11 @@ mod tests {
             format!("config: {{ locked: ${{{KEY}}}, overlay: {{ file: /missing/overlay.json }} }}");
         let result = capture_store(&raw, Path::new("/missing/config.yaml"));
         let locked = old_document(&raw).unwrap()["config"]["locked"].as_bool();
+        let quoted = old_document(&format!("config: {{locked: '${{{KEY}}}'}}")).unwrap()["config"]
+            ["locked"]
+            .clone();
         std::env::remove_var(KEY);
+        assert_eq!(quoted.as_str(), Some("true"));
         assert_eq!(locked, Some(true));
         assert_eq!(result.unwrap(), (raw, false));
     }

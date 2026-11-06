@@ -54,6 +54,9 @@ fn migrate(path: &Path) -> Result<(String, String), String> {
     let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .arg("--migrate-config")
         .arg(path)
+        .arg("--providers")
+        .arg(providers_for(path))
+        .env_remove("BUSBAR_CONFIG_OVERLAY")
         .output()
         .map_err(|e| format!("could not run busbar: {e}"))?;
     if !out.status.success() {

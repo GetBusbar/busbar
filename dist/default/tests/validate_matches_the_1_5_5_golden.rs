@@ -71,7 +71,7 @@ fn validate(dir: &Path, case: &str) -> String {
 }
 
 #[test]
-fn validate_refuses_every_golden_case_as_1_5_5_did() {
+fn validate_preserves_golden_refusals_except_explicit_current_capabilities() {
     let dir = std::env::temp_dir().join(format!("busbar-golden-155-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let cases = cases();
@@ -94,6 +94,17 @@ fn validate_refuses_every_golden_case_as_1_5_5_did() {
             continue;
         }
         answered += 1;
+        // The current OTLP plugin is a per-instance push sink. The host owns the trace
+        // producer, so collectors no longer compete to install a process-global subscriber.
+        // Keep the historical recording unchanged and name this capability change explicitly.
+        if want.len() == 1
+            && want[0] == "  - export.again: a second `module: otlp` instance (already defined as 'traces'). OTLP installs the ONE process-global tracer subscriber, so a second instance could only be silently ignored — keep a single instance."
+        {
+            assert_eq!(named, ["otlp", "otlp"]);
+            assert!(out.contains("ok: config valid"), "{case}:\n{out}");
+            assert!(!out.contains("[error]"), "{case}:\n{out}");
+            continue;
+        }
         let got: Vec<String> = out
             .lines()
             .filter(|l| l.starts_with("  - "))
