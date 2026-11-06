@@ -196,11 +196,10 @@ Timeouts bound connect and overall duration (`upstream_request_timeout_secs`, de
 
 ### T8: Supply-chain tampering (boundary 7)
 A backdoored binary, image or plugin must be detectable. **Mitigation in this tree:** release artifacts are signed by the release pipeline, never by a GitHub workflow or a CI-held key (a source
-rule, `crates/busbar-contract/tests/source_rules/workflows.rs`, refuses any workflow that reads the plugin-signing
-secret, packs a plugin, publishes a GitHub release or signs release provenance);
-dropped-in plugins are signature-checked before they load (see the plugin threat below). Dependencies are checked by
-`cargo deny` on every change (`deny.toml`, `.ci/default.yaml`), and third-party GitHub Actions are
-pinned by commit (`docs/ci/actions-pins.md`).
+rule, `crates/busbar-contract/tests/source_rules/workflows.rs`, prevents GitHub Actions from returning);
+dropped-in plugins are signature-checked before they load (see the plugin threat below).
+Dependency checks use `deny.toml` through internal CI. GitHub is a public source mirror only.
+
 
 **Not built:** the 1.6.0 release publication step (`.ci/qa.yaml`) is not written yet, so this tree
 does not yet produce the signed, attested release binaries and images. Until it lands nothing is

@@ -1,9 +1,3 @@
----
-name: Feature request
-about: Suggest an idea for Busbar
-title: "[feature] "
-labels: enhancement
----
 
 **Problem / motivation**
 What are you trying to do that Busbar doesn't support today?

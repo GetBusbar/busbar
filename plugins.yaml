@@ -18,7 +18,7 @@
 #
 # Fleet fields (read by `busbar-release plugin sync` (GetBusbar/busbar-release), the ONE generator: it
 # renders every plugin repo's CI caller, toolchain, lint config, deny.toml, workspace dependency table,
-# LICENSE and README header from this file, its template/ and .github/fleet/deps.toml, and checks the repos
+# LICENSE and README header from this file, its template/ and fleet/deps.toml, and checks the repos
 # against the render). Defaults in brackets:
 #   manifest_name  the signed manifest's `name` (the plugin's identity at load) [repo]
 #   asset_prefix   the published tarball's filename prefix [repo]

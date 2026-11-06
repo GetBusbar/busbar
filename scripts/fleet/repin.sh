@@ -11,9 +11,6 @@
 #                        one busbar-contract every framer resolves to; Cargo refuses a patch naming
 #                        the source it patches, so busbar-release renders it at the pin that way);
 #   Cargo.lock           the resolved busbar git source, so `--locked` builds keep working;
-#   .github/workflows    each `uses: GetBusbar/busbar/.github/workflows/<file>@<sha>`: the thin
-#                        callers take the reusable CI/release logic at the same busbar commit the
-#                        contract comes from.
 #
 # One implementation for the whole fleet: plugin-repin.yml runs it in the plugin repo, and
 # `busbar-release plugin sync` produces the same four edits from plugins.yaml.
@@ -118,18 +115,12 @@ repin() {
     repin_manifest "$m" "$sha"
   done
   printf '%s %s\n' "$sha" "$ver" > .busbar-ref
-  local wf
-  for wf in .github/workflows/*.yml; do
-    [ -f "$wf" ] || continue
-    sed -i.repin-bak -E "s#(GetBusbar/busbar/\.github/workflows/[A-Za-z0-9_.-]+@)[0-9a-f]{40}#\\1${sha}#g" "$wf"
-    rm -f "$wf.repin-bak"
-  done
 
   # Re-resolve ONLY what moved (the busbar git source); every other locked package stays as locked.
   cargo metadata --format-version 1 >/dev/null
   cargo metadata --format-version 1 --locked >/dev/null
   bash "$(dirname "$0")/pin-check.sh" .
-  echo "busbar pin -> ${sha} ${ver} (${#manifests[@]} manifest(s), .busbar-ref, Cargo.lock, workflows)"
+  echo "busbar pin -> ${sha} ${ver} (${#manifests[@]} manifest(s), .busbar-ref, Cargo.lock)"
 }
 
 selftest() {

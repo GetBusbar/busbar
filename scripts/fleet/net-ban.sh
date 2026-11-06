@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# THE SOCKET/TLS BAN every first-party plugin repo runs (.github/fleet/deps.toml [net-ban];
+# THE SOCKET/TLS BAN every first-party plugin repo runs (fleet/deps.toml [net-ban];
 # BUSBAR-1.6.0.md line 3980, OWNER LAW 2026-09-27: "NO plugin opens its own socket, dials, binds, or
 # does TLS"). A connection is a declared need the host's connector judges (the one destination
 # guard) and dials; a plugin that dials for itself is a connection no guard ever judged. RED on:
@@ -15,7 +15,7 @@
 # `carriers` (repo names) are exempt from the socket half of the import list; it is empty today.
 #
 # Usage: net-ban.sh <plugin-root> <plugin-crate> <cdylib> [<deps.toml>]
-#          (deps.toml default: the .github/fleet/deps.toml of the busbar checkout this script sits in;
+#          (deps.toml default: the fleet/deps.toml of the busbar checkout this script sits in;
 #           NET_BAN_REPO names the repo for `carriers`, default the plugin root's directory name)
 #        net-ban.sh --selftest   every refusal fires on its planted defect (builds offline fixtures)
 set -euo pipefail
@@ -113,7 +113,7 @@ selftest() {
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
   export CARGO_TARGET_DIR="$tmp/target"
   # The policy under test: busbar's own.
-  local deps="$here/../../.github/fleet/deps.toml"
+  local deps="$here/../../fleet/deps.toml"
   mk() {  # mk <body of lib.rs> [extra Cargo.toml lines]: a fixture plugin, its cdylib built
     rm -rf "$tmp/p"; mkdir -p "$tmp/p/src"
     printf '[package]\nname = "fixture-plugin"\nversion = "0.1.0"\nedition = "2021"\n[workspace]\n[lib]\ncrate-type = ["cdylib"]\n[profile.release]\nlto = true\n%s\n' "${2:-}" > "$tmp/p/Cargo.toml"
@@ -157,5 +157,5 @@ tokio = { path = \"../tokio\", features = [\"rt\"] }"; expect "an allowed featur
 case "${1:-}" in
   --selftest) selftest ;;
   -*|"") echo "usage: net-ban.sh <plugin-root> <plugin-crate> <cdylib> [<deps.toml>] | --selftest" >&2; exit 2 ;;
-  *) check "$1" "${2:?plugin crate}" "${3:?cdylib}" "${4:-$here/../../.github/fleet/deps.toml}" ;;
+  *) check "$1" "${2:?plugin crate}" "${3:?cdylib}" "${4:-$here/../../fleet/deps.toml}" ;;
 esac

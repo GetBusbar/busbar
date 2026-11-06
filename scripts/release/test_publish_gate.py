@@ -151,8 +151,8 @@ class World:
         (r / "crates" / "busbar" / "Cargo.toml").write_text(f'[package]\nname = "busbar"\nversion = "{VERSION}"\n')
         (r / "CHANGELOG.md").write_text(f"# Changelog\n\n## [Unreleased]\n\n## [{VERSION}] - 2026-10-26\n\n## [1.5.5]\n")
         (r / "plugins.yaml").write_text(f"fleet:\n  x: 1\n\nplugins:\n  - repo: {PLUGIN}\n    kind: store\n\nother: 1\n")
-        (r / ".github").mkdir()
-        (r / ".github" / "release-targets.json").write_text(json.dumps({"targets": [
+        (r / "release").mkdir()
+        (r / "release" / "release-targets.json").write_text(json.dumps({"targets": [
             {"target": "x86_64-unknown-linux-gnu", "kind": "binary", "published": True, "archive": "tar.gz", "packaged_into": ""},
             {"target": "x86_64-pc-windows-msvc", "kind": "binary", "published": True, "archive": "zip", "packaged_into": ""},
             {"target": "x86_64-unknown-linux-musl", "kind": "binary", "published": False, "archive": "tar.gz", "packaged_into": "image-linux-amd64"},
@@ -757,8 +757,8 @@ class PluginIndex(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="publish-gate-index-"))
         self.root, self.cand = self.tmp / "repo", self.tmp / "cand"
         r, c = self.root, self.cand
-        (r / ".github").mkdir(parents=True)
-        (r / ".github" / "release-targets.json").write_text(json.dumps({"targets": [
+        (r / "release").mkdir(parents=True)
+        (r / "release" / "release-targets.json").write_text(json.dumps({"targets": [
             {"target": "x86_64-unknown-linux-gnu", "kind": "binary", "published": True, "archive": "tar.gz"}]}))
         (r / "plugins.yaml").write_text(
             "plugins:\n"

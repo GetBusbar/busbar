@@ -275,7 +275,7 @@ def commit_key_list(root: Path) -> str:
 
 
 def release_targets(root: Path) -> list:
-    return json.loads((root / ".github" / "release-targets.json").read_text())["targets"]
+    return json.loads((root / "release" / "release-targets.json").read_text())["targets"]
 
 
 def registry_entries(root: Path) -> list:
