@@ -3115,6 +3115,15 @@ async fn eof_errors_an_unfinished_body_without_invalidating_a_piece_end_body() {
 
 #[tokio::test]
 async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
+    real_oidc_pending_ingest(false).await;
+}
+
+#[tokio::test]
+async fn a_signed_keys_reader_pass_reaches_real_head_only_oidc_before_releasing_the_body() {
+    real_oidc_pending_ingest(true).await;
+}
+
+async fn real_oidc_pending_ingest(mixed_keys: bool) {
     use base64::Engine as _;
     use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY};
     use busbar_contract::abi::mechanism::call::Outcome;
@@ -3297,6 +3306,13 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
             }
         }
         let settings = crate::root::test_plugins::application_store_settings(&directory);
+        let chain = if mixed_keys {
+            vec!["held", "keys"]
+        } else {
+            vec!["held"]
+        };
+        let signing = directory.join("signing.key");
+        std::fs::write(&signing, [37u8; 32]).unwrap();
         let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {}, "models": {},
         "store": {"module": store_module.unwrap(), "settings": settings},
@@ -3305,7 +3321,7 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
             "jwks_url": jwks_url, "ca_cert_pem": cert_pem, "role_claim": "roles",
             "jwks_min_refetch_secs": 1,
         }}},
-        "auth": {"chain": ["held"], "admin_auth": [], "role_bindings": {"held": {"reader": {"allowed_pools": []}}}},
+        "auth": {"chain": chain, "signing_key": {"file": signing}, "admin_auth": [], "role_bindings": {"held": {"reader": {"allowed_pools": []}}}},
         "advanced": {"allow_destinations": ["127.0.0.1"]},
     })).unwrap();
         let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
@@ -3331,8 +3347,22 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
         armed.store(true, std::sync::atomic::Ordering::Release);
 
         tokio::time::sleep(Duration::from_millis(1100)).await;
-        let points = app.auth.position_points("held");
-        assert!(points.has(busbar_contract::abi::auth::AuthPoint::Head));
+        let head_points = app.auth.position_points("held");
+        assert_eq!(
+            head_points,
+            AuthPoints::HEAD,
+            "the actual OIDC provider is HEAD-only"
+        );
+        let points = if mixed_keys {
+            let keys = app.auth.position_points(busbar_kernel::config::KEYS_MODULE);
+            assert!(
+                keys.has(busbar_contract::abi::auth::AuthPoint::HeadBody),
+                "the actual keys reader requires the body"
+            );
+            AuthPoints(head_points.bits() | keys.bits())
+        } else {
+            head_points
+        };
         let guests = GuestList::seal(vec![
             Line {
                 route: Route {
@@ -3358,13 +3388,31 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
                 },
                 claimant: Claimant::Clean("listener-real-eof".into()),
                 dialect: 0,
-                auth: LineAuth::Chain(vec!["held".into()], points),
+                auth: LineAuth::Chain(chain.iter().map(|name| (*name).into()).collect(), points),
                 upgrade: None,
                 offered: AuthPoints(POINT_HEAD | POINT_HEAD_BODY),
             },
         ])
         .unwrap();
-        crate::root::inbound::stage(guests, Vec::new());
+        let signed = if mixed_keys {
+            vec![busbar_kernel::plane_routes::PlaneRefusalSpec {
+                route: busbar_kernel::plane_routes::DoorRouteId {
+                    path: "/capture".into(),
+                    method: busbar_contract::abi::mechanism::route::RouteMethod::Post,
+                },
+                refuse: Arc::new(|_, _| {
+                    axum::http::Response::builder()
+                        .status(401)
+                        .body(axum::body::Body::empty())
+                        .unwrap()
+                }),
+                ticket_prefix: None,
+                signed_ingress: Arc::from(["/capture".to_owned()]),
+            }]
+        } else {
+            Vec::new()
+        };
+        crate::root::inbound::stage(guests, signed);
         assert!(crate::root::inbound::publish(&app).is_some());
         let (answers, mut received) = tokio::sync::mpsc::unbounded_channel();
         let router = Router::new().route(
