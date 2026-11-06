@@ -9,8 +9,8 @@
       "core_pin": "409a8a585a33f85608c96606cb5ad108c3216e6f",
       "repo": "GetBusbar/busbar-plane-a2a",
       "script": "testing/conformance/a2a.sh",
-      "script_sha256": "de2d02b0c99b24ad188c5af0891f4526d666e75b8d8f74bb2af38cc68c48ebf1",
-      "source_commit": "914f8d6c084c38cefc246115eaf5eeb101e035b4",
+      "script_sha256": "a8bd0977de0eabcbe1c4a4222c9aa029374af39cdd59a90a28b0b58817b70c0a",
+      "source_commit": "722d0b3aeb1eccb3a4183bd7a31c90be55db21a1",
       "stage": "qa"
     },
     "evidence-audit-trail": {
@@ -19,7 +19,7 @@
       "core_pin": "checkout",
       "repo": "GetBusbar/busbar",
       "script": "testing/evidence-conformance/evidence.py",
-      "script_sha256": "62a3d989e35d16af918852b06df2b309c547731f29e582c01ea763978894a093",
+      "script_sha256": "45a3c4e88a42b5d1b6604077947392f4c2b6cbba13dbba438fa274653e2d9f2d",
       "source_commit": "checkout",
       "stage": "qa"
     },
@@ -29,7 +29,7 @@
       "core_pin": "checkout",
       "repo": "GetBusbar/busbar",
       "script": "testing/evidence-conformance/evidence.py",
-      "script_sha256": "62a3d989e35d16af918852b06df2b309c547731f29e582c01ea763978894a093",
+      "script_sha256": "45a3c4e88a42b5d1b6604077947392f4c2b6cbba13dbba438fa274653e2d9f2d",
       "source_commit": "checkout",
       "stage": "qa"
     },
@@ -39,7 +39,7 @@
       "core_pin": "checkout",
       "repo": "GetBusbar/busbar",
       "script": "testing/evidence-conformance/evidence.py",
-      "script_sha256": "62a3d989e35d16af918852b06df2b309c547731f29e582c01ea763978894a093",
+      "script_sha256": "45a3c4e88a42b5d1b6604077947392f4c2b6cbba13dbba438fa274653e2d9f2d",
       "source_commit": "checkout",
       "stage": "qa"
     },
@@ -70,7 +70,7 @@
       "repo": "GetBusbar/busbar-plane-decisions",
       "script": "testing/conformance/jev.sh",
       "script_sha256": "9eaab7b8111cf8a5954117c61e16d5916683517d2ceb37e76fd4c10359e85cb1",
-      "source_commit": "82cfc139784f9063ff72735262e48afa354629c8",
+      "source_commit": "fa49cb5a093faa1dff086a931c6d5cb48707c368",
       "stage": "qa"
     },
     "llm-anthropic": {
@@ -80,7 +80,7 @@
       "repo": "GetBusbar/busbar-plane-llm",
       "script": "testing/conformance/llm.sh",
       "script_sha256": "694eca68cdab3a41d4b1625982d7de9a6978f7e1cff59751369a2b5a332c63e3",
-      "source_commit": "2dbd026844fbe724079751230901e1e49f38afa9",
+      "source_commit": "baad7c780a382e736a272edd6e5296a91b18eafd",
       "stage": "qa"
     },
     "llm-bedrock": {
@@ -90,7 +90,7 @@
       "repo": "GetBusbar/busbar-plane-llm",
       "script": "testing/conformance/llm.sh",
       "script_sha256": "694eca68cdab3a41d4b1625982d7de9a6978f7e1cff59751369a2b5a332c63e3",
-      "source_commit": "2dbd026844fbe724079751230901e1e49f38afa9",
+      "source_commit": "baad7c780a382e736a272edd6e5296a91b18eafd",
       "stage": "qa"
     },
     "llm-cohere": {
@@ -100,7 +100,7 @@
       "repo": "GetBusbar/busbar-plane-llm",
       "script": "testing/conformance/llm.sh",
       "script_sha256": "694eca68cdab3a41d4b1625982d7de9a6978f7e1cff59751369a2b5a332c63e3",
-      "source_commit": "2dbd026844fbe724079751230901e1e49f38afa9",
+      "source_commit": "baad7c780a382e736a272edd6e5296a91b18eafd",
       "stage": "qa"
     },
     "llm-gemini": {
@@ -110,7 +110,7 @@
       "repo": "GetBusbar/busbar-plane-llm",
       "script": "testing/conformance/llm.sh",
       "script_sha256": "694eca68cdab3a41d4b1625982d7de9a6978f7e1cff59751369a2b5a332c63e3",
-      "source_commit": "2dbd026844fbe724079751230901e1e49f38afa9",
+      "source_commit": "baad7c780a382e736a272edd6e5296a91b18eafd",
       "stage": "qa"
     },
     "llm-openai": {
@@ -120,7 +120,7 @@
       "repo": "GetBusbar/busbar-plane-llm",
       "script": "testing/conformance/llm.sh",
       "script_sha256": "694eca68cdab3a41d4b1625982d7de9a6978f7e1cff59751369a2b5a332c63e3",
-      "source_commit": "2dbd026844fbe724079751230901e1e49f38afa9",
+      "source_commit": "baad7c780a382e736a272edd6e5296a91b18eafd",
       "stage": "qa"
     },
     "llm-responses": {
@@ -130,7 +130,7 @@
       "repo": "GetBusbar/busbar-plane-llm",
       "script": "testing/conformance/llm.sh",
       "script_sha256": "694eca68cdab3a41d4b1625982d7de9a6978f7e1cff59751369a2b5a332c63e3",
-      "source_commit": "2dbd026844fbe724079751230901e1e49f38afa9",
+      "source_commit": "baad7c780a382e736a272edd6e5296a91b18eafd",
       "stage": "qa"
     },
     "mcp": {
@@ -140,7 +140,7 @@
       "repo": "GetBusbar/busbar-plane-mcp",
       "script": "testing/conformance/mcp.sh",
       "script_sha256": "0295439fa43152117584022c03b783c76215933aae39655bf2396c0065b6f302",
-      "source_commit": "e098ffe375c5175e753734368e598ebedc453911",
+      "source_commit": "f4ebfe4d1eb134dc6768dfdf0f2413cd67d44b37",
       "stage": "qa"
     },
     "oidf-oauth2": {
@@ -230,7 +230,7 @@
       "repo": "GetBusbar/busbar-plane-llm",
       "script": "testing/conformance/audio.sh",
       "script_sha256": "b37419cbfd85600c04e014c19127cbf3858467158bd01847b0c1e2692d609b02",
-      "source_commit": "2dbd026844fbe724079751230901e1e49f38afa9",
+      "source_commit": "baad7c780a382e736a272edd6e5296a91b18eafd",
       "stage": "qa"
     },
     "voice-tts": {
@@ -240,7 +240,7 @@
       "repo": "GetBusbar/busbar-plane-llm",
       "script": "testing/conformance/audio.sh",
       "script_sha256": "b37419cbfd85600c04e014c19127cbf3858467158bd01847b0c1e2692d609b02",
-      "source_commit": "2dbd026844fbe724079751230901e1e49f38afa9",
+      "source_commit": "baad7c780a382e736a272edd6e5296a91b18eafd",
       "stage": "qa"
     },
     "voice-twilio": {
