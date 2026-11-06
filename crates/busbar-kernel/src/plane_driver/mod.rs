@@ -1082,6 +1082,13 @@ impl PlaneDriver {
             status,
             dialect,
             reason: reason_code(reason),
+            retry_after_s: if reason == ReasonCode::InFlightCap {
+                crate::limits::admission::OVERLOADED_RETRY_AFTER
+                    .parse()
+                    .expect("the admission backoff is a constant number of seconds")
+            } else {
+                0
+            },
             text: AbiStr::over(text.as_bytes()),
             unit: 0,
             target: AbiStr::over(target),
