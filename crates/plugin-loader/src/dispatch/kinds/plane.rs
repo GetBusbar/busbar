@@ -982,6 +982,78 @@ pub fn refresh_door(
     checked(plugin, refreshed(plugin, settings, owned, next)?)
 }
 
+/// Refresh a served plane through its dispatcher. Contention with an ordinary crossing is
+/// queued on the existing binding admission wake, not mistaken for a plugin refusal. The
+/// config worker waits for the lifecycle result; request threads never wait here.
+pub fn refresh_door_on(
+    plugin: &crate::dispatch::Plugin<Plane>,
+    dispatcher: &Arc<crate::dispatch::Dispatcher>,
+    settings: &[u8],
+    owned: &[u8],
+    next: u64,
+) -> Result<OwnedSnapshot, String> {
+    use crate::dispatch::call::Ticketed;
+    use busbar_contract::abi::mechanism::call::{DeadlineClass, BLOB_JSON, BLOB_OCTETS};
+
+    // A queued or watchdog-detached crossing must never retain a loan into this caller's
+    // stack. The dispatch job owns both byte buffers until it releases the input frame.
+    let settings = zeroize::Zeroizing::new(settings.to_vec());
+    let extensions = zeroize::Zeroizing::new(if owned.is_empty() {
+        Vec::new()
+    } else {
+        busbar_contract::abi::mechanism::extensions::encode(&[(plane::EXT_OWNED, owned)])
+    });
+    let inputs = Arc::new((settings, extensions));
+    let mut call = (0..dispatcher.workers().max(1))
+        .find_map(|worker| Ticketed::mint(dispatcher, worker))
+        .ok_or_else(|| "no ticket could be minted for a plane refresh".to_string())?;
+    let mut head = in_head();
+    head.extensions = lifecycle::blob(&inputs.1, BLOB_OCTETS, 0);
+    let frame = Frame::new(
+        RefreshIn {
+            head,
+            generation: next,
+            settings: lifecycle::blob(&inputs.0, BLOB_JSON, 0),
+            secrets: std::ptr::null(),
+            secrets_len: 0,
+        },
+        PlaneRefreshOut {
+            head: out_head(),
+            snapshot: std::ptr::null(),
+        },
+    );
+    let deadline = crate::dispatch::now_ns().saturating_add(
+        u64::try_from(dispatcher.budgets().lifecycle.as_nanos()).unwrap_or(u64::MAX),
+    );
+    call.submit(
+        plugin,
+        life::REFRESH,
+        frame,
+        DeadlineClass::Call,
+        deadline,
+        inputs,
+    );
+    // The dispatcher expires an unadmitted job at its deadline. Once a crossing starts,
+    // retain its result custody until it returns or its own watchdog faults it: dropping
+    // an active answer at the queue deadline could miss a legitimate late publication.
+    let done = futures::executor::block_on(&mut call);
+    let _lease = lifecycle::AnswerLease::new(plugin, done.lease);
+    if done.outcome != Outcome::Ready {
+        return Err(format!(
+            "plane `{}` did not refresh: {:?}",
+            plugin.name(),
+            done.outcome
+        ));
+    }
+    // Copy before dropping the lifecycle ticket/answer lease. The caller serializes config
+    // refreshes and owns this generation until its later RETIRE.
+    checked(
+        plugin,
+        done.frame
+            .and_then(|frame| copy_snapshot(frame.out.snapshot, plugin.dialects())),
+    )
+}
+
 fn refreshed(
     plugin: &crate::dispatch::Plugin<Plane>,
     settings: &[u8],

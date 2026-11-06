@@ -345,3 +345,275 @@ fn a_door_states_its_actual_registry_facts_and_judges_its_section() {
         "same actual declaredfacts whicheverloadingpath"
     );
 }
+
+fn served_lifecycle_plane(
+    dropped_image: bool,
+    dispatcher: &Arc<crate::dispatch::Dispatcher>,
+) -> Plugin<Plane> {
+    let binding = Bind {
+        dispatcher: dispatcher.adopter(),
+        ..binding()
+    };
+    if dropped_image {
+        load_dropped::<Plane>(
+            &crate::actual_mcp::cdylib(),
+            &rendering_of_library(&crate::actual_mcp::cdylib())
+                .unwrap()
+                .unwrap(),
+            binding,
+        )
+        .unwrap()
+    } else {
+        load_linked::<Plane>(&LinkedRow::of(crate::actual_mcp::door).unwrap(), binding).unwrap()
+    }
+}
+
+#[test]
+fn served_refresh_waits_for_a_crossing_then_publishes_the_actual_plane_generation() {
+    use crate::dispatch::kinds::plane::refresh_door_on;
+    use crate::dispatch::{DispatchConfig, Dispatcher};
+    use busbar_contract::abi::mechanism::{lifecycle::slot, ticket::Ticket};
+    use std::time::{Duration, Instant};
+
+    for dropped_image in [false, true] {
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let plugin = Arc::new(served_lifecycle_plane(dropped_image, &dispatcher));
+        let first = open_door(&plugin, b"{}", b"{}", None).unwrap();
+        let held = plugin
+            .inner
+            .export_admission(slot::TICK, Ticket::NONE)
+            .unwrap()
+            .expect("the actual plane has generation-bound connection needs");
+        assert!(
+            refresh_door(&plugin, b"{}", b"{}", 2).is_err(),
+            "the old ticketless path refuses this exact crossing"
+        );
+        let (sent, received) = std::sync::mpsc::channel();
+        let join = {
+            let plugin = Arc::clone(&plugin);
+            let dispatcher = Arc::clone(&dispatcher);
+            std::thread::spawn(move || {
+                let result = refresh_door_on(&plugin, &dispatcher, b"{}", b"{}", 2);
+                sent.send(result).unwrap();
+            })
+        };
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(
+                received.try_recv().is_err(),
+                "refresh must wait for the held crossing"
+            );
+            if plugin.inner.inflight() != 0 {
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "the queued refresh takes lifecycle custody"
+            );
+            std::thread::yield_now();
+        }
+        drop(held);
+        let second = received
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        join.join().unwrap();
+        assert_eq!(second.generation, 2);
+        assert_eq!(first.generation, 1, "the prior snapshot is an owned copy");
+        assert!(
+            refresh_door_on(&plugin, &dispatcher, b"{", b"{}", 3).is_err(),
+            "a terminal plugin refusal is not retried as admission contention"
+        );
+        let third = refresh_door_on(&plugin, &dispatcher, b"{}", b"{}", 3).unwrap();
+        assert_eq!(
+            third.generation, 3,
+            "the refused generation was not published"
+        );
+        retire_door(&plugin, 1);
+        retire_door(&plugin, 2);
+        assert_eq!(
+            second.generation, 2,
+            "the copied queued snapshot survives retirement"
+        );
+    }
+}
+
+#[test]
+fn served_refresh_cancels_a_timed_out_admission_without_publishing_later() {
+    use crate::dispatch::kinds::plane::refresh_door_on;
+    use crate::dispatch::{DispatchConfig, Dispatcher};
+    use busbar_contract::abi::mechanism::{lifecycle::slot, ticket::Ticket};
+    use std::time::{Duration, Instant};
+
+    for dropped_image in [false, true] {
+        let mut config = DispatchConfig::default();
+        config.budgets.lifecycle = Duration::from_millis(100);
+        let dispatcher = Arc::new(Dispatcher::new(config));
+        let plugin = Arc::new(served_lifecycle_plane(dropped_image, &dispatcher));
+        open_door(&plugin, b"{}", b"{}", None).unwrap();
+        let prior = plugin.inner.wake.exports.pin(Ticket::NONE).unwrap();
+        let held = plugin
+            .inner
+            .export_admission(slot::TICK, Ticket::NONE)
+            .unwrap()
+            .unwrap();
+        let (sent, received) = std::sync::mpsc::channel();
+        let join = {
+            let plugin = Arc::clone(&plugin);
+            let dispatcher = Arc::clone(&dispatcher);
+            std::thread::spawn(move || {
+                let _ = sent.send(refresh_door_on(&plugin, &dispatcher, b"{}", b"{}", 2));
+            })
+        };
+        let refused = received
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a blocked queue settles within its deadline")
+            .unwrap_err();
+        join.join().unwrap();
+        assert!(refused.contains("did not refresh"), "{refused}");
+        drop(held);
+        let until = Instant::now() + Duration::from_secs(5);
+        while !plugin.inner.enter_lifecycle() {
+            assert!(
+                Instant::now() < until,
+                "timed-out refresh releases lifecycle custody"
+            );
+            std::thread::yield_now();
+        }
+        plugin.inner.leave_lifecycle();
+        assert!(
+            Arc::ptr_eq(
+                &prior,
+                &plugin.inner.wake.exports.pin(Ticket::NONE).unwrap()
+            ),
+            "canceled admission never published a connection generation"
+        );
+        let applied = refresh_door_on(&plugin, &dispatcher, b"{}", b"{}", 2).unwrap();
+        assert_eq!(
+            applied.generation, 2,
+            "canceled admission never crossed the plugin"
+        );
+    }
+}
+
+#[test]
+fn served_refresh_keeps_active_result_custody_past_its_queue_deadline() {
+    use crate::dispatch::kinds::plane::refresh_door_on;
+    use crate::dispatch::{DispatchConfig, Dispatcher};
+    use busbar_contract::abi::mechanism::call::{InHead, Op, RawOutcome};
+    use busbar_contract::abi::mechanism::{lifecycle::slot, ticket::Ticket};
+    use std::collections::HashMap;
+    use std::ffi::c_void;
+    use std::sync::{mpsc, LazyLock, Mutex};
+    use std::time::{Duration, Instant};
+
+    struct Crossing {
+        actual: Op,
+        entered: mpsc::Sender<u64>,
+        release: mpsc::Receiver<()>,
+    }
+    static CROSSINGS: LazyLock<Mutex<HashMap<u64, Crossing>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    extern "C" fn held_refresh(
+        instance: *mut c_void,
+        input: *const c_void,
+        output: *mut c_void,
+    ) -> RawOutcome {
+        // SAFETY: the validated lifecycle frame begins with the initialized host header.
+        let head = unsafe { &*input.cast::<InHead>() };
+        let crossing = CROSSINGS.lock().unwrap().remove(&head.host.handle).unwrap();
+        // SAFETY: the actual product receives its live instance and the original checked frame.
+        let outcome = unsafe { (crossing.actual)(instance, input, output) };
+        crossing.entered.send(head.deadline_ns).unwrap();
+        crossing
+            .release
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        outcome
+    }
+
+    let mut config = DispatchConfig::default();
+    config.budgets.lifecycle = Duration::from_secs(2);
+    let dispatcher = Arc::new(Dispatcher::new(config));
+    let mut validated = crate::dispatch::load::validate_door::<Plane>(crate::actual_mcp::door())
+        .expect("the actual MCP descriptor validates before wrapping REFRESH");
+    let actual = validated.slots[slot::REFRESH as usize];
+    validated.slots[slot::REFRESH as usize] = held_refresh;
+    let plugin = Arc::new(
+        Plugin::<Plane>::bind(
+            validated,
+            None,
+            Bind {
+                dispatcher: dispatcher.adopter(),
+                ..binding()
+            },
+        )
+        .unwrap(),
+    );
+    open_door(&plugin, b"{}", b"{}", None).unwrap();
+    let (entered, crossing) = mpsc::channel();
+    struct Release(Option<mpsc::Sender<()>>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            if let Some(release) = self.0.take() {
+                let _ = release.send(());
+            }
+        }
+    }
+    let (release, released) = mpsc::channel();
+    let mut release = Release(Some(release));
+    CROSSINGS.lock().unwrap().insert(
+        plugin.inner.ctx().handle,
+        Crossing {
+            actual,
+            entered,
+            release: released,
+        },
+    );
+    let held = plugin
+        .inner
+        .export_admission(slot::TICK, Ticket::NONE)
+        .unwrap()
+        .unwrap();
+    let (sent, received) = mpsc::channel();
+    let join = {
+        let dispatcher = Arc::clone(&dispatcher);
+        let plugin = Arc::clone(&plugin);
+        std::thread::spawn(move || {
+            sent.send(refresh_door_on(&plugin, &dispatcher, b"{}", b"{}", 2))
+                .unwrap();
+        })
+    };
+    let until = Instant::now() + Duration::from_secs(5);
+    while plugin.inner.inflight() == 0 {
+        assert!(Instant::now() < until, "refresh takes queued custody");
+        std::thread::yield_now();
+    }
+    std::thread::sleep(Duration::from_secs(1));
+    drop(held);
+    let deadline = crossing.recv_timeout(Duration::from_secs(1)).unwrap();
+    let release_at = deadline.saturating_add(100_000_000);
+    std::thread::sleep(Duration::from_nanos(
+        release_at.saturating_sub(crate::dispatch::now_ns()),
+    ));
+    // Queue time plus this legitimate crossing exceeds L; the active crossing itself
+    // remains below L. An external Reply::wait(L) would already have abandoned it.
+    assert!(
+        matches!(received.try_recv(), Err(mpsc::TryRecvError::Empty)),
+        "an admitted refresh keeps result custody past the admission deadline"
+    );
+    release.0.take().unwrap().send(()).unwrap();
+    let refreshed = received
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap()
+        .unwrap();
+    join.join().unwrap();
+    assert_eq!(
+        refreshed.generation, 2,
+        "the actual publication is observed"
+    );
+    assert!(
+        !plugin.is_faulted(),
+        "the legitimate crossing stays within its own budget"
+    );
+}

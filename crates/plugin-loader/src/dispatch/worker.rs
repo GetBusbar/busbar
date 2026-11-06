@@ -1375,6 +1375,23 @@ impl Worker {
         let mut next = u64::MAX;
         let mut due = Vec::new();
         for (idx, e) in st.entries.iter_mut().enumerate() {
+            // Admission can park a queued job without entering the plugin (for example,
+            // REFRESH waiting for a binding crossing). Its deadline still belongs to us.
+            // Once admitted, the existing pending-call timer and crossing watchdog own it.
+            for _ in 0..e.queue.len() {
+                let (mut meta, job) = e.queue.pop_front().expect("counted queued job");
+                let deadline = meta.deadline_ns;
+                if meta.class != DeadlineClass::WriteBehind && deadline != 0 {
+                    if now >= deadline {
+                        meta.give_back();
+                        meta.reply.settle(meta.instance.timeout, false);
+                        drop_after_lock(Box::new((meta, job)));
+                        continue;
+                    }
+                    next = next.min(deadline);
+                }
+                e.queue.push_back((meta, job));
+            }
             let owed = !matches!(e.next, Some(Action::Resume));
             if let Some(c) = e.current.as_mut().filter(|c| c.pending) {
                 let (class, deadline) = (c.meta.class, c.meta.deadline_ns);

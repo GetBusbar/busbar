@@ -518,6 +518,7 @@ fn a_pools_refresh_whose_snapshot_the_host_refuses_is_retired() {
     let composed = &served.planes[0].live;
     let pools = Arc::new(super::DoorApply {
         plugin: Arc::clone(&composed.plugin),
+        dispatcher: Arc::clone(&composed.dispatcher),
         served_facts: ServedFacts {
             section: busbar_contract::section::RESERVED_POOLS_KEY,
             ..composed.served_facts.clone()

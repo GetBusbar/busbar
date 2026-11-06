@@ -988,6 +988,7 @@ pub struct ApplyReach {
 
 pub struct DoorApply {
     plugin: DoorPlane,
+    dispatcher: Arc<Dispatcher>,
     served_facts: crate::root::loader::dispatch::kinds::plane::ServedFacts,
     facts: DoorFacts,
     reach: Option<ApplyReach>,
@@ -1084,6 +1085,8 @@ impl DoorApply {
             Err(e) => {
                 tracing::warn!(
                     plane = self.facts.plane.as_str(),
+                    config_version = app.config_version,
+                    retained_generation = now.generation,
                     error = %e,
                     "door plane kept its generation across a config apply"
                 );
@@ -1114,8 +1117,9 @@ impl DoorApply {
         } else {
             handed_settings(settings_path(&self.served_facts), handed)?
         };
-        crate::root::loader::dispatch::kinds::plane::refresh_door(
+        crate::root::loader::dispatch::kinds::plane::refresh_door_on(
             &self.plugin,
+            &self.dispatcher,
             &settings,
             &owned_bytes(owned)?,
             generation,
@@ -1268,8 +1272,12 @@ impl DoorAppliers {
                     continue;
                 }
             };
-            if let Err(e) = crate::root::loader::dispatch::kinds::plane::refresh_door(
-                &p.plugin, &settings, &owned, next,
+            if let Err(e) = crate::root::loader::dispatch::kinds::plane::refresh_door_on(
+                &p.plugin,
+                &p.dispatcher,
+                &settings,
+                &owned,
+                next,
             ) {
                 tracing::error!(plane = name, error = %e, "door plane did not refresh onto the new configuration; it keeps serving the previous one");
 
@@ -2174,6 +2182,7 @@ pub(crate) fn compose_planes_over(
         });
         let live = Arc::new(DoorApply {
             plugin: plugin.clone(),
+            dispatcher: Arc::clone(dispatcher),
             served_facts: served_facts.clone(),
             facts: facts.clone(),
             reach,
