@@ -344,7 +344,7 @@ fn boot_mutable_with_overlay_disabled_refuses_to_boot() {
         }
     }
     crate::dist_root_install::install();
-    let cfg = "providers: {}\nmodels: {}\nconfig:\n  locked: false\n  overlay: false\n";
+    let cfg = "providers: {}\nmodels: {}\nstore: {module: memory}\nauth: {chain: [], admin_auth: []}\nconfig:\n  locked: false\n  overlay: false\n";
     let (dir, config_path, _p) = boot_config_dir("no-backend", cfg);
     let Err(err) = load_config_from_disk(
         &config_path,
@@ -357,8 +357,19 @@ fn boot_mutable_with_overlay_disabled_refuses_to_boot() {
     };
 
     assert!(
-        err.contains("mutable config requires") && err.contains("Store-backed overlay"),
-        "the boot refusal must be the specific mutable-without-backend message: {err}"
+        err.contains("unknown field `overlay`") && err.contains("expected `locked`"),
+        "the removed selector must be refused by the current configuration grammar: {err}"
+    );
+    std::fs::write(&config_path, cfg.replace("  overlay: false\n", "")).unwrap();
+    assert!(
+        load_config_from_disk(
+            &config_path,
+            None,
+            false,
+            busbar_kernel::config::EnvSubst::Strict,
+            &crate::root::door_steps::Rules::default(),
+        ).is_ok(),
+        "otherwise identical mutable configuration uses its configured Store without an overlay selector"
     );
     let _ = std::fs::remove_dir_all(&dir);
     println!("{WITNESS}");

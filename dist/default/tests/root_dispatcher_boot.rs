@@ -32,7 +32,7 @@ fn fixture_dir() -> PathBuf {
     d
 }
 
-fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
+fn write_configs(dir: &Path, data_port: u16, admin_port: u16, workers: Option<usize>) {
     std::fs::write(
         dir.join("providers.yaml"),
         include_str!("fixtures/mock_provider.yaml"),
@@ -46,7 +46,7 @@ admin_listen: "127.0.0.1:{admin_port}"
 store: {{module: memory}}
 admin_require_mtls: false
 advanced:
-  worker_threads: {WORKERS}
+  worker_threads: {worker_count}
 auth:
   chain: []
 providers:
@@ -55,7 +55,8 @@ providers:
 models:
   test-model:
     provider: mock
-"#
+"#,
+            worker_count = workers.map_or_else(|| "null".to_string(), |n| n.to_string())
         ),
     )
     .unwrap();
@@ -81,11 +82,11 @@ fn dispatcher_threads(pid: u32) -> usize {
         .count()
 }
 
-fn boot(tag: &str, env: &[(&str, &str)]) -> (usize, String) {
+fn boot(tag: &str, env: &[(&str, &str)], workers: Option<usize>) -> (usize, String) {
     let dir = fixture_dir();
     let data_port = common::boot::free_port();
     let admin_port = common::boot::free_port();
-    write_configs(&dir, data_port, admin_port);
+    write_configs(&dir, data_port, admin_port, workers);
     let log_path = dir.join(format!("{tag}.log"));
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
@@ -126,7 +127,7 @@ fn boot(tag: &str, env: &[(&str, &str)]) -> (usize, String) {
 
 #[test]
 fn the_binary_boots_with_the_root_dispatcher_installed() {
-    let (threads, out) = boot("plain", &[]);
+    let (threads, out) = boot("plain", &[], Some(WORKERS));
     assert_eq!(
         threads,
         WORKERS + 1,
@@ -140,20 +141,23 @@ fn the_binary_boots_with_the_root_dispatcher_installed() {
 
 #[test]
 fn the_worker_count_warnings_print_as_before_and_the_dispatcher_is_full_size() {
-    let (threads, out) = boot("invalid-env", &[("BUSBAR_WORKER_THREADS", "0")]);
+    let (threads, out) = boot("invalid-env", &[("TOKIO_WORKER_THREADS", "0")], None);
     assert_eq!(
         threads,
-        WORKERS + 1,
-        "the configured count sizes the dispatcher"
+        std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(128)
+            + 1,
+        "invalid Tokio fallback uses the current capped available-worker count and watchdog"
     );
     let line = out
         .lines()
-        .find(|l| l.contains("BUSBAR_WORKER_THREADS=\"0\""))
+        .find(|l| l.contains("TOKIO_WORKER_THREADS=\"0\""))
         .unwrap_or_else(|| panic!("the invalid-count warning: {out}"));
     assert!(
         line.starts_with("[warn] BUSBAR-")
             && line.ends_with(
-                ": BUSBAR_WORKER_THREADS=\"0\" is not a positive integer; ignoring it and using \
+                ": TOKIO_WORKER_THREADS=\"0\" is not a positive integer; ignoring it and using \
                  the default worker-thread count"
             ),
         "{line}"
@@ -163,14 +167,30 @@ fn the_worker_count_warnings_print_as_before_and_the_dispatcher_is_full_size() {
         out.find("busbar listening").is_none_or(|l| at < l),
         "the warning prints before the boot's own lines: {out}"
     );
-    let (threads, out) = boot("deprecated-env", &[("BUSBAR_WORKER_THREADS", "2")]);
+    let (threads, out) = boot("supported-env", &[("TOKIO_WORKER_THREADS", "2")], None);
     assert_eq!(
         threads,
         2 + 1,
-        "the deprecated knob still wins and sizes the dispatcher"
+        "the supported Tokio fallback sizes the dispatcher when config leaves it unset"
     );
-    let deprecated =
-        "[warn] BUSBAR_WORKER_THREADS is DEPRECATED; set `advanced.worker_threads` in \
-                      config.yaml instead (it is honored for now).";
-    assert!(out.lines().any(|l| l == deprecated), "{out}");
+    assert!(
+        !out.contains("DEPRECATED"),
+        "the Tokio fallback is supported: {out}"
+    );
+}
+
+#[test]
+fn retired_worker_environment_never_overrides_the_configured_dispatcher() {
+    for (tag, value) in [("retired-invalid", "0"), ("retired-positive", "2")] {
+        let (threads, out) = boot(tag, &[("BUSBAR_WORKER_THREADS", value)], Some(WORKERS));
+        assert_eq!(
+            threads,
+            WORKERS + 1,
+            "retired environment cannot override configured workers"
+        );
+        assert!(
+            !out.contains("BUSBAR_WORKER_THREADS"),
+            "retired runtime input is ignored, not deprecated: {out}"
+        );
+    }
 }

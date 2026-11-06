@@ -11,15 +11,36 @@ USAGE:
                         for correlating a perf number to a build and for CI's build-parity gate
     busbar --validate   parse + validate config.yaml/providers.yaml AND every plugin manifest
                         (structure, signature/trust, conflicts, abi, version floors) and exit
-                        (0 = valid, 1 = errors); no server, no network, no state, no dlopen —
-                        safe in CI and before a reload; a clean --validate means boot succeeds
+                        (0 = offline checks passed, 1 = errors); no server or network;
+                        no application Store opening or overlay recovery. Authorized native
+                        grammar/check callbacks may run. Passing does not guarantee boot,
+                        plugin readiness or backend reachability
     busbar --list-plugins
                         manifest-only inventory of the plugins dir (name/alias/kind/version,
                         signature verdict, load status + exact reason); never loads plugin code
     busbar --migrate-config <old-config.yaml>
-                        mechanically convert a 1.4.x config to the 1.5.0 shape: prints the new
-                        YAML to stdout (with TODO/WARNING comments where a human must decide)
-                        and a change summary to stderr; ZERO side effects, nothing is written
+                        convert supported historical configuration to the current 1.6 shape;
+                        prints YAML to stdout and a change summary to stderr. Source files
+                        remain unchanged; literal secrets may create protected, retry-safe
+                        secret files beside the source configuration. Review reported decisions
+    busbar --config <migrated.yaml> --migrate-overlay <old-config.yaml>
+                        offline import of the actual 1.5.5 overlay into the configured durable Store;
+                        source files remain unchanged; matching retries are safe; exits without serving
+    busbar --principal-transition <spec-or-plan.json>
+           --transition-action inspect|prepare|check|apply|verify|initialize-fresh|
+                               initialize-fresh-and-serve|reauthorize
+           [--transition-attestation <attestation.json>]
+                        principal maintenance using the configured Store.
+                        inspect requires --principal-transition - (no input) and prints only
+                        config, key, group, overlay and receipt hashes plus admitted auth bindings.
+                        prepare reads a specification and prints a plan; initialize-fresh reads
+                        a namespace creation receipt. apply requires a fresh cold attestation.
+                        initialize-fresh-and-serve requires an explicit exclusive ephemeral-instance
+                        creation receipt, initializes that opened Store, then runs ordinary boot.
+                        All other actions exit after maintenance; initialize-fresh requires a
+                        durable namespace witness and never authorizes an ephemeral instance.
+                        reauthorize requires explicit evidence that a new artifact/settings
+                        vector leaves all principal outputs unchanged; never infers issuer continuity.
     busbar --generate-signing-key
                         mint a fresh ed25519 signing key (64 hex chars) to stdout with a paste-
                         ready auth.signing_key snippet on stderr; ZERO side effects, nothing is
@@ -38,8 +59,6 @@ CONFIG INPUTS:
 ENVIRONMENT:
     BUSBAR_CONFIG       path to config.yaml     (default: /etc/busbar/config.yaml; overridden by
                         -c/--config)
-    BUSBAR_PROVIDERS    path to providers.yaml  (DEPRECATED — set `providers_file:` in config.yaml;
-                        default: providers.yaml next to the resolved config.yaml)
     RUST_LOG            log level: error|warn|info|debug|trace  (default: info)
 
 Flags:

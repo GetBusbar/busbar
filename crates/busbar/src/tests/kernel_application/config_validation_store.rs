@@ -4,7 +4,7 @@
 use busbar_kernel::config;
 use busbar_kernel::config_validate::validate;
 
-const NO_STORE: &str = "listen: \"127.0.0.1:8080\"\nproviders:\n  acme:\n    api_key: { env: ACME_KEY }\nmodels:\n  m:\n    provider: acme\n";
+const NO_STORE: &str = "listen: \"127.0.0.1:8080\"\nproviders:\n  acme:\n    auth: bearer\n    api_key: { env: ACME_KEY }\nmodels:\n  m:\n    provider: acme\n";
 
 #[test]
 fn a_config_without_a_store_block_is_refused() {
@@ -54,7 +54,9 @@ fn migrate_inserts_the_memory_store_into_a_config_without_one() {
     );
     assert!(
         out.todos.is_empty() && out.warnings.is_empty(),
-        "nothing to decide"
+        "explicit bearer credentials need no catalog decision: todos={:?}, warnings={:?}",
+        out.todos,
+        out.warnings
     );
     assert!(
         !out.yaml.starts_with('#'),
