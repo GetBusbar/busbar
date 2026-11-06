@@ -3257,6 +3257,7 @@ fn the_auth_request_signs_the_authority_the_socket_dials() {
         per_request: None,
     };
     let head = super::Head {
+        completed: None,
         method: b"GET".to_vec(),
         target: Vec::new(),
         fields: Vec::new(),
@@ -3317,6 +3318,7 @@ fn the_auth_request_signs_the_lines_the_open_completes_the_head_with() {
         per_request: None,
     };
     let head = super::Head {
+        completed: None,
         method: b"POST".to_vec(),
         target: b"/x".to_vec(),
         fields: vec![
