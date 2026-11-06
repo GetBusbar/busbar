@@ -879,6 +879,9 @@ async fn run(
     let mut cfg = config::resolve(&deploy, &defs)
         .unwrap_or_else(|errs| die(format!("config errors:\n  - {}", errs.join("\n  - "))));
 
+    let door_kernel_sections = root::door_steps::kernel_sections(&cfg)
+        .unwrap_or_else(|error| die(format!("config errors:\n  - {error}")));
+
     dest.replace(root::connector::dest_judge(&cfg));
     root::boot::note_provider_urls(
         cfg.providers
@@ -932,7 +935,7 @@ async fn run(
         deploy
             .door_sections()
             .keys()
-            .chain(root::door_steps::kernel_sections(&cfg).keys())
+            .chain(door_kernel_sections.keys())
             .copied(),
     );
 
@@ -952,8 +955,6 @@ async fn run(
         &cfg.providers,
         &config_validate::MetadataPosture::global(&cfg),
     );
-
-    let door_kernel_sections = root::door_steps::kernel_sections(&cfg);
 
     let door_model_pools = root::model_egress::ModelPools::of(&cfg);
 

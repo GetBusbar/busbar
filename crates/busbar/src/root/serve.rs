@@ -1041,12 +1041,22 @@ impl DoorApply {
             .config_projection
             .as_ref()
             .and_then(|p| p.downcast_ref::<crate::root::door_steps::DoorConfig>());
-        let owned = config
-            .map(|c| owned_sections(&self.served_facts, &c.sections))
+        let sections = match config.map(|c| &c.sections) {
+            Some(Ok(sections)) => Some(sections),
+            Some(Err(error)) => {
+                tracing::error!(%error, "refusing invalid plane configuration projection");
+                return;
+            }
+            None => None,
+        };
+        let owned = sections
+            .map(|sections| owned_sections(&self.served_facts, sections))
             .unwrap_or_default();
 
-        let handed = match config {
-            Some(c) if !section.is_null() => settings_of(&self.served_facts, &section, &c.sections),
+        let handed = match sections {
+            Some(sections) if !section.is_null() => {
+                settings_of(&self.served_facts, &section, sections)
+            }
             _ => section.clone(),
         };
 
@@ -3219,7 +3229,7 @@ impl ListenerPlan {
         let cfg = self.config(app)?;
         let mut needs = crate::root::boot::candidate_listener_needs(
             app,
-            &cfg.sections,
+            cfg.sections.as_ref().map_err(Clone::clone)?,
             cfg.root_binds.clone()?,
         )
         .unwrap_or_else(|| cfg.listeners.clone())?;

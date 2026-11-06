@@ -1707,7 +1707,7 @@ pub struct DoorConfig {
     /// The kernel-owned sections, and beside them every plane section the configuration carries RAW
     /// (a door plane's other owned sections among them: a config apply hands a plane its owned
     /// sections from here, as boot hands them from the document's sections).
-    pub sections: BTreeMap<&'static str, serde_yaml::Value>,
+    pub sections: Result<BTreeMap<&'static str, serde_yaml::Value>, String>,
     /// The providers, by name.
     pub providers: BTreeMap<String, ProviderRoute>,
     /// The model-serving pools' bounds.
@@ -1716,13 +1716,18 @@ pub struct DoorConfig {
 
 #[must_use]
 pub fn door_config(cfg: &busbar_kernel::config::RootCfg) -> Arc<dyn std::any::Any + Send + Sync> {
-    let mut sections = kernel_sections(cfg);
-    for (key, value) in raw_sections(cfg) {
-        sections.entry(key).or_insert(value);
-    }
+    let sections = kernel_sections(cfg).map(|mut sections| {
+        for (key, value) in raw_sections(cfg) {
+            sections.entry(key).or_insert(value);
+        }
+        sections
+    });
     Arc::new(DoorConfig {
         listener_routes: std::sync::OnceLock::new(),
-        listeners: crate::root::boot::configured_listener_needs(cfg, &sections),
+        listeners: sections
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|sections| crate::root::boot::configured_listener_needs(cfg, sections)),
         root_binds: crate::root::boot::configured_root_binds(cfg),
         data_chain: cfg
             .auth
@@ -1741,7 +1746,7 @@ pub fn door_config(cfg: &busbar_kernel::config::RootCfg) -> Arc<dyn std::any::An
 pub fn listener_needs(
     cfg: &busbar_kernel::config::RootCfg,
 ) -> Result<crate::root::boot::ListenerNeeds, String> {
-    let mut sections = kernel_sections(cfg);
+    let mut sections = kernel_sections(cfg)?;
     for (key, value) in raw_sections(cfg) {
         sections.entry(key).or_insert(value);
     }
@@ -1942,6 +1947,13 @@ impl busbar_kernel::appbuild::RootRules for Rules {
     }
 
     fn check_built(&self, app: &App) -> Result<(), String> {
+        if let Some(config) = app
+            .config_projection
+            .as_ref()
+            .and_then(|c| c.downcast_ref::<DoorConfig>())
+        {
+            config.sections.as_ref().map_err(Clone::clone)?;
+        }
         match self.listeners.get() {
             Some(listeners) => listeners.check(app),
             None => Ok(()),
@@ -1975,6 +1987,7 @@ impl busbar_kernel::appbuild::RootRules for Rules {
     }
 
     fn check(&self, cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
+        kernel_sections(cfg)?;
         if let Some(url) = cfg.public_url.as_deref() {
             busbar_core_admin::config::validate_public_url(url, &cfg.blocked_metadata_hosts)
                 .map_err(|errors| errors.join("\n"))?;
@@ -2006,117 +2019,255 @@ impl busbar_kernel::appbuild::RootRules for Rules {
     }
 }
 
-#[must_use]
+/// Project the kernel-owned configuration without passing JSON's arbitrary-precision
+/// serialization markers to YAML. A provider number outside YAML's scalar domain is refused.
 pub fn kernel_sections(
     cfg: &busbar_kernel::config::RootCfg,
-) -> BTreeMap<&'static str, serde_yaml::Value> {
-    use serde_json::{json, Map, Value};
-    fn opt(m: &mut Map<String, Value>, key: &str, v: Option<Value>) {
+) -> Result<BTreeMap<&'static str, serde_yaml::Value>, String> {
+    use serde_yaml::{Mapping, Value};
+    fn opt(m: &mut Mapping, key: &str, v: Option<Value>) {
         if let Some(v) = v {
-            m.insert(key.to_string(), v);
+            m.insert(Value::from(key), v);
         }
     }
     let mut out = BTreeMap::new();
-    let mut providers = Map::new();
+    let mut providers = Mapping::new();
     for (name, p) in &cfg.providers {
-        let mut m = p.table.clone();
-        opt(&mut m, "path", p.path.as_ref().map(|v| json!(v)));
-        opt(&mut m, "path_base", p.path_base.as_ref().map(|v| json!(v)));
+        let mut m = Mapping::new();
+        for (key, value) in &p.table {
+            m.insert(
+                Value::from(key.clone()),
+                provider_yaml(value, &format!("providers.{name}.{key}"))?,
+            );
+        }
+        opt(&mut m, "path", p.path.clone().map(Value::from));
+        opt(&mut m, "path_base", p.path_base.clone().map(Value::from));
         opt(
             &mut m,
             "auth",
-            p.auth.as_ref().map(style_word).map(|v| json!(v)),
+            p.auth.as_ref().map(style_word).map(Value::from),
         );
-        providers.insert(name.clone(), Value::Object(m));
+        providers.insert(Value::from(name.clone()), Value::Mapping(m));
     }
-    let mut models = Map::new();
+    let mut models = Mapping::new();
     for (name, model) in &cfg.models {
-        let mut m = Map::new();
-        m.insert(MODEL_PROVIDER_KEY.into(), json!(model.provider));
+        let mut m = Mapping::new();
+        m.insert(
+            Value::from(MODEL_PROVIDER_KEY),
+            Value::from(model.provider.clone()),
+        );
         opt(
             &mut m,
             "upstream_model",
-            model.upstream_model.as_ref().map(|v| json!(v)),
+            model.upstream_model.clone().map(Value::from),
         );
         opt(
             &mut m,
             "default_max_tokens",
-            model.default_max_tokens.map(|v| json!(v)),
+            model.default_max_tokens.map(Value::from),
         );
-        opt(&mut m, "reasoning", model.reasoning.map(|v| json!(v)));
+        opt(&mut m, "reasoning", model.reasoning.map(Value::from));
         opt(
             &mut m,
             "prompt_caching",
-            model.prompt_caching.map(|v| json!(v)),
+            model.prompt_caching.map(Value::from),
         );
-
         opt(
             &mut m,
             MODEL_PROTOCOL_KEYS[0],
-            model.protocol.as_ref().map(|v| json!(v)),
+            model.protocol.clone().map(Value::from),
         );
-        models.insert(name.clone(), Value::Object(m));
+        models.insert(Value::from(name.clone()), Value::Mapping(m));
     }
-    let mut pools = Map::new();
+    let mut pools = Mapping::new();
     for (name, pool) in &cfg.pools {
-        let members: Vec<Value> = pool
+        let members = pool
             .members
             .iter()
             .map(|member| {
-                let mut m = Map::new();
-                m.insert("model".into(), json!(member.model));
-                opt(&mut m, "reasoning", member.reasoning.map(|v| json!(v)));
-                opt(&mut m, "context_max", member.context_max.map(|v| json!(v)));
-                Value::Object(m)
+                let mut m = Mapping::new();
+                m.insert(Value::from("model"), Value::from(member.model.clone()));
+                opt(&mut m, "reasoning", member.reasoning.map(Value::from));
+                opt(&mut m, "context_max", member.context_max.map(Value::from));
+                Value::Mapping(m)
             })
             .collect();
-        let mut p = Map::new();
-        p.insert(POOL_MEMBERS_KEY.into(), Value::Array(members));
+        let mut p = Mapping::new();
+        p.insert(Value::from(POOL_MEMBERS_KEY), Value::Sequence(members));
         if let Some(busbar_kernel::config::pools::OnExhaustedCfg::FallbackPool(fallback)) =
             &pool.on_exhausted
         {
             p.insert(
-                ON_EXHAUSTED_KEY.into(),
-                json!({ FALLBACK_POOL_KEY: fallback }),
+                Value::from(ON_EXHAUSTED_KEY),
+                section_map([(FALLBACK_POOL_KEY, Value::from(fallback.clone()))]),
             );
         }
-
         if let Some(header) = pool.affinity.as_ref().and_then(|a| a.header_name.as_ref()) {
-            p.insert("affinity".into(), json!({ "header_name": header }));
+            p.insert(
+                Value::from("affinity"),
+                section_map([("header_name", Value::from(header.clone()))]),
+            );
         }
-        pools.insert(name.clone(), Value::Object(p));
+        pools.insert(Value::from(name.clone()), Value::Mapping(p));
     }
-
-    let limits = json!({
-        "default_max_tokens": cfg.limits.default_max_tokens,
-        "request_body_max_bytes": cfg.limits.request_body_max_bytes,
-        "datagram_line_memory_bytes": cfg.limits.datagram_line_memory_bytes,
-        "reasoning_effort_budgets": {
-            "minimal": cfg.limits.reasoning_effort_budgets.minimal,
-            "low": cfg.limits.reasoning_effort_budgets.low,
-            "medium": cfg.limits.reasoning_effort_budgets.medium,
-            "high": cfg.limits.reasoning_effort_budgets.high,
-        },
-    });
-    let yaml = |v: Value| serde_yaml::to_value(v).unwrap_or(serde_yaml::Value::Null);
+    let limits = section_map([
+        (
+            "default_max_tokens",
+            Value::from(cfg.limits.default_max_tokens),
+        ),
+        (
+            "request_body_max_bytes",
+            Value::from(cfg.limits.request_body_max_bytes),
+        ),
+        (
+            "datagram_line_memory_bytes",
+            cfg.limits
+                .datagram_line_memory_bytes
+                .map_or(Value::Null, Value::from),
+        ),
+        (
+            "reasoning_effort_budgets",
+            section_map([
+                (
+                    "minimal",
+                    Value::from(cfg.limits.reasoning_effort_budgets.minimal),
+                ),
+                ("low", Value::from(cfg.limits.reasoning_effort_budgets.low)),
+                (
+                    "medium",
+                    Value::from(cfg.limits.reasoning_effort_budgets.medium),
+                ),
+                (
+                    "high",
+                    Value::from(cfg.limits.reasoning_effort_budgets.high),
+                ),
+            ]),
+        ),
+    ]);
     if !providers.is_empty() {
         out.insert(
             busbar_contract::plugin::Kind::Transport.root(),
-            yaml(Value::Object(providers)),
+            Value::Mapping(providers),
         );
     }
-
     let required = |key: &'static str| {
         busbar_kernel::plane_driver::registry::plane_decls()
             .iter()
             .any(|d| d.required_config_sections.contains(&key))
     };
     if !models.is_empty() || !pools.is_empty() || required(RESERVED_MODELS_KEY) {
-        out.insert(RESERVED_MODELS_KEY, yaml(Value::Object(models)));
-        out.insert(RESERVED_POOLS_KEY, yaml(Value::Object(pools)));
+        out.insert(RESERVED_MODELS_KEY, Value::Mapping(models));
+        out.insert(RESERVED_POOLS_KEY, Value::Mapping(pools));
     }
-    out.insert("limits", yaml(limits));
-    out
+    out.insert("limits", limits);
+    Ok(out)
+}
+
+fn section_map<const N: usize>(entries: [(&str, serde_yaml::Value); N]) -> serde_yaml::Value {
+    serde_yaml::Value::Mapping(
+        entries
+            .into_iter()
+            .map(|(key, value)| (serde_yaml::Value::from(key), value))
+            .collect(),
+    )
+}
+
+fn provider_yaml(value: &serde_json::Value, path: &str) -> Result<serde_yaml::Value, String> {
+    use serde_json::Value as Json;
+    use serde_yaml::Value as Yaml;
+    Ok(match value {
+        Json::Null => Yaml::Null,
+        Json::Bool(value) => Yaml::Bool(*value),
+        Json::String(value) => Yaml::String(value.clone()),
+        Json::Number(value) => {
+            if let Some(value) = value.as_u64() {
+                Yaml::from(value)
+            } else if let Some(value) = value.as_i64() {
+                Yaml::from(value)
+            } else if let Some(integer) = decimal_integer(value.as_str()) {
+                integer
+            } else {
+                // Only a declared decimal may become a YAML float. Require the float's
+                // shortest decimal to retain the same decimal value; never round an integer
+                // or silently truncate an arbitrary-precision decimal to fit the handoff.
+                let text = value.as_str();
+                let decimal = text
+                    .contains(['.', 'e', 'E'])
+                    .then(|| value.as_f64())
+                    .flatten();
+                let exact = decimal.and_then(|float| {
+                    let back = serde_json::Number::from_f64(float)?;
+                    (decimal_parts(text)? == decimal_parts(back.as_str())?).then_some(float)
+                });
+                Yaml::from(exact.ok_or_else(|| {
+                    format!(
+                        "{path}: number cannot be represented without loss in plane configuration"
+                    )
+                })?)
+            }
+        }
+        Json::Array(values) => Yaml::Sequence(
+            values
+                .iter()
+                .enumerate()
+                .map(|(i, value)| provider_yaml(value, &format!("{path}[{i}]")))
+                .collect::<Result<_, _>>()?,
+        ),
+        Json::Object(values) => Yaml::Mapping(
+            values
+                .iter()
+                .map(|(key, value)| {
+                    Ok((
+                        Yaml::from(key.clone()),
+                        provider_yaml(value, &format!("{path}.{key}"))?,
+                    ))
+                })
+                .collect::<Result<_, String>>()?,
+        ),
+    })
+}
+
+// Decimal notation can name an exact integer beyond f64's precision. Construct it
+// with bounded checked arithmetic; an exponent never controls an allocation.
+fn decimal_integer(text: &str) -> Option<serde_yaml::Value> {
+    let (negative, digits, exponent) = decimal_parts(text)?;
+    if !(0..=19).contains(&exponent) || (negative && digits == "0") {
+        return None;
+    }
+    let magnitude = digits
+        .parse::<u64>()
+        .ok()?
+        .checked_mul(10_u64.checked_pow(u32::try_from(exponent).ok()?)?)?;
+    if negative {
+        i64::try_from(-i128::from(magnitude))
+            .ok()
+            .map(serde_yaml::Value::from)
+    } else {
+        Some(serde_yaml::Value::from(magnitude))
+    }
+}
+
+// Normalize decimal notation, not binary floating point: 1.25e2 and 125.0 agree.
+// Preserve the sign of zero, and refuse exponents too wide for this bounded handoff.
+fn decimal_parts(text: &str) -> Option<(bool, String, i64)> {
+    let negative = text.starts_with('-');
+    let text = text.strip_prefix('-').unwrap_or(text);
+    let (mantissa, exponent) = text.split_once(['e', 'E']).unwrap_or((text, "0"));
+    let fraction = mantissa
+        .split_once('.')
+        .map_or(0, |(_, fraction)| fraction.len());
+    let digits = mantissa.replace('.', "");
+    let digits = digits.trim_start_matches('0');
+    if digits.is_empty() {
+        return Some((negative, "0".into(), 0));
+    }
+    let significant = digits.trim_end_matches('0');
+    let exponent = exponent
+        .parse::<i64>()
+        .ok()?
+        .checked_sub(i64::try_from(fraction).ok()?)?
+        .checked_add(i64::try_from(digits.len() - significant.len()).ok()?)?;
+    Some((negative, significant.to_string(), exponent))
 }
 
 /// ONE `providers:` ENTRY as a door plane's member reaches it (THE DESIGN §6 step 2; #50, #51): the

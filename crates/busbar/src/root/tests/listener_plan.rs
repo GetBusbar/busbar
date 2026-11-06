@@ -228,7 +228,7 @@ fn projection_boundary_app(
             .collect()),
         listeners: Ok(topology),
         data_chain: vec![busbar_kernel::config::KEYS_MODULE.into()],
-        sections: Default::default(),
+        sections: Ok(Default::default()),
         providers: Default::default(),
         model_pools: Default::default(),
     }));

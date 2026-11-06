@@ -879,7 +879,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         &cfg.providers,
         &busbar_kernel::config_validate::MetadataPosture::default(),
     );
-    let sections = kernel_sections(&cfg);
+    let sections = kernel_sections(&cfg)?;
     let model_pools = crate::root::model_egress::ModelPools::of(&cfg);
 
     let store = crate::root::real_store::store();

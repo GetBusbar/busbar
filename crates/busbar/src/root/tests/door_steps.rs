@@ -8637,7 +8637,9 @@ fn the_limits_a_door_plane_is_handed_carry_the_operators_translate_cap() {
     let handed = |yaml: &str| {
         let deploy = busbar_kernel::config::deploy_from_yaml_str(yaml).expect("a deployment");
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
-        super::kernel_sections(&cfg)["limits"]["request_body_max_bytes"].as_u64()
+        super::kernel_sections(&cfg).expect("projectable sections")["limits"]
+            ["request_body_max_bytes"]
+            .as_u64()
     };
     assert_eq!(
         handed("providers: {}\nmodels: {}\nlimits:\n  request_body_max_bytes: 131072\n"),
@@ -8646,6 +8648,130 @@ fn the_limits_a_door_plane_is_handed_carry_the_operators_translate_cap() {
     assert_eq!(
         handed("providers: {}\nmodels: {}\n"),
         Some(busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT as u64)
+    );
+}
+
+fn numeric_projection_config() -> busbar_kernel::config::RootCfg {
+    let def: busbar_kernel::config::ProviderDef =
+        serde_yaml::from_str("protocol: dialect-a\nbase_url: http://127.0.0.1:9\n")
+            .expect("provider");
+    let defs = std::collections::HashMap::from([("p".to_string(), def)]);
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "providers:\n  p:\n    api_key: {env: BUSBAR_TEST_KEY}\nmodels:\n  over:\n    provider: p\n  plain:\n    provider: p\n",
+    ).expect("deployment");
+    busbar_kernel::config::resolve(&deploy, &defs).expect("resolved configuration")
+}
+
+#[test]
+fn kernel_sections_preserve_numeric_scalars_in_every_projected_section() {
+    let mut cfg = numeric_projection_config();
+    cfg.models.get_mut("over").unwrap().default_max_tokens = Some(u32::MAX);
+    let mut pool: busbar_kernel::config::pools::PoolCfg =
+        serde_yaml::from_str("members: [{model: over}, {model: plain}]").expect("pool");
+    pool.members[0].context_max = Some(usize::MAX);
+    cfg.pools.insert("all".into(), pool);
+    cfg.limits.default_max_tokens = u32::MAX;
+    cfg.limits.request_body_max_bytes = usize::MAX;
+    cfg.limits.datagram_line_memory_bytes = Some(usize::MAX - 1);
+    cfg.limits.reasoning_effort_budgets = busbar_kernel::config::limits::ReasoningEffortBudgets {
+        minimal: 1,
+        low: 1024,
+        medium: 8192,
+        high: u32::MAX,
+    };
+    cfg.providers.get_mut("p").unwrap().table.insert("numbers".into(),
+        serde_json::from_str(r#"{"unsigned":18446744073709551615,"signed":-9007199254740993,"nested":[0.1,null,1.2500,1e2]}"#).expect("exact JSON"));
+    let sections = super::kernel_sections(&cfg).expect("projectable configuration");
+    let models = &sections[busbar_contract::section::RESERVED_MODELS_KEY];
+    assert_eq!(
+        models["over"]["default_max_tokens"].as_u64(),
+        Some(u64::from(u32::MAX))
+    );
+    assert!(models["plain"].get("default_max_tokens").is_none());
+    let members = &sections[busbar_contract::section::RESERVED_POOLS_KEY]["all"]["members"];
+    assert_eq!(members[0]["context_max"].as_u64(), Some(usize::MAX as u64));
+    assert!(members[1].get("context_max").is_none());
+    let expected: serde_yaml::Value = serde_yaml::from_str(&format!(
+        "default_max_tokens: {}\nrequest_body_max_bytes: {}\ndatagram_line_memory_bytes: {}\nreasoning_effort_budgets: {{minimal: 1, low: 1024, medium: 8192, high: {}}}",
+        u32::MAX, usize::MAX, usize::MAX - 1, u32::MAX,
+    )).expect("exact limits");
+    assert_eq!(sections["limits"], expected);
+    let numbers = &sections[busbar_contract::plugin::Kind::Transport.root()]["p"]["numbers"];
+    assert_eq!(numbers["unsigned"].as_u64(), Some(u64::MAX));
+    assert_eq!(numbers["signed"].as_i64(), Some(-9_007_199_254_740_993));
+    assert_eq!(numbers["nested"][0].as_f64(), Some(0.1));
+    assert!(numbers["nested"][1].is_null());
+    assert_eq!(numbers["nested"][2].as_f64(), Some(1.25));
+    assert_eq!(numbers["nested"][3].as_f64(), Some(100.0));
+    cfg.limits.datagram_line_memory_bytes = None;
+    assert!(
+        super::kernel_sections(&cfg).unwrap()["limits"]["datagram_line_memory_bytes"].is_null()
+    );
+}
+
+#[test]
+fn kernel_sections_refuse_unrepresentable_provider_numbers_before_application() {
+    use busbar_kernel::appbuild::RootRules;
+    for number in [
+        "18446744073709551617",
+        "-9223372036854775809",
+        "0.1000000000000000000001",
+        "9007199254740993.1",
+        "1e400",
+        "1e-400",
+    ] {
+        let mut cfg = numeric_projection_config();
+        cfg.providers.get_mut("p").unwrap().table.insert(
+            "numbers".into(),
+            serde_json::from_str(&format!("[{{\"bad\":{number}}}]"))
+                .expect("arbitrary precision JSON"),
+        );
+        let error = super::kernel_sections(&cfg).expect_err("must not round the provider value");
+        assert!(error.contains("providers.p.numbers[0].bad"), "{error}");
+        assert_eq!(
+            super::Rules::default().check(&cfg),
+            Err(error.clone()),
+            "root validation refuses before config fetch, construction or persistence"
+        );
+        let projection = super::door_config(&cfg);
+        let projection = projection
+            .downcast_ref::<super::DoorConfig>()
+            .expect("door projection");
+        assert_eq!(projection.sections.as_ref().unwrap_err(), &error);
+        assert_eq!(projection.listeners.as_ref().unwrap_err(), &error);
+        assert_eq!(super::listener_needs(&cfg).unwrap_err(), error);
+    }
+}
+
+#[test]
+fn provider_decimal_projection_retains_declared_decimal_semantics() {
+    for text in ["0.1", "1e2", "1.2500", "-0.0", "1e-300"] {
+        let value = serde_json::from_str(text).expect("decimal JSON");
+        let projected =
+            super::provider_yaml(&value, "providers.p.decimal").expect("ordinary decimal");
+        assert!(projected.is_number(), "{text}");
+        assert_eq!(projected.as_f64(), value.as_f64(), "{text}");
+        if text == "-0.0" {
+            assert!(projected.as_f64().unwrap().is_sign_negative());
+        }
+    }
+    for (text, integer) in [
+        ("9007199254740993.0", 9_007_199_254_740_993),
+        ("9.007199254740993e15", 9_007_199_254_740_993),
+        ("18446744073709551615.0", u64::MAX),
+        ("27.0", 27),
+    ] {
+        let value = serde_json::from_str(text).expect("integral decimal JSON");
+        let projected =
+            super::provider_yaml(&value, "providers.p.decimal").expect("exact integral decimal");
+        assert_eq!(projected.as_u64(), Some(integer), "{text}");
+    }
+    let value = serde_json::from_str("-9223372036854775808.0").expect("signed integral decimal");
+    assert_eq!(
+        super::provider_yaml(&value, "providers.p.decimal")
+            .unwrap()
+            .as_i64(),
+        Some(i64::MIN)
     );
 }
 
@@ -10182,7 +10308,7 @@ fn a_models_protocol_override_is_handed_to_the_plane() {
     )
     .expect("parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
-    let sections = super::kernel_sections(&cfg);
+    let sections = super::kernel_sections(&cfg).expect("projectable sections");
     let models = sections
         .get(busbar_contract::section::RESERVED_MODELS_KEY)
         .expect("the models section");
