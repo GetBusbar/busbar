@@ -35,7 +35,7 @@ mod cancellation;
 const REQUEST: &[u8] = br##"{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"role":"user","messageId":"m1","contextId":"ctx-7","parts":[{"text":"hi"}]}}}"##;
 const ANSWER: &[u8] = br##"{"jsonrpc":"2.0","id":1,"result":{"role":"agent","messageId":"a1","parts":[{"text":"the agent's reply, that buffer that holds the whole request takes the answer in several writes. the agent's reply, long enough that a buffer that holds the whole request takes the answer in several writes. the agent's reply, long enough that a buffer that holds the whole request takes the answer in several writes. ","kind":"text"}],"kind":"message"}}"##;
 const ANSWER_OUT: &[u8] = br##"{"jsonrpc":"2.0","id":1,"result":{"role":"agent","messageId":"a1","parts":[{"text":"the agent's reply, that buffer that holds the whole request takes the answer in several writes. the agent's reply, long enough that a buffer that holds the whole request takes the answer in several writes. the agent's reply, long enough that a buffer that holds the whole request takes the answer in several writes. ","kind":"text"}],"kind":"message","contextId":"ctx-7"}}"##;
-const REFUSAL: &[u8] = br##"{"error":{"code":-32004,"data":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","domain":"a2a-protocol.org","reason":"UNSUPPORTED_OPERATION"}],"message":"denied"},"id":null,"jsonrpc":"2.0"}"##;
+const REFUSAL: &[u8] = br##"{"jsonrpc":"2.0","id":null,"error":{"code":-32004,"message":"denied","data":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","domain":"a2a-protocol.org","reason":"UNSUPPORTED_OPERATION"}]}}"##;
 const ADMIN_TOKEN: &str = "a2a-parity-operator-token";
 const CAP: usize = 32;
 const OPEN_CLAIMS: &[(&str, &str)] = &[
