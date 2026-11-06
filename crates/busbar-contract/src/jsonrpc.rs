@@ -309,9 +309,7 @@ fn numeric_id(number: &serde_json::Number) -> (bool, String, String) {
     let text = number.to_string();
     let negative = text.starts_with('-');
     let unsigned = text.strip_prefix('-').unwrap_or(&text);
-    let (mantissa, exponent) = unsigned
-        .split_once(['e', 'E'])
-        .map_or((unsigned, "0"), |parts| parts);
+    let (mantissa, exponent) = unsigned.split_once(['e', 'E']).unwrap_or((unsigned, "0"));
     let fraction_len = mantissa.split_once('.').map_or(0, |(_, f)| f.len());
     let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
     let significant = digits.trim_start_matches('0');

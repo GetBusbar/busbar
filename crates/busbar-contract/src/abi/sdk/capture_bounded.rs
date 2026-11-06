@@ -112,7 +112,10 @@ mod tests {
     #[test]
     fn event_parts_keep_the_original_prefix_and_field_order() {
         let mut out = Bounded::new(18);
-        assert!(write!(out, "{}: {}{}", "target", "message", " answer=42").is_err());
+        let target = "target";
+        let message = "message";
+        let fields = " answer=42";
+        assert!(write!(out, "{target}: {message}{fields}").is_err());
         assert_eq!(out.into_string(), "target: message an");
     }
 }
