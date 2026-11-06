@@ -968,6 +968,8 @@ struct Scripted {
     facts: Mutex<Option<ConnFacts>>,
     /// Every read fails with this, the table naming this cause.
     failing: Option<(ConnError, ConnCause)>,
+    /// Prepared observation failure, lost when close removes connection custody.
+    observation_failure: Option<(bool, ConnCause)>,
     /// The member binding every request is authenticated with (`auth_of`); `None` = none.
     member_auth: Option<busbar_contract::conn::ConnAuth>,
     /// The member binding every request this table carries is authed by (none = no binding).
@@ -1162,14 +1164,25 @@ impl DeclaredConns for Scripted {
         Ok(())
     }
 
-    fn cause(&self, _: InstanceId, _: ConnId) -> Option<ConnCause> {
-        self.failing.as_ref().map(|(_, c)| c.clone())
+    fn cause(&self, caller: InstanceId, conn: ConnId) -> Option<ConnCause> {
+        self.slab.get(caller, conn).ok()?;
+        self.observation_failure
+            .as_ref()
+            .map(|(_, c)| c.clone())
+            .or_else(|| self.failing.as_ref().map(|(_, c)| c.clone()))
     }
 
     fn landed(&self, caller: InstanceId, conn: ConnId, _: u64) -> Result<(), ConnError> {
         self.slab.get(caller, conn)?;
         if self.landing {
             return Err(ConnError::Pending);
+        }
+        if self
+            .observation_failure
+            .as_ref()
+            .is_some_and(|(landed, _)| *landed)
+        {
+            return Err(ConnError::Refused);
         }
         Ok(())
     }
@@ -1260,6 +1273,13 @@ impl Conns for Scripted {
     }
     fn facts(&self, owner: InstanceId, conn: ConnId) -> Result<ConnFacts, ConnError> {
         self.slab.get(owner, conn)?;
+        if self
+            .observation_failure
+            .as_ref()
+            .is_some_and(|(landed, _)| !*landed)
+        {
+            return Err(ConnError::Refused);
+        }
         let mut pending = self.facts_pends.lock().unwrap();
         if *pending > 0 {
             *pending -= 1;

@@ -778,18 +778,20 @@ service!(
             Err(e) => return refusal(e).into(),
         };
         if let Err(error) = table.landed(id, conn, conn_ticket(head.handle.ticket)) {
+            let answer = refusal_of(error, id, table, conn);
             if error != ConnError::Pending {
                 fail_prepared(st, i.stream, error);
             }
-            return refusal(error).into();
+            return answer.into();
         }
         let f = match table.facts(id, conn) {
             Ok(f) => f,
             Err(e) => {
+                let answer = refusal_of(e, id, table, conn);
                 if e != ConnError::Pending {
                     fail_prepared(st, i.stream, e);
                 }
-                return refusal(e).into();
+                return answer.into();
             }
         };
         let hash = f.peer_cert.as_ref().map(|c| c.fingerprint.as_str());

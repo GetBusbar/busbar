@@ -286,3 +286,43 @@ fn prepared_request_commit_cannot_relax_previously_confirmed_security() {
     assert!(ready(&close(&p, stream)));
     assert_eq!(table.closed.lock().unwrap().len(), 1);
 }
+
+#[test]
+fn prepared_observation_preserves_failure_cause_before_close_and_on_replay() {
+    use busbar_contract::abi::host::conn::connector::{
+        CAUSE_CONNECT, CAUSE_FRAMER, CAUSE_SECURITY,
+    };
+    for landed in [false, true] {
+        for stage in [CAUSE_CONNECT, CAUSE_FRAMER, CAUSE_SECURITY] {
+            let table = Arc::new(Scripted {
+                framed: true,
+                observation_failure: Some((
+                    landed,
+                    ConnCause {
+                        stage,
+                        text: "original connection failure".into(),
+                    },
+                )),
+                ..Scripted::default()
+            });
+            let p = bound_over(&table);
+            let stream = opened_stream(&p, 0).value;
+            for _ in 0..2 {
+                let (answer, secure) = facts(&p, 1, stream);
+                assert_eq!(answer.outcome, RawOutcome::of(Outcome::Refused));
+                assert_eq!(answer.value, stage);
+                assert_eq!(error_text(&answer), "original connection failure");
+                assert_eq!(secure, 0);
+                let closed = table.closed.lock().unwrap();
+                assert_eq!(closed.len(), 1);
+                assert!(
+                    table.cause(closed[0].0, closed[0].1).is_none(),
+                    "closed connection must no longer expose its cause"
+                );
+                assert!(table.opened.lock().unwrap().is_empty());
+                assert!(table.writes.lock().unwrap().is_empty());
+            }
+            assert_eq!(table.prepared.lock().unwrap().len(), 1);
+        }
+    }
+}
