@@ -83,6 +83,27 @@ pub use registry::{
 };
 pub use stage::{install_native_load_guard, sweep_dead_staging, NativeLoadGuard};
 
+/// Run plugin lifecycle work synchronously on the loader's permanent worker pool.
+///
+/// The completion rendezvous finishes before this returns, including when the callback panics,
+/// so closures and results may borrow caller-owned data without being `'static`. Both must be
+/// `Send` because the callback runs, and its result is produced, on another thread.
+/// Callback panics return their original payload as `Err`; the worker remains available.
+/// This does not change ABI ownership or the existing request call/free paths.
+///
+/// # Panics
+///
+/// Worker acquisition or rendezvous failures retain the private worker's panic behavior. A panic
+/// does not guarantee that the callback started; callers must retain their resource cleanup
+/// invariants on that path.
+pub fn run_plugin_lifecycle<F, R>(f: F) -> std::thread::Result<R>
+where
+    F: FnOnce() -> R + Send,
+    R: Send,
+{
+    ffi_thread::on_plugin_thread(f)
+}
+
 pub fn intern_name(name: &str) -> &'static str {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};

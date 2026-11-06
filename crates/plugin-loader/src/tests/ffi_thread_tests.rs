@@ -3,6 +3,8 @@
 
 use std::sync::Mutex;
 
+use crate::run_plugin_lifecycle;
+
 use super::{on_plugin_thread, on_plugin_thread_in, Pool};
 
 static IDENTITY: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -114,4 +116,43 @@ fn concurrent_callers_get_distinct_workers() {
         n,
         "each concurrent caller must get its own worker, not queue behind a shared one"
     );
+}
+
+#[test]
+fn lifecycle_callback_runs_on_an_actual_plugin_worker() {
+    let _serial = identity_lock();
+    let caller = std::thread::current().id();
+    let (worker, name) = run_plugin_lifecycle(|| {
+        let current = std::thread::current();
+        (current.id(), current.name().map(str::to_owned))
+    })
+    .unwrap();
+    assert_ne!(worker, caller);
+    assert_eq!(name.as_deref(), Some("busbar-plugin-ffi"));
+}
+
+#[test]
+fn borrowed_input_and_result_remain_valid_after_the_rendezvous() {
+    let _serial = identity_lock();
+    let mut input = String::from("borrowed");
+    run_plugin_lifecycle(|| input.push_str(" lifecycle")).unwrap();
+    let result = run_plugin_lifecycle(|| input.as_str()).unwrap();
+    assert_eq!(result, "borrowed lifecycle");
+}
+
+#[test]
+fn callback_panic_preserves_its_payload_and_the_pool_remains_usable() {
+    let _serial = identity_lock();
+    let caller = std::thread::current().id();
+    let mut ran_on = None;
+    let outcome: std::thread::Result<()> = run_plugin_lifecycle(|| {
+        ran_on = Some(std::thread::current().id());
+        std::panic::panic_any(String::from("lifecycle panic payload"));
+    });
+    assert_ne!(ran_on.unwrap(), caller);
+    let payload = outcome.unwrap_err().downcast::<String>().unwrap();
+    assert_eq!(*payload, "lifecycle panic payload");
+    let (worker, value) = run_plugin_lifecycle(|| (std::thread::current().id(), 42)).unwrap();
+    assert_ne!(worker, caller);
+    assert_eq!(value, 42);
 }
