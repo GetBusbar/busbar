@@ -56,6 +56,7 @@ fn install_auth_plugin(dir: &Path) {
         "e2e-idp",
         true,
     );
+    common::fresh_namespace::stage(dir);
 }
 
 fn plane_section() -> String {
@@ -78,6 +79,10 @@ fn write_configs(dir: &Path, extra: &str) {
     } else {
         ""
     };
+    let selected_store = common::fresh_namespace::selection(dir);
+    let store = selected_store
+        .clone()
+        .unwrap_or_else(|| serde_json::json!({"module":"memory"}));
     std::fs::write(
         dir.join("config.yaml"),
         format!(
@@ -85,25 +90,22 @@ fn write_configs(dir: &Path, extra: &str) {
 admin_listen: "127.0.0.1:0"
 advanced:
   allow_destinations: ["127.0.0.1"]
-store: {{module: memory}}
+store: {store}
 {providers}{section}{extra}"#,
             section = plane_section(),
         ),
     )
     .unwrap();
+    if selected_store.is_some() {
+        common::fresh_namespace::initialize(dir, &base_command(dir, None))
+            .expect("the genuinely new fixture namespace initializes before stdio starts");
+    }
 }
 
 fn governed_config(dir: &Path, bindings_and_more: &str) -> String {
     let settings = common::credentials::issuer_settings_yaml(canonical(), 6);
     format!(
-        r#"plugins:
-  enabled: true
-  dir: '{plugins}'
-  trust:
-    allow_unsigned: true
-    publishers:
-      - name: '{fixture_publisher}'
-        public_key: '{fixture_public_key}'
+        r#"plugins: {plugins}
 identity-providers:
   idp:
     module: e2e-idp-module
@@ -112,9 +114,7 @@ identity-providers:
   chain: [idp]
   signing_key: {{ env: BUSBAR_SIGNING_KEY }}
 {bindings_and_more}"#,
-        plugins = dir.join("plugins").display(),
-        fixture_publisher = common::plugins::FIXTURE_PUBLISHER,
-        fixture_public_key = common::credentials::harness_release_key_hex(),
+        plugins = common::plugins::trusted_config_document(&dir.join("plugins")),
     )
 }
 
@@ -125,9 +125,14 @@ fn spawn(dir: &Path, credential: Option<&str>) -> StdioChild {
 }
 
 fn command(dir: &Path, credential: Option<&str>) -> Command {
+    let mut cmd = base_command(dir, credential);
+    cmd.arg(surface("serve_flag"));
+    cmd
+}
+
+fn base_command(dir: &Path, credential: Option<&str>) -> Command {
     let mut cmd = Command::new(common::boot::exe());
-    cmd.arg(surface("serve_flag"))
-        .env("MOCK_KEY", "test-key-value")
+    cmd.env("MOCK_KEY", "test-key-value")
         .env(
             "BUSBAR_SIGNING_KEY",
             "0000000000000000000000000000000000000000000000000000000000000001",
@@ -600,4 +605,52 @@ fn a_shutdown_signal_ends_a_live_line_session_cleanly() {
     });
     assert_eq!(code, 0, "a signalled stop is a clean shutdown: {stderr}");
     assert!(child.stdin.is_some(), "stdin was never closed by the test");
+}
+
+#[test]
+fn a_real_created_namespace_retains_its_baseline_and_cannot_be_initialized_as_fresh_twice() {
+    let dir = fixture_dir("principal-baseline");
+    install_auth_plugin(&dir);
+    write_configs(&dir, &governed_config(&dir, ""));
+    let result = common::fresh_namespace::initialize(&dir, &base_command(&dir, None));
+    assert_eq!(
+        result.unwrap_err(),
+        "a retained namespace cannot be presented as freshly created"
+    );
+    assert!(dir.join("principal-fresh.json").is_file());
+    let reports: Vec<_> = std::fs::read_dir(dir.join("principal-setup"))
+        .expect("actual cold CLI observations were retained")
+        .map(|entry| entry.expect("the observation entry reads").path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.split_once('-').is_some_and(|(ordinal, action)| {
+                        ordinal.parse::<u64>().is_ok() && action == "initialize-fresh.stdout"
+                    })
+                })
+        })
+        .collect();
+    assert_eq!(
+        reports.len(),
+        1,
+        "one actual initialization observation was emitted"
+    );
+    let report: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&reports[0]).expect("the emitted initialization stdout reads"),
+    )
+    .expect("the emitted product initialization report is JSON");
+    assert_eq!(report["action"], "initialize-fresh");
+    assert_eq!(report["ok"], true);
+    let creation: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(dir.join("principal-namespace-creation.json")).unwrap(),
+    )
+    .unwrap();
+    let selected = common::fresh_namespace::selection(&dir).unwrap();
+    assert_eq!(creation["database"], selected["settings"]["db_path"]);
+    assert_eq!(
+        selected["settings"],
+        common::plugins::application_store_settings(&dir)
+    );
+    let _ = std::fs::remove_dir_all(dir);
 }

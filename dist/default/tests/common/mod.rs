@@ -5,6 +5,7 @@
 
 pub mod boot;
 pub mod credentials;
+pub mod fresh_namespace;
 pub mod lines;
 pub mod otlp;
 pub mod pinned_planes;
