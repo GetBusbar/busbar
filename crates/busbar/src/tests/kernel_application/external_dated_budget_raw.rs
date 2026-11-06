@@ -202,11 +202,11 @@ fn exact_opening_and_same_timestamp_cards_survive_later_day_and_restart() {
             TOTAL_CENTS - OPENING_FEE
         )
     );
-    assert!(gov
-        .adjust_usage(&second, &ambiguous)
-        .unwrap_err()
-        .to_string()
-        .contains("multiple raw rate entries"));
+    assert!(matches!(
+        gov.adjust_usage(&second, &ambiguous).unwrap(),
+        Err(busbar_kernel::governance::AdjustRefused::Preparation { reason })
+            if reason.contains("multiple raw rate entries")
+    ));
     assert_eq!(
         reads(&gov),
         (

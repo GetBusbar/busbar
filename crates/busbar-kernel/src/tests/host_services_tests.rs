@@ -1681,14 +1681,47 @@ fn a_unit_not_in_flight_or_no_unit_is_not_entitled_and_ungoverned_is() {
     assert_eq!(stranger.value, svc::NOT_ENTITLED);
 }
 
-/// A judge that refuses `10.0.0.5` as internal and admits every other literal, recording what it
-/// was asked.
+#[derive(Debug, PartialEq, Eq)]
+struct TargetJudgement {
+    authority: String,
+    secure: bool,
+    class: u32,
+    refuse_private: bool,
+    reach: bool,
+}
+
+/// Records every question, refuses the private fixture host and plaintext targets,
+/// and pins admitted destinations to the fixture's public address.
 #[derive(Default)]
-struct FakeGuard(Mutex<Vec<String>>);
+struct FakeGuard {
+    names: Mutex<Vec<String>>,
+    targets: Mutex<Vec<TargetJudgement>>,
+}
 
 impl DestJudge for FakeGuard {
+    fn judge_target(
+        &self,
+        target: Destination<'_>,
+        refuse_private: bool,
+        reach: bool,
+        done: Box<dyn FnOnce(Admitted) + Send>,
+    ) -> Option<Admitted> {
+        self.targets.lock().unwrap().push(TargetJudgement {
+            authority: target.authority.to_owned(),
+            secure: target.secure,
+            class: target.egress_class,
+            refuse_private,
+            reach,
+        });
+        // Keep the production open-web rule: a bare authority conveys no TLS intent.
+        if !target.secure {
+            return Some(Err(svc::DEST_PLAINTEXT.into()));
+        }
+        self.judge(target.authority, target.egress_class, refuse_private, done)
+    }
+
     fn judge_name(&self, dest: &str, _class: u32, _refuse_private: bool) -> Result<(), u64> {
-        self.0.lock().unwrap().push(dest.to_owned());
+        self.names.lock().unwrap().push(dest.to_owned());
         if dest.contains("10.0.0.5") {
             Err(svc::DEST_INTERNAL)
         } else {
@@ -1729,15 +1762,33 @@ fn dest_judge_answers_the_installed_guard_refusal() {
         assert_eq!(got.value, svc::DEST_INTERNAL, "class {class}");
     }
     assert_eq!(
-        s.judge_dial("10.0.0.5:80", 0, Box::new(|_| {})),
+        s.judge_destination(
+            Destination {
+                authority: "10.0.0.5:443",
+                secure: true,
+                egress_class: 4,
+            },
+            Box::new(|_| panic!("the fixture answers immediately")),
+        ),
         Some(Err(svc::DEST_INTERNAL))
     );
-    assert!(guard.0.lock().unwrap().len() >= 3);
+    assert_eq!(
+        *guard.targets.lock().unwrap(),
+        vec![TargetJudgement {
+            authority: "10.0.0.5:443".into(),
+            secure: true,
+            class: 4,
+            refuse_private: false,
+            reach: false,
+        }]
+    );
+    assert_eq!(guard.names.lock().unwrap().len(), 3);
 }
 
 #[test]
 fn dest_judge_answers_the_installed_guard_admission() {
-    let s = KernelServices::new().with_dest_judge(Arc::new(FakeGuard::default()));
+    let guard = Arc::new(FakeGuard::default());
+    let s = KernelServices::new().with_dest_judge(guard.clone());
     let (_, later) = recorder();
     let got = verdict_now(s.dest_judge(
         "https://api.example.com/",
@@ -1748,8 +1799,30 @@ fn dest_judge_answers_the_installed_guard_admission() {
     assert_eq!(got.value, svc::DEST_ALLOWED);
     assert_eq!(got.bytes, b"93.184.216.34");
     assert_eq!(
-        s.judge_dial("api.example.com:443", 0, Box::new(|_| {})),
+        s.judge_destination(
+            Destination {
+                authority: "api.example.com:443",
+                secure: true,
+                egress_class: 0,
+            },
+            Box::new(|_| panic!("the fixture answers immediately")),
+        ),
         Some(Ok("93.184.216.34:443".parse().unwrap()))
+    );
+    assert_eq!(
+        s.judge_dial("api.example.com:443", 0, Box::new(|_| panic!("no pend"))),
+        Some(Err(svc::DEST_PLAINTEXT)),
+        "a bare authority must not acquire secure intent from its port"
+    );
+    assert_eq!(
+        *guard.targets.lock().unwrap(),
+        [true, false].map(|secure| TargetJudgement {
+            authority: "api.example.com:443".into(),
+            secure,
+            class: 0,
+            refuse_private: false,
+            reach: false,
+        })
     );
 }
 

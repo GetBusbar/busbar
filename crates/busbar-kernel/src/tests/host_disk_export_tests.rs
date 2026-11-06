@@ -138,6 +138,9 @@ fn file_manifest(name: &str, declares: Declares) -> Manifest {
     .expect("the actual manifest parses");
     manifest.name = name.into();
     manifest.alias = name.into();
+    // This fixture compares first-party grants through both doors. Qualification
+    // manifests have their own publisher; explicit third-party cases override this.
+    manifest.publisher = busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into();
     manifest.declares = declares;
     manifest.statement = Some(hex::encode(
         rendering_of(FILE_DOOR).expect("the actual file Statement"),
@@ -898,6 +901,9 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
     );
     let name = "s1-fixture";
     let doors = file_registries(file_manifest(name, renaming(declared.clone())));
+    for registry in &doors {
+        assert!(registry.resolve(name).unwrap().first_party());
+    }
     let dir = scratch("s1");
     let path = dir.join("requests.jsonl");
     let [linked, dropped] = doors.map(|registry| {
@@ -945,6 +951,7 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
     let mut third = file_manifest("s1-third-party", declared.clone());
     third.publisher = "acme".into();
     let [_, registry] = file_registries(third);
+    assert!(!registry.resolve("s1-third-party").unwrap().first_party());
     let sink = ExportRows::new(&registry, Arc::clone(&d))
         .open(
             "s1-third-party",
@@ -952,6 +959,13 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
             &file_settings(&path),
         )
         .expect("a third party opens; its declaration is simply not granted");
+    for (s, k) in &series {
+        assert!(!busbar_plugin_loader::observe::first_party_series(
+            "s1-third-party",
+            s,
+            k
+        ));
+    }
     drop(sink);
     for (s, k) in &series {
         assert!(!busbar_plugin_loader::observe::first_party_series(
