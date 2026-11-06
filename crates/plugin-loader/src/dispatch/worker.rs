@@ -221,6 +221,8 @@ pub struct Done<I, O> {
     pub disposition: Option<u32>,
     /// The record writes that `cancel` carried (a plane's, SEAM-L(r)).
     pub cancel_writes: Vec<busbar_contract::plane_calls::CancelWrite>,
+    /// Host-owned sibling retirement; never supplied by a plugin.
+    pub(crate) retirement: Option<busbar_contract::plane_calls::Retirement>,
 }
 
 struct Queued<I, O> {
@@ -386,6 +388,7 @@ impl<I: InFrame, O: OutFrame> Settle for ReplySlot<Queued<I, O>> {
             short: false,
             disposition: None,
             cancel_writes: Vec::new(),
+            retirement: None,
         }))
     }
 }
@@ -443,6 +446,7 @@ impl<I: InFrame, O: OutFrame> Reply<I, O> {
             short: false,
             disposition: None,
             cancel_writes: Vec::new(),
+            retirement: None,
         }));
         Self { slot, owner: None }
     }
@@ -496,6 +500,7 @@ pub(crate) trait Job: Send {
     fn heads(&mut self) -> (*mut InHead, *mut OutHead, u32);
     fn keep_lent(&self) -> Option<Lent>;
     fn closes_unit(&self, slot: u32, final_answer: bool) -> bool;
+    fn piece(&self, slot: u32) -> Option<busbar_contract::abi::plane::OnPieceIn>;
 
     fn finish(self: Box<Self>, c: Crossed, short: Option<Arc<ShortLease>>) -> bool;
 }
@@ -524,6 +529,10 @@ impl<I: InFrame, O: OutFrame> Job for JobOf<I, O> {
         unit_cancel::closes(&self.instance, slot, &self.frame, final_answer)
     }
 
+    fn piece(&self, slot: u32) -> Option<busbar_contract::abi::plane::OnPieceIn> {
+        unit_cancel::piece(&self.instance, slot, &self.frame.input)
+    }
+
     fn finish(self: Box<Self>, c: Crossed, short: Option<Arc<ShortLease>>) -> bool {
         let lease = UnhandedLease::new(&self.instance, self.framing.clone(), c.lease);
         self.reply.put(Queued {
@@ -536,6 +545,7 @@ impl<I: InFrame, O: OutFrame> Job for JobOf<I, O> {
                 short: c.short,
                 disposition: c.disposition,
                 cancel_writes: c.cancel_writes,
+                retirement: c.retirement,
             },
             lease,
             short: UnhandedShort(short),
@@ -1161,9 +1171,13 @@ impl Worker {
                     drop_after_lock(Box::new(job));
                     return true;
                 }
-                if !self.accept_unit(st, ticket, &meta) {
+                if let Err(retired) = self.accept_unit(st, ticket, &meta, &*job) {
                     meta.give_back();
-                    meta.reply.settle(Outcome::Refused, false);
+                    if retired {
+                        job.finish(unit_cancel::completed(), None);
+                    } else {
+                        meta.reply.settle(Outcome::Refused, false);
+                    }
                     return true;
                 }
                 match self.entry(st, ticket) {

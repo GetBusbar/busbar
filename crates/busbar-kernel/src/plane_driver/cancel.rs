@@ -172,6 +172,11 @@ impl PlaneDriver {
                         unsettled.push(unit);
                         continue;
                     }
+                    Some(_) if flight.retirement().is_some() => {
+                        // The sibling owns no settlement, writes, bill or cancellation.
+                        self.calls.recycle(unit.ticket);
+                        continue;
+                    }
                     Some(done) => match (done.disposition, done.outcome) {
                         (Some(d), _) => {
                             bill_ready = true;

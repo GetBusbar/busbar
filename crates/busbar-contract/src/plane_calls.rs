@@ -28,10 +28,23 @@ pub struct Answered {
     pub disposition: Option<u32>,
 }
 
+/// Host-owned reason an operation ended without another plugin answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retirement {
+    /// The primary operation completed the unit. Its settlement still owns the result.
+    UnitCompleted,
+}
+
 /// One `on_piece` in flight on its ticket. Dropping it before it answered is a client drop.
 pub trait PieceInFlight: Future<Output = Answered> + Send + Unpin {
     /// The answer, if it has arrived; never waits.
     fn settled(&mut self) -> Option<Answered>;
+
+    /// Stable after settlement; absent before settlement. A retired sibling has no plugin output
+    /// and must not publish successful unit completion or repeat its primary's settlement.
+    fn retirement(&self) -> Option<Retirement> {
+        None
+    }
 
     /// The `out` the answer carried; `None` before the answer, or when the op was faulted
     fn out(&self) -> Option<OnPieceOut>;

@@ -159,7 +159,7 @@ mod session_wake_tests;
 
 fn cause(end: &End) -> Option<ReasonCode> {
     match end {
-        End::Done => None,
+        End::Done | End::RetiredByCompletion => None,
         End::Failed(reason) | End::Cancel(reason, _) => Some(*reason),
         End::Exhausted(..) => Some(ReasonCode::BreakerOpen),
         End::Vetoed(..) => Some(ReasonCode::HookVeto),
@@ -394,6 +394,10 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         end: End,
         ended: &EndCell,
     ) -> Result<(), ReasonCode> {
+        if matches!(end, End::RetiredByCompletion) {
+            run.finish();
+            return Ok(());
+        }
         let why = match *ended.borrow() {
             Some(Halt::Over) => None,
             Some(Halt::Cause(reason)) => Some(reason),

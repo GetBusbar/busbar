@@ -1301,6 +1301,9 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
 
         match &end {
             route::End::Done | route::End::Cancel(ReasonCode::ClientGone, _) => {}
+            route::End::RetiredByCompletion => {
+                self.response_tap(false, self.status_for(ReasonCode::PlanePanic))
+            }
             route::End::Failed(reason) | route::End::Cancel(reason, _) => {
                 self.response_tap(false, self.status_for(*reason));
             }
@@ -1309,6 +1312,8 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         }
         let answer = match end {
             route::End::Done => StepAnswer::proceed(token, RoutePlan::default()),
+            // Request units have no sibling: host retirement here is a routing fault.
+            route::End::RetiredByCompletion => failed(token, ReasonCode::PlanePanic),
             route::End::Failed(reason) => failed(token, reason),
             route::End::Exhausted(status, retry_after, detail) => {
                 let rendered = self.render_as(

@@ -30,7 +30,7 @@ impl End {
     fn crossed(self, timeout: Outcome) -> Crossed {
         match self {
             Self::Fault => Crossed::host(Outcome::Fault),
-            Self::Completed => Crossed::host(timeout),
+            Self::Completed => completed(),
             Self::Cancelled { disposition } => Crossed {
                 disposition: Some(disposition),
                 ..Crossed::host(timeout)
@@ -42,6 +42,8 @@ impl End {
 pub(super) struct Binding {
     instance: Arc<Instance>,
     unit: u64,
+    stream: Option<u64>,
+    completion_sibling: bool,
     end: Option<End>,
     final_answer: bool,
 }
@@ -110,6 +112,28 @@ pub(super) fn key<I: InFrame>(instance: &Instance, slot: u32, input: &I) -> Opti
         .filter(|unit| *unit != 0)
 }
 
+pub(super) fn completed() -> Crossed {
+    Crossed {
+        retirement: Some(busbar_contract::plane_calls::Retirement::UnitCompleted),
+        ..Crossed::host(Outcome::Refused)
+    }
+}
+
+pub(super) fn piece<I: InFrame>(instance: &Instance, slot: u32, input: &I) -> Option<OnPieceIn> {
+    if instance.kind != KindCode::Plane
+        || slot != plane_slot::ON_PIECE
+        || size_of::<I>() < size_of::<OnPieceIn>()
+    {
+        return None;
+    }
+    // SAFETY: this is a complete host-owned input frame of the checked kind and slot.
+    Some(unsafe {
+        std::ptr::from_ref(input)
+            .cast::<OnPieceIn>()
+            .read_unaligned()
+    })
+}
+
 pub(super) fn final_piece<I: InFrame>(instance: &Instance, slot: u32, input: &I) -> bool {
     if instance.kind != KindCode::Plane
         || slot != plane_slot::ON_PIECE
@@ -169,13 +193,17 @@ impl Worker {
         if instance.kind != KindCode::Plane || unit == 0 {
             return false;
         }
-        let (end, final_answer) = st
+        let (end, final_answer, stream) = st
             .entries
             .iter()
             .filter_map(|e| e.unit_binding.as_ref())
             .filter(|b| b.matches(instance, unit))
-            .fold((None, false), |(end, final_answer), b| {
-                (end.or(b.end), final_answer || b.final_answer)
+            .fold((None, false, None), |(end, final_answer, stream), b| {
+                (
+                    end.or(b.end),
+                    final_answer || b.final_answer,
+                    stream.or(b.stream),
+                )
             });
         let Some((_, entry)) = self.entry(st, ticket) else {
             return false;
@@ -186,32 +214,68 @@ impl Worker {
         entry.unit_binding = Some(Binding {
             instance: Arc::clone(instance),
             unit,
+            stream,
+            completion_sibling: false,
             end,
             final_answer,
         });
         true
     }
 
-    pub(super) fn accept_unit(&self, st: &mut WorkerState, ticket: Ticket, meta: &Meta) -> bool {
+    // Err(true) is a known completed sibling's empty transport cleanup; Err(false) is refusal.
+    pub(super) fn accept_unit(
+        &self,
+        st: &mut WorkerState,
+        ticket: Ticket,
+        meta: &Meta,
+        job: &dyn Job,
+    ) -> Result<(), bool> {
         let Some(unit) = meta.unit_key else {
-            return true;
+            return Ok(());
         };
+        let known = self.entry(st, ticket).is_some_and(|(_, e)| {
+            !e.client_dropped
+                && e.unit_binding
+                    .as_ref()
+                    .is_some_and(|b| b.matches(&meta.instance, unit))
+        });
         if !self.bind_unit_entry(st, ticket, &meta.instance, unit) {
-            return false;
+            return Err(false);
         }
-        if meta.unit_final {
-            for entry in &mut st.entries {
-                if let Some(binding) = entry
-                    .unit_binding
-                    .as_mut()
-                    .filter(|b| b.matches(&meta.instance, unit))
-                {
-                    binding.final_answer = true;
+        let input = job.piece(meta.slot);
+        let binding = self
+            .entry(st, ticket)
+            .and_then(|(_, e)| e.unit_binding.as_ref())
+            .expect("bound unit");
+        if binding.closed() {
+            use busbar_contract::abi::plane::{FROM_FAR_END, PIECE_CUT, PIECE_LAST};
+            let cleanup = known
+                && binding.completion_sibling
+                && matches!(binding.end, Some(End::Completed))
+                && input.is_some_and(|i| {
+                    i.stream != 0
+                        && binding.stream == Some(i.stream)
+                        && i.from == FROM_FAR_END
+                        && i.flags & PIECE_LAST != 0
+                        && i.flags & !(PIECE_LAST | PIECE_CUT) == 0
+                        && i.bytes.len == 0
+                        && i.head_fields_len == 0
+                });
+            return Err(cleanup);
+        }
+        for entry in &mut st.entries {
+            if let Some(binding) = entry
+                .unit_binding
+                .as_mut()
+                .filter(|b| b.matches(&meta.instance, unit))
+            {
+                if let Some(input) = input {
+                    binding.stream = Some(input.stream);
                 }
+                binding.final_answer |= meta.unit_final;
             }
         }
-        self.entry(st, ticket)
-            .is_some_and(|(_, e)| e.unit_binding.as_ref().is_some_and(|b| !b.closed()))
+        Ok(())
     }
 
     pub(super) fn request_unit_cancel(
@@ -437,6 +501,19 @@ impl Worker {
                 .is_some_and(|(slot, job)| job.closes_unit(slot, final_answer));
         if !terminal {
             return;
+        }
+        let stream = st.entries[primary as usize]
+            .current
+            .as_ref()
+            .and_then(|c| c.job.as_ref().and_then(|job| job.piece(c.meta.slot)))
+            .map(|input| input.stream);
+        for &idx in &members {
+            let binding = st.entries[idx as usize]
+                .unit_binding
+                .as_mut()
+                .expect("completed unit");
+            binding.completion_sibling = idx != primary;
+            binding.stream = stream;
         }
         self.retire_unit(
             st,

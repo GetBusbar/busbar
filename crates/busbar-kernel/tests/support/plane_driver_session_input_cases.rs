@@ -30,7 +30,9 @@ fn input(id: u32, dropped: &Arc<Mutex<Vec<u32>>>) -> SessionInput {
     }
 }
 
-struct OwnedCaller(tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<SessionInput>>);
+pub(super) struct OwnedCaller(
+    pub(super) tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<SessionInput>>,
+);
 
 impl CallerEnd for OwnedCaller {
     fn head(&self, _: u32, _: Vec<(Vec<u8>, Vec<u8>)>) {}
@@ -76,7 +78,7 @@ impl SessionCaller for CreditCaller {
     }
 }
 
-async fn drive<C: SessionCaller>(
+pub(super) async fn drive<C: SessionCaller>(
     units: &busbar_kernel::plane_driver::PlaneUnits<'_, common::TestUnits, cases::Far, C>,
 ) -> busbar_contract::caps::Outcome {
     use busbar_kernel::teller::{run_unit_async, AccrualMeter, Ended, Kernel, Run};

@@ -304,6 +304,7 @@ impl<I: InFrame, O: OutFrame> InFlight<I, O> {
     fn answer_out(&self) -> Option<O> {
         self.done
             .as_ref()
+            .filter(|d| d.retirement.is_none())
             .and_then(|d| d.frame.as_ref())
             .map(|f| f.out)
     }
@@ -316,6 +317,10 @@ impl ServeInFlight for InFlight<ServeIn, ServeOut> {
 }
 
 impl PieceInFlight for InFlight<OnPieceIn, OnPieceOut> {
+    fn retirement(&self) -> Option<busbar_contract::plane_calls::Retirement> {
+        self.done.as_ref().and_then(|d| d.retirement)
+    }
+
     fn settled(&mut self) -> Option<Answered> {
         if self.done.is_none() {
             self.done = self.reply.wait(Duration::ZERO);

@@ -71,6 +71,7 @@ impl<I: InFrame, O: OutFrame> Future for Ticketed<I, O> {
                 short: false,
                 disposition: None,
                 cancel_writes: Vec::new(),
+                retirement: None,
             });
         };
         let done = std::task::ready!(Pin::new(reply).poll(cx));

@@ -492,6 +492,9 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
 pub(crate) enum End {
     Done,
 
+    /// A sibling completed the unit; that primary still owns settlement and outcome.
+    RetiredByCompletion,
+
     Failed(ReasonCode),
 
     Exhausted(u32, Option<u32>, &'static str),
@@ -667,7 +670,7 @@ impl<'u> Pumping<'u> {
         })
     }
 
-    async fn cross(&mut self, p: &Piece) -> (Answered, Option<Answer>, Option<ReasonCode>) {
+    async fn cross(&mut self, p: &Piece) -> (Answered, Option<Answer>, Option<ReasonCode>, bool) {
         self.piece_flags = p.flags;
 
         if p.from == FROM_KERNEL && p.attempt_no > 0 {
@@ -695,6 +698,7 @@ impl<'u> Pumping<'u> {
                 ((&mut **flight).await, Some(cause))
             }
         };
+        let retired = flight.retirement().is_some();
         let out = flight.out().map(|o| Answer::of(&o));
 
         if cause.is_some() {
@@ -712,7 +716,7 @@ impl<'u> Pumping<'u> {
         if answered.outcome == AbiOutcome::Ready && p.src == Src::Input {
             self.bufs.input = SessionInput::default();
         }
-        (answered, out, cause)
+        (answered, out, cause, retired)
     }
 
     pub(crate) async fn cancel(&mut self, cause: ReasonCode, done: Option<Answered>) -> CancelBill {
@@ -855,6 +859,10 @@ impl Drop for Pumping<'_> {
         let (flight, done) = match self.flight.take() {
             Some(mut flight) => match flight.settled() {
                 Some(settled) => {
+                    if flight.retirement().is_some() {
+                        self.finish();
+                        return;
+                    }
                     let done =
                         answered_done(&settled, &*flight, self.piece_flags, self.final_answer);
 
@@ -1327,7 +1335,15 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         let framing = piece.from == FROM_FAR_END
             && (piece.src != Src::Input || run.bufs.input.bytes.is_empty());
         loop {
-            let (done, out, cause) = run.cross(&piece).await;
+            let (done, out, cause, retired) = run.cross(&piece).await;
+            if retired {
+                if let Some(cause) = cause {
+                    return Step::End(End::Cancel(cause, None));
+                }
+                // The actual primary must finish output, billing and records before publishing
+                // the session's result. This leg owns only recycling its own ticket.
+                return Step::End(End::RetiredByCompletion);
+            }
             if let Some(cause) = cause {
                 return Step::End(End::Cancel(cause, Some(done)));
             }

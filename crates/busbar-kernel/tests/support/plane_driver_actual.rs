@@ -18,6 +18,9 @@ mod close_cases;
 #[path = "plane_driver_session_input_cases.rs"]
 mod session_input_cases;
 
+#[path = "plane_driver_completion_retirement.rs"]
+mod completion_retirement;
+
 #[path = "plane_driver_retirement_cases.rs"]
 mod retirement_cases;
 

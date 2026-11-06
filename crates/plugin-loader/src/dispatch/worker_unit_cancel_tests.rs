@@ -64,6 +64,14 @@ crate::dispatch_tests::c_abi! {
                 }
                 Outcome::Pending
             }
+            10 => {
+                if input.flags & plane::PIECE_LAST != 0 {
+                    out.flags = EMIT_DONE;
+                    Outcome::Ready
+                } else {
+                    Outcome::Pending
+                }
+            }
             1 | 2 => {
                 out.flags = EMIT_DONE;
                 out.verdict = if input.stream == 2 { VERDICT_RETRY } else { 0 };
@@ -593,3 +601,6 @@ fn a_stale_plane_submission_remains_a_routing_fault() {
     assert_eq!(c.pieces.load(Ordering::SeqCst), 0);
     assert!(c.cancels.lock().unwrap().is_empty());
 }
+
+#[path = "worker_unit_completion_tests.rs"]
+mod completion_retirement;

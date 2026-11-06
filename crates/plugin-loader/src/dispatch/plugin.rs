@@ -340,6 +340,8 @@ pub(crate) struct Crossed {
     pub(crate) disposition: Option<u32>,
     /// The record writes that `cancel` carried (a plane's, SEAM-L(r)).
     pub(crate) cancel_writes: Vec<busbar_contract::plane_calls::CancelWrite>,
+    /// Host-owned sibling retirement; never supplied by a plugin.
+    pub(crate) retirement: Option<busbar_contract::plane_calls::Retirement>,
     /// A lease the plugin named on an answer that hands none to the caller (any outcome but READY
     /// or PENDING, a FAULT the host judged included): released by the host as the crossing ends.
     pub(crate) unread: u64,
@@ -356,6 +358,7 @@ impl Crossed {
             short_lease: 0,
             disposition: None,
             cancel_writes: Vec::new(),
+            retirement: None,
             unread: 0,
         }
     }
@@ -2138,6 +2141,7 @@ impl Instance {
             short_lease,
             disposition: None,
             cancel_writes: Vec::new(),
+            retirement: None,
         }
     }
 

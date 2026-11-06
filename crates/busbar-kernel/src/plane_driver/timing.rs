@@ -98,6 +98,7 @@ impl AttemptTiming {
                 self.finish("complete");
             }
             End::Done => self.finish("cut"),
+            End::RetiredByCompletion => self.finish("retired"),
             End::Cancel(reason, _) => {
                 self.mark("cancelled_us");
                 self.span.record(
