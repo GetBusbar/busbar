@@ -323,7 +323,7 @@ fn descriptor_delegation_does_not_hide_removal_of_unrelated_core_fields() {
 }
 
 #[test]
-fn every_core_config_struct_keeps_every_key_the_frozen_snapshot_records() {
+fn historical_config_key_changes_match_the_explicit_migration_contract() {
     let text = std::fs::read_to_string(walk::repo().join(SNAPSHOT)).expect("the snapshot");
     let snapshot: serde_json::Value = serde_json::from_str(&text).expect("the snapshot is JSON");
     let types = snapshot["types"].as_object().expect("`types`");
@@ -339,9 +339,13 @@ fn every_core_config_struct_keeps_every_key_the_frozen_snapshot_records() {
         checked > 0,
         "no snapshot struct is declared in core: the walk is wrong"
     );
-    assert!(
-        removed.is_empty(),
-        "a 1.5.x config key core no longer accepts (the grammar is additive-only): {removed:?}"
+    // Current parsing refuses this retired selector. The one-shot 1.6 migrator removes it
+    // while preserving config.locked; see migrate_1_6::drop_overlay_selector and migration-1.6.md.
+    // An additional removal or accidental reintroduction must change this explicit contract.
+    assert_eq!(
+        removed,
+        ["ConfigMgmtCfg.overlay"],
+        "config key changes must match documented migration, not blanket historical parity"
     );
 }
 

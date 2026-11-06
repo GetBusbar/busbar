@@ -23,7 +23,7 @@ fn current_abi_generations_are_explicit() {
     // Generation 2 requires semantic rate-limit faults and namespace provenance;
     // the unreleased generation 1 must not be accepted as the current plane ABI.
     assert_eq!(plane::ABI_VERSION, 2);
-    assert_eq!(transport::ABI_VERSION, 1);
+    assert_eq!(transport::ABI_VERSION, 2);
 }
 
 #[test]
