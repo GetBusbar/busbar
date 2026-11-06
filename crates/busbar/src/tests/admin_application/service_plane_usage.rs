@@ -475,11 +475,12 @@ async fn serve_calls_view(cost: fn() -> CostModel, calls: &[Call]) -> (i64, Usag
                     output: *output,
                     ..Default::default()
                 };
-                gov.record_usage(
+                gov.record_usage_served(
                     &cost,
                     &key,
                     "",
                     POOLS_MODEL,
+                    Some(POOLS_PROVIDER),
                     &units(&[("input", *input), ("output", *output)]),
                     now,
                 );
@@ -487,11 +488,12 @@ async fn serve_calls_view(cost: fn() -> CostModel, calls: &[Call]) -> (i64, Usag
             }
             Call::Rerank { search_units } => {
                 assert!(gov.try_admit(&cost, &key, "", now).is_ok());
-                gov.record_usage(
+                gov.record_usage_served(
                     &cost,
                     &key,
                     "",
                     POOLS_MODEL,
+                    Some(POOLS_PROVIDER),
                     &units(&[("search_units", *search_units)]),
                     now,
                 );

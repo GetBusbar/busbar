@@ -76,20 +76,44 @@ async fn inspect_bounds_pathological_schema_nesting_depth() {
     if let Some(rotate) = rotate {
         rotate();
     }
-    let bomb = format!("{}{}", "[".repeat(500), "]".repeat(500));
+    let bomb = format!("{}true{}", "{\"allOf\":[".repeat(500), "]}".repeat(500));
     let mut candidate = plugins::manifest(
         "store",
         &module,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    candidate.settings_schema = Some(bomb);
-    candidate.statement = Some(hex::encode(
-        busbar_plugin_loader::dispatch::rendering_of_library(
-            &crate::root::test_plugins::application_store_library(),
-        )
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement"),
-    ));
+    let mut statement = busbar_plugin_loader::dispatch::rendering_of_library(
+        &crate::root::test_plugins::application_store_library(),
+    )
+    .expect("the actual Store statement reads")
+    .expect("the actual Store exports its statement");
+    let stated = busbar_contract::abi::mechanism::rendering::read(&statement).unwrap();
+    let schema = &stated.settings_schema;
+    // Replace only the authoritative schema blob in the current signed Statement.
+    // The canonical rendering encodes a blob as fmt, flags, u32 length, then bytes.
+    let mut original = schema.fmt.to_le_bytes().to_vec();
+    original.extend_from_slice(&schema.flags.to_le_bytes());
+    original.extend_from_slice(&u32::try_from(schema.bytes.len()).unwrap().to_le_bytes());
+    original.extend_from_slice(&schema.bytes);
+    let offsets: Vec<_> = statement
+        .windows(original.len())
+        .enumerate()
+        .filter_map(|(at, bytes)| (bytes == original).then_some(at))
+        .collect();
+    assert_eq!(
+        offsets.len(),
+        1,
+        "the actual schema blob occurs exactly once"
+    );
+    let mut malformed = schema.fmt.to_le_bytes().to_vec();
+    malformed.extend_from_slice(&schema.flags.to_le_bytes());
+    malformed.extend_from_slice(&u32::try_from(bomb.len()).unwrap().to_le_bytes());
+    malformed.extend_from_slice(bomb.as_bytes());
+    statement.splice(offsets[0]..offsets[0] + original.len(), malformed);
+    let injected = busbar_contract::abi::mechanism::rendering::read(&statement).unwrap();
+    assert_eq!(injected.name, module);
+    assert_eq!(injected.settings_schema.bytes, bomb.as_bytes());
+    candidate.statement = Some(hex::encode(statement));
     let tarball = plugins::signed(
         &crate::dist_root_install::release_key(),
         candidate,
@@ -106,13 +130,16 @@ async fn inspect_bounds_pathological_schema_nesting_depth() {
         .send().await.unwrap();
     assert_eq!(
         response.status().as_u16(),
-        200,
-        "inspect itself still succeeds"
+        400,
+        "a pathological authoritative schema is refused before plugin admission"
     );
     let view: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(view["schema"], serde_json::Value::Null);
-    let error = view["schema_error"].as_str().expect("schema_error is set");
-    assert!(error.contains("nests deeper"), "got {error:?}");
+    assert_eq!(view["error"]["code"], "invalid_request");
+    let error = view["error"]["message"]
+        .as_str()
+        .expect("schema refusal is set");
+    assert!(error.contains("Statement settings_schema"), "got {error:?}");
+    assert!(error.contains("recursion limit exceeded"), "got {error:?}");
     server.abort();
 }
 #[tokio::test]
