@@ -68,6 +68,30 @@ fn write_auth_plugin(dir: &Path, file: &str, name: &str, alias: &str) {
     std::fs::write(dir.join(file), tarball).unwrap();
 }
 
+/// Stage the actual durable Store whose fresh namespace the fixture will initialize.
+fn write_application_store(dir: &Path) -> (String, String) {
+    let path = common::plugins::application_store_library();
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
+        .expect("the actual Store statement reads")
+        .expect("the actual Store exports its statement");
+    let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual Store statement is valid");
+    let mut manifest = common::plugins::manifest("store", &facts.name, "acme");
+    manifest.version = facts.version;
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(path).expect("the actual Store image reads");
+    std::fs::write(
+        dir.join("store.tar.gz"),
+        first_party_tarball(manifest, &library),
+    )
+    .expect("stage the actual Store archive");
+    let config = serde_json::json!({
+        "module": facts.name,
+        "settings": common::plugins::application_store_settings(dir),
+    });
+    (facts.name, config.to_string())
+}
+
 fn plugins_cfg_allow_unsigned(dir: &Path) -> PluginsCfg {
     let mut cfg = PluginsCfg {
         enabled: true,
@@ -146,7 +170,9 @@ fn auth_plugin_undeclared_setting_is_delivered_as_written_and_a_reference_there_
     .expect("a setting written as its value is delivered and the plugin loads");
     assert_eq!(mw.chain_names(), vec![module_name()], "plugin loaded");
     match mw.run_chain(Some(&alice_token())) {
-        ChainVerdict::Identified { principal, .. } => assert_eq!(principal.id, "oidc:alice"),
+        ChainVerdict::Identified { principal, .. } => {
+            assert_eq!(principal.id, common::credentials::principal_id("alice"))
+        }
         other => panic!("the delivered trust root must let the module verify: {other:?}"),
     }
 
@@ -213,7 +239,9 @@ fn auth_plugin_schema_marked_setting_is_not_declared_so_a_reference_there_is_ref
         &["platform"],
         raw_audience,
     ))) {
-        ChainVerdict::Identified { principal, .. } => assert_eq!(principal.id, "oidc:alice"),
+        ChainVerdict::Identified { principal, .. } => {
+            assert_eq!(principal.id, common::credentials::principal_id("alice"))
+        }
         other => panic!("a token for the delivered audience must authenticate: {other:?}"),
     }
     assert_eq!(
@@ -284,7 +312,7 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
             module, principal, ..
         } => {
             assert_eq!(module, "my-auth", "role_bindings key = the PROVIDER NAME");
-            assert_eq!(principal.id, "oidc:alice");
+            assert_eq!(principal.id, common::credentials::principal_id("alice"));
             assert_eq!(principal.roles, vec!["platform".to_string()]);
         }
         other => panic!("valid token must Identify, got {other:?}"),
@@ -317,6 +345,7 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
 fn admin_modules_rebuilt_on_reload() {
     crate::dist_root_install::install();
     let dir = tmp_plugin_dir("admin-modules-reload");
+    let (_, store) = write_application_store(&dir);
     write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "admin-oidc");
     let config = dir.join("config.yaml");
     let providers = dir.join("providers.yaml");
@@ -328,12 +357,14 @@ fn admin_modules_rebuilt_on_reload() {
         std::fs::write(
             &config,
             format!(
-            "listen: \"127.0.0.1:0\"\nstore: {{ module: memory }}\nproviders: {{}}\nmodels: {{}}\n\
+                "listen: \"127.0.0.1:0\"\nstore: {store}\nproviders: {{}}\nmodels: {{}}\n\
              plugins: {{ enabled: true, dir: {dir:?}, trust: {{ allow_unsigned: true }} }}\n\
              auth:\n  chain: []\n  admin_auth: [{operator:?}, {provider:?}]\n\
-             identity-providers:\n  {provider}:\n    module: acme-idp\n    settings: {settings}\n",
-            dir = dir.display().to_string(), operator = busbar_kernel::config::operator_provider(),
-        ),
+             identity-providers:\n  admin-oidc:\n    module: acme-idp\n    settings: {settings}\n\
+             \x20 reloaded-admin:\n    module: acme-idp\n    settings: {settings}\n",
+                dir = dir.display().to_string(),
+                operator = busbar_kernel::config::operator_provider(),
+            ),
         )
         .unwrap();
         let loaded = busbar_kernel::load_config_from_disk(
@@ -345,7 +376,12 @@ fn admin_modules_rebuilt_on_reload() {
         .expect("the configuration reads");
         let cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
             .expect("the configuration resolves");
-        let (app, _rotation, _limits) = busbar_kernel::build_app_from_config(
+        // Initialize only at first construction; reload retains the same baseline and Store.
+        let anchor = prior.is_none().then(|| {
+            common::plugins::bootstrap_fresh_application_store(&cfg, &loaded.deploy.plugins, &dir)
+                .expect("the actual new Store initializes its principal baseline")
+        });
+        let (app, _rotation, _limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             cfg,
             loaded.deploy.plugins.clone(),
             None,
@@ -354,10 +390,13 @@ fn admin_modules_rebuilt_on_reload() {
             (Some(config.clone()), Some(providers.clone())),
             prior,
             &rules,
+            anchor,
+            false,
         )
         .expect("the real application builds its admin chain");
         app
     };
+    // Keep both marked provider definitions stable; reload changes admin-chain membership.
     let boot = build("admin-oidc", None);
     assert!(
         boot.admin_modules.modules.contains_key("admin-oidc"),
@@ -414,6 +453,7 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
     );
 
     let dir2 = tmp_plugin_dir("auth-login-current-ok");
+    let (store_module, store) = write_application_store(&dir2);
     let current = auth_manifest("acme-idp", "cap-idp", "acme");
     std::fs::write(dir2.join("idp.tar.gz"), first_party_tarball(current, &lib)).unwrap();
     std::env::set_var("BUSBAR_TEST_CLIENT_SECRET", "the-confidential-secret");
@@ -424,7 +464,7 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
         &config,
         format!(
             "listen: \"127.0.0.1:0\"\npublic_url: \"https://busbar.example.com\"\n\
-             store: {{ module: memory }}\nproviders: {{}}\nmodels: {{}}\n\
+             store: {store}\nproviders: {{}}\nmodels: {{}}\n\
              plugins: {{ enabled: true, dir: {dir:?}, trust: {{ allow_unsigned: true }} }}\n\
              identity-providers:\n  cap-idp:\n    module: acme-idp\n    browser_login:\n      \
              client_id: client-abc\n      client_secret: {{ env: BUSBAR_TEST_CLIENT_SECRET }}\n    \
@@ -442,7 +482,10 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
     .expect("the configuration reads");
     let cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
         .expect("the configuration resolves");
-    let built = busbar_kernel::build_app_from_config(
+    let anchor =
+        common::plugins::bootstrap_fresh_application_store(&cfg, &loaded.deploy.plugins, &dir2)
+            .expect("the actual new Store initializes its principal baseline");
+    let built = busbar_kernel::appbuild::build_app_from_config_with_store(
         cfg,
         loaded.deploy.plugins.clone(),
         None,
@@ -452,11 +495,13 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
         None,
         &(std::sync::Arc::new(busbar_kernel::appbuild::AcceptAll)
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>),
+        Some(anchor),
+        true,
     );
     let (app, _rotation, limits) =
         built.expect("the current login-capable plugin with browser_login builds");
     limits.stage_boot();
-    let _book = crate::root::boot::book(&app, "memory")
+    let _book = crate::root::boot::book(&app, &store_module)
         .expect("the real configured Store binds the boot rate authority before activation");
     limits
         .keep()
