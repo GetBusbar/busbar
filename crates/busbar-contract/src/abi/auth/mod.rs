@@ -424,8 +424,12 @@ pub fn retry_after_secs(header_value: &[u8], now_unix: u64) -> Option<u64> {
     u64::try_from((at - i128::from(now_unix)).max(0)).ok()
 }
 
-/// An HTTP-date (IMF-fixdate, RFC 850 or asctime; RFC 9110 §5.6.7) as Unix seconds.
-fn http_date_unix(v: &str, now_unix: u64) -> Option<i128> {
+/// An HTTP-date (IMF-fixdate, RFC 850 or asctime; RFC 9110 §5.6.7) as signed Unix seconds.
+/// `now_unix` resolves RFC 850's two-digit year using its fifty-year rule. Keeping the absolute
+/// instant lets a caller collect the header now and calculate its remaining delay later.
+/// Dates before the epoch remain negative; callers that cannot represent them may reject them.
+#[must_use]
+pub fn http_date_unix(v: &str, now_unix: u64) -> Option<i128> {
     const SECONDS_PER_DAY: u64 = 86_400;
     const YEARS_PER_CENTURY: i128 = 100;
     const YEARS_PER_ERA: i128 = 400;

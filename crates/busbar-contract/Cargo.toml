@@ -19,7 +19,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
 serde_yaml = { workspace = true }
 indexmap = { workspace = true }
 async-trait = { workspace = true }

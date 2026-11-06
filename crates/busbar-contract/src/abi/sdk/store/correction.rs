@@ -18,6 +18,20 @@ const APPLIED: u8 = 0;
 const CONDITION_CONFLICT: u8 = 1;
 const WIRE: &str = "invalid usage correction extension bytes";
 
+/// Normalize every stored count in a correction candidate to scale six without changing the
+/// original request. Fingerprints and dedupe must continue to use that original request.
+pub fn normalized(request: &Request) -> Result<Request, crate::count::CountError> {
+    let mut request = request.clone();
+    for row in &mut request.metering {
+        row.normalize_scale6()?;
+    }
+    for change in &mut request.usage {
+        change.expected.normalize_scale6()?;
+        change.replacement.normalize_scale6()?;
+    }
+    Ok(request)
+}
+
 /// Explicit opt-in Statement entry. Unsupported stores must omit it.
 #[must_use]
 pub const fn capability<B: super::StoreSlots>() -> Option<(&'static str, &'static [u8])> {

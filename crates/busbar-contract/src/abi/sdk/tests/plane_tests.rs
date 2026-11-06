@@ -253,3 +253,67 @@ fn the_cancel_reads_its_ticket_and_unit_and_answers_partial_or_aborted() {
     assert_eq!(cancel_disposition(true), CANCEL_OK_PARTIAL);
     assert_eq!(cancel_disposition(false), CANCEL_ABORTED);
 }
+
+#[test]
+fn piece_settlement_is_atomic_when_any_buffer_is_short() {
+    use crate::abi::plane::OnPieceIn;
+    use crate::abi::sdk::test_support::zeroed;
+    for short_index in 0..=4 {
+        let mut field = [zeroed::<OutField>()];
+        let mut unit = [zeroed::<UnitCount>()];
+        let mut record = [zeroed::<RecordWrite>()];
+        let mut arena = [0u8];
+        let input = OnPieceIn {
+            fields_buf: field.as_mut_ptr(),
+            fields_cap: usize::from(short_index != 0),
+            units_buf: unit.as_mut_ptr(),
+            units_cap: usize::from(short_index != 1),
+            records_buf: record.as_mut_ptr(),
+            records_cap: usize::from(short_index != 2),
+            arena_buf: arena.as_mut_ptr(),
+            arena_cap: usize::from(short_index != 3),
+            ..zeroed()
+        };
+        // SAFETY: the four independent buffers above remain live throughout this scope.
+        let lent = unsafe { Lent::new(&input) };
+        let (mut fields, mut units, mut records, mut arena) = (
+            lent.fields_buf(),
+            lent.units_buf(),
+            lent.records_buf(),
+            lent.arena_buf(),
+        );
+        fields.push_row(zeroed());
+        units.push_row(zeroed());
+        records.push_row(zeroed());
+        arena.push_row(1);
+        let mut output = zeroed::<OnPieceOut>();
+        let short = settle_piece(
+            &mut Out::new(&mut output),
+            &fields,
+            &units,
+            &arena,
+            Some(&records),
+        );
+        assert_eq!(short, short_index < 4);
+        assert_eq!(
+            [
+                output.fields_written,
+                output.units_written,
+                output.records_written
+            ],
+            [u32::from(!short); 3]
+        );
+        assert_eq!(
+            [
+                output.fields_needed,
+                output.units_needed,
+                output.records_needed
+            ],
+            [u32::from(short); 3]
+        );
+        assert_eq!(
+            (output.arena_written, output.arena_needed),
+            (u64::from(!short), u64::from(short))
+        );
+    }
+}

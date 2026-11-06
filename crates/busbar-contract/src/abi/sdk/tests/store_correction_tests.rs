@@ -39,6 +39,42 @@ fn candidate() -> Request {
 }
 
 #[test]
+fn normalization_preserves_the_candidate_and_refuses_overflow_atomically() {
+    let mut request = candidate();
+    request.metering.push(
+        serde_json::from_value(serde_json::json!({
+            "scale":0,"key_id":"key","model":"model","provider":"provider",
+            "tokens_input":7,"tokens_output":0,"tokens_cache_read":0,
+            "tokens_cache_write":0,"requests":0
+        }))
+        .unwrap(),
+    );
+    let original = request.clone();
+    let normalized = normalized(&request).unwrap();
+    assert_eq!(request, original);
+    assert_eq!(normalized.metering[0].tokens_input, 7_000_000);
+    assert_eq!(normalized.metering[0].scale, 6);
+    for ledger in [
+        &normalized.usage[0].expected,
+        &normalized.usage[0].replacement,
+    ] {
+        assert_eq!(ledger.models[0].scale, 6);
+    }
+    assert_eq!(normalized.usage[0].expected.requests, u64::MAX);
+    assert_eq!(super::normalized(&normalized).unwrap(), normalized);
+
+    request.usage[0].replacement.models[0]
+        .usage_units
+        .insert(UNIT_INPUT.into(), i128::MAX);
+    let original = request.clone();
+    assert_eq!(
+        super::normalized(&request),
+        Err(crate::count::CountError::OutOfRange)
+    );
+    assert_eq!(request, original);
+}
+
+#[test]
 fn exact_unsigned_rows_roundtrip_and_bind_the_dedupe_body() {
     let request = candidate();
     let encoded = request.encode().unwrap();

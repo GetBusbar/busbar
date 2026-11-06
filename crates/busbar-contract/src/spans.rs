@@ -1,6 +1,8 @@
 //! The closed JSON span grammar, on the plugin surface.
 
-pub use crate::json_grammar::{resolve_pointer, scan_frontier, Resolved, Span, MAX_JSON_DEPTH};
+pub use crate::json_grammar::{
+    parse_value, resolve_pointer, scan_frontier, Resolved, Span, MAX_JSON_DEPTH,
+};
 
 use crate::bounded::{PlaneAlloc, PlaneAllocBudget, MAX_KEYS};
 
