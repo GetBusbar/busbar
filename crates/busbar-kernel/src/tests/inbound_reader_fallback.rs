@@ -137,7 +137,7 @@ fn signed_head() -> Head {
 impl Kit {
     fn id(&self, path: &str) -> u64 {
         assert_eq!(path, MESSAGES);
-        self.inbound.specs(OWNER, GEN).unwrap()[0].auth
+        self.inbound.specs_at(OWNER, 71, GEN).unwrap()[0].auth
     }
     fn hand_in(&self, path: &str, line_path: &str, unit: UnitRef, head: Head) -> (u32, UnitRef) {
         assert_eq!(line_path, MESSAGES);
