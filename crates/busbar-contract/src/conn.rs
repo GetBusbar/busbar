@@ -557,7 +557,9 @@ impl HeadDefaults {
         let breaks = |bytes: &[u8]| bytes.iter().any(|b| matches!(b, b'\r' | b'\n' | b'\0'));
         for (index, (name, value)) in defaults.iter().enumerate() {
             if name.is_empty()
-                || name.trim_ascii() != name
+                || name
+                    .iter()
+                    .any(|b| b.is_ascii_whitespace() || b.is_ascii_control() || *b == b':')
                 || breaks(name)
                 || breaks(value)
                 || name.eq_ignore_ascii_case(b"transfer-encoding")

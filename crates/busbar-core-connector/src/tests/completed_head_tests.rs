@@ -186,6 +186,10 @@ fn protocol_completion_rejects_noncanonical_length_transfer_encoding_and_injecti
         ],
         vec![(b"host".to_vec(), b"sink.example\r\nx: y".to_vec())],
         vec![(b" content-length ".to_vec(), b"3".to_vec())],
+        vec![(b"x bad".to_vec(), b"ok".to_vec())],
+        vec![(b"x:bad".to_vec(), b"ok".to_vec())],
+        vec![(b"x\tbad".to_vec(), b"ok".to_vec())],
+        vec![(b"x\x7fbad".to_vec(), b"ok".to_vec())],
     ] {
         assert!(HeadDefaults {
             lines,
