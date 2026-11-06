@@ -1751,3 +1751,50 @@ fn release_root_lists_are_complete_unique_and_never_restore_retired_keys() {
             .is_some()
     );
 }
+
+#[test]
+fn nested_manifest_canonical_bytes_match_original_oidc_signer() {
+    let manifest: Manifest = serde_json::from_slice(include_bytes!(
+        "fixtures/oidc-original-signed-manifest.json"
+    ))
+    .unwrap();
+    let signer_bytes = include_bytes!("fixtures/oidc-original-signer-canonical.json");
+    let canonical = canonical_manifest_bytes(&manifest);
+    assert_eq!(
+        sha256_hex(&canonical),
+        "9ad24692a54c63d010b652ac34ba5c9da3e5b3d755c76e780dd8c06de6c764fb",
+        "nested declarations must have the same bytes in ordinary and preserve_order builds"
+    );
+    assert_eq!(canonical.as_slice(), signer_bytes);
+    let public: [u8; 32] =
+        hex::decode("e990bbd9ce59115f6951f4490c0cba9fde5699a3eef90f407411346898b4272f")
+            .unwrap()
+            .try_into()
+            .unwrap();
+    let public = VerifyingKey::from_bytes(&public).unwrap();
+    let signature = Signature::from_slice(&hex::decode(&manifest.signature).unwrap()).unwrap();
+    public.verify_strict(signer_bytes, &signature).unwrap();
+    public.verify_strict(&canonical, &signature).unwrap();
+
+    let mut tampered = manifest.clone();
+    tampered.declares.diagnostics[0].summary.push('!');
+    assert!(public
+        .verify_strict(&canonical_manifest_bytes(&tampered), &signature)
+        .is_err());
+
+    // Native causal runs additionally exercise the unchanged original archive through
+    // the production tar reader, image binding and signature checker. The small golden
+    // manifest above remains sufficient for ordinary unit runs without an ELF fixture.
+    if let Some(path) = std::env::var_os("BUSBAR_CANONICAL_OIDC_ARCHIVE") {
+        let archive = std::fs::read(path).unwrap();
+        assert_eq!(
+            sha256_hex(&archive),
+            "8fa5eb41ac0fb764ce096586eea70d74b672621893e4d7deb052e1696b712e43"
+        );
+        let unpacked = crate::tarball::unpack(&archive).unwrap();
+        assert_eq!(unpacked.manifest, manifest);
+        signature_ok(&unpacked.manifest, &unpacked.lib_bytes, &public).unwrap();
+        assert!(signature_ok(&tampered, &unpacked.lib_bytes, &public).is_err());
+        println!("original_oidc_archive_verified: unchanged signer, archive and library");
+    }
+}

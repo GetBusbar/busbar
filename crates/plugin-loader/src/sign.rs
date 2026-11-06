@@ -925,7 +925,8 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 pub fn canonical_manifest_bytes(m: &Manifest) -> Vec<u8> {
-    let value = serde_json::to_value(m).expect("manifest is serializable");
+    let mut value = serde_json::to_value(m).expect("manifest is serializable");
+    value.sort_all_objects();
     let obj = value
         .as_object()
         .expect("manifest serializes to a JSON object");
