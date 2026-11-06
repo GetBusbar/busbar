@@ -722,7 +722,7 @@ fn pending_refresh_refusal_and_cancel_retire_candidate_once_and_unblock_prior_ge
 fn pending_export_batch_keeps_its_target_and_credentials_after_same_instance_refresh_both_doors() {
     for dropped in [false, true] {
         let d = dispatcher();
-        let far = Arc::new(Far::default());
+        let far = Arc::new(Far::with_modeled_secure_transport());
         assert!(far.waker.set(d.conn_waker()).is_ok());
         let plugin = loaded(dropped, &d, far.clone());
         let old = serde_json::json!({"url":format!("https://alice:old@{STALL_TARGET}/old"),

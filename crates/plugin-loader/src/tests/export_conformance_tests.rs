@@ -292,6 +292,9 @@ type OnOpen = Arc<dyn Fn(&str) + Send + Sync>;
 /// [`Far::release`]d — so a stalled request holds no thread. Ownership is the shared [`ConnSlab`].
 #[derive(Default)]
 struct Far {
+    /// Explicit transport-double capability, never inferred from a URL.
+    peer_cert: Option<busbar_contract::transport::CertFacts>,
+    prepared: Mutex<HashMap<ConnId, (NeedId, String, bool)>>,
     slab: ConnSlab<()>,
     verdicts: Mutex<HashMap<(InstanceId, NeedId), Verdict>>,
     declared: Mutex<Vec<serde_json::Value>>,
@@ -310,6 +313,60 @@ struct Far {
 }
 
 impl Far {
+    /// A modeled established peer for credential-lifetime tests, not a TLS handshake.
+    fn with_modeled_secure_transport() -> Self {
+        Self {
+            peer_cert: Some(busbar_contract::transport::CertFacts {
+                subject: "export conformance peer".into(),
+                issuer: "export conformance fixture".into(),
+                fingerprint: "fixture-peer-certificate".into(),
+            }),
+            ..Self::default()
+        }
+    }
+
+    fn target(&self, caller: InstanceId, need: NeedId, desc: &OpenDesc<'_>) -> String {
+        let declared = self
+            .verdicts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&(caller, need))
+            .map(|(_, t)| t.clone())
+            .unwrap_or_default();
+        if desc.target.is_empty() {
+            declared
+        } else {
+            desc.target.to_string()
+        }
+    }
+
+    fn carry(&self, caller: InstanceId, id: ConnId, target: &str, desc: &OpenDesc<'_>) {
+        if target.contains(STALL_TARGET) && !self.released.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            self.stalled
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(id, (caller, 0));
+        }
+        let fields: Vec<(String, String)> = desc
+            .fields
+            .iter()
+            .map(|(n, v)| ((*n).to_string(), String::from_utf8_lossy(v).into_owned()))
+            .collect();
+        self.carried
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(serde_json::json!({
+                "target": target,
+                "method": String::from_utf8_lossy(desc.method),
+                "head_target": String::from_utf8_lossy(desc.head_target),
+                "fields": fields,
+                // Text as text; any other body (the collector's protobuf) as hex.
+                "body": std::str::from_utf8(&desc.body)
+                    .map_or_else(|_| hex::encode(&desc.body), str::to_owned),
+            }));
+    }
+
     fn carried(&self) -> Vec<serde_json::Value> {
         self.carried
             .lock()
@@ -347,10 +404,62 @@ impl Far {
 }
 
 impl DeclaredConns for Far {
+    fn prepare_request(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        _: u64,
+    ) -> Result<ConnId, ConnError> {
+        if !desc.fields.is_empty() || !desc.body.is_empty() {
+            return Err(ConnError::Refused);
+        }
+        let target = self.target(caller, need, desc);
+        if target.contains(UNREACHABLE_TARGET) {
+            return Err(ConnError::Timeout);
+        }
+        let conn = self.slab.insert(caller, need, ())?;
+        self.prepared
+            .lock()
+            .unwrap()
+            .insert(conn, (need, target, false));
+        Ok(conn)
+    }
+
+    fn commit_request(
+        &self,
+        caller: InstanceId,
+        conn: ConnId,
+        desc: &OpenDesc<'_>,
+        require_secure: bool,
+    ) -> Result<(), ConnError> {
+        self.slab.get(caller, conn)?;
+        let target = {
+            let mut all = self.prepared.lock().unwrap();
+            let (need, target, committed) = all.get_mut(&conn).ok_or(ConnError::Closed)?;
+            if *committed || self.target(caller, *need, desc) != *target {
+                return Err(ConnError::Refused);
+            }
+            if require_secure && self.peer_cert.is_none() {
+                return Err(ConnError::AuthRefused);
+            }
+            *committed = true;
+            target.clone()
+        };
+        let callback = self.on_open.lock().unwrap().clone();
+        if let Some(callback) = callback {
+            callback(&target);
+        }
+        self.carry(caller, conn, &target, desc);
+        Ok(())
+    }
+
     fn forget(&self, owner: InstanceId) {
         self.forgotten.lock().unwrap().push(owner);
         for conn in self.slab.forget(owner) {
-            let _ = Conns::close(self, owner, conn);
+            self.prepared.lock().unwrap().remove(&conn);
+            self.stalled.lock().unwrap().remove(&conn);
+            self.read.lock().unwrap().remove(&conn);
         }
         self.verdicts
             .lock()
@@ -420,18 +529,7 @@ impl Conns for Far {
         need: NeedId,
         desc: &OpenDesc<'_>,
     ) -> Result<ConnId, ConnError> {
-        let declared = self
-            .verdicts
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&(caller, need))
-            .map(|(_, t)| t.clone())
-            .unwrap_or_default();
-        let target = if desc.target.is_empty() {
-            declared
-        } else {
-            desc.target.to_string()
-        };
+        let target = self.target(caller, need, desc);
         let callback = self.on_open.lock().unwrap().clone();
         if let Some(callback) = callback {
             callback(&target);
@@ -440,30 +538,7 @@ impl Conns for Far {
             return Err(ConnError::Timeout);
         }
         let id = self.slab.insert(caller, need, ())?;
-        if target.contains(STALL_TARGET) && !self.released.load(std::sync::atomic::Ordering::SeqCst)
-        {
-            self.stalled
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(id, (caller, 0));
-        }
-        let fields: Vec<(String, String)> = desc
-            .fields
-            .iter()
-            .map(|(n, v)| ((*n).to_string(), String::from_utf8_lossy(v).into_owned()))
-            .collect();
-        self.carried
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(serde_json::json!({
-                "target": target,
-                "method": String::from_utf8_lossy(desc.method),
-                "head_target": String::from_utf8_lossy(desc.head_target),
-                "fields": fields,
-                // Text as text; any other body (the collector's protobuf) as hex.
-                "body": std::str::from_utf8(&desc.body)
-                    .map_or_else(|_| hex::encode(&desc.body), str::to_owned),
-            }));
+        self.carry(caller, id, &target, desc);
         Ok(id)
     }
     fn write(
@@ -484,6 +559,15 @@ impl Conns for Far {
         _: &mut [u8],
     ) -> Result<Piece, ConnError> {
         self.slab.get(caller, conn)?;
+        if self
+            .prepared
+            .lock()
+            .unwrap()
+            .get(&conn)
+            .is_some_and(|(_, _, committed)| !committed)
+        {
+            return Err(ConnError::Refused);
+        }
         {
             let mut stalled = self.stalled.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(waiting) = stalled.get_mut(&conn) {
@@ -516,10 +600,19 @@ impl Conns for Far {
     fn wait(&self, _: InstanceId, _: &[ConnId], _: u64) -> Result<usize, ConnError> {
         Ok(0)
     }
-    fn facts(&self, _: InstanceId, _: ConnId) -> Result<ConnFacts, ConnError> {
-        Err(ConnError::Closed)
+    fn facts(&self, caller: InstanceId, conn: ConnId) -> Result<ConnFacts, ConnError> {
+        self.slab.get(caller, conn)?;
+        if !self.prepared.lock().unwrap().contains_key(&conn) {
+            return Err(ConnError::Closed);
+        }
+        Ok(ConnFacts {
+            peer_cert: self.peer_cert.clone(),
+            ..ConnFacts::default()
+        })
     }
     fn close(&self, caller: InstanceId, conn: ConnId) -> Result<(), ConnError> {
+        self.slab.get(caller, conn)?;
+        self.prepared.lock().unwrap().remove(&conn);
         self.stalled.lock().unwrap().remove(&conn);
         self.read.lock().unwrap().remove(&conn);
         self.slab.remove(caller, conn).map(|_| ())
@@ -833,7 +926,12 @@ fn a_sink_starts_and_checks_the_same_through_either_door() {
         })
         .collect();
     let t = &transcripts[0];
-    assert!(t.starts_with("Some([]) Some([]) Some([\"export.audit: settings.max_inflight_deliveries must be >= 1"), "{t}");
+    assert!(
+        t.starts_with(
+            "Some([]) Some([]) Some([\"export.audit: settings.max_inflight_deliveries must be >= 1"
+        ),
+        "{t}"
+    );
     assert!(
         t.contains("sets settings.delivery_timeout_secs: 0 — it must be >= 1")
             && t.ends_with(" None"),
@@ -1249,4 +1347,66 @@ fn a_closed_span_reaches_a_collector_the_same_through_either_door() {
         "{linked}"
     );
     assert_eq!(linked, dropped, "both doors carry the same request");
+}
+
+#[test]
+fn modeled_secure_transport_commits_only_its_prepared_connection_once() {
+    let caller = InstanceId(9001);
+    let other = InstanceId(9002);
+    let need = NeedId(0);
+    let target = "https://fixture.example/in";
+    let preparing = OpenDesc {
+        target,
+        ..OpenDesc::default()
+    };
+    let fields = [("authorization", b"fixture-credential".as_slice())];
+    let sending = OpenDesc {
+        target,
+        fields: &fields,
+        ..OpenDesc::default()
+    };
+    for secure in [false, true] {
+        let far = if secure {
+            Far::with_modeled_secure_transport()
+        } else {
+            Far::default()
+        };
+        far.slab.declare(caller, need);
+        let conn = far.prepare_request(caller, need, &preparing, 0).unwrap();
+        assert!(
+            far.carried().is_empty(),
+            "preparation carries no credentials"
+        );
+        assert_eq!(far.facts(caller, conn).unwrap().peer_cert.is_some(), secure);
+        assert!(far.facts(other, conn).is_err());
+        assert!(far.commit_request(other, conn, &sending, true).is_err());
+        assert!(far.carried().is_empty());
+        if secure {
+            let changed = OpenDesc {
+                target: "https://other.example/in",
+                ..sending.clone()
+            };
+            assert!(far.commit_request(caller, conn, &changed, true).is_err());
+            assert!(far.carried().is_empty());
+            far.commit_request(caller, conn, &sending, true).unwrap();
+            assert_eq!(far.carried().len(), 1);
+            assert!(
+                far.slab.get(caller, conn).is_ok(),
+                "commit keeps the prepared connection"
+            );
+            assert!(far.commit_request(caller, conn, &sending, true).is_err());
+            assert_eq!(far.carried().len(), 1);
+        } else {
+            assert_eq!(
+                far.commit_request(caller, conn, &sending, true),
+                Err(ConnError::AuthRefused)
+            );
+            assert!(
+                far.carried().is_empty(),
+                "HTTPS alone grants no fixture security"
+            );
+        }
+        Conns::close(&far, caller, conn).unwrap();
+        assert!(far.facts(caller, conn).is_err());
+    }
 }
