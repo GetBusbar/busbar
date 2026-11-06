@@ -48,6 +48,7 @@ tls    The judge is a client-certificate probe: a certless client and a client f
 Everything is generated at run time: the PKI (pki.py, no openssl), every key, port and config.
 Needs cargo, git and python3 (no docker, but the `tls` suite this one reads needs it).
 """
+import base64
 import http.client
 import importlib.util
 import json
@@ -719,6 +720,49 @@ def rbac_config(data, admin, plugins, issuer, ca_pem, signing_key_file, verb_nam
                     "signing_key": {"file": signing_key_file}, "role_bindings": {"rig": bind}}})
 
 
+def isolation_audit_findings(control, attempt, key_id, control_subject, attempt_subject=None):
+    """Require one observer and exactly the eight sealed pre-dispatch refusals.
+
+    Refused data requests must remain audited. A refusal is evidence of isolation only when
+    its stage, principal, and absence of dispatch, billing, and child work match the probe.
+    """
+    def no_effects(record):
+        return (isinstance(record, dict)
+                and all(record.get(k) == "0" for k in
+                        ("lines_count", "fee_count", "children_count", "emission_delta"))
+                and record.get("lines") == [] and record.get("children") == []
+                and all(record.get(k) == "" for k in
+                        ("destination", "hold_ref", "settle_ref", "slice_ref", "lease_ref")))
+
+    def observer(record, expected_subject):
+        return (no_effects(record) and record.get("op_class") == "admin_read"
+                and record.get("outcome") == "Completed" and record.get("step") == ""
+                and record.get("finish") == "Complete"
+                and record.get("subject_tag") == "principal"
+                and isinstance(record.get("subject_value"), str)
+                and bool(record["subject_value"])
+                and record["subject_value"] == expected_subject)
+
+    if len(control) != 1 or not observer(control[0], control_subject):
+        return ["empty dispatch bracket did not observe exactly its own effect-free admin_read"]
+    if attempt is None:
+        return []
+    if len(attempt) != 9 or not observer(attempt[0], attempt_subject):
+        return ["data/admin probe bracket did not contain one observer and exactly eight refusals"]
+    for index, record in enumerate(attempt[1:]):
+        authenticate = index < 6
+        outcome = ("Refused(Authenticate, Unauthenticated)" if authenticate
+                   else "Refused(Decode, DecodeFailed)")
+        if not (no_effects(record) and record.get("op_class") == ""
+                and record.get("outcome") == outcome
+                and record.get("step") == ("authenticate" if authenticate else "decode")
+                and record.get("finish") == "Error"
+                and record.get("subject_tag") == "principal"
+                and record.get("subject_value") == ("anonymous" if authenticate else key_id)):
+            return [f"data/admin probe {index + 1} did not seal its expected effect-free refusal"]
+    return []
+
+
 def judge_data_admin_isolation(data, admin, full, vkey, key_id):
     """Observe listener isolation with denied credentials and a legitimate live data key.
 
@@ -749,10 +793,20 @@ def judge_data_admin_isolation(data, admin, full, vkey, key_id):
         return number
 
     def head():
-        st, view = ask(admin, "GET", ADMIN + "/audit/head", full())
+        headers = full()
+        # Read the subject from our own freshly minted credential, never from the server's
+        # answer. This correlates each observer record without reusing a rate-bucket identity.
+        token = headers["authorization"].removeprefix("Bearer ")
+        claims64 = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(claims64 + "=" * (-len(claims64) % 4)))
+        subject = claims.get("sub")
+        if claims.get("iss") != ISS or not isinstance(subject, str) or not subject:
+            raise Refused("the fixture observer credential has no expected issuer/subject")
+        principal = f"oidc-v2:{oidf.b64url(ISS.encode())}:{subject}"
+        st, view = ask(admin, "GET", ADMIN + "/audit/head", headers)
         if st != 200 or not isinstance(view, dict):
             raise Refused("the dispatch observer could not read audit/head")
-        return position(view["head"]["seq"]) if view.get("head") else 0
+        return (position(view["head"]["seq"]) if view.get("head") else 0), principal
 
     def window(lo, hi):
         st, view = ask(admin, "GET", ADMIN + f"/audit/range?from={lo + 1}&to={hi}", full())
@@ -772,12 +826,15 @@ def judge_data_admin_isolation(data, admin, full, vkey, key_id):
         observed["protected_keys_before"] = before
         if not any(item.get("id") == key_id for item in before):
             raise Refused("the legitimately minted data key is absent from the protected snapshot")
-        a, b = head(), head()
+        a, control_subject = head()
+        b, _ = head()
         control = window(a, b)
-        if len(control) != 1 or control[0].get("op_class") != "admin_read":
-            raise Refused("empty dispatch bracket did not observe exactly its own admin_read")
+        control_findings = isolation_audit_findings(control, None, key_id, control_subject)
+        if control_findings:
+            raise Refused(control_findings[0])
         observed["empty_bracket"] = control
-        lo = head()
+        observed["control_observer_principal"] = control_subject
+        lo, attempt_subject = head()
         for name, mint, expected in (
                 ("no credential", lambda: {}, 401),
                 ("an invalid credential", lambda: {"authorization": "Bearer invalid-isolation-probe"}, 401),
@@ -796,16 +853,17 @@ def judge_data_admin_isolation(data, admin, full, vkey, key_id):
                 encoded = json.dumps(reply, default=str)
                 if key_id in encoded or vkey in encoded or "rbac-data-admin-mutation-probe" in encoded:
                     why.append(f"subject: data {method} /keys with {name} disclosed protected probe material")
-        hi = head()
+        hi, _ = head()
         attempt = window(lo, hi)
         observed["probe_bracket"] = attempt
-        if len(attempt) != len(control) or [r.get("op_class") for r in attempt] != [r.get("op_class") for r in control]:
-            why.append("subject: data/admin probes caused sealed dispatch activity beyond the observer control")
+        observed["probe_observer_principal"] = attempt_subject
+        why.extend("subject: " + finding
+                   for finding in isolation_audit_findings(control, attempt, key_id, control_subject, attempt_subject))
         after = keys()
         observed["protected_keys_after"] = after
         if before != after:
             why.append("subject: data/admin probes mutated the protected key catalog")
-    except (Refused, KeyError, TypeError, ValueError) as e:
+    except (Refused, KeyError, IndexError, TypeError, ValueError) as e:
         why.append(f"subject: data/admin isolation could not be established: {e}")
     finally:
         observed["findings"] = why
