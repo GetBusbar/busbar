@@ -1083,7 +1083,7 @@ impl Connector {
         target: &str,
         timeout_ms: u64,
     ) -> Result<HeadDefaults, ConnError> {
-        let need = self
+        let (door, declared, members) = self
             .over
             .lock()
             .expect("needs")
@@ -1092,29 +1092,40 @@ impl Connector {
                 (
                     Arc::clone(&n.door),
                     n.declared_target.clone().filter(|_| target.is_empty()),
+                    n.members.clone(),
                 )
+            })
+            .ok_or(ConnError::Refused)?;
+        // A member-program target names a host-declared child, not a socket authority.
+        // Its pipe framing contributes no request-head defaults. Match the same member
+        // selection used by open_timed; only the later open can lease or spawn it.
+        if let Some(members) = members {
+            if !members.contains_key(program::member_of(target)) {
+                return Err(ConnError::Refused);
+            }
+            return Ok(HeadDefaults {
+                lines: Vec::new(),
+                states_length: false,
             });
-        need.ok_or(ConnError::Refused)
-            .and_then(|(door, declared)| {
-                let target = declared.as_deref().unwrap_or(target);
-                // A datagram association obtains its peer description over a separately
-                // framed exchange. Its own door has no request-head locate operation.
-                let door = if door.facts().datagram {
-                    self.rendezvous_exchange(target)?.door
-                } else {
-                    door
-                };
-                if door.facts().role == ROLE_CARRIER {
-                    self.located(&door, target).ok_or(ConnError::Refused)
-                } else {
-                    framer::locate_request(door.as_ref(), target, timeout_ms)
-                        .map_err(|_| ConnError::Refused)
-                }
-            })
-            .map(|located| HeadDefaults {
-                lines: located.defaults,
-                states_length: located.states_length,
-            })
+        }
+        let target = declared.as_deref().unwrap_or(target);
+        // A datagram association obtains its peer description over a separately
+        // framed exchange. Its own door has no request-head locate operation.
+        let door = if door.facts().datagram {
+            self.rendezvous_exchange(target)?.door
+        } else {
+            door
+        };
+        let located = if door.facts().role == ROLE_CARRIER {
+            self.located(&door, target).ok_or(ConnError::Refused)
+        } else {
+            framer::locate_request(door.as_ref(), target, timeout_ms)
+                .map_err(|_| ConnError::Refused)
+        };
+        located.map(|located| HeadDefaults {
+            lines: located.defaults,
+            states_length: located.states_length,
+        })
     }
 
     /// The ordinary exchange carrying a datagram association's peer description.

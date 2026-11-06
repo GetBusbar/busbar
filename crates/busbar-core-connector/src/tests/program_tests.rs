@@ -1128,3 +1128,53 @@ fn a_retired_members_supervision_key_is_signalled_retired_once() {
 
 #[path = "program_retirement_tests.rs"]
 mod retirement_order;
+
+#[test]
+fn member_program_head_defaults_use_the_declared_child_without_socket_authority_validation() {
+    use busbar_contract::conn::PollConns as _;
+    let c = connector();
+    declare(&c, &[("m", sh(ECHO_PID, &[]))]).expect("the real member program declares");
+    for target in ["m", "m/", "m/a-logical-path"] {
+        let defaults = c
+            .head_defaults(OWNER, NEED, target, 100)
+            .expect("a declared member's pipe contributes no request-head defaults");
+        assert!(defaults.lines.is_empty());
+        assert!(!defaults.states_length);
+    }
+    for target in ["", "other", "other/"] {
+        assert!(
+            matches!(
+                c.head_defaults(OWNER, NEED, target, 100),
+                Err(ConnError::Refused)
+            ),
+            "an unknown program member remains refused: {target}"
+        );
+    }
+    assert!(
+        matches!(
+            c.head_defaults(InstanceId(2), NEED, "m/", 100),
+            Err(ConnError::Refused)
+        ),
+        "another caller cannot borrow this program declaration"
+    );
+    assert!(
+        matches!(
+            c.head_defaults(OWNER, NeedId(2), "m/", 100),
+            Err(ConnError::Refused)
+        ),
+        "an undeclared need remains refused"
+    );
+    c.declare_over(OWNER, NeedId(2), "bytes")
+        .expect("an ordinary carrier declares");
+    assert!(c
+        .head_defaults(OWNER, NeedId(2), "127.0.0.1:9", 100)
+        .is_ok());
+    assert!(
+        matches!(
+            c.head_defaults(OWNER, NeedId(2), "m/", 100),
+            Err(ConnError::Refused)
+        ),
+        "ordinary carrier authority validation still rejects a path"
+    );
+    c.forget(OWNER);
+}
