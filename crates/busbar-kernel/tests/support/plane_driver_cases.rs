@@ -376,13 +376,6 @@ impl SessionCaller for Caller {
 }
 
 impl Caller {
-    pub(crate) fn stopping_after(after: Duration) -> Self {
-        Self {
-            stop_after: Some(after),
-            ..Self::default()
-        }
-    }
-
     pub(crate) fn text(&self) -> String {
         String::from_utf8_lossy(&self.bytes.lock().unwrap()).into_owned()
     }
