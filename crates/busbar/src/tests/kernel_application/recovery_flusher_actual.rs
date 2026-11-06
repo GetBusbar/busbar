@@ -90,19 +90,28 @@ impl RecordStore for ChunkStore {
     }
 }
 fn input(store: &dyn RecordStore, bucket: &str, window: u64) -> i128 {
-    store
-        .get_usage(bucket, window)
-        .unwrap()
-        .models
-        .iter()
-        .filter(|row| row.model == MODEL)
-        .map(|row| {
-            row.usage_units
-                .get(busbar_contract::records::UNIT_INPUT)
-                .copied()
-                .unwrap_or(0)
-        })
-        .sum()
+    let usage = store.get_usage(bucket, window).unwrap();
+    let count =
+        busbar_contract::Count::total(usage.models.iter().filter(|row| row.model == MODEL).map(
+            |row| {
+                busbar_contract::Count::from_stored(
+                    row.usage_units
+                        .get(busbar_contract::records::UNIT_INPUT)
+                        .copied()
+                        .unwrap_or(0),
+                    row.scale,
+                )
+                .expect("a valid stored count scale")
+            },
+        ))
+        .expect("the exact signed input count fits");
+    let unit = busbar_contract::Count::ONE.micros();
+    assert_eq!(
+        count.micros() % unit,
+        0,
+        "this witness expects whole counts"
+    );
+    count.micros() / unit
 }
 
 struct Journal {

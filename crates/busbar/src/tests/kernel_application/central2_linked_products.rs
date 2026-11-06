@@ -639,7 +639,20 @@ async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reache
         available_concurrency: conc,
         budget_remaining: None,
         rate_headroom: rate,
-        signals: Default::default(),
+        signals: {
+            // One expected unit at the candidate's declared routing price. The current
+            // ranking door consumes this recipe, never the legacy scalar above.
+            let mut signals = busbar_contract::SignalBag::new();
+            busbar_contract::signal::route_cost::append(
+                &mut signals,
+                [busbar_contract::signal::route_cost::Term {
+                    class: "work",
+                    price_per_unit: cost,
+                    expected_units: 1.0,
+                }],
+            );
+            signals
+        },
     };
     let req = RoutingRequest {
         request_id: 1,
@@ -751,13 +764,13 @@ async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reache
         ("fastest", Vec::new(), RoutingDecision::Abstain),
         ("least_busy", Vec::new(), RoutingDecision::Abstain),
         ("usage", Vec::new(), RoutingDecision::Abstain),
-        // An infinity is a key like any other, ordered as 1.5.5 ordered it (the v1.5.5 ranking
-        // natives' `lib.rs:77-80`, `:99-102`): never dropped as absent.
+        // Valid recipe prices preserve the old cheapest ordering, including ties and zero.
+        // Non-finite latency/headroom signals still retain their numeric ordering.
         (
             "cheapest",
             vec![
-                (0, Some(f64::INFINITY), None, 1, None),
-                (1, Some(f64::INFINITY), None, 1, None),
+                (0, Some(f64::MAX), None, 1, None),
+                (1, Some(f64::MAX), None, 1, None),
             ],
             prefer(&[0, 1]),
         ),
@@ -765,7 +778,7 @@ async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reache
             "cheapest",
             vec![
                 (0, Some(3.0), None, 1, None),
-                (1, Some(f64::NEG_INFINITY), None, 1, None),
+                (1, Some(0.0), None, 1, None),
                 (2, None, None, 1, None),
             ],
             prefer(&[1, 0, 2]),
@@ -802,6 +815,22 @@ async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reache
             Ok(decision) => assert_eq!(decision, want, "`{word}` over {rows:?}"),
             Err(e) => panic!("`{word}` reached on_error ({e}); 1.5.5's ranking never did"),
         }
+    }
+    for invalid in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, -1.0] {
+        let rows = [
+            (0, Some(invalid), None, 1, None),
+            (1, Some(3.0), None, 1, None),
+            (2, None, None, 1, None),
+        ];
+        let cands: Vec<Candidate<'_>> = rows.iter().map(cand).collect();
+        assert!(busbar_contract::signal::route_cost::decode(&cands[0].signals).is_err());
+        let (policy, budget) =
+            real_ranking("cheapest").expect("the strategy opens through the door");
+        assert_eq!(
+            policy.decide(&req, &cands, &ctx, budget).await.unwrap(),
+            RoutingDecision::Prefer(vec![1, 0, 2]),
+            "malformed price {invalid} is unknown, never cheaper than a valid recipe or dropped"
+        );
     }
     println!("{WITNESS}");
 }
