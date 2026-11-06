@@ -8553,6 +8553,8 @@ done
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_childs_ask_reaches_the_caller_verbatim_and_its_answer_reaches_the_child() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine as _;
         let _one = PUBLISHING.lock().await;
         let instance = "door-program-ask";
         let rig = rig_tools(instance, 0, section(true), &|app| app);
@@ -8587,7 +8589,47 @@ done
             &retry(serde_json::json!({ "srv-ask-1": draft() }), "forged"),
         )
         .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "a forged state: {body}");
+        assert_eq!(status, StatusCode::BAD_REQUEST, "malformed state: {body}");
+        assert_eq!(body["error"]["code"], -32602, "{body}");
+        assert_eq!(body["error"]["data"]["reason"], "state_malformed", "{body}");
+
+        // Keep the actual issued payload and canonical encoding; change only its seal.
+        let (payload, signature) = state.split_once('.').expect("the issued payload and seal");
+        let mut signature_bytes = URL_SAFE_NO_PAD
+            .decode(signature)
+            .expect("canonical issued seal");
+        assert_eq!(signature_bytes.len(), 64, "the issued Ed25519 signature");
+        assert_eq!(URL_SAFE_NO_PAD.encode(&signature_bytes), signature);
+        signature_bytes[0] ^= 1;
+        let tampered = format!("{payload}.{}", URL_SAFE_NO_PAD.encode(&signature_bytes));
+        assert_ne!(tampered, state, "the issued seal was actually changed");
+        let (status, body) = call(
+            &rig.router,
+            &rig.bound_token(),
+            &retry(serde_json::json!({ "srv-ask-1": draft() }), &tampered),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "a tampered issued seal: {body}"
+        );
+        assert_eq!(body["error"]["code"], -32602, "{body}");
+        assert_eq!(
+            body["error"]["data"]["reason"], "state_bad_signature",
+            "{body}"
+        );
+
+        let mut unsolicited: serde_json::Value = serde_json::from_str(CALL).expect("the call");
+        unsolicited["params"]["inputResponses"] = serde_json::json!({ "srv-ask-1": draft() });
+        assert!(unsolicited["params"].get("requestState").is_none());
+        let (status, body) = call(&rig.router, &rig.bound_token(), &unsolicited.to_string()).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "an unsolicited answer: {body}"
+        );
+        assert_eq!(body["error"]["code"], -32000, "{body}");
         assert_eq!(
             body["error"]["data"]["reason"], "ask_unsolicited_state",
             "{body}"
