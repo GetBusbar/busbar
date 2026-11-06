@@ -37,7 +37,7 @@
     {
       "repo": "busbar-auth-sigv4",
       "url": "https://github.com/GetBusbar/busbar-auth-sigv4",
-      "commit": "89285620a37a02c78ba2745d9f51d7a7bf8d3eb3",
+      "commit": "d69e0695982cfd7ce9d9c78af51c91a260b4954f",
       "package": "busbar-auth-sigv4-plugin",
       "kind": "auth",
       "alias": "sigv4",
