@@ -17,9 +17,11 @@
 #
 # THE TRANSPORT FRAMERS a networked plugin's conformance host takes as dev-dependencies (rendered by
 # the fleet template, ARCHITECT Q-P4-9: GetBusbar/busbar-transport-*, each its own repo) are pinned
-# too: each such source in the lock must be the one busbar's own Cargo.lock at the pin records for that
-# crate (PIN_CHECK_BUSBAR_LOCK, default: dist/default/Cargo.lock of the busbar checkout this script sits
-# in, the one lock that names plugins since core's workspace depends on none).
+# too: each source must match the independently authorized product cohort's lock. Native CI
+# supplies PIN_CHECK_BUSBAR_LOCK via cohort-pin-check.sh, using immutable source identities
+# and a lock digest supplied by the protected controller, never plugin input. Without an override,
+# local checks retain the SDK checkout's dist/default/Cargo.lock baseline. SDK and product pins
+# differ: embedding future framer commits in their SDK would create a dependency hash cycle.
 #
 # Two more refusals: a manifest that names a path OUTSIDE the repo (a sibling-checkout dependency
 # builds whatever happens to sit beside the checkout, not the pin), and a retired busbar crate
