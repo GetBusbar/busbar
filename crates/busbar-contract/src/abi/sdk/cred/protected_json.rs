@@ -89,6 +89,88 @@ pub fn select_json(body: Opaque<Vec<u8>>, path: &[&str]) -> Result<SelectedJson,
     select_with(body.wire(), path, Unwatched).map_err(JsonReplyError::from)
 }
 
+/// Read selected text members of a JSON object into wiping holders. Missing and null members
+/// return `None`; other types and duplicate selected members are refused. Unselected members
+/// are validated without retaining their values. Escaped names match their decoded spelling.
+///
+/// This recipe serves callers that must inspect token text (for example a JWT verifier). The
+/// caller owns and must bound the input; it is not wiped by this borrowing function. Decoded
+/// strings and temporary buffers wipe on every exit. Serde's numeric scratch remains an
+/// upstream limitation, as with [`select_json`].
+pub fn json_text_members<const N: usize>(
+    body: &[u8],
+    names: [&str; N],
+) -> Result<[Option<Zeroizing<String>>; N], JsonReplyError> {
+    let view = masked(body, Unwatched);
+    let doc = Doc {
+        body,
+        view: &view,
+        custody: Unwatched,
+    };
+    let mut de = serde_json::Deserializer::from_slice(&view);
+    serde::Deserializer::deserialize_map(&mut de, TextMembers { doc, names })
+        .and_then(|members| de.end().map(|()| members))
+        .map_err(JsonReplyError::from)
+}
+
+struct TextMembers<'a, C, const N: usize> {
+    doc: Doc<'a, C>,
+    names: [&'a str; N],
+}
+
+impl<'de, C: Custody, const N: usize> Visitor<'de> for TextMembers<'_, C, N> {
+    type Value = [Option<Zeroizing<String>>; N];
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a JSON object")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut values = std::array::from_fn(|_| None);
+        let mut seen = [false; N];
+        while let Some(key) = map.next_key_seed(AnyKey(self.doc))? {
+            let ObjectKey::Text(key) = key else {
+                return Err(A::Error::custom("expected a JSON object"));
+            };
+            if let Some(index) = self.names.iter().position(|name| *name == key.as_str()) {
+                if std::mem::replace(&mut seen[index], true) {
+                    return Err(A::Error::custom("duplicate selected field"));
+                }
+                values[index] = map.next_value_seed(TextMember(self.doc))?;
+            } else {
+                map.next_value_seed(Skip(self.doc))?;
+            }
+        }
+        Ok(values)
+    }
+}
+
+struct TextMember<'a, C>(Doc<'a, C>);
+
+impl<'de, C: Custody> DeserializeSeed<'de> for TextMember<'_, C> {
+    type Value = Option<Zeroizing<String>>;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
+        de.deserialize_any(self)
+    }
+}
+
+impl<'de, C: Custody> Visitor<'de> for TextMember<'_, C> {
+    type Value = Option<Zeroizing<String>>;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a string or null")
+    }
+
+    fn visit_unit<E: Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_borrowed_str<E: Error>(self, value: &'de str) -> Result<Self::Value, E> {
+        self.0.decoded(value, Held::Value).map(Some)
+    }
+}
+
 fn select_with<C: Custody>(
     body: &[u8],
     path: &[&str],
@@ -792,6 +874,12 @@ impl From<Value> for SettingsValue {
 }
 
 impl SettingsValue {
+    /// Mutably visit a configuration value by JSON pointer. Any value moved out must be put
+    /// into another wiping owner by the caller; dropping this document only wipes what remains.
+    pub fn pointer_mut(&mut self, pointer: &str) -> Option<&mut Value> {
+        self.0.pointer_mut(pointer)
+    }
+
     fn object() -> Self {
         Self(Value::Object(serde_json::Map::new()))
     }
@@ -954,6 +1042,93 @@ pub(crate) fn observing<T>(observe: Observer, action: impl FnOnce() -> T) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_members_decode_escapes_and_ignore_nested_or_unknown_values() {
+        let body = br#"{"nested":{"token":"ignored"},"nested":null,"to\u006ben":"A\n\uD834\uDD1E","empty":"","nullable":null,"number":184467440737095516160000}"#;
+        let [token, empty, nullable, absent] =
+            json_text_members(body, ["token", "empty", "nullable", "absent"]).unwrap();
+        let token = token.unwrap();
+        assert_eq!(token.as_str(), "A\n\u{1D11E}");
+        assert_eq!(token.capacity(), br"A\n\uD834\uDD1E".len());
+        assert_eq!(empty.as_deref().map(String::as_str), Some(""));
+        assert!(nullable.is_none());
+        assert!(absent.is_none());
+    }
+
+    #[test]
+    fn text_members_reject_ambiguous_types_and_malformed_siblings_without_echo() {
+        for body in [
+            r#"{"token":"CANARY","to\u006ben":null}"#.to_owned(),
+            r#"{"token":null,"token":"CANARY"}"#.to_owned(),
+            r#"{"token":{"CANARY":1}}"#.to_owned(),
+            r#"{"token":184467440737095516160000}"#.to_owned(),
+            r#"{"token":true}"#.to_owned(),
+            r#"{"token":["CANARY"]}"#.to_owned(),
+            r#"{"token":"CANARY\uD800"}"#.to_owned(),
+            r#"{"token":"CANARY","ignored":"bad\q"}"#.to_owned(),
+            r#"{"token":"CANARY","bad\q":null}"#.to_owned(),
+            r#"{"token":"CANARY"} trailing"#.to_owned(),
+            r#"["CANARY"]"#.to_owned(),
+            "184467440737095516160000".to_owned(),
+            format!(
+                r#"{{"token":"CANARY","ignored":{}{}}}"#,
+                "[".repeat(130),
+                "]".repeat(130)
+            ),
+        ] {
+            let error = json_text_members(body.as_bytes(), ["token"]).unwrap_err();
+            assert!(!format!("{error} {error:?}").contains("CANARY"));
+        }
+        assert!(json_text_members(b"{\"token\":\"\xff\"}", ["token"]).is_err());
+    }
+
+    #[test]
+    fn text_members_wipe_allocations_on_success_and_partial_failure() {
+        use crate::alloc_counter::{watch_initialized_payload, InitializedPayloadProbe};
+
+        fn observe(_: &'static str, bytes: &[u8]) {
+            // SAFETY: guarded parser buffers are exclusively owned on this thread, and the
+            // observer receives their initialized allocation prefixes before they are freed.
+            unsafe { watch_initialized_payload(bytes) };
+        }
+        for (body, valid) in [
+            (
+                r#"{"token":"CANARY\u002dtoken","unknown":{"key":"not decoded"}}"#,
+                true,
+            ),
+            (r#"{"token":"CANARY\u002dtoken","unknown":[1,]}"#, false),
+            (r#"{"token":"CANARY\u002dtoken"} trailing"#, false),
+            (r#"{"token":"CANARY\uD800"}"#, false),
+        ] {
+            // SAFETY: every observed allocation remains initialized and exclusively owned
+            // on this thread until its wiping holder drops within the observation scope.
+            let probe = unsafe { InitializedPayloadProbe::start().unwrap() };
+            observing(observe, || {
+                let result = json_text_members(body.as_bytes(), ["token"]);
+                assert_eq!(result.is_ok(), valid);
+                drop(result);
+            });
+            let observed = probe.finish();
+            assert!(!observed.reentered);
+            assert!(observed.payloads.len() >= 3, "view, key and selected value");
+            for payload in observed.payloads {
+                assert!(payload.freed, "parser allocation survived: {payload:?}");
+                assert!(!payload.reallocated, "decoded strings must not reallocate");
+                #[cfg(target_os = "linux")]
+                {
+                    assert_eq!(payload.read_error, None);
+                    assert!(payload.complete_read);
+                    assert!(
+                        payload.wiped,
+                        "parser allocation freed unwiped: {payload:?}"
+                    );
+                }
+                #[cfg(not(target_os = "linux"))]
+                assert_eq!(payload.read_error, Some(std::io::ErrorKind::Unsupported));
+            }
+        }
+    }
 
     fn selected(body: &str, path: &[&str]) -> Vec<u8> {
         match select_json(Opaque::new(body.as_bytes().to_vec()), path).unwrap() {

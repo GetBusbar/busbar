@@ -3,11 +3,30 @@
 
 //! An identity provider's `Retry-After` on a `LOGIN_OUTAGE` answer.
 
-use super::{retry_after_extensions, retry_after_of, retry_after_secs, EXT_RETRY_AFTER};
+use super::{
+    http_date_unix, retry_after_extensions, retry_after_of, retry_after_secs, EXT_RETRY_AFTER,
+};
 use crate::abi::mechanism::extensions;
 
 /// `Sun, 06 Nov 1994 08:49:37 GMT`, RFC 9110's example instant, as Unix seconds.
 const NOW: u64 = 784_111_777;
+
+#[test]
+fn absolute_dates_preserve_the_instant_for_a_later_clock_reading() {
+    for date in [
+        "Sun, 06 Nov 1994 08:49:37 GMT",
+        "Sunday, 06-Nov-94 08:49:37 GMT",
+        "Sun Nov  6 08:49:37 1994",
+    ] {
+        assert_eq!(http_date_unix(date, NOW + 120), Some(i128::from(NOW)));
+    }
+    assert_eq!(
+        http_date_unix("Wed, 31 Dec 1969 23:59:59 GMT", NOW),
+        Some(-1)
+    );
+    assert_eq!(http_date_unix("120", NOW), None);
+    assert_eq!(http_date_unix("Sun, 31 Nov 1994 08:49:37 GMT", NOW), None);
+}
 
 #[test]
 fn the_key_is_retry_after() {

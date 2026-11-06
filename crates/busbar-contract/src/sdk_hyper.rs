@@ -46,6 +46,30 @@ macro_rules! hyper_io {
             /// it, so a settled connection stops after one; the bound is the backstop.
             pub const MAX_ROUNDS: usize = 64;
 
+            /// Append material while wiping the old allocation before growth releases it.
+            /// The caller remains responsible for wiping the final buffer on drop.
+            pub fn extend_wiped(buf: &mut Vec<u8>, bytes: &[u8]) {
+                let need = buf.len().saturating_add(bytes.len());
+                if need > buf.capacity() {
+                    let mut grown = Vec::with_capacity(need.max(buf.capacity().saturating_mul(2)));
+                    grown.extend_from_slice(buf);
+                    ::zeroize::Zeroize::zeroize(buf);
+                    *buf = grown;
+                }
+                buf.extend_from_slice(bytes);
+            }
+
+            /// Share bytes while retaining their wiping owner until the last view drops.
+            pub fn held_bytes(bytes: ::zeroize::Zeroizing<Vec<u8>>) -> Buf {
+                struct Held(::zeroize::Zeroizing<Vec<u8>>);
+                impl AsRef<[u8]> for Held {
+                    fn as_ref(&self) -> &[u8] {
+                        self.0.as_slice()
+                    }
+                }
+                Buf::from_owner(Held(bytes))
+            }
+
             // ── the pipe ─────────────────────────────────────────────────────────────────────────
 
             /// What the far side sent and has not been read, whether the far side has ended, and
@@ -533,4 +557,46 @@ macro_rules! hyper_io {
             }
         }
     };
+}
+
+#[cfg(test)]
+#[allow(unsafe_code, unused_imports)]
+mod wiping_tests {
+    crate::hyper_io!(bytes::Bytes);
+
+    #[test]
+    fn shared_body_owner_wipes_growth_and_only_releases_the_last_view() {
+        use crate::alloc_counter::{watch_initialized_payload, InitializedPayloadProbe};
+        use zeroize::Zeroizing;
+        // SAFETY: registered buffer allocations stay exclusively owned on this thread through
+        // growth and final view drop, and their registered prefixes remain initialized.
+        let probe = unsafe { InitializedPayloadProbe::start().unwrap() };
+        let mut body = Zeroizing::new(Vec::with_capacity(1));
+        hyper_io::extend_wiped(&mut body, b"a");
+        // SAFETY: the initialized prefix starts at the owned allocation base.
+        unsafe { watch_initialized_payload(&body) };
+        hyper_io::extend_wiped(&mut body, b" private body");
+        // SAFETY: this is the initialized prefix of the replacement allocation.
+        unsafe { watch_initialized_payload(&body) };
+        let bytes = hyper_io::held_bytes(body);
+        let view = bytes.slice(2..);
+        drop(bytes);
+        assert_eq!(&view[..], b"private body");
+        drop(view);
+        let observed = probe.finish();
+        assert!(!observed.reentered);
+        assert_eq!(observed.payloads.len(), 2);
+        for payload in observed.payloads {
+            assert!(payload.freed);
+            assert!(!payload.reallocated);
+            #[cfg(target_os = "linux")]
+            {
+                assert_eq!(payload.read_error, None);
+                assert!(payload.complete_read);
+                assert!(payload.wiped);
+            }
+            #[cfg(not(target_os = "linux"))]
+            assert_eq!(payload.read_error, Some(std::io::ErrorKind::Unsupported));
+        }
+    }
 }

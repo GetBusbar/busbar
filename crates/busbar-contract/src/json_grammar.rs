@@ -461,3 +461,78 @@ pub fn scan_frontier(input: &[u8]) -> usize {
         Err(_) => input.len(),
     }
 }
+
+use serde::{Deserialize, Deserializer};
+use serde_json::{value::RawValue, Value};
+
+/// Parse one document bounded by [`MAX_JSON_DEPTH`], preserving exact numeric lexemes and
+/// literal object keys, including serde's private number marker. Duplicate object keys keep
+/// their last value. This is for public JSON; decoded strings are ordinary owned strings.
+pub fn parse_value(bytes: &[u8]) -> Result<Value, serde_json::Error> {
+    if crate::spans::exceeds_max_depth(bytes, MAX_JSON_DEPTH) {
+        return serde_json::from_slice::<ExactValue>(b"").map(|value| value.0);
+    }
+    serde_json::from_slice::<ExactValue>(bytes).map(|value| value.0)
+}
+
+struct ExactValue(Value);
+
+impl<'de> Deserialize<'de> for ExactValue {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // RawValue identifies the actual JSON token before any arbitrary-precision transport
+        // maps are synthesized. Container members recurse through this same distinction; only
+        // scalar tokens reach Value's deserializer. Escaped object keys remain ordinary keys.
+        let raw = <&RawValue>::deserialize(deserializer)?.get();
+        let value = match raw.as_bytes().first() {
+            Some(b'{') => {
+                let mut de = serde_json::Deserializer::from_str(raw);
+                de.deserialize_map(ObjectVisitor)
+            }
+            Some(b'[') => serde_json::from_str::<Vec<ExactValue>>(raw)
+                .map(|items| Value::Array(items.into_iter().map(|item| item.0).collect())),
+            _ => serde_json::from_str::<Value>(raw),
+        };
+        value.map(ExactValue).map_err(serde::de::Error::custom)
+    }
+}
+
+struct ObjectVisitor;
+
+impl<'de> serde::de::Visitor<'de> for ObjectVisitor {
+    type Value = Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a JSON object")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+        let mut object = serde_json::Map::new();
+        while let Some((key, value)) = map.next_entry::<String, ExactValue>()? {
+            object.insert(key, value.0);
+        }
+        Ok(Value::Object(object))
+    }
+}
+
+#[cfg(test)]
+mod exact_value_tests {
+    use super::*;
+
+    #[test]
+    fn exact_values_preserve_literal_marker_keys_numbers_and_duplicate_policy() {
+        let value = parse_value(br#"{"$serde_json::private::Number":"123","n":1e+400,"id":18446744073709551617,"x":1,"x":2}"#).unwrap();
+        assert_eq!(value["$serde_json::private::Number"], "123");
+        assert_eq!(value["n"].to_string(), "1e+400");
+        assert_eq!(value["id"].to_string(), "18446744073709551617");
+        assert_eq!(value["x"], 2);
+        assert!(parse_value(br#"{"x":1} trailing"#).is_err());
+        assert!(parse_value(b"[1,]").is_err());
+    }
+
+    #[test]
+    fn exact_values_bound_recursive_container_depth() {
+        let body = |depth| format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
+        assert!(parse_value(body(MAX_JSON_DEPTH - 1).as_bytes()).is_ok());
+        assert!(parse_value(body(MAX_JSON_DEPTH + 1).as_bytes()).is_err());
+    }
+}

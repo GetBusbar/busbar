@@ -4,11 +4,41 @@
 //! THE PLANE KIND'S SHARED PIECES (`abi::plane`): what the planes wrote alike, stated once.
 
 use crate::abi::mechanism::ticket::Ticket;
+use crate::abi::plane::{OnPieceOut, OutField, RecordWrite, UnitCount};
 use crate::abi::plane::{PlaneCancelIn, CANCEL_ABORTED, CANCEL_OK_PARTIAL};
 use crate::abi::sdk::lent::Lent;
 use crate::abi::sdk::publish::Keyed;
+use crate::abi::sdk::{lent::HostBuf, out::Out};
 
 pub mod conditional;
+
+/// Settle every piece buffer together. If any buffer is short, all written counts are zero
+/// and all required counts are reported so the host can retry the complete answer atomically.
+pub fn settle_piece(
+    out: &mut Out<'_, OnPieceOut>,
+    fields: &HostBuf<'_, OutField>,
+    units: &HostBuf<'_, UnitCount>,
+    arena: &HostBuf<'_, u8>,
+    records: Option<&HostBuf<'_, RecordWrite>>,
+) -> bool {
+    let short =
+        !(fields.fits() && units.fits() && arena.fits() && records.is_none_or(HostBuf::fits));
+    if let Some(records) = records {
+        let (written, needed) = records.settle(short);
+        out.set(|o| &o.records_written, written as u32);
+        out.set(|o| &o.records_needed, needed as u32);
+    }
+    let (fw, fn_) = fields.settle(short);
+    let (uw, un) = units.settle(short);
+    let (aw, an) = arena.settle(short);
+    out.set(|o| &o.fields_written, fw as u32);
+    out.set(|o| &o.fields_needed, fn_ as u32);
+    out.set(|o| &o.units_written, uw as u32);
+    out.set(|o| &o.units_needed, un as u32);
+    out.set(|o| &o.arena_written, aw as u64);
+    out.set(|o| &o.arena_needed, an as u64);
+    short
+}
 
 /// The refusal of a dealt blob that is JSON but not an object.
 pub const NOT_A_MAP: &str = "the dealt settings are not a map of the plane's sections";
