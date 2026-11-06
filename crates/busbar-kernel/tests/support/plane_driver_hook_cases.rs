@@ -1336,10 +1336,7 @@ async fn caller_transport_deadline_bounds_pending_routed_and_gated_hooks() {
         let (steps, far, caller) = (
             TestUnits::passing(),
             Far::new(&["ok"], &[b"done"]),
-            Caller {
-                stop_after: Some(Duration::from_millis(20)),
-                ..Caller::default()
-            },
+            Caller::stopping_after(Duration::from_millis(20)),
         );
         let units = r
             .driver

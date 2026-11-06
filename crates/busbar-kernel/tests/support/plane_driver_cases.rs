@@ -376,6 +376,13 @@ impl SessionCaller for Caller {
 }
 
 impl Caller {
+    pub(crate) fn stopping_after(after: Duration) -> Self {
+        Self {
+            stop_after: Some(after),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn text(&self) -> String {
         String::from_utf8_lossy(&self.bytes.lock().unwrap()).into_owned()
     }
@@ -1860,10 +1867,7 @@ async fn caller_transport_deadline_cancels_idle_work_and_settles_once() {
         let (steps, far, caller) = (
             TestUnits::passing(),
             Far::new(&["hang"], CHUNKS),
-            Caller {
-                stop_after: Some(Duration::from_millis(20)),
-                ..Caller::default()
-            },
+            Caller::stopping_after(Duration::from_millis(20)),
         );
         // No driver deadline: only the caller transport can wake this idle admitted unit.
         let units = r
