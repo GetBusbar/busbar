@@ -50,12 +50,13 @@ fn binding_of(
     let row = &fixture()["bindings"][dialect];
     let style = row["style"].as_str().expect("style").to_string();
     let mut params = row["params"].clone();
-    let mut sent = Vec::new();
+    let sent = row
+        .get("sent")
+        .map(|sent| serde_json::from_value(sent.clone()).expect("sent headers"))
+        .unwrap_or_default();
     if style == "sigv4" {
         let region = recorded_region(host).unwrap_or("us-east-1");
         params["region"] = serde_json::Value::String(region.to_string());
-        let content_type = params["content_type"].as_str().expect("content_type");
-        sent.push(("content-type".to_string(), content_type.to_string()));
     }
     StyleBinding {
         style,
@@ -511,8 +512,7 @@ fn the_linked_sigv4_style_signs_the_walked_requests_method_and_query() {
         *params,
         serde_json::json!({
             "service": service,
-            "region": "us-east-1",
-            "content_type": "application/json"
+            "region": "us-east-1"
         })
     );
     let serving = axis()
@@ -524,74 +524,90 @@ fn the_linked_sigv4_style_signs_the_walked_requests_method_and_query() {
         .open_outbound(style, format!("AKIDEXAMPLE:{SECRET}").as_bytes(), params)
         .expect("the binding opens");
 
-    let request = FieldsRequest {
-        point: AuthPoint::HeadBody,
-        body: Some(Vec::new()),
-        method: b"GET".to_vec(),
-        authority: AUTHORITY.into(),
-        path: b"/model/a%3Ab/invoke".to_vec(),
-        query: Some(b"b=2&a=1".to_vec()),
-        timestamp: 1_440_938_160,
-        headers: vec![],
-        caller_credential: Default::default(),
-        extensions: Default::default(),
-        ..Default::default()
-    };
-    let fields = match serving.auth.fields_now(handle, &request) {
-        Some(Fields::Ready(fields)) => fields,
-        other => panic!("the style signs in place: {other:?}"),
-    };
-    let field = |name: &str| {
-        fields.iter().find(|f| f.name == name.as_bytes()).map(|f| {
-            String::from_utf8(f.value.expose(&busbar_kernel::seal::lend()).clone()).expect("utf-8")
-        })
-    };
-    let auth = field("authorization").expect("an authorization field");
-    let amzdate = field("x-amz-date").expect("an x-amz-date field");
-    assert_eq!(amzdate, "20150830T123600Z");
-    let scope = format!(
-        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/{service}/aws4_request, "
-    );
-    let rest = auth
-        .strip_prefix(scope.as_str())
-        .unwrap_or_else(|| panic!("the scope is the request's day, region and service: {auth}"));
-    let (signed_headers, signature) = rest
-        .strip_prefix("SignedHeaders=")
-        .and_then(|r| r.split_once(", Signature="))
-        .unwrap_or_else(|| panic!("SignedHeaders then Signature: {auth}"));
-
-    let empty_hash = sigv4::sha256_hex(b"");
-    let mut canonical_headers = String::new();
-    for name in signed_headers.split(';') {
-        let value = match name {
-            "host" => AUTHORITY.to_string(),
-            "x-amz-content-sha256" => empty_hash.clone(),
-            other => {
-                field(other).unwrap_or_else(|| panic!("no field carries the signed `{other}`"))
-            }
+    for content_type in [None, Some("application/x-amz-json-1.1")] {
+        let request = FieldsRequest {
+            point: AuthPoint::HeadBody,
+            body: Some(Vec::new()),
+            method: b"GET".to_vec(),
+            authority: AUTHORITY.into(),
+            path: b"/model/a%3Ab/invoke".to_vec(),
+            query: Some(b"b=2&a=1".to_vec()),
+            timestamp: 1_440_938_160,
+            headers: content_type
+                .into_iter()
+                .map(|value: &str| (b"content-type".to_vec(), value.as_bytes().to_vec()))
+                .collect(),
+            caller_credential: Default::default(),
+            extensions: Default::default(),
+            ..Default::default()
         };
-        canonical_headers.push_str(&format!("{name}:{value}\n"));
+        let fields = match serving.auth.fields_now(handle, &request) {
+            Some(Fields::Ready(fields)) => fields,
+            other => panic!("the style signs in place: {other:?}"),
+        };
+        let field = |name: &str| {
+            fields.iter().find(|f| f.name == name.as_bytes()).map(|f| {
+                String::from_utf8(f.value.expose(&busbar_kernel::seal::lend()).clone())
+                    .expect("utf-8")
+            })
+        };
+        let auth = field("authorization").expect("an authorization field");
+        let amzdate = field("x-amz-date").expect("an x-amz-date field");
+        assert_eq!(amzdate, "20150830T123600Z");
+        let scope = format!(
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/{service}/aws4_request, "
+        );
+        let rest = auth.strip_prefix(scope.as_str()).unwrap_or_else(|| {
+            panic!("the scope is the request's day, region and service: {auth}")
+        });
+        let (signed_headers, signature) = rest
+            .strip_prefix("SignedHeaders=")
+            .and_then(|r| r.split_once(", Signature="))
+            .unwrap_or_else(|| panic!("SignedHeaders then Signature: {auth}"));
+
+        let empty_hash = sigv4::sha256_hex(b"");
+        let mut canonical_headers = String::new();
+        for name in signed_headers.split(';') {
+            let value = match name {
+                "content-type" => content_type
+                    .expect("the request sends content-type")
+                    .to_string(),
+                "host" => AUTHORITY.to_string(),
+                "x-amz-content-sha256" => empty_hash.clone(),
+                other => {
+                    field(other).unwrap_or_else(|| panic!("no field carries the signed `{other}`"))
+                }
+            };
+            canonical_headers.push_str(&format!("{name}:{value}\n"));
+        }
+        let canonical_request = format!(
+            "GET\n{}\na=1&b=2\n{canonical_headers}\n{signed_headers}\n{empty_hash}",
+            sigv4::uri_encode("/model/a%3Ab/invoke")
+        );
+        assert_eq!(
+            signature,
+            sigv4::signature(
+                SECRET,
+                &amzdate,
+                "20150830",
+                "us-east-1",
+                service,
+                &canonical_request
+            ),
+            "the signature verifies over the walked request:\n{canonical_request}"
+        );
+        if content_type.is_some() {
+            assert!(
+                signed_headers.split(';').any(|h| h == "content-type"),
+                "the request's content-type is signed: {signed_headers}"
+            );
+        } else {
+            assert!(
+                signed_headers.split(';').all(|h| h != "content-type"),
+                "a request without content-type signs none: {signed_headers}"
+            );
+        }
     }
-    let canonical_request = format!(
-        "GET\n{}\na=1&b=2\n{canonical_headers}\n{signed_headers}\n{empty_hash}",
-        sigv4::uri_encode("/model/a%3Ab/invoke")
-    );
-    assert_eq!(
-        signature,
-        sigv4::signature(
-            SECRET,
-            &amzdate,
-            "20150830",
-            "us-east-1",
-            service,
-            &canonical_request
-        ),
-        "the signature verifies over the walked request:\n{canonical_request}"
-    );
-    assert!(
-        signed_headers.split(';').all(|h| h != "content-type"),
-        "a request without content-type signs none: {signed_headers}"
-    );
 }
 
 mod sigv4 {
