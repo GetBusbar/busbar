@@ -1585,10 +1585,6 @@
             "module": {
               "type": "string"
             },
-            "plugin": {
-              "type": "string",
-              "deprecated": true
-            },
             "timeout_ms": {
               "type": "integer",
               "format": "uint64",
@@ -1635,21 +1631,6 @@
                     "reject",
                     "weighted",
                     "first"
-                  ]
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "at": {
-              "anyOf": [
-                {
-                  "enum": [
-                    "request",
-                    "candidate",
-                    "routing",
-                    "response"
                   ]
                 },
                 {
@@ -1710,31 +1691,10 @@
           },
           "additionalProperties": false,
           "required": [
-            "kind"
+            "kind",
+            "module"
           ],
-          "oneOf": [
-            {
-              "required": [
-                "module"
-              ],
-              "not": {
-                "required": [
-                  "plugin"
-                ]
-              }
-            },
-            {
-              "required": [
-                "plugin"
-              ],
-              "not": {
-                "required": [
-                  "module"
-                ]
-              }
-            }
-          ],
-          "description": "HookCfg accepted by admin POST/PUT and overlay. module is canonical; plugin is the legacy input alias. This differs from the deploy HookDefinition wrapper. Settings may contain hidden values and must never be reconstructed from HookView.",
+          "description": "Admin hook POST/PUT input. module and phase are the canonical names; use phase:[stage] for a single stage. This differs from the deploy HookDefinition wrapper. Settings may contain hidden values and must never be reconstructed from HookView.",
           "x-busbar-runtime-validation": [
             "module resolves to admitted hook",
             "prompt/user grants immutable after registration; tap cannot use rw",
@@ -1894,7 +1854,7 @@
           "required": [
             "module"
           ],
-          "description": "Actual top-level hooks named-definition input (HookDefCfg). Admin POST/PUT consumes Hook instead. default, signals, global and legacy at are runtime HookCfg fields, not accepted by this deploy wrapper.",
+          "description": "Actual top-level hooks named-definition input (HookDefCfg). Admin POST/PUT consumes Hook instead. default, signals and global are accepted by admin writes, not by this deploy wrapper.",
           "x-busbar-runtime-validation": [
             "module resolution and settings after secret resolution",
             "hook references, prompt/user grants and normal deploy validation"
@@ -3901,6 +3861,1871 @@
             "omitted streams use the module's carried streams; fields are checked against those defaults",
             "module lifecycle settings after host secret resolution"
           ]
+        },
+        "PlaneInput:mcp": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "mcp plane lifecycle settings",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlaneInput:mcp/$defs/section"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "tools": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/PlaneInput:mcp/$defs/validate_section"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "mcp": {
+                  "type": "object",
+                  "properties": {
+                    "canonical_uri": {
+                      "type": "string",
+                      "pattern": "^\\s*https?://[^/?#]+/mcp\\s*$"
+                    },
+                    "authorization_servers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^\\s*https?://[^?#]+\\s*$"
+                      },
+                      "minItems": 1
+                    },
+                    "scopes_supported": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "default": []
+                    },
+                    "allowed_origins": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "default": []
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "canonical_uri",
+                    "authorization_servers"
+                  ]
+                }
+              },
+              "additionalProperties": true,
+              "anyOf": [
+                {
+                  "required": [
+                    "tools"
+                  ]
+                },
+                {
+                  "required": [
+                    "mcp"
+                  ]
+                }
+              ]
+            }
+          ],
+          "$defs": {
+            "section": {
+              "type": "object",
+              "properties": {
+                "hooks": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                },
+                "upstream_credentials": {
+                  "const": "own"
+                },
+                "pools": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "members": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "default": []
+                          },
+                          "repeatable": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "default": []
+                          }
+                        },
+                        "additionalProperties": true
+                      },
+                      {
+                        "not": {
+                          "type": "object"
+                        }
+                      }
+                    ]
+                  },
+                  "default": {}
+                }
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/PlaneInput:mcp/$defs/server"
+              },
+              "propertyNames": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "hooks",
+                      "upstream_credentials",
+                      "pools"
+                    ]
+                  },
+                  {
+                    "pattern": "^[A-Za-z0-9.-]+$"
+                  }
+                ]
+              }
+            },
+            "validate_section": {
+              "type": "object",
+              "properties": {
+                "hooks": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                },
+                "upstream_credentials": {
+                  "const": "own"
+                }
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/PlaneInput:mcp/$defs/server"
+              },
+              "propertyNames": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "hooks",
+                      "upstream_credentials",
+                      "pools"
+                    ]
+                  },
+                  {
+                    "pattern": "^[A-Za-z0-9.-]+$"
+                  }
+                ]
+              }
+            },
+            "server": {
+              "type": "object",
+              "properties": {
+                "url": {
+                  "type": "string",
+                  "default": ""
+                },
+                "command": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "args": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                },
+                "env": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/PlaneInput:mcp/$defs/secret"
+                      }
+                    ],
+                    "x-busbar-secret": true,
+                    "writeOnly": true
+                  },
+                  "default": {},
+                  "propertyNames": {
+                    "pattern": "^[^=\\u0000]+$"
+                  }
+                },
+                "cwd": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "pin": {
+                  "type": "object",
+                  "properties": {
+                    "mechanism": {
+                      "enum": [
+                        "cert_spki",
+                        "mtls",
+                        "local_program",
+                        "unpinned"
+                      ]
+                    },
+                    "key": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "mechanism"
+                  ]
+                },
+                "client_identity": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "cert": {
+                          "$ref": "#/$defs/PlaneInput:mcp/$defs/secret",
+                          "x-busbar-secret": true,
+                          "writeOnly": true
+                        },
+                        "key": {
+                          "$ref": "#/$defs/PlaneInput:mcp/$defs/secret",
+                          "x-busbar-secret": true,
+                          "writeOnly": true
+                        }
+                      },
+                      "additionalProperties": false,
+                      "required": [
+                        "cert",
+                        "key"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "tls": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "ca_cert_pem": {
+                          "type": "string",
+                          "pattern": "\\S"
+                        }
+                      },
+                      "additionalProperties": false,
+                      "required": [
+                        "ca_cert_pem"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "verify_ttl": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": "5s"
+                },
+                "timeout": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^\\s*0*[1-9][0-9]*[smhd]\\s*$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": "30s",
+                  "description": "Positive duration parsed by the host duration grammar."
+                },
+                "tools_allow": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "$ref": "#/$defs/PlaneInput:mcp/$defs/tool"
+                  },
+                  "default": {},
+                  "propertyNames": {
+                    "pattern": "^[A-Za-z0-9_.-]+$"
+                  }
+                },
+                "prompts_allow": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "$ref": "#/$defs/PlaneInput:mcp/$defs/prompt"
+                  },
+                  "default": {},
+                  "propertyNames": {
+                    "type": "string",
+                    "pattern": "\\S"
+                  }
+                },
+                "resources_allow": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "$ref": "#/$defs/PlaneInput:mcp/$defs/resource"
+                  },
+                  "default": {},
+                  "propertyNames": {
+                    "type": "string",
+                    "pattern": "\\S"
+                  }
+                },
+                "resource_templates_allow": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "$ref": "#/$defs/PlaneInput:mcp/$defs/resource_template"
+                  },
+                  "default": {},
+                  "propertyNames": {
+                    "type": "string",
+                    "pattern": "\\S"
+                  }
+                },
+                "transport": {
+                  "enum": [
+                    "streamable_http",
+                    "stdio",
+                    null
+                  ],
+                  "default": "streamable_http"
+                },
+                "aud": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^https?://",
+                      "description": "Absolute HTTP(S) resource indicator, without fragment, userinfo, whitespace or controls."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "grants": {
+                  "type": "object",
+                  "properties": {
+                    "sampling": {
+                      "type": "boolean",
+                      "default": false
+                    },
+                    "elicitation": {
+                      "type": "boolean",
+                      "default": false
+                    },
+                    "roots": {
+                      "type": "boolean",
+                      "default": false
+                    }
+                  },
+                  "additionalProperties": false,
+                  "default": {
+                    "sampling": false,
+                    "elicitation": false,
+                    "roots": false
+                  }
+                },
+                "allow_private": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "token_exchange": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "token_url": {
+                          "type": "string",
+                          "pattern": "^https?://"
+                        },
+                        "subject_token": {
+                          "$ref": "#/$defs/PlaneInput:mcp/$defs/secret",
+                          "x-busbar-secret": true,
+                          "writeOnly": true
+                        },
+                        "subject_token_type": {
+                          "type": "string",
+                          "default": "urn:ietf:params:oauth:token-type:access_token"
+                        }
+                      },
+                      "additionalProperties": false,
+                      "required": [
+                        "token_url",
+                        "subject_token"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "max_input_required_rounds": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 4294967295,
+                      "x-busbar-integer-token": "unsigned"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": 3
+                },
+                "max_caller_ask_rounds": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 4294967295,
+                      "x-busbar-integer-token": "unsigned"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": 3
+                },
+                "sampling_bounds": {
+                  "type": "object",
+                  "properties": {
+                    "max_messages": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 4294967295,
+                      "default": 64,
+                      "x-busbar-integer-token": "unsigned"
+                    },
+                    "max_prompt_bytes": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 4294967295,
+                      "default": 65536,
+                      "x-busbar-integer-token": "unsigned"
+                    },
+                    "max_stop_sequences": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 4294967295,
+                      "default": 8,
+                      "x-busbar-integer-token": "unsigned"
+                    },
+                    "max_stop_sequence_bytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 4294967295,
+                      "default": 64,
+                      "x-busbar-integer-token": "unsigned"
+                    },
+                    "temperature_min_milli": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 4294967295,
+                      "default": 0,
+                      "x-busbar-integer-token": "unsigned"
+                    },
+                    "temperature_max_milli": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 4294967295,
+                      "default": 2000,
+                      "x-busbar-integer-token": "unsigned"
+                    },
+                    "max_input_response_bytes": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 4294967295,
+                      "default": 1048576,
+                      "x-busbar-integer-token": "unsigned"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "Lifecycle additionally requires temperature_min_milli <= temperature_max_milli."
+                },
+                "upstream_credentials": {
+                  "enum": [
+                    "own",
+                    null
+                  ]
+                },
+                "hooks": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "pin"
+              ],
+              "allOf": [
+                {
+                  "if": {
+                    "required": [
+                      "transport"
+                    ],
+                    "properties": {
+                      "transport": {
+                        "const": "stdio"
+                      }
+                    }
+                  },
+                  "then": {
+                    "required": [
+                      "command"
+                    ],
+                    "properties": {
+                      "command": {
+                        "type": "string",
+                        "pattern": "^/(?:[\\s\\S]*\\S)?$"
+                      },
+                      "cwd": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^/(?:[\\s\\S]*\\S)?$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "url": {
+                        "type": "string",
+                        "pattern": "^\\s*$"
+                      },
+                      "pin": {
+                        "properties": {
+                          "mechanism": {
+                            "enum": [
+                              "local_program",
+                              "unpinned"
+                            ]
+                          }
+                        }
+                      },
+                      "allow_private": {
+                        "const": false
+                      },
+                      "token_exchange": {
+                        "type": "null"
+                      },
+                      "aud": {
+                        "type": "null"
+                      },
+                      "upstream_credentials": {
+                        "type": "null"
+                      },
+                      "client_identity": {
+                        "type": "null"
+                      },
+                      "tls": {
+                        "type": "null"
+                      }
+                    }
+                  },
+                  "else": {
+                    "required": [
+                      "url"
+                    ],
+                    "properties": {
+                      "url": {
+                        "type": "string",
+                        "pattern": "^https?://"
+                      },
+                      "command": {
+                        "type": "null"
+                      },
+                      "cwd": {
+                        "type": "null"
+                      },
+                      "args": {
+                        "maxItems": 0
+                      },
+                      "env": {
+                        "maxProperties": 0
+                      },
+                      "pin": {
+                        "properties": {
+                          "mechanism": {
+                            "enum": [
+                              "cert_spki",
+                              "mtls",
+                              "unpinned"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "pin": {
+                        "properties": {
+                          "mechanism": {
+                            "const": "mtls"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "then": {
+                    "required": [
+                      "client_identity"
+                    ],
+                    "properties": {
+                      "client_identity": {
+                        "type": "object",
+                        "properties": {
+                          "cert": {
+                            "$ref": "#/$defs/PlaneInput:mcp/$defs/secret",
+                            "x-busbar-secret": true,
+                            "writeOnly": true
+                          },
+                          "key": {
+                            "$ref": "#/$defs/PlaneInput:mcp/$defs/secret",
+                            "x-busbar-secret": true,
+                            "writeOnly": true
+                          }
+                        },
+                        "additionalProperties": false,
+                        "required": [
+                          "cert",
+                          "key"
+                        ]
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "required": [
+                      "client_identity"
+                    ],
+                    "properties": {
+                      "client_identity": {
+                        "type": "object"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "url": {
+                        "type": "string",
+                        "pattern": "^https://"
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "required": [
+                      "tls"
+                    ],
+                    "properties": {
+                      "tls": {
+                        "type": "object"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "url": {
+                        "type": "string",
+                        "pattern": "^https://"
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "pin": {
+                        "properties": {
+                          "mechanism": {
+                            "const": "local_program"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "then": {
+                    "required": [
+                      "cwd"
+                    ],
+                    "properties": {
+                      "cwd": {
+                        "type": "string",
+                        "pattern": "^/"
+                      },
+                      "pin": {
+                        "required": [
+                          "key"
+                        ],
+                        "properties": {
+                          "key": {
+                            "type": "string",
+                            "pattern": "^/"
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "required": [
+                      "token_exchange"
+                    ],
+                    "properties": {
+                      "token_exchange": {
+                        "type": "object"
+                      }
+                    }
+                  },
+                  "then": {
+                    "required": [
+                      "aud"
+                    ],
+                    "properties": {
+                      "aud": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "allow_private": {
+                        "const": false
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "token_exchange": {
+                        "properties": {
+                          "token_url": {
+                            "type": "string",
+                            "pattern": "^https://"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "tool": {
+              "type": "object",
+              "properties": {
+                "schema_hash": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "description": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "input_schema": {
+                  "description": "Operator-approved tool input JSON Schema; schema annotations are also validated by the lifecycle."
+                },
+                "output_schema": {
+                  "description": "Opaque operator-supplied output JSON Schema."
+                },
+                "publish_as": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "ask_caller": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "method": {
+                          "enum": [
+                            "elicitation/create",
+                            "sampling/createMessage",
+                            "roots/list"
+                          ]
+                        },
+                        "params": {
+                          "description": "Caller request params are opaque JSON, sent verbatim."
+                        }
+                      },
+                      "additionalProperties": false,
+                      "required": [
+                        "method"
+                      ]
+                    }
+                  },
+                  "default": []
+                },
+                "task_support": {
+                  "enum": [
+                    "none",
+                    "optional",
+                    "required"
+                  ],
+                  "default": "none"
+                },
+                "task_ask_caller": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "method": {
+                          "enum": [
+                            "elicitation/create",
+                            "sampling/createMessage",
+                            "roots/list"
+                          ]
+                        },
+                        "params": {
+                          "description": "Caller request params are opaque JSON, sent verbatim."
+                        }
+                      },
+                      "additionalProperties": false,
+                      "required": [
+                        "method"
+                      ]
+                    }
+                  },
+                  "default": []
+                }
+              },
+              "additionalProperties": false,
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "task_support": {
+                        "const": "none"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "task_ask_caller": {
+                        "maxItems": 0
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "prompt": {
+              "type": "object",
+              "properties": {
+                "description": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "template": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "ask_caller": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "method": {
+                          "enum": [
+                            "elicitation/create",
+                            "sampling/createMessage",
+                            "roots/list"
+                          ]
+                        },
+                        "params": {
+                          "description": "Caller request params are opaque JSON, sent verbatim."
+                        }
+                      },
+                      "additionalProperties": false,
+                      "required": [
+                        "method"
+                      ]
+                    }
+                  },
+                  "default": []
+                },
+                "messages": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "role": {
+                        "enum": [
+                          "user",
+                          "assistant"
+                        ],
+                        "default": "user"
+                      },
+                      "content": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "const": "text"
+                              },
+                              "text": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "required": [
+                              "type",
+                              "text"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "const": "image"
+                              },
+                              "data": {
+                                "type": "string",
+                                "contentEncoding": "base64",
+                                "description": "Lifecycle requires valid standard base64."
+                              },
+                              "mime_type": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "required": [
+                              "type",
+                              "data",
+                              "mime_type"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "const": "audio"
+                              },
+                              "data": {
+                                "type": "string",
+                                "contentEncoding": "base64",
+                                "description": "Lifecycle requires valid standard base64."
+                              },
+                              "mime_type": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "required": [
+                              "type",
+                              "data",
+                              "mime_type"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "const": "resource"
+                              },
+                              "resource": {
+                                "type": "object",
+                                "properties": {
+                                  "uri": {
+                                    "type": "string",
+                                    "pattern": "\\S"
+                                  },
+                                  "mime_type": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "text": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "blob": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "contentEncoding": "base64",
+                                        "description": "Lifecycle requires valid standard base64."
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "additionalProperties": false,
+                                "required": [
+                                  "uri"
+                                ],
+                                "not": {
+                                  "required": [
+                                    "text",
+                                    "blob"
+                                  ],
+                                  "properties": {
+                                    "text": {
+                                      "type": "string"
+                                    },
+                                    "blob": {
+                                      "type": "string"
+                                    }
+                                  }
+                                }
+                              }
+                            },
+                            "additionalProperties": false,
+                            "required": [
+                              "type",
+                              "resource"
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                      "content"
+                    ]
+                  },
+                  "default": []
+                }
+              },
+              "additionalProperties": false,
+              "not": {
+                "required": [
+                  "template",
+                  "messages"
+                ],
+                "properties": {
+                  "template": {
+                    "type": "string"
+                  },
+                  "messages": {
+                    "minItems": 1
+                  }
+                }
+              }
+            },
+            "resource": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "description": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "mime_type": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "text": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "blob": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "contentEncoding": "base64",
+                      "description": "Lifecycle requires valid standard base64."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "not": {
+                "required": [
+                  "text",
+                  "blob"
+                ],
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  },
+                  "blob": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "resource_template": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "description": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "mime_type": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "text": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "secret": {
+              "oneOf": [
+                {
+                  "const": "none"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "module": {
+                      "type": "string",
+                      "pattern": "\\S"
+                    },
+                    "settings": {
+                      "type": "object"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "module"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "env": {
+                      "type": "string",
+                      "pattern": "\\S"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "env"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "file": {
+                      "type": "string",
+                      "pattern": "\\S"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "file"
+                  ]
+                }
+              ]
+            },
+            "authored_section": {
+              "type": "object",
+              "properties": {
+                "hooks": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                },
+                "upstream_credentials": {
+                  "const": "own"
+                },
+                "pools": false
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/PlaneInput:mcp/$defs/server"
+              },
+              "propertyNames": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "hooks",
+                      "upstream_credentials",
+                      "pools"
+                    ]
+                  },
+                  {
+                    "pattern": "^[A-Za-z0-9.-]+$"
+                  }
+                ]
+              },
+              "description": "Plane-owned raw tools section grammar; host-injected pools are not writable registration input. Core security/source policy, reserved-name checks, SecretRef resolution and module validation still apply."
+            },
+            "user_configuration": {
+              "type": "object",
+              "properties": {
+                "tools": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/PlaneInput:mcp/$defs/authored_section"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Null/absent is an unconfigured host section; the host does not pass null as a lifecycle settings object."
+                },
+                "mcp": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "canonical_uri": {
+                          "type": "string",
+                          "pattern": "^\\s*https?://[^/?#]+/mcp\\s*$"
+                        },
+                        "authorization_servers": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "pattern": "^\\s*https?://[^?#]+\\s*$"
+                          },
+                          "minItems": 1
+                        },
+                        "scopes_supported": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "default": []
+                        },
+                        "allowed_origins": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "default": []
+                        }
+                      },
+                      "additionalProperties": false,
+                      "required": [
+                        "canonical_uri",
+                        "authorization_servers"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Raw host endpoint block; null/absent leaves the endpoint unconfigured."
+                }
+              },
+              "additionalProperties": true,
+              "x-busbar-partial": true,
+              "description": "The supported plane-owned blocks within a complete deploy document. This is not a complete host boot schema."
+            }
+          },
+          "description": "Lifecycle tools settings and the dealt validate envelope. Cross-entry published-name uniqueness, URI/base64 validity, schema annotations, matching local-program keys, duration values and cross-field numerical comparisons remain lifecycle judgments.",
+          "x-busbar-settings-profile": "integer-token-v1"
+        },
+        "PlaneInput:a2a": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "a2a plane lifecycle settings",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlaneInput:a2a/$defs/section"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "agents": {
+                  "$ref": "#/$defs/PlaneInput:a2a/$defs/section"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "agents"
+              ]
+            }
+          ],
+          "$defs": {
+            "section": {
+              "type": "object",
+              "properties": {
+                "hooks": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                },
+                "upstream_credentials": {
+                  "const": "own"
+                },
+                "pools": {
+                  "description": "Host-injected pools: the reader extracts pool.members entries that are strings or objects with a string name. Missing or malformed pools/members are ignored, preserving its tolerant grammar.",
+                  "examples": [
+                    {
+                      "fallback": {
+                        "members": [
+                          "primary",
+                          {
+                            "name": "secondary"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/PlaneInput:a2a/$defs/agent"
+              },
+              "propertyNames": {
+                "pattern": "^[A-Za-z0-9._~-]+$",
+                "not": {
+                  "enum": [
+                    ".",
+                    ".."
+                  ]
+                }
+              }
+            },
+            "agent": {
+              "type": "object",
+              "properties": {
+                "url": {
+                  "type": "string",
+                  "pattern": "^[hH][tT][tT][pP][sS]?://",
+                  "description": "Lifecycle verifies URL syntax and refuses userinfo."
+                },
+                "pin": {
+                  "type": "object",
+                  "properties": {
+                    "mechanism": {
+                      "enum": [
+                        "jws_issuer_key",
+                        "cert_spki",
+                        "mtls",
+                        "unpinned"
+                      ]
+                    },
+                    "key": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "fingerprint": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "mechanism"
+                  ]
+                },
+                "client_identity": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "cert": {
+                          "$ref": "#/$defs/PlaneInput:a2a/$defs/secret",
+                          "x-busbar-secret": true,
+                          "writeOnly": true
+                        },
+                        "key": {
+                          "$ref": "#/$defs/PlaneInput:a2a/$defs/secret",
+                          "x-busbar-secret": true,
+                          "writeOnly": true
+                        }
+                      },
+                      "additionalProperties": false,
+                      "required": [
+                        "cert",
+                        "key"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "reverify_ttl": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": "5s"
+                },
+                "recovery_backoff": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "allow_private": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "upstream_credentials": {
+                  "enum": [
+                    "own",
+                    null
+                  ]
+                },
+                "upstream_credential": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "secret": {
+                          "$ref": "#/$defs/PlaneInput:a2a/$defs/secret",
+                          "x-busbar-secret": true,
+                          "writeOnly": true
+                        },
+                        "placement": {
+                          "anyOf": [
+                            {
+                              "const": "bearer"
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "header": {
+                                  "type": "string",
+                                  "pattern": "\\S"
+                                }
+                              },
+                              "additionalProperties": false,
+                              "required": [
+                                "header"
+                              ]
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "bearer": true
+                              },
+                              "additionalProperties": false,
+                              "required": [
+                                "bearer"
+                              ]
+                            }
+                          ],
+                          "default": "bearer"
+                        },
+                        "lease_ttl_ms": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 18446744073709551615,
+                          "x-busbar-integer-token": "unsigned"
+                        }
+                      },
+                      "additionalProperties": false,
+                      "required": [
+                        "secret",
+                        "lease_ttl_ms"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "egress_scopes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "maxItems": 0,
+                  "default": []
+                },
+                "hooks": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "url",
+                "pin"
+              ],
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "pin": {
+                        "properties": {
+                          "mechanism": {
+                            "const": "mtls"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "then": {
+                    "required": [
+                      "client_identity"
+                    ],
+                    "properties": {
+                      "client_identity": {
+                        "type": "object",
+                        "properties": {
+                          "cert": {
+                            "$ref": "#/$defs/PlaneInput:a2a/$defs/secret",
+                            "x-busbar-secret": true,
+                            "writeOnly": true
+                          },
+                          "key": {
+                            "$ref": "#/$defs/PlaneInput:a2a/$defs/secret",
+                            "x-busbar-secret": true,
+                            "writeOnly": true
+                          }
+                        },
+                        "additionalProperties": false,
+                        "required": [
+                          "cert",
+                          "key"
+                        ]
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "required": [
+                      "client_identity"
+                    ],
+                    "properties": {
+                      "client_identity": {
+                        "type": "object"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "url": {
+                        "pattern": "^[hH][tT][tT][pP][sS]://"
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "secret": {
+              "oneOf": [
+                {
+                  "const": "none"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "module": {
+                      "type": "string",
+                      "pattern": "\\S"
+                    },
+                    "settings": {
+                      "type": "object"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "module"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "env": {
+                      "type": "string",
+                      "pattern": "\\S"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "env"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "file": {
+                      "type": "string",
+                      "pattern": "\\S"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "file"
+                  ]
+                }
+              ]
+            },
+            "owned_sections": {
+              "description": "PlaneOpenIn.owned / PlaneRefreshIn.owned, separate from the settings argument described by the schema root.",
+              "properties": {
+                "agent_push": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "ca": {
+                          "type": "string",
+                          "pattern": "\\S",
+                          "description": "Public CA certificate PEM; not a secret."
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            },
+            "authored_section": {
+              "type": "object",
+              "properties": {
+                "hooks": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                },
+                "upstream_credentials": {
+                  "const": "own"
+                },
+                "pools": false
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/PlaneInput:a2a/$defs/agent"
+              },
+              "propertyNames": {
+                "pattern": "^[A-Za-z0-9._~-]+$",
+                "not": {
+                  "enum": [
+                    ".",
+                    ".."
+                  ]
+                }
+              },
+              "description": "Plane-owned raw agents section grammar; host-injected pools are not writable registration input. Core security/source policy, reserved-name checks, SecretRef resolution and module validation still apply."
+            },
+            "user_configuration": {
+              "type": "object",
+              "properties": {
+                "agents": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/PlaneInput:a2a/$defs/authored_section"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Null/absent is an unconfigured host section; the host does not pass null as a lifecycle settings object."
+                },
+                "agent_push": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "ca": {
+                          "type": "string",
+                          "pattern": "\\S",
+                          "description": "Public CA certificate PEM; not a secret."
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": true,
+              "x-busbar-partial": true,
+              "description": "The supported plane-owned blocks within a complete deploy document. This is not a complete host boot schema."
+            }
+          },
+          "description": "Lifecycle agents settings (bare section, or validate envelope). URL validity, TLS compatibility and registration rules are also checked by validate_agent.",
+          "x-busbar-settings-profile": "integer-token-v1"
         }
       },
       "type": "object",
@@ -3984,11 +5809,95 @@
           },
           "default": {},
           "description": "Module-keyed secret initialization map. Module selection and bootstrap SecretRef restrictions are runtime validation, not new wrapper fields."
+        },
+        "mcp": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "canonical_uri": {
+                  "type": "string",
+                  "pattern": "^\\s*https?://[^/?#]+/mcp\\s*$"
+                },
+                "authorization_servers": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^\\s*https?://[^?#]+\\s*$"
+                  },
+                  "minItems": 1
+                },
+                "scopes_supported": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                },
+                "allowed_origins": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "canonical_uri",
+                "authorization_servers"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Raw host endpoint block; null/absent leaves the endpoint unconfigured."
+        },
+        "tools": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlaneInput:mcp/$defs/authored_section"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Null/absent is an unconfigured host section; the host does not pass null as a lifecycle settings object."
+        },
+        "agent_push": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "ca": {
+                  "type": "string",
+                  "pattern": "\\S",
+                  "description": "Public CA certificate PEM; not a secret."
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "agents": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlaneInput:a2a/$defs/authored_section"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Null/absent is an unconfigured host section; the host does not pass null as a lifecycle settings object."
         }
       },
       "additionalProperties": true,
       "x-busbar-partial": true,
-      "description": "User-input forms for the listed host-owned fields. Not a complete boot schema: other top-level blocks and plane-owned settings remain with their declaring parser. The provider catalog is a separate document using ProviderCatalogEntry."
+      "description": "User-input forms for host-owned fields and installed planes that explicitly declare raw user-configuration schemas. Not a complete boot schema: undeclared top-level blocks remain with their owning parser. The provider catalog is a separate document using ProviderCatalogEntry."
     },
     "declared_plane_scope_kinds": [
       "agent",
@@ -5029,16 +6938,23 @@
             "maximum": 65535,
             "description": "Rewrite/reject ordering key (transform-chain order + reject tie-break)."
           },
-          "at": {
+          "on_error": {
+            "type": "string",
+            "description": "Gate fallback on timeout/error, a CLOSED, unambiguous string union: one of the\nreserved terminals (`\"weighted\"` | `\"reject\"` | `\"first\"` | `\"nothing\"`) or the NAME of the\nfallback hook the chain continues through. Unambiguous by construction: the terminal words\nare ILLEGAL hook names on every write path (`config::RESERVED_HOOK_NAMES`), so a value in\nthe terminal set is always a terminal and anything else is always a hook reference."
+          },
+          "on_empty": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The LEGACY single-valued tap stage (`\"request\"`/`\"candidate\"`/`\"routing\"`/`\"response\"`), or\n`null`. Kept for back-compat and NOT the field to read: `null` here does NOT mean \"a gate\"\nand does not mean \"unscoped\". Every hook written in the current top-level `hooks:` grammar\nhas `at: null` by construction (`config::hook_cfg_from_def` never sets it, and\n`--migrate-config` rewrites a legacy `at:` into `phase:`), so this field is `null` for\nessentially every hook a running deployment has. Read `fires_at`.\n1.6.0 owner rule: a 1.5.5 client reading this view must see this field byte-for-byte, so it\nis RESTORED alongside `phase`/`fires_at`."
+            "description": "Configured empty-intersection fallback: `\"weighted\"` | `\"reject\"` | `\"first\"`.\n`null` preserves an omitted override, whose runtime default is fail-closed."
           },
-          "on_error": {
-            "type": "string",
-            "description": "Gate fallback on timeout/error, a CLOSED, unambiguous string union: one of the\nreserved terminals (`\"weighted\"` | `\"reject\"` | `\"first\"` | `\"nothing\"`) or the NAME of the\nfallback hook the chain continues through. Unambiguous by construction: the terminal words\nare ILLEGAL hook names on every write path (`config::RESERVED_HOOK_NAMES`), so a value in\nthe terminal set is always a terminal and anything else is always a hook reference."
+          "signals": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Requested signal catalog names, in configured order."
           },
           "timeout_ms": {
             "type": "integer",
@@ -5062,19 +6978,23 @@
             "type": "boolean",
             "description": "Whether this hook fires on every request (globally wired)."
           },
+          "default": {
+            "type": "boolean",
+            "description": "Whether this hook replaces the default ordering hook for pools with no named base."
+          },
           "phase": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "The `phase:` STAGE LIST exactly as configured, empty when unset. The literal config echo,\nfor an operator diffing what they wrote against what busbar parsed. It is NOT the effective\nanswer on its own: empty means \"fall back\", and what it falls back TO is `at:` if set and the\nfour core stages otherwise. For the effective answer read `fires_at`."
+            "description": "The canonical configured stage list. Empty selects the fixed core stages."
           },
           "fires_at": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "The RESOLVED stage set: the stages this hook ACTUALLY fires at, in pipeline order, never\nempty. This is the field that answers \"when does this hook run\", and it is computed by\n`config::HookCfg::resolved_stages` through the same `fires_at_stage` predicate the firing\npath uses, so it cannot disagree with runtime behavior. It reflects the frozen precedence\n(a non-empty `phase:` wins, else the legacy single `at:`, else the four core stages) without\nasking the reader to re-derive it from the two spellings above."
+            "description": "The effective stage set in pipeline order, computed by the runtime firing predicate."
           },
           "groups": {
             "type": "array",
@@ -5091,11 +7011,13 @@
           "prompt",
           "user",
           "priority",
-          "at",
           "on_error",
+          "on_empty",
+          "signals",
           "timeout_ms",
           "settings_keys",
           "global",
+          "default",
           "phase",
           "fires_at",
           "groups"
@@ -6627,7 +8549,7 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/ClassUsage"
             },
-            "description": "THE PLANE-DECLARED CLASSES the row's ledger lines counted outside the token split, keyed by\nthe class name the plane declares (new in 1.6.0, [`ClassUsage`]). Absent when the row carries\nnone, so a token-only row reads exactly as 1.5.5's."
+            "description": "Every ledgered class outside the reserved token split, keyed by class name ([`ClassUsage`]).\nIncludes open classes from every provider and plane. Absent when the row carries none."
           }
         },
         "required": [
@@ -6766,7 +8688,7 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/ClassUsage"
             },
-            "description": "THE PLANE-DECLARED CLASSES the row's ledger lines counted outside the token split, keyed by\nthe class name the plane declares (new in 1.6.0, [`ClassUsage`]). Absent when the row carries\nnone, so a token-only row reads exactly as 1.5.5's."
+            "description": "Every ledgered class outside the reserved token split, keyed by class name ([`ClassUsage`]).\nIncludes open classes from every provider and plane. Absent when the row carries none."
           }
         },
         "required": [
@@ -6876,7 +8798,7 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/ClassUsage"
             },
-            "description": "THE PLANE-DECLARED CLASSES the row's ledger lines counted outside the token split, keyed by\nthe class name the plane declares (new in 1.6.0, [`ClassUsage`]). Absent when the row carries\nnone, so a token-only row reads exactly as 1.5.5's."
+            "description": "Every ledgered class outside the reserved token split, keyed by class name ([`ClassUsage`]).\nIncludes open classes from every provider and plane. Absent when the row carries none."
           }
         },
         "required": [
@@ -9763,7 +11685,7 @@
           },
           "module": {
             "type": "string",
-            "description": "The `module:` backing this instance (a built-in name or a signed-plugin name/alias).\n\nALWAYS present, matching 1.5.5's wire shape byte-for-byte (`required` includes `module`,\nschema type `\"string\"`, never nullable): 1.5.5 had no named-map section whose entries\ncarried no module, so it has no representation for one, and the ruling is 1:1 with 1.5.5\nrather than inventing a new shape. EMPTY-STRINGED, not omitted, for a section whose entries\nare not plugin instances -- today `agents:`, whose entries describe endpoints somebody else\nruns (`NamedMapSection::requires_module`). Every section that HAS a module requires it to be\nnon-empty, so an empty string is unambiguous for \"no module\" without a `skip_serializing_if`\nthat would shrink `required` below 1.5.5's."
+            "description": "The `module:` backing this plugin instance (a built-in name or signed-plugin name/alias).\nOmitted for definitions that do not instantiate a module, such as remote agents, and for\nan unparseable stored definition that has no string-valued module to project."
           },
           "settings_keys": {
             "type": "array",
@@ -9824,10 +11746,9 @@
         },
         "required": [
           "name",
-          "module",
           "settings_keys"
         ],
-        "description": "ONE definition of ONE 1.5.3 named-DEFINITION map: the read shape of the GENERIC named-map CRUD\n(`GET /api/v1/admin/identity-providers[/{name}]`, `GET /api/v1/admin/export[/{name}]`, and\n`tools:`/`agents:` when they land).\n\nDeliberately ONE view for every section rather than one per kind: the sections share the frozen\n`{module, settings}` spine and differ only by optional kind-specific fields, which are\n`skip_serializing_if`-omitted for a section that has none. So `/export` serves exactly\n`{name, module, settings_keys}` while `/identity-providers` additionally carries its ceiling,\nand a new section adds fields here (additive) instead of a parallel view + a parallel handler.\n\nSECRETS ARE NEVER PROJECTED, by construction, and that claim covers the `settings:` bag too,\nwhich is why this view carries `settings_keys` and NOT the bag itself. A `token:` is a SECRET\nREFERENCE collapsed to a boolean, and the module's opaque settings are a bag an operator\nlegitimately puts a credential VALUE in (an OIDC `client_secret`, a webhook `auth_header` value),\nso projecting it verbatim would hand every READ-ONLY admin credential the deployment's secrets\nthrough `GET /identity-providers/{name}` / `GET /export/{name}`. Projecting the KEY NAMES keeps\nthe introspection the read surface exists for (\"what is configured here?\") with no field a value\ncould ride out on: the same discipline `token_configured` already applies to the reference."
+        "description": "One definition in a named-definition map: the read shape of the generic named-map CRUD\n(`GET /api/v1/admin/identity-providers[/{name}]`, `GET /api/v1/admin/export[/{name}]`, and\nplane-owned named definitions).\n\nOne view serves every section: plugin instances name their backing module, while plane-owned\ndefinitions can describe remote endpoints without a module. Kind-specific fields are\n`skip_serializing_if`-omitted for a section that has none. So `/export` serves exactly\n`{name, module, settings_keys}` while `/identity-providers` additionally carries its ceiling,\nand a new section adds fields here (additive) instead of a parallel view + a parallel handler.\n\nSECRETS ARE NEVER PROJECTED, by construction, and that claim covers the `settings:` bag too,\nwhich is why this view carries `settings_keys` and NOT the bag itself. A `token:` is a SECRET\nREFERENCE collapsed to a boolean, and the module's opaque settings are a bag an operator\nlegitimately puts a credential VALUE in (an OIDC `client_secret`, a webhook `auth_header` value),\nso projecting it verbatim would hand every READ-ONLY admin credential the deployment's secrets\nthrough `GET /identity-providers/{name}` / `GET /export/{name}`. Projecting the KEY NAMES keeps\nthe introspection the read surface exists for (\"what is configured here?\") with no field a value\ncould ride out on: the same discipline `token_configured` already applies to the reference."
       },
       "MutatedDefView": {
         "type": "object",
@@ -9838,7 +11759,7 @@
           },
           "module": {
             "type": "string",
-            "description": "The `module:` backing this instance (a built-in name or a signed-plugin name/alias).\n\nALWAYS present, matching 1.5.5's wire shape byte-for-byte (`required` includes `module`,\nschema type `\"string\"`, never nullable): 1.5.5 had no named-map section whose entries\ncarried no module, so it has no representation for one, and the ruling is 1:1 with 1.5.5\nrather than inventing a new shape. EMPTY-STRINGED, not omitted, for a section whose entries\nare not plugin instances -- today `agents:`, whose entries describe endpoints somebody else\nruns (`NamedMapSection::requires_module`). Every section that HAS a module requires it to be\nnon-empty, so an empty string is unambiguous for \"no module\" without a `skip_serializing_if`\nthat would shrink `required` below 1.5.5's."
+            "description": "The `module:` backing this plugin instance (a built-in name or signed-plugin name/alias).\nOmitted for definitions that do not instantiate a module, such as remote agents, and for\nan unparseable stored definition that has no string-valued module to project."
           },
           "settings_keys": {
             "type": "array",
@@ -9924,7 +11845,6 @@
         },
         "required": [
           "name",
-          "module",
           "settings_keys"
         ],
         "description": "THE MUTATION RESPONSE for an upsert/settings write: the stored definition, PLUS the\nrestart-required signal for boot-bound routes, planes and export instances or projections.\n\n`#[serde(flatten)]` keeps the definition's own fields exactly where they have always been, so the\nsignal is purely ADDITIVE. Configuration values, when available, are explicitly identified as\nbelonging to the installed config generation, not an acknowledgement from a running plugin.\nThis is the `export:` named map's sibling of\n`PUT /config/settings`'s `reload_to_apply`/`note` pair (`handlers::reload_to_apply_fields`), which\nreports the same class of boot-frozen change for the single-value settings surface."
@@ -11014,10 +12934,6 @@
           "module": {
             "type": "string"
           },
-          "plugin": {
-            "type": "string",
-            "deprecated": true
-          },
           "timeout_ms": {
             "type": "integer",
             "format": "uint64",
@@ -11064,21 +12980,6 @@
                   "reject",
                   "weighted",
                   "first"
-                ]
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "at": {
-            "anyOf": [
-              {
-                "enum": [
-                  "request",
-                  "candidate",
-                  "routing",
-                  "response"
                 ]
               },
               {
@@ -11139,31 +13040,10 @@
         },
         "additionalProperties": false,
         "required": [
-          "kind"
+          "kind",
+          "module"
         ],
-        "oneOf": [
-          {
-            "required": [
-              "module"
-            ],
-            "not": {
-              "required": [
-                "plugin"
-              ]
-            }
-          },
-          {
-            "required": [
-              "plugin"
-            ],
-            "not": {
-              "required": [
-                "module"
-              ]
-            }
-          }
-        ],
-        "description": "HookCfg accepted by admin POST/PUT and overlay. module is canonical; plugin is the legacy input alias. This differs from the deploy HookDefinition wrapper. Settings may contain hidden values and must never be reconstructed from HookView.",
+        "description": "Admin hook POST/PUT input. module and phase are the canonical names; use phase:[stage] for a single stage. This differs from the deploy HookDefinition wrapper. Settings may contain hidden values and must never be reconstructed from HookView.",
         "x-busbar-runtime-validation": [
           "module resolves to admitted hook",
           "prompt/user grants immutable after registration; tap cannot use rw",
@@ -11323,7 +13203,7 @@
         "required": [
           "module"
         ],
-        "description": "Actual top-level hooks named-definition input (HookDefCfg). Admin POST/PUT consumes Hook instead. default, signals, global and legacy at are runtime HookCfg fields, not accepted by this deploy wrapper.",
+        "description": "Actual top-level hooks named-definition input (HookDefCfg). Admin POST/PUT consumes Hook instead. default, signals and global are accepted by admin writes, not by this deploy wrapper.",
         "x-busbar-runtime-validation": [
           "module resolution and settings after secret resolution",
           "hook references, prompt/user grants and normal deploy validation"
@@ -26570,13 +28450,22 @@
                     "allOf": [
                       {
                         "type": "object",
-                        "description": "The settings sections to replace, keyed by section name. Durable by default (1.5.3): a mutable config always stores the change in its overlay (survives restart), and a locked config (`config.locked: true`) refuses ANY change with `400`. There is no \"apply in memory only\" outcome. The optional top-level boolean `persist` is accepted for back-compat and boolean-validated (a non-boolean is a 400 naming the field), but its value has NO effect: persistence is unconditional on a mutable config and refusal is unconditional on a locked one. Every other top-level key must be a known settings section; an unknown key is a 400. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.",
+                        "description": "The settings sections to replace, keyed by section name. A mutable config always stores the change through its configured Store. A locked config (`config.locked: true`) refuses changes with `400`. There is no apply-in-memory-only outcome. Every top-level key must be a known settings section; unknown or retired fields, including `persist`, are refused with `400`. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.",
                         "additionalProperties": true
                       },
                       {
                         "not": {
-                          "required": [
-                            "document_patch"
+                          "anyOf": [
+                            {
+                              "required": [
+                                "document_patch"
+                              ]
+                            },
+                            {
+                              "required": [
+                                "persist"
+                              ]
+                            }
                           ]
                         }
                       }
@@ -26636,10 +28525,6 @@
                           "type": "string"
                         },
                         "description": "Forget only these exact prior document edits before merging the new edit; typed overlays are never removed."
-                      },
-                      "persist": {
-                        "type": "boolean",
-                        "const": true
                       }
                     }
                   }
@@ -31263,20 +33148,39 @@
             }
           },
           "503": {
-            "description": "`unavailable`: the node could not take the unit, or the store could not take the correction. The body is the admin error envelope with code `unavailable`",
+            "description": "Typed refusal or durable action outcome. An action outcome body carries effect and reconciliation identity; unknown effect requires recovery, never a new automatic delta.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AdjustmentActionView"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AdjustmentActionInFlightError"
+                    }
+                  ]
                 }
               }
             },
             "headers": {
-              "Retry-After": {
-                "description": "Delay in seconds when supplied by the listener's rate/backpressure refusal; absence makes no retry promise.",
+              "x-busbar-adjust-effect": {
+                "description": "Host-created applied/not_applied/unknown effect classification when an action outcome is available; not derived from a request header.",
                 "schema": {
-                  "type": "integer",
-                  "minimum": 0
+                  "enum": [
+                    "applied",
+                    "not_applied",
+                    "unknown"
+                  ]
+                }
+              },
+              "x-busbar-receipt-durable": {
+                "description": "false when the effect is known in this process but final receipt persistence was not confirmed. After restart the retained pre-effect receipt may remain unknown; reconcile before any new action.",
+                "schema": {
+                  "const": "false"
                 }
               },
               "Cache-Control": {
