@@ -52,7 +52,7 @@ fn a_mixed_auth_chain_preserves_each_required_point_without_relaxing_provider_ru
         POINT_PEER | POINT_HEAD | POINT_HEAD_BODY,
     ] {
         let mixed = GuestLine { points, ..line() };
-        let bytes = encode(17, 3, &[mixed.clone()]).unwrap();
+        let bytes = encode(17, 3, std::slice::from_ref(&mixed)).unwrap();
         assert_eq!(decode(&bytes).unwrap().lines, vec![mixed.clone()]);
         assert!(
             check_points(points, true).is_err(),
