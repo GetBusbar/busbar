@@ -257,6 +257,7 @@ enum Plane {
 
 struct Witness {
     plane: Plane,
+    selecting: Vec<String>,
     catalog: Option<&'static str>,
     dns: BTreeMap<&'static str, Vec<IpAddr>>,
     handed: RefCell<Option<serde_json::Value>>,
@@ -267,6 +268,7 @@ impl Witness {
     fn new(plane: Plane) -> Self {
         Self {
             plane,
+            selecting: Vec::new(),
             catalog: None,
             dns: BTreeMap::new(),
             handed: RefCell::new(None),
@@ -286,6 +288,11 @@ impl Witness {
 }
 
 impl MigrateHost for Witness {
+    fn plane_selecting_sections(&self, module: &str) -> Vec<String> {
+        assert_eq!(module, "witness");
+        self.selecting.clone()
+    }
+
     fn migrate(
         &self,
         kind: &str,
@@ -440,6 +447,26 @@ fn a_plane_with_none_of_its_own_sections_is_not_handed_the_ones_it_consumes() {
     assert!(host.handed.borrow().is_none(), "the plane was not called");
     assert!(d["advanced"].is_null());
     assert!(changes.is_empty() && todos.is_empty());
+}
+
+#[test]
+fn a_selecting_consumed_section_runs_migration_without_inventing_owned_sections() {
+    let mut host = Witness::new(Plane::Migrates);
+    host.selecting.push(RESERVED_MODELS_KEY.into());
+    let (d, changes, todos) = run(
+        "models:\n  m: { provider: a }\nproviders:\n  a: { base_url: 'http://127.0.0.1:8000' }\n",
+        &host,
+    );
+    assert_eq!(
+        host.handed()["models"],
+        serde_json::json!({"m": {"provider": "a"}})
+    );
+    assert!(host.handed().get("pools").is_none());
+    assert!(d.get("pools").is_none());
+    assert_eq!(d["advanced"]["allow_destinations"], yaml("[127.0.0.1]"));
+    assert!(d["advanced"].get("block_private_addresses").is_none());
+    assert!(changes.iter().any(|line| line.contains("127.0.0.1")));
+    assert!(todos.is_empty(), "{todos:?}");
 }
 
 #[test]

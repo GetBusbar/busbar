@@ -17,6 +17,12 @@ const LOCALHOST_SUFFIX: &str = ".localhost";
 pub const FROM_DEFAULT: &str = "1.5.5";
 
 pub trait MigrateHost {
+    /// Additional config sections whose presence selects this admitted plane for use.
+    /// Consuming a section alone does not select the plane; its Statement must say so.
+    fn plane_selecting_sections(&self, _module: &str) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Cold migration only: save an old literal and return its private absolute file path.
     /// The default refuses rather than printing a purportedly migrated literal credential.
     fn externalize_secret(
@@ -284,7 +290,12 @@ fn sites(
             }
         }
 
-        if sections.is_empty() {
+        if sections.is_empty()
+            && !host
+                .plane_selecting_sections(plane.key)
+                .iter()
+                .any(|section| root.contains_key(Value::from(section.as_str())))
+        {
             continue;
         }
         let mut read_only = Vec::new();

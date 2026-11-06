@@ -73,6 +73,46 @@ pools: {}
 }
 
 #[test]
+fn direct_models_migrate_the_catalog_destination_without_a_pool_section() {
+    crate::dist_root_install::install();
+    let config = "\
+store: { module: memory }
+providers:
+  fixture-openai: { api_key: { env: FIXTURE_UPSTREAM_KEY } }
+models:
+  m-chat: { provider: fixture-openai }
+advanced:
+  usage_flush_interval_ms: 3600000
+";
+    let directory = super::FetchedDir::create_in(&std::env::temp_dir()).unwrap();
+    let catalog = "fixture-openai:\n  protocol: openai\n  base_url: http://127.0.0.1:35761\n";
+    std::fs::write(directory.0.join("providers.yaml"), catalog).unwrap();
+    let host = super::RootHost::for_document(config, &directory.0.join("config.yaml"));
+    let out = migrate_config_with(config, &host).expect("the selected LLM plane migrates");
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
+    assert_eq!(
+        doc["advanced"]["allow_destinations"],
+        serde_yaml::from_str::<serde_yaml::Value>("[127.0.0.1]").unwrap()
+    );
+    assert!(doc["advanced"].get("block_private_addresses").is_none());
+    assert!(
+        doc.get("pools").is_none(),
+        "migration must not invent a pool section"
+    );
+    assert_eq!(doc["models"]["m-chat"]["provider"], "fixture-openai");
+    assert_eq!(
+        doc["providers"]["fixture-openai"]["api_key"]["env"],
+        "FIXTURE_UPSTREAM_KEY"
+    );
+    assert_eq!(
+        std::fs::read_to_string(directory.0.join("providers.yaml")).unwrap(),
+        catalog
+    );
+    assert!(out.changes.iter().any(|line| line.contains("127.0.0.1")));
+    assert!(out.todos.is_empty(), "{:?}", out.todos);
+}
+
+#[test]
 fn the_release_index_picks_the_newest_release_built_for_this_core() {
     let kind = "store";
     let speaks = crate::root::loader::registry::supported_abi(kind)[0];

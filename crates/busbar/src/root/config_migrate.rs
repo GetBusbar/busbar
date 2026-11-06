@@ -474,6 +474,15 @@ impl RootHost {
 }
 
 impl MigrateHost for RootHost {
+    fn plane_selecting_sections(&self, module: &str) -> Vec<String> {
+        crate::root::boot::DOOR_CANDIDATES
+            .get()
+            .into_iter()
+            .flatten()
+            .find(|candidate| candidate.name == module)
+            .map_or_else(Vec::new, |candidate| candidate.selecting.clone())
+    }
+
     fn validate_migrated(
         &self,
         kind: &str,
