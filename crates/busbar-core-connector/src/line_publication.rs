@@ -690,7 +690,18 @@ impl Pairing {
                     return;
                 }
 
-                if current.is_none() {
+                // Opening metadata can be owed by the caller's continuation while early
+                // media is already queued for an upstream that cannot be dialled until that
+                // metadata arrives. Park its job in FIFO order and cross the caller without
+                // input, so accepting the recall cannot account for the parked media.
+                let opening_recall = state.upstream.is_none()
+                    && state.publications.recall[index(Leg::Caller)]
+                    && current.as_ref().is_none_or(|job| job.to == Leg::Upstream);
+                if opening_recall {
+                    if let Some(job) = current.take() {
+                        state.publications.queue.push_front(job);
+                    }
+                } else if current.is_none() {
                     current = state
                         .publications
                         .queue

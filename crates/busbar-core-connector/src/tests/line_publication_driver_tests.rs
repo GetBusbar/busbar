@@ -1121,3 +1121,109 @@ fn a_real_credit_refusal_cancels_a_partial_frontier_instead_of_waiting_on_queued
     drop(retained);
     assert_eq!(memory.used(), 0);
 }
+
+#[test]
+fn caller_opening_recall_progresses_before_queued_audio_has_an_upstream() {
+    use std::task::Waker;
+
+    for late_recall in [false, true] {
+        for attach in [false, true] {
+            let caller = Arc::new(Script::default());
+            let upstream = Arc::new(Script::default());
+            let pairing = pairing_over(&caller, None);
+            caller.then(|input| {
+                assert!(
+                    input.is_none(),
+                    "caller recall must not consume parked upstream audio"
+                );
+                let mut yielded = Yielded::default();
+                yielded.pieces = vec![got(1, b"label: events\r\nopening-pending: 0\r\n", true)];
+                // Even an accepted recall cannot count the unrelated parked job as handed.
+                LineStep::Batch {
+                    yielded,
+                    accepted: true,
+                }
+            });
+            let mut yielded = Yielded::default();
+            yielded.pieces = vec![
+                got(10, b"kind: audio\r\nopening-pending: 1\r\n", true),
+                got(10, b"early-one", false),
+                got(10, b"early-two", false),
+            ];
+            yielded.continuing = !late_recall;
+            drop(pairing.publish(Leg::Caller, yielded, Instant::now()));
+            let mut task = caller.task.lock().unwrap().take().unwrap();
+            let mut cx = Context::from_waker(Waker::noop());
+            if late_recall {
+                assert!(task.as_mut().poll(&mut cx).is_pending());
+                assert!(caller.crossed().is_empty());
+                owe_recall(&pairing, Leg::Caller);
+            }
+            assert!(task.as_mut().poll(&mut cx).is_pending());
+            assert!(
+                !caller.crossed().is_empty(),
+                "queued upstream audio must not block caller metadata recall"
+            );
+            assert!(Box::pin(pairing.wait_opening())
+                .as_mut()
+                .poll(&mut cx)
+                .is_ready());
+            let outcome = pairing.publication_outcome();
+            assert_eq!(
+                (
+                    outcome.accepted_frames,
+                    outcome.handed_frames,
+                    outcome.cancelled_frames
+                ),
+                (2, 0, 0)
+            );
+            assert_eq!(outcome.original_handed_bytes, 0);
+            if attach {
+                for expected in [b"early-one", b"early-two"] {
+                    upstream.then(move |input| {
+                        assert_eq!(
+                            input.map(|frame| frame.bytes.as_slice()),
+                            Some(expected.as_slice())
+                        );
+                        LineStep::Batch {
+                            yielded: Yielded::default(),
+                            accepted: true,
+                        }
+                    });
+                }
+                pairing.sort(
+                    Leg::Upstream,
+                    vec![got(20, b"kind: audio\r\n", true)],
+                    Instant::now(),
+                );
+                pairing
+                    .attach(Arc::clone(&upstream) as Arc<dyn LegSink>)
+                    .unwrap();
+                assert!(task.as_mut().poll(&mut cx).is_ready());
+                let outcome = pairing.publication_outcome();
+                assert!(outcome.failure.is_none());
+                assert_eq!(
+                    (
+                        outcome.handed_frames,
+                        outcome.handed_bytes,
+                        outcome.cancelled_frames
+                    ),
+                    (2, 18, 0)
+                );
+                pairing.close();
+            } else {
+                pairing.close();
+                assert!(task.as_mut().poll(&mut cx).is_ready());
+                let outcome = pairing.publication_outcome();
+                assert_eq!(
+                    (
+                        outcome.handed_frames,
+                        outcome.cancelled_frames,
+                        outcome.cancelled_bytes
+                    ),
+                    (0, 2, 18)
+                );
+            }
+        }
+    }
+}
