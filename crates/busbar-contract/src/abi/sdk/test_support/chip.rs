@@ -31,3 +31,39 @@ pub fn drive_sealed<E>(
 pub fn framed_head(exchange: &crate::abi::sdk::exchange::Exchange) -> Vec<u8> {
     exchange.head_bytes()
 }
+
+/// Observe the initialized payload of a credential in a test's allocator witness.
+pub fn observe_credential(credential: &crate::abi::sdk::cred::Cred, observe: impl FnOnce(&[u8])) {
+    observe(credential.wire());
+}
+
+/// Observe protected JSON buffers during an action. Available only to chip tests; production
+/// builds have neither a callback nor a way to read protected response material.
+pub fn with_json_observer<T>(observe: fn(&'static str, &[u8]), action: impl FnOnce() -> T) -> T {
+    crate::abi::sdk::cred::protected_json::observing(observe, action)
+}
+
+/// Drive the real resolved-value writer against a test-owned host buffer, including short output.
+pub fn resolve_into(
+    value: crate::abi::sdk::cred::Held<Vec<u8>>,
+    buffer: &mut [u8],
+) -> (
+    crate::abi::mechanism::call::Outcome,
+    crate::abi::secret::ResolveOut,
+) {
+    use crate::abi::sdk::{Lent, Out};
+    let input = crate::abi::secret::ResolveIn {
+        secret_buf: buffer.as_mut_ptr(),
+        secret_cap: buffer.len(),
+        ..super::zeroed()
+    };
+    let mut output = super::zeroed();
+    let holders = crate::abi::sdk::out::Holders::default();
+    // SAFETY: input and its exclusively borrowed buffer live until the writer returns.
+    let outcome = crate::abi::sdk::cred::resolved(
+        unsafe { Lent::new(&input) },
+        &mut Out::lent(&mut output, None, &holders),
+        value,
+    );
+    (outcome, output)
+}

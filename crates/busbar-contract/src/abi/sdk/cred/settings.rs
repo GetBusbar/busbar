@@ -11,6 +11,7 @@ use serde::forward_to_deserialize_any;
 use serde_json::Value;
 use zeroize::{Zeroize, Zeroizing};
 
+use super::protected_json::wipe;
 use super::{Cred, CredUrl, MysqlUrl, PostgresUrl, UserinfoUrl, ValkeyUrl};
 
 /// Why settings did not parse: the field path and what was wrong, never the value.
@@ -135,13 +136,15 @@ pub fn settings_lent<T: DeserializeOwned>(doc: &[u8], lent: &[&[u8]]) -> Result<
 }
 
 fn document(bytes: &[u8]) -> Result<Value, SettingsError> {
-    serde_json::from_slice(bytes).map_err(|e| {
-        SettingsError::new(format!(
-            "not a JSON document (line {}, column {})",
-            e.line(),
-            e.column()
-        ))
-    })
+    super::protected_json::document(bytes, false)
+        .map(|mut value| core::mem::take(&mut value.0))
+        .map_err(|e| {
+            SettingsError::new(format!(
+                "not a JSON document (line {}, column {})",
+                e.line(),
+                e.column()
+            ))
+        })
 }
 
 /// Replace every marker under `v` (at `path`) with its lent bytes as a string.
@@ -182,21 +185,6 @@ fn substitute(v: &mut Value, lent: &[&[u8]], path: &str) -> Result<(), SettingsE
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
     }
     Ok(())
-}
-
-fn wipe(v: &mut Value) {
-    match v {
-        Value::String(s) => s.zeroize(),
-        Value::Array(a) => a.iter_mut().for_each(wipe),
-        Value::Object(m) => {
-            let taken = core::mem::take(m);
-            for (mut k, mut v) in taken {
-                k.zeroize();
-                wipe(&mut v);
-            }
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) => {}
-    }
 }
 
 struct Node {

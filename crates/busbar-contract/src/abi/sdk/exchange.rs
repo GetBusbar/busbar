@@ -112,6 +112,24 @@ impl Zeroize for ExchangeResponse {
     }
 }
 
+/// A framed reply whose body stays in credential custody. The public head has an empty body;
+/// only the credential SDK can read the protected body. Dropping either part wipes its buffers.
+#[allow(missing_debug_implementations)]
+pub struct ProtectedResponse {
+    /// Public status, reason and fields; its body is always empty when returned by the exchange.
+    pub head: Zeroizing<ExchangeResponse>,
+    /// Protected response bytes, consumed by credential recipes such as `select_json`.
+    pub body: super::cred::Held<Vec<u8>>,
+}
+
+impl From<ExchangeResponse> for ProtectedResponse {
+    fn from(reply: ExchangeResponse) -> Self {
+        let mut head = Zeroizing::new(reply);
+        let body = super::cred::Held::new(std::mem::take(&mut head.body));
+        Self { head, body }
+    }
+}
+
 /// What became of what a [`send_and_ack`] sent: the transport's code and the peer's text.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Ack {
@@ -1315,6 +1333,20 @@ impl<'a> Op<'a> {
             .map(|answer| answer.map_err(ExchangeFailure::into_cause))
     }
 
+    /// A bounded sealed exchange with an opaque response body. Timing, cancellation, bounds and
+    /// retained failure heads are identical to [`Self::exchange_sealed_bounded_with_head`].
+    pub fn exchange_protected_bounded_with_head(
+        &self,
+        need: u32,
+        target: Option<&str>,
+        reply_limit: usize,
+        head_only: bool,
+        request: impl FnOnce() -> Result<(Request, Vec<SealedField>), String>,
+    ) -> Poll<Result<ProtectedResponse, ExchangeFailure>> {
+        self.exchange_sealed_bounded_with_head(need, target, reply_limit, head_only, request)
+            .map(|answer| answer.map(ProtectedResponse::from))
+    }
+
     /// A bounded exchange that retains an earlier reply head when the exchange later fails.
     pub fn exchange_sealed_bounded_with_head(
         &self,
@@ -1392,6 +1424,20 @@ impl<'a> Op<'a> {
 #[cfg(test)]
 mod bounded_body_tests {
     use super::*;
+
+    #[test]
+    fn protected_response_separates_public_head_and_custodied_body() {
+        let response = ProtectedResponse::from(ExchangeResponse {
+            status: 201,
+            reason: Some(b"Created".to_vec()),
+            fields: vec![(b"content-type".to_vec(), b"application/json".to_vec())],
+            body: b"secret response".to_vec(),
+        });
+        assert_eq!(response.head.status, 201);
+        assert!(response.head.body.is_empty());
+        assert_eq!(response.head.fields.len(), 1);
+        assert_eq!(response.body.wire(), b"secret response");
+    }
 
     #[test]
     fn a_refused_body_piece_is_not_collected_past_the_reply_limit() {
