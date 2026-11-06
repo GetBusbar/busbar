@@ -315,7 +315,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oidc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=328fcc9c21e8b0c8d3d7a55646245f04fc77eda9#328fcc9c21e8b0c8d3d7a55646245f04fc77eda9"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=3014e55b4f41d3f9d2671400d4e6baa44caa51f3#3014e55b4f41d3f9d2671400d4e6baa44caa51f3"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -331,7 +331,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oidc-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=328fcc9c21e8b0c8d3d7a55646245f04fc77eda9#328fcc9c21e8b0c8d3d7a55646245f04fc77eda9"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=3014e55b4f41d3f9d2671400d4e6baa44caa51f3#3014e55b4f41d3f9d2671400d4e6baa44caa51f3"
 dependencies = [
  "busbar-auth-oidc",
  "busbar-contract",
@@ -631,7 +631,7 @@ dependencies = [
 [[package]]
 name = "busbar-hook-ranking"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-hook-ranking?rev=c60598a5bb3716a110533852aed8af20e885cb8b#c60598a5bb3716a110533852aed8af20e885cb8b"
+source = "git+https://github.com/GetBusbar/busbar-hook-ranking?rev=147d5ba32df4d4237ee7c29be5f4a2243b1f9481#147d5ba32df4d4237ee7c29be5f4a2243b1f9481"
 dependencies = [
  "busbar-contract",
  "serde_json",
@@ -780,7 +780,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-llm"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=411da3e2f0c338684c0f759f520d463a14b87515#411da3e2f0c338684c0f759f520d463a14b87515"
+source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=ee17d44be579751ab69a6f32b6f38e4971074ee1#ee17d44be579751ab69a6f32b6f38e4971074ee1"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -4146,4 +4146,4 @@ source = "git+https://github.com/GetBusbar/busbar-store-mysql?rev=7a8ecfdaba8c41
 [[patch.unused]]
 name = "postgres-protocol"
 version = "0.6.12"
-source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=e0daed0284eee420189813f792c3a38f93f30b42#e0daed0284eee420189813f792c3a38f93f30b42"
+source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=a8917bd87de7ccc3ae6b0835ad2bc8b8781b5c09#a8917bd87de7ccc3ae6b0835ad2bc8b8781b5c09"

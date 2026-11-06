@@ -81,7 +81,7 @@
     {
       "repo": "busbar-hook-ranking",
       "url": "https://github.com/GetBusbar/busbar-hook-ranking",
-      "commit": "c60598a5bb3716a110533852aed8af20e885cb8b",
+      "commit": "147d5ba32df4d4237ee7c29be5f4a2243b1f9481",
       "package": "busbar-hook-ranking-plugin",
       "kind": "hook",
       "alias": "ranking",
@@ -92,7 +92,7 @@
     {
       "repo": "busbar-plane-llm",
       "url": "https://github.com/GetBusbar/busbar-plane-llm",
-      "commit": "411da3e2f0c338684c0f759f520d463a14b87515",
+      "commit": "ee17d44be579751ab69a6f32b6f38e4971074ee1",
       "package": "busbar-plane-llm-plugin",
       "kind": "plane",
       "alias": "llm",
@@ -213,13 +213,13 @@
     {
       "repo": "busbar-auth-github",
       "url": "https://github.com/GetBusbar/busbar-auth-github",
-      "commit": "01816b5e41c901ecaacdbd972b7fa2099034405d",
+      "commit": "57fe7a4277076d5b6671602bfa10b6ea64dbadca",
       "package": "busbar-auth-github-plugin",
       "kind": "auth",
       "alias": "github",
       "image": "libbusbar_auth_github_plugin.so",
       "declares": "auth-github/declares.json",
-      "lock_sha256": "4400afd07c5fe1530e1c5e3a43fd25ed2ba23f670b20476efbab9de4db0b824e"
+      "lock_sha256": "d2991ff2609379dcfd671189e8bc7efef58a8eedce308596d14f4adf054e59c7"
     },
     {
       "repo": "busbar-auth-oauth",
@@ -235,7 +235,7 @@
     {
       "repo": "busbar-auth-oidc",
       "url": "https://github.com/GetBusbar/busbar-auth-oidc",
-      "commit": "328fcc9c21e8b0c8d3d7a55646245f04fc77eda9",
+      "commit": "3014e55b4f41d3f9d2671400d4e6baa44caa51f3",
       "package": "busbar-auth-oidc-plugin",
       "kind": "auth",
       "alias": "oidc",
@@ -268,7 +268,7 @@
     {
       "repo": "busbar-hook-webrequest",
       "url": "https://github.com/GetBusbar/busbar-hook-webrequest",
-      "commit": "4e9072d1b2d1488907537298134f9207c364f134",
+      "commit": "74cfe7b249d80788d414b094a564a016cd5c3faf",
       "package": "busbar-hook-webrequest-plugin",
       "kind": "hook",
       "alias": "webrequest",
@@ -345,7 +345,7 @@
     {
       "repo": "busbar-store-postgres",
       "url": "https://github.com/GetBusbar/busbar-store-postgres",
-      "commit": "e0daed0284eee420189813f792c3a38f93f30b42",
+      "commit": "a8917bd87de7ccc3ae6b0835ad2bc8b8781b5c09",
       "package": "busbar-store-postgres-plugin",
       "kind": "store",
       "alias": "postgres",
@@ -356,7 +356,7 @@
     {
       "repo": "busbar-store-valkey",
       "url": "https://github.com/GetBusbar/busbar-store-valkey",
-      "commit": "b3d6d9547bf6548469a038f195eb108ba6864449",
+      "commit": "b75dfd90b8ed4183b97d30ade6ddb34852f12cba",
       "package": "busbar-store-valkey-plugin",
       "kind": "store",
       "alias": "valkey",

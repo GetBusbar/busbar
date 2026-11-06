@@ -72,12 +72,12 @@ hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-x86_64-unknown-linux-gnu.tar
 # BOOT-170/171's literal db_path is a plain setting, as in 1.5.5.
 store-sqlite	src:7d8442cf7e81e6d6ac2fb2a9ea98d631601d2ab6	build:busbar-store-sqlite	-	1.6
 # 2026-10-31: keepalives=1 reaches the server as in 1.5.5; only keepalives=0 is refused.
-store-postgres	src:e0daed0284eee420189813f792c3a38f93f30b42	build:busbar-store-postgres	-	1.6
-store-valkey	src:b3d6d9547bf6548469a038f195eb108ba6864449	build:busbar-store-valkey	-	1.6
+store-postgres	src:a8917bd87de7ccc3ae6b0835ad2bc8b8781b5c09	build:busbar-store-postgres	-	1.6
+store-valkey	src:b75dfd90b8ed4183b97d30ade6ddb34852f12cba	build:busbar-store-valkey	-	1.6
 store-mysql	src:4cc8b1a114e16b993c810fab1e5caadd121ec614	build:busbar-store-mysql	-	1.6
 hashicorp-vault	src:be6bd493ce9cc060ddafe13570677a479c727212	build:busbar-secret-vault	-	1.6
-auth-oidc	src:328fcc9c21e8b0c8d3d7a55646245f04fc77eda9	build:busbar-auth-oidc	-	1.6
-auth-github	src:01816b5e41c901ecaacdbd972b7fa2099034405d	build:busbar-auth-github	-	1.6
+auth-oidc	src:3014e55b4f41d3f9d2671400d4e6baa44caa51f3	build:busbar-auth-oidc	-	1.6
+auth-github	src:57fe7a4277076d5b6671602bfa10b6ea64dbadca	build:busbar-auth-github	-	1.6
 auth-ldap	src:c8f26cbbb5ef7962f09b51d70e51582a960893df	build:busbar-auth-ldap	-	1.6
-webrequest-hook	src:4e9072d1b2d1488907537298134f9207c364f134	build:busbar-hook-webrequest	-	1.6
+webrequest-hook	src:74cfe7b249d80788d414b094a564a016cd5c3faf	build:busbar-hook-webrequest	-	1.6
 headroom-hook	src:4385464cbc80509e8cb7254c81e07a07ad319c55	build:busbar-hook-headroom	-	1.6
