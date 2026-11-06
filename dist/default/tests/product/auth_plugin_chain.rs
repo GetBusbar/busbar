@@ -102,6 +102,15 @@ fn plugins_cfg_allow_unsigned(dir: &Path) -> PluginsCfg {
     cfg
 }
 
+fn pinned_plugins_document(dir: &Path) -> serde_json::Value {
+    let mut cfg = plugins_cfg_allow_unsigned(dir);
+    // Base configuration must pin the exact staged archives before opening the Store.
+    cfg.fetch =
+        common::plugins::trusted_config_with_key(dir, &crate::dist_root_install::release_key())
+            .fetch;
+    common::plugins::config_document(&cfg)
+}
+
 fn auth_manifest_with_root_secret_schema(
     name: &str,
     alias: &str,
@@ -347,6 +356,7 @@ fn admin_modules_rebuilt_on_reload() {
     let dir = tmp_plugin_dir("admin-modules-reload");
     let (_, store) = write_application_store(&dir);
     write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "admin-oidc");
+    let plugins = pinned_plugins_document(&dir);
     let config = dir.join("config.yaml");
     let providers = dir.join("providers.yaml");
     std::fs::write(&providers, "{}\n").unwrap();
@@ -358,11 +368,10 @@ fn admin_modules_rebuilt_on_reload() {
             &config,
             format!(
                 "listen: \"127.0.0.1:0\"\nstore: {store}\nproviders: {{}}\nmodels: {{}}\n\
-             plugins: {{ enabled: true, dir: {dir:?}, trust: {{ allow_unsigned: true }} }}\n\
+             plugins: {plugins}\n\
              auth:\n  chain: []\n  admin_auth: [{operator:?}, {provider:?}]\n\
              identity-providers:\n  admin-oidc:\n    module: acme-idp\n    settings: {settings}\n\
              \x20 reloaded-admin:\n    module: acme-idp\n    settings: {settings}\n",
-                dir = dir.display().to_string(),
                 operator = busbar_kernel::config::operator_provider(),
             ),
         )
@@ -456,6 +465,7 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
     let (store_module, store) = write_application_store(&dir2);
     let current = auth_manifest("acme-idp", "cap-idp", "acme");
     std::fs::write(dir2.join("idp.tar.gz"), first_party_tarball(current, &lib)).unwrap();
+    let plugins = pinned_plugins_document(&dir2);
     std::env::set_var("BUSBAR_TEST_CLIENT_SECRET", "the-confidential-secret");
     let settings = serde_json::Value::Object(settings()).to_string();
     let config = dir2.join("config.yaml");
@@ -465,11 +475,10 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
         format!(
             "listen: \"127.0.0.1:0\"\npublic_url: \"https://busbar.example.com\"\n\
              store: {store}\nproviders: {{}}\nmodels: {{}}\n\
-             plugins: {{ enabled: true, dir: {dir:?}, trust: {{ allow_unsigned: true }} }}\n\
+             plugins: {plugins}\n\
              identity-providers:\n  cap-idp:\n    module: acme-idp\n    browser_login:\n      \
              client_id: client-abc\n      client_secret: {{ env: BUSBAR_TEST_CLIENT_SECRET }}\n    \
              settings: {settings}\n",
-            dir = dir2.display().to_string(),
         ),
     )
     .unwrap();
