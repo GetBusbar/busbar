@@ -955,6 +955,37 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         if permit.as_ref().is_some_and(Result::is_err) {
             metrics::counter!(busbar_kernel::snapshot::ADMISSION_DENIED_TOTAL, "gate" => "inbound")
                 .increment(1);
+            let rendered = admission.as_ref().and_then(|request| {
+                request.refuse(
+                    busbar_contract::caps::StepName::Arrival,
+                    busbar_contract::caps::ReasonCode::InFlightCap,
+                );
+                self.framer
+                    .dispatch
+                    .as_ref()
+                    .and_then(|dispatch| dispatch(request))
+                    .and_then(|dispatcher| dispatcher.capacity_refusal(request))
+            });
+            if let Some(rendered) = rendered {
+                // Queue only the bounded refusal, never an overflow execution task. The
+                // StreamEnd below follows these messages in the same stream's FIFO.
+                let (done, _) = oneshot::channel();
+                out.send(Op::Head {
+                    status: rendered.status,
+                    fields: neutral_fields(&rendered.fields),
+                    end: rendered.body.is_empty(),
+                    done,
+                });
+                if !rendered.body.is_empty() {
+                    let (done, _) = oneshot::channel();
+                    out.send(Op::Data {
+                        bytes: Bytes::from(rendered.body),
+                        end: true,
+                        done,
+                    });
+                }
+                return;
+            }
             out.send(Op::Refuse {
                 status: 503,
                 head_sent: false,

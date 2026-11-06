@@ -18,7 +18,7 @@ const ADMITTED_BUDGET: Duration = Duration::from_secs(5);
 const BURST: usize = 8;
 const CAP: usize = 2;
 
-const SHED_BODY: &str = r#"{"error":{"type":"overloaded","message":"The gateway is at capacity. Please retry shortly."}}"#;
+const SHED_BODY: &str = r#"{"error":{"type":"rate_limit_error","message":"The gateway is at capacity. Please retry shortly.","param":null,"code":null}}"#;
 
 #[test]
 fn inbound_cap_sheds_the_excess_and_serves_the_admitted() {
@@ -121,7 +121,11 @@ fn inbound_cap_sheds_the_excess_and_serves_the_admitted() {
             Some("application/json"),
             "the shed body is JSON"
         );
-        assert_eq!(r.body, SHED_BODY, "the shed body is byte-for-byte fixed");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&r.body).expect("valid refusal JSON"),
+            serde_json::from_str::<serde_json::Value>(SHED_BODY).unwrap(),
+            "the selected plane renders the complete native refusal envelope"
+        );
     }
 
     let _ = std::fs::remove_dir_all(&dir);

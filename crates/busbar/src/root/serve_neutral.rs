@@ -91,6 +91,19 @@ impl DataRoutes {
         ))
     }
 
+    /// Render the physical arrival cap through the already sealed claimant. This does not
+    /// start execution, read a body, or rematch the request against another plane.
+    pub(crate) fn capacity_refusal(&self, admission: &RequestAdmission) -> Option<Rendered> {
+        let (plane, _) = self.admitted_claim(admission)?;
+        self.served.planes[plane].driver.refuse_kernel(
+            ReasonCode::InFlightCap,
+            503,
+            "The gateway is at capacity. Please retry shortly.",
+            admission.selected_line().dialect,
+            &target_of(admission.head()),
+        )
+    }
+
     pub(crate) fn auth_completion(&self, admission: &RequestAdmission, status: u32) {
         if let Some((plane, _)) = self.admitted_claim(admission) {
             self.auth_completion_for(
