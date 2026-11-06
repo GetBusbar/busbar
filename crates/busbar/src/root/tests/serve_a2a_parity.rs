@@ -137,6 +137,47 @@ fn canonical(value: &serde_json::Value) -> String {
     }
 }
 
+/// Consume only the genuine public witness committed by the exclusive fresh-Store provisioner.
+/// Each instance is migrated before any ordinary serving or lifecycle assertion starts.
+fn cold_record_receipt(
+    directory: &std::path::Path,
+    gov: &busbar_kernel::governance::GovState,
+    instance: &str,
+    store_fingerprint: &str,
+) -> busbar_kernel::host_record_bootstrap::ColdRecordReceipt {
+    let creation = std::fs::read(directory.join("principal-creation-evidence.json"))
+        .expect("the exclusive Store creation provenance is retained");
+    let witness = crate::root::loader::sign::sha256_hex(&creation);
+    let calls = gov
+        .store_calls()
+        .expect("the actual Store has typed records");
+    let schema = "test.fixture.principal-creation";
+    let committed = futures::executor::block_on(calls.record_get(schema, b"namespace"))
+        .expect("the actual public witness reads")
+        .expect("fresh principal initialization committed its public witness");
+    assert_eq!(committed.as_slice(), witness.as_bytes());
+    let mut epoch = [0u8; 16];
+    getrandom::fill(&mut epoch).expect("a fresh cold migration epoch");
+    busbar_kernel::host_record_bootstrap::ColdRecordReceipt {
+        version: 1,
+        epoch: hex::encode(epoch),
+        instance: instance.into(),
+        namespace_hex: hex::encode(busbar_kernel::host_records::record_key(instance, &[])),
+        store_config_sha256: store_fingerprint.into(),
+        store_witness: busbar_kernel::host_record_bootstrap::StoreWitness {
+            schema: schema.into(),
+            key_hex: hex::encode(b"namespace"),
+            value_hex: hex::encode(committed.as_slice()),
+        },
+        sender_quiesced: true,
+        backend_quiesced: true,
+        actor: "isolated actual A2A parity fixture provisioner".into(),
+        reason:
+            "exclusive new Store; this namespace has no prior sender; earlier cold hosts drained"
+                .into(),
+    }
+}
+
 fn peer_card(endpoint: &str, issuer: &ed25519_dalek::SigningKey) -> serde_json::Value {
     let mut card = serde_json::json!({
         "name": "Vendor", "description": "the conformance agent", "version": "1.0.0",
@@ -1012,7 +1053,13 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
     }
     let destinations = config.destinations();
     let transport_settings = crate::root::policy::client_settings(&config.limits);
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let store_fingerprint = busbar_kernel::host_record_bootstrap::store_fingerprint(
+        &serde_json::to_value(&config.store).expect("the actual effective Store selection"),
+    );
+    let opened =
+        crate::root::test_plugins::bootstrap_fresh_application_store(&config, &plugins, &directory)
+            .expect("exclusively provision and initialize the real durable principal namespace");
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugins,
         None,
@@ -1021,6 +1068,8 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         (None, None),
         None,
         &rules,
+        Some(opened),
+        false,
     )
     .expect("the actual Store boots the normal root");
     limits.stage_boot();
@@ -1121,12 +1170,18 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
     });
 
     let mut auxiliary_parity = None;
-    for (origin, cancelling) in [
+    let cases = [
         (Origin::Linked, false),
         (Origin::Dropped, false),
         (Origin::Linked, true),
         (Origin::Dropped, true),
-    ] {
+    ];
+    // First migrate every actual namespace through a real signed request. Ordinary hosts are
+    // then opened without a bootstrap grant, so raw rebind/refresh/cancel assertions stay real.
+    for (initializing, (origin, cancelling)) in [true, false]
+        .into_iter()
+        .flat_map(|initializing| cases.into_iter().map(move |case| (initializing, case)))
+    {
         let instance = if cancelling {
             format!("actual-a2a-{origin:?}-cancel")
         } else {
@@ -1151,6 +1206,14 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
                 gov.store_calls().expect("the real Store has typed records"),
             ))),
         );
+        if initializing {
+            kernel
+                .arm_record_bootstrap(
+                    cold_record_receipt(&directory, &gov, &instance, &store_fingerprint),
+                    &store_fingerprint,
+                )
+                .expect("the actual cold host consumes the committed fresh-Store witness");
+        }
         services.install_kernel(kernel.clone(), kernel).unwrap();
         let dispatcher = Arc::new(Dispatcher::with_services(
             DispatchConfig::default(),
@@ -1273,6 +1336,36 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         let approved: serde_json::Value = serde_json::from_slice(&approved).unwrap();
         assert_eq!(status, 200, "{approved}");
         assert_eq!(approved["state"], "approved");
+        if initializing {
+            let (status, answer) =
+                http_bytes(&data, "/a2a", REQUEST.to_vec(), ("authorization", &bearer)).await;
+            assert_eq!(
+                status,
+                200,
+                "real cold migration: {}",
+                String::from_utf8_lossy(&answer)
+            );
+            assert_eq!(
+                answer, ANSWER_OUT,
+                "the actual peer completed the cold migration request"
+            );
+            tables.withdraw(&instance);
+            drop(data);
+            drop(admin);
+            drop(plane);
+            assert!(
+                kernel.drain_plane_cleanup(Duration::from_secs(10)).await,
+                "all cold migration callers settle before ordinary serving"
+            );
+            let draining = kernel.clone();
+            assert!(
+                tokio::task::spawn_blocking(move || draining.drain(Duration::from_secs(10)))
+                    .await
+                    .expect("the cold host drain completes"),
+                "all cold migration backend writes settle before ordinary serving"
+            );
+            continue;
+        }
         if cancelling {
             cancellation::run(
                 &data,
