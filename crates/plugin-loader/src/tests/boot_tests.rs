@@ -390,7 +390,7 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
         kind: "plane".into(),
         version: stated.version,
         publisher: crate::sign::FIRST_PARTY_PUBLISHER.into(),
-        abi_version: 1,
+        abi_version: busbar_contract::abi::plane::ABI_VERSION,
         sha256: crate::sign::sha256_hex(&lib),
         signature: String::new(),
         description: String::new(),

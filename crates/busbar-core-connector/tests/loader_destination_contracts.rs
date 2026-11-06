@@ -88,7 +88,9 @@ fn dest_judge_answers_the_owner_default_guard_without_resolving() {
             DEST_ALLOWED,
         ),
         ("HTTPS://vendor.example/", open, 0, DEST_ALLOWED),
-        ("vendor.example:8443", open, 0, DEST_ALLOWED),
+        // A bare authority carries no TLS intent, regardless of its port.
+        ("vendor.example:8443", open, 0, DEST_PLAINTEXT),
+        ("https://vendor.example:8443", open, 0, DEST_ALLOWED),
         ("http://vendor.example/", open, 0, DEST_PLAINTEXT),
         ("http://vendor.example/", infra, 0, DEST_ALLOWED),
         ("ftp://vendor.example/", open, 0, DEST_SCHEME),
