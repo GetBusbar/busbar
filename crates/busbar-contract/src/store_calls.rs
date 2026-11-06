@@ -50,7 +50,9 @@ impl std::error::Error for StoreFailure {}
 
 /// ONE STORE INSTANCE'S CALLS, as the kernel makes them: the store v3 slots, typed.
 pub trait StoreCalls: Send + Sync {
-    /// Per-open durability metadata. `None` is an older door; use its static Statement mark.
+    /// Effective instance durability: per-open metadata takes precedence over the admitted
+    /// static Statement mark. A loader holding both resolves that fallback here. `None` means
+    /// neither is available to this implementation; callers must not assume durability.
     fn ephemeral(&self) -> Option<bool> {
         None
     }

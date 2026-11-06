@@ -1136,7 +1136,9 @@ fn boxed<'a, T>(f: impl Future<Output = Result<T, StoreFailure>> + Send + 'a) ->
 
 impl StoreCalls for LoadedStore {
     fn ephemeral(&self) -> Option<bool> {
-        self.ephemeral
+        // Fixed backends omit per-open metadata and declare durability in their Statement.
+        // Resolve against this instance's retained declaration, never a fresh registry lookup.
+        Some(self.ephemeral.unwrap_or(self.facts.ephemeral))
     }
 
     fn supports_usage_correction(&self) -> bool {
