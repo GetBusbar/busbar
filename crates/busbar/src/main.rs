@@ -1295,6 +1295,13 @@ async fn run(
             else {
                 return;
             };
+            let sections = match &cfg.sections {
+                Ok(sections) => sections,
+                Err(error) => {
+                    tracing::error!(%error, "refusing invalid model configuration projection");
+                    return;
+                }
+            };
             let models = root::model_egress::ModelServing {
                 pools: cfg.model_pools.clone(),
                 lanes: next
@@ -1324,7 +1331,7 @@ async fn run(
                 upgrades: upgrades.clone(),
             };
             door_appliers.refresh_models(
-                &cfg.sections,
+                sections,
                 &root::serve::DoorEgress {
                     reach: &reach,
                     journal: std::sync::Arc::clone(&post)

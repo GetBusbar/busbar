@@ -267,7 +267,8 @@ fn actual_listener_with_routers(
             .and_then(|projection| projection.downcast_ref::<crate::root::door_steps::DoorConfig>())
             .expect("the normal root retains the actual resolved plane-owned sections")
             .sections
-            .clone();
+            .clone()
+            .expect("the validated root projection contains valid plane-owned sections");
         assert!(
             sections.contains_key(section),
             "the actual fallback section is configured"
