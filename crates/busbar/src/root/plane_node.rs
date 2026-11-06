@@ -178,6 +178,16 @@ impl Node {
         }
     }
 
+    /// A composed fixture must share the real inbound host's unit identity allocator while
+    /// retaining its own journal and accounting state for independent assertions.
+    #[cfg(test)]
+    pub(crate) fn with_inbound_keys() -> Self {
+        Self {
+            next_key: node().kernel_and_keys().1,
+            ..Self::new()
+        }
+    }
+
     #[must_use]
     pub fn kernel_and_keys(
         &self,

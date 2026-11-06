@@ -1969,7 +1969,7 @@ pub(super) mod session_door {
             )
             .expect("mint");
         gov.hydrate_budgets(&cost, 0).expect("hydrate");
-        let node = Arc::new(Node::new());
+        let node = Arc::new(Node::with_inbound_keys());
         let book = crate::root::durability::node_book();
         node.bind_book(Arc::clone(&book.durability));
         let post = Arc::new(NodeEndPost::new(Arc::clone(&node)));
@@ -2367,6 +2367,7 @@ pub(super) mod session_door {
             &offers,
         )
         .expect("its claims mount");
+        let data = Arc::clone(&mounts.data);
         let (router, _admin, handle) = busbar_kernel::build_split_routers_serving_doors(
             Arc::clone(&app),
             mounts.routes,
@@ -2390,7 +2391,8 @@ pub(super) mod session_door {
         let framer = crate::root::listener::framed::data_framer(Arc::new(move |scheme| {
             inbound_connector.framer_for(scheme)
         }))
-        .expect("the actual HTTP and WebSocket framers are linked");
+        .expect("the actual HTTP and WebSocket framers are linked")
+        .with_dispatch(Arc::new(move |_| Some(Arc::clone(&data))));
         Some(Ok(SessionDoor {
             framer,
             connector,
@@ -2543,40 +2545,50 @@ pub(super) mod session_door {
                 self.framer.clone(),
             ));
             let exchange = async {
-                let mut socket = tokio::net::TcpStream::connect(address)
+                let socket = tokio::net::TcpStream::connect(address)
                     .await
                     .expect("the signal connection");
-                let request = format!(
-                    "POST {SIGNAL} HTTP/1.1\r\nhost: {address}\r\nauthorization: Bearer {token}\r\ncontent-type: application/sdp\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                    offer.len()
-                );
-                socket
-                    .write_all(request.as_bytes())
+                let (mut sender, connection) =
+                    hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(socket))
+                        .await
+                        .expect("the signal HTTP client");
+                self.peers.keep(tokio::spawn(async move {
+                    connection.await.expect("the signal HTTP connection");
+                }));
+                let request = axum::http::Request::builder()
+                    .method("POST")
+                    .uri(SIGNAL)
+                    .header("host", address.to_string())
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/sdp")
+                    .header("connection", "close")
+                    .body(axum::body::Body::from(offer))
+                    .expect("the actual peer SDP request");
+                let response = sender
+                    .send_request(request)
                     .await
-                    .expect("the SDP head");
-                socket
-                    .write_all(&offer)
-                    .await
-                    .expect("the actual peer SDP offer");
-                let head = read_head(&mut socket)
-                    .await
-                    .expect("the signal response head");
-                let code = head
-                    .lines()
-                    .next()
-                    .and_then(|line| line.split_whitespace().nth(1))
-                    .and_then(|code| code.parse::<u16>().ok())
-                    .expect("the HTTP status");
-                let mut body = Vec::new();
-                socket
-                    .read_to_end(&mut body)
-                    .await
-                    .expect("the signal response ends");
-                (
-                    StatusCode::from_u16(code).expect("a valid HTTP status"),
-                    head,
-                    body,
-                )
+                    .expect("the signal response");
+                let status = response.status();
+                let mut head = format!("HTTP/1.1 {status}\r\n");
+                for (name, value) in response.headers() {
+                    head.push_str(&format!(
+                        "{name}: {}\r\n",
+                        value.to_str().expect("HTTP response field")
+                    ));
+                }
+                head.push_str("\r\n");
+                let body =
+                    axum::body::to_bytes(axum::body::Body::new(response.into_body()), 1 << 20)
+                        .await
+                        .expect("the decoded signal response body")
+                        .to_vec();
+                if !status.is_success() {
+                    eprintln!(
+                        "signal refusal {status}: {}",
+                        String::from_utf8_lossy(&body)
+                    );
+                }
+                (status, head, body)
             };
             let result = tokio::time::timeout(ANSWER_BOUND, exchange).await;
             self.peers.keep(serving);
