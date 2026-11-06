@@ -114,7 +114,7 @@
     {
       "repo": "busbar-secret-file",
       "url": "https://github.com/GetBusbar/busbar-secret-file",
-      "commit": "d0b0cd317bfe6649e3265966630882fd093b1738",
+      "commit": "afbad224985def3fde23aa8fefb37fae133187d8",
       "package": "busbar-secret-file-plugin",
       "kind": "secret",
       "alias": "file",
@@ -169,7 +169,7 @@
     {
       "repo": "busbar-transport-stdio",
       "url": "https://github.com/GetBusbar/busbar-transport-stdio",
-      "commit": "920b52b7b279f0512ee2ba1da62694ec0fe16c36",
+      "commit": "545fc837657eaaa0308a1d5b2a4e1aedccee428c",
       "package": "busbar-transport-stdio-plugin",
       "kind": "transport",
       "alias": "stdio",
@@ -180,7 +180,7 @@
     {
       "repo": "busbar-transport-tcp",
       "url": "https://github.com/GetBusbar/busbar-transport-tcp",
-      "commit": "22b94220f3c0303c981c432619848ca8c2f60905",
+      "commit": "47523c5edf9a0f86a22f1655ae038900b55d5025",
       "package": "busbar-transport-tcp-plugin",
       "kind": "transport",
       "alias": "tcp",
@@ -224,7 +224,7 @@
     {
       "repo": "busbar-auth-oauth",
       "url": "https://github.com/GetBusbar/busbar-auth-oauth",
-      "commit": "e6eff62824b946b695e3800f71438d9070e8dff0",
+      "commit": "f77686582d57fb9ffbc70a5284d8e46b08c1120e",
       "package": "busbar-auth-oauth-plugin",
       "kind": "auth",
       "alias": "oauth",
@@ -279,7 +279,7 @@
     {
       "repo": "busbar-plane-a2a",
       "url": "https://github.com/GetBusbar/busbar-plane-a2a",
-      "commit": "fd4fbabeb52ff22a1530f96244dcc00c3bfe1aae",
+      "commit": "5bccefd09391e73e0d3a1a3eb877249baef81d36",
       "package": "busbar-plane-a2a-plugin",
       "kind": "plane",
       "alias": "a2a",
@@ -356,7 +356,7 @@
     {
       "repo": "busbar-store-valkey",
       "url": "https://github.com/GetBusbar/busbar-store-valkey",
-      "commit": "b75dfd90b8ed4183b97d30ade6ddb34852f12cba",
+      "commit": "fdf653f9655fd0a6882ae611ba822ea46c728d5b",
       "package": "busbar-store-valkey-plugin",
       "kind": "store",
       "alias": "valkey",

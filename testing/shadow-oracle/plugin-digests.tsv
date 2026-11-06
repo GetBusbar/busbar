@@ -73,7 +73,7 @@ hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-x86_64-unknown-linux-gnu.tar
 store-sqlite	src:7d8442cf7e81e6d6ac2fb2a9ea98d631601d2ab6	build:busbar-store-sqlite	-	1.6
 # 2026-10-31: keepalives=1 reaches the server as in 1.5.5; only keepalives=0 is refused.
 store-postgres	src:a8917bd87de7ccc3ae6b0835ad2bc8b8781b5c09	build:busbar-store-postgres	-	1.6
-store-valkey	src:b75dfd90b8ed4183b97d30ade6ddb34852f12cba	build:busbar-store-valkey	-	1.6
+store-valkey	src:fdf653f9655fd0a6882ae611ba822ea46c728d5b	build:busbar-store-valkey	-	1.6
 store-mysql	src:4cc8b1a114e16b993c810fab1e5caadd121ec614	build:busbar-store-mysql	-	1.6
 hashicorp-vault	src:be6bd493ce9cc060ddafe13570677a479c727212	build:busbar-secret-vault	-	1.6
 auth-oidc	src:3014e55b4f41d3f9d2671400d4e6baa44caa51f3	build:busbar-auth-oidc	-	1.6
