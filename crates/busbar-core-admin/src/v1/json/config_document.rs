@@ -61,19 +61,42 @@ fn requires_source_binding(patch: Option<&DocumentPatch>, resets: &[String]) -> 
 /// Only sanitized values captured by the builder (plus mutable registries from this same Arc).
 /// Never reconstruct an applied view by reading config.yaml or the desired Store overlay.
 pub(super) fn configuration(app: &App) -> serde_json::Value {
+    configuration_and_restart(app).0
+}
+
+/// Take one observation snapshot for every field in one response, including the outer envelope.
+pub(super) fn configuration_and_restart(app: &App) -> (serde_json::Value, Vec<String>) {
+    let observation = app.plane_refresh.snapshot();
+    let mut restart: Vec<String> = app
+        .config_pending_restart
+        .iter()
+        .chain(&app.planes_awaiting_restart)
+        .cloned()
+        .chain(observation.restart_sections().map(str::to_owned))
+        .collect();
+    restart.sort();
+    restart.dedup();
     let Some(view) = app.configured_view.as_ref() else {
-        return json!({"config_version": app.config_version, "state": "unavailable"});
+        return (
+            json!({"config_version": app.config_version, "state": "unavailable",
+            "plane_refresh": observation, "reload_to_apply": restart}),
+            restart,
+        );
     };
     let mut view = (**view).clone();
     view.refresh_mutable_registries(app);
-    json!({
-        "config_version": app.config_version,
-        "state": if app.config_pending_restart.is_empty() && app.planes_awaiting_restart.is_empty() { "configured" } else { "restart_pending" },
-        "source": "installed_generation",
-        "config_locked": app.overlay_path.is_none(),
-        "values": view,
-        "reload_to_apply": app.config_pending_restart.iter().chain(&app.planes_awaiting_restart).collect::<Vec<_>>(),
-    })
+    (
+        json!({
+            "config_version": app.config_version,
+            "state": if restart.is_empty() { "configured" } else { "restart_pending" },
+            "source": "installed_generation",
+            "config_locked": app.overlay_path.is_none(),
+            "values": view,
+            "plane_refresh": observation,
+            "reload_to_apply": restart,
+        }),
+        restart,
+    )
 }
 
 pub(super) async fn put(
@@ -239,6 +262,7 @@ pub(super) async fn put(
                 &actor,
             );
             installed.record_version(&actor, "config.document (Store document overlay)");
+            let (configuration, reload_to_apply) = configuration_and_restart(&installed);
             with_config_etag(
                 ok_json(
                     StatusCode::OK,
@@ -246,9 +270,9 @@ pub(super) async fn put(
                         "applied": true,
                         "persisted": true,
                         "config_version": installed.config_version,
-                        "configuration": configuration(&installed),
-                        "reload_to_apply": installed.config_pending_restart.iter().chain(&installed.planes_awaiting_restart).collect::<Vec<_>>(),
-                        "note": "stored and installed as configuration; reload_to_apply paths require a process restart, and configured plugin values do not acknowledge asynchronous runtime refresh",
+                        "configuration": configuration,
+                        "reload_to_apply": reload_to_apply,
+                        "note": "stored and installed as configuration; reload_to_apply paths require a process restart. plane_refresh observes only synchronous ordinary door callbacks; it does not acknowledge listener, model, credential, fallback, transport, or asynchronous plugin activation",
                     }),
                 ),
                 installed.config_version,

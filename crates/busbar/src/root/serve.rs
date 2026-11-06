@@ -1005,6 +1005,40 @@ pub struct DoorApply {
     units: Arc<busbar_kernel::host_units::UnitRecords>,
 }
 
+/// Keep admission identity until the observation is recorded; never classify display text.
+#[derive(Debug)]
+enum DoorRefreshError {
+    Preparation(String),
+    Admission(busbar_kernel::host_services::AdmitRefused),
+}
+
+impl From<String> for DoorRefreshError {
+    fn from(error: String) -> Self {
+        Self::Preparation(error)
+    }
+}
+
+impl std::fmt::Display for DoorRefreshError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Preparation(error) => f.write_str(error),
+            Self::Admission(error) => std::fmt::Display::fmt(error, f),
+        }
+    }
+}
+
+impl DoorRefreshError {
+    fn classification(&self) -> busbar_kernel::state::activation::RefreshFailure {
+        use busbar_kernel::state::activation::RefreshFailure;
+        match self {
+            Self::Admission(busbar_kernel::host_services::AdmitRefused::BootstrapHeld {
+                ..
+            }) => RefreshFailure::BootstrapHeld,
+            _ => RefreshFailure::RefreshFailed,
+        }
+    }
+}
+
 impl DoorApply {
     #[must_use]
     pub fn listen_setting(&self, carrier: &str) -> Option<String> {
@@ -1046,6 +1080,12 @@ impl DoorApply {
             Some(Ok(sections)) => Some(sections),
             Some(Err(error)) => {
                 tracing::error!(%error, "refusing invalid plane configuration projection");
+                app.plane_refresh.record(
+                    &self.facts.plane,
+                    self.served_facts.section,
+                    now.generation,
+                    Some(busbar_kernel::state::activation::RefreshFailure::InvalidProjection),
+                );
                 return;
             }
             None => None,
@@ -1071,10 +1111,17 @@ impl DoorApply {
             &scope,
         ) {
             Ok(next) => {
+                let installed_generation = next.generation;
                 *self
                     .live
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(next);
+                app.plane_refresh.record(
+                    &self.facts.plane,
+                    self.served_facts.section,
+                    installed_generation,
+                    None,
+                );
                 if now.generation > 1 {
                     crate::root::loader::dispatch::kinds::plane::retire_door(
                         &self.plugin,
@@ -1083,6 +1130,12 @@ impl DoorApply {
                 }
             }
             Err(e) => {
+                app.plane_refresh.record(
+                    &self.facts.plane,
+                    self.served_facts.section,
+                    now.generation,
+                    Some(e.classification()),
+                );
                 tracing::warn!(
                     plane = self.facts.plane.as_str(),
                     config_version = app.config_version,
@@ -1107,7 +1160,7 @@ impl DoorApply {
         generation: u64,
         secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
         scope: &busbar_contract::config_time::ConfigScope,
-    ) -> Result<DoorLive, String> {
+    ) -> Result<DoorLive, DoorRefreshError> {
         crate::root::door_steps::member_tls_refusal(&self.served_facts, section)?;
         let admission = self
             .driver
@@ -1174,7 +1227,9 @@ impl DoorApply {
             }
             None => None,
         };
-        admission.commit()?;
+        admission
+            .commit_typed()
+            .map_err(DoorRefreshError::Admission)?;
         if let Some(routes) = fetches {
             bind_fetches(
                 &self.plugin,

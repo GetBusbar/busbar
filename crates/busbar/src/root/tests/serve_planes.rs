@@ -573,3 +573,17 @@ fn a_pools_refresh_whose_snapshot_the_host_refuses_is_retired() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn door_refresh_failure_classification_preserves_typed_bootstrap_refusal() {
+    use super::DoorRefreshError;
+    use busbar_kernel::host_services::AdmitRefused;
+    use busbar_kernel::state::activation::RefreshFailure;
+    let held = DoorRefreshError::Admission(AdmitRefused::BootstrapHeld {
+        instance: "private-label".into(),
+    });
+    assert_eq!(held.classification(), RefreshFailure::BootstrapHeld);
+    // Display-like text alone must never invent a restart remedy.
+    let generic = DoorRefreshError::from(held.to_string());
+    assert_eq!(generic.classification(), RefreshFailure::RefreshFailed);
+}

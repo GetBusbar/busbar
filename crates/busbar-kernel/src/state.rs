@@ -10,6 +10,8 @@ pub use busbar_kernel::topology::{worker_stripe, worker_stripes};
 
 pub use busbar_kernel::plane_driver::slots::runtime_slot_key;
 
+pub mod activation;
+
 pub type ContainerGateMap = HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>;
 
 pub type PlaneGateMap = std::collections::BTreeMap<&'static str, ContainerGateMap>;
@@ -63,6 +65,8 @@ pub struct App {
     pub document_source_fingerprints: Option<crate::config::document_patch::SourceFingerprints>,
     /// Configured changes whose physical activation needs a restart. Cleared only at boot.
     pub config_pending_restart: Vec<String>,
+    /// Generation-local observations of synchronous ordinary plane refresh callbacks.
+    pub plane_refresh: activation::PlaneRefreshReport,
     /// The kernel's own tables over the `pools:`/`models:` sections this generation resolved: the
     /// read seam's answer when no plane contributed a runtime of its own (a door-served plane walks
     /// these sections through its door).
@@ -705,6 +709,7 @@ impl App {
             document_source_fingerprints: None,
             providers_override: providers_path.clone(),
             config_pending_restart: Vec::new(),
+            plane_refresh: activation::PlaneRefreshReport::default(),
             config_tables,
             store,
             limits,
@@ -1107,6 +1112,7 @@ impl AppHandle {
                 None
             }
         };
+        next.plane_refresh.begin();
         self.current.store(next.clone());
         *published = true;
         crate::export::plugin::queue_refresh(&next.export_defs, next.config_version);
@@ -1128,6 +1134,7 @@ impl AppHandle {
         for applier in appliers {
             applier(&next);
         }
+        next.plane_refresh.finish();
         Ok(())
     }
 

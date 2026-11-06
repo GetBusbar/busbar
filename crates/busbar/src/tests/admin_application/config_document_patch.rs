@@ -233,6 +233,28 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
     busbar_kernel::boot::hydrate_all(&app).expect("the actual Store hydrates before writes");
     let (_data, admin, handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
+    // Exercise the response projection through the same synchronous callback seam used by doors.
+    if phase == "persistence" {
+        handle.on_apply(Box::new(|app| {
+            use busbar_kernel::state::activation::RefreshFailure;
+            assert_eq!(app.plane_refresh.snapshot().phase, "observing");
+            app.plane_refresh.record(
+                "held-plane",
+                "held-section",
+                7,
+                Some(RefreshFailure::BootstrapHeld),
+            );
+            app.plane_refresh.record(
+                "failed-plane",
+                "failed-section",
+                9,
+                Some(RefreshFailure::RefreshFailed),
+            );
+            app.plane_refresh
+                .record("installed-plane", "installed-section", 11, None);
+        }));
+    }
+    let boot_snapshot = handle.load();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, admin).await.unwrap() });
@@ -522,6 +544,34 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
     assert_eq!(response.status(), StatusCode::OK);
     let body: Value = response.json().await.unwrap();
     assert_eq!(body["persisted"], true);
+    if phase == "persistence" {
+        let report = &body["configuration"]["plane_refresh"];
+        assert_eq!(report["scope"], "synchronous_plane_refresh");
+        assert_eq!(report["phase"], "observed");
+        assert_eq!(
+            report["planes"],
+            json!([
+                {"plane":"held-plane", "section":"held-section", "generation":7, "outcome":"retained", "failure":"bootstrap_held"},
+                {"plane":"failed-plane", "section":"failed-section", "generation":9, "outcome":"retained", "failure":"refresh_failed"},
+                {"plane":"installed-plane", "section":"installed-section", "generation":11, "outcome":"installed", "failure":null}
+            ])
+        );
+        assert_eq!(
+            body["reload_to_apply"],
+            body["configuration"]["reload_to_apply"]
+        );
+        assert_eq!(
+            body["reload_to_apply"],
+            json!(["/advanced/worker_threads", "held-section"])
+        );
+        assert_eq!(boot_snapshot.plane_refresh.snapshot().phase, "unobserved");
+        let installed = handle.load();
+        let cloned = (*installed).clone();
+        assert_eq!(cloned.plane_refresh.snapshot().phase, "unobserved");
+        assert!(cloned.plane_refresh.snapshot().planes.is_empty());
+        assert_eq!(installed.plane_refresh.snapshot().planes.len(), 3);
+    }
+
     assert_eq!(
         body["configuration"]["values"]["sections"]["advanced"]["worker_threads"],
         3

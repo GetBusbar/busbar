@@ -291,9 +291,12 @@ pub struct PreparedSection<'a> {
 impl PreparedSection<'_> {
     /// Commit after every other fallible step of a generation refresh has succeeded.
     pub fn commit(self) -> Result<(), String> {
-        self.services
-            .admit(&self.label, self.facts)
-            .map_err(|e| e.to_string())?;
+        self.commit_typed().map_err(|e| e.to_string())
+    }
+
+    /// Preserve admission refusal identity for the composition root’s refresh observation.
+    pub fn commit_typed(self) -> Result<(), crate::host_services::AdmitRefused> {
+        self.services.admit(&self.label, self.facts)?;
         self.services.bound_work(&self.label, self.work);
         Ok(())
     }

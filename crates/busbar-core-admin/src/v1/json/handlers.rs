@@ -2676,16 +2676,12 @@ pub(crate) async fn put_config_settings(
             );
             record_group_version(&installed, &actor, "config.settings (root section applied)");
 
-            let (reload_to_apply, note) = if reload_to_apply.is_empty() {
-                (reload_to_apply, "applied live".to_string())
+            let (configuration, reload_to_apply) =
+                super::config_document::configuration_and_restart(&installed);
+            let note = if reload_to_apply.is_empty() {
+                "stored and installed as configuration; plane_refresh observes only synchronous ordinary door callbacks, not listener, model, credential, fallback, transport, or asynchronous plugin activation".to_string()
             } else {
-                let note = format!(
-                    "applied live except {} — stored in the overlay, effective on the next RESTART (a \
-                     socket rebind / TLS bind is read once at process start, and the store backend is \
-                     reused across a hot reload; none can hot-swap)",
-                    reload_to_apply.join(", ")
-                );
-                (reload_to_apply, note)
+                format!("stored and installed as configuration; reload_to_apply paths {} require a process restart. plane_refresh observes only synchronous ordinary door callbacks, not listener, model, credential, fallback, transport, or asynchronous plugin activation", reload_to_apply.join(", "))
             };
 
             let mut settings = serde_json::to_value(&merged).unwrap_or_else(|_| json!({}));
@@ -2699,7 +2695,7 @@ pub(crate) async fn put_config_settings(
                         // settings-leak-lint: allow — the envelope member; `redact_settings_bags`
                         // above has already reduced every bag inside `settings` to its key names.
                         "settings": settings,
-                        "configuration": super::config_document::configuration(&installed),
+                        "configuration": configuration,
                         "reload_to_apply": reload_to_apply,
                         "note": note,
                     }),
