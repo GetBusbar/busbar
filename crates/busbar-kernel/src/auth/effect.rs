@@ -6,9 +6,32 @@
 
 use super::AdminDoor;
 use crate::config::transaction::TxnError;
-use crate::state::App;
+use crate::state::{App, AppHandle};
 use axum::http::HeaderMap;
 use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+// A host-admin effect may change a provider's Store without publishing a new App. Fence
+// verification answers obtained before such an effect completed, including pending answers.
+static COMPLETED_EFFECTS: AtomicU64 = AtomicU64::new(0);
+
+/// Own until an admitted Store mutation finishes, including an uncertain outcome. Dropping
+/// this token invalidates concurrent verification answers; it holds no mutex or permit.
+#[must_use = "retain the completion token until the admitted Store mutation finishes"]
+pub struct Completion(());
+
+impl Completion {
+    pub(crate) fn new() -> Self {
+        Self(())
+    }
+}
+
+impl Drop for Completion {
+    fn drop(&mut self) {
+        COMPLETED_EFFECTS.fetch_add(1, Ordering::SeqCst);
+    }
+}
 
 #[derive(Clone)]
 pub struct Context {
@@ -70,6 +93,7 @@ impl Context {
     }
 
     pub async fn revalidate(&self, app: &App) -> Result<Authority, TxnError> {
+        let completed = COMPLETED_EFFECTS.load(Ordering::SeqCst);
         let door = super::judge_admin_door(
             app,
             &self.method,
@@ -81,7 +105,8 @@ impl Context {
         )
         .await
         .map_err(|_| TxnError::Forbidden)?;
-        if actor(&door) != self.actor.as_deref()
+        if COMPLETED_EFFECTS.load(Ordering::SeqCst) != completed
+            || actor(&door) != self.actor.as_deref()
             || roles(&door) != self.roles
             || !super::admin_door_admits(&door, &self.method, &self.target)
         {
@@ -95,6 +120,60 @@ impl Context {
     pub(crate) fn survives(&self, app: &App) -> bool {
         let door = super::probe_admin_door(app, &self.method, &self.target, &self.headers, false);
         actor(&door) == self.actor.as_deref() && full_operator(&door)
+    }
+}
+
+/// Admission for a Store-only effect that cannot publish configuration. The snapshot pins
+/// its Store and policy together; it does not take the config mutation lock. Call `revalidate`
+/// again after any per-resource or worker queue, immediately before the first effect.
+/// `start` returns the completion token that must remain owned through that effect.
+///
+/// Final App and completion-epoch checks fence config publication and completed host effects.
+/// Earlier publication or host-effect completion refuses a stale plan/verification answer;
+/// a later revocation cannot undo an admitted write. Providers are queried afresh after waits.
+/// Revocation outside host effects still depends on the provider's verification consistency.
+/// No host mutex is held while that provider answers.
+pub struct PinnedEffect {
+    app: Arc<App>,
+    context: Option<Context>,
+}
+
+impl PinnedEffect {
+    pub async fn admit(
+        handle: &Arc<AppHandle>,
+        context: Option<Context>,
+    ) -> Result<Self, TxnError> {
+        let effect = Self {
+            app: handle.load(),
+            context,
+        };
+        effect.revalidate(handle).await?;
+        Ok(effect)
+    }
+
+    pub fn app(&self) -> &Arc<App> {
+        &self.app
+    }
+
+    pub async fn start(&self, handle: &Arc<AppHandle>) -> Result<Completion, TxnError> {
+        self.revalidate(handle).await?;
+        Ok(Completion::new())
+    }
+
+    pub async fn revalidate(&self, handle: &Arc<AppHandle>) -> Result<(), TxnError> {
+        let completed = COMPLETED_EFFECTS.load(Ordering::SeqCst);
+        if !Arc::ptr_eq(&self.app, &handle.load()) {
+            return Err(TxnError::Forbidden);
+        }
+        if let Some(context) = &self.context {
+            context.revalidate(&self.app).await?;
+        }
+        if !Arc::ptr_eq(&self.app, &handle.load())
+            || COMPLETED_EFFECTS.load(Ordering::SeqCst) != completed
+        {
+            return Err(TxnError::Forbidden);
+        }
+        Ok(())
     }
 }
 

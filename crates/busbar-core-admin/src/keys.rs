@@ -413,16 +413,10 @@ async fn complete_key_mutation(
 async fn admit_key_effect(
     handle: &std::sync::Arc<busbar_kernel::state::AppHandle>,
     who: KeyAudit<'_>,
-) -> Result<
-    (
-        busbar_kernel::config::transaction::EffectGuard,
-        Option<busbar_kernel::auth::effect::Context>,
-    ),
-    Box<Response>,
-> {
+) -> Result<busbar_kernel::auth::effect::PinnedEffect, Box<Response>> {
     let context = busbar_kernel::auth::effect::current();
-    match busbar_kernel::config::transaction::admit_effect(handle, context.as_ref()).await {
-        Ok(guard) => Ok((guard, context)),
+    match busbar_kernel::auth::effect::PinnedEffect::admit(handle, context).await {
+        Ok(effect) => Ok(effect),
         Err(error) => {
             record_key_refusal(who);
             Err(Box::new(crate::v1::json::err_json(&AdminError::from(
@@ -432,15 +426,13 @@ async fn admit_key_effect(
     }
 }
 
-fn key_effect_still_authorized(
+fn start_key_effect(
     handle: &std::sync::Arc<busbar_kernel::state::AppHandle>,
-    context: Option<&busbar_kernel::auth::effect::Context>,
-) -> bool {
-    context.is_none_or(|context| {
-        tokio::runtime::Handle::current()
-            .block_on(context.revalidate(&handle.load()))
-            .is_ok()
-    })
+    effect: &busbar_kernel::auth::effect::PinnedEffect,
+) -> Option<busbar_kernel::auth::effect::Completion> {
+    tokio::runtime::Handle::current()
+        .block_on(effect.start(handle))
+        .ok()
 }
 
 fn key_effect_forbidden(who: KeyAudit<'_>) -> Response {
@@ -1178,8 +1170,10 @@ async fn update_key_owned(
 
         AtCap { group: String, n: usize, cap: usize },
     }
+    let effect_context = busbar_kernel::auth::effect::current();
     let res = crate::v1::json::config_transaction(&handle, move |txn| {
         let current = txn.app();
+        let effect_app = current.clone();
         let Some(gov) = current.governance.clone() else {
 
 
@@ -1202,6 +1196,11 @@ async fn update_key_owned(
         let cap = current.max_keys_per_principal;
         Ok(txn.store_write(move || {
             let _existence_guard = EXISTENCE_GATE.claim(id.clone());
+            if let Some(context) = effect_context {
+                tokio::runtime::Handle::current()
+                    .block_on(context.revalidate(&effect_app))
+                    .map_err(AdminError::from)?;
+            }
             let outcome = (|| -> busbar_kernel::governance::RecordStoreResult<UpdateOutcome> {
 
 
@@ -1504,11 +1503,11 @@ async fn rotate_key_owned(
             Err(crate::idempotency::BindingMismatch) => return idempotency_mismatch(who),
         }
     }
-    let (effect_guard, effect_context) = match admit_key_effect(&handle, who).await {
+    let effect_guard = match admit_key_effect(&handle, who).await {
         Ok(admitted) => admitted,
         Err(response) => return *response,
     };
-    let app = handle.load();
+    let app = effect_guard.app();
     let Some(gov) = &app.governance else {
         return disabled_write(who);
     };
@@ -1545,11 +1544,10 @@ async fn rotate_key_owned(
     }
     let res = tokio::task::spawn_blocking(
         move || -> Result<RotateOutcome, busbar_kernel::governance::RecordStoreError> {
-            let _effect_guard = effect_guard;
             let _existence_guard = EXISTENCE_GATE.claim(gid.clone());
-            if !key_effect_still_authorized(&handle, effect_context.as_ref()) {
+            let Some(_completion) = start_key_effect(&handle, &effect_guard) else {
                 return Ok(RotateOutcome::Forbidden);
-            }
+            };
 
             let Some(key) = gov
                 .store()
@@ -1678,11 +1676,11 @@ async fn revoke_key_owned(
         resource: &resource,
         actor: &actor,
     };
-    let (effect_guard, effect_context) = match admit_key_effect(&handle, who).await {
+    let effect_guard = match admit_key_effect(&handle, who).await {
         Ok(admitted) => admitted,
         Err(response) => return *response,
     };
-    let app = handle.load();
+    let app = effect_guard.app();
     let Some(gov) = &app.governance else {
         return disabled_write(who);
     };
@@ -1699,11 +1697,10 @@ async fn revoke_key_owned(
     }
     let res = tokio::task::spawn_blocking(
         move || -> busbar_kernel::governance::RecordStoreResult<RevokeOutcome> {
-            let _effect_guard = effect_guard;
             let _existence_guard = EXISTENCE_GATE.claim(id_for_task.clone());
-            if !key_effect_still_authorized(&handle, effect_context.as_ref()) {
+            let Some(_completion) = start_key_effect(&handle, &effect_guard) else {
                 return Ok(RevokeOutcome::Forbidden);
-            }
+            };
 
             let exists = gov.store().get_key(&id_for_task)?.is_some();
             if !exists {
@@ -1912,11 +1909,11 @@ async fn delete_key_owned(
         resource: &resource,
         actor: &actor,
     };
-    let (effect_guard, effect_context) = match admit_key_effect(&handle, who).await {
+    let effect_guard = match admit_key_effect(&handle, who).await {
         Ok(admitted) => admitted,
         Err(response) => return *response,
     };
-    let app = handle.load();
+    let app = effect_guard.app();
     let Some(gov) = &app.governance else {
         return disabled_write(who);
     };
@@ -1940,11 +1937,10 @@ async fn delete_key_owned(
     let id_for_task = id.clone();
     let task_actor = actor.clone();
     let res = tokio::task::spawn_blocking(move || {
-        let _effect_guard = effect_guard;
         let _existence_guard = EXISTENCE_GATE.claim(id_for_task.clone());
-        if !key_effect_still_authorized(&handle, effect_context.as_ref()) {
+        let Some(_completion) = start_key_effect(&handle, &effect_guard) else {
             return Ok(DeleteOutcome::Forbidden);
-        }
+        };
 
         let key = gov.store().get_key(&id_for_task)?;
         match key {

@@ -116,6 +116,8 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
     assert!(effect::full_operator(&door));
     let context = effect::Context::new("PUT", target, headers, &door);
 
+    independent_store_effects(&original, &store, operator).await;
+
     // Every representation reaches Commit with a resolved generation. Refusal precedes the
     // exact persistence closure and the pointer swap, including a whole-parent replacement.
     for sensitive in ["protected-empty", "ceiling-raise"] {
@@ -489,5 +491,241 @@ impl std::future::Future for Ready {
 impl busbar_contract::auth_calls::Verifying for Ready {
     fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
         self.0.take()
+    }
+}
+
+// Uses the actual product Store with a controlled issuer whose revocation record lives there.
+// The same production admission and per-resource claim primitive used by the key handlers run
+// on blocking workers. No Store substitute or timing sleep supplies the ordering assertions.
+async fn independent_store_effects(
+    original: &Arc<busbar_kernel::state::App>,
+    store: &Arc<dyn RecordStore>,
+    operator: &str,
+) {
+    use busbar_contract::auth_calls::AuthCalls;
+    use busbar_kernel::auth::effect::PinnedEffect;
+    for (case, revoked, written) in [
+        ("before-config", "pin-revoke-config", "pin-write-config"),
+        ("before-store", "pin-revoke-store", "pin-write-store"),
+        ("after-both", "pin-revoke-after", "pin-write-after"),
+        ("during-auth", "pin-revoke-auth", "pin-write-auth"),
+        (
+            "during-store-auth",
+            "pin-revoke-suspended",
+            "pin-write-suspended",
+        ),
+    ] {
+        let issuer = Arc::new(StoreAuthority {
+            store: store.clone(),
+            revoked,
+            gate: std::sync::Mutex::new(None),
+        });
+        let mut app = (**original).clone();
+        app.admin_chain = vec![issuer.name().into()];
+        app.admin_modules = Arc::new(busbar_kernel::auth::AdminAuthChain {
+            operator: busbar_kernel::auth::Operator::new(operator),
+            modules: [(
+                issuer.name().into(),
+                busbar_kernel::auth::AdminModule {
+                    calls: issuer.clone(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        });
+        app.auth_scope_caps
+            .insert(issuer.name().into(), "full".into());
+        app.role_bindings.insert(
+            issuer.name().into(),
+            [(
+                "editor".into(),
+                busbar_kernel::config::RoleBindingCfg {
+                    admin_scope: Some("full".into()),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let handle = Arc::new(AppHandle::new(Arc::new(app)));
+        let snapshot = handle.load();
+        let target = "/api/v1/admin/keys/example";
+        let door =
+            busbar_kernel::auth::admin_verdict(&snapshot, "DELETE", target, &Default::default())
+                .door;
+        assert!(busbar_kernel::auth::admin_door_admits(
+            &door, "DELETE", target
+        ));
+        let context = effect::Context::new("DELETE", target, Default::default(), &door);
+        // A parked config transaction must not serialize an independent key's admission.
+        let config_gate = effect_lock().await;
+        let admitted = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            PinnedEffect::admit(&handle, Some(context.clone())),
+        )
+        .await
+        .expect("independent admission does not take the config lock")
+        .unwrap();
+        drop(config_gate);
+        assert!(Arc::ptr_eq(admitted.app(), &snapshot));
+
+        if matches!(case, "during-auth" | "during-store-auth") {
+            let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            *issuer.gate.lock().unwrap() = Some((entered_tx, release_rx));
+            let task_handle = handle.clone();
+            let task_store = store.clone();
+            let task = tokio::spawn(async move {
+                let _completion = admitted.start(&task_handle).await?;
+                persist(task_store, written)().map_err(TxnError::Validation)
+            });
+            entered_rx.await.unwrap();
+            if case == "during-store-auth" {
+                let revoke = busbar_kernel::config::transaction::admit_effect(&handle, None)
+                    .await
+                    .unwrap();
+                persist(store.clone(), revoked)().unwrap();
+                drop(revoke);
+                assert!(Arc::ptr_eq(&snapshot, &handle.load()));
+            } else {
+                let mut next = (*snapshot).clone();
+                next.auth_scope_caps
+                    .insert(issuer.name().into(), "read-only".into());
+                handle.swap(Arc::new(next));
+            }
+            release_tx.send(()).unwrap();
+            assert_eq!(task.await.unwrap(), Err(TxnError::Forbidden));
+        } else {
+            let claims = Arc::new(busbar_kernel::governance::claims::ClaimSet::new());
+            let mut held = Some(claims.claim("example"));
+            let task_claims = claims.clone();
+            let task_handle = handle.clone();
+            let task_store = store.clone();
+            let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+            let (admitted_tx, admitted_rx) = tokio::sync::oneshot::channel();
+            let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+            let task = tokio::task::spawn_blocking(move || {
+                entered_tx.send(()).unwrap();
+                let _key_claim = task_claims.claim("example");
+                let _completion =
+                    tokio::runtime::Handle::current().block_on(admitted.start(&task_handle))?;
+                if case == "after-both" {
+                    admitted_tx.send(()).unwrap();
+                    finish_rx.recv().unwrap();
+                }
+                persist(task_store, written)().map_err(TxnError::Validation)
+            });
+            entered_rx.await.unwrap();
+            if case == "after-both" {
+                drop(held.take());
+                admitted_rx.await.unwrap();
+            } else {
+                // The queued worker cannot revalidate until we release this exact key claim.
+                assert!(!task.is_finished());
+            }
+            if case != "before-config" {
+                let revoke = busbar_kernel::config::transaction::admit_effect(&handle, None)
+                    .await
+                    .unwrap();
+                persist(store.clone(), revoked)().unwrap();
+                drop(revoke);
+                assert!(
+                    Arc::ptr_eq(&snapshot, &handle.load()),
+                    "Store revoke changes no App"
+                );
+            }
+            if case != "before-store" {
+                let mut next = (*snapshot).clone();
+                next.auth_scope_caps
+                    .insert(issuer.name().into(), "read-only".into());
+                handle.swap(Arc::new(next));
+            }
+            if case == "after-both" {
+                finish_tx.send(()).unwrap();
+                assert_eq!(
+                    task.await.unwrap(),
+                    Ok(()),
+                    "admitted custody must complete"
+                );
+            } else {
+                drop(held.take());
+                assert_eq!(task.await.unwrap(), Err(TxnError::Forbidden));
+            }
+        }
+        assert_eq!(
+            store
+                .get_plane_record("admin_effect_test", written)
+                .unwrap(),
+            (case == "after-both").then(|| b"committed".to_vec()),
+            "{case}: denied work writes nothing; admitted work retains its receipt",
+        );
+        assert!(PinnedEffect::admit(&handle, Some(context)).await.is_err());
+    }
+}
+
+type VerificationGate = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+);
+struct StoreAuthority {
+    store: Arc<dyn RecordStore>,
+    revoked: &'static str,
+    gate: std::sync::Mutex<Option<VerificationGate>>,
+}
+impl busbar_contract::auth_calls::AuthCalls for StoreAuthority {
+    fn name(&self) -> &str {
+        "store-authority"
+    }
+    fn facts(&self) -> u32 {
+        0
+    }
+    fn verify_now(
+        &self,
+        request: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        match self
+            .store
+            .get_plane_record("admin_effect_test", self.revoked)
+        {
+            Ok(None) => RoleProvider.verify_now(request),
+            Ok(Some(_)) => Some(busbar_contract::auth_calls::Verified::Reject.into()),
+            Err(_) => Some(busbar_contract::auth_calls::Verified::Failed.into()),
+        }
+    }
+    fn verify(
+        &self,
+        request: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        let answer = self.verify_now(&request).unwrap();
+        let gate = self.gate.lock().unwrap().take();
+        Box::new(PendingVerification(Box::pin(async move {
+            if let Some((entered, release)) = gate {
+                entered.send(()).unwrap();
+                release.await.unwrap();
+            }
+            answer
+        })))
+    }
+    fn refresh(&self) -> Result<u64, String> {
+        Ok(0)
+    }
+}
+struct PendingVerification(
+    std::pin::Pin<
+        Box<dyn std::future::Future<Output = busbar_contract::auth_calls::VerifyAnswer> + Send>,
+    >,
+);
+impl std::future::Future for PendingVerification {
+    type Output = busbar_contract::auth_calls::VerifyAnswer;
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        self.0.as_mut().poll(cx)
+    }
+}
+impl busbar_contract::auth_calls::Verifying for PendingVerification {
+    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        None
     }
 }

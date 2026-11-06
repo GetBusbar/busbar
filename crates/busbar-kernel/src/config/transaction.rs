@@ -360,6 +360,8 @@ mod txn_loom;
 /// effect has started; revocation can deny queued callers, never undo an admitted Store write.
 /// The only network await under this lock is the bounded fresh authentication check.
 pub struct EffectGuard {
+    // Advance before releasing the config guard, including Store-only authority changes.
+    _completion: crate::auth::effect::Completion,
     _guard: tokio::sync::OwnedMutexGuard<()>,
     authority: Option<crate::auth::effect::Authority>,
 }
@@ -378,6 +380,7 @@ pub async fn admit_effect(
         None => None, // Internal kernel work has no administrative caller.
     };
     Ok(EffectGuard {
+        _completion: crate::auth::effect::Completion::new(),
         _guard: guard,
         authority,
     })
