@@ -1786,14 +1786,15 @@ async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
     )
     .await;
     assert_eq!(status, 200, "plane_record_write is served: {body}");
-    let at = serde_json::from_str::<serde_json::Value>(&body).expect("JSON")["written_at"]
-        .as_u64()
-        .expect("written_at");
+    let written =
+        serde_json::from_str::<serde_json::Value>(&body).expect("record write answers JSON");
+    let at = written["written_at"].as_u64().expect("written_at");
     assert_eq!(
-        body,
-        format!(
-            r#"{{"id":"n-1","kind":"note","parent":null,"plane":"example","terminal":false,"written_at":{at}}}"#
-        )
+        written,
+        serde_json::json!({
+            "id": "n-1", "kind": "note", "parent": null, "plane": "example",
+            "terminal": false, "written_at": at
+        })
     );
     {
         let kept = kept.lock().expect("the sink");
