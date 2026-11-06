@@ -576,7 +576,7 @@ fn parse_rewrite_is_fail_closed() {
 }
 
 #[test]
-fn transform_reply_reads_back_as_1_5_5_did() {
+fn transform_reply_keeps_valid_behavior_and_reports_malformed_current_rewrites() {
     match transform(
         r#"{"reject":{"status":200,"message":"no\r\nX"},"rewrite":{"messages":[{"role":"user"}]}}"#,
     ) {
@@ -597,13 +597,25 @@ fn transform_reply_reads_back_as_1_5_5_did() {
     }
     for json in [
         r#"{"rewrite":{"messages":[]}}"#,
-        r#"{"rewrite":{"messages":"hi"}}"#,
         r#"{"rewrite":null}"#,
         r#"{}"#,
     ] {
         assert!(
             matches!(transform(json), TransformOutcome::Abstain),
-            "a malformed or absent rewrite keeps the original body: {json}"
+            "an empty or absent rewrite keeps the original body: {json}"
+        );
+    }
+    // The current SDK reports a malformed requested rewrite as a failed hook call,
+    // so its configured on_error policy can decide. It is not an abstention.
+    for json in [
+        r#"{"rewrite":{"messages":"hi"}}"#,
+        r#"{"rewrite":{}}"#,
+        r#"{"rewrite":true}"#,
+    ] {
+        assert_eq!(
+            lower_transform_reply(Ok(serde_json::from_str(json).unwrap())),
+            RewriteVerdict::Failed("hook rewrite must be an object with a messages array".into()),
+            "a malformed current rewrite must reach the failure policy: {json}"
         );
     }
 }

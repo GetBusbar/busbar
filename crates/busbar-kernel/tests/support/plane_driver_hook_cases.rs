@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use busbar_contract::caps::{Outcome, ReasonCode};
+use busbar_contract::caps::{Outcome, ReasonCode, StepName};
 use busbar_contract::hooks::{
     BudgetBucketState, Candidate, PolicyResult, RewriteReply, RoutingContext, RoutingDecision,
     RoutingPolicy, RoutingRequest, TransformOutcome,
@@ -995,28 +995,31 @@ async fn unparseable_over(hooks: BoundHooks, far: Far) -> Driven {
 }
 
 #[tokio::test]
-async fn an_unparseable_body_with_only_a_gate_is_judged_as_a_null_body_and_served() {
-    let (seen, g) = gate(None);
-    let (outcome, rendered, sent, projects) =
-        unparseable_under(bound(Vec::new(), vec![(0, g)])).await;
-    assert!(matches!(outcome, Outcome::Completed), "{outcome:?}");
-    assert_eq!(rendered, None, "nothing was refused");
-    assert_eq!(sent, 1, "the body went through");
-    assert_eq!(
-        *seen.lock().unwrap(),
-        vec![Vec::<(String, String)>::new()],
-        "the gate judged once, over a Null body: no turns"
-    );
-    assert_eq!(projects.len(), 1, "one project, with no rewrite");
-    assert!(
-        projects[0].1.is_empty(),
-        "the up-front project carries no rewrite"
-    );
-
-    let (_, g) = gate(Some((451, "blocked")));
-    let (_, rendered, sent, _) = unparseable_under(bound(Vec::new(), vec![(0, g)])).await;
-    assert_eq!(rendered, Some((451, b"refused:451:blocked".to_vec())));
-    assert_eq!(sent, 0, "never dialled");
+async fn an_unparseable_body_with_only_a_gate_fails_closed_without_screening() {
+    for reject in [None, Some((451, "blocked"))] {
+        let (seen, g) = gate(reject);
+        let (outcome, rendered, sent, projects) =
+            unparseable_under(bound(Vec::new(), vec![(0, g)])).await;
+        assert!(
+            matches!(
+                outcome,
+                Outcome::Failed(StepName::Route, ReasonCode::DecodeFailed)
+            ),
+            "{reject:?}: {outcome:?}"
+        );
+        assert_eq!(rendered.map(|(status, _)| status), Some(400));
+        assert_eq!(sent, 0, "unreadable facts cannot authorize dispatch");
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "the gate must not judge fabricated empty facts"
+        );
+        assert_eq!(
+            projects.len(),
+            1,
+            "the plane was asked for the real facts once"
+        );
+        assert!(projects[0].1.is_empty(), "no rewrite was requested");
+    }
 }
 
 #[tokio::test]
@@ -1047,28 +1050,39 @@ async fn with_only_a_gate_a_parseable_body_is_judged_over_its_own_turns() {
 }
 
 #[tokio::test]
-async fn an_unparseable_body_with_only_a_policy_is_judged_as_a_null_body_and_served() {
+async fn an_unparseable_body_with_only_a_policy_fails_closed_without_screening() {
     let (seen, policy) = gate(None);
     let mut hooks = bound(Vec::new(), Vec::new());
     hooks.pool_policies.insert("pool-a".to_string(), policy);
     let far = Far::new(&["ok"], &[b"done"]).naming_its_pool();
-    let (outcome, rendered, sent, _) = unparseable_over(hooks, far).await;
-    assert!(matches!(outcome, Outcome::Completed), "{outcome:?}");
-    assert_eq!(rendered, None, "nothing was refused");
-    assert_eq!(sent, 1, "the body went through");
+    let (outcome, rendered, sent, projects) = unparseable_over(hooks, far).await;
+    assert!(
+        matches!(
+            outcome,
+            Outcome::Failed(StepName::Route, ReasonCode::DecodeFailed)
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(rendered.map(|(status, _)| status), Some(400));
+    assert_eq!(sent, 0, "unreadable facts cannot authorize dispatch");
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "the policy must not judge fabricated empty facts"
+    );
     assert_eq!(
-        *seen.lock().unwrap(),
-        vec![Vec::<(String, String)>::new()],
-        "the policy judged once, over a Null body: no turns"
+        projects.len(),
+        1,
+        "the plane was asked for the real facts once"
     );
 }
 
 #[tokio::test]
-async fn a_gate_first_unparseable_body_with_only_gates_is_judged_and_served() {
-    for (send_prompt, reject, want_sent, want_seen) in [
-        (false, None, 1, 1),
-        (true, None, 1, 0),
-        (false, Some((451, "blocked")), 0, 1),
+async fn a_gate_first_unparseable_body_never_reaches_a_configured_gate() {
+    for (send_prompt, reject) in [
+        (false, None),
+        (true, None),
+        (false, Some((451, "blocked"))),
+        (true, Some((451, "blocked"))),
     ] {
         let (seen, g) = gate_granted(reject, send_prompt);
         let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
@@ -1090,15 +1104,19 @@ async fn a_gate_first_unparseable_body_with_only_gates_is_judged_and_served() {
         );
         let outcome = drive(&units).await;
         let case = format!("send_prompt {send_prompt}, reject {reject:?}");
-        assert_eq!(far.sent().len(), want_sent, "{case}: {outcome:?}");
-        assert_eq!(seen.lock().unwrap().len(), want_seen, "{case}");
-        match reject {
-            None => assert!(matches!(outcome, Outcome::Completed), "{case}: {outcome:?}"),
-            Some((status, _)) => {
-                let rendered = units.take_rendered().expect("the veto is rendered");
-                assert_eq!(rendered.status, u32::from(status), "{case}");
-            }
-        }
+        assert!(
+            matches!(
+                outcome,
+                Outcome::Refused(StepName::Approve, ReasonCode::DecodeFailed)
+            ),
+            "{case}: {outcome:?}"
+        );
+        assert!(far.sent().is_empty(), "{case}: never dialled");
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "{case}: no fabricated facts screened"
+        );
+        assert_eq!(units.take_rendered().map(|r| r.status), Some(400), "{case}");
     }
 }
 
