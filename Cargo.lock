@@ -3587,4 +3587,4 @@ source = "git+https://github.com/GetBusbar/busbar-store-mysql?rev=7a8ecfdaba8c41
 [[patch.unused]]
 name = "postgres-protocol"
 version = "0.6.12"
-source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=be8bb24055d0b951277bdabfe70d56117a1035fc#be8bb24055d0b951277bdabfe70d56117a1035fc"
+source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=3bd87918dfd83b4af9331ed7857a885bfb344a71#3bd87918dfd83b4af9331ed7857a885bfb344a71"
