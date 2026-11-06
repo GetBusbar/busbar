@@ -3372,7 +3372,7 @@ impl Conns for Connector {
         if let Some((member, lease)) = &held.lease {
             return member.write(*lease, bytes);
         }
-        if let Some(d) = held.dialled.as_ref().filter(|d| !d.exchanging()) {
+        if let Some(d) = held.dialled.as_ref() {
             return d.write(bytes, end, text);
         }
         if !self.settle(&held, None)? {

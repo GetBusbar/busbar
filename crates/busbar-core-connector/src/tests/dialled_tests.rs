@@ -1239,3 +1239,144 @@ fn closing_after_partial_feedback_preserves_accepted_handed_and_cancelled_truth(
         assert!(dialled.leg.ready.lock().unwrap().is_empty());
     });
 }
+
+/// Application writes must never escape onto the SDP signalling connection, including after
+/// response headers have released a waiting session writer but before its answer is complete.
+#[test]
+fn connector_holds_datagram_writes_until_the_signalling_exchange_finishes() {
+    use crate::compose::{Dial, Planned, EXCHANGE_STREAM};
+    use busbar_contract::conn::{ConnError, Conns, InstanceId, NeedId, Piece, PieceKind, StreamId};
+    use tokio::io::AsyncReadExt;
+
+    crate::support::worker().block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let connection = Planned::carried(
+            crate::support::via(),
+            Dial {
+                target: address.to_string(),
+                tls: None,
+                alpn: Vec::new(),
+                open_timeout: Duration::from_secs(5),
+                opening: None,
+                head_words: Default::default(),
+                anchors: None,
+            },
+        )
+        .and_then(|plan| plan.dial_at(address))
+        .unwrap();
+        let (mut peer, _) = listener.accept().await.unwrap();
+        let line = crate::line::Line::new(connection);
+        futures::future::poll_fn(|cx| line.poll_landed(EXCHANGE_STREAM, cx))
+            .await
+            .unwrap();
+        let connector = crate::Connector::new();
+        let owner = InstanceId(1);
+        connector.slab.declare(owner, NeedId(1));
+        connector.slab.declare(owner, NeedId(2));
+        let ordinary = connector
+            .slab
+            .insert(
+                owner,
+                NeedId(1),
+                crate::Held::over(Some((Arc::clone(&line), EXCHANGE_STREAM)), None, None),
+            )
+            .unwrap();
+        assert_eq!(
+            connector.write(owner, ordinary, b"ordinary", true, false),
+            Ok(8)
+        );
+        let mut received = [0; 8];
+        peer.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received, b"ordinary");
+
+        let door = Arc::new(Hanging {
+            facts: crate::framer::DoorFacts {
+                name: "signalling-write-guard".into(),
+                claims: vec!["signalling-write-guard"],
+                role: busbar_contract::abi::transport::ROLE_FRAMER,
+                composes_over: Vec::new(),
+                ported: false,
+                status_rows: Vec::new(),
+                status_namespaces: Vec::new(),
+                handoff_status: Vec::new(),
+                duplex: Vec::new(),
+                datagram: true,
+            },
+            gate: Mutex::new(None),
+            crossed: Mutex::new(Vec::new()),
+        });
+        let (framing, _) = crate::datagram::DatagramFraming::accept_minted(
+            door.clone() as Arc<dyn crate::framer::FramerDoor>,
+            "127.0.0.1:9".parse().unwrap(),
+        )
+        .unwrap();
+        let port = crate::udp::ReadyPort::open(crate::udp::bind("127.0.0.1:0").unwrap()).unwrap();
+        let pairing =
+            crate::datagram::Pairing::new(Arc::new(NoLeg), "127.0.0.1:1".parse().unwrap());
+        let dialled = super::Dialled::new(framing, port, Arc::clone(&pairing), None);
+        let media = connector
+            .slab
+            .insert(
+                owner,
+                NeedId(2),
+                crate::Held::over(Some((line, EXCHANGE_STREAM)), None, None).dialling(dialled),
+            )
+            .unwrap();
+        let (_, held) = connector.slab.get(owner, media).unwrap();
+        let dialled = held.dialled.as_ref().unwrap();
+
+        let pending = || {
+            for text in [false, true] {
+                assert_eq!(
+                    connector.write(owner, media, b"application", true, text),
+                    Err(ConnError::Pending),
+                    "an incomplete SDP exchange must not accept application bytes"
+                );
+            }
+            assert_eq!(pairing.publication_outcome().original_bytes, 0);
+            assert_eq!(pairing.memory_account().used(), 0);
+            assert!(dialled.gather.lock().unwrap().bytes.is_empty());
+        };
+        pending();
+        let headers = Piece {
+            kind: PieceKind::Fields,
+            stream: StreamId(EXCHANGE_STREAM),
+            len: 0,
+            end: true,
+            status: Some(busbar_contract::transport::wire::WireStatusClass::Success),
+            status_code: Some(200),
+            status_namespace: None,
+            retry_after_secs: None,
+            fault: None,
+            reason: None,
+            declared_len: Some(1359),
+        };
+        assert_eq!(
+            dialled.exchanged(headers.clone(), &[]).unwrap(),
+            Some(headers)
+        );
+        assert!(dialled.exchanging());
+        pending();
+        *dialled.phase.lock().unwrap() = super::Phase::Settling(None);
+        pending();
+        let mut unexpected = [0; 32];
+        assert_eq!(
+            peer.try_read(&mut unexpected).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert!(door
+            .crossed
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(operation, _)| *operation == "begin"));
+        connector.close(owner, media).unwrap();
+        assert!(pairing.closed());
+        assert_eq!(pairing.memory_account().used(), 0);
+        assert_eq!(
+            connector.write(owner, media, b"cancelled", true, false),
+            Err(ConnError::Closed)
+        );
+    });
+}
