@@ -459,13 +459,20 @@ impl PendingAuditQueue {
     }
 
     fn enqueue(&self, p: PendingAudit) {
+        if self.try_enqueue(p).is_err() {
+            self.record_gap();
+        }
+    }
+
+    fn try_enqueue(&self, p: PendingAudit) -> RecordStoreResult<()> {
         let mut q = self.rows.lock().unwrap_or_else(|e| e.into_inner());
         if q.queued.len() >= self.cap {
-            drop(q);
-            self.record_gap();
-            return;
+            return Err(RecordStoreError(
+                "the admin audit recovery queue is full".into(),
+            ));
         }
         q.queued.push_back(p);
+        Ok(())
     }
 
     fn record_gap(&self) {
@@ -545,19 +552,28 @@ impl PendingAuditQueue {
 
 static PENDING_AUDIT: PendingAuditQueue = PendingAuditQueue::new(MAX_PENDING_AUDIT);
 
-fn enqueue_pending_audit(scope: &str, suffix: Vec<u8>, origin: EventOrigin) {
+fn pending_audit(
+    scope: &str,
+    suffix: Vec<u8>,
+    origin: EventOrigin,
+) -> RecordStoreResult<PendingAudit> {
     let mut operation = [0; 16];
-    if getrandom::fill(&mut operation).is_err() {
-        PENDING_AUDIT.record_gap();
-        return;
-    }
-    PENDING_AUDIT.enqueue(PendingAudit {
+    getrandom::fill(&mut operation)
+        .map_err(|error| RecordStoreError(format!("admin audit operation entropy: {error}")))?;
+    Ok(PendingAudit {
         scope: scope.to_string(),
         suffix,
         origin,
         operation,
         prepared: None,
-    });
+    })
+}
+
+fn enqueue_pending_audit(scope: &str, suffix: Vec<u8>, origin: EventOrigin) {
+    match pending_audit(scope, suffix, origin) {
+        Ok(pending) => PENDING_AUDIT.enqueue(pending),
+        Err(_) => PENDING_AUDIT.record_gap(),
+    }
 }
 
 #[cfg(test)]
@@ -714,6 +730,25 @@ fn emit_admin_hostless_from(
 pub fn emit_admin_hostless_now(action: &str, resource: &str, outcome: &str, principal: &str) {
     let ts = busbar_kernel::store::now();
     emit_admin_hostless(ts, action, resource, outcome, principal);
+}
+
+/// Return success only after this event was accepted and its native append confirmed.
+pub(crate) async fn emit_admin_hostless_confirmed(
+    action: &str,
+    resource: &str,
+    outcome: &str,
+    principal: &str,
+) -> RecordStoreResult<()> {
+    let (suffix, _) = admin_suffix(
+        busbar_kernel::store::now(),
+        action,
+        resource,
+        outcome,
+        principal,
+    );
+    let pending = pending_audit(ADMIN_LOG, suffix, EventOrigin::Mutation)?;
+    PENDING_AUDIT.try_enqueue(pending)?;
+    flush_pending().await
 }
 
 /// What the host refused, or flagged, while a plugin started, bound or served.

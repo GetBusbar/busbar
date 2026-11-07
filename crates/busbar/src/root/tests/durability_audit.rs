@@ -8,12 +8,11 @@ pub(crate) struct Scratch(pub(crate) std::path::PathBuf);
 
 impl Scratch {
     pub(crate) fn new(tag: &str) -> Self {
-        let path = std::path::PathBuf::from("/Users/matthew/Developer/tmp/corefix-implementation")
-            .join(format!(
-                "busbar-root-durability-audit-{tag}-{}-{:?}",
-                std::process::id(),
-                std::thread::current().id()
-            ));
+        let path = std::env::temp_dir().join(format!(
+            "busbar-root-durability-audit-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("scratch directory");
         Scratch(path)

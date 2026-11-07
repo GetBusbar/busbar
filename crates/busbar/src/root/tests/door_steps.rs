@@ -105,9 +105,6 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
         .await
         .expect("the actual root builds the door generation");
         limits.stage_boot();
-        let _book = crate::root::boot::book(&app, &module)
-            .await
-            .expect("the configured Store boots its rate history before activation");
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -227,9 +224,6 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
             .await
             .expect("the actual root builds the door generation");
             limits.stage_boot();
-            let _book = crate::root::boot::book(&app, &module)
-                .await
-                .expect("the configured Store boots its rate history before activation");
             limits.keep().await.expect("the product limits commit");
             if let Some(rotate) = rotate {
                 rotate.await;
@@ -345,9 +339,6 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
         .await
         .expect("the actual root builds the door generation");
         limits.stage_boot();
-        let _book = crate::root::boot::book(&app, &module)
-            .await
-            .expect("the configured Store boots its rate history before activation");
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -894,9 +885,6 @@ async fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() 
         .await
         .expect("the actual root builds the door generation");
         limits.stage_boot();
-        let _book = crate::root::boot::book(&app, &module)
-            .await
-            .expect("the configured Store boots its rate history before activation");
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -1079,9 +1067,6 @@ async fn downgrade_book(
         .await
         .expect("the actual root builds the door generation");
         limits.stage_boot();
-        let _book = crate::root::boot::book(&app, &module)
-            .await
-            .expect("the configured Store boots its rate history before activation");
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -3907,9 +3892,6 @@ pub(crate) mod tool_door {
                     .await
                     .expect("the actual root builds the door generation");
                 limits.stage_boot();
-                let _book = crate::root::boot::book(&app, &module)
-                    .await
-                    .expect("the configured Store boots its rate history before activation");
                 limits.keep().await.expect("the product limits commit");
                 if let Some(rotate) = rotate {
                     rotate.await;
@@ -10033,9 +10015,6 @@ async fn the_configured_error_body_cap_reaches_both_egress_constructors() {
             .await
             .expect("the actual root builds the door generation");
             limits.stage_boot();
-            let _book = crate::root::boot::book(&app, &module)
-                .await
-                .expect("the configured Store boots its rate history before activation");
             limits.keep().await.expect("the product limits commit");
             if let Some(rotate) = rotate {
                 rotate.await;
@@ -10260,9 +10239,6 @@ async fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_
                     .await
                     .expect("the actual root builds the door generation");
                 limits.stage_boot();
-                let _book = crate::root::boot::book(&app, &module)
-                    .await
-                    .expect("the configured Store binds the boot rate authority");
                 limits.keep().await.expect("the product limits commit");
                 if let Some(rotate) = rotate {
                     rotate.await;
@@ -10644,9 +10620,6 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
         .await
         .expect("the actual root builds the door generation");
         limits.stage_boot();
-        let _book = crate::root::boot::book(&app, &module)
-            .await
-            .expect("the configured Store boots its rate history before activation");
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -10788,9 +10761,6 @@ async fn asking_whether_a_name_is_configured_allocates_nothing() {
         .await
         .expect("the actual root builds the door generation");
         limits.stage_boot();
-        let _book = crate::root::boot::book(&app, &module)
-            .await
-            .expect("the configured Store boots its rate history before activation");
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;

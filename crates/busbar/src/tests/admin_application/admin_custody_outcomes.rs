@@ -277,11 +277,24 @@ async fn app() -> (
             name: "third-party".into(),
             public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
         });
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+    let mut observed = None;
+    let fresh = crate::root::test_plugins::provision_fresh_application_store_with_backend(
+        &config,
+        &plugin_config,
+        &directory,
+        |backend| {
+            let store = Store::new(backend);
+            observed = Some(store.clone());
+            store
+        },
+    )
+    .await
+    .expect("the custody fixture exclusively provisions its wrapped native Store");
+    let anchor = fresh
+        .initialize_principal_format(&config, &plugin_config)
         .await
-        .unwrap();
-    let store = Store::new(anchor);
-    let anchor = crate::root::real_store::core_over(store.clone()).await;
+        .expect("the new custody namespace receives its principal baseline before serving");
+    let store = observed.expect("the primitive custody fault wrapper was installed");
     store.core.set(anchor.clone()).ok().unwrap();
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone()).unwrap();
     let rules = Arc::new(crate::root::door_steps::Rules::default())
