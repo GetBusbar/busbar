@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-#[cfg(any(feature = "plane-decisions", linked_driver_proofs))]
+#[cfg(any(
+    feature = "plane-decisions",
+    linked_driver_proofs,
+    linked_axis_plane_door
+))]
 pub(super) fn independent_cases(test: &str, cases: &[&str]) -> Option<String> {
     if std::env::var("BUSBAR_SERVE_INDEPENDENT_TEST").as_deref() == Ok(test) {
         let case = std::env::var("BUSBAR_SERVE_INDEPENDENT_CASE").unwrap();
@@ -29,7 +33,11 @@ pub(super) fn independent_cases(test: &str, cases: &[&str]) -> Option<String> {
     }
     None
 }
-#[cfg(any(feature = "plane-decisions", linked_driver_proofs))]
+#[cfg(any(
+    feature = "plane-decisions",
+    linked_driver_proofs,
+    linked_axis_plane_door
+))]
 pub(super) fn independent_case_done(test: &str, case: &str) {
     println!("SERVE-CASE-DONE {test} {case}");
 }
@@ -2755,6 +2763,21 @@ pub(super) mod session_door {
                         "signal refusal {status}: {}",
                         String::from_utf8_lossy(&body)
                     );
+                    if status == StatusCode::UNAUTHORIZED {
+                        let identity = self
+                            .gov
+                            .prepare_ticket_redemption_async(
+                                "ek_",
+                                token,
+                                busbar_kernel::store::now(),
+                            )
+                            .await;
+                        eprintln!(
+                            "signal ticket native verification: {}; issuance receipts: {}",
+                            identity.is_some(),
+                            self.audit_records().len()
+                        );
+                    }
                 }
                 (status, head, body)
             };
@@ -4827,27 +4850,38 @@ mod tools_door {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_rewrite_hook_rewrites_the_arguments_on_the_composed_door() {
+        const TEST: &str = concat!(
+            module_path!(),
+            "::a_rewrite_hook_rewrites_the_arguments_on_the_composed_door"
+        );
+        let Some(case) = super::independent_cases(TEST, &["control", "rewrite"]) else {
+            return;
+        };
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-tap";
         let mut port_server = TlsToolServer::new().await;
         let mut heard = take_heard(&mut port_server);
         let arguments = serde_json::json!({ "path": "/home/caller/secret.txt" });
 
-        let control = hook_parity::rig(instance, &port_server, Vec::new()).await;
-        let (status, _) = call(
-            &control,
-            &control.bound_token(),
-            "fs_read_file",
-            arguments.clone(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        let sent = hook_parity::calls_heard(&mut heard);
-        assert!(
-            sent.len() == 1 && sent[0].contains("/home/caller/secret.txt"),
-            "the control carries the caller's arguments: {sent:?}"
-        );
-        drop(control);
+        if case == "control" {
+            let control = hook_parity::rig(instance, &port_server, Vec::new()).await;
+            let (status, _) = call(
+                &control,
+                &control.bound_token(),
+                "fs_read_file",
+                arguments.clone(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let sent = hook_parity::calls_heard(&mut heard);
+            assert!(
+                sent.len() == 1 && sent[0].contains("/home/caller/secret.txt"),
+                "the control carries the caller's arguments: {sent:?}"
+            );
+            drop(control);
+            super::independent_case_done(TEST, &case);
+            return;
+        }
 
         let tapped = hook_parity::rig(
             instance,
@@ -4885,6 +4919,7 @@ mod tools_door {
             "the rewritten call is the one served unit"
         );
         assert!(tapped.all_ended(), "every unit ended");
+        super::independent_case_done(TEST, &case);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5793,6 +5828,15 @@ mod tools_door {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn each_member_presents_only_the_credential_its_registration_plans() {
+        const TEST: &str = concat!(
+            module_path!(),
+            "::each_member_presents_only_the_credential_its_registration_plans"
+        );
+        let Some(case) =
+            super::independent_cases(TEST, &["passthrough-refused", "planned-credentials"])
+        else {
+            return;
+        };
         let _one = PUBLISHING.lock().await;
         std::env::set_var(SUBJECT, "busbar-own-subject");
         let instance = "serve-door-tools-egress";
@@ -5817,28 +5861,32 @@ mod tools_door {
             .as_mapping_mut()
             .expect("a mapping")
             .extend(exchanged_tools.as_mapping().expect("a mapping").clone());
-        let error = lent_server
-            .try_rig(
+        if case == "passthrough-refused" {
+            let error = lent_server
+                .try_rig(
+                    "serve-door-tools-egress-passthrough-refused",
+                    registration(
+                        "lent",
+                        &lent_server,
+                        "  upstream_credentials: passthrough\n",
+                    ),
+                    &|app| app,
+                )
+                .await
+                .err()
+                .expect("MCP refuses to forward the caller's credential at registration");
+            crate::root::door_steps::tests::tool_door::assert_member_passthrough_refused(
+                &error,
                 "serve-door-tools-egress-passthrough-refused",
-                registration(
-                    "lent",
-                    &lent_server,
-                    "  upstream_credentials: passthrough\n",
-                ),
-                &|app| app,
-            )
-            .await
-            .err()
-            .expect("MCP refuses to forward the caller's credential at registration");
-        crate::root::door_steps::tests::tool_door::assert_member_passthrough_refused(
-            &error,
-            "serve-door-tools-egress-passthrough-refused",
-            "lent",
-        );
-        assert!(
-            wire(&mut lent_heard).is_empty(),
-            "a refused registration sends no upstream HTTP"
-        );
+                "lent",
+            );
+            assert!(
+                wire(&mut lent_heard).is_empty(),
+                "a refused registration sends no upstream HTTP"
+            );
+            super::independent_case_done(TEST, &case);
+            return;
+        }
         let rig = plain_server
             .rig_with_footing(
                 instance,
@@ -5885,6 +5933,7 @@ mod tools_door {
                 "the caller's credential never reaches it"
             );
         }
+        super::independent_case_done(TEST, &case);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

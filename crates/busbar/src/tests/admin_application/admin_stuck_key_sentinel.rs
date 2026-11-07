@@ -160,7 +160,9 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
         .expect("the actual Store governance is present")
         .clone();
     let cache = Arc::new(busbar_core_admin::keys::KeyReplayCache::new());
-    let router = busbar_kernel::build_router(Arc::new(app)).layer(axum::Extension(cache.clone()));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await)
+            .layer(axum::Extension(cache.clone()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

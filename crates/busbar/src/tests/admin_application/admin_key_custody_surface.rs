@@ -306,7 +306,8 @@ async fn test_admin_v1_get_single_key() {
         .expect("actual governance")
         .core_store_handle()
         .unwrap();
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

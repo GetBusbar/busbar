@@ -153,7 +153,9 @@ async fn a_granted_scrape_is_the_actual_sinks_rendering_of_the_snapshot() {
     );
 }
 
-#[tokio::test]
+// SERVE is synchronous while the actual host schedules the refused read on this runtime.
+// Keep a worker available to deliver that refusal, as for the granted crossing above.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_ungranted_actual_sink_cannot_read_the_snapshot() {
     use busbar_contract::export_calls::ServeRequest;
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));

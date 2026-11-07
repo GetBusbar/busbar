@@ -149,7 +149,7 @@ async fn create_and_rotate_operation_namespaces_survive_cache_loss() {
             if let Some(rotate) = rotate {
                 rotate.await;
             }
-            let app = Arc::new(app);
+            let app = crate::root::real_store::hydrated(Arc::new(app)).await;
             let gov = app.governance.as_ref().expect("actual governance").clone();
             let router = busbar_kernel::build_router(app.clone());
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

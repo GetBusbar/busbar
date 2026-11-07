@@ -100,7 +100,8 @@ async fn plain_app() -> Arc<busbar_kernel::state::App> {
 }
 
 async fn hooked_app() -> Arc<busbar_kernel::state::App> {
-    let mut app = (*plain_app().await).clone();
+    let mut owned = plain_app().await;
+    let app = Arc::get_mut(&mut owned).expect("the fixture owns its exact App before publishing");
     let directory = crate::root::test_plugins::scratch(&format!(
         "inbound-close-secret-{}",
         busbar_kernel::door::op_id().counter(),
@@ -138,7 +139,7 @@ async fn hooked_app() -> Arc<busbar_kernel::state::App> {
     app.hook_env = env;
     app.hook_registry = hooks;
     assert_eq!(app.global_gates.len(), 1);
-    Arc::new(app)
+    owned
 }
 
 fn listener(app: Arc<busbar_kernel::state::App>) -> kin::Listener {
@@ -176,7 +177,34 @@ fn listener(app: Arc<busbar_kernel::state::App>) -> kin::Listener {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retiring_or_replacing_a_generation_closes_its_real_hook_outside_the_table_lock() {
-    for replace in [false, true] {
+    const CHILD: &str = "BUSBAR_INBOUND_CLOSE_CASE";
+    let case = match std::env::var(CHILD) {
+        Ok(case) => case,
+        Err(_) => {
+            let exact = std::thread::current().name().unwrap().to_string();
+            for case in ["retire", "replace"] {
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", &exact, "--nocapture"])
+                    .env(CHILD, case)
+                    .output()
+                    .expect("run the independent native hook retirement row");
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                assert!(
+                    output.status.success(),
+                    "{case}: {stdout}\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert!(
+                    stdout.contains(&format!("INBOUND-CLOSE-DONE {case}")),
+                    "the row completed its original assertions: {stdout}"
+                );
+            }
+            return;
+        }
+    };
+    assert!(matches!(case.as_str(), "retire" | "replace"));
+    let replace = case == "replace";
+    {
         *GATE.0.lock().unwrap() = Gate {
             closes: 0,
             release: true,
@@ -189,16 +217,17 @@ async fn retiring_or_replacing_a_generation_closes_its_real_hook_outside_the_tab
             Arc::new(|_| {}),
             Arc::new(|_| {}),
         );
-        inbound
-            .install(OWNER, 1, listener(hooked_app().await))
-            .unwrap();
+        let hooked = hooked_app().await;
+        let mut prior = hooked.clone();
+        inbound.install(OWNER, 1, listener(hooked)).unwrap();
         if !replace {
-            inbound
-                .install(OWNER, 2, listener(plain_app().await))
-                .unwrap();
+            let (plain, _, _) = super::app_generation(false, false, Some(prior)).await;
+            prior = plain.clone();
+            inbound.install(OWNER, 2, listener(plain)).unwrap();
         }
         let generation = if replace { 1 } else { 3 };
-        let next = listener(plain_app().await);
+        let (next, _, _) = super::app_generation(false, false, Some(prior)).await;
+        let next = listener(next);
         let expected = next.specs();
         let release = Release;
         {
@@ -240,4 +269,5 @@ async fn retiring_or_replacing_a_generation_closes_its_real_hook_outside_the_tab
             "one old plugin instance closed"
         );
     }
+    println!("INBOUND-CLOSE-DONE {case}");
 }

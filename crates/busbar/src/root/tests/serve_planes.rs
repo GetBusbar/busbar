@@ -97,7 +97,51 @@ async fn admin(
 
 #[tokio::test]
 async fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
-    let native_money = money().await;
+    crate::dist_root_install::install();
+    let module = busbar_kernel::preflight::root_rows()
+        .stores
+        .first()
+        .expect("the distribution links its actual Store")
+        .0;
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+        "store": {"module": module},
+    }))
+    .expect("the configured plane's application deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the application deployment resolves");
+    let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+        Arc::new(crate::root::door_steps::Rules::default());
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+        config,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+        Some(crate::root::real_store::core().await),
+        false,
+    )
+    .await
+    .expect("the normal application admits its native Store");
+    limits.stage_boot();
+    limits.keep().await.expect("the application limits commit");
+    if let Some(rotate) = rotate {
+        rotate.await;
+    }
+    let app = Arc::new(app);
+    busbar_kernel::boot::hydrate_all(&app)
+        .await
+        .expect("normal startup registers the durable administrative audit stream");
+    let native_money = Arc::new(PlaneMoney::new(
+        app.governance
+            .as_ref()
+            .expect("the admitted application owns governance")
+            .clone(),
+        post() as Arc<dyn EndPost>,
+    ));
     let money = || native_money.clone();
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let instance = "serve-compose-configured";

@@ -569,6 +569,9 @@ async fn the_boot_book_ships_its_records_to_the_configured_store() {
     use busbar_kernel_wal::RecordClass;
     let dir = BookDir::new("ships");
     let fixture = root::durability::tests::NativeFixture::new(7).await;
+    root::kernel::ROOT_CARD
+        .keep_in_store(fixture.core.clone(), 7)
+        .expect("the price owner binds the journal's actual configured CoreStore");
     let token = root::kernel::new_kernel().durability_token();
     let durability = root::boot::compose_book(
         fixture.journal.clone(),
@@ -605,6 +608,9 @@ async fn the_boot_book_ships_its_records_to_the_configured_store() {
 async fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
     let unnamed = BookDir::new("unnamed");
     let fixture = root::durability::tests::NativeFixture::new(7).await;
+    root::kernel::ROOT_CARD
+        .keep_in_store(fixture.core.clone(), 7)
+        .expect("the price owner binds the journal's actual configured CoreStore");
     let token = root::kernel::new_kernel().durability_token();
     let durability = root::boot::compose_book(
         fixture.journal.clone(),

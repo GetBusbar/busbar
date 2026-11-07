@@ -105,38 +105,74 @@ async fn refresh_flag_for(base: &str, site: Option<&str>) -> bool {
 
 #[tokio::test]
 async fn chooser_renders_0_1_n_buttons() {
-    let (base0, h0) = hosted(&[]).await;
-    let body0 = page(&base0).await;
-    assert_eq!(body0.matches("class=\"provider\"").count(), 0);
-    assert!(body0.contains("No browser login"));
+    const CASE: &str = "BUSBAR_HOSTED_CHOOSER_CASE";
+    let case = std::env::var(CASE).ok();
+    if case.is_none() {
+        let module = module_path!()
+            .split_once("::")
+            .expect("mounted test module")
+            .1;
+        let test = format!("{module}::chooser_renders_0_1_n_buttons");
+        for case in ["0", "1", "n"] {
+            let output =
+                std::process::Command::new(std::env::current_exe().expect("test executable"))
+                    .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+                    .env(CASE, case)
+                    .output()
+                    .expect("run one independent hosted deployment in its own product process");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success()
+                    && stdout.contains("running 1 test")
+                    && stdout.contains(&format!("test {test} ..."))
+                    && stdout.contains("1 passed; 0 failed; 0 ignored"),
+                "chooser case {case} failed or did not run once:\n{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        return;
+    }
+    match case.as_deref().expect("child case") {
+        "0" => {
+            let (base0, h0) = hosted(&[]).await;
+            let body0 = page(&base0).await;
+            assert_eq!(body0.matches("class=\"provider\"").count(), 0);
+            assert!(body0.contains("No browser login"));
 
-    let (base1, h1) = hosted(&[("microsoft", true)]).await;
-    let body1 = page(&base1).await;
-    assert_eq!(body1.matches("class=\"provider\"").count(), 1);
-    assert!(body1.contains("/auth/token?method=microsoft"));
+            h0.abort();
+        }
+        "1" => {
+            let (base1, h1) = hosted(&[("microsoft", true)]).await;
+            let body1 = page(&base1).await;
+            assert_eq!(body1.matches("class=\"provider\"").count(), 1);
+            assert!(body1.contains("/auth/token?method=microsoft"));
 
-    let (basen, hn) = hosted(&[
-        ("microsoft", true),
-        ("second-sso", true),
-        ("headless-only", false),
-    ])
-    .await;
-    let bodyn = page(&basen).await;
-    assert_eq!(
-        bodyn.matches("class=\"provider\"").count(),
-        2,
-        "only the two browser_login methods render buttons; the gui-off method is excluded"
-    );
-    assert!(
-        !bodyn.contains("method=headless-only"),
-        "gui-off method not shown"
-    );
+            h1.abort();
+        }
+        "n" => {
+            let (basen, hn) = hosted(&[
+                ("microsoft", true),
+                ("second-sso", true),
+                ("headless-only", false),
+            ])
+            .await;
+            let bodyn = page(&basen).await;
+            assert_eq!(
+                bodyn.matches("class=\"provider\"").count(),
+                2,
+                "only the two browser_login methods render buttons; the gui-off method is excluded"
+            );
+            assert!(
+                !bodyn.contains("method=headless-only"),
+                "gui-off method not shown"
+            );
 
-    assert!(bodyn.contains("https://busbar.example.com"));
-    assert!(!bodyn.contains("https://busbar.example.com/v1"));
-    h0.abort();
-    h1.abort();
-    hn.abort();
+            assert!(bodyn.contains("https://busbar.example.com"));
+            assert!(!bodyn.contains("https://busbar.example.com/v1"));
+            hn.abort();
+        }
+        other => panic!("unknown hosted chooser case: {other}"),
+    }
 }
 
 #[tokio::test]

@@ -168,7 +168,7 @@ async fn proof_role_pool_ceiling_refuses_an_over_ceiling_rotate() {
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let app = Arc::new(app);
+    let app = crate::root::real_store::hydrated(Arc::new(app)).await;
     let gov = app.governance.as_ref().expect("actual governance").clone();
     let router = busbar_kernel::build_router(app.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -393,7 +393,7 @@ async fn proof_role_pool_ceiling_rotates_an_in_ceiling_key() {
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let app = Arc::new(app);
+    let app = crate::root::real_store::hydrated(Arc::new(app)).await;
     let gov = app.governance.as_ref().expect("actual governance").clone();
     let router = busbar_kernel::build_router(app.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -609,7 +609,7 @@ async fn a_past_ceiling_rotate_releases_its_idempotency_claim() {
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let app = Arc::new(app);
+    let app = crate::root::real_store::hydrated(Arc::new(app)).await;
     let router = busbar_kernel::build_router(app.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

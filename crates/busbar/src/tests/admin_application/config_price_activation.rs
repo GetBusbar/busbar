@@ -471,15 +471,61 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
             Some(CANDIDATE_BODY_CAP)
         );
         let confirmed = price_faults.attempts(target_tag);
-        assert!(
-            confirmed.iter().all(|attempt| attempt == &submitted[0]),
-            "every retry uses the same actual key/body"
-        );
-        assert_eq!(confirmed[0].0, submitted[0].0);
-        assert_eq!(confirmed[0].1, submitted[0].1);
+        assert_eq!(confirmed[0], submitted[0]);
+        assert!(confirmed.iter().all(|attempt| attempt.0 == submitted[0].0));
+        if activation {
+            let mut phases: Vec<_> = confirmed
+                .iter()
+                .map(|(_, bytes)| status_phase(bytes))
+                .collect();
+            phases.dedup();
+            assert_eq!(
+                phases,
+                ["activating", "active"],
+                "authorization is durable before final Active publication"
+            );
+            let submissions = price_faults.native_attempts.lock().unwrap().clone();
+            let mut native_phases: Vec<_> = submissions
+                .iter()
+                .map(|(phase, _, _)| phase.clone())
+                .collect();
+            native_phases.dedup();
+            assert_eq!(native_phases, phases);
+            for phase in ["activating", "active"] {
+                let bodies: Vec<_> = confirmed
+                    .iter()
+                    .filter(|(_, bytes)| status_phase(bytes) == phase)
+                    .collect();
+                assert!(!bodies.is_empty());
+                assert!(
+                    bodies.iter().all(|body| *body == bodies[0]),
+                    "retries of {phase} retain their exact key/body"
+                );
+                let native: Vec<_> = submissions
+                    .iter()
+                    .filter(|(actual, _, _)| actual == phase)
+                    .collect();
+                assert!(!native.is_empty());
+                assert!(
+                    native.iter().all(|attempt| *attempt == native[0]),
+                    "retries of {phase} retain their native AttemptId and candidate fingerprint"
+                );
+            }
+            assert_ne!(
+                submissions.first().unwrap().1,
+                submissions.last().unwrap().1,
+                "distinct protocol transitions have distinct immutable native attempts"
+            );
+        } else {
+            assert!(
+                confirmed.iter().all(|attempt| attempt == &submitted[0]),
+                "every preparation retry uses the same actual key/body"
+            );
+        }
+        let durable = confirmed.last().expect("the exact candidate was confirmed");
         assert_eq!(
-            price_faults.read_value(&submitted[0].0).await,
-            Some(submitted[0].1.clone())
+            price_faults.read_value(&durable.0).await,
+            Some(durable.1.clone())
         );
         let entries = book.entries();
         let confirmed_entry = entries
