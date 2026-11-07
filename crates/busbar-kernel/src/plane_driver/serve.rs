@@ -263,7 +263,7 @@ impl ServeTables {
             .map(|()| s),
             Err(e) => Err(e),
         };
-        Some(audited_reply(&table, route, name, &actor, served))
+        Some(audited_reply(&table, route, name, &actor, served).await)
     }
 
     pub async fn answer_public(
@@ -320,11 +320,11 @@ impl ServeTables {
             .map(|()| s),
             Err(e) => Err(e),
         };
-        audited_reply(&table, route, name, &AuthPrincipal(None), served)
+        audited_reply(&table, route, name, &AuthPrincipal(None), served).await
     }
 }
 
-fn audited_reply(
+async fn audited_reply(
     table: &ServeTable,
     route: &ServeRoute,
     name: &str,
@@ -341,12 +341,17 @@ fn audited_reply(
         _ => None,
     };
     if let Some(outcome) = outcome.filter(|_| !route.audit_verb.is_empty()) {
-        crate::audit_ring::AUDIT.record_by(
+        if let Err(error) = crate::audit::auditlog::emit_admin_hostless_confirmed(
             &format!("{}.{}", table.audit_kind, route.audit_verb),
             &format!("{}:{name}", table.audit_kind),
             outcome,
             actor.actor_id(),
-        );
+        )
+        .await
+        {
+            tracing::warn!(%error, "the served route's audit record is not confirmed");
+            return status_only(503);
+        }
     }
     reply(&s).unwrap_or_else(|unserved| status_only(unserved.status()))
 }

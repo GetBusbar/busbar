@@ -40,6 +40,26 @@ fn event(operation: u8, action: &str) -> PendingAudit {
 }
 
 #[tokio::test]
+async fn native_full_queue_refuses_the_new_event_and_preserves_the_accepted_original() {
+    let (_, _, native, log) = fixture().await;
+    let queue = PendingAuditQueue::new(1);
+    queue.try_enqueue(event(1, "accepted")).unwrap();
+    let refused = queue.try_enqueue(event(2, "retry")).unwrap_err();
+    assert!(refused.to_string().contains("queue is full"));
+    assert_eq!(queue.len(), 1);
+    drain_native(&queue, &log, native.clone()).await.unwrap();
+    let rows = log.list_filtered(0, 10, None, None);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].action, "accepted");
+    queue.try_enqueue(event(2, "retry")).unwrap();
+    drain_native(&queue, &log, native).await.unwrap();
+    let rows = log.list_filtered(0, 10, None, None);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].action, "retry");
+    assert_eq!(rows[0].prev_hash, rows[1].hash);
+}
+
+#[tokio::test]
 async fn native_unknown_original_is_not_published_until_its_exact_applied_replay() {
     let (backend, _, native, log) = fixture().await;
     let queue = PendingAuditQueue::new(4);
