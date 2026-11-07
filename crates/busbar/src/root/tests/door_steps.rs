@@ -1,4 +1,57 @@
 // SPDX-License-Identifier: Apache-2.0
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
+fn isolated_fixture_cases(test: &str, cases: &[&str]) -> Option<String> {
+    if std::env::var("BUSBAR_DOOR_STEPS_ISOLATED_TEST").as_deref() == Ok(test) {
+        let case = std::env::var("BUSBAR_DOOR_STEPS_ISOLATED_CASE").unwrap();
+        assert!(cases.contains(&case.as_str()));
+        return Some(case);
+    }
+    let exact = test.split_once("::").unwrap().1;
+    for case in cases {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", exact, "--nocapture"])
+            .env("BUSBAR_DOOR_STEPS_ISOLATED_TEST", test)
+            .env("BUSBAR_DOOR_STEPS_ISOLATED_CASE", case)
+            .output()
+            .expect("run this exact independent native fixture case");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{case}: {stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            stdout.contains(&format!("DOOR-STEPS-CASE-DONE {test} {case}")),
+            "every subcase must complete its assertions: {stdout}"
+        );
+    }
+    None
+}
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
+fn isolated_fixture_done(test: &str, case: &str) {
+    println!("DOOR-STEPS-CASE-DONE {test} {case}");
+}
+
+async fn boot_fixture_prices(app: &busbar_kernel::state::App) {
+    let store = app
+        .governance
+        .as_ref()
+        .expect("native fixture governance")
+        .core_store_handle()
+        .expect("native fixture authority");
+    if let Some(previous) = crate::root::kernel::ROOT_CARD.card_store() {
+        assert!(previous.is_bound_to(&store), "independent native deployments require separate fixture processes; never reuse another Store's price holder");
+        return;
+    }
+    crate::root::kernel::ROOT_CARD
+        .keep_in_store(store, busbar_kernel::door::op_id().counter())
+        .expect("bind this deployment's actual native price Store");
+    crate::root::kernel::ROOT_CARD
+        .boot_in_store(None)
+        .await
+        .expect("confirm native opening prices before committing limits");
+}
+
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::abi::plane::{ROUTE_DIRECT, ROUTE_POOL};
@@ -105,6 +158,7 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
         .await
         .expect("the actual root builds the door generation");
         limits.stage_boot();
+        crate::root::door_steps::tests::boot_fixture_prices(&app).await;
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -156,6 +210,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
     let mut facts = super::door_facts("p", &[], &["frames", "seconds"], &[], "a", Vec::new());
     facts.route_cost = vec![(0, 2.5), (1, 0.0), (0, 1.0)];
     let p = pools("a: {}");
+    let generation_store = crate::root::real_store::core().await;
     let app = async |price| {
         let entry = RateEntryCfg {
             units: BTreeMap::from([
@@ -205,7 +260,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
                 .expect("the door deployment resolves");
             let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
                 as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-            let opened = crate::root::real_store::core().await;
+            let opened = generation_store.clone();
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
                 cfg,
                 crate::root::test_plugins::trusted_config_with_key(
@@ -224,6 +279,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
             .await
             .expect("the actual root builds the door generation");
             limits.stage_boot();
+            crate::root::door_steps::tests::boot_fixture_prices(&app).await;
             limits.keep().await.expect("the product limits commit");
             if let Some(rotate) = rotate {
                 rotate.await;
@@ -320,7 +376,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
             .expect("the door deployment resolves");
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let opened = crate::root::real_store::core().await;
+        let opened = generation_store.clone();
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             cfg,
             crate::root::test_plugins::trusted_config_with_key(
@@ -339,6 +395,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
         .await
         .expect("the actual root builds the door generation");
         limits.stage_boot();
+        crate::root::door_steps::tests::boot_fixture_prices(&app).await;
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -885,6 +942,7 @@ async fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() 
         .await
         .expect("the actual root builds the door generation");
         limits.stage_boot();
+        crate::root::door_steps::tests::boot_fixture_prices(&app).await;
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -1048,7 +1106,9 @@ async fn downgrade_book(
         cfg.groups = groups.clone();
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let opened = crate::root::real_store::core().await;
+        let opened = gov
+            .core_store_handle()
+            .expect("the generation keeps its native governance authority");
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             cfg,
             crate::root::test_plugins::trusted_config_with_key(
@@ -1067,6 +1127,7 @@ async fn downgrade_book(
         .await
         .expect("the actual root builds the door generation");
         limits.stage_boot();
+        crate::root::door_steps::tests::boot_fixture_prices(&app).await;
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -3739,9 +3800,20 @@ pub(crate) mod tool_door {
             )
             .await
             .expect("native node journal opens");
-            let book = crate::root::durability::node_book(journal, journal_budget)
+            let mut book = crate::root::durability::node_book(journal, journal_budget)
                 .await
                 .expect("native node book opens");
+            let durability_token = crate::root::kernel::new_kernel().durability_token();
+            Arc::get_mut(&mut book.durability)
+                .expect("bootstrap owns its native book")
+                .get_mut()
+                .unwrap()
+                .restore_amendments(gov.amendments(), &durability_token)
+                .await
+                .expect("restore this fixture's native amendment journal");
+            crate::root::durability::bind_amendments(&book.durability, gov.amendments())
+                .await
+                .expect("bind content handoffs to this same native journal");
             node.bind_book(Arc::clone(&book.durability));
             let post = Arc::new(NodeEndPost::new(Arc::clone(&node)));
             let site = Arc::clone(&post);
@@ -3872,7 +3944,9 @@ pub(crate) mod tool_door {
                 }
                 let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
                     as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-                let opened = crate::root::real_store::core().await;
+                let opened = gov
+                    .core_store_handle()
+                    .expect("the generation keeps its native governance authority");
                 let (app, rotate, limits) =
                     busbar_kernel::appbuild::build_app_from_config_with_store(
                         cfg,
@@ -3892,6 +3966,7 @@ pub(crate) mod tool_door {
                     .await
                     .expect("the actual root builds the door generation");
                 limits.stage_boot();
+                crate::root::door_steps::tests::boot_fixture_prices(&app).await;
                 limits.keep().await.expect("the product limits commit");
                 if let Some(rotate) = rotate {
                     rotate.await;
@@ -3934,6 +4009,7 @@ pub(crate) mod tool_door {
                 )
                 .expect("the actual root constructs the keys middleware"),
             );
+            app.amendments = Arc::clone(gov.amendments());
             app.governance = Some(Arc::clone(&gov));
             app.serve_tables = tables.clone();
             app.cost = Arc::new(CostModel::flat(1));
@@ -4936,6 +5012,13 @@ pub(crate) mod tool_door {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_token_exchange_registration_presents_the_token_exchanged_for_the_callers_down_scope()
     {
+        const EXACT: &str = concat!(module_path!(), "::a_token_exchange_registration_presents_the_token_exchanged_for_the_callers_down_scope");
+        let Some(case) = crate::root::door_steps::tests::isolated_fixture_cases(
+            EXACT,
+            &["door-exchange-granted", "door-exchange-wildcard"],
+        ) else {
+            return;
+        };
         let _one = PUBLISHING.lock().await;
         std::env::set_var(SUBJECT_VAR, "busbar-own-subject-token");
         let granted: &[(&str, &str)] = &[
@@ -4952,6 +5035,9 @@ pub(crate) mod tool_door {
             ),
             ("door-exchange-wildcard", None, "fs_read_file"),
         ] {
+            if case != instance {
+                continue;
+            }
             let mut server =
                 TlsToolServer::listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
             let port = server.port;
@@ -5024,11 +5110,22 @@ pub(crate) mod tool_door {
             }
             assert!(rig.all_ended(), "every unit ended");
             server.close().await;
+            crate::root::door_steps::tests::isolated_fixture_done(EXACT, &case);
         }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tool_pool_fails_over_through_the_one_walk_and_repeats_only_what_it_names() {
+        const EXACT: &str = concat!(
+            module_path!(),
+            "::a_tool_pool_fails_over_through_the_one_walk_and_repeats_only_what_it_names"
+        );
+        let Some(case) = crate::root::door_steps::tests::isolated_fixture_cases(
+            EXACT,
+            &["repeatable", "single"],
+        ) else {
+            return;
+        };
         let _one = PUBLISHING.lock().await;
         let listing = || {
             serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}})
@@ -5054,6 +5151,9 @@ pub(crate) mod tool_door {
         };
         let instance = "door-tool-pool";
         for (repeatable, twin_answers) in [("read_file", true), ("", false)] {
+            if case != if twin_answers { "repeatable" } else { "single" } {
+                continue;
+            }
             let mut bad = TlsToolServer::replying(Arc::new(move |r: &str| {
                 if r.contains("\"tools/list\"") {
                     (200, listing())
@@ -5087,11 +5187,22 @@ pub(crate) mod tool_door {
             assert!(rig.all_ended(), "the unit ended inside itself");
             bad.close().await;
             good.close().await;
+            crate::root::door_steps::tests::isolated_fixture_done(EXACT, &case);
         }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn verify_on_call_judges_the_live_list_reuses_a_fresh_look_and_fails_closed() {
+        const EXACT: &str = concat!(
+            module_path!(),
+            "::verify_on_call_judges_the_live_list_reuses_a_fresh_look_and_fails_closed"
+        );
+        let Some(case) = crate::root::door_steps::tests::isolated_fixture_cases(
+            EXACT,
+            &["cached", "drift", "unavailable"],
+        ) else {
+            return;
+        };
         let _one = PUBLISHING.lock().await;
         let tools = |server: &TlsToolServer, ttl: &str| {
             let mut value = server.section();
@@ -5113,58 +5224,67 @@ pub(crate) mod tool_door {
         };
 
         let instance = "door-verify-on-call";
-        let mut server = TlsToolServer::new().await;
-        let rig = server.rig(instance, tools(&server, "1h"), &|app| app).await;
-        let heard = &mut server.heard;
-        for _ in 0..2 {
-            let (status, body) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
-            assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        if case == "cached" {
+            let mut server = TlsToolServer::new().await;
+            let rig = server.rig(instance, tools(&server, "1h"), &|app| app).await;
+            let heard = &mut server.heard;
+            for _ in 0..2 {
+                let (status, body) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
+                assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+            }
+            assert_eq!(
+                drain(heard),
+                vec!["list", "call", "call"],
+                "one fetch, two calls"
+            );
+            drop(rig);
+            server.close().await;
+            crate::root::door_steps::tests::isolated_fixture_done(EXACT, &case);
         }
-        assert_eq!(
-            drain(heard),
-            vec!["list", "call", "call"],
-            "one fetch, two calls"
-        );
-        drop(rig);
-        server.close().await;
 
-        let listed = Arc::new(std::sync::Mutex::new(tool_listing()));
-        let mut server = TlsToolServer::listing(Arc::clone(&listed)).await;
-        let rig = server.rig(instance, tools(&server, "0s"), &|app| app).await;
-        let heard = &mut server.heard;
-        let (status, _) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
-        assert_eq!(
-            status,
-            StatusCode::OK,
-            "the control: the approved list serves"
-        );
-        *listed.lock().expect("the list") = serde_json::json!([
-            {"name": "read_file", "description": TOOL_DESCRIPTION,
-             "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "exfil": {"type": "string"}}}}
-        ]);
-        let (status, body) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
-        assert_eq!(status.as_u16(), 403, "{}", String::from_utf8_lossy(&body));
-        let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
-        assert_eq!(body["error"]["data"]["reason"], "quarantined", "{body}");
-        assert_eq!(
-            drain(heard),
-            vec!["list", "call", "list"],
-            "the drifted call was refused before it was sent"
-        );
-        drop(rig);
-        server.close().await;
+        if case == "drift" {
+            let listed = Arc::new(std::sync::Mutex::new(tool_listing()));
+            let mut server = TlsToolServer::listing(Arc::clone(&listed)).await;
+            let rig = server.rig(instance, tools(&server, "0s"), &|app| app).await;
+            let heard = &mut server.heard;
+            let (status, _) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "the control: the approved list serves"
+            );
+            *listed.lock().expect("the list") = serde_json::json!([
+                {"name": "read_file", "description": TOOL_DESCRIPTION,
+                 "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "exfil": {"type": "string"}}}}
+            ]);
+            let (status, body) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
+            assert_eq!(status.as_u16(), 403, "{}", String::from_utf8_lossy(&body));
+            let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
+            assert_eq!(body["error"]["data"]["reason"], "quarantined", "{body}");
+            assert_eq!(
+                drain(heard),
+                vec!["list", "call", "list"],
+                "the drifted call was refused before it was sent"
+            );
+            drop(rig);
+            server.close().await;
+            crate::root::door_steps::tests::isolated_fixture_done(EXACT, &case);
+        }
 
-        let server = TlsToolServer::new().await;
-        let rig = server.rig(instance, tools(&server, "0s"), &|app| app).await;
-        server.close().await;
-        let (status, body) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
-        assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&body));
-        let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
-        assert_eq!(
-            body["result"]["isError"], true,
-            "an upstream failure: {body}"
-        );
-        assert!(rig.all_ended(), "the refused unit ended");
+        if case == "unavailable" {
+            let server = TlsToolServer::new().await;
+            let rig = server.rig(instance, tools(&server, "0s"), &|app| app).await;
+            server.close().await;
+            let (status, body) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
+            assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&body));
+            let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
+            assert_eq!(
+                body["result"]["isError"], true,
+                "an upstream failure: {body}"
+            );
+            assert!(rig.all_ended(), "the refused unit ended");
+            crate::root::door_steps::tests::isolated_fixture_done(EXACT, &case);
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -8047,29 +8167,42 @@ pub(crate) mod hook_parity {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tools_hooks_reject_all_rejects_a_tools_call() {
+        const EXACT: &str = concat!(
+            module_path!(),
+            "::tools_hooks_reject_all_rejects_a_tools_call"
+        );
+        let Some(case) =
+            crate::root::door_steps::tests::isolated_fixture_cases(EXACT, &["control", "gated"])
+        else {
+            return;
+        };
         let _one = PUBLISHING.lock().await;
         let instance = "door-hook-reject-all";
         let body = call(serde_json::json!({ "path": "/etc/hosts" }));
 
         let mut server = TlsToolServer::new().await;
-        let control = rig(instance, &server, Vec::new()).await;
-        let (status, answer) = send_as(
-            &control.router,
-            Some(&control.bound_token()),
-            &body,
-            "tools/call",
-            Some("fs_read_file"),
-        )
-        .await;
-        assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&answer));
-        assert_eq!(
-            calls_heard(&mut server.heard).len(),
-            1,
-            "the control reached the server"
-        );
-        drop(control);
+        if case == "control" {
+            let control = rig(instance, &server, Vec::new()).await;
+            let (status, answer) = send_as(
+                &control.router,
+                Some(&control.bound_token()),
+                &body,
+                "tools/call",
+                Some("fs_read_file"),
+            )
+            .await;
+            assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&answer));
+            assert_eq!(
+                calls_heard(&mut server.heard).len(),
+                1,
+                "the control reached the server"
+            );
+            drop(control);
+            crate::root::door_steps::tests::isolated_fixture_done(EXACT, &case);
+        }
 
-        let gated = rig(
+        if case == "gated" {
+            let gated = rig(
             instance,
             &server,
             vec![(
@@ -8082,24 +8215,26 @@ pub(crate) mod hook_parity {
                 ),
             )],
         ).await;
-        let (status, answer) = send_as(
-            &gated.router,
-            Some(&gated.bound_token()),
-            &body,
-            "tools/call",
-            Some("fs_read_file"),
-        )
-        .await;
-        assert_eq!(status.as_u16(), 403, "{}", String::from_utf8_lossy(&answer));
-        let answer: serde_json::Value = serde_json::from_slice(&answer).expect("JSON-RPC");
-        assert_eq!(
-            answer["error"]["message"], "no tool calls today",
-            "{answer}"
-        );
-        assert!(
-            calls_heard(&mut server.heard).is_empty(),
-            "a gate that rejects after the call went out stopped nothing"
-        );
+            let (status, answer) = send_as(
+                &gated.router,
+                Some(&gated.bound_token()),
+                &body,
+                "tools/call",
+                Some("fs_read_file"),
+            )
+            .await;
+            assert_eq!(status.as_u16(), 403, "{}", String::from_utf8_lossy(&answer));
+            let answer: serde_json::Value = serde_json::from_slice(&answer).expect("JSON-RPC");
+            assert_eq!(
+                answer["error"]["message"], "no tool calls today",
+                "{answer}"
+            );
+            assert!(
+                calls_heard(&mut server.heard).is_empty(),
+                "a gate that rejects after the call went out stopped nothing"
+            );
+            crate::root::door_steps::tests::isolated_fixture_done(EXACT, &case);
+        }
         server.close().await;
     }
 
@@ -8243,65 +8378,81 @@ pub(crate) mod hook_parity {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn rewrite_failure_outcomes_preserve_the_body_or_refuse_before_the_tool_hop() {
+        const EXACT: &str = concat!(
+            module_path!(),
+            "::rewrite_failure_outcomes_preserve_the_body_or_refuse_before_the_tool_hop"
+        );
+        let Some(case) = crate::root::door_steps::tests::isolated_fixture_cases(
+            EXACT,
+            &["optional", "required"],
+        ) else {
+            return;
+        };
         let _one = PUBLISHING.lock().await;
         let instance = "door-hook-failure-dispositions";
         let body = call(serde_json::json!({ "path": "/etc/hosts" }));
         let mut server = TlsToolServer::new().await;
-        let weighted = rig(
-            instance,
-            &server,
-            vec![(
-                "optional-outcome",
-                // A real target error makes the actual webrequest operation fail;
-                // its optional disposition must preserve the original request.
-                gate("rw", serde_json::json!({ "http_status": 503 })),
-            )],
-        )
-        .await;
-        let (status, answer) = send_as(
-            &weighted.router,
-            Some(&weighted.bound_token()),
-            &body,
-            "tools/call",
-            Some("fs_read_file"),
-        )
-        .await;
-        assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&answer));
-        let wire = calls_heard(&mut server.heard);
-        assert!(
-            wire.len() == 1 && wire[0].contains("/etc/hosts"),
-            "served with the caller's original arguments: {wire:?}"
-        );
-        drop(weighted);
+        if case == "optional" {
+            let weighted = rig(
+                instance,
+                &server,
+                vec![(
+                    "optional-outcome",
+                    // A real target error makes the actual webrequest operation fail;
+                    // its optional disposition must preserve the original request.
+                    gate("rw", serde_json::json!({ "http_status": 503 })),
+                )],
+            )
+            .await;
+            let (status, answer) = send_as(
+                &weighted.router,
+                Some(&weighted.bound_token()),
+                &body,
+                "tools/call",
+                Some("fs_read_file"),
+            )
+            .await;
+            assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&answer));
+            let wire = calls_heard(&mut server.heard);
+            assert!(
+                wire.len() == 1 && wire[0].contains("/etc/hosts"),
+                "served with the caller's original arguments: {wire:?}"
+            );
+            drop(weighted);
+            crate::root::door_steps::tests::isolated_fixture_done(EXACT, &case);
+        }
 
-        let mut required = gate("rw", serde_json::json!({ "http_status": 503 }));
-        required.on_error =
-            serde_json::from_value(serde_json::json!("reject")).expect("an on_error disposition");
-        let required = rig(instance, &server, vec![("required-outcome", required)]).await;
-        let (status, body) = send_as(
-            &required.router,
-            Some(&required.bound_token()),
-            &body,
-            "tools/call",
-            Some("fs_read_file"),
-        )
-        .await;
-        assert_eq!(
-            status.as_u16(),
-            busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
-            "the required-hook failure outcome refuses the call: {}",
-            String::from_utf8_lossy(&body)
-        );
-        let answer: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
-        assert_eq!(
-            answer["error"]["message"],
-            busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
-            "the content-free refusal reaches the caller: {answer}",
-        );
-        assert!(
-            calls_heard(&mut server.heard).is_empty(),
-            "nothing was dispatched"
-        );
+        if case == "required" {
+            let mut required = gate("rw", serde_json::json!({ "http_status": 503 }));
+            required.on_error = serde_json::from_value(serde_json::json!("reject"))
+                .expect("an on_error disposition");
+            let required = rig(instance, &server, vec![("required-outcome", required)]).await;
+            let (status, body) = send_as(
+                &required.router,
+                Some(&required.bound_token()),
+                &body,
+                "tools/call",
+                Some("fs_read_file"),
+            )
+            .await;
+            assert_eq!(
+                status.as_u16(),
+                busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+                "the required-hook failure outcome refuses the call: {}",
+                String::from_utf8_lossy(&body)
+            );
+            let answer: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
+            assert_eq!(
+                answer["error"]["message"],
+                busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
+                "the content-free refusal reaches the caller: {answer}",
+            );
+            assert!(
+                calls_heard(&mut server.heard).is_empty(),
+                "nothing was dispatched"
+            );
+            crate::root::door_steps::tests::isolated_fixture_done(EXACT, &case);
+        }
         server.close().await;
     }
 }
@@ -10015,6 +10166,7 @@ async fn the_configured_error_body_cap_reaches_both_egress_constructors() {
             .await
             .expect("the actual root builds the door generation");
             limits.stage_boot();
+            crate::root::door_steps::tests::boot_fixture_prices(&app).await;
             limits.keep().await.expect("the product limits commit");
             if let Some(rotate) = rotate {
                 rotate.await;
@@ -10239,6 +10391,7 @@ async fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_
                     .await
                     .expect("the actual root builds the door generation");
                 limits.stage_boot();
+                crate::root::door_steps::tests::boot_fixture_prices(&app).await;
                 limits.keep().await.expect("the product limits commit");
                 if let Some(rotate) = rotate {
                     rotate.await;
@@ -10601,7 +10754,9 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
         cfg.groups = groups.clone();
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let opened = crate::root::real_store::core().await;
+        let opened = gov
+            .core_store_handle()
+            .expect("the generation keeps its native governance authority");
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             cfg,
             crate::root::test_plugins::trusted_config_with_key(
@@ -10620,6 +10775,7 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
         .await
         .expect("the actual root builds the door generation");
         limits.stage_boot();
+        crate::root::door_steps::tests::boot_fixture_prices(&app).await;
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -10761,6 +10917,7 @@ async fn asking_whether_a_name_is_configured_allocates_nothing() {
         .await
         .expect("the actual root builds the door generation");
         limits.stage_boot();
+        crate::root::door_steps::tests::boot_fixture_prices(&app).await;
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
