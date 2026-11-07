@@ -77,9 +77,10 @@ async fn the_scan_catches_a_source_spliced_into_a_real_door_render() {
         module_path!(),
         "::the_scan_catches_a_source_spliced_into_a_real_door_render"
     );
-    let Some(case) =
-        crate::root::door_steps::isolated_fixture_cases(TEST, &["tools-red-env", "tools-red-file"])
-    else {
+    let Some(case) = crate::root::door_steps::tests::isolated_fixture_cases(
+        TEST,
+        &["tools-red-env", "tools-red-file"],
+    ) else {
         return;
     };
     let _one = PUBLISHING.lock().await;
@@ -114,5 +115,5 @@ async fn the_scan_catches_a_source_spliced_into_a_real_door_render() {
             "{instance}: the cell every door runs must fail on a render that carries {found:?}"
         );
     }
-    crate::root::door_steps::isolated_fixture_done(TEST, &case);
+    crate::root::door_steps::tests::isolated_fixture_done(TEST, &case);
 }
