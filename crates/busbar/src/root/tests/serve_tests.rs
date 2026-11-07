@@ -2482,6 +2482,9 @@ pub(super) mod session_door {
         app.serve_tables = tables.clone();
         app.plugin_routes = super::metrics_routes();
         let app = std::sync::Arc::new(app);
+        busbar_kernel::boot::hydrate_all(&app).await.expect(
+            "normal startup restores the session deployment's native audit owner before serving",
+        );
 
         let upgrades = crate::root::serve::upgrade_carriers(crate::LINKED.transports, &[]);
         let mut offers = crate::root::serve::transport_offers(crate::LINKED.transports, &[]);
