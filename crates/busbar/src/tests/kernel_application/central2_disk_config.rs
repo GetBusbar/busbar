@@ -112,18 +112,18 @@ fn load_config_from_disk_refuses_a_real_legacy_config_file_loudly() {
 
     let err = match result {
         Ok(_) => panic!(
-            "a REAL 1.x config file on disk must be REFUSED at the real boot entry point \
-             (load_config_from_disk), not silently loaded under 1.5.0 semantics"
+            "an authored historical document whose normalization refuses must not be \
+             silently interpreted as current configuration by the real boot entry point"
         ),
         Err(e) => e,
     };
     assert!(
-        err.contains("busbar --migrate-config"),
-        "the boot-time refusal must name the migrator: {err}"
+        err.contains("supported configuration normalization refused the authored document"),
+        "the real boot entry point must report the historical normalization refusal: {err}"
     );
     assert!(
-        err.contains("1.x"),
-        "the boot-time refusal must name the version family: {err}"
+        std::fs::read_to_string(&config_path).unwrap() == BOOT_LEGACY_14X_CONFIG,
+        "a refused normalization must retain every original authored byte"
     );
 
     std::fs::remove_dir_all(&dir).ok();
