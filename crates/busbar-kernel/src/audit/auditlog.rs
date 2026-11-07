@@ -380,6 +380,98 @@ impl PlaneAuditLog {
 
 const MAX_PENDING_AUDIT: usize = 256;
 
+/// Confirmation observers for one administrative execution, independent of queue custody.
+#[derive(Default)]
+pub struct AuditRequest {
+    confirmations: Mutex<Vec<Arc<AtomicBool>>>,
+    failed: AtomicBool,
+}
+
+tokio::task_local! {
+    static AUDIT_REQUEST: Arc<AuditRequest>;
+}
+
+/// Capture the current request when an existing owner transfers execution to another task.
+pub fn current_request() -> Option<Arc<AuditRequest>> {
+    AUDIT_REQUEST.try_with(Arc::clone).ok()
+}
+
+/// Carry the same audit observers across an owned asynchronous execution.
+pub async fn scope_request<F: std::future::Future>(
+    request: Option<Arc<AuditRequest>>,
+    future: F,
+) -> F::Output {
+    match request {
+        Some(request) => AUDIT_REQUEST.scope(request, future).await,
+        None => future.await,
+    }
+}
+
+/// Carry the same observers onto an existing blocking worker.
+pub fn scope_request_sync<T>(request: Option<Arc<AuditRequest>>, work: impl FnOnce() -> T) -> T {
+    match request {
+        Some(request) => AUDIT_REQUEST.sync_scope(request, work),
+        None => work(),
+    }
+}
+
+fn request_failed() {
+    if let Some(request) = current_request() {
+        request.failed.store(true, Ordering::Release);
+    }
+}
+
+fn request_confirmation() -> Option<Arc<AtomicBool>> {
+    let request = current_request()?;
+    let mut confirmations = request
+        .confirmations
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if confirmations.len() >= MAX_PENDING_AUDIT {
+        request.failed.store(true, Ordering::Release);
+        return None;
+    }
+    let confirmation = Arc::new(AtomicBool::new(false));
+    confirmations.push(confirmation.clone());
+    Some(confirmation)
+}
+
+/// Run one request and confirm its exact emitted events before publishing the result.
+/// Cancellation drops only observers: queued originals retain their native replay custody.
+pub async fn confirmed_request<F: std::future::Future>(
+    future: F,
+) -> (F::Output, RecordStoreResult<()>) {
+    let request = Arc::new(AuditRequest::default());
+    let result = scope_request(Some(request.clone()), future).await;
+    let confirmations = request
+        .confirmations
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    let confirmed = || {
+        confirmations
+            .iter()
+            .all(|event| event.load(Ordering::Acquire))
+    };
+    let drained = if confirmed() {
+        Ok(())
+    } else {
+        flush_pending().await
+    };
+    let publication = if request.failed.load(Ordering::Acquire) {
+        Err(RecordStoreError(
+            "request audit enqueue was not confirmed".into(),
+        ))
+    } else if confirmed() {
+        Ok(())
+    } else {
+        drained.and(Err(RecordStoreError(
+            "request audit publication remains unconfirmed".into(),
+        )))
+    };
+    (result, publication)
+}
+
 /// One admin-audit mutation waiting for its durable write. `scope` plus the
 /// already pre-framed `suffix` are everything a retry needs to replay the write byte-identically to
 /// what would have been sent the first time — nothing is re-derived, so a recovered record is
@@ -415,6 +507,8 @@ struct PendingAudit {
     operation: [u8; 16],
     /// Exact source envelope survives unknown outcomes and cancelled drains.
     prepared: Option<PreparedAudit>,
+    /// Observers never own, cancel or replace this queued original.
+    confirmation: Option<Arc<AtomicBool>>,
 }
 
 struct PendingAuditQueue {
@@ -467,6 +561,7 @@ impl PendingAuditQueue {
     fn try_enqueue(&self, p: PendingAudit) -> RecordStoreResult<()> {
         let mut q = self.rows.lock().unwrap_or_else(|e| e.into_inner());
         if q.queued.len() >= self.cap {
+            request_failed();
             return Err(RecordStoreError(
                 "the admin audit recovery queue is full".into(),
             ));
@@ -476,6 +571,7 @@ impl PendingAuditQueue {
     }
 
     fn record_gap(&self) {
+        request_failed();
         let dropped_total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
         crate::diagnostics::diag_error!(
             crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
@@ -558,14 +654,17 @@ fn pending_audit(
     origin: EventOrigin,
 ) -> RecordStoreResult<PendingAudit> {
     let mut operation = [0; 16];
-    getrandom::fill(&mut operation)
-        .map_err(|error| RecordStoreError(format!("admin audit operation entropy: {error}")))?;
+    getrandom::fill(&mut operation).map_err(|error| {
+        request_failed();
+        RecordStoreError(format!("admin audit operation entropy: {error}"))
+    })?;
     Ok(PendingAudit {
         scope: scope.to_string(),
         suffix,
         origin,
         operation,
         prepared: None,
+        confirmation: request_confirmation(),
     })
 }
 
@@ -1353,6 +1452,9 @@ async fn drain_native(
                 ));
             }
             held.queued.pop_front();
+        }
+        if let Some(confirmation) = &pending.confirmation {
+            confirmation.store(true, Ordering::Release);
         }
     }
 }

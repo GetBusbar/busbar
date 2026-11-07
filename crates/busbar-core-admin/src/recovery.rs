@@ -223,7 +223,12 @@ pub(crate) async fn resolve(
         backend_quiesced: request.backend_quiesced,
     };
 
-    match tokio::spawn(async move { governance.recovery().resolve(&cost, resolution).await }).await
+    let audit_request = busbar_kernel::audit::auditlog::current_request();
+    match tokio::spawn(busbar_kernel::audit::auditlog::scope_request(
+        audit_request,
+        async move { governance.recovery().resolve(&cost, resolution).await },
+    ))
+    .await
     {
         Ok(Ok(item)) => ok_json(StatusCode::OK, &ItemView::from(item)),
         Ok(Err(error)) => recovery_error(error),
