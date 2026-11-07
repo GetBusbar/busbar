@@ -479,13 +479,13 @@ impl<'a> History<'a> {
         }
         candidate(&decoded)?.ok_or_else(|| invalid("selected frame is not a recovery candidate"))
     }
-    async fn finish(self) -> Result<(), RecoveryError> {
+    async fn finish(&self) -> Result<(), RecoveryError> {
         let mut predicates = Vec::new();
-        for (node, proof) in self.proofs {
+        for (node, proof) in &self.proofs {
             predicates.extend(
-                StoreJournal::new(self.store, node)
+                StoreJournal::new(self.store, *node)
                     .map_err(unavailable)?
-                    .selected_predicates(&proof)
+                    .selected_predicates(proof)
                     .map_err(unavailable)?,
             );
         }
@@ -645,6 +645,12 @@ impl StoreRecovery {
     }
     async fn owned(&self) -> Result<Arc<VerifiedHead>, RecoveryError> {
         let mut history = History::new(&self.store);
+        self.owned_with_history(&mut history).await
+    }
+    async fn owned_with_history(
+        &self,
+        history: &mut History<'_>,
+    ) -> Result<Arc<VerifiedHead>, RecoveryError> {
         let proof = history.proof(self.node).await?;
         StoreJournal::new(&self.store, self.node)
             .map_err(unavailable)?
@@ -654,8 +660,15 @@ impl StoreRecovery {
         Ok(proof)
     }
     async fn verify_origin_at(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
-        let local = self.owned().await?;
         let mut history = History::new(&self.store);
+        self.verify_origin_with_history(event, &mut history).await
+    }
+    async fn verify_origin_with_history(
+        &self,
+        event: &RecoveryEvent,
+        history: &mut History<'_>,
+    ) -> Result<(), RecoveryError> {
+        let local = self.owned_with_history(history).await?;
         let current = head(&self.store, &event.operation_id).await?;
         let initial = match &current {
             Some((tip, _)) => {
@@ -718,6 +731,15 @@ impl StoreRecovery {
         owned: bool,
     ) -> Result<(), RecoveryError> {
         let mut history = History::new(&self.store);
+        self.verify_checkpoint_with_history(event, owned, &mut history)
+            .await
+    }
+    async fn verify_checkpoint_with_history(
+        &self,
+        event: &RecoveryEvent,
+        owned: bool,
+        history: &mut History<'_>,
+    ) -> Result<(), RecoveryError> {
         let (tip, raw) = head(&self.store, &event.operation_id)
             .await?
             .ok_or_else(|| invalid("checkpoint has no selected operation"))?;
@@ -741,10 +763,10 @@ impl StoreRecovery {
                 "checkpoint is outside current selected ancestry".into(),
             ));
         }
-        self.verify_origin_at(event).await?;
+        self.verify_origin_with_history(event, history).await?;
         history.finish().await?;
         {
-            let proof = self.owned().await?;
+            let proof = self.owned_with_history(history).await?;
             check(
                 &self.store,
                 StoreJournal::new(&self.store, self.node)
@@ -835,6 +857,9 @@ impl StoreRecovery {
             }
             saved
         } else {
+            // One preflight attempt shares immutable evidence only until the
+            // staging boundary; every use still confirms live native guards.
+            let mut history = History::new(&self.store);
             let current = head(&self.store, &event.operation_id).await?;
             let selected = if let Some((tip, _)) = &current {
                 if tip.node != self.node {
@@ -842,17 +867,23 @@ impl StoreRecovery {
                         "recovery operation belongs to another node".into(),
                     ));
                 }
-                Some(self.selection(&event.operation_id, tip).await?)
+                let selected = history
+                    .selection(&event.operation_id, tip, |_, _| Ok(()))
+                    .await?;
+                history.finish().await?;
+                Some(selected)
             } else {
                 None
             };
             if selected.as_ref().is_some_and(|s| s.selected == *event) {
-                self.verify_checkpoint_at(event, true).await?;
+                self.verify_checkpoint_with_history(event, true, &mut history)
+                    .await?;
                 return Ok(());
             }
             event.follows(selected.as_ref().map(|s| &s.selected))?;
-            self.verify_origin_at(event).await?;
-            self.owned().await?;
+            self.verify_origin_with_history(event, &mut history).await?;
+            self.owned_with_history(&mut history).await?;
+            drop(history);
             let body = body(&Candidate {
                 event: event.clone(),
                 previous_head: current.as_ref().map(|(tip, _)| tip.clone()),
