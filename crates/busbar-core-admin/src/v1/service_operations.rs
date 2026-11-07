@@ -420,6 +420,52 @@ impl AdminService {
         })
     }
 
+    /// Keep native filesystem and archive work off the reactor while retaining
+    /// both the shared scan gate and the caller's config-transaction fence.
+    pub(crate) async fn list_plugins_current_async(
+        &self,
+        ptype: &str,
+    ) -> Result<Page<PluginView>, AdminError> {
+        plugin_query(ptype)?;
+        let gate = match tokio::time::timeout(CATALOG_SCAN_GATE_WAIT, CATALOG_SCAN_GATE.lock())
+            .await
+        {
+            Ok(guard) => guard,
+            Err(_elapsed) => {
+                diag_warn!(
+                    PLUGIN_CATALOG_SCAN_GATE_TIMEOUT,
+                    operation = "plugins.list",
+                    wait = ?CATALOG_SCAN_GATE_WAIT,
+                    "plugin catalog scan could not acquire the shared scan gate within its bound"
+                );
+                return Err(AdminError::Unavailable(
+                    "the plugin directory scan is taking too long; try again shortly".into(),
+                ));
+            }
+        };
+        let service = Self::new(self.app.clone());
+        let ptype = ptype.to_string();
+        match tokio::task::spawn_blocking(move || {
+            // Dropping the waiting future cannot release the gate while its
+            // native filesystem worker is still scanning.
+            let _gate = gate;
+            service.list_plugins_current(&ptype)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(join_err) => {
+                diag_error!(
+                    ADMIN_STORE_TASK_JOIN_FAILED,
+                    operation = "plugins.list",
+                    error = %join_err,
+                    "admin plugin catalog worker failed"
+                );
+                Err(AdminError::Internal)
+            }
+        }
+    }
+
     /// Called inside the config transaction: inventory and archive hashes share the mutation fence.
     pub(crate) fn list_plugins_current(&self, ptype: &str) -> Result<Page<PluginView>, AdminError> {
         plugin_query(ptype)?;
@@ -1107,7 +1153,7 @@ impl AdminService {
         deploy: DeployCfg,
         defs: std::collections::HashMap<String, ProviderDef>,
     ) -> Result<ConfigValidateView, AdminError> {
-        let _gate = match tokio::time::timeout(CATALOG_SCAN_GATE_WAIT, CATALOG_SCAN_GATE.lock())
+        let gate = match tokio::time::timeout(CATALOG_SCAN_GATE_WAIT, CATALOG_SCAN_GATE.lock())
             .await
         {
             Ok(guard) => guard,
@@ -1129,6 +1175,7 @@ impl AdminService {
 
         let rules = std::sync::Arc::clone(&self.app.root_rules);
         match tokio::task::spawn_blocking(move || {
+            let _gate = gate;
             validate_config_blocking(deploy, &defs, plugins_dir, &rules)
         })
         .await

@@ -157,7 +157,9 @@ pub(crate) async fn list_plugins(
         let snapshot = txn.app().clone();
         Ok(txn.store_write_async(async move {
             Ok(Outcome::Value(
-                AdminService::new(snapshot).list_plugins_current(&ptype)?,
+                AdminService::new(snapshot)
+                    .list_plugins_current_async(&ptype)
+                    .await?,
             ))
         }))
     });
