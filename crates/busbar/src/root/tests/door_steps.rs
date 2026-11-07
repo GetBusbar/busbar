@@ -7111,6 +7111,9 @@ mod spent_ledger {
                 .put_key(&handoff.key)
                 .await
                 .expect("seed the same native caller before opening its governance and auth host");
+            let row = super::door_boundary::row();
+            super::door_boundary::registry(row);
+            let slot = super::door_boundary::slot_over(row, handoff.tools.clone());
             let mut node_b = Rig::with(
                 INSTANCE,
                 handoff.port,
@@ -7122,9 +7125,23 @@ mod spent_ledger {
                     ledger: Ledger::Store(core),
                     ..Footing::own()
                 },
-                &|app| app,
+                &|app| super::door_boundary::dispatched(app, row, &slot),
             )
             .await;
+            assert!(
+                Arc::ptr_eq(node_b.app.governance.as_ref().unwrap(), &node_b.gov),
+                "the HTTP App retains this independent node's native governance owner"
+            );
+            let admission = node_b
+                .app
+                .planes
+                .admission_for(&super::tool_door::endpoint())
+                .expect("the actual HTTP door retains its configured plane admission");
+            assert_eq!(
+                Some(admission.audience.as_str()),
+                node_b.audience.as_deref(),
+                "HTTP authentication checks the audience bound by this real door"
+            );
             node_b.key = Arc::new(handoff.key);
             node_b.token = handoff.token;
             assert!(
