@@ -225,7 +225,7 @@ async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_i
         module_path!(),
         "::tool_door_a_program_members_unresolved_env_reaches_the_caller_without_its_source"
     );
-    let Some(case) = crate::root::door_steps::isolated_fixture_cases(
+    let Some(case) = crate::root::door_steps::tests::isolated_fixture_cases(
         TEST,
         &["tools-program-env", "tools-program-file"],
     ) else {
@@ -272,7 +272,7 @@ async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_i
             "{instance}: the member is not served"
         );
     }
-    crate::root::door_steps::isolated_fixture_done(TEST, &case);
+    crate::root::door_steps::tests::isolated_fixture_done(TEST, &case);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
