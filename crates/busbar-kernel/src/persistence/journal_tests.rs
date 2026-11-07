@@ -1238,3 +1238,62 @@ async fn bounds_and_unported_bridge_histories_refuse_before_commit() {
     ));
     assert!(backend.state.lock().unwrap().sent.is_empty());
 }
+
+#[tokio::test]
+async fn verified_original_prefix_survives_append_without_granting_stale_selection() {
+    let backend = Arc::new(Backend::default());
+    let (store, first) = old_journal(&backend).await;
+    let journal = StoreJournal::new(&store, 7).unwrap();
+    let proof = verified(&journal).await;
+    let unrelated = record(2, hash(&first), vec![2]);
+    applied(
+        journal
+            .append(&proof, std::slice::from_ref(&unrelated))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        journal.read_verified_record(&proof, 1).await.unwrap().body,
+        first.body,
+        "a newer selected tip does not corrupt the verified immutable prefix"
+    );
+    assert!(matches!(
+        journal.confirm_owned(&proof).await,
+        Err(Error::Authority)
+    ));
+    let stale = journal
+        .select_verified(&proof, std::slice::from_ref(&first), selection(1))
+        .await
+        .unwrap();
+    let WriteResult::Submitted(stale) = stale else {
+        panic!("the stale candidate must receive a definitive native decision")
+    };
+    assert!(matches!(
+        stale.result,
+        SubmitResult::Decided(ref result) if matches!(**result, Decision::ConditionConflict)
+    ));
+    let fresh = verified(&journal).await;
+    let mut retry = selection(1);
+    retry.operation_id = [52; 16];
+    applied(
+        journal
+            .select_verified(&fresh, std::slice::from_ref(&first), retry)
+            .await
+            .unwrap(),
+    );
+    {
+        let state = backend.state.lock().unwrap();
+        let stale = &state.sent[state.sent.len() - 2];
+        let fresh = &state.sent[state.sent.len() - 1];
+        assert_ne!(stale.candidate().id, fresh.candidate().id);
+        assert_ne!(stale.fingerprint(), fresh.fingerprint());
+    }
+    backend.state.lock().unwrap().rows.insert(
+        journal.address(b'R', 1),
+        Secret::new(record(1, [0; 32], vec![9]).body),
+    );
+    assert!(matches!(
+        journal.read_verified_record(&proof, 1).await,
+        Err(Error::Corrupt)
+    ));
+}

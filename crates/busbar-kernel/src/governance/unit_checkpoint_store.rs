@@ -384,7 +384,35 @@ impl StoreUnitCheckpoints {
             }
             Err((definite, why)) => {
                 if definite {
-                    self.clear();
+                    // A different service may append to this same journal
+                    // between verification and selection. A known no-effect
+                    // reply releases only the native attempt, never the exact
+                    // signed checkpoint and already sealed original frames.
+                    let (snapshot, expected) = match &pending {
+                        Pending::Persist(p) => (&p.snapshot, p.expected.as_ref()),
+                        Pending::Remove(p) => (&p.snapshot, p.expected.as_ref()),
+                    };
+                    let current = self.head(&snapshot.id).await?;
+                    let unchanged = match (expected, current.as_ref()) {
+                        (ExpectedValue::Absent, None) => true,
+                        (ExpectedValue::Exact(expected), Some(current)) => expected == current,
+                        _ => false,
+                    };
+                    if !unchanged {
+                        return Err(why);
+                    }
+                    let proof = self.evidence.proof().await?;
+                    match &mut pending {
+                        Pending::Persist(p) => {
+                            p.selection_proof = Some(proof);
+                            p.operation = crate::door::op_id().0;
+                        }
+                        Pending::Remove(p) => {
+                            p.proof = proof;
+                            p.operation = crate::door::op_id().0;
+                        }
+                    }
+                    self.save(pending);
                 }
                 Err(why)
             }

@@ -190,7 +190,25 @@ impl<'a> StoreJournal<'a> {
         if sequence == 0 || sequence > proof.head.sequence {
             return Err(Error::Invalid);
         }
-        let mut replay = self.historical_replay().await?;
+        // The proof fixes one immutable prefix, not the journal's future tip.
+        // Replaying a later selected head here would mistake a valid concurrent
+        // append for changed original evidence. Read exactly the proven prefix;
+        // confirmation and native selection still compare its H/O guards.
+        let mut replay = Replay {
+            journal: self,
+            target: VerifiedHead {
+                dataset: proof.dataset,
+                node: proof.node,
+                head: proof.head,
+                selected: proof.selected.clone(),
+                owner: proof.owner.clone(),
+                records_seal: proof.records_seal,
+            },
+            observed: Head::default(),
+            failed: false,
+            historical: true,
+            records_seal: [0; 32],
+        };
         let mut found = None;
         let mut ordinal = 0u64;
         while let Some(record) = replay.next().await? {
