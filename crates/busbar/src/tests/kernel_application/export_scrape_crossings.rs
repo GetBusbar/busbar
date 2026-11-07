@@ -5,18 +5,50 @@
 
 use busbar_contract::abi::mechanism::endpoint::EndpointRequest;
 use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
-use busbar_contract::export_calls::{ExportAxis, ExportCalls};
+use busbar_contract::export_calls::ExportCalls;
 use std::sync::Arc;
 
 fn sink() -> Arc<dyn ExportCalls> {
+    use crate::root::loader::dispatch::{
+        kinds::export::Export, load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig,
+        Dispatcher, NoSink,
+    };
     crate::dist_root_install::install();
-    crate::root::exports::EXPORTS
-        .open(
-            "prometheus",
-            "export.scrape-crossing",
-            &serde_json::json!({"buffer_seconds": 60}),
+    let path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_TEST_PROMETHEUS_CDYLIB")
+            .expect("the actual qualified metrics exporter is required"),
+    );
+    let statement = rendering_of_library(&path).unwrap().unwrap();
+    let mut services = busbar_kernel::host_services::KernelServices::new();
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        services = services.with_pool(Arc::new(busbar_kernel::host_services::BlockingPool::new(
+            runtime, 64,
+        )));
+    }
+    let dispatcher = Arc::new(Dispatcher::with_services(
+        DispatchConfig::default(),
+        Arc::new(services),
+    ));
+    let plugin = load_dropped::<Export>(
+        &path,
+        &statement,
+        Bind {
+            instance: "export.scrape-crossing".into(),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: ConnTable::NoNeeds,
+        },
+    )
+    .expect("the actual scrape exporter loads with its asynchronous host services");
+    Arc::new(
+        crate::root::loader::export_door::ExportInstance::open(
+            plugin,
+            dispatcher,
+            br#"{"buffer_seconds":60}"#,
         )
-        .expect("the actual linked scrape sink opens")
+        .expect("the actual linked scrape sink opens"),
+    )
 }
 
 fn get(path: &str) -> EndpointRequest {
@@ -62,7 +94,7 @@ fn metrics_route_declarations_come_from_the_actual_sink() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_granted_scrape_is_the_actual_sinks_rendering_of_the_snapshot() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let granted = busbar_kernel::export::serve_test_sink(sink());

@@ -253,18 +253,8 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
         .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
-    let mut plugin_config = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
-    plugin_config
-        .trust
-        .publishers
-        .push(busbar_kernel::config::PluginPublisher {
-            name: "third-party".into(),
-            public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
-        });
+    let mut plugin_config = plugins::trusted_config_with_key(&directory, &plugins::key(0x33));
+    plugin_config.trust.publishers[0].name = "third-party".into();
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let native_config = config;
