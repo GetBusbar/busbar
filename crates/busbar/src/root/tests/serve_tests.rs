@@ -86,7 +86,14 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
 
     let dispatcher = std::sync::Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
-        std::sync::Arc::new(busbar_kernel::host_services::KernelServices::new()),
+        std::sync::Arc::new(
+            busbar_kernel::host_services::KernelServices::new().with_pool(std::sync::Arc::new(
+                busbar_kernel::host_services::BlockingPool::new(
+                    tokio::runtime::Handle::current(),
+                    64,
+                ),
+            )),
+        ),
     ));
     crate::root::connector::install_io(&dispatcher);
     let plugin = load_dropped::<Export>(

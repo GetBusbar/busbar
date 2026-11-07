@@ -137,13 +137,16 @@ impl GovState {
         };
         owner.scope(async {
         let mut captured = false;
-        {
+        let retained_keys = {
             let mut flight = pending.flight.lock().unwrap_or_else(|p| p.into_inner());
+            let retained_keys: std::collections::HashSet<_> =
+                flight.iter().map(|write| write.key.clone()).collect();
             if flight.is_empty() {
                 flight.extend(pending.drain().into_iter().filter_map(MeteringWrite::new));
                 captured = true;
             }
-        }
+            retained_keys
+        };
         let mut flushed = 0;
         loop {
             let write = {
@@ -157,7 +160,20 @@ impl GovState {
             let Some(write) = write else {
                 if !captured {
                     let mut flight = pending.flight.lock().unwrap_or_else(|p| p.into_inner());
-                    flight.extend(pending.drain().into_iter().filter_map(MeteringWrite::new));
+                    if shutdown {
+                        flight.extend(pending.drain().into_iter().filter_map(MeteringWrite::new));
+                    } else {
+                        // Fresh counts for a retained key keep coalescing until the
+                        // next periodic batch. Other pinned groups/eras are independent
+                        // cells and may join this bounded capture after replay settles.
+                        for shard in pending.shards.iter() {
+                            let mut map = shard.lock().unwrap_or_else(|p| p.into_inner());
+                            flight.extend(
+                                map.extract_if(|key, _| !retained_keys.contains(key))
+                                    .filter_map(MeteringWrite::new),
+                            );
+                        }
+                    }
                     captured = true;
                     continue;
                 }

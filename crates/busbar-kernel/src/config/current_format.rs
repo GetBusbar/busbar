@@ -43,16 +43,10 @@ pub fn detect_legacy_markers(doc: &Value) -> Vec<String> {
         }
     }
     if let Some(pools) = root.get("pools").and_then(Value::as_mapping) {
-        for (name, pool) in pools {
+        for pool in pools.values() {
             let Some(pool) = pool.as_mapping() else {
                 continue;
             };
-            if pool.get("on_exhausted").is_some_and(Value::is_string) {
-                markers.push(format!(
-                    "pools.{}.on_exhausted must use the current mapping form",
-                    name.as_str().unwrap_or("<entry>")
-                ));
-            }
             if let Some(members) = pool.get("members").and_then(Value::as_sequence) {
                 if members
                     .iter()
@@ -71,4 +65,31 @@ pub fn legacy_config_error(markers: &[String]) -> String {
         "configuration is not in the current format; automatic normalization must resolve these fields before admission:\n  - {}",
         markers.join("\n  - ")
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{OnExhaustedCfg, PoolCfg};
+
+    #[test]
+    fn current_exhaustion_keywords_reach_the_canonical_parser() {
+        for (keyword, expected) in [
+            ("reject", OnExhaustedCfg::Reject),
+            ("least_bad", OnExhaustedCfg::LeastBad),
+        ] {
+            let document: Value = serde_yaml::from_str(&format!(
+                "pools: {{op: {{members: [], on_exhausted: {keyword}}}}}"
+            ))
+            .unwrap();
+            assert!(detect_legacy_markers(&document).is_empty());
+            let pool: PoolCfg = serde_yaml::from_value(document["pools"]["op"].clone()).unwrap();
+            assert_eq!(pool.on_exhausted, Some(expected));
+        }
+        let document: Value =
+            serde_yaml::from_str("pools: {op: {members: [], on_exhausted: invalid_mode}}").unwrap();
+        assert!(detect_legacy_markers(&document).is_empty());
+        let error = serde_yaml::from_value::<PoolCfg>(document["pools"]["op"].clone()).unwrap_err();
+        assert!(error.to_string().contains("unknown on_exhausted keyword"));
+    }
 }

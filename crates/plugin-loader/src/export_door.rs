@@ -60,6 +60,51 @@ fn copy_str(s: AbiStr) -> String {
         .unwrap_or_default()
 }
 
+/// A synchronous HTTP caller keeps its request and frame live while the host
+/// service completes asynchronously. The initial inline crossing also preserves
+/// the caller's scoped host grants; resuming never remints its service identity.
+struct InlineServe<'a> {
+    plugin: &'a Plugin<Export>,
+    ticket: crate::dispatch::InlineTicket,
+    frame: Frame<ServeIn, ServeOut>,
+    started: bool,
+    pending: bool,
+}
+impl InlineServe<'_> {
+    fn finish(&mut self) -> crate::dispatch::Called {
+        futures::executor::block_on(futures::future::poll_fn(|cx| {
+            self.ticket.register(cx.waker());
+            let resume = std::mem::replace(&mut self.started, true);
+            self.pending = true;
+            let called =
+                self.plugin
+                    .call_inline(self.ticket.ticket(), resume, slot::SERVE, &mut self.frame);
+            if called.outcome == Outcome::Pending {
+                release(self.plugin, called.lease);
+                Poll::Pending
+            } else {
+                self.pending = false;
+                Poll::Ready(called)
+            }
+        }))
+    }
+}
+impl Drop for InlineServe<'_> {
+    fn drop(&mut self) {
+        if self.pending {
+            let cancelled = self.plugin.inner.cancel_abandoned(
+                self.ticket.ticket(),
+                <Export as crate::dispatch::Kind>::ticketed_class(slot::SERVE),
+                None,
+                None,
+            );
+            if cancelled.outcome != Outcome::Ready {
+                tracing::warn!(outcome = ?cancelled.outcome, "pending export HTTP cancellation did not answer READY");
+            }
+        }
+    }
+}
+
 pub fn validate(plugin: &Plugin<Export>, settings: &[u8]) -> Result<(), String> {
     let called = validate_call(plugin, blob(settings, BLOB_JSON));
     let _lease = AnswerLease::new(plugin, called.lease);
@@ -590,7 +635,7 @@ impl ExportCalls for ExportInstance {
             .take(MAX_SERVE_HEADERS)
             .flat_map(|(k, v)| [lend(k), lend(v)])
             .collect();
-        let mut f = Frame::new(
+        let f = Frame::new(
             ServeIn {
                 head: in_head(),
                 method: lend(req.method),
@@ -609,10 +654,24 @@ impl ExportCalls for ExportInstance {
                 body: NO_BLOB,
             },
         );
-        let called = plugin.call(slot::SERVE, &mut f);
+        let ticket = self
+            .shared
+            .dispatcher
+            .inline_ticket()
+            .ok_or("no ticket could be minted for an export HTTP request")?;
+        let mut call = InlineServe {
+            plugin,
+            ticket,
+            frame: f,
+            started: false,
+            pending: false,
+        };
+        let called = call.finish();
+        let _lease = AnswerLease::new(plugin, called.lease);
         if called.outcome != Outcome::Ready {
             return Err(why(called.outcome, called.error));
         }
+        let f = &call.frame;
         let pairs = if f.out.headers_out_len == 0 || f.out.headers_out.is_null() {
             &[][..]
         } else {
@@ -630,7 +689,6 @@ impl ExportCalls for ExportInstance {
                 .collect(),
             body: copy_blob(f.out.body),
         };
-        release(plugin, called.lease);
         Ok(served)
     }
 
