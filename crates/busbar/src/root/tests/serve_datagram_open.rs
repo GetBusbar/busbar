@@ -472,8 +472,11 @@ async fn cleaned(g: &Deployment, routes: &serving::DataRoutes, framer: &OpeningF
             && !g.book.lock().expect("unpoisoned").audit_records.is_empty()
     })
     .await;
-    let book = g.book.lock().expect("unpoisoned");
-    assert_eq!(book.audit_records.len(), 1, "one final session record");
+    let unit_key = {
+        let book = g.book.lock().expect("unpoisoned");
+        assert_eq!(book.audit_records.len(), 1, "one final session record");
+        book.audit_records[0].what.unit_key.get()
+    };
     assert_eq!(
         g.requests().await,
         1,
@@ -484,7 +487,7 @@ async fn cleaned(g: &Deployment, routes: &serving::DataRoutes, framer: &OpeningF
         1,
         "the actual association finished once"
     );
-    book.audit_records[0].what.unit_key.get()
+    unit_key
 }
 
 struct EmptyLeg;

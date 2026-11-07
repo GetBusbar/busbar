@@ -222,7 +222,7 @@ async fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_ups
     let name =
         busbar_core_admin::verb_name(busbar_core_admin::KernelVerb::PlaneRecordWrite).unwrap();
     let replay_key = ("admin".to_string(), format!("{name}:unknown-record"));
-    let kept = match durable::claim_held(&*store, &replay_key, request.at).await {
+    let kept = match durable::claim_held(&store, &replay_key, request.at).await {
         Err(Refused::Retained(bytes)) => super::kept_answer(&bytes).expect("readable receipt"),
         other => panic!("the exact unknown receipt must be durable: {other:?}"),
     };

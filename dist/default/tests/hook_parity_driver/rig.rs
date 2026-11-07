@@ -346,14 +346,20 @@ impl CallerFacts for Callers {
     fn budget(&self, _: &str) -> Vec<BudgetBucketState> {
         Vec::new()
     }
-    fn hook_read(&self, hook: &str, principal: Option<&str>, dialect: &str, identity: bool) {
-        busbar_kernel::audit::amend::record_test_hook_read(
+    fn hook_read<'a>(
+        &'a self,
+        hook: &'a str,
+        principal: Option<&'a str>,
+        dialect: &'a str,
+        identity: bool,
+    ) -> busbar_kernel::audit::amend::ReadConfirmation<'a> {
+        Box::pin(busbar_kernel::audit::amend::record_test_hook_read(
             &self.journal,
             hook,
             principal,
             dialect,
             identity,
-        );
+        ))
     }
 }
 
@@ -543,7 +549,7 @@ pub struct Rig {
 }
 
 impl Rig {
-    pub fn new(primary: Pool, fallback: Option<Pool>, hooks: Hooks) -> Self {
+    pub async fn new(primary: Pool, fallback: Option<Pool>, hooks: Hooks) -> Self {
         let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
             workers: 2,
             ..DispatchConfig::default()
@@ -575,6 +581,7 @@ impl Rig {
             Arc::new(busbar_kernel::host_services::KernelServices::new()),
             ("pools", &serde_yaml::Value::Null),
         )
+        .await
         .expect("the plane instance is admitted");
         let amendments = Arc::clone(&hooks.callers.journal);
         let driver = driver.with_hooks(Arc::new(hooks.bound(primary.name, dialects)));

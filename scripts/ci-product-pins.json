@@ -92,7 +92,7 @@
     {
       "repo": "busbar-plane-llm",
       "url": "https://github.com/GetBusbar/busbar-plane-llm",
-      "commit": "af4c0154ddf0559216822700b6e854de2803dd1f",
+      "commit": "1678cd1fcfd7ef50cd0b20df5494ddd3597db06f",
       "package": "busbar-plane-llm-plugin",
       "kind": "plane",
       "alias": "llm",

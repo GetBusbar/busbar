@@ -661,7 +661,7 @@ async fn independent_store_effects(
             }
         }
         assert_eq!(
-            recorded(&store, written).await,
+            recorded(store, written).await,
             (case == "after-both").then(|| b"committed".to_vec()),
             "{case}: denied work writes nothing; admitted work retains its receipt",
         );

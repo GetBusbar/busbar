@@ -14,6 +14,13 @@ mod cases;
 #[path = "../../../crates/busbar/src/root/tests/test_plugins.rs"]
 mod fixture_plugins;
 
+#[path = "../../../crates/busbar-kernel/src/tests/real_store.rs"]
+mod real_store;
+
+async fn actual_store() -> Arc<persistence::facade::CoreStore> {
+    real_store::core().await
+}
+
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -33,6 +40,7 @@ use busbar_contract::ids::StreamId;
 use busbar_contract::transport::ConnFacts;
 use busbar_kernel::host_services::KernelServices;
 use busbar_kernel::plane_driver::{refusal_status, BufferCaps, DriverConfig, PlaneDriver};
+use busbar_kernel::{door, persistence};
 use busbar_plugin_loader::dispatch::{
     conn_services::ticket_of,
     in_head,
@@ -42,6 +50,7 @@ use busbar_plugin_loader::dispatch::{
     rendering_of, Bind, ConnTable, Diagnostic, DispatchConfig, Dispatcher, Dropped, EnvelopeSink,
     Frame, LinkedRow, Metric, NoSink, Plugin, NO_BLOB,
 };
+use futures::FutureExt;
 
 pub(crate) fn now_ns() -> u64 {
     dispatch_now()
@@ -283,6 +292,8 @@ pub(crate) fn rig(way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
         services(),
         ("test_plane", &serde_yaml::Value::Null),
     )
+    .now_or_never()
+    .expect("non-persistent fixture admission completes immediately")
     .expect("the instance is admitted");
     Rig {
         plugin,
@@ -426,6 +437,8 @@ fn driver_of(plugin: &Arc<Plugin<Plane>>, dispatcher: Arc<Dispatcher>) -> PlaneD
         services(),
         ("test_plane", &serde_yaml::Value::Null),
     )
+    .now_or_never()
+    .expect("non-persistent fixture admission completes immediately")
     .expect("the instance is admitted")
 }
 
@@ -1164,32 +1177,12 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
         }),
         ..Default::default()
     });
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let plugin = load_dropped::<busbar_plugin_loader::dispatch::kinds::store::Store>(
-        &path,
-        &statement,
-        Bind {
-            instance: "plane-driver-admin-audit".into(),
-            max_inflight_cap: 1024,
-            sink: Arc::new(NoSink),
-            dispatcher: dispatcher.adopter(),
-            conns: ConnTable::NoNeeds,
-        },
-    )
-    .expect("the actual store loads through the memory ABI");
-    let settings =
-        std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".to_string());
-    let _: serde_json::Value =
-        serde_json::from_str(&settings).expect("the actual store settings are JSON");
-    let store = Arc::new(
-        busbar_plugin_loader::store_v3::LoadedStore::open(
-            plugin,
-            dispatcher,
-            settings.as_bytes(),
-            busbar_kernel::door::op_id,
-        )
-        .expect("the actual store opens"),
-    );
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("the native store runtime");
+    let store = runtime.block_on(actual_store());
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "store": {"module": module},
         "auth": {"chain": [], "admin_auth": []},
@@ -1201,32 +1194,33 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
         .expect("the admin-route deployment resolves");
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
         Arc::new(busbar_kernel::appbuild::AcceptAll);
-    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
-        None,
-        Default::default(),
-        Default::default(),
-        (None, None),
-        None,
-        &rules,
-        Some(busbar_contract::store_calls::OpenedStore {
-            records: store.clone(),
-            calls: Some(store),
-        }),
-        false,
-    )
-    .expect("the product builds the admin-route deployment");
-    limits.keep().expect("the admin-route limits commit");
-    if let Some(rotate) = rotate {
-        rotate();
-    }
-    let app = Arc::new(app);
-    busbar_kernel::audit::auditlog::register_test_audit_stream(&app);
+    let _app = runtime.block_on(async {
+        let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+            config,
+            busbar_kernel::config::PluginsCfg {
+                enabled: true,
+                dir: directory.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+            Some(store),
+            false,
+        )
+        .await
+        .expect("the product builds the admin-route deployment");
+        limits.keep().await.expect("the admin-route limits commit");
+        if let Some(rotate) = rotate {
+            rotate().await;
+        }
+        let app = Arc::new(app);
+        busbar_kernel::audit::auditlog::register_test_audit_stream(&app).await;
+        app
+    });
     for way in ways() {
         let item = format!("{way:?}").to_lowercase();
         let act = format!("/items/{item}/act");
@@ -1859,6 +1853,7 @@ async fn a_session_is_refused_while_its_money_is_unstated() {
             services(),
             ("test_plane", &serde_yaml::Value::Null),
         )
+        .await
         .expect("the instance is admitted");
         let r = Rig {
             plugin,

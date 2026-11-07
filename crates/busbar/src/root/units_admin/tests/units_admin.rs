@@ -4151,11 +4151,11 @@ async fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
         sealed,
         "reconciliation seals nothing"
     );
-    let chain = { book.lock().unwrap().chain_at() }
-        .read()
-        .await
-        .unwrap()
-        .unwrap();
+    let chain_at = {
+        let book = book.lock().unwrap();
+        book.chain_at()
+    };
+    let chain = chain_at.read().await.unwrap().unwrap();
     assert_eq!(
         chain
             .iter()
