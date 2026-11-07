@@ -1,6 +1,103 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+// A nextest process represents one deployment; sequential rigs are generations
+// of it. Keep its native authority with the process-global price holder.
+pub(super) async fn process_store() -> std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>
+{
+    static STORE: tokio::sync::OnceCell<
+        std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>,
+    > = tokio::sync::OnceCell::const_new();
+    STORE
+        .get_or_init(crate::root::real_store::core)
+        .await
+        .clone()
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn build_process_app(
+    cfg: busbar_kernel::config::RootCfg,
+    plugins: busbar_kernel::config::PluginsCfg,
+    overlay: Option<std::sync::Arc<busbar_kernel::config::overlay::OverlayStore>>,
+    base_hooks: std::collections::HashSet<String>,
+    base_groups: std::collections::HashSet<String>,
+    paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
+    prior: Option<&busbar_kernel::state::App>,
+    rules: &std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>,
+) -> Result<
+    (
+        busbar_kernel::state::App,
+        Option<busbar_kernel::GovCredentialRotation>,
+        busbar_kernel::InstalledLimits,
+    ),
+    String,
+> {
+    let core = process_store().await;
+    if let Some(prior) = prior {
+        assert!(std::sync::Arc::ptr_eq(
+            &core,
+            &prior
+                .governance
+                .as_ref()
+                .unwrap()
+                .core_store_handle()
+                .unwrap()
+        ));
+    }
+    busbar_kernel::appbuild::build_app_from_config_with_store(
+        cfg,
+        plugins,
+        overlay,
+        base_hooks,
+        base_groups,
+        paths,
+        prior,
+        rules,
+        Some(core),
+        false,
+    )
+    .await
+}
+
+pub(super) async fn attach_process_prices(app: &busbar_kernel::state::App) -> Result<(), String> {
+    let store = app
+        .governance
+        .as_ref()
+        .ok_or("fixture governance is absent")?
+        .core_store_handle()
+        .map_err(|e| e.to_string())?;
+    assert!(
+        std::sync::Arc::ptr_eq(&store, &process_store().await),
+        "every generation keeps this process's admitted Store"
+    );
+    if let Some(previous) = crate::root::kernel::ROOT_CARD.card_store() {
+        assert!(
+            previous.is_bound_to(&store),
+            "a fixture cannot publish through another deployment's price Store"
+        );
+        return Ok(());
+    }
+    crate::root::kernel::ROOT_CARD.keep_in_store(store, busbar_kernel::door::op_id().counter())?;
+    crate::root::kernel::ROOT_CARD.boot_in_store(None).await
+}
+
+pub(super) async fn bind_process_amendments(
+    book: &mut std::sync::Arc<std::sync::Mutex<crate::root::durability::Durability>>,
+    amendments: &busbar_kernel_audit::amend::NodeAmendments,
+) {
+    let token = crate::root::kernel::new_kernel().durability_token();
+    std::sync::Arc::get_mut(book)
+        .expect("bootstrap owns the native book before sharing")
+        .get_mut()
+        .unwrap()
+        .restore_amendments(amendments, &token)
+        .await
+        .expect("the fixture restores its actual native amendment history");
+    crate::root::durability::bind_amendments(book, amendments)
+        .await
+        .expect("content handoffs use this same native journal");
+}
+
 fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
     busbar_kernel::snapshot::snapshot()
@@ -441,7 +538,7 @@ async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = crate::root::real_store::build_app(
+    let (app, rotate, limits) = crate::root::serve::door_tests::build_process_app(
         config,
         plugins,
         None,
@@ -454,20 +551,9 @@ async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
     .await
     .expect("the actual product builds the empty-plane deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD
-        .keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the serving application has its configured Store")
-                .core_store_handle()
-                .expect("the configured Store exposes its actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        )
-        .expect("native rate history attaches");
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
+    crate::root::serve::door_tests::attach_process_prices(&app)
         .await
-        .expect("the serving application's actual Store boots its rate history");
+        .expect("native process price history");
     limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate.await;
@@ -807,9 +893,13 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
 
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
     let gov = Arc::new(
-        GovState::new_with_core(crate::root::real_store::core().await, None, Some(signer))
-            .await
-            .expect("governance"),
+        GovState::new_with_core(
+            crate::root::serve::door_tests::process_store().await,
+            None,
+            Some(signer),
+        )
+        .await
+        .expect("governance"),
     );
     let (key, token) = gov
         .mint_signed_async(
@@ -827,7 +917,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         .await
         .expect("hydrate");
     let node = Arc::new(Node::new());
-    let book = crate::root::durability::node_book(
+    let mut book = crate::root::durability::node_book(
         busbar_kernel::persistence::journal::runtime::RuntimeJournal::open(
             gov.core_store_handle().expect("native Store"),
             busbar_kernel::door::op_id().counter().max(1),
@@ -845,6 +935,8 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     )
     .await
     .expect("native node book");
+    crate::root::serve::door_tests::bind_process_amendments(&mut book.durability, gov.amendments())
+        .await;
     node.bind_book(Arc::clone(&book.durability));
     let post = Arc::new(NodeEndPost::new(Arc::clone(&node)));
     let site = Arc::clone(&post);
@@ -963,7 +1055,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = crate::root::real_store::build_app(
+    let (mut app, rotate, limits) = crate::root::serve::door_tests::build_process_app(
         config,
         plugins,
         None,
@@ -976,24 +1068,14 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD
-        .keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the serving application has its configured Store")
-                .core_store_handle()
-                .expect("the configured Store exposes its actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        )
-        .expect("native rate history attaches");
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
+    crate::root::serve::door_tests::attach_process_prices(&app)
         .await
-        .expect("the serving application's actual Store boots its rate history");
+        .expect("native process price history");
     limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate.await;
     }
+    app.amendments = Arc::clone(gov.amendments());
     app.governance = Some(Arc::clone(&gov));
     app.cost = Arc::new(CostModel::flat(1));
     let app = std::sync::Arc::new(app);
@@ -1110,7 +1192,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = crate::root::real_store::build_app(
+    let (app, rotate, limits) = crate::root::serve::door_tests::build_process_app(
         config,
         plugins,
         None,
@@ -1123,20 +1205,9 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD
-        .keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the serving application has its configured Store")
-                .core_store_handle()
-                .expect("the configured Store exposes its actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        )
-        .expect("native rate history attaches");
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
+    crate::root::serve::door_tests::attach_process_prices(&app)
         .await
-        .expect("the serving application's actual Store boots its rate history");
+        .expect("native process price history");
     limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate.await;
@@ -1265,7 +1336,7 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = crate::root::real_store::build_app(
+    let (app, rotate, limits) = crate::root::serve::door_tests::build_process_app(
         config,
         plugins,
         None,
@@ -1278,20 +1349,9 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD
-        .keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the serving application has its configured Store")
-                .core_store_handle()
-                .expect("the configured Store exposes its actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        )
-        .expect("native rate history attaches");
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
+    crate::root::serve::door_tests::attach_process_prices(&app)
         .await
-        .expect("the serving application's actual Store boots its rate history");
+        .expect("native process price history");
     limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate.await;
@@ -2001,9 +2061,13 @@ pub(super) mod session_door {
         };
         let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
         let gov = Arc::new(
-            GovState::new_with_core(crate::root::real_store::core().await, None, Some(signer))
-                .await
-                .expect("governance"),
+            GovState::new_with_core(
+                crate::root::serve::door_tests::process_store().await,
+                None,
+                Some(signer),
+            )
+            .await
+            .expect("governance"),
         );
         super::super::door_rig::attach_late(&services, &gov);
         let (key, plain) = gov
@@ -2021,7 +2085,7 @@ pub(super) mod session_door {
             .expect("mint");
         gov.hydrate_budgets_async(&cost, 0).await.expect("hydrate");
         let node = Arc::new(Node::with_inbound_keys());
-        let book = crate::root::durability::node_book(
+        let mut book = crate::root::durability::node_book(
             busbar_kernel::persistence::journal::runtime::RuntimeJournal::open(
                 gov.core_store_handle().expect("native Store"),
                 busbar_kernel::door::op_id().counter().max(1),
@@ -2039,6 +2103,11 @@ pub(super) mod session_door {
         )
         .await
         .expect("native node book");
+        crate::root::serve::door_tests::bind_process_amendments(
+            &mut book.durability,
+            gov.amendments(),
+        )
+        .await;
         node.bind_book(Arc::clone(&book.durability));
         let post = Arc::new(NodeEndPost::new(Arc::clone(&node)));
         let money = Arc::new(PlaneMoney::new(
@@ -2313,7 +2382,7 @@ pub(super) mod session_door {
         let plugins = crate::root::test_plugins::trusted_config(&directory);
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = crate::root::real_store::build_app(
+        let (mut app, rotate, limits) = crate::root::serve::door_tests::build_process_app(
             config,
             plugins,
             None,
@@ -2326,20 +2395,9 @@ pub(super) mod session_door {
         .await
         .expect("the actual product builds the session deployment");
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD
-            .keep_in_store(
-                app.governance
-                    .as_ref()
-                    .expect("the serving application has its configured Store")
-                    .core_store_handle()
-                    .expect("the configured Store exposes its actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            )
-            .expect("native rate history attaches");
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
+        crate::root::serve::door_tests::attach_process_prices(&app)
             .await
-            .expect("the serving application's actual Store boots its rate history");
+            .expect("native process price history");
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -2377,6 +2435,7 @@ pub(super) mod session_door {
                 "the actual session group is exhausted before the tested request"
             );
         }
+        app.amendments = Arc::clone(gov.amendments());
         app.governance = Some(Arc::clone(&gov));
         app.cost = Arc::new(cost);
         app.serve_tables = tables.clone();
@@ -6682,9 +6741,13 @@ async fn serve_configured(
 
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
     let gov = Arc::new(
-        GovState::new_with_core(crate::root::real_store::core().await, None, Some(signer))
-            .await
-            .expect("governance"),
+        GovState::new_with_core(
+            crate::root::serve::door_tests::process_store().await,
+            None,
+            Some(signer),
+        )
+        .await
+        .expect("governance"),
     );
     let group = format!("decider-{instance}");
     let groups = if limits.is_empty() {
@@ -6729,7 +6792,7 @@ async fn serve_configured(
         .expect("mint");
     gov.hydrate_budgets_async(&cost, 0).await.expect("hydrate");
     let node = Arc::new(Node::new());
-    let book = crate::root::durability::node_book(
+    let mut book = crate::root::durability::node_book(
         busbar_kernel::persistence::journal::runtime::RuntimeJournal::open(
             gov.core_store_handle().expect("native Store"),
             busbar_kernel::door::op_id().counter().max(1),
@@ -6747,6 +6810,8 @@ async fn serve_configured(
     )
     .await
     .expect("native node book");
+    crate::root::serve::door_tests::bind_process_amendments(&mut book.durability, gov.amendments())
+        .await;
     node.bind_book(Arc::clone(&book.durability));
     let post = Arc::new(NodeEndPost::new(Arc::clone(&node)));
     let site = Arc::clone(&post);
@@ -6873,7 +6938,7 @@ async fn serve_configured(
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = crate::root::real_store::build_app(
+    let (mut app, rotate, limits) = crate::root::serve::door_tests::build_process_app(
         config,
         plugins,
         None,
@@ -6886,24 +6951,14 @@ async fn serve_configured(
     .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD
-        .keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the serving application has its configured Store")
-                .core_store_handle()
-                .expect("the configured Store exposes its actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        )
-        .expect("native rate history attaches");
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
+    crate::root::serve::door_tests::attach_process_prices(&app)
         .await
-        .expect("the serving application's actual Store boots its rate history");
+        .expect("native process price history");
     limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate.await;
     }
+    app.amendments = Arc::clone(gov.amendments());
     app.governance = Some(Arc::clone(&gov));
     app.cost = Arc::new(cost);
     app.plugin_routes = metrics_routes();
