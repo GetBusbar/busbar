@@ -422,6 +422,26 @@ async fn build_application(
     .await
     .expect("the actual product builds the OAuth deployment");
     limits.stage_boot();
+    let price_store = app
+        .governance
+        .as_ref()
+        .expect("the OAuth deployment owns governance")
+        .core_store_handle()
+        .expect("the OAuth deployment retains its admitted Store");
+    if let Some(bound) = crate::root::kernel::ROOT_CARD.card_store() {
+        assert!(
+            bound.is_bound_to(&price_store),
+            "OAuth reloads must retain the price authority's exact CoreStore"
+        );
+    } else {
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(price_store, busbar_kernel::door::op_id().counter())
+            .expect("the first OAuth deployment binds its native price Store");
+        crate::root::kernel::ROOT_CARD
+            .boot_in_store(None)
+            .await
+            .expect("the first OAuth deployment boots its native price history");
+    }
     limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate.await;

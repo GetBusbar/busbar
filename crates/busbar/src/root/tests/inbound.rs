@@ -58,6 +58,18 @@ async fn app_with_admin_reader(
     busbar_kernel::config::RootCfg,
     crate::root::durability::NodeBook,
 ) {
+    app_generation(with_llm, reader, None).await
+}
+
+async fn app_generation(
+    with_llm: bool,
+    reader: bool,
+    prior: Option<Arc<busbar_kernel::state::App>>,
+) -> (
+    Arc<busbar_kernel::state::App>,
+    busbar_kernel::config::RootCfg,
+    crate::root::durability::NodeBook,
+) {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -179,7 +191,16 @@ async fn app_with_admin_reader(
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let boot_store = if reader {
+    let boot_store = if let Some(prior) = &prior {
+        Some(
+            prior
+                .governance
+                .as_ref()
+                .expect("prior governance")
+                .core_store_handle()
+                .expect("prior admitted CoreStore"),
+        )
+    } else if reader {
         Some(
             crate::root::test_plugins::bootstrap_fresh_application_store(
                 &config,
@@ -209,7 +230,7 @@ async fn app_with_admin_reader(
         Default::default(),
         Default::default(),
         (None, None),
-        None,
+        prior.as_deref(),
         &rules,
         Some(core),
         false,
@@ -227,13 +248,38 @@ async fn app_with_admin_reader(
         .expect("the fixture App retains its native governance owner")
         .core_store_handle()
         .expect("the fixture App retains its admitted CoreStore");
-    let journal = busbar_kernel::persistence::journal::RuntimeJournal::open(
-        core,
-        busbar_kernel::door::op_id().counter(),
-        budget,
-    )
-    .await
-    .expect("the fixture listener journal opens on its App's native Store");
+    let node = busbar_kernel::door::op_id().counter();
+    if let Some(prior) = &prior {
+        let previous = prior
+            .governance
+            .as_ref()
+            .expect("prior governance")
+            .core_store_handle()
+            .expect("prior admitted CoreStore");
+        assert!(
+            Arc::ptr_eq(&core, &previous),
+            "a listener reload retains the exact admitted CoreStore"
+        );
+        assert!(
+            crate::root::kernel::ROOT_CARD.keeps_store(),
+            "the original generation booted native prices"
+        );
+    } else {
+        assert!(
+            !crate::root::kernel::ROOT_CARD.keeps_store(),
+            "an independent first application requires a fresh process"
+        );
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(core.clone(), node)
+            .expect("bind the first application's native price owner");
+        crate::root::kernel::ROOT_CARD
+            .boot_in_store(None)
+            .await
+            .expect("boot the actual native price history before limits activation");
+    }
+    let journal = busbar_kernel::persistence::journal::RuntimeJournal::open(core, node, budget)
+        .await
+        .expect("the fixture listener journal opens on its App's native Store");
     let book = crate::root::durability::node_book(journal, budget)
         .await
         .expect("the fixture listener retains its native NodeBook");
@@ -423,10 +469,14 @@ async fn actual_listener(
         .0
 }
 
-async fn side() -> (Arc<Inbound>, GuestList) {
+async fn side() -> (Arc<Inbound>, GuestList, Arc<busbar_kernel::state::App>) {
     let (app, config, book) = app(true).await;
-    let listener = actual_listener(app, &config, &book, true).await;
+    let listener = actual_listener(app.clone(), &config, &book, true).await;
     let guests = listener.guests.clone();
+    (install_side(listener), guests, app)
+}
+
+fn install_side(listener: kin::Listener) -> Arc<Inbound> {
     let next = Arc::new(AtomicU64::new(1));
     let inbound = Inbound::new(
         kin::Seals {
@@ -439,7 +489,7 @@ async fn side() -> (Arc<Inbound>, GuestList) {
     inbound
         .install(OWNER, GEN, listener)
         .expect("the actual declared line ids install");
-    (inbound, guests)
+    inbound
 }
 
 fn selected_line(guests: &GuestList, head: &kin::Head) -> u32 {
@@ -681,11 +731,12 @@ fn assert_current_admin_body_cap(response: &kin::Refusal) {
 }
 
 async fn refused_against(family: &str, cause: u32) -> Vec<String> {
-    let (side, guests) = side().await;
     let (router_app, router_config, router_book) = app(true).await;
     let token = captured_key(&router_app).await;
-    let (_, data, admin) =
+    let (listener, data, admin) =
         actual_listener_with_routers(router_app, &router_config, &router_book, true).await;
+    let guests = listener.guests.clone();
+    let side = install_side(listener);
     let mut failing = Vec::new();
     for (name, head, credentialed) in crosscut(family) {
         let captured = captured_request(&name);
@@ -830,7 +881,7 @@ async fn actual_listener_refusal_uses_only_its_sealed_claimant_route_and_dialect
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retained_listener_refusals_keep_the_actual_llm_producer_after_its_claims_are_removed() {
-    let (side, guests) = side().await;
+    let (side, guests, previous_app) = side().await;
     let (name, head, _) = crosscut("wrong-method")
         .into_iter()
         .find(|(_, head, credentialed)| head.target == "/v1/messages" && *credentialed)
@@ -857,7 +908,7 @@ async fn retained_listener_refusals_keep_the_actual_llm_producer_after_its_claim
         "the actual linked producer matches the retained wire golden"
     );
 
-    let (next_app, next_config, next_book) = app(false).await;
+    let (next_app, next_config, next_book) = app_generation(false, false, Some(previous_app)).await;
     let next = actual_listener(next_app, &next_config, &next_book, false).await;
     assert!(
         matches!(

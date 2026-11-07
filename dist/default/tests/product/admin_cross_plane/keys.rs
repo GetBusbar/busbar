@@ -8,6 +8,67 @@ const PROTO_ANTHROPIC: &str = "anthropic";
 
 use std::sync::Arc;
 
+// Each independent deployment gets a real process-owned price Store. Subcases
+// execute the same existing test by exact name and emit an execution witness.
+fn run_fixture_process(key: &str, value: &str, extra: &[(&str, &str)]) {
+    let current = std::thread::current();
+    let mut command = std::process::Command::new(std::env::current_exe().expect("test executable"));
+    command
+        .args(["--exact", current.name().expect("test name"), "--nocapture"])
+        .env(key, value);
+    for (name, value) in extra {
+        command.env(name, value);
+    }
+    let output = command.output().expect("execute isolated native fixture");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let witness = format!("BUSBAR_FIXTURE_SELECTED:{key}={value}");
+    assert!(
+        output.status.success()
+            && stdout.contains("test result: ok. 1 passed; 0 failed; 0 ignored;")
+            && (stdout.contains(&witness) || stderr.contains(&witness)),
+        "isolated fixture {key}={value} failed: {}\n{stdout}\n{stderr}",
+        output.status
+    );
+}
+
+fn isolated_fixture(key: &str, value: &str) -> bool {
+    match std::env::var(key) {
+        Ok(selected) if selected == value => {
+            eprintln!("BUSBAR_FIXTURE_SELECTED:{key}={value}");
+            false
+        }
+        Ok(_) => true,
+        Err(_) => {
+            run_fixture_process(key, value, &[]);
+            true
+        }
+    }
+}
+
+async fn attach_fixture_prices(app: &busbar_kernel::state::App) {
+    let store = app
+        .governance
+        .as_ref()
+        .expect("fixture governance")
+        .core_store_handle()
+        .expect("fixture native Store");
+    if let Some(previous) = crate::root::kernel::ROOT_CARD.card_store() {
+        assert!(
+            previous.is_bound_to(&store),
+            "independent deployments must use isolated fixture processes"
+        );
+    } else {
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(store, busbar_kernel::door::op_id().counter())
+            .expect("the fixture binds its actual native price Store");
+        crate::root::kernel::ROOT_CARD
+            .boot_in_store(None)
+            .await
+            .expect("the fixture boots its actual native price history");
+    }
+}
+
 /// The governance posture a keys error case is exercised against.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum KeysFixture {
@@ -86,6 +147,9 @@ async fn spin_up(
 }
 
 async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
+    if isolated_fixture("BUSBAR_ADMIN_FIXTURE_DRIVER", "unpriced_usage_reads") {
+        return Vec::new();
+    }
     crate::distribution::admin_cross_plane::ensure_seam();
     let store = crate::root::real_store::core().await;
     let gov = gov_with_signer(store, Some("admintok".to_string())).await;
@@ -185,6 +249,7 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
         .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
+        attach_fixture_prices(&app).await;
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -259,6 +324,9 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
 }
 
 async fn assert_unpriced_usage_read_is_named(prefix: &str) {
+    if isolated_fixture("BUSBAR_ADMIN_FIXTURE_DRIVER", "unpriced_usage_reads") {
+        return;
+    }
     let reads = drive_unpriced_usage_reads().await;
     let (path, status, body) = reads
         .iter()
@@ -343,6 +411,7 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
         .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
+        attach_fixture_prices(&app).await;
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -486,6 +555,7 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
         .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
+        attach_fixture_prices(&app).await;
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -604,6 +674,12 @@ fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
 /// It also asserts the audit consequence: every one of these refusals writes a `rejected` row —
 /// a refused mint is an attempt to issue a credential, and it must leave a trace.
 async fn drive_key_cap_and_delegation_errors() {
+    if isolated_fixture(
+        "BUSBAR_ADMIN_FIXTURE_DRIVER",
+        "key_cap_and_delegation_errors",
+    ) {
+        return;
+    }
     crate::distribution::admin_cross_plane::ensure_seam();
     let store = crate::root::real_store::core().await;
     let gov = gov_with_signer(store, Some("admintok".to_string())).await;
@@ -679,6 +755,7 @@ async fn drive_key_cap_and_delegation_errors() {
         .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
+        attach_fixture_prices(&app).await;
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -913,6 +990,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
         .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
+        attach_fixture_prices(&app).await;
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -1159,6 +1237,7 @@ async fn serve_keys_fixture(
                 .await
                 .expect("the product root builds the actual admin application");
                 limits.stage_boot();
+                attach_fixture_prices(&app).await;
                 limits.keep().await.expect("the product limits commit");
                 if let Some(rotate) = rotate {
                     rotate.await;
@@ -1243,6 +1322,7 @@ async fn serve_keys_fixture(
                 .await
                 .expect("the product root builds the actual admin application");
                 limits.stage_boot();
+                attach_fixture_prices(&app).await;
                 limits.keep().await.expect("the product limits commit");
                 if let Some(rotate) = rotate {
                     rotate.await;
@@ -1319,6 +1399,7 @@ async fn serve_keys_fixture(
             .await
             .expect("the product root builds the actual admin application");
             limits.stage_boot();
+            attach_fixture_prices(&app).await;
             limits.keep().await.expect("the product limits commit");
             if let Some(rotate) = rotate {
                 rotate.await;
@@ -1372,6 +1453,9 @@ async fn keys_error_surface_is_byte_stable() {
 }
 
 async fn drive_keys_error_surface() {
+    if isolated_fixture("BUSBAR_ADMIN_FIXTURE_DRIVER", "keys_error_surface") {
+        return;
+    }
     crate::distribution::admin_cross_plane::ensure_seam();
 
     const OVERLONG: &str = "vk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -1695,53 +1779,82 @@ async fn drive_keys_error_surface() {
 
     let client = reqwest::Client::new();
     let mut observed = serde_json::Map::new();
-    for fixture in [
-        KeysFixture::Signing,
-        KeysFixture::NoSigner,
-        KeysFixture::Off,
-    ] {
-        let (addr, server, live) = serve_keys_fixture(fixture).await;
-        for case in cases.iter().filter(|c| c.fixture == fixture) {
-            let path = case
-                .path
-                .replace("{overlong}", OVERLONG)
-                .replace("{missing}", MISSING)
-                .replace("{live}", &live);
-            let mut req = client
-                .request(
-                    reqwest::Method::from_bytes(case.method.as_bytes()).unwrap(),
-                    format!("http://{addr}/api/v1/admin{path}"),
-                )
-                .header("x-admin-token", "admintok");
-            for (k, v) in case.headers {
-                req = req.header(*k, *v);
-            }
-            if let Some(body) = case.body {
-                req = req
-                    .header("content-type", "application/json")
-                    .body(body.to_string());
-            }
-            let resp = req.send().await.unwrap();
-            let status = resp.status().as_u16();
-            let content_type = resp
-                .headers()
-                .get("content-type")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or_default()
-                .to_string();
-            let body = resp.text().await.unwrap();
-            assert!(
-                (400..600).contains(&status),
-                "{} expected an error response, got {status}: {body}",
-                case.name
-            );
-            observed.insert(
+    if let Ok(selected) = std::env::var("BUSBAR_KEYS_FIXTURE_CASE") {
+        eprintln!("BUSBAR_FIXTURE_SELECTED:BUSBAR_KEYS_FIXTURE_CASE={selected}");
+        for fixture in [
+            KeysFixture::Signing,
+            KeysFixture::NoSigner,
+            KeysFixture::Off,
+        ]
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, fixture)| (selected == index.to_string()).then_some(fixture))
+        {
+            let (addr, server, live) = serve_keys_fixture(fixture).await;
+            for case in cases.iter().filter(|c| c.fixture == fixture) {
+                let path = case
+                    .path
+                    .replace("{overlong}", OVERLONG)
+                    .replace("{missing}", MISSING)
+                    .replace("{live}", &live);
+                let mut req = client
+                    .request(
+                        reqwest::Method::from_bytes(case.method.as_bytes()).unwrap(),
+                        format!("http://{addr}/api/v1/admin{path}"),
+                    )
+                    .header("x-admin-token", "admintok");
+                for (k, v) in case.headers {
+                    req = req.header(*k, *v);
+                }
+                if let Some(body) = case.body {
+                    req = req
+                        .header("content-type", "application/json")
+                        .body(body.to_string());
+                }
+                let resp = req.send().await.unwrap();
+                let status = resp.status().as_u16();
+                let content_type = resp
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string();
+                let body = resp.text().await.unwrap();
+                assert!(
+                    (400..600).contains(&status),
+                    "{} expected an error response, got {status}: {body}",
+                    case.name
+                );
+                observed.insert(
                 case.name.to_string(),
                 serde_json::json!({"status": status, "content_type": content_type, "body": body}),
             );
+            }
+            server.abort();
         }
-        server.abort();
+
+        let output = std::env::var("BUSBAR_KEYS_FIXTURE_OUTPUT").expect("child result path");
+        assert!(
+            !observed.is_empty(),
+            "selected governance fixture executed its cases"
+        );
+        std::fs::write(output, serde_json::to_vec(&observed).unwrap()).unwrap();
+        return;
     }
+    let outputs = super::plugins::scratch("isolated-key-wire");
+    for index in 0..3 {
+        let path = outputs.join(format!("{index}.json"));
+        let path_text = path.to_str().unwrap();
+        run_fixture_process(
+            "BUSBAR_KEYS_FIXTURE_CASE",
+            &index.to_string(),
+            &[("BUSBAR_KEYS_FIXTURE_OUTPUT", path_text)],
+        );
+        let part: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        observed.extend(part);
+    }
+    std::fs::remove_dir_all(outputs).unwrap();
 
     let fresh = format!(
         "{}\n",
@@ -1919,6 +2032,7 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
         .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
+        attach_fixture_prices(&app).await;
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -1964,6 +2078,9 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
 }
 
 async fn drive_admin_error_surface() {
+    if isolated_fixture("BUSBAR_ADMIN_FIXTURE_DRIVER", "admin_error_surface") {
+        return;
+    }
     crate::distribution::admin_cross_plane::ensure_seam();
 
     const STALE: &str = "\"999999\"";
@@ -2703,7 +2820,10 @@ async fn drive_admin_error_surface() {
     ];
 
     let client = reqwest::Client::new();
-    for batch in cases.chunks(6) {
+    for (index, batch) in cases.chunks(6).enumerate() {
+        if isolated_fixture("BUSBAR_ADMIN_ERROR_BATCH", &index.to_string()) {
+            continue;
+        }
         let (addr, server) = admin_error_fixture().await;
         for (label, method, rel, if_match, body, want_status, want_code) in batch {
             let mut req = client
@@ -2743,6 +2863,9 @@ async fn plugin_reload_reports_an_unrebuildable_disk_config() {
 }
 
 async fn drive_plugin_reload_errors() {
+    if isolated_fixture("BUSBAR_ADMIN_FIXTURE_DRIVER", "plugin_reload_errors") {
+        return;
+    }
     crate::distribution::admin_cross_plane::ensure_seam();
 
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -2816,6 +2939,7 @@ async fn drive_plugin_reload_errors() {
         .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
+        attach_fixture_prices(&app).await;
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -2856,6 +2980,9 @@ async fn drive_plugin_reload_errors() {
 }
 
 async fn drive_plugin_rollback_errors() {
+    if isolated_fixture("BUSBAR_ADMIN_FIXTURE_DRIVER", "plugin_rollback_errors") {
+        return;
+    }
     crate::distribution::admin_cross_plane::ensure_seam();
 
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -2933,6 +3060,7 @@ async fn drive_plugin_rollback_errors() {
         .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
+        attach_fixture_prices(&app).await;
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -3097,6 +3225,9 @@ async fn drive_plugin_rollback_errors() {
 }
 
 async fn drive_plugin_inspect_errors() {
+    if isolated_fixture("BUSBAR_ADMIN_FIXTURE_DRIVER", "plugin_inspect_errors") {
+        return;
+    }
     crate::distribution::admin_cross_plane::ensure_seam();
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
@@ -3168,6 +3299,7 @@ async fn drive_plugin_inspect_errors() {
         .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
+        attach_fixture_prices(&app).await;
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -3598,6 +3730,7 @@ async fn named_map_app_opts(
     .await
     .expect("the actual product builds the named-map application");
     limits.stage_boot();
+    attach_fixture_prices(&app).await;
     limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate.await;
@@ -4404,6 +4537,9 @@ async fn assert_passthrough_is_refused_before_publication() {
 }
 
 async fn drive_door_verb_errors() {
+    if isolated_fixture("BUSBAR_ADMIN_FIXTURE_DRIVER", "door_verb_errors") {
+        return;
+    }
     assert_passthrough_is_refused_before_publication().await;
     let (tables, _admission) = publish_door(
         "tools",
@@ -4439,43 +4575,63 @@ async fn drive_door_verb_errors() {
 
 #[tokio::test]
 async fn a_door_admin_route_is_served_only_by_the_generation_lent_its_table() {
+    let selected = match std::env::var("BUSBAR_ADMIN_TABLE_CASE") {
+        Ok(selected) => selected,
+        Err(_) => {
+            for case in ["lent", "unlent"] {
+                run_fixture_process("BUSBAR_ADMIN_TABLE_CASE", case, &[]);
+            }
+            return;
+        }
+    };
+    assert!(matches!(selected.as_str(), "lent" | "unlent"));
+    eprintln!("BUSBAR_FIXTURE_SELECTED:BUSBAR_ADMIN_TABLE_CASE={selected}");
     assert_passthrough_is_refused_before_publication().await;
-    let (tables, _admission) = publish_door(
-        "tools",
-        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "cert_spki", "key": "sha256/l5WGzHWyALvI/qjcwI1ctxb3Jp8+8Ztd0NTYTcL0Q4s="}, "upstream_credentials": "own", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
-    ).await;
-    let (lent_dir, _lent_overlay, lent, lent_handle) =
-        named_map_app_serving("door-table-lent", tables).await;
-    let (unlent_dir, _unlent_overlay, unlent, unlent_handle) =
-        named_map_app("door-table-unlent", false).await;
-    let client = reqwest::Client::new();
-
-    let changes = |addr: std::net::SocketAddr| {
-        client
+    let (dir, _overlay, _addr, handle) = if selected == "lent" {
+        let (tables, _admission) = publish_door(
+            "tools",
+            r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "cert_spki", "key": "sha256/l5WGzHWyALvI/qjcwI1ctxb3Jp8+8Ztd0NTYTcL0Q4s="}, "upstream_credentials": "own", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
+        ).await;
+        // Admission stays alive through the fixture's requests, as in the original witness.
+        let fixture = named_map_app_serving("door-table-lent", tables).await;
+        let client = reqwest::Client::new();
+        let response = client
             .get(format!(
-                "http://{addr}/api/v1/admin/tools/base-tools/changes"
+                "http://{}/api/v1/admin/tools/base-tools/changes",
+                fixture.2
             ))
             .header("x-admin-token", "admintok")
             .send()
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(status, 200, "the lent generation serves the door: {body}");
+        assert_eq!(body.get("name").unwrap(), "base-tools", "{body}");
+        assert!(body.get("error").is_none(), "{body}");
+        fixture
+    } else {
+        let fixture = named_map_app("door-table-unlent", false).await;
+        let response = reqwest::Client::new()
+            .get(format!(
+                "http://{}/api/v1/admin/tools/base-tools/changes",
+                fixture.2
+            ))
+            .header("x-admin-token", "admintok")
+            .send()
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(
+            status, 404,
+            "a generation lent no table serves no door: {body}"
+        );
+        assert_eq!(body.pointer("/error/code").unwrap(), "not_found", "{body}");
+        fixture
     };
-    let r = changes(lent).await.unwrap();
-    let status = r.status().as_u16();
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(status, 200, "the lent generation serves the door: {body}");
-    assert_eq!(body.get("name").unwrap(), "base-tools", "{body}");
-    assert!(body.get("error").is_none(), "{body}");
-    let r = changes(unlent).await.unwrap();
-    let status = r.status().as_u16();
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(
-        status, 404,
-        "a generation lent no table serves no door: {body}"
-    );
-    assert_eq!(body.pointer("/error/code").unwrap(), "not_found", "{body}");
-    lent_handle.abort();
-    unlent_handle.abort();
-    let _ = std::fs::remove_dir_all(&lent_dir);
-    let _ = std::fs::remove_dir_all(&unlent_dir);
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn issuer_key_info(issuer: &ed25519_dalek::SigningKey) -> String {
@@ -4488,6 +4644,9 @@ fn issuer_key_info(issuer: &ed25519_dalek::SigningKey) -> String {
 }
 
 async fn drive_agent_door_verb_errors() {
+    if isolated_fixture("BUSBAR_ADMIN_FIXTURE_DRIVER", "agent_door_verb_errors") {
+        return;
+    }
     let issuer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
     let section = serde_json::json!({
         "base-agent": {
@@ -4547,6 +4706,9 @@ async fn drive_agent_door_verb_errors() {
 }
 
 async fn drive_named_map_errors() {
+    if isolated_fixture("BUSBAR_ADMIN_FIXTURE_DRIVER", "named_map_errors") {
+        return;
+    }
     linked_export_axis();
     let big_settings = {
         let mut m = serde_json::Map::new();
@@ -4764,6 +4926,9 @@ async fn drive_named_map_errors() {
 
     let client = reqwest::Client::new();
     for (batch_i, batch) in cases.chunks(8).enumerate() {
+        if isolated_fixture("BUSBAR_NAMED_MAP_CASE", &format!("batch-{batch_i}")) {
+            continue;
+        }
         let (dir, _overlay, addr, handle) =
             named_map_app(&format!("witness-{batch_i}"), false).await;
         for (label, method, rel, if_match, body, want_status, want_code) in batch {
@@ -4795,6 +4960,9 @@ async fn drive_named_map_errors() {
     }
 
     for section in ["identity-providers", "export", "tools", "agents"] {
+        if isolated_fixture("BUSBAR_NAMED_MAP_CASE", &format!("ephemeral-{section}")) {
+            continue;
+        }
         crate::distribution::admin_cross_plane::ensure_seam();
         let store = crate::root::real_store::core().await;
         let gov = gov_with_signer(store, Some("admintok".to_string())).await;
@@ -4867,6 +5035,7 @@ async fn drive_named_map_errors() {
             .await
             .expect("the product root builds the actual admin application");
             limits.stage_boot();
+            attach_fixture_prices(&app).await;
             limits.keep().await.expect("the product limits commit");
             if let Some(rotate) = rotate {
                 rotate.await;
@@ -4922,7 +5091,7 @@ async fn drive_named_map_errors() {
         handle.abort();
     }
 
-    {
+    if !isolated_fixture("BUSBAR_NAMED_MAP_CASE", "dangling") {
         let (dir, _overlay, addr, handle) = named_map_app("witness-dangling", true).await;
         let admin = |r: reqwest::RequestBuilder| {
             r.header("x-admin-token", "admintok")
