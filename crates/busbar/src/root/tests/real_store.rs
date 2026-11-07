@@ -4,6 +4,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[path = "native_store_startup.rs"]
+mod native_store_startup;
+pub(crate) use native_store_startup::core_over;
+
 use crate::root::loader::dispatch::{
     load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
 };
@@ -52,31 +56,6 @@ pub(crate) async fn native_backend() -> Arc<dyn busbar_contract::persistence::Pe
 
 pub(crate) async fn core() -> Arc<busbar_kernel::persistence::facade::CoreStore> {
     core_over(native_backend().await).await
-}
-
-pub(crate) async fn core_over(
-    backend: Arc<dyn busbar_contract::persistence::PersistenceBackend>,
-) -> Arc<busbar_kernel::persistence::facade::CoreStore> {
-    let mut startup = busbar_kernel::persistence::startup::Startup::new(
-        backend,
-        busbar_kernel::persistence::facade::Limits {
-            pending_operations: 1024,
-            conflict_retries: 8,
-            scan_items: 128,
-            scan_bytes: 1024 * 1024,
-        },
-        true,
-    )
-    .expect("valid native test storage authority");
-    loop {
-        use busbar_kernel::persistence::startup::Progress;
-        match startup.advance().await.expect("native storage startup") {
-            Progress::Advanced => {}
-            Progress::Admitted => break,
-            other => panic!("test startup did not admit: {other:?}"),
-        }
-    }
-    startup.store().expect("admitted core store")
 }
 
 pub(crate) async fn admin_scoped() -> Arc<busbar_kernel::persistence::scoped::ScopedStore> {

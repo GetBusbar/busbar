@@ -852,7 +852,7 @@ mod tests {
                 doc.publication.transform_id =
                     Sha256::digest(doc.publication.path.as_os_str().as_encoded_bytes()).into();
             }
-            inventory.digest = Sha256::digest(&inventory.material().unwrap()).into();
+            inventory.digest = Sha256::digest(inventory.material().unwrap()).into();
             inventory
         }
     }
