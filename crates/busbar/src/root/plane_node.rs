@@ -259,16 +259,29 @@ impl Node {
         seal: Option<impl Into<Sealing>>,
         lines: Vec<RecordLine>,
     ) {
-        let Some(seal) = seal.map(Into::<Sealing>::into) else {
-            return;
-        };
+        drop(self.seal_end_task(principal, arrived, card, ended, seal, lines));
+    }
+
+    fn seal_end_task(
+        &self,
+        principal: &PrincipalId,
+        arrived: Arrived,
+        card: Option<&crate::root::kernel::PinnedHistory>,
+        ended: busbar_kernel::teller::Ended,
+        seal: Option<impl Into<Sealing>>,
+        lines: Vec<RecordLine>,
+    ) -> Option<TerminalConfirmation> {
+        let seal = seal.map(Into::<Sealing>::into)?;
         let key = seal.seal.key;
         let completed =
             matches!(&ended, Ended::Settled { end, .. } if end.outcome().is_completed());
         let receipt = self.seal_end_ack(principal, arrived, card, ended, seal, lines);
         match receipt {
             Some(receipt) => receipt.confirm_terminal(self.ticket_custody.clone(), key, completed),
-            None => self.ticket_custody.terminal(key, false),
+            None => {
+                self.ticket_custody.terminal(key, false);
+                None
+            }
         }
     }
 
@@ -564,7 +577,7 @@ impl Node {
         match self.late_arm(Some(late), principal, arrived, history.as_ref()) {
             Some(mut arm) => {
                 arm.seal = seal;
-                arm.carrying(ended).post();
+                drop(arm.carrying(ended).post());
             }
             None => self.seal_end(
                 principal,
@@ -708,21 +721,28 @@ impl Node {
         Some((opened, ctx, session))
     }
 
-    fn seal_session(&self, key: UnitKey, mut open: OpenUnit, ended: Option<Ended>) {
+    fn seal_session(&self, key: UnitKey, open: OpenUnit, ended: Option<Ended>) {
+        drop(self.seal_session_task(key, open, ended));
+    }
+
+    fn seal_session_task(
+        &self,
+        key: UnitKey,
+        mut open: OpenUnit,
+        ended: Option<Ended>,
+    ) -> Option<TerminalConfirmation> {
         if let Some(ended) = ended {
             let Ended::Settled { end, .. } = ended else {
                 self.ticket_custody.terminal(key, false);
-                return;
+                return None;
             };
             open.sealing.said = Some(end.outcome());
             if end.into_posted().is_err() {
                 self.ticket_custody.terminal(key, false);
-                return;
+                return None;
             }
         }
-        let Some(book) = self.book.get() else {
-            return;
-        };
+        let book = self.book.get()?;
         let OpenUnit {
             principal,
             arrived,
@@ -731,13 +751,8 @@ impl Node {
             ..
         } = open;
         let (said, report) = (sealing.said.take(), sealing.report.take());
-        let Some(outcome) = said else {
-            return;
-        };
-        let Some(seal) = sealing.into_seal(key, self.kernel.origin(OriginKind::Client), None)
-        else {
-            return;
-        };
+        let outcome = said?;
+        let seal = sealing.into_seal(key, self.kernel.origin(OriginKind::Client), None)?;
         let (lines, fee_count) = report
             .as_ref()
             .map_or((Vec::new(), 0), |r| (report_lines(r), r.fee_count));
@@ -756,7 +771,10 @@ impl Node {
             Ok(receipt) => {
                 receipt.confirm_terminal(self.ticket_custody.clone(), key, outcome.is_completed())
             }
-            Err(_) => self.ticket_custody.terminal(key, false),
+            Err(_) => {
+                self.ticket_custody.terminal(key, false);
+                None
+            }
         }
     }
 
@@ -898,7 +916,11 @@ impl Node {
                 Response::from_parts(parts, axum::body::Body::new(LateBody::new(body, arm)))
             }
             None => {
-                self.seal_end(principal, arrived, history, ended, seal, Vec::new());
+                let confirmation =
+                    self.seal_end_task(principal, arrived, history, ended, seal, Vec::new());
+                if let Err(error) = await_terminal(confirmation).await {
+                    return journal_unavailable("", &error);
+                }
                 match self.retry_held_journal().await {
                     Ok(()) => response,
                     Err(error) => journal_unavailable("", &error),
@@ -991,7 +1013,7 @@ impl LateAccrual {
         self
     }
 
-    fn post(self) {
+    fn post(self) -> Option<TerminalConfirmation> {
         let LateAccrual {
             custody,
             book,
@@ -1012,7 +1034,7 @@ impl LateAccrual {
                 || report.usage.usage_units.values().any(|n| !n.is_zero())
         });
         let (Some(seal), Some(outcome)) = (seal, outcome) else {
-            return;
+            return None;
         };
         let key = seal.seal.key;
         let acknowledged = match report {
@@ -1041,12 +1063,15 @@ impl LateAccrual {
             ),
             None => {
                 custody.terminal(key, false);
-                return;
+                return None;
             }
         };
         match acknowledged {
             Ok(receipt) => receipt.confirm_terminal(custody, key, posted && completed),
-            Err(_) => custody.terminal(key, false),
+            Err(_) => {
+                custody.terminal(key, false);
+                None
+            }
         }
     }
 }
@@ -1078,10 +1103,8 @@ impl LateBody {
         }
     }
 
-    fn fire(&mut self) {
-        if let Some(arm) = self.arm.take() {
-            arm.post();
-        }
+    fn fire(&mut self) -> Option<TerminalConfirmation> {
+        self.arm.take().and_then(LateAccrual::post)
     }
 }
 
@@ -1101,10 +1124,11 @@ impl http_body::Body for LateBody {
         };
 
         if matches!(polled, std::task::Poll::Ready(None)) {
-            this.fire();
+            let terminal = this.fire();
             this.inner = None;
             let journal = this.journal.clone();
             this.confirmation = Some(Box::pin(async move {
+                await_terminal(terminal).await?;
                 journal
                     .flush()
                     .await
@@ -1147,7 +1171,7 @@ impl http_body::Body for LateBody {
 impl Drop for LateBody {
     fn drop(&mut self) {
         drop(self.inner.take());
-        self.fire();
+        drop(self.fire());
     }
 }
 
@@ -1210,7 +1234,8 @@ impl SessionSlot<'_> {
     }
 
     pub async fn finish(mut self, post: &NodeEndPost) -> Result<(), String> {
-        self.finish_inner(post, None, Evidence::default());
+        let confirmation = self.finish_inner(post, None, Evidence::default());
+        await_terminal(confirmation).await?;
         self.occupied.node.retry_held_journal().await
     }
 
@@ -1220,7 +1245,8 @@ impl SessionSlot<'_> {
         units: &U,
     ) -> Result<(), String> {
         let evidence = units.evidence(&self.ctx);
-        self.finish_inner(post, None, evidence);
+        let confirmation = self.finish_inner(post, None, evidence);
+        await_terminal(confirmation).await?;
         self.occupied.node.retry_held_journal().await
     }
 
@@ -1229,7 +1255,7 @@ impl SessionSlot<'_> {
         post: &NodeEndPost,
         override_outcome: Option<Outcome>,
         evidence: Evidence,
-    ) {
+    ) -> Option<TerminalConfirmation> {
         let node = self.occupied.node;
         let mut open = post.take(self.key);
         if let Some(open) = open.as_mut() {
@@ -1259,12 +1285,14 @@ impl SessionSlot<'_> {
                 evidence,
             )
         });
-        if let Some(open) = open {
-            node.seal_session(self.key, open, ended);
+        let confirmation = if let Some(open) = open {
+            node.seal_session_task(self.key, open, ended)
         } else {
             node.ticket_custody.terminal(self.key, false);
-        }
+            None
+        };
         self.occupied.reached_end = true;
+        confirmation
     }
 }
 
@@ -1279,13 +1307,13 @@ impl Drop for SessionSlot<'_> {
                         ..Evidence::default()
                     })
                     .unwrap_or_default();
-                self.finish_inner(
+                drop(self.finish_inner(
                     post,
                     Some(Outcome::Aborted(busbar_contract::caps::Abort::Kernel {
                         reason: busbar_contract::caps::ReasonCode::ClientGone,
                     })),
                     evidence,
-                );
+                ));
                 if let Some(money) = self.money.as_ref().and_then(|(money, _)| money.upgrade()) {
                     busbar_kernel::plane_driver::MoneySeam::abandoned(
                         &*money,
@@ -1745,6 +1773,18 @@ impl Accruing {
     }
 }
 
+// Serving waits for both native confirmation and ticket readiness. Dropping the
+// JoinHandle only detaches the owned task; cancellation never abandons its original.
+type TerminalConfirmation = tokio::task::JoinHandle<Result<(), String>>;
+
+async fn await_terminal(confirmation: Option<TerminalConfirmation>) -> Result<(), String> {
+    if let Some(task) = confirmation {
+        task.await
+            .map_err(|error| format!("terminal confirmation task failed: {error}"))??;
+    }
+    Ok(())
+}
+
 struct StagedAudit {
     journal: Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>,
     run: Arc<busbar_kernel::persistence::journal::runtime::StagedRun>,
@@ -1755,15 +1795,16 @@ impl StagedAudit {
         custody: Arc<crate::root::serve::TicketCustody>,
         key: UnitKey,
         completed: bool,
-    ) {
+    ) -> Option<TerminalConfirmation> {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             custody.terminal(key, false);
-            return;
+            return None;
         };
-        runtime.spawn(async move {
-            let confirmed = self.journal.confirm(&self.run).await.is_ok();
-            custody.terminal(key, completed && confirmed);
-        });
+        Some(runtime.spawn(async move {
+            let confirmed = self.journal.confirm(&self.run).await;
+            custody.terminal(key, completed && confirmed.is_ok());
+            confirmed.map_err(|error| format!("terminal audit is unconfirmed: {error:?}"))
+        }))
     }
 }
 
