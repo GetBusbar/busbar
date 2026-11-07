@@ -3898,8 +3898,10 @@ async fn a_correction_the_store_refuses_answers_503_with_the_reason() {
     let (status, body) = status_and_body(&answered);
     assert_eq!(status, 503, "{body}");
     assert!(
-        body.contains("Unavailable"),
-        "the store's reason is stated: {body}"
+        body.contains("sealed at journal position")
+            && body.contains("not yet kept by the store: Pending")
+            && body.contains("do not re-submit"),
+        "the native journal retains the correction instead of claiming durable success: {body}"
     );
 
     let before = book.lock().unwrap().journal.next_seq();
@@ -3938,7 +3940,13 @@ async fn commit_upgrade_answers_only_once_the_store_kept_its_record() {
         "{}",
         String::from_utf8_lossy(&answer.body)
     );
-    assert!(String::from_utf8_lossy(&answer.body).contains("Unavailable"));
+    let pending = String::from_utf8_lossy(&answer.body);
+    assert!(
+        pending.contains("sealed at journal position")
+            && pending.contains("not yet kept by the store: Pending")
+            && pending.contains("do not re-submit"),
+        "the unconfirmed commit stays retained: {pending}"
+    );
 
     let taking = NativeJournalStore::new().await;
     let book = a_book_over_the_store(&taking).await;
@@ -4044,8 +4052,23 @@ async fn a_commit_the_journal_retained_is_answered_not_yet_kept_and_lands() {
 
     refusing.store(false, std::sync::atomic::Ordering::SeqCst);
     append_the_next_record(&book).await;
-    let commits = replayed_amendments(&book).await.len();
-    assert_eq!(commits, 1, "the retained commit landed on the chain");
+    let chain = { book.lock().unwrap().chain_at() };
+    let records = chain
+        .read()
+        .await
+        .expect("the native journal reads")
+        .expect("the native journal verifies");
+    let commits: Vec<_> = records
+        .iter()
+        .filter(|record| record.class == busbar_kernel_wal::RecordClass::Policy)
+        .collect();
+    assert_eq!(commits.len(), 1, "the retained commit landed on the chain");
+    let mut commit = busbar_kernel_wal::BodyReader::new(&commits[0].body);
+    assert_eq!(commit.text(), Some(bound::COMMIT_UPGRADE_RECORD_TAG));
+    assert_eq!(commit.text(), Some(bound::RUNNING_RELEASE));
+    assert_eq!(commit.num(), Some(1_700_000_000));
+    assert_eq!(commit.text(), Some("admin"));
+    assert!(commit.is_done(), "the exact original commit body survived");
 }
 
 #[tokio::test]

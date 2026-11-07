@@ -926,31 +926,7 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
     )
     .await
     .expect("the product builds the actual admin application");
-    if !crate::root::kernel::ROOT_CARD.keeps_store() {
-        limits.stage_boot();
-        crate::root::kernel::ROOT_CARD
-            .keep_in_store(
-                built
-                    .governance
-                    .as_ref()
-                    .expect("the application has its configured governance Store")
-                    .core_store_handle()
-                    .expect("the configured Store exposes its actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            )
-            .expect("bind native price history");
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .await
-            .expect("the actual configured Store boots its initial rate history");
-    }
-    limits
-        .keep()
-        .await
-        .expect("the real application limits commit");
-    if let Some(rotate) = rotate {
-        rotate.await;
-    }
+    limits.stage_boot();
 
     let booted = std::sync::Arc::new(built);
     let book = crate::root::boot::book(&booted, "test-store")
@@ -961,77 +937,6 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
         "a node with a configured store carries it on its book"
     );
 
-    crate::dist_root_install::install();
-    let library_path = crate::root::test_plugins::application_store_library();
-    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual Store statement is valid")
-        .name;
-    let mut manifest = crate::root::test_plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    manifest.statement = Some(hex::encode(statement));
-    let library = std::fs::read(library_path).expect("the actual Store library reads");
-    let directory = crate::root::test_plugins::scratch(&format!(
-        "admin-unit-{}",
-        busbar_kernel::door::op_id().counter(),
-    ));
-    let archive = crate::root::test_plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &library,
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings = crate::root::test_plugins::application_store_settings(&directory);
-    assert!(
-        settings.is_object(),
-        "the actual Store settings are an object"
-    );
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {}, "models": {},
-        "auth": {"chain": [], "admin_auth": []},
-        "store": {"module": module, "settings": settings},
-        "advanced": {"allow_destinations": ["127.0.0.1"]},
-    }))
-    .expect("the real admin deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
-        .expect("the real admin deployment resolves");
-    let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
-        as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (built, rotate, limits) = crate::root::real_store::build_app(
-        config,
-        crate::root::test_plugins::trusted_config(&directory),
-        None,
-        Default::default(),
-        Default::default(),
-        (None, None),
-        None,
-        &rules,
-    )
-    .await
-    .expect("the product builds the actual admin application");
-    if !crate::root::kernel::ROOT_CARD.keeps_store() {
-        limits.stage_boot();
-        crate::root::kernel::ROOT_CARD
-            .keep_in_store(
-                built
-                    .governance
-                    .as_ref()
-                    .expect("the application has its configured governance Store")
-                    .core_store_handle()
-                    .expect("the configured Store exposes its actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            )
-            .expect("bind native price history");
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .await
-            .expect("the actual configured Store boots its initial rate history");
-    }
     limits
         .keep()
         .await
@@ -1039,7 +944,7 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let app = std::sync::Arc::new(built);
+    let app = booted;
     busbar_kernel::audit::auditlog::register_test_audit_stream(&app).await;
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
