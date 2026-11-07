@@ -121,15 +121,10 @@ async fn lane_less_healthz(opening: Option<bool>) -> (u16, Vec<u8>) {
         app.plane_sections = Some([decl.config_section].into_iter().collect());
         app.plane_slots.insert(decl.key, slot);
     }
-    tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap()
-        .block_on(async {
-            let resp = kernel::endpoints::healthz(kernel::state::CurrentApp(Arc::new(app))).await;
-            let status = resp.status().as_u16();
-            let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
-            (status, body.to_vec())
-        })
+    let resp = kernel::endpoints::healthz(kernel::state::CurrentApp(Arc::new(app))).await;
+    let status = resp.status().as_u16();
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+    (status, body.to_vec())
 }
 
 #[tokio::test]
