@@ -898,3 +898,77 @@ async fn shared_runtime_orders_prior_audit_staging_before_recovery_frames() {
 
 #[path = "usage_origin_final_fold.rs"]
 mod usage_origin_final_fold;
+
+#[tokio::test]
+async fn history_record_cache_bounds_native_proof_and_preserves_miss_and_final_guard() {
+    let backend = Arc::new(Backend::default());
+    let recovery = sink(Arc::new(attach(backend, 1).await), 7).await;
+    let mut events = Vec::new();
+    for id in 1..=6 {
+        let mut event = intent();
+        event.operation_id = [id; 16];
+        recovery.persist(&event).await.unwrap();
+        events.push(event);
+    }
+    let tip = head(&recovery.store, &events[0].operation_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .0;
+    let retained_tip = head(&recovery.store, &events[5].operation_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .0;
+    let mut history = History::new(&recovery.store);
+    history.proof(recovery.node).await.unwrap();
+    assert!(history.records.records.len() <= recovery.store.limits().scan_items);
+    assert!(history.records.bytes <= recovery.store.limits().scan_bytes);
+    assert!(!history
+        .records
+        .records
+        .contains_key(&(tip.node, tip.sequence)));
+    assert_eq!(history.candidate(&tip).await.unwrap().event, events[0]);
+    // A subsequent append cannot invalidate immutable original bytes, but it
+    // must still invalidate this attempt's final native authority predicates.
+    let mut next = intent();
+    next.operation_id = [7; 16];
+    recovery.persist(&next).await.unwrap();
+    assert_eq!(history.candidate(&tip).await.unwrap().event, events[0]);
+    assert!(history
+        .records
+        .records
+        .contains_key(&(retained_tip.node, retained_tip.sequence)));
+    assert_eq!(
+        history.candidate(&retained_tip).await.unwrap().event,
+        events[5]
+    );
+    assert!(history.finish().await.is_err());
+}
+
+#[tokio::test]
+async fn history_record_cache_never_publishes_an_incomplete_native_proof() {
+    let backend = Arc::new(Backend::default());
+    let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+    recovery.persist(&intent()).await.unwrap();
+    {
+        let mut state = backend.state.lock().unwrap();
+        let at = state
+            .rows
+            .iter()
+            .find_map(|(at, value)| {
+                JournalRecord::decode(value.expose(&crate::seal::lend()))
+                    .ok()
+                    .map(|_| at.clone())
+            })
+            .unwrap();
+        state
+            .rows
+            .insert(at, Secret::new(b"corrupt original".to_vec()));
+    }
+    let mut history = History::new(&recovery.store);
+    assert!(history.proof(recovery.node).await.is_err());
+    assert!(history.records.records.is_empty());
+    assert_eq!(history.records.bytes, 0);
+    assert!(history.proofs.is_empty());
+}

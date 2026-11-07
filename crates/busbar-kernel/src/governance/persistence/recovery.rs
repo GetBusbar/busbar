@@ -369,17 +369,68 @@ async fn heads(store: &CoreStore) -> Result<Vec<([u8; 16], Head)>, RecoveryError
     Ok(result)
 }
 
-/// One verification attempt retains only native head proofs and operation
-/// endpoint metadata. The full chain is streamed from immutable original frames.
+/// Immutable original frames retained only within one verification attempt.
+/// Both body allocation and entry metadata are bounded by the native page limits.
+#[derive(Default)]
+struct HistoryRecords {
+    records: BTreeMap<(u64, u64), Record>,
+    bytes: usize,
+}
+impl HistoryRecords {
+    fn insert(&mut self, record: Record, max_entries: usize, max_bytes: usize) {
+        let bytes = record.body.capacity();
+        if max_entries == 0 || bytes > max_bytes {
+            return;
+        }
+        while self.records.len() >= max_entries || self.bytes > max_bytes - bytes {
+            let Some((_, removed)) = self.records.pop_first() else {
+                break;
+            };
+            self.bytes -= removed.body.capacity();
+        }
+        if let Some(previous) = self.records.insert(record.identity(), record) {
+            self.bytes -= previous.body.capacity();
+        }
+        self.bytes += bytes;
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn history_records_bound_allocations_and_leave_misses_for_verified_fallback() {
+    let mut cache = HistoryRecords::default();
+    cache.insert(Record::new(1, 1, vec![1; 4]), 2, 8);
+    cache.insert(Record::new(1, 2, vec![2; 4]), 2, 8);
+    cache.insert(Record::new(2, 1, vec![3; 4]), 2, 8);
+    assert_eq!(cache.records.len(), 2);
+    assert_eq!(cache.bytes, 8);
+    assert!(!cache.records.contains_key(&(1, 1)));
+    // Charge allocated capacity even when the body length is small. A frame
+    // that cannot fit is a normal cache miss, never a verification refusal.
+    let mut oversized = Vec::with_capacity(9);
+    oversized.push(4);
+    cache.insert(Record::new(2, 2, oversized), 2, 8);
+    assert!(!cache.records.contains_key(&(2, 2)));
+    assert_eq!(cache.bytes, 8);
+    cache.insert(Record::new(3, 1, vec![5]), 1, 8);
+    assert_eq!(cache.records.len(), 1);
+    assert_eq!(cache.bytes, 1);
+}
+
+/// One verification attempt streams and proves the complete immutable prefix.
+/// Its bounded frame cache avoids replaying that prefix for each ancestry link;
+/// cache misses still use the original verified reader.
 struct History<'a> {
     store: &'a CoreStore,
     proofs: BTreeMap<u64, Arc<VerifiedHead>>,
+    records: HistoryRecords,
 }
 impl<'a> History<'a> {
     fn new(store: &'a CoreStore) -> Self {
         Self {
             store,
             proofs: BTreeMap::new(),
+            records: HistoryRecords::default(),
         }
     }
     async fn proof(&mut self, node: u64) -> Result<Arc<VerifiedHead>, RecoveryError> {
@@ -388,18 +439,32 @@ impl<'a> History<'a> {
         }
         let journal = StoreJournal::new(self.store, node).map_err(unavailable)?;
         let mut cursor = journal.historical_replay().await.map_err(unavailable)?;
-        while cursor.next().await.map_err(unavailable)?.is_some() {}
+        // Keep staging private until the entire prefix and its seal are valid.
+        // Taking the old cache also bounds the total retained allocation while
+        // proving another node; a failed proof simply discards cached frames.
+        let mut staged = std::mem::take(&mut self.records);
+        let limits = self.store.limits();
+        while let Some(record) = cursor.next().await.map_err(unavailable)? {
+            staged.insert(record, limits.scan_items, limits.scan_bytes);
+        }
         let proof = Arc::new(cursor.finish().map_err(unavailable)?);
+        self.records = staged;
         self.proofs.insert(node, proof.clone());
         Ok(proof)
     }
     async fn candidate(&mut self, at: &Head) -> Result<Candidate, RecoveryError> {
         let proof = self.proof(at.node).await?;
+        if let Some(record) = self.records.records.get(&(at.node, at.sequence)) {
+            return Self::decode_candidate(record);
+        }
         let journal = StoreJournal::new(self.store, at.node).map_err(unavailable)?;
         let record = journal
             .read_verified_record(&proof, at.sequence)
             .await
             .map_err(unavailable)?;
+        Self::decode_candidate(&record)
+    }
+    fn decode_candidate(record: &Record) -> Result<Candidate, RecoveryError> {
         let decoded = JournalRecord::decode(&record.body).map_err(invalid)?;
         if decoded.identity() != record.identity() {
             return Err(invalid("recovery key and sealed identity differ"));
