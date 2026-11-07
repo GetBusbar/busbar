@@ -1121,11 +1121,47 @@ fn a_slow_admin_door_does_not_stall_healthz() {
                                 assert!(count < 64 * 1024, "client wire overflow is a failure");
                                 count + 1
                             });
-                            let count = std::io::copy(
-                                &mut (&mut upstream).take(64 * 1024 + 1),
-                                &mut downstream,
-                            )
-                            .expect("forward actual issuer TLS bytes");
+                            // The verifier can finish consuming JWKS and close while the
+                            // issuer still writes TLS shutdown bytes. Count only bytes the
+                            // real verifier accepted. The wire, Pending, health and
+                            // authentication assertions below still apply.
+                            let mut count = 0u64;
+                            let mut bytes = [0u8; 8192];
+                            'issuer: while count <= 64 * 1024 {
+                                let cap = bytes.len().min((64 * 1024 + 1 - count) as usize);
+                                let read = match upstream.read(&mut bytes[..cap]) {
+                                    Ok(read) => read,
+                                    Err(error)
+                                        if error.kind() == std::io::ErrorKind::Interrupted =>
+                                    {
+                                        continue
+                                    }
+                                    Err(error) => panic!("read actual issuer TLS bytes: {error}"),
+                                };
+                                if read == 0 {
+                                    break;
+                                }
+                                let mut written = 0;
+                                while written < read {
+                                    match downstream.write(&bytes[written..read]) {
+                                        Ok(0) => panic!("the verifier accepted no TLS bytes"),
+                                        Ok(n) => {
+                                            written += n;
+                                            count += n as u64;
+                                        }
+                                        Err(error)
+                                            if error.kind() == std::io::ErrorKind::Interrupted => {}
+                                        Err(error)
+                                            if error.kind() == std::io::ErrorKind::BrokenPipe =>
+                                        {
+                                            break 'issuer
+                                        }
+                                        Err(error) => {
+                                            panic!("forward actual issuer TLS bytes: {error}")
+                                        }
+                                    }
+                                }
+                            }
                             let _ = downstream.shutdown(Shutdown::Both);
                             assert!(count <= 64 * 1024, "issuer wire overflow is a failure");
                             (forward.join().expect("the owned forwarder joins"), count)

@@ -6552,6 +6552,13 @@ pub(crate) mod door_boundary {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn connect_fetches_with_the_members_binding_and_never_for_a_passthrough_member() {
+        const EXACT: &str = concat!(
+            module_path!(),
+            "::connect_fetches_with_the_members_binding_and_never_for_a_passthrough_member"
+        );
+        let Some(case) = super::isolated_fixture_cases(EXACT, &["exchange", "passthrough"]) else {
+            return;
+        };
         let _one = PUBLISHING.lock().await;
         std::env::set_var(
             "BUSBAR_DOOR_CONNECT_TEST_SUBJECT",
@@ -6571,7 +6578,7 @@ pub(crate) mod door_boundary {
         let row = row();
         registry(row);
 
-        {
+        if case == "exchange" {
             let instance = "door-connect-exchange";
             let mut server = super::tool_door::TlsToolServer::listing(listed()).await;
             let mut tools = connect_section(&server, true);
@@ -6612,6 +6619,8 @@ pub(crate) mod door_boundary {
                 "busbar's own subject token"
             );
             server.close().await;
+            super::isolated_fixture_done(EXACT, &case);
+            return;
         }
 
         let mut server = super::tool_door::TlsToolServer::listing(listed()).await;
@@ -6642,6 +6651,7 @@ pub(crate) mod door_boundary {
         );
         assert!(server.heard.try_recv().is_err(), "connect fetched nothing");
         server.close().await;
+        super::isolated_fixture_done(EXACT, &case);
     }
 
     const APPLY_SUBJECT_VAR: &str = "BUSBAR_DOOR_APPLY_CONNECT_TEST_SUBJECT";
@@ -7090,6 +7100,17 @@ mod spent_ledger {
                 },
             )
             .expect("the second node verifies the same actual server");
+            let backend = crate::root::real_store::native_backend().await;
+            assert_eq!(
+                backend.info().durability,
+                busbar_contract::persistence::Durability::Ephemeral,
+                "the second node owns an actual independent native Memory store"
+            );
+            let core = crate::root::real_store::core_over(backend).await;
+            core.identity()
+                .put_key(&handoff.key)
+                .await
+                .expect("seed the same native caller before opening its governance and auth host");
             let mut node_b = Rig::with(
                 INSTANCE,
                 handoff.port,
@@ -7098,24 +7119,25 @@ mod spent_ledger {
                 Some(handoff.tools),
                 Footing {
                     tls: Some(Arc::new(tls)),
+                    ledger: Ledger::Store(core),
                     ..Footing::own()
                 },
                 &|app| app,
             )
             .await;
-            node_b
-                .store
-                .identity()
-                .put_key(&handoff.key)
-                .await
-                .expect("the independent node recognizes the same caller identity");
-            node_b
-                .gov
-                .refresh_async()
-                .await
-                .expect("publish the native caller identity");
             node_b.key = Arc::new(handoff.key);
             node_b.token = handoff.token;
+            assert!(
+                node_b
+                    .gov
+                    .verify_token(
+                        &node_b.bound_token(),
+                        busbar_kernel::store::now(),
+                        node_b.audience.as_deref()
+                    )
+                    .is_some(),
+                "the independent node admits the exact original signed caller"
+            );
             let second = redeem(&node_b, &handoff.state).await;
             assert!(
                 proceeded(&second),

@@ -96,7 +96,8 @@ fn bullets(text: &str, head: &str, bullet: &str) -> Vec<String> {
 
 #[test]
 fn the_observability_lift_out_meets_its_1_5_5_bytes() {
-    install();
+    // Migration detection also reads the current plane-owned configuration vocabulary.
+    crate::dist_root_install::install();
     let g = observability_golden();
     let text = |k: &str| field(&g, k);
     let raw = text("config");
@@ -147,8 +148,6 @@ fn the_observability_lift_out_meets_its_1_5_5_bytes() {
 
     let hints = g["hints"].as_sequence().expect("golden `hints`");
     assert!(!hints.is_empty(), "the golden carries 1.5.5's hints");
-    // The current reader routes providers/models/pools through their actual plane declarations.
-    crate::dist_root_install::install();
     for row in hints {
         let stderr = field(row, "stderr");
         let old = stderr
