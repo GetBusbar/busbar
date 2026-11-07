@@ -1193,9 +1193,6 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
         );
         scope.operation_finished(Ticket::NONE, false);
     };
-    hand_in(&mut conn, 7);
-    let admitted_app = Arc::downgrade(&new_app);
-    drop(new_app);
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
@@ -1252,7 +1249,12 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
     if let Some(rotate) = rotate {
         rotate.await;
     }
+    // Finish the asynchronous fixture setup before admitting the task whose
+    // never-polled cancellation this case exercises.
     let latest = std::sync::Arc::new(app);
+    hand_in(&mut conn, 7);
+    let admitted_app = Arc::downgrade(&new_app);
+    drop(new_app);
     for _ in 0..3 {
         assert!(inbound::publish(&latest).is_some());
     }

@@ -1266,11 +1266,11 @@ async fn a_stored_chain_that_does_not_verify_never_disarms_the_card_journal() {
 }
 #[tokio::test]
 async fn store_card_history_ignores_absent_and_unusable_data_directories_without_writing_files() {
-    let scratch = std::path::PathBuf::from("/Users/matthew/Developer/tmp/corefix-implementation")
-        .join(format!(
-            "native-price-files-{}",
-            busbar_kernel::door::op_id().counter()
-        ));
+    let scratch = std::env::temp_dir().join(format!(
+        "native-price-files-{}-{}",
+        std::process::id(),
+        busbar_kernel::door::op_id().counter()
+    ));
     std::fs::create_dir(&scratch).unwrap();
     let blocked = scratch.join("a-file-not-a-directory");
     std::fs::write(&blocked, b"unchanged fixture").unwrap();

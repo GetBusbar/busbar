@@ -80,7 +80,7 @@ async fn the_credential_read_follows_the_app_swap() {
         let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (mut app, rotate, limits) = crate::root::real_store::build_app(
             config,
             Default::default(),
             None,
@@ -140,7 +140,7 @@ async fn the_credential_read_follows_the_app_swap() {
             let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
             let rules = Arc::new(crate::root::door_steps::Rules::default())
                 as Arc<dyn busbar_kernel::appbuild::RootRules>;
-            let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+            let (mut app, rotate, limits) = crate::root::real_store::build_app(
                 config,
                 Default::default(),
                 None,
@@ -250,7 +250,7 @@ async fn a_late_source_refuses_until_its_handle_is_set() {
         let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (mut app, rotate, limits) = crate::root::real_store::build_app(
             config,
             Default::default(),
             None,
