@@ -421,11 +421,9 @@ async fn test_admin_v1_plugins_catalog_by_type() {
 
     let hooks: serde_json::Value = get("hooks").await.json().await.unwrap();
     let h_items = hooks["items"].as_array().unwrap();
-    assert!(
-        h_items
-            .iter()
-            .any(|p| p["name"] == "weighted" && p["loader"] == "compiled-in")
-    );
+    assert!(h_items
+        .iter()
+        .any(|p| p["name"] == "weighted" && p["loader"] == "compiled-in"));
     for linked in busbar_kernel::preflight::root_rows().hook_names {
         assert!(
             h_items
@@ -648,41 +646,31 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
 
     assert_eq!(body["version"], 0, "fresh config is version 0");
     assert!(body["auth"]["chain"].is_array());
-    assert!(
-        body["pools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|p| p["name"] == "p")
-    );
-    assert!(
-        body["models"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|m| m["model"] == "m")
-    );
-    assert!(
-        body["providers"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|p| p["provider"] == "prov")
-    );
-    assert!(
-        body["hooks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|h| h["name"] == "g")
-    );
-    assert!(
-        body["global_hooks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|n| n == "g")
-    );
+    assert!(body["pools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["name"] == "p"));
+    assert!(body["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["model"] == "m"));
+    assert!(body["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["provider"] == "prov"));
+    assert!(body["hooks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|h| h["name"] == "g"));
+    assert!(body["global_hooks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|n| n == "g"));
 
     for needle in ["admintok", "client_tokens", "api_key", "secret"] {
         assert!(

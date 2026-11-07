@@ -6,14 +6,14 @@
 use busbar_contract::plugin::Kind;
 use busbar_contract::records::PlaneSelector;
 use busbar_kernel::audit::auditlog::{
-    AUDIT_LOG, PluginRefusal, emit_admin_hostless_now, plugin_refusal_resource,
-    record_plugin_refusal,
+    emit_admin_hostless_now, plugin_refusal_resource, record_plugin_refusal, PluginRefusal,
+    AUDIT_LOG,
 };
 use busbar_kernel::audit_ring::OUTCOME_APPLIED;
 use std::io::{BufRead, Write};
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::root::test_plugins as plugins;
@@ -56,18 +56,17 @@ impl Drop for WriterLock {
                 .write_all(b"release\n")
                 .expect("release the actual SQLite writer lock");
         }
-        assert!(
-            self.0
-                .wait()
-                .expect("wait for SQLite lock control")
-                .success()
-        );
+        assert!(self
+            .0
+            .wait()
+            .expect("wait for SQLite lock control")
+            .success());
     }
 }
 
 #[tokio::test]
-async fn accepted_audit_records_recover_once_on_actual_sqlite_and_hydration_does_not_accept_them_again()
- {
+async fn accepted_audit_records_recover_once_on_actual_sqlite_and_hydration_does_not_accept_them_again(
+) {
     const CHILD: &str = "BUSBAR_ACTUAL_ACCEPTED_EVENTS_CHILD";
     const WITNESS: &str = "actual SQLite accepted-event controls completed";
     if std::env::var_os(CHILD).is_none() {

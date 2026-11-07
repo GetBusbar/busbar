@@ -116,11 +116,9 @@ fn a_declared_token_endpoint_keeps_host_metadata_policy() {
             errors.iter().any(|e| e.contains("blocked cloud-metadata")),
             "{target}: {errors:?}"
         );
-        assert!(
-            !errors
-                .iter()
-                .any(|e| e.contains("scope") || e.contains("http or https"))
-        );
+        assert!(!errors
+            .iter()
+            .any(|e| e.contains("scope") || e.contains("http or https")));
     }
     provider.token_url = Some("foreign://169.254.169.254:443/token".into());
     provider.allow_metadata_hosts.push("169.254.169.254".into());
@@ -170,11 +168,9 @@ fn declared_provider_destinations_are_located_without_a_protocol_allowlist() {
     assert!(validate_provider_destinations(&cfg, &[], &locate).is_ok());
     cfg.providers.get_mut("foreign").unwrap().base_url = "missing://api.example:7443".into();
     let errors = validate_provider_destinations(&cfg, &[], &locate).unwrap_err();
-    assert!(
-        errors
-            .iter()
-            .any(|e| e.contains("provider 'foreign'") && e.contains("claim 'missing'"))
-    );
+    assert!(errors
+        .iter()
+        .any(|e| e.contains("provider 'foreign'") && e.contains("claim 'missing'")));
 }
 
 #[test]
@@ -1272,11 +1268,9 @@ fn test_validate_refuses_every_duration_past_the_runtime_horizon() {
         validate(&cfg)
     );
 
-    assert!(
-        std::time::Instant::now()
-            .checked_add(std::time::Duration::from_millis(MAX_DURATION_MS))
-            .is_some()
-    );
+    assert!(std::time::Instant::now()
+        .checked_add(std::time::Duration::from_millis(MAX_DURATION_MS))
+        .is_some());
 }
 
 fn validate_cost_metadata(
@@ -1554,7 +1548,7 @@ fn a_card_configuring_an_undeclared_class_fails_naming_it_and_the_declared_list(
 
 #[test]
 fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
-    use busbar_kernel_ledger::cost::{PER_SESSION, PlaneFees};
+    use busbar_kernel_ledger::cost::{PlaneFees, PER_SESSION};
     let session: &'static crate::plane_driver::registry::PlaneDeclaration =
         Box::leak(Box::new(crate::plane_driver::registry::PlaneDeclaration {
             key: "session-plane",

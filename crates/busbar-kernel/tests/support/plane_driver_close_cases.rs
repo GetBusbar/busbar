@@ -107,7 +107,9 @@ impl busbar_kernel::plane_driver::HookBinder for Rewrites {
             )],
             key: None,
             scan: None,
-            reads: Arc::new(|_: &str, _: Option<&str>, _: &str, _: bool| {}),
+            reads: Arc::new(|_: &str, _: Option<&str>, _: &str, _: bool| {
+                Box::pin(async { Ok(()) })
+            }),
         })
     }
 }
@@ -517,7 +519,7 @@ async fn closed_by(exit: Exit) -> u32 {
             } else {
                 r.driver = r
                     .driver
-                    .with_records(records(), instance())
+                    .with_records(records().await, instance())
                     .with_refused_piece();
                 Gone {
                     unsent: None,

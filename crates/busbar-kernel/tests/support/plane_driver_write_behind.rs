@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::atomic::AtomicUsize;
-use std::sync::Condvar;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 
-use busbar_kernel::host_records::{record_key, Acked, BATCH_CAP, FLUSH_INTERVAL};
+use busbar_contract::kinds::RecordBytes;
+use busbar_contract::persistence::{
+    BackendInfo, Call, ClockObservation, DatasetId, Decision, Page, PersistenceBackend,
+    PreparedCandidate, Read, ReadResult, Scan,
+};
+use busbar_kernel::host_records::{Acked, BATCH_CAP, FLUSH_INTERVAL};
+use busbar_kernel::host_services::{AsyncJob, Offload};
+use busbar_kernel::persistence::{facade::CoreStore, scoped::ScopedStore};
 
 use super::*;
 
@@ -14,129 +20,135 @@ fn task() -> RecordSchemaId {
     RecordSchemaId::new(TASK)
 }
 
-/// A store whose puts wait at the gate until the test opens it.
+/// Gate the actual primitive commit after Startup and instance admission complete.
 #[derive(Default)]
 struct Gate {
-    open: Mutex<bool>,
-    cv: Condvar,
+    armed: AtomicBool,
+    open: AtomicBool,
+    changed: tokio::sync::Notify,
     entered: AtomicUsize,
 }
-
 impl Gate {
-    fn pass(&self) {
+    fn arm(&self) {
+        self.armed.store(true, Ordering::SeqCst);
+    }
+    async fn pass(&self) {
+        if !self.armed.load(Ordering::SeqCst) {
+            return;
+        }
         self.entered.fetch_add(1, Ordering::SeqCst);
-        let mut open = self.open.lock().unwrap();
-        while !*open {
-            open = self.cv.wait(open).unwrap();
+        loop {
+            let changed = self.changed.notified();
+            if self.open.load(Ordering::SeqCst) {
+                return;
+            }
+            changed.await;
         }
     }
-
     fn release(&self) {
-        *self.open.lock().unwrap() = true;
-        self.cv.notify_all();
+        self.open.store(true, Ordering::SeqCst);
+        self.changed.notify_waiters();
     }
-
     fn entered(&self) -> usize {
         self.entered.load(Ordering::SeqCst)
     }
 }
-
 struct Gated {
-    rows: Rows,
+    actual: Arc<dyn PersistenceBackend>,
     gate: Arc<Gate>,
 }
-
-impl RecordRows for Gated {
-    fn claim(
-        &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> Result<bool, busbar_contract::kinds::StoreError> {
-        Ok(true)
+impl PersistenceBackend for Gated {
+    fn info(&self) -> BackendInfo {
+        self.actual.info()
     }
-    fn record_put(&self, s: RecordSchemaId, k: &[u8], v: &RecordBytes) -> Result<(), StoreError> {
-        self.gate.pass();
-        self.rows.record_put(s, k, v)
+    fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
+        self.actual.clock(dataset)
     }
-
-    fn record_get(&self, s: RecordSchemaId, k: &[u8]) -> Result<Option<RecordBytes>, StoreError> {
-        self.rows.record_get(s, k)
+    fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
+        self.actual.read(request)
     }
-
-    fn record_scan(
-        &self,
-        s: RecordSchemaId,
-        prefix: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
-        self.rows.record_scan(s, prefix, limit)
+    fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
+        self.actual.scan(request)
+    }
+    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+        Box::pin(async move {
+            self.gate.pass().await;
+            self.actual.commit(candidate).await
+        })
     }
 }
-
 struct Threads;
-
 impl Offload for Threads {
     fn run(&self, job: Box<dyn FnOnce() + Send>) {
         std::thread::spawn(job);
     }
+    fn run_async(&self, job: AsyncJob) {
+        drop(tokio::spawn(job));
+    }
 }
-
-/// Refuses (drops unrun) the first job, then runs every later one at once.
+/// Refuse the first actual asynchronous flush job, then let the cadence retry it.
 #[derive(Default)]
 struct RefusesFirst(AtomicUsize);
-
 impl Offload for RefusesFirst {
     fn run(&self, job: Box<dyn FnOnce() + Send>) {
         if self.0.fetch_add(1, Ordering::SeqCst) > 0 {
             job();
         }
     }
+    fn run_async(&self, job: AsyncJob) {
+        if self.0.fetch_add(1, Ordering::SeqCst) > 0 {
+            drop(tokio::spawn(job));
+        }
+    }
 }
-
-type Job = Box<dyn FnOnce() + Send>;
-
-/// Holds every job until the test runs them; its clones share the jobs.
 #[derive(Default, Clone)]
-struct Held(Arc<Mutex<Vec<Job>>>);
-
+struct Held(Arc<Mutex<Vec<AsyncJob>>>);
 impl Held {
-    fn run_all(&self) -> usize {
+    async fn run_all(&self) -> usize {
         let jobs = std::mem::take(&mut *self.0.lock().unwrap());
         let n = jobs.len();
-        jobs.into_iter().for_each(|job| job());
+        for job in jobs {
+            job.await;
+        }
         n
     }
 }
-
 impl Offload for Held {
     fn run(&self, job: Box<dyn FnOnce() + Send>) {
+        self.run_async(Box::pin(async move {
+            job();
+        }));
+    }
+    fn run_async(&self, job: AsyncJob) {
         self.0.lock().unwrap().push(job);
     }
 }
-
-fn services_over(
-    rows: impl FnOnce(Arc<LoadedStore>) -> Arc<dyn RecordRows>,
+async fn services_over(
+    decorate: impl FnOnce(Arc<dyn PersistenceBackend>) -> Arc<dyn PersistenceBackend>,
     pool: Arc<dyn Offload>,
-) -> (Arc<KernelServices>, Arc<LoadedStore>) {
-    let store = actual_store();
-    let s = KernelServices::new()
-        .with_records(rows(Arc::clone(&store)))
-        .with_pool(pool);
-    let facts = InstanceFacts {
-        record_kinds: vec![task()],
-        ..InstanceFacts::default()
-    };
-    s.admit("inst", facts).unwrap();
+) -> (Arc<KernelServices>, Arc<CoreStore>) {
+    let backend = super::real_store::native_backend().await;
+    let store = super::real_store::core_over(decorate(backend)).await;
+    let s = KernelServices::new().with_pool(pool);
+    assert!(s.attach_persistence(store.clone()));
+    s.admit(
+        "inst",
+        InstanceFacts {
+            record_kinds: vec![task()],
+            ..InstanceFacts::default()
+        },
+    )
+    .await
+    .unwrap();
     (Arc::new(s), store)
 }
-
-fn stored(store: &Arc<LoadedStore>, key: &[u8]) -> Option<Vec<u8>> {
-    Rows(Arc::clone(store))
-        .record_get(task(), &record_key("inst", key))
+async fn stored(store: &Arc<CoreStore>, key: &[u8]) -> Option<Vec<u8>> {
+    ScopedStore::authorized(store.clone(), "inst", [TASK.into()])
         .unwrap()
-        .map(|v| v.as_slice().to_vec())
+        .get(TASK, key)
+        .await
+        .unwrap()
+        .map(|value| value.expose(&busbar_kernel::seal::lend()).clone())
 }
 
 fn completed(o: &busbar_contract::caps::Outcome) -> bool {
@@ -154,10 +166,10 @@ fn answers() -> (Answers, impl Fn() -> Acked) {
     })
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_write_left_queued_is_flushed_within_one_interval_whatever_the_planes_ticks() {
-    let (s, store) = services_over(|m| Arc::new(Rows(m)), Arc::new(RefusesFirst::default()));
-    let (_plane, _book, driver) = driven(0);
+    let (s, store) = services_over(|backend| backend, Arc::new(RefusesFirst::default())).await;
+    let (_plane, _book, driver) = driven(0).await;
     tokio::time::timeout(Duration::from_secs(5), driver.ticks())
         .await
         .expect("the instance's schedule ends at once");
@@ -176,8 +188,12 @@ async fn a_write_left_queued_is_flushed_within_one_interval_whatever_the_planes_
             .is_err(),
         "the unit waits on its write"
     );
-    assert_eq!(get(&s, b"a").bytes, b"1", "read-your-writes while queued");
-    assert_eq!(stored(&store, b"a"), None);
+    assert_eq!(
+        get(&s, b"a").await.bytes,
+        b"1",
+        "read-your-writes while queued"
+    );
+    assert_eq!(stored(&store, b"a").await, None);
     let o = tokio::time::timeout(FLUSH_INTERVAL * 3, &mut unit)
         .await
         .expect("the cadence flushed the write");
@@ -187,15 +203,15 @@ async fn a_write_left_queued_is_flushed_within_one_interval_whatever_the_planes_
         "flushed within one interval: {:?}",
         started.elapsed()
     );
-    assert_eq!(stored(&store, b"a"), Some(b"1".to_vec()));
+    assert_eq!(stored(&store, b"a").await, Some(b"1".to_vec()));
     assert_eq!(s.pending().queued(), 0);
     cadence.abort();
 }
 
-#[test]
-fn a_burst_past_one_batch_is_carried_by_the_one_flush() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_burst_past_one_batch_is_carried_by_the_one_flush() {
     let held = Held::default();
-    let (s, store) = services_over(|m| Arc::new(Rows(m)), Arc::new(held.clone()));
+    let (s, store) = services_over(|backend| backend, Arc::new(held.clone())).await;
     let (got, acked) = answers();
     let n = 2 * BATCH_CAP + 1;
     for i in 0..n {
@@ -208,29 +224,26 @@ fn a_burst_past_one_batch_is_carried_by_the_one_flush() {
         "nothing answered before the store took it"
     );
     assert_eq!(s.pending().queued(), n);
-    assert_eq!(held.run_all(), 1, "one flush for the whole burst");
+    assert_eq!(held.run_all().await, 1, "one flush for the whole burst");
     assert_eq!(got.lock().unwrap().len(), n);
     assert!(got.lock().unwrap().iter().all(Result::is_ok));
     assert_eq!(s.pending().queued(), 0);
     assert_eq!(
-        stored(&store, format!("k{:04}", n - 1).as_bytes()),
+        stored(&store, format!("k{:04}", n - 1).as_bytes()).await,
         Some(format!("v{}", n - 1).into_bytes())
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pieces_record_write_is_in_the_store_before_its_unit_completes() {
     let gate = Arc::new(Gate::default());
     let g = Arc::clone(&gate);
     let (s, store) = services_over(
-        move |m| {
-            Arc::new(Gated {
-                rows: Rows(m),
-                gate: g,
-            })
-        },
+        move |actual| Arc::new(Gated { actual, gate: g }),
         Arc::new(Threads),
-    );
+    )
+    .await;
+    gate.arm();
     let mut r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
     r.driver = r.driver.with_records(Arc::clone(&s), instance());
     let unit = write(&r.driver, b"a=1");
@@ -242,9 +255,9 @@ async fn a_pieces_record_write_is_in_the_store_before_its_unit_completes() {
         "the unit completed before the store took its write"
     );
     assert_eq!(gate.entered(), 1, "the put reached the store");
-    assert_eq!(stored(&store, b"a"), None);
+    assert_eq!(stored(&store, b"a").await, None);
     assert_eq!(
-        get(&s, b"a").bytes,
+        get(&s, b"a").await.bytes,
         b"1",
         "read-your-writes while the store holds it"
     );
@@ -253,12 +266,12 @@ async fn a_pieces_record_write_is_in_the_store_before_its_unit_completes() {
         .await
         .expect("the unit completes once the store took the write");
     assert!(completed(&o), "{o:?}");
-    assert_eq!(stored(&store, b"a"), Some(b"1".to_vec()));
+    assert_eq!(stored(&store, b"a").await, Some(b"1".to_vec()));
 }
 
-#[test]
-fn a_claim_is_spent_in_the_store_before_it_answers() {
-    let (s, store) = services_over(|m| Arc::new(Rows(m)), Arc::new(Threads));
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claim_is_spent_in_the_store_before_it_answers() {
+    let (s, store) = services_over(|backend| backend, Arc::new(Threads)).await;
     let (tx, rx) = std::sync::mpsc::channel();
     let ran = s.records_claim(
         &instance(),
@@ -269,9 +282,8 @@ fn a_claim_is_spent_in_the_store_before_it_answers() {
     );
     assert!(matches!(ran, Ran::Later));
     assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(svc::CLAIM_WON));
-    let fresh = KernelServices::new()
-        .with_records(Arc::new(Rows(Arc::clone(&store))))
-        .with_pool(Arc::new(Inline));
+    let fresh = KernelServices::new().with_pool(Arc::new(Threads));
+    assert!(fresh.attach_persistence(store.clone()));
     fresh
         .admit(
             "inst",
@@ -280,24 +292,22 @@ fn a_claim_is_spent_in_the_store_before_it_answers() {
                 ..InstanceFacts::default()
             },
         )
+        .await
         .unwrap();
-    let again = answer(|l| fresh.records_claim(&instance(), TASK, b"nonce", 60_000, l));
+    let again = answer(|l| fresh.records_claim(&instance(), TASK, b"nonce", 60_000, l)).await;
     assert_eq!(again.value, svc::CLAIM_TAKEN);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_hung_store_holds_neither_the_reload_nor_the_drain() {
     let gate = Arc::new(Gate::default());
     let g = Arc::clone(&gate);
     let (s, store) = services_over(
-        move |m| {
-            Arc::new(Gated {
-                rows: Rows(m),
-                gate: g,
-            })
-        },
+        move |actual| Arc::new(Gated { actual, gate: g }),
         Arc::new(Threads),
-    );
+    )
+    .await;
+    gate.arm();
     let mut r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
     r.driver = r.driver.with_records(Arc::clone(&s), instance());
     let unit = write(&r.driver, b"a=1");
@@ -331,5 +341,5 @@ async fn a_hung_store_holds_neither_the_reload_nor_the_drain() {
         s.drain(Duration::from_secs(5)),
         "the store answered: the drain completes"
     );
-    assert_eq!(stored(&store, b"a"), Some(b"1".to_vec()));
+    assert_eq!(stored(&store, b"a").await, Some(b"1".to_vec()));
 }

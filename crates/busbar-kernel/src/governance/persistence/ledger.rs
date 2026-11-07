@@ -18,17 +18,17 @@ use crate::persistence::{
     keys, partition,
 };
 use busbar_contract::{
-    Secret,
     persistence::{
-        Address, CANDIDATE_VERSION, Candidate, Decision, ExpectedValue, Failure, Mutation,
-        NamespaceId, Predicate, PreparedCandidate, Read, ReadResult,
+        Address, Candidate, Decision, ExpectedValue, Failure, Mutation, NamespaceId, Predicate,
+        PreparedCandidate, Read, ReadResult, CANDIDATE_VERSION,
     },
     records::{
-        MeteringDelta, MeteringRow, OpId, RecordStoreError, RecordStoreResult, UsageDelta,
-        UsageLedger, correction, dedupe::Dedupe,
+        correction, dedupe::Dedupe, MeteringDelta, MeteringRow, OpId, RecordStoreError,
+        RecordStoreResult, UsageDelta, UsageLedger,
     },
+    Secret,
 };
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 pub const USAGE: NamespaceId = NamespaceId(*b"busbar.usage.v1\0");
 pub const METERING: NamespaceId = NamespaceId(*b"busbar.meter.v1\0");

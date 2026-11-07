@@ -72,8 +72,8 @@ async fn final_ticket_admission_uses_the_actual_key_and_spends_the_record_once()
 }
 
 #[tokio::test]
-async fn a_signed_identity_preempts_ticket_consumption_but_a_matched_invalid_ticket_never_falls_through()
- {
+async fn a_signed_identity_preempts_ticket_consumption_but_a_matched_invalid_ticket_never_falls_through(
+) {
     let (gov, _, ticket, now) = actual_ticket("signed-ticket-priority").await;
     assert!(
         ticket_verdict(true, true, Some("tk_"), Some(&ticket), Some(&gov), now)
@@ -91,12 +91,10 @@ async fn a_signed_identity_preempts_ticket_consumption_but_a_matched_invalid_tic
         (true, Some("other_"), Some(ticket.as_str())),
         (true, Some("tk_"), None),
     ] {
-        assert!(
-            ticket_verdict(false, keys, prefix, token, Some(&gov), now)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(ticket_verdict(false, keys, prefix, token, Some(&gov), now)
+            .await
+            .unwrap()
+            .is_none());
     }
     assert!(gov.peek_ticket_async("tk_", &ticket, now).await.is_some());
     assert!(
@@ -166,19 +164,17 @@ async fn refused_host_custody_never_spends_the_durable_ticket() {
         }
     }
     let (gov, _, ticket, now) = actual_ticket("missing-host-custody").await;
-    assert!(
-        claimed_ticket_verdict(
-            false,
-            true,
-            Some("tk_"),
-            Some(&ticket),
-            Some(&gov),
-            now,
-            &Refuse,
-        )
-        .await
-        .is_err()
-    );
+    assert!(claimed_ticket_verdict(
+        false,
+        true,
+        Some("tk_"),
+        Some(&ticket),
+        Some(&gov),
+        now,
+        &Refuse,
+    )
+    .await
+    .is_err());
     assert!(gov.peek_ticket_async("tk_", &ticket, now).await.is_some());
     assert!(gov.admit_ticket_async("tk_", &ticket, now).await.is_some());
 }

@@ -5,7 +5,7 @@
 
 use busbar_contract::net::{host_is_private_or_loopback, target_host, url_authority};
 
-use super::{MetadataPosture, ssrf_blocked_host};
+use super::{ssrf_blocked_host, MetadataPosture};
 use crate::config::RootCfg;
 
 /// The selected transport's target interpretation, before DNS or connection establishment.

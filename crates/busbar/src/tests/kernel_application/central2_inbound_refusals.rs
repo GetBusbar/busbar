@@ -3,7 +3,7 @@
 
 use crate::root::test_plugins as plugins;
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
-use busbar_contract::abi::host::service::{FLOW_STOP, REFUSE_STOPPED, UnitRef};
+use busbar_contract::abi::host::service::{UnitRef, FLOW_STOP, REFUSE_STOPPED};
 use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
 use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use busbar_kernel::inbound::{Call, Head, Listener, ListenerScope, Refusal, Refuse};
@@ -432,11 +432,10 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
         got, want,
         "a private listener keeps its native fallback bytes"
     );
-    assert!(
-        !got.fields
-            .iter()
-            .any(|(name, _)| name == "www-authenticate")
-    );
+    assert!(!got
+        .fields
+        .iter()
+        .any(|(name, _)| name == "www-authenticate"));
     println!("{WITNESS}");
 }
 

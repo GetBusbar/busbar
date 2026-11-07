@@ -24,7 +24,7 @@
 //!   - the inventory comparison is set EQUALITY in both directions, so neither a new type nor a
 //!     stale entry passes.
 
-use super::{SECRET_BEARING_TYPES, SecretBearing};
+use super::{SecretBearing, SECRET_BEARING_TYPES};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 

@@ -6,12 +6,12 @@ use busbar_contract::persistence::{
     PersistenceBackend, PreparedCandidate, Read, ReadResult, Scan,
 };
 use std::sync::{
-    Arc,
     atomic::{AtomicBool, Ordering},
+    Arc,
 };
 
 use super::TicketRefusal;
-use crate::governance::signing::{DEFAULT_KID, TokenSigner};
+use crate::governance::signing::{TokenSigner, DEFAULT_KID};
 use crate::governance::{GovState, NewKeySpec};
 
 const PREFIX: &str = "tk_";
@@ -109,11 +109,10 @@ async fn a_foreign_or_expired_or_misprefixed_ticket_is_refused() {
         .mint_ticket(&other_id, PREFIX, 600, None, b"{}", now)
         .await
         .expect("mint");
-    assert!(
-        g.admit_ticket_async(PREFIX, &foreign, now + 1)
-            .await
-            .is_none()
-    );
+    assert!(g
+        .admit_ticket_async(PREFIX, &foreign, now + 1)
+        .await
+        .is_none());
 
     let (expired, exp) = g
         .mint_ticket(&id, PREFIX, 1, None, b"{}", crate::store::now())
@@ -126,18 +125,16 @@ async fn a_foreign_or_expired_or_misprefixed_ticket_is_refused() {
         .mint_ticket(&id, PREFIX, 600, None, b"{}", now)
         .await
         .expect("mint");
-    assert!(
-        g.admit_ticket_async("other_", &ticket, now + 1)
-            .await
-            .is_none()
-    );
+    assert!(g
+        .admit_ticket_async("other_", &ticket, now + 1)
+        .await
+        .is_none());
     assert!(g.admit_ticket_async("", &ticket, now + 1).await.is_none());
 
-    assert!(
-        g.admit_ticket_async(PREFIX, &ticket, now + 1)
-            .await
-            .is_some()
-    );
+    assert!(g
+        .admit_ticket_async(PREFIX, &ticket, now + 1)
+        .await
+        .is_some());
 }
 
 #[tokio::test]
@@ -177,17 +174,15 @@ async fn a_ticket_is_never_a_key_and_a_key_is_never_a_ticket() {
 
     assert!(g.verify_token(&ticket, now + 1, None).is_none());
     let body = ticket.strip_prefix(PREFIX).expect("prefixed");
-    assert!(
-        g.verify_token(&format!("bbk_{body}"), now + 1, None)
-            .is_none()
-    );
+    assert!(g
+        .verify_token(&format!("bbk_{body}"), now + 1, None)
+        .is_none());
 
     let key_body = key_token.strip_prefix("bbk_").expect("a key");
-    assert!(
-        g.admit_ticket_async(PREFIX, &format!("{PREFIX}{key_body}"), now + 1)
-            .await
-            .is_none()
-    );
+    assert!(g
+        .admit_ticket_async(PREFIX, &format!("{PREFIX}{key_body}"), now + 1)
+        .await
+        .is_none());
 
     assert!(g.verify_token(&key_token, now + 1, None).is_some());
 }
@@ -203,11 +198,10 @@ async fn a_ticket_stands_only_while_its_key_does() {
         .expect("mint");
     g.revoke_async(&id, "test").await.expect("revoke");
 
-    assert!(
-        g.admit_ticket_async(PREFIX, &ticket, now + 1)
-            .await
-            .is_none()
-    );
+    assert!(g
+        .admit_ticket_async(PREFIX, &ticket, now + 1)
+        .await
+        .is_none());
 
     assert_eq!(
         g.mint_ticket(&id, PREFIX, 600, None, b"{}", now).await,
@@ -449,11 +443,10 @@ async fn ticket_deadline_and_record_follow_store_clock_despite_node_skew() {
         .await
         .unwrap();
     at_store_second(exp + 1).await;
-    assert!(
-        g.peek_ticket_async(PREFIX, &expired, slow_node)
-            .await
-            .is_none()
-    );
+    assert!(g
+        .peek_ticket_async(PREFIX, &expired, slow_node)
+        .await
+        .is_none());
     assert!(
         g.admit_ticket_async(PREFIX, &expired, slow_node)
             .await
@@ -479,26 +472,22 @@ async fn ticket_preflight_and_first_admission_include_the_store_deadline_second(
         .await
         .unwrap();
     at_store_second(exp).await;
-    assert!(
-        g.peek_ticket_async(PREFIX, &ticket, exp + 1)
-            .await
-            .is_some()
-    );
-    assert!(
-        g.peek_ticket_async(PREFIX, &ticket, exp - 1)
-            .await
-            .is_some()
-    );
-    assert!(
-        g.admit_ticket_async(PREFIX, &ticket, exp + 1)
-            .await
-            .is_some()
-    );
-    assert!(
-        g.admit_ticket_async(PREFIX, &ticket, exp - 1)
-            .await
-            .is_none()
-    );
+    assert!(g
+        .peek_ticket_async(PREFIX, &ticket, exp + 1)
+        .await
+        .is_some());
+    assert!(g
+        .peek_ticket_async(PREFIX, &ticket, exp - 1)
+        .await
+        .is_some());
+    assert!(g
+        .admit_ticket_async(PREFIX, &ticket, exp + 1)
+        .await
+        .is_some());
+    assert!(g
+        .admit_ticket_async(PREFIX, &ticket, exp - 1)
+        .await
+        .is_none());
     assert_eq!(
         crate::store::now(),
         exp,
@@ -551,14 +540,12 @@ async fn host_binding_precedes_publication_and_failed_binding_removes_the_record
         .await;
     assert_eq!(result, Err(TicketRefusal::NotKept));
     assert!(!bound_id.is_empty());
-    assert!(
-        super::scope(g.core_store_handle().unwrap())
-            .unwrap()
-            .get(super::TICKET_RECORD_KIND, bound_id.as_bytes())
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(super::scope(g.core_store_handle().unwrap())
+        .unwrap()
+        .get(super::TICKET_RECORD_KIND, bound_id.as_bytes())
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -599,11 +586,10 @@ async fn store_failure_never_calls_host_binding_and_failed_spend_returns_no_reco
                 .prepare_ticket_redemption_async(PREFIX, &ticket, now)
                 .await
                 .unwrap();
-            assert!(
-                g.redeem_verified_ticket_async(identity, now)
-                    .await
-                    .is_none()
-            );
+            assert!(g
+                .redeem_verified_ticket_async(identity, now)
+                .await
+                .is_none());
         }
     }
 }
@@ -622,12 +608,10 @@ async fn prepared_identity_is_store_bound_revalidated_and_spent_once() {
         .await
         .unwrap();
     let other = gov().await;
-    assert!(
-        other
-            .redeem_verified_ticket_async(identity, now)
-            .await
-            .is_none()
-    );
+    assert!(other
+        .redeem_verified_ticket_async(identity, now)
+        .await
+        .is_none());
     let identity = g
         .prepare_ticket_redemption_async(PREFIX, &ticket, now)
         .await
@@ -656,16 +640,14 @@ async fn prepared_identity_is_store_bound_revalidated_and_spent_once() {
         .await
         .unwrap()
         .unwrap();
-    assert!(
-        g.redeem_verified_ticket_async(identity, now)
-            .await
-            .is_none()
-    );
-    assert!(
-        g.prepare_ticket_redemption_async(PREFIX, &ticket, now)
-            .await
-            .is_none()
-    );
+    assert!(g
+        .redeem_verified_ticket_async(identity, now)
+        .await
+        .is_none());
+    assert!(g
+        .prepare_ticket_redemption_async(PREFIX, &ticket, now)
+        .await
+        .is_none());
 }
 
 #[tokio::test]
@@ -678,11 +660,10 @@ async fn prepared_identity_rejects_expired_or_tampered_credentials_and_redacts_d
         .await
         .unwrap();
     at_store_second(exp + 1).await;
-    assert!(
-        g.prepare_ticket_redemption_async(PREFIX, &expired, now)
-            .await
-            .is_none()
-    );
+    assert!(g
+        .prepare_ticket_redemption_async(PREFIX, &expired, now)
+        .await
+        .is_none());
     let (ticket, _) = g
         .mint_ticket(&id, PREFIX, 600, None, b"opaque", now)
         .await
@@ -697,9 +678,8 @@ async fn prepared_identity_rejects_expired_or_tampered_credentials_and_redacts_d
     assert!(!debug.contains(&identity.principal().generation_hash));
     let mut tampered = ticket;
     tampered.push('x');
-    assert!(
-        g.prepare_ticket_redemption_async(PREFIX, &tampered, now)
-            .await
-            .is_none()
-    );
+    assert!(g
+        .prepare_ticket_redemption_async(PREFIX, &tampered, now)
+        .await
+        .is_none());
 }

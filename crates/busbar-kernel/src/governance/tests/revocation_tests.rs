@@ -213,31 +213,27 @@ async fn a_backwards_wall_clock_still_observes_shared_store_rotation_and_revocat
         .unwrap()
         .unwrap()
         .token;
-    assert!(
-        b.verify_token(first.expose(&crate::seal::lend()), rolled_back, None)
-            .is_some()
-    );
+    assert!(b
+        .verify_token(first.expose(&crate::seal::lend()), rolled_back, None)
+        .is_some());
     let window_ms = REVOCATION_SYNC_TTL_SECS * 1_000;
     b.denylist.refresh_if_stale_at(rolled_back, window_ms);
     finished(&b.denylist).await;
-    assert!(
-        b.verify_token(first.expose(&crate::seal::lend()), rolled_back, None)
-            .is_none()
-    );
-    assert!(
-        b.verify_token(second.expose(&crate::seal::lend()), rolled_back, None)
-            .is_some()
-    );
+    assert!(b
+        .verify_token(first.expose(&crate::seal::lend()), rolled_back, None)
+        .is_none());
+    assert!(b
+        .verify_token(second.expose(&crate::seal::lend()), rolled_back, None)
+        .is_some());
     assert_eq!(b.denylist.synced_at(), rolled_back);
     a.revoke_async(&key.id, "peer revoke after clock correction")
         .await
         .unwrap();
     b.denylist.refresh_if_stale_at(rolled_back, window_ms * 2);
     finished(&b.denylist).await;
-    assert!(
-        b.verify_token(second.expose(&crate::seal::lend()), rolled_back, None)
-            .is_none()
-    );
+    assert!(b
+        .verify_token(second.expose(&crate::seal::lend()), rolled_back, None)
+        .is_none());
     assert!(b.denylist.contains(&key.id));
 }
 

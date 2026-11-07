@@ -344,11 +344,9 @@ fn request_timing_export_includes_termination_after_the_last_transport_poll() {
     let records = std::mem::take(&mut *TIMING_CLOSE.lock().unwrap());
     assert_eq!(records.len(), 1);
     assert!(records[0]["end_ns"].as_u64().unwrap() >= finished);
-    assert!(
-        records[0]["attributes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|field| field["key"] == "producer_complete_us" && field["value"] == "123")
-    );
+    assert!(records[0]["attributes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|field| field["key"] == "producer_complete_us" && field["value"] == "123"));
 }

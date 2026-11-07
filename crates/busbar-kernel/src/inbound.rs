@@ -1490,7 +1490,7 @@ fn signed_then_keys(
                             && !crate::governance::key_row_expired(&key, now)
                             && cred.meta.is_live(now)
                             && !g.is_revoked(&key.id))
-                            .then_some(key)
+                        .then_some(key)
                     })
                 });
                 return match key {

@@ -7,13 +7,13 @@ use std::collections::{HashMap, HashSet};
 
 use crate::config::RootCfg;
 use crate::diagnostics::{
-    CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT, CONFIG_PASSTHROUGH_UNUSED_APIKEY,
-    CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO, diag_warn,
+    diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
+    CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
 };
 use crate::plane_driver::registry::plane_decl_for;
 use busbar_contract::abi::export::CheckPhase;
 use busbar_kernel_ledger::cost::{
-    PER_REQUEST, PER_SESSION, PLANE_LANE_SEP, flat_card_present, split_plane_lane,
+    flat_card_present, split_plane_lane, PER_REQUEST, PER_SESSION, PLANE_LANE_SEP,
 };
 
 const MAX_AFFINITY_HEADER_NAME_LEN: usize = 64;
@@ -1671,7 +1671,7 @@ pub fn metadata_enforced_entries() -> Vec<String> {
 
 pub mod deal;
 mod destinations;
-pub use destinations::{ProviderDestination, validate_provider_destinations};
+pub use destinations::{validate_provider_destinations, ProviderDestination};
 
 pub(crate) mod secret_refs;
 mod undeclared_secret_refs;
@@ -1679,7 +1679,7 @@ pub(crate) use secret_refs::{keyless_credential_allowed, secret_module, secret_r
 pub(crate) use undeclared_secret_refs::undeclared_secret_refs;
 
 mod check;
-pub use check::{Check, Refusal, check, no_root_rules};
+pub use check::{check, no_root_rules, Check, Refusal};
 
 fn validate_token_endpoint_fields(
     provider_name: &str,

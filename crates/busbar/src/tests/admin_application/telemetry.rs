@@ -208,11 +208,9 @@ async fn telemetry_http_route_reads_the_bounded_source_after_admin_authorization
         assert!(body["identities"].as_array().unwrap().len() <= 32);
         let observed_nonce = body["process_boot_nonce"].as_str().unwrap();
         assert_eq!(observed_nonce.len(), 32);
-        assert!(
-            observed_nonce
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        );
+        assert!(observed_nonce
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
         if let Some(prior) = &nonce {
             assert_eq!(prior, observed_nonce);
         }
@@ -302,11 +300,9 @@ async fn info_process_generation_is_available_without_metrics_and_changes_on_res
         .expect("native OS randomness is available")
         .to_string();
     assert_eq!(nonce.len(), 32);
-    assert!(
-        nonce
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    );
+    assert!(nonce
+        .bytes()
+        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
     assert!(
         !busbar_kernel::snapshot::recorder_installed(),
         "info must not enable metrics"

@@ -8,8 +8,8 @@ use crate::persistence::{
     scoped::{Expected, Mutation, Outcome, Predicate, Request, ScopedStore},
 };
 use busbar_contract::{
-    Secret,
     persistence::{Read, ReadResult, TimeGuard},
+    Secret,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 

@@ -207,12 +207,10 @@ async fn unknown_and_unwound_flushes_keep_exact_same_timestamp_entry_identity() 
     accrue_raw(&gov, 3, first);
     assert_eq!(gov.flush_metering().await, 0);
     accrue_raw(&gov, 5, second);
-    assert!(
-        std::panic::AssertUnwindSafe(gov.flush_metering())
-            .catch_unwind()
-            .await
-            .is_err()
-    );
+    assert!(std::panic::AssertUnwindSafe(gov.flush_metering())
+        .catch_unwind()
+        .await
+        .is_err());
     assert_eq!(gov.flush_metering_final().await, 2);
     let calls = store.calls.lock().unwrap();
     assert_eq!(calls[0], calls[1]);
@@ -331,12 +329,10 @@ async fn unwind_retains_operation_and_releases_flush_owner() {
         .await
         .unwrap();
     accrue(&gov, 3, 123);
-    assert!(
-        std::panic::AssertUnwindSafe(gov.flush_metering())
-            .catch_unwind()
-            .await
-            .is_err()
-    );
+    assert!(std::panic::AssertUnwindSafe(gov.flush_metering())
+        .catch_unwind()
+        .await
+        .is_err());
     assert_eq!(requests(&gov).await, 1);
     assert_eq!(gov.pending_metering_totals().1.requests, 1);
     assert_eq!(gov.flush_metering_final().await, 1);

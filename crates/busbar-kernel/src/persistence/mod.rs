@@ -23,10 +23,10 @@ pub(crate) mod history;
 #[allow(dead_code)]
 pub(crate) mod host_records;
 // Staged journal owner; removed with its asynchronous recovery caller port.
+pub mod import_target;
 #[allow(dead_code)]
 pub mod journal;
 pub(crate) mod keys;
-pub mod import_target;
 pub mod objects;
 pub(crate) mod partition;
 pub mod recovery_api;

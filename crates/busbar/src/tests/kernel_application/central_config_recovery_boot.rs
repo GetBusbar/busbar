@@ -3,7 +3,7 @@
 
 use crate::root::test_plugins as plugins;
 use busbar_kernel::appbuild::AcceptAll;
-use busbar_kernel::config::overlay::{RootSettings, persist_root_async as persist_root};
+use busbar_kernel::config::overlay::{persist_root_async as persist_root, RootSettings};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -182,15 +182,13 @@ async fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stal
     .await
     .unwrap();
 
-    assert!(
-        backend
-            .read_required_async()
-            .await
-            .unwrap()
-            .unwrap()
-            .groups
-            .contains_key("remote_security_team")
-    );
+    assert!(backend
+        .read_required_async()
+        .await
+        .unwrap()
+        .unwrap()
+        .groups
+        .contains_key("remote_security_team"));
     assert!(backend.read_bytes_async().await.unwrap().is_some());
     let next = std::sync::Arc::new(
         busbar_kernel::governance::group_provision::build_with_group(

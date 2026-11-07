@@ -6,10 +6,10 @@
 //! original selected heads and journal frames remain unchanged.
 use super::*;
 use crate::governance::recovery::MigratedChildContext;
-use crate::governance::{GovState, recovery::RecoveryKind};
+use crate::governance::{recovery::RecoveryKind, GovState};
 use crate::persistence::facade::{LogicalClaim, LogicalId};
 use busbar_contract::persistence::{
-    CANDIDATE_VERSION, Candidate as NativeCandidate, Mutation, PreparedCandidate,
+    Candidate as NativeCandidate, Mutation, PreparedCandidate, CANDIDATE_VERSION,
 };
 use sha2::{Digest, Sha256};
 
@@ -505,7 +505,7 @@ impl StoreRecovery {
     }
 
     async fn adopt_native_foreign(&self) -> Result<(), RecoveryError> {
-        use busbar_contract::records::{OpId, dedupe::Dedupe};
+        use busbar_contract::records::{dedupe::Dedupe, OpId};
         for (operation, scanned_tip) in heads(&self.store).await? {
             if scanned_tip.node == self.node {
                 continue;

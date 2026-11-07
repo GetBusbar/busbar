@@ -105,10 +105,9 @@ tools:
     want.sort_unstable();
     assert_eq!(paths, want);
 
-    assert!(
-        s.reserved
-            .contains(&(verbs(&["tools", "t1", "tier"]), json!("big")))
-    );
+    assert!(s
+        .reserved
+        .contains(&(verbs(&["tools", "t1", "tier"]), json!("big"))));
     assert!(!is_reserved("url"));
 }
 
@@ -204,12 +203,11 @@ tools:
         verbs(&["tools", "pools", "p1", "members", "0", "tier"]),
         json!("big")
     )));
-    assert!(
-        s.reserved
-            .iter()
-            .any(|(p, v)| p == &verbs(&["tools", "pools"])
-                && v.pointer("/p1/member_granted") == Some(&json!(true)))
-    );
+    assert!(s
+        .reserved
+        .iter()
+        .any(|(p, v)| p == &verbs(&["tools", "pools"])
+            && v.pointer("/p1/member_granted") == Some(&json!(true))));
     assert!(is_reserved(busbar_contract::section::RESERVED_POOLS_KEY));
 }
 
@@ -325,18 +323,12 @@ fn the_knob_field_lists_are_the_kernel_types_own() {
             .expect_err(knob)
             .to_string()
     }
-    assert!(
-        expected::<crate::config::pools::BreakerCfg>("breaker")
-            .contains("expected one of `base_cooldown_secs`, `max_cooldown_secs`, `trip`")
-    );
-    assert!(
-        expected::<crate::config::pools::AffinityCfg>("affinity")
-            .contains("expected `mode` or `header_name`")
-    );
-    assert!(
-        expected::<crate::config::PlaneFeesCfg>("fees")
-            .contains("expected `per_request` or `per_session`")
-    );
+    assert!(expected::<crate::config::pools::BreakerCfg>("breaker")
+        .contains("expected one of `base_cooldown_secs`, `max_cooldown_secs`, `trip`"));
+    assert!(expected::<crate::config::pools::AffinityCfg>("affinity")
+        .contains("expected `mode` or `header_name`"));
+    assert!(expected::<crate::config::PlaneFeesCfg>("fees")
+        .contains("expected `per_request` or `per_session`"));
 }
 
 #[test]

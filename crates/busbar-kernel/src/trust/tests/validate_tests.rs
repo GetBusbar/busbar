@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::trust::validate::{
-    Grant, Lapsed, Refusal, Snapshot, Standing, next_generation, reason, validate_visibility,
+    next_generation, reason, validate_visibility, Grant, Lapsed, Refusal, Snapshot, Standing,
 };
 use busbar_contract::records::{ScopeRef, VirtualKey};
 use std::collections::BTreeMap;
@@ -228,11 +228,9 @@ async fn a_key_disabled_under_an_open_response_lapses_it_on_the_next_ask() {
     let gov = a_registry().await;
     let key = a_live_key(&gov).await;
     let standing = Standing::opened(Some(&key), Snapshot::Watching, Duration::from_secs(300));
-    assert!(
-        standing
-            .still_permitted(Some(&*gov), 1, 1_700_000_000)
-            .is_ok()
-    );
+    assert!(standing
+        .still_permitted(Some(&*gov), 1, 1_700_000_000)
+        .is_ok());
 
     gov.update_key_outcome_async(&key.id, Some(false), None)
         .await
@@ -255,11 +253,9 @@ async fn a_key_deleted_under_an_open_response_lapses_it_on_the_next_ask() {
     let gov = a_registry().await;
     let key = a_live_key(&gov).await;
     let standing = Standing::opened(Some(&key), Snapshot::Watching, Duration::from_secs(300));
-    assert!(
-        standing
-            .still_permitted(Some(&*gov), 1, 1_700_000_000)
-            .is_ok()
-    );
+    assert!(standing
+        .still_permitted(Some(&*gov), 1, 1_700_000_000)
+        .is_ok());
 
     gov.delete_key(&key.id).await.expect("the admin DELETE");
 

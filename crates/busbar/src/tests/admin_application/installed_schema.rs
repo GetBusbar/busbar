@@ -174,7 +174,7 @@ fn declaration_candidate(
     for _ in 0..8 {
         word(&mut rendering, 0);
     } // families, diagnostics, tail, tail facts,
-    // extension blob (3 words), secret refs
+      // extension blob (3 words), secret refs
     word(
         &mut rendering,
         if schema.is_empty() {

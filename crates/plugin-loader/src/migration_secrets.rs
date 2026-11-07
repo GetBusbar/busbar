@@ -348,22 +348,22 @@ mod windows {
     };
     use windows_sys::Win32::{
         Foundation::{
-            ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS, GENERIC_READ, GENERIC_WRITE,
-            INVALID_HANDLE_VALUE, LocalFree,
+            LocalFree, ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS, GENERIC_READ, GENERIC_WRITE,
+            INVALID_HANDLE_VALUE,
         },
         Security::{
             Authorization::{
                 ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
                 ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
             },
-            DACL_SECURITY_INFORMATION, GetTokenInformation, IsValidSid, OWNER_SECURITY_INFORMATION,
-            SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+            GetTokenInformation, IsValidSid, TokenUser, DACL_SECURITY_INFORMATION,
+            OWNER_SECURITY_INFORMATION, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
         },
         Storage::FileSystem::{
-            CREATE_NEW, CreateDirectoryW, CreateFileW, DELETE, FILE_ATTRIBUTE_NORMAL,
+            CreateDirectoryW, CreateFileW, MoveFileExW, CREATE_NEW, DELETE, FILE_ATTRIBUTE_NORMAL,
             FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
             FILE_FLAG_WRITE_THROUGH, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-            MOVEFILE_WRITE_THROUGH, MoveFileExW,
+            MOVEFILE_WRITE_THROUGH,
         },
         System::Threading::{GetCurrentProcess, OpenProcessToken},
     };
@@ -847,7 +847,7 @@ mod windows {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+    use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
     use std::path::PathBuf;
 
     struct Fixture(PathBuf);
@@ -900,14 +900,12 @@ mod tests {
         );
         assert_eq!(std::fs::read_dir(fixture.secret_dir()).unwrap().count(), 1);
         assert!(!output.to_str().unwrap().contains("LITERAL_SECRET"));
-        assert!(
-            !output
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .contains("auth:example")
-        );
+        assert!(!output
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("auth:example"));
     }
 
     #[test]
@@ -965,25 +963,21 @@ mod tests {
         assert_eq!(std::fs::read_dir(&other.0).unwrap().count(), 1);
         std::fs::remove_file(fixture.secret_dir()).unwrap();
         symlink(&other.0, fixture.0.join("linked-parent")).unwrap();
-        assert!(
-            externalize(
-                &fixture.0.join("linked-parent/config.yaml"),
-                "site",
-                &[],
-                b"credential"
-            )
-            .is_err()
-        );
+        assert!(externalize(
+            &fixture.0.join("linked-parent/config.yaml"),
+            "site",
+            &[],
+            b"credential"
+        )
+        .is_err());
         symlink(other.config(), fixture.0.join("linked-config.yaml")).unwrap();
-        assert!(
-            externalize(
-                &fixture.0.join("linked-config.yaml"),
-                "site",
-                &[],
-                b"credential"
-            )
-            .is_err()
-        );
+        assert!(externalize(
+            &fixture.0.join("linked-config.yaml"),
+            "site",
+            &[],
+            b"credential"
+        )
+        .is_err());
     }
 
     #[test]

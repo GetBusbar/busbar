@@ -6,9 +6,9 @@ use std::sync::Arc;
 use axum::body::Bytes;
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_kernel as kernel;
-use busbar_plugin_loader::dispatch::kinds::plane::{Plane, open_door};
+use busbar_plugin_loader::dispatch::kinds::plane::{open_door, Plane};
 use busbar_plugin_loader::dispatch::plane_calls::PlaneInstance;
-use busbar_plugin_loader::dispatch::{Bind, ConnTable, LinkedRow, NoSink, load_linked};
+use busbar_plugin_loader::dispatch::{load_linked, Bind, ConnTable, LinkedRow, NoSink};
 use kernel::plane_driver::serve::{AdminServe, ServeRoute, ServeTable};
 
 use crate::root::test_plugins as plugins;

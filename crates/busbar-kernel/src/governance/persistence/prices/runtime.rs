@@ -11,8 +11,8 @@ use busbar_kernel_ledger::cost::{EntryKey, History, RateCard};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
-        Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicU32, Ordering},
+        Arc, Mutex, Weak,
     },
     time::{Duration, Instant},
 };

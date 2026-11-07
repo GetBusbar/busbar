@@ -1814,12 +1814,10 @@ impl GovState {
                             .expect("adjustment row read"),
                         &slot,
                         class,
-                        prepare!(
-                            change
-                                .micros()
-                                .checked_abs()
-                                .ok_or("adjustment magnitude overflow")
-                        ),
+                        prepare!(change
+                            .micros()
+                            .checked_abs()
+                            .ok_or("adjustment magnitude overflow")),
                     ));
                 }
                 let request = Request {
@@ -1828,22 +1826,20 @@ impl GovState {
                     key_id: adj.key_id.into(),
                     day_start: day,
                     metering,
-                    usage: prepare!(
-                        snapshots
-                            .into_iter()
-                            .map(|(address, expected)| {
-                                let mut replacement =
-                                    replacements.remove(&address).expect("same raw row set");
+                    usage: prepare!(snapshots
+                        .into_iter()
+                        .map(|(address, expected)| {
+                            let mut replacement =
+                                replacements.remove(&address).expect("same raw row set");
 
-                                correction::canonical_ledger(&mut replacement)?;
-                                Ok::<_, &'static str>(UsageChange {
-                                    address,
-                                    expected,
-                                    replacement,
-                                })
+                            correction::canonical_ledger(&mut replacement)?;
+                            Ok::<_, &'static str>(UsageChange {
+                                address,
+                                expected,
+                                replacement,
                             })
-                            .collect::<Result<Vec<_>, _>>()
-                    ),
+                        })
+                        .collect::<Result<Vec<_>, _>>()),
                 };
                 prepare!(request.encode());
                 for (bucket, window, mut before, accepted) in branches {

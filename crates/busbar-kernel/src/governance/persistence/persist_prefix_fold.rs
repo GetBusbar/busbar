@@ -33,12 +33,10 @@ async fn persist_prefix_proves_local_predecessor_parent_and_same_digest_without_
 async fn persist_prefix_brackets_initially_absent_head_as_an_exact_option() {
     let (backend, recovery) = fixture().await;
     let initial = intent();
-    assert!(
-        head(&recovery.store, &initial.operation_id)
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(head(&recovery.store, &initial.operation_id)
+        .await
+        .unwrap()
+        .is_none());
     let before = effects(&backend, &recovery);
     recovery.verify_origin(&initial).await.unwrap();
     assert_eq!(effects(&backend, &recovery), before);
@@ -87,12 +85,10 @@ async fn persist_prefix_rejects_changed_child_parent_or_fence_before_any_effects
             }
         });
         let before = effects(&backend, &recovery);
-        assert!(
-            recovery
-                .persist(&transition(&child, RecoveryState::Applied))
-                .await
-                .is_err()
-        );
+        assert!(recovery
+            .persist(&transition(&child, RecoveryState::Applied))
+            .await
+            .is_err());
         assert_eq!(
             effects(&backend, &recovery),
             before,
@@ -114,12 +110,10 @@ async fn persist_prefix_missing_or_corrupt_sealed_fact_fails_before_pending_or_s
         let (at, _) = record_row(&backend, recovery.node, tip.sequence);
         damage(&backend, &at, missing);
         let before = effects(&backend, &recovery);
-        assert!(
-            recovery
-                .persist(&transition(&initial, RecoveryState::LandedUnknown))
-                .await
-                .is_err()
-        );
+        assert!(recovery
+            .persist(&transition(&initial, RecoveryState::LandedUnknown))
+            .await
+            .is_err());
         assert_eq!(effects(&backend, &recovery), before);
     }
 }
@@ -146,12 +140,10 @@ async fn persist_prefix_final_fold_checks_an_unselected_tail_before_effects() {
     let (at, _) = record_row(&backend, recovery.node, tail.sequence);
     damage(&backend, &at, false);
     let before = effects(&backend, &recovery);
-    assert!(
-        recovery
-            .persist(&transition(&initial, RecoveryState::LandedUnknown))
-            .await
-            .is_err()
-    );
+    assert!(recovery
+        .persist(&transition(&initial, RecoveryState::LandedUnknown))
+        .await
+        .is_err());
     assert_eq!(effects(&backend, &recovery), before);
 }
 #[tokio::test]

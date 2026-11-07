@@ -4,8 +4,8 @@
 use super::*;
 use crate::persistence::facade::{Limits, WriterAuthority};
 use busbar_contract::persistence::{
-    BackendInfo, Call, ClockObservation, DatasetId, Durability, Page, PersistenceBackend, Scan,
-    control,
+    control, BackendInfo, Call, ClockObservation, DatasetId, Durability, Page, PersistenceBackend,
+    Scan,
 };
 use busbar_contract::records::ModelTokensDelta;
 use std::sync::Mutex;
@@ -296,13 +296,11 @@ async fn overflow_is_atomic_and_rejected_batch_has_no_receipt() {
         .unwrap();
     let before = store.ledger().get_usage("b", 1).await.unwrap();
     let cells = [("a", 1, delta(5)), ("b", 1, delta(1))];
-    assert!(
-        store
-            .ledger()
-            .add_usage_batch_deduped(OpId([8; 16]), &cells)
-            .await
-            .is_err()
-    );
+    assert!(store
+        .ledger()
+        .add_usage_batch_deduped(OpId([8; 16]), &cells)
+        .await
+        .is_err());
     assert_eq!(store.ledger().get_usage("b", 1).await.unwrap(), before);
     assert_eq!(
         store.ledger().get_usage("a", 1).await.unwrap(),
@@ -344,13 +342,11 @@ async fn logical_receipt_survives_attachment_and_preserves_original_body() {
     );
     let mut changed = cells.clone();
     changed[0].2.models[0].scale = 0;
-    assert!(
-        replacement
-            .ledger()
-            .add_usage_batch_deduped(op, &changed)
-            .await
-            .is_err()
-    );
+    assert!(replacement
+        .ledger()
+        .add_usage_batch_deduped(op, &changed)
+        .await
+        .is_err());
     assert_eq!(backend.0.lock().unwrap().attempts.len(), 2);
 }
 #[tokio::test]
@@ -366,13 +362,11 @@ async fn unknown_replays_exact_attempt_before_planning() {
         .await
         .unwrap_err();
     assert!(err.0.contains("retained operation"));
-    assert!(
-        store
-            .ledger()
-            .add_usage_batch_deduped(op, &[("b", 1, delta(6))])
-            .await
-            .is_err()
-    );
+    assert!(store
+        .ledger()
+        .add_usage_batch_deduped(op, &[("b", 1, delta(6))])
+        .await
+        .is_err());
     store
         .ledger()
         .add_usage_batch_deduped(op, &cells)
@@ -434,19 +428,15 @@ fn canonical_records_reject_unknown_versions_nested_fields_and_retain_i128() {
         decode::<UsageLedger>(&Secret::new(reordered.into_bytes())).unwrap(),
         row
     );
-    assert!(
-        decode::<UsageLedger>(&Secret::new(
-            text.replace("\"version\":1", "\"version\":2").into_bytes()
-        ))
-        .is_err()
-    );
-    assert!(
-        decode::<UsageLedger>(&Secret::new(
-            text.replace("\"requests\":1", "\"unknown\":1,\"requests\":1")
-                .into_bytes()
-        ))
-        .is_err()
-    );
+    assert!(decode::<UsageLedger>(&Secret::new(
+        text.replace("\"version\":1", "\"version\":2").into_bytes()
+    ))
+    .is_err());
+    assert!(decode::<UsageLedger>(&Secret::new(
+        text.replace("\"requests\":1", "\"unknown\":1,\"requests\":1")
+            .into_bytes()
+    ))
+    .is_err());
 }
 
 #[tokio::test]
@@ -546,13 +536,11 @@ async fn sequential_refund_floor_and_metering_overflow_remain_atomic() {
     store.ledger().add_metering(&max).await.unwrap();
     let mut one = max.clone();
     one.tokens_input = 1;
-    assert!(
-        store
-            .ledger()
-            .add_metering_batch_deduped(OpId([6; 16]), &[meter("new", 1), one])
-            .await
-            .is_err()
-    );
+    assert!(store
+        .ledger()
+        .add_metering_batch_deduped(OpId([6; 16]), &[meter("new", 1), one])
+        .await
+        .is_err());
     let rows = store.ledger().list_metering(1).await.unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].tokens_input, i128::MAX);
@@ -600,10 +588,9 @@ async fn batches_prefetch_distinct_rows_once_and_keep_sequential_floor_order() {
     assert_eq!(backend.0.lock().unwrap().reads, vec![42]);
     let rows = store.ledger().list_metering(1).await.unwrap();
     assert_eq!(rows.len(), 40);
-    assert!(
-        rows.iter()
-            .all(|row| row.tokens_input == 2 && row.requests == 2)
-    );
+    assert!(rows
+        .iter()
+        .all(|row| row.tokens_input == 2 && row.requests == 2));
     // A warm transaction must not issue additional reads for cached/changed rows.
     let mut tx = Tx::new(&store);
     let at = usage_address(&names[0], 1).unwrap();
@@ -630,12 +617,10 @@ async fn partitions_isolate_bucket_writes_and_keep_index_metadata_stable() {
     {
         let state = backend.0.lock().unwrap();
         assert_eq!(state.generations[&USAGE.0], original_index_generation);
-        assert!(
-            state
-                .last_predicates
-                .iter()
-                .all(|at| at.namespace != USAGE.0)
-        );
+        assert!(state
+            .last_predicates
+            .iter()
+            .all(|at| at.namespace != USAGE.0));
         for time in [1, 2] {
             let at = index_address(USAGE, time).unwrap();
             assert_eq!(index_time(&at, &state.rows[&at], USAGE).unwrap(), time);

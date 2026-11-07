@@ -2,8 +2,8 @@
 use super::*;
 use crate::persistence::facade::{Limits, WriterAuthority};
 use busbar_contract::persistence::{
-    BackendInfo, Call, ClockObservation, DatasetId, Durability, Failure, Mutation, Page,
-    PersistenceBackend, PreparedCandidate, control,
+    control, BackendInfo, Call, ClockObservation, DatasetId, Durability, Failure, Mutation, Page,
+    PersistenceBackend, PreparedCandidate,
 };
 use std::{
     collections::HashMap,
@@ -771,12 +771,10 @@ async fn attested_foreign_adoption_selects_only_final_verdict_and_transfers_owne
     let resolution = attestation(&initial);
     let mut missing = resolution.clone();
     missing.backend_quiesced = false;
-    assert!(
-        recipient
-            .adopt_verdict_selection(&missing, &[unknown.clone(), verdict.clone()])
-            .await
-            .is_err()
-    );
+    assert!(recipient
+        .adopt_verdict_selection(&missing, &[unknown.clone(), verdict.clone()])
+        .await
+        .is_err());
     let selected = recipient
         .adopt_verdict_selection(&resolution, &[unknown.clone(), verdict.clone()])
         .await
@@ -835,12 +833,10 @@ async fn selected_parent_requires_exact_child_template_and_immutable_origin() {
         recovery.persist(&changed).await,
         Err(RecoveryError::Invalid(_))
     ));
-    assert!(
-        head(&recovery.store, &child.operation_id)
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(head(&recovery.store, &child.operation_id)
+        .await
+        .unwrap()
+        .is_none());
     recovery.persist(&child).await.unwrap();
     let mut changed_origin = transition(&child, RecoveryState::LandedUnknown);
     let mut raw: serde_json::Value = serde_json::from_slice(&changed_origin.payload).unwrap();

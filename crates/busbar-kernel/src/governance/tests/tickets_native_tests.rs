@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::*;
-use crate::governance::signing::{DEFAULT_KID, TokenSigner};
-use crate::persistence::host_records::timed_tests::{Backend, attach};
+use crate::governance::signing::{TokenSigner, DEFAULT_KID};
+use crate::persistence::host_records::timed_tests::{attach, Backend};
 async fn gov(backend: Arc<Backend>, writer: u8) -> Arc<GovState> {
     Arc::new(
         GovState::new_with_core(
@@ -51,12 +51,10 @@ async fn native_ticket_delivers_original_record_once_across_independent_nodes() 
         b"opaque original"
     );
     assert!(second.redeem_verified_ticket_async(b, 10).await.is_none());
-    assert!(
-        first
-            .prepare_ticket_redemption_async("tk_", &ticket, 10)
-            .await
-            .is_none()
-    );
+    assert!(first
+        .prepare_ticket_redemption_async("tk_", &ticket, 10)
+        .await
+        .is_none());
 }
 #[tokio::test]
 async fn unknown_spend_replays_original_receipt_after_expiry_then_cannot_admit_again() {
@@ -72,11 +70,10 @@ async fn unknown_spend_replays_original_receipt_after_expiry_then_cannot_admit_a
         .await
         .unwrap();
     backend.lose_reply.store(true, Ordering::SeqCst);
-    assert!(
-        gov.redeem_verified_ticket_async(prepared, 10)
-            .await
-            .is_none()
-    );
+    assert!(gov
+        .redeem_verified_ticket_async(prepared, 10)
+        .await
+        .is_none());
     assert_eq!(gov.ticket_operations.pending.lock().unwrap().len(), 1);
     backend.now.store(expiry + 1, Ordering::SeqCst);
     let retry = gov
@@ -87,11 +84,10 @@ async fn unknown_spend_replays_original_receipt_after_expiry_then_cannot_admit_a
         gov.redeem_verified_ticket_async(retry, 10).await.unwrap().1,
         b"opaque original"
     );
-    assert!(
-        gov.prepare_ticket_redemption_async("tk_", &ticket, 10)
-            .await
-            .is_none()
-    );
+    assert!(gov
+        .prepare_ticket_redemption_async("tk_", &ticket, 10)
+        .await
+        .is_none());
 }
 #[tokio::test]
 async fn queue_crossing_native_expiry_spends_nothing_despite_slow_caller_clock() {
@@ -108,26 +104,21 @@ async fn queue_crossing_native_expiry_spends_nothing_despite_slow_caller_clock()
         .unwrap();
     let ticket_id = prepared.id.clone();
     backend.now.store(expiry + 1, Ordering::SeqCst);
-    assert!(
-        gov.redeem_verified_ticket_async(prepared, 10)
-            .await
-            .is_none()
-    );
+    assert!(gov
+        .redeem_verified_ticket_async(prepared, 10)
+        .await
+        .is_none());
     let records = scope(gov.core_store_handle().unwrap()).unwrap();
-    assert!(
-        records
-            .get(TICKET_RECORD_KIND, ticket_id.as_bytes())
-            .await
-            .unwrap()
-            .is_some()
-    );
-    assert!(
-        records
-            .get(TICKET_SPENT_KIND, ticket_id.as_bytes())
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(records
+        .get(TICKET_RECORD_KIND, ticket_id.as_bytes())
+        .await
+        .unwrap()
+        .is_some());
+    assert!(records
+        .get(TICKET_SPENT_KIND, ticket_id.as_bytes())
+        .await
+        .unwrap()
+        .is_none());
 }
 #[tokio::test]
 async fn rejected_host_custody_binding_never_publishes_a_credential_and_deletes_exact_record() {
@@ -144,14 +135,12 @@ async fn rejected_host_custody_binding_never_publishes_a_credential_and_deletes_
         Err(TicketRefusal::NotKept)
     );
     let ticket_id = captured.lock().unwrap().clone().unwrap();
-    assert!(
-        scope(gov.core_store_handle().unwrap())
-            .unwrap()
-            .get(TICKET_RECORD_KIND, ticket_id.as_bytes())
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(scope(gov.core_store_handle().unwrap())
+        .unwrap()
+        .get(TICKET_RECORD_KIND, ticket_id.as_bytes())
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -168,29 +157,23 @@ async fn expiry_cleanup_uses_native_time_and_keeps_valid_records_under_fast_call
         .await
         .unwrap();
     let records = scope(gov.core_store_handle().unwrap()).unwrap();
-    assert!(
-        records
-            .get(TICKET_RECORD_KIND, original_id.as_bytes())
-            .await
-            .unwrap()
-            .is_some()
-    );
+    assert!(records
+        .get(TICKET_RECORD_KIND, original_id.as_bytes())
+        .await
+        .unwrap()
+        .is_some());
     backend.now.store(expiry + 1, Ordering::SeqCst);
     gov.mint_ticket(&id, "tk_", 60, None, b"slow-node", 10)
         .await
         .unwrap();
-    assert!(
-        records
-            .get(TICKET_RECORD_KIND, original_id.as_bytes())
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        records
-            .get(EXPIRY_SCHEMA, &expiry_key(&original_id, expiry))
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(records
+        .get(TICKET_RECORD_KIND, original_id.as_bytes())
+        .await
+        .unwrap()
+        .is_none());
+    assert!(records
+        .get(EXPIRY_SCHEMA, &expiry_key(&original_id, expiry))
+        .await
+        .unwrap()
+        .is_none());
 }
