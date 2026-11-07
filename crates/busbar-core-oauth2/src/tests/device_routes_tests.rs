@@ -13,8 +13,8 @@ const SECRET: &str = "device-client-secret-for-test";
 
 #[tokio::test]
 async fn device_csrf_is_shared_and_spent_once_across_fresh_nodes() {
-    let store = crate::testkit::store_calls();
-    let build = || {
+    let store = crate::testkit::memory_store().await;
+    let build = || async {
         let identity = crate::config::AsIdentity::from_cfg(&crate::config::OauthAsCfg {
             issuer: "https://as.example".to_string(),
             ..Default::default()
@@ -25,16 +25,17 @@ async fn device_csrf_is_shared_and_spent_once_across_fresh_nodes() {
             None,
             Vec::new(),
             crate::cimd::unconnected(),
-            Arc::new(crate::plane::Carried::over(Some(Arc::clone(&store)))),
+            Arc::new(crate::plane::Carried::over(Some(Arc::clone(&store))).unwrap()),
         )
+        .await
         .unwrap()
     };
-    let first = build();
+    let first = build().await;
     first
         .issue_device_form("session-a", "csrf-a", "operator")
         .await
         .unwrap();
-    let second = build();
+    let second = build().await;
     assert!(!second
         .consume_device_form("session-b", "csrf-a", "operator")
         .await
@@ -84,7 +85,7 @@ async fn only_explicit_operator_device_clients_can_omit_redirects_and_use_device
     );
     assert_eq!(identity.verification_path(), "/tenant/device");
     assert_eq!(identity.revocation_path(), "/tenant/revoke");
-    let plane = build_owner(identity).unwrap();
+    let plane = build_owner(identity).await.unwrap();
     let client = plane
         .server()
         .store()
@@ -98,7 +99,9 @@ async fn only_explicit_operator_device_clients_can_omit_redirects_and_use_device
 
     cfg.clients[0].device_authorization = false;
     cfg.clients[0].redirect_uris = vec!["https://client.example/cb".to_string()];
-    let plane = build_owner(crate::config::AsIdentity::from_cfg(&cfg).unwrap()).unwrap();
+    let plane = build_owner(crate::config::AsIdentity::from_cfg(&cfg).unwrap())
+        .await
+        .unwrap();
     let client = plane
         .server()
         .store()
@@ -110,7 +113,7 @@ async fn only_explicit_operator_device_clients_can_omit_redirects_and_use_device
     assert!(!client.grant_types.contains(&GrantType::DeviceCode));
 }
 
-fn build_owner(
+async fn build_owner(
     identity: crate::config::AsIdentity,
 ) -> Result<crate::plane::AsPlane, crate::plane::AsBuildError> {
     crate::plane::AsPlane::build_carrying(
@@ -118,10 +121,9 @@ fn build_owner(
         None,
         Vec::new(),
         crate::cimd::unconnected(),
-        Arc::new(crate::plane::Carried::over(Some(
-            crate::testkit::store_calls(),
-        ))),
+        Arc::new(crate::plane::Carried::over(Some(crate::testkit::memory_store().await)).unwrap()),
     )
+    .await
 }
 
 #[tokio::test]
@@ -133,7 +135,7 @@ async fn confidential_secret_device_tokens_retain_their_records_and_revoke_the_w
         ..Default::default()
     })
     .unwrap();
-    let plane = build_owner(identity).unwrap();
+    let plane = build_owner(identity).await.unwrap();
     let server = plane.server();
     let scope = ScopeSet::from_tokens(["read"]).unwrap();
     server

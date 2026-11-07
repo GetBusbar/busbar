@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::audit::journal::{Journal, JournalError, NeutralRecord, Reframe};
+use crate::audit::journal::Journal;
 use crate::audit::{frame_prelude, ChainLabels, ChainedRecord, Digest, Framing};
-use crate::store::plane_view::PlaneStore;
 use busbar_contract::records::{RecordStoreError, RecordStoreResult};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -115,12 +114,6 @@ impl ChainedRecord for StreamRecord {
     }
 }
 
-impl NeutralRecord for StreamRecord {
-    fn content(&self) -> &[u8] {
-        &self.content
-    }
-}
-
 pub(crate) type NativeDecode = fn(&str, &[u8]) -> RecordStoreResult<StreamRecord>;
 
 /// How a registered stream's stored body decodes back into its record.
@@ -133,9 +126,7 @@ pub(crate) enum Decode {
 const DECODE_FAILED: &str = "journal reframe failed: Fault";
 
 struct DurableStream {
-    kind: String,
     framing: Framing,
-    digests_scope: bool,
     decode: Decode,
     journal: Arc<Journal<StreamRecord>>,
 }
@@ -150,30 +141,22 @@ fn registry_lock() -> MutexGuard<'static, HashMap<u32, DurableStream>> {
 }
 
 pub(crate) struct StreamHandle {
-    pub(crate) kind: String,
     pub(crate) framing: Framing,
-    pub(crate) digests_scope: bool,
     pub(crate) decode: Decode,
     pub(crate) journal: Arc<Journal<StreamRecord>>,
 }
 
 pub(crate) fn register(
     kind_id: u32,
-    kind: String,
+    _kind: String,
     framing: Framing,
-    digests_scope: bool,
+    _digests_scope: bool,
     decode: Decode,
     cap: usize,
-    sink: Option<Arc<dyn PlaneStore>>,
 ) {
     let journal = Arc::new(Journal::<StreamRecord>::new(cap));
-    if let Some(store) = sink {
-        journal.set_sink(store);
-    }
     let stream = DurableStream {
-        kind,
         framing,
-        digests_scope,
         decode,
         journal,
     };
@@ -183,9 +166,7 @@ pub(crate) fn register(
 pub(crate) fn handle(kind_id: u32) -> Option<StreamHandle> {
     let map = registry_lock();
     map.get(&kind_id).map(|s| StreamHandle {
-        kind: s.kind.clone(),
         framing: s.framing,
-        digests_scope: s.digests_scope,
         decode: s.decode.clone(),
         journal: s.journal.clone(),
     })
@@ -204,57 +185,6 @@ impl StreamHandle {
             framing: self.framing,
             ..r
         })
-    }
-
-    pub(crate) fn append(
-        &self,
-        scope: &str,
-        content: Vec<u8>,
-        decode: &Reframe<'_, StreamRecord>,
-    ) -> Result<StreamRecord, JournalError> {
-        let input = StreamInput::new(content, self.framing, self.digests_scope);
-        let appended = self.journal.append_scoped(&self.kind, scope, input, decode);
-        self.report_resume_breaks();
-        appended
-    }
-
-    fn report_resume_breaks(&self) {
-        for brk in self.journal.take_resume_breaks() {
-            crate::diagnostics::diag_error!(
-                crate::diagnostics::PLANE_JOURNAL_RESUME_CHAIN_BROKEN,
-                stream = %self.kind,
-                break_detail = %brk,
-                "plane journal CHAIN VERIFICATION FAILED on resume — the persisted tail of an evicted \
-                 scope does not verify against its own hash chain. The chain resumes from the broken \
-                 tail; the write is not refused."
-            );
-        }
-    }
-}
-
-pub(crate) fn append_full(
-    kind_id: u32,
-    scope: &str,
-    content: &[u8],
-) -> Result<(u64, String, String), RecordStoreError> {
-    let Some(h) = handle(kind_id) else {
-        return Err(RecordStoreError(
-            "journal stream is not registered".to_string(),
-        ));
-    };
-    if scope.is_empty() {
-        return Err(RecordStoreError(
-            "journal scope must be a non-empty key".to_string(),
-        ));
-    }
-    let decode = |sc: &str, body: &[u8]| h.decode_native(sc, body);
-    match h.append(scope, content.to_vec(), &decode) {
-        Ok(record) => Ok((
-            record.seq(),
-            record.prev_hash().to_string(),
-            record.hash().to_string(),
-        )),
-        Err(JournalError::Store(e)) => Err(e),
     }
 }
 

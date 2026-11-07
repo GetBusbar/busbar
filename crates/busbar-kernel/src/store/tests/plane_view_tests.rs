@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::{PlaneStore, PlaneStoreView};
+use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector};
 
-const KIND_ASK: &str = "ask";
-use busbar_contract::records::{
-    PlaneDisposition, PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStoreResult,
-};
-use std::sync::Arc;
-
-/// A throwaway opaque body for the `demotion` kind — this seam names no plane record type, so the
-/// forwarding test stands one up locally to prove the wrapper carries an opaque body through.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct DemoRow {
     server: String,
@@ -18,149 +10,71 @@ struct DemoRow {
     recorded_at: u64,
 }
 
-/// A minimal recording backend: it implements the non-defaulted `Store` methods trivially and
-/// records the two plane calls the forwarding test exercises, so a call reaching the inner `Store`
-/// is observable. The RAM `MemoryStore` implements none of the plane methods (they take the trait
-/// defaults), so it cannot witness forwarding; this can.
-#[derive(Default)]
-struct RecordingStore {
-    demotions: std::sync::Mutex<Vec<DemoRow>>,
-    redemptions: std::sync::atomic::AtomicUsize,
-}
-
-impl busbar_contract::records::RecordStore for RecordingStore {
-    fn put_key(&self, _key: &busbar_contract::records::VirtualKey) -> RecordStoreResult<()> {
-        Ok(())
-    }
-    fn get_key(
-        &self,
-        _id: &str,
-    ) -> RecordStoreResult<Option<busbar_contract::records::VirtualKey>> {
-        Ok(None)
-    }
-    fn list_keys(&self) -> RecordStoreResult<Vec<busbar_contract::records::VirtualKey>> {
-        Ok(Vec::new())
-    }
-    fn delete_key(&self, _id: &str) -> RecordStoreResult<()> {
-        Ok(())
-    }
-    fn get_usage(
-        &self,
-        _bucket: &str,
-        _win: u64,
-    ) -> RecordStoreResult<busbar_contract::records::UsageLedger> {
-        Ok(busbar_contract::records::UsageLedger::default())
-    }
-    fn put_usage(
-        &self,
-        _bucket: &str,
-        _win: u64,
-        _ledger: &busbar_contract::records::UsageLedger,
-    ) -> RecordStoreResult<()> {
-        Ok(())
-    }
-    fn add_metering(
-        &self,
-        _delta: &busbar_contract::records::MeteringDelta,
-    ) -> RecordStoreResult<()> {
-        Ok(())
-    }
-    fn list_metering(
-        &self,
-        _bucket: u64,
-    ) -> RecordStoreResult<Vec<busbar_contract::records::MeteringRow>> {
-        Ok(Vec::new())
-    }
-
-    fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        let record = &record.to_record();
-        if record.kind == crate::store::plane_view::KIND_DEMOTION {
-            self.demotions
-                .lock()
-                .unwrap()
-                .push(crate::store::plane_view::decode(&record.body)?);
-        }
-        Ok(())
-    }
-    fn list_plane_records(
-        &self,
-        kind: &str,
-        selector: &PlaneSelector,
-    ) -> RecordStoreResult<Vec<Vec<u8>>> {
-        match (kind, selector) {
-            (crate::store::plane_view::KIND_DEMOTION, PlaneSelector::All) => self
-                .demotions
-                .lock()
-                .unwrap()
-                .iter()
-                .map(crate::store::plane_view::encode)
-                .collect(),
-            _ => Ok(Vec::new()),
-        }
-    }
-    fn redeem_plane_token(
-        &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> RecordStoreResult<bool> {
-        let n = self
-            .redemptions
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(n == 0)
-    }
-}
-
-#[test]
-fn plane_store_view_forwards_to_the_real_backend() {
-    let store: Arc<dyn PlaneStore> = PlaneStoreView::narrow(Arc::new(RecordingStore::default()));
-    let list_demotions = |s: &Arc<dyn PlaneStore>| -> Vec<DemoRow> {
-        s.list_plane_records(crate::store::plane_view::KIND_DEMOTION, &PlaneSelector::All)
-            .unwrap()
-            .iter()
-            .map(|body| crate::store::plane_view::decode(body).unwrap())
-            .collect()
+#[tokio::test]
+async fn native_history_preserves_opaque_bodies_and_claims_redeem_once() {
+    use crate::host_records_async::{AsyncHistory, HistoryOutcome};
+    use crate::persistence::scoped::{ClaimOutcome, ScopedStore};
+    let core = crate::real_store::core().await;
+    let store = AsyncHistory::authorized_upserts(
+        core.clone(),
+        "plane-view",
+        [super::KIND_DEMOTION.to_string()],
+    )
+    .unwrap();
+    assert!(store
+        .list(super::KIND_DEMOTION, &PlaneSelector::All)
+        .await
+        .unwrap()
+        .is_empty());
+    let row = PlaneRecord {
+        kind: super::KIND_DEMOTION.into(),
+        id: "srv-1".into(),
+        parent: None,
+        seq: 0,
+        ts: 100,
+        disposition: PlaneDisposition::Active,
+        body: super::encode(&DemoRow {
+            server: "srv-1".into(),
+            reason: "drift".into(),
+            recorded_at: 100,
+        })
+        .unwrap(),
     };
-    assert!(
-        list_demotions(&store).is_empty(),
-        "a fresh backend holds no demotions"
-    );
-    store
-        .upsert_plane_record(
-            PlaneRecord {
-                kind: crate::store::plane_view::KIND_DEMOTION.to_string(),
-                id: "srv-1".to_string(),
-                parent: None,
-                seq: 0,
-                ts: 100,
-                disposition: PlaneDisposition::Active,
-                body: crate::store::plane_view::encode(&DemoRow {
-                    server: "srv-1".to_string(),
-                    reason: "drift".to_string(),
-                    recorded_at: 100,
-                })
-                .unwrap(),
-            }
-            .view(),
-        )
+    assert!(matches!(
+        store.upsert(row.view()).await.unwrap(),
+        HistoryOutcome::Applied
+    ));
+    let rows = store
+        .list(super::KIND_DEMOTION, &PlaneSelector::All)
+        .await
         .unwrap();
-    let rows = list_demotions(&store);
-    assert_eq!(rows.len(), 1, "the write forwarded to the inner backend");
-    assert_eq!(rows[0].server, "srv-1");
-
-    assert!(
-        store
-            .redeem_plane_token(KIND_ASK, "nonce-a", 1_000, 10)
-            .unwrap(),
-        "first redemption is fresh"
+    assert_eq!(rows.len(), 1);
+    let decoded: DemoRow = super::decode(&rows[0].body).unwrap();
+    assert_eq!(decoded.server, "srv-1");
+    assert_eq!(
+        rows[0].body, row.body,
+        "the native backend preserves the opaque body"
     );
-    assert!(
-        !store
-            .redeem_plane_token(KIND_ASK, "nonce-a", 1_000, 10)
-            .unwrap(),
-        "second redemption sees the same inner ledger the wrapper forwarded to"
-    );
+    let scoped = ScopedStore::authorized(
+        core.clone(),
+        "plane-view",
+        [super::KIND_DEMOTION.to_string()],
+    )
+    .unwrap();
+    let now = core
+        .backend()
+        .clock(core.info().dataset)
+        .await
+        .unwrap()
+        .unix_seconds;
+    assert!(matches!(
+        scoped.redeem("ask", "nonce-a", now + 1000).await.unwrap(),
+        ClaimOutcome::Claimed
+    ));
+    assert!(matches!(
+        scoped.redeem("ask", "nonce-a", now + 1000).await.unwrap(),
+        ClaimOutcome::AlreadyClaimed
+    ));
 }
 
 #[test]

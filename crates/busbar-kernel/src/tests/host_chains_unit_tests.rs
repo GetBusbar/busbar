@@ -399,7 +399,7 @@ fn a_stored_body_round_trips_and_a_foreign_one_is_none() {
     assert!(body.len() <= CHAIN_OVERHEAD + own_2().len());
     let back = decode(SCOPE, &body, LP_SCOPED).unwrap();
     assert_eq!(
-        (back.seq(), back.prev_hash(), back.hash(), back.content()),
+        (back.seq(), back.prev_hash(), back.hash(), back.content.as_slice()),
         (2, e1.hash(), e2.hash(), own_2().as_slice())
     );
     let mut foreign = body.clone();

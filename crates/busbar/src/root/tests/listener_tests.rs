@@ -249,7 +249,7 @@ async fn a_rejected_configs_limits_do_not_govern_later_connections() {
         .expect("the production deployment resolves");
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (baseline, rotate, installed) = busbar_kernel::build_app_from_config(
+    let (baseline, rotate, installed) = crate::root::real_store::build_app(
         config,
         Default::default(),
         None,
@@ -259,30 +259,37 @@ async fn a_rejected_configs_limits_do_not_govern_later_connections() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the baseline app with its real ABI store");
     installed.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        baseline
-            .governance
-            .as_ref()
-            .expect("the listener application has its configured governance Store")
-            .store_calls()
-            .expect("the configured product Store exposes its actual calls"),
-        busbar_kernel::door::op_id().counter(),
-    );
+    crate::root::kernel::ROOT_CARD
+        .keep_in_store(
+            baseline
+                .governance
+                .as_ref()
+                .expect("the listener application has its configured governance Store")
+                .core_store_handle()
+                .expect("the configured product Store exposes its actual calls"),
+            busbar_kernel::door::op_id().counter(),
+        )
+        .expect("native rate history owner binds");
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the listener's actual Store boots its rate-card history");
-    installed.keep().expect("the baseline limits activate");
+    installed
+        .keep()
+        .await
+        .expect("the baseline limits activate");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     {
         let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the candidate production deployment resolves");
         candidate.limits.request_body_read_timeout_secs = 1;
         let candidate_limits = candidate.limits.clone();
-        let (_candidate, _rotate, _rejected) = busbar_kernel::build_app_from_config(
+        let (_candidate, _rotate, _rejected) = crate::root::real_store::build_app(
             candidate,
             Default::default(),
             None,
@@ -292,6 +299,7 @@ async fn a_rejected_configs_limits_do_not_govern_later_connections() {
             Some(&baseline),
             &rules,
         )
+        .await
         .expect("the actual product stages the candidate against the existing app and store");
         let _scope = busbar_kernel::config::limits::BuildScope::enter(&candidate_limits);
         assert_eq!(

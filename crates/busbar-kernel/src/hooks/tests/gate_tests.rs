@@ -38,7 +38,14 @@ fn projected_document_cleanup_clears_nested_members_and_strings() {
     assert_eq!(value, serde_json::json!([{}, ["", {}], ""]));
 }
 
-fn no_reads(_: &str, _: Option<&str>, _: &str, _: bool) {}
+fn no_reads<'a>(
+    _: &'a str,
+    _: Option<&'a str>,
+    _: &'a str,
+    _: bool,
+) -> crate::audit::amend::ReadConfirmation<'a> {
+    Box::pin(async { Ok(()) })
+}
 
 async fn decide(gates: &[(u16, ResolvedPolicy)], subject: &GateSubject<'_>) -> GateVerdict {
     decide_over(gates, subject, true, &mut Vec::new()).await
@@ -1241,10 +1248,38 @@ async fn a_gate_handed_content_leaves_exactly_one_access_amendment() {
     let facts = tool_call();
     let k = key();
 
-    let journal = amend::NodeAmendments::new();
-    let reads = |hook: &str, principal: Option<&str>, op: &str, identity: bool| {
-        amend::hook_read(&journal, hook, principal, op, identity);
-    };
+    struct Confirm;
+    impl amend::AmendSink for Confirm {
+        fn sealed(
+            &self,
+            _: &amend::Amendment,
+        ) -> Result<
+            busbar_kernel_audit::amend::AmendCommit,
+            busbar_kernel_audit::amend::AmendPersistError,
+        > {
+            Ok(Box::pin(async { Ok(()) }))
+        }
+    }
+    let journal = Arc::new(amend::NodeAmendments::new());
+    journal
+        .bind(
+            Some(Arc::new(Confirm)),
+            0,
+            &crate::teller::Kernel::new().durability_token(),
+        )
+        .await
+        .unwrap();
+    let read_journal = journal.clone();
+    let reads: crate::plane_driver::hooks::HookRead =
+        Arc::new(move |hook, principal, op, identity| {
+            let journal = read_journal.clone();
+            let hook = hook.to_owned();
+            let principal = principal.map(str::to_owned);
+            let op = op.to_owned();
+            Box::pin(async move {
+                amend::hook_read(&journal, &hook, principal.as_deref(), &op, identity).await
+            })
+        });
     for (op, send_prompt) in [("p2-404-shape-only", false), ("p2-404-hook-read", true)] {
         let spy = Arc::new(Spy {
             reply: RoutingDecision::Abstain,
@@ -1259,7 +1294,7 @@ async fn a_gate_handed_content_leaves_exactly_one_access_amendment() {
             key: Some(&k),
             session: None,
             incremental: None,
-            reads: &reads,
+            reads: &*reads,
         };
         assert!(matches!(
             decide(&gates, &subject).await,

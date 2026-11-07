@@ -81,7 +81,7 @@ impl PluginRows for PluginRegistry {
     fn store_door(
         &self,
         name_or_alias: &str,
-    ) -> Result<busbar_contract::store_calls::StoreDoor, String> {
+    ) -> Result<busbar_contract::persistence::axis::StoreDoor, String> {
         PluginRegistry::store_door(self, name_or_alias)
     }
 

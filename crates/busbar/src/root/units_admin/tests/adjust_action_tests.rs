@@ -16,9 +16,9 @@ fn request(action: &str) -> super::super::super::AdminRequest {
     }
 }
 
-#[test]
-fn adjustment_lost_response_replays_durable_action_without_second_delta() {
-    let store = crate::root::real_store::records();
+#[tokio::test]
+async fn adjustment_lost_response_replays_durable_action_without_second_delta() {
+    let store = crate::root::real_store::admin_scoped().await;
     let replay_store: super::super::super::bound::ReplayStore = {
         let store = store.clone();
         Arc::new(move || Some(store.clone()))
@@ -27,16 +27,19 @@ fn adjustment_lost_response_replays_durable_action_without_second_delta() {
     let adjuster: UsageAdjuster = {
         let calls = calls.clone();
         Arc::new(move |correction| {
-            assert_eq!(
-                correction.delta["input"],
-                busbar_contract::Count::from_micros(-1)
-            );
-            calls.fetch_add(1, Ordering::SeqCst);
-            Ok(Ok(()))
+            let calls = calls.clone();
+            Box::pin(async move {
+                assert_eq!(
+                    correction.delta["input"],
+                    busbar_contract::Count::from_micros(-1)
+                );
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(Ok(()))
+            })
         })
     };
     let mut unit = request("lost-response");
-    let ask = |unit: &super::super::super::AdminRequest, actor| {
+    let ask = async |unit: &super::super::super::AdminRequest, actor: &str| {
         adjust_request(
             unit,
             &unit.body,
@@ -46,12 +49,13 @@ fn adjustment_lost_response_replays_durable_action_without_second_delta() {
             &|_| true,
             &adjuster,
         )
+        .await
         .unwrap()
     };
-    let discarded = ask(&unit, "actor-a");
+    let discarded = ask(&unit, "actor-a").await;
     assert_eq!(discarded.status, 200);
     unit.at += 86_400;
-    let replay = ask(&unit, "actor-a");
+    let replay = ask(&unit, "actor-a").await;
     assert_eq!(replay.body, discarded.body);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     let receipt: serde_json::Value = serde_json::from_slice(&replay.body).unwrap();
@@ -67,27 +71,30 @@ fn adjustment_lost_response_replays_durable_action_without_second_delta() {
         .contains("private operator explanation"));
     let original = unit.body.clone();
     unit.body = b"{".to_vec();
-    assert_eq!(ask(&unit, "actor-a").status, 409);
+    assert_eq!(ask(&unit, "actor-a").await.status, 409);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     unit.body = original;
     unit.headers[0].1 = "intentional-second-action".into();
-    assert_eq!(ask(&unit, "actor-a").status, 200);
+    assert_eq!(ask(&unit, "actor-a").await.status, 200);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
-    assert_eq!(ask(&unit, "actor-b").status, 200);
+    assert_eq!(ask(&unit, "actor-b").await.status, 200);
     assert_eq!(calls.load(Ordering::SeqCst), 3);
 }
 
-#[test]
-fn adjustment_unknown_effect_remains_in_custody_without_reapplying() {
-    let store = crate::root::real_store::records();
+#[tokio::test]
+async fn adjustment_unknown_effect_remains_in_custody_without_reapplying() {
+    let store = crate::root::real_store::admin_scoped().await;
     let replay_store: super::super::super::bound::ReplayStore =
         Arc::new(move || Some(store.clone()));
     let calls = Arc::new(AtomicUsize::new(0));
     let adjuster: UsageAdjuster = {
         let calls = calls.clone();
         Arc::new(move |_| {
-            calls.fetch_add(1, Ordering::SeqCst);
-            Err("effect landed but acknowledgement failed".into())
+            let calls = calls.clone();
+            Box::pin(async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err("effect landed but acknowledgement failed".into())
+            })
         })
     };
     let mut unit = request("unknown-effect");
@@ -103,6 +110,7 @@ fn adjustment_unknown_effect_remains_in_custody_without_reapplying() {
             &|_| true,
             &adjuster,
         )
+        .await
         .unwrap();
         assert_eq!(answer.status, 409);
         assert_eq!(

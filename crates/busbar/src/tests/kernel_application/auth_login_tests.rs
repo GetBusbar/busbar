@@ -110,15 +110,17 @@ async fn inbound_provider_retains_the_actual_opened_instance() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let build = |cold| {
+    let build = async |cold| {
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the same actual deployment resolves for this generation");
-        let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-            .expect("the actual Store bootstraps");
-        let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-            anchor.calls.as_ref().cloned().expect("actual Store calls"),
+        let anchor = crate::root::real_store::core_over(
+            busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+                .await
+                .expect("the actual Store bootstraps"),
         )
-        .expect("the actual Store supports conditional records");
+        .await;
+        let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+            .expect("the actual Store supports conditional records");
         busbar_kernel::appbuild::build_app_from_config_with_store(
             config,
             plugin_config.clone(),
@@ -131,14 +133,20 @@ async fn inbound_provider_retains_the_actual_opened_instance() {
             Some(anchor),
             cold,
         )
+        .await
         .expect("the actual product candidate builds")
     };
-    let (old, rotate, limits) = build(true);
+    let (old, rotate, limits) = build(true).await;
     limits.stage_boot();
-    let _book = crate::root::boot::book(&old, &store).expect("the actual Store binds boot history");
-    limits.keep().expect("initial product limits activate");
+    let _book = crate::root::boot::book(&old, &store)
+        .await
+        .expect("the actual Store binds boot history");
+    limits
+        .keep()
+        .await
+        .expect("initial product limits activate");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let bound = old
         .inbound_default_auth(&auth)
@@ -158,7 +166,7 @@ async fn inbound_provider_retains_the_actual_opened_instance() {
     assert!(old.inbound_default_auth("tenant").is_err());
     assert!(old.inbound_default_auth("outbound-style").is_err());
     assert!(old.inbound_default_auth("").unwrap().is_none());
-    let (next, _rotate, _limits) = build(false);
+    let (next, _rotate, _limits) = build(false).await;
     let replacement = next.inbound_default_auth(&auth).unwrap().unwrap();
     assert!(
         !Arc::ptr_eq(&bound.calls, &replacement.calls),

@@ -132,15 +132,11 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -153,39 +149,47 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::new(app)));
     let swap_on_capture = Arc::new(AtomicBool::new(false));
     let replace_pending = Arc::new(AtomicBool::new(false));
-    let observer: Arc<dyn Fn() + Send + Sync> = {
+    let observer: Arc<dyn Fn() -> busbar_kernel::state::ApplyFuture + Send + Sync> = {
         let handle = handle.clone();
         let swap_on_capture = swap_on_capture.clone();
         let replace_pending = replace_pending.clone();
         Arc::new(move || {
-            if swap_on_capture.swap(false, Ordering::SeqCst) {
-                let mut later = (*handle.load()).clone();
-                later.config_version += 1;
-                if replace_pending.swap(false, Ordering::SeqCst) {
-                    busbar_kernel::config::overlay::persist_named_map(
-                        later.overlay_path.as_deref(),
-                        busbar_kernel::config::named_map::NamedMapSection::Export,
-                        "pending-entry",
-                        Some(&serde_json::json!({"module":"pending-after", "settings":[]})),
-                    )
-                    .unwrap();
+            let handle = handle.clone();
+            let swap_on_capture = swap_on_capture.clone();
+            let replace_pending = replace_pending.clone();
+            Box::pin(async move {
+                if swap_on_capture.swap(false, Ordering::SeqCst) {
+                    let mut later = (*handle.load()).clone();
+                    later.config_version += 1;
+                    if replace_pending.swap(false, Ordering::SeqCst) {
+                        busbar_kernel::config::overlay::persist_named_map_async(
+                            later.overlay_path.as_deref(),
+                            busbar_kernel::config::named_map::NamedMapSection::Export,
+                            "pending-entry",
+                            Some(&serde_json::json!({"module":"pending-after", "settings":[]})),
+                        )
+                        .await
+                        .unwrap();
+                    }
+                    if let Some(group) = later.groups_registry.get_mut("snapshot-group") {
+                        group.enabled = false;
+                    }
+                    handle.swap(Arc::new(later)).await;
                 }
-                if let Some(group) = later.groups_registry.get_mut("snapshot-group") {
-                    group.enabled = false;
-                }
-                handle.swap(Arc::new(later));
-            }
+            })
         })
     };
     let router = busbar_kernel::router::build_admin_router_on(&handle, 2048, false).layer(
@@ -349,7 +353,7 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
             .unwrap()
             .enabled = true;
         let before = current.config_version;
-        handle.swap(Arc::new(current));
+        handle.swap(Arc::new(current)).await;
         swap_on_capture.store(true, Ordering::SeqCst);
         let response = client
             .get(format!("{root}{path}"))
@@ -377,12 +381,13 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
     let section = busbar_kernel::config::named_map::NamedMapSection::Export;
     for item in [false, true] {
         let current = handle.load();
-        busbar_kernel::config::overlay::persist_named_map(
+        busbar_kernel::config::overlay::persist_named_map_async(
             current.overlay_path.as_deref(),
             section,
             "pending-entry",
             Some(&serde_json::json!({"module":"pending-before", "settings":[]})),
         )
+        .await
         .unwrap();
         let before = current.config_version;
         let path = if item {
@@ -412,10 +417,11 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
         };
         assert_eq!(entry["module"], "pending-before");
         assert_eq!(handle.load().config_version, before + 1);
-        let pending = busbar_kernel::config::overlay::unparseable_named_map_entries(
+        let pending = busbar_kernel::config::overlay::unparseable_named_map_entries_async(
             handle.load().overlay_path.as_deref(),
             section,
         )
+        .await
         .unwrap();
         assert_eq!(pending["pending-entry"].raw["module"], "pending-after");
         assert!(!replace_pending.load(Ordering::SeqCst));

@@ -179,7 +179,17 @@ pub(crate) fn is_plane_flag(planes: &[&[super::linked::CliHelpRow]], arg: &str) 
         .any(|(_, lines)| lines.split_whitespace().next() == Some(arg))
 }
 
-pub(crate) fn handle_cli_flags() -> Option<i32> {
+pub(crate) enum Parsed {
+    Exit(i32),
+    Serve,
+}
+
+/// Explicit informational commands exit; ordinary startup owns data upgrades.
+pub(crate) fn handle_cli_flags() -> Parsed {
+    ordinary_cli_flags().map_or(Parsed::Serve, Parsed::Exit)
+}
+
+fn ordinary_cli_flags() -> Option<i32> {
     let supplied: Vec<String> = std::env::args().skip(1).collect();
     match super::overlay_migrate::command(supplied.iter().cloned()) {
         Ok(Some(_)) => return None,
@@ -571,7 +581,7 @@ fn migrate_config_command(path: Option<String>) -> i32 {
         };
     let host =
         crate::root::config_migrate::RootHost::for_document(&raw, std::path::Path::new(&path));
-    match config::migrate::migrate_config_with(&raw, &host) {
+    match busbar_migrations::config::migrate::migrate_config_with(&raw, &host) {
         Ok(mut out) => {
             out.changes.splice(0..0, captured.changes);
             out.warnings.extend(captured.warnings);

@@ -4,7 +4,7 @@
 //! OAuth application assertions compiled by the actual distribution binary.
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use busbar_core_oauth2::config::OauthAsCfg;
 use busbar_kernel::state::App;
@@ -120,30 +120,30 @@ fn serve_boot_jwks(listener: std::net::TcpListener, app: Arc<App>) {
 }
 
 /// Build through the shipped root and its normal plugin loader. The required store
-fn application(oauth_as: Option<&OauthAsCfg>, prior: Option<&App>) -> Arc<App> {
-    application_with_resource_auth(oauth_as, prior, false)
+async fn application(oauth_as: Option<&OauthAsCfg>, prior: Option<&App>) -> Arc<App> {
+    application_with_resource_auth(oauth_as, prior, false).await
 }
 
-fn application_with_resource_auth(
+async fn application_with_resource_auth(
     oauth_as: Option<&OauthAsCfg>,
     prior: Option<&App>,
     resource_auth: bool,
 ) -> Arc<App> {
-    build_application(oauth_as, prior, resource_auth, None, None)
+    build_application(oauth_as, prior, resource_auth, None, None).await
 }
 
-fn application_with_document(document: serde_json::Value) -> Arc<App> {
-    build_application(None, None, false, Some(document), None)
+async fn application_with_document(document: serde_json::Value) -> Arc<App> {
+    build_application(None, None, false, Some(document), None).await
 }
 
-fn application_with_auth_plugin(
+async fn application_with_auth_plugin(
     document: serde_json::Value,
     library: &std::path::Path,
 ) -> Arc<App> {
-    build_application(None, None, false, Some(document), Some(library))
+    build_application(None, None, false, Some(document), Some(library)).await
 }
 
-fn build_application(
+async fn build_application(
     oauth_as: Option<&OauthAsCfg>,
     prior: Option<&App>,
     resource_auth: bool,
@@ -151,10 +151,8 @@ fn build_application(
     auth_library: Option<&std::path::Path>,
 ) -> Arc<App> {
     let hosted_credentials = auth_library.is_some();
-    static BUILDING: Mutex<()> = Mutex::new(());
-    let _building = BUILDING
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    static BUILDING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _building = BUILDING.lock().await;
     crate::dist_root_install::install();
 
     let store_library = crate::root::test_plugins::application_store_library();
@@ -222,20 +220,34 @@ fn build_application(
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
 
     let mut fresh_store = None;
-    let authorization_server = resource_auth.then(|| {
+    let authorization_server = if resource_auth {
         let deploy = busbar_kernel::config::deploy_from_deserializer(document.clone())
             .expect("the authorization-server bootstrap deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the authorization-server bootstrap deployment resolves");
         // Retain the exclusive creation provenance across construction stages. A prior
         // App never acquires a fresh receipt merely because this helper rebuilds it.
-        fresh_store = prior.is_none().then(|| {
-            plugins::provision_fresh_application_store(&config, &plugins, &directory)
-                .expect("the fixture exclusively provisions its new authorization-server Store")
-        });
-        let opened_store = fresh_store
-            .as_ref()
-            .map(plugins::FreshApplicationStore::opened);
+        fresh_store = if prior.is_none() {
+            Some(
+                plugins::provision_fresh_application_store(&config, &plugins, &directory)
+                    .await
+                    .expect(
+                        "the fixture exclusively provisions its new authorization-server Store",
+                    ),
+            )
+        } else {
+            None
+        };
+        let opened_store = match &fresh_store {
+            Some(fresh) => fresh.opened(),
+            None => prior
+                .expect("retained authorization-server app")
+                .governance
+                .as_ref()
+                .expect("retained governance")
+                .core_store_handle()
+                .unwrap(),
+        };
         let (app, _rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             config,
             plugins.clone(),
@@ -245,25 +257,29 @@ fn build_application(
             (None, None),
             prior,
             &rules,
-            opened_store,
+            Some(opened_store),
             false,
         )
+        .await
         .expect("the actual authorization server builds before resource-auth READY");
         if let Some(fresh) = &fresh_store {
             assert!(
                 Arc::ptr_eq(
-                    &fresh.opened().records,
+                    &fresh.opened(),
                     &app.governance
                         .as_ref()
                         .expect("the AS owns governance")
-                        .store(),
+                        .core_store_handle()
+                        .unwrap(),
                 ),
                 "the AS construction must retain the provisioner's actual Store"
             );
         }
         drop(limits);
-        Arc::new(app)
-    });
+        Some(Arc::new(app))
+    } else {
+        None
+    };
     let jwks_tls = authorization_server.as_ref().map(|_| {
         let listener =
             std::net::TcpListener::bind("127.0.0.1:0").expect("the OAuth JWKS TLS listener");
@@ -299,11 +315,16 @@ fn build_application(
         .expect("the product deployment resolves");
     // Only construction has occurred: no JWKS or application listener serves yet.
     // Finalize the originally created namespace against its eventual marked domain.
-    let initialized_store = fresh_store.map(|fresh| {
-        fresh
-            .initialize_principal_format(&config, &plugins)
-            .expect("the new Store receives its baseline before serving")
-    });
+    let initialized_store = if let Some(fresh) = fresh_store {
+        Some(
+            fresh
+                .initialize_principal_format(&config, &plugins)
+                .await
+                .expect("the new Store receives its baseline before serving"),
+        )
+    } else {
+        None
+    };
     if let Some((_, _, listener)) = jwks_tls {
         serve_boot_jwks(
             listener,
@@ -320,13 +341,8 @@ fn build_application(
                 .governance
                 .as_ref()
                 .expect("the actual AS owns governance");
-            busbar_contract::store_calls::OpenedStore {
-                records: gov.store(),
-                calls: Some(
-                    gov.store_calls()
-                        .expect("the actual AS Store exposes its calls"),
-                ),
-            }
+            gov.core_store_handle()
+                .expect("the actual AS owns native persistence")
         })
     });
 
@@ -353,24 +369,44 @@ fn build_application(
             .iter()
             .any(|requirement| !requirement.format.is_empty())
         {
-            plugins::bootstrap_fresh_application_store(&config, &plugins, &directory)
+            plugins::bootstrap_fresh_application_store(&config, &plugins, &directory).await
         } else {
-            busbar_kernel::appbuild::bootstrap_config_store(&config, &plugins)
+            Ok::<_, String>(
+                crate::root::real_store::core_over(
+                    busbar_kernel::appbuild::bootstrap_config_store(&config, &plugins)
+                        .await
+                        .expect("the actual backend opens"),
+                )
+                .await,
+            )
         }
         .expect("the actual hosted-login Store anchors its config authority");
-        let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-            opened
-                .calls
-                .as_ref()
-                .cloned()
-                .expect("the actual Store exposes typed calls"),
-        )
-        .expect("the actual hosted-login Store supports a writable config overlay");
+        let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(opened.clone())
+            .expect("the actual hosted-login Store supports a writable config overlay");
         (Some(opened), Some(overlay))
     } else {
         (opened_store, None)
     };
     let carried = authorization_server.as_deref().or(prior);
+    let opened_store = match opened_store {
+        Some(opened) => opened,
+        None => {
+            if let Some(app) = carried {
+                app.governance
+                    .as_ref()
+                    .expect("retained governance")
+                    .core_store_handle()
+                    .unwrap()
+            } else {
+                crate::root::real_store::core_over(
+                    busbar_kernel::appbuild::bootstrap_config_store(&config, &plugins)
+                        .await
+                        .expect("the actual backend opens"),
+                )
+                .await
+            }
+        }
+    };
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugins,
@@ -380,16 +416,18 @@ fn build_application(
         (None, None),
         carried,
         &rules,
-        opened_store,
+        Some(opened_store),
         false,
     )
+    .await
     .expect("the actual product builds the OAuth deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds OAuth rate history and usage recovery before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     Arc::new(app)
 }

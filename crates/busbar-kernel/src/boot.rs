@@ -1,19 +1,14 @@
 use std::sync::Arc;
 
-pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
-    if let Some(gov) = app.governance.as_ref() {
-        crate::audit::auditlog::register_and_migrate(app, &gov.store());
+pub async fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
+    if let Some(governance) = app.governance.as_ref() {
+        let store = governance.core_store_handle().map_err(|e| e.to_string())?;
+        crate::audit::auditlog::register_and_restore(app, store.clone())
+            .await
+            .map_err(|e| e.to_string())?;
+        app.demotion_record.set_store(store)?;
     }
-
-    let plane_store = app
-        .governance
-        .as_ref()
-        .map(|gov| crate::store::plane_view::PlaneStoreView::narrow(gov.store()));
-
-    if let Some(store) = &plane_store {
-        app.demotion_record.set_sink(Arc::clone(store));
-    }
-    let ctx = crate::plane_driver::registry::BootCtx::for_hydrate(plane_store, app);
+    let ctx = crate::plane_driver::registry::BootCtx::for_hydrate(app);
     run_hydrate_hooks(&configured_decls(app), &ctx)
 }
 

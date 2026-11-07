@@ -292,20 +292,26 @@ fn test_stateful_plane_ephemeral_store_warn_fires_only_for_ram_plus_stateful() {
     );
 }
 
-#[test]
-fn test_memory_store_cannot_reach_inert_with_keys() {
+#[tokio::test]
+async fn test_memory_store_cannot_reach_inert_with_keys() {
     use crate::governance::GovState;
 
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
+    let store = crate::tests::real_store::core().await;
+    let gov = GovState::new_with_core(store, None, None).await.unwrap();
     assert!(gov.admin_token_hash().is_none(), "no admin token → inert");
-    let key_count = gov.all_keys().map(|k| k.len()).unwrap_or(0);
+    let key_count = gov
+        .all_keys_async()
+        .await
+        .map(|keys| keys.len())
+        .unwrap_or(0);
     assert_eq!(key_count, 0, "a fresh RAM store holds no keys");
 
     assert!(inert_durable_keys_banner(false, key_count, false).is_none());
 
-    let store2 = crate::real_store::store();
-    let gov2 = GovState::new(store2, Some("admintok".to_string())).unwrap();
+    let store2 = crate::tests::real_store::core().await;
+    let gov2 = GovState::new_with_core(store2, Some("admintok".to_string()), None)
+        .await
+        .unwrap();
     assert!(gov2.admin_token_hash().is_some(), "admin token → active");
 }
 

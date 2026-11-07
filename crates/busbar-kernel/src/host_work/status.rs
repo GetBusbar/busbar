@@ -8,6 +8,39 @@ use busbar_contract::abi::host::service::{
 use super::*;
 
 impl WorkBook {
+    pub(crate) async fn status_native(
+        &self,
+        rows: &crate::persistence::scoped::ScopedStore,
+        instance: &Arc<str>,
+        reference: &Reference,
+        now_ms: u64,
+        retain_ms: u64,
+    ) -> Result<u64, crate::persistence::scoped::Error> {
+        {
+            let book = self.lock();
+            if let Some(handle) = book.by_ref.get(&(Arc::clone(instance), *reference)) {
+                if let Some(work) = book.handles.get(handle) {
+                    return Ok(if book.settling.contains(handle) {
+                        WORK_STATUS_SETTLING
+                    } else {
+                        retained_status(work, now_ms, retain_ms)
+                    });
+                }
+            }
+        }
+        let Some(row) = rows.get(WORK_SCHEMA.as_str(), reference).await? else {
+            return Ok(WORK_STATUS_ABSENT);
+        };
+        let seal = crate::seal::lend();
+        let bytes = row.expose(&seal);
+        if bytes.is_empty() {
+            return Ok(WORK_STATUS_ABSENT);
+        }
+        let work = Work::read(instance, *reference, bytes)
+            .ok_or(crate::persistence::scoped::Error::Corrupt)?;
+        Ok(retained_status(&work, now_ms, retain_ms))
+    }
+
     /// Read-only instance-scoped settlement observation. Cached state and its in-flight marker
     /// are read under one lock; only `commit_settle` publishes a settled cached state. Cold
     /// observations read the durable row without adopting, rebinding, or disclosing its contents.

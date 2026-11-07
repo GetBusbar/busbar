@@ -117,18 +117,9 @@ pub struct RootHistory {
     /// about which generation of the deployment's configuration produced the entry. The day the seam
     /// carries the engine's own epoch, this counter is what it replaces.
     resolutions: std::sync::atomic::AtomicU64,
-    /// Where an applied card is made durable. A
-    /// history that lives only in memory is rebuilt at the next boot as the boot card from instant
-    /// zero, and every posting a restart replays is then priced at a card that was not in force when
-    /// it arrived. So every config-applied card is journalled on the node's one book with its
-    /// `effective_from`, and a boot rebuilds the history from the chain before it rebuilds the book.
-    /// Off — the default, and every holder but the one a production boot arms — journals nothing.
-    journal: Mutex<CardJournal>,
     /// One append at a time — a config apply or a signed correction — so an entry's number on the
     /// history and its record's position on the chain are the same order.
     applying: Mutex<()>,
-    /// The form of the config card in force, as the journal holds it.
-    in_force: Mutex<Option<CardForm>>,
     /// **THE FLEET-SHARED HISTORY IN THE STORE** (MONEY-DESIGN section 3a): set by the production boot
     /// before its book opens ([`Self::keep_in_store`]). Once it is loaded nothing is journalled,
     /// and every change of the configured card appends an entry to it.
@@ -136,27 +127,6 @@ pub struct RootHistory {
     /// The card the boot's configuration resolved: the history's opening entry, or the boot's own
     /// change, once the history is loaded.
     boot_card: Mutex<Option<busbar_kernel::config::card::CardFields>>,
-}
-
-/// Where a holder's applied cards go (see [`RootHistory::arm_journal`]).
-#[derive(Default)]
-enum CardJournal {
-    /// Nothing is journalled: a build with no root ledger, a test's holder, or a node with no data
-    /// directory — the previous release's no-persistence shape, whose history is the boot card.
-    #[default]
-    Off,
-    /// Armed at boot, before the book exists: applies are held until the boot's book rebuilds the
-    /// history from its chain ([`RootHistory::restore`]).
-    Armed(Vec<CardApplied>),
-    /// The history was rebuilt from the chain and the boot's cards journalled; the book's shared
-    /// handle is not bound yet ([`RootHistory::bind_journal`]), so an apply has no journal to go on
-    /// and is refused ([`CardRefused::Unbound`]).
-    Restored,
-    /// Every apply goes on this book's journal as it lands.
-    Bound {
-        book: Arc<Mutex<crate::root::durability::Durability>>,
-        token: Grant<busbar_contract::caps::DurableWrite>,
-    },
 }
 
 /// Why the boot's rebuild of the dated history refused the boot.
@@ -195,7 +165,7 @@ pub enum CardRefused {
     /// chained its record before the log was asked to take it, and the log retained the refused
     /// batch and offers it again, in order, on the next append (`busbar-kernel-wal`
     /// `Journal::append`, `Wal::append_batch`). So the record may yet land, and the holder put the
-    /// card in force back on the journal behind it at the same instant ([`RootHistory::withdraw`]).
+    /// card in force back on the journal behind it at the same instant .
     Lost(busbar_contract::caps::DurabilityLost),
     /// The log neither holds nor owes the card, so the record can never land: nothing is published
     /// and nothing is put back — the node fails closed. Every arm of `Wal::append_batch` retains
@@ -238,12 +208,17 @@ impl RootHistory {
 
     pub fn keep_in_store(
         &self,
-        calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
+        store: Arc<busbar_kernel::persistence::facade::CoreStore>,
         node: u64,
-    ) {
-        let _ = self
-            .store
-            .set(crate::root::card_history::CardStore::new(calls, node));
+    ) -> Result<(), String> {
+        let history = crate::root::card_history::CardStore::new(
+            store,
+            node,
+            crate::root::card_history::rate_card_of,
+        )?;
+        self.store
+            .set(history)
+            .map_err(|_| "rate-card Store is already bound".to_string())
     }
 
     #[must_use]
@@ -263,8 +238,10 @@ impl RootHistory {
 
     pub fn card_applied(&self, card: &busbar_kernel::config::card::CardFields, origin: &str) {
         match self.card_store() {
-            Some(store) => {
-                store.apply(card, origin);
+            Some(_) => {
+                // Live configuration publishes through the confirmed RateApply
+                // preparation. This notification performs no persistence.
+                let _ = origin;
             }
             None => {
                 let mut boot = self.boot_card.lock().unwrap_or_else(|p| p.into_inner());
@@ -275,32 +252,28 @@ impl RootHistory {
         }
     }
 
+    pub(crate) async fn boot_bound_store(&self) -> Result<(), String> {
+        let store = self.store.get().ok_or("no store kept")?;
+        self.boot_store(store, None).await
+    }
+
     #[cfg(test)]
-    pub(crate) fn boot_in_store(
+    pub(crate) async fn boot_in_store(
         &self,
         own: Option<&[busbar_kernel_wal::JournalRecord]>,
     ) -> Result<(), String> {
         let store = self.store.get().ok_or("no store kept")?;
-        self.boot_store(store, own)
+        self.boot_store(store, own).await
     }
 
-    fn boot_store(
+    async fn boot_store(
         &self,
         store: &Arc<crate::root::card_history::CardStore>,
         own: Option<&[busbar_kernel_wal::JournalRecord]>,
     ) -> Result<(), String> {
-        let mut chains: Vec<crate::root::card_history::Chain> = Vec::new();
-        if let Some(own) = own {
-            chains.push((store.node(), own.to_vec()));
-        }
-        match crate::root::durability::stored_chains(store.calls().as_ref(), store.node()) {
-            Ok(others) => chains.extend(others),
-            Err(why) => tracing::warn!(
-                "other nodes' journals could not be read for the rate-card migration: {why}"
-            ),
-        }
-        let migrated = crate::root::card_history::migrated(&chains, store.node());
-
+        // Historical node-journal price import is an explicit offline operation.
+        // Serving boot reads only the canonical native price namespace.
+        let _ = own;
         let Some(card) = self
             .boot_card
             .lock()
@@ -313,7 +286,9 @@ impl RootHistory {
             );
             return Ok(());
         };
-        store.boot(&card, &format!("boot of node {}", store.node()), migrated)
+        store
+            .boot(&card, &format!("boot of node {}", store.node()), Vec::new())
+            .await
     }
 
     pub fn apply(
@@ -326,13 +301,6 @@ impl RootHistory {
             .resolutions
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.append_config(card, now_ms, policy_epoch)
-    }
-
-    fn effective_from_for(&self, now_ms: u64) -> u64 {
-        match self.history.load().as_deref() {
-            Some(history) if !history.is_empty() => now_ms,
-            _ => 0,
-        }
     }
 
     fn append_config(
@@ -365,84 +333,16 @@ impl RootHistory {
     pub fn apply_rates(
         &self,
         rates: &busbar_kernel::rate_apply::RawRates<'_>,
-        now_ms: u64,
+        _now_ms: u64,
     ) -> Result<busbar_kernel_ledger::cost::HistorySeq, CardRefused> {
-        let _one_at_a_time = self.applying.lock().unwrap_or_else(|p| p.into_inner());
         register_classes(rates);
-
-        if self.store.get().is_some() {
-            return Err(CardRefused::InStore);
-        }
-        let card = card_from_raw(rates);
-        let form = CardForm::of(rates, &card);
-
-        let policy_epoch = self.resolutions.load(std::sync::atomic::Ordering::Relaxed);
-        self.journal_or_withdraw(
-            CardApplied {
-                effective_from: self.effective_from_for(now_ms),
-                appended_at: now_ms,
-                policy_epoch,
-                form: form.clone(),
-            },
-            now_ms,
-        )?;
-        *self.in_force.lock().unwrap_or_else(|p| p.into_inner()) = Some(form);
-        Ok(self.append_config(card, now_ms, policy_epoch))
-    }
-
-    fn spend_epoch(&self, policy_epoch: u64) {
-        self.resolutions.fetch_max(
-            policy_epoch.saturating_add(1),
-            std::sync::atomic::Ordering::Relaxed,
-        );
-    }
-
-    fn journal_or_withdraw(&self, applied: CardApplied, _now_ms: u64) -> Result<(), CardRefused> {
-        match self.journal_applied(applied.clone()) {
-            Ok(()) => {
-                self.spend_epoch(applied.policy_epoch);
-                Ok(())
-            }
-            Err(CardRefused::Unbound) => Err(CardRefused::Unbound),
-            Err(CardRefused::Dropped(lost)) => {
-                self.spend_epoch(applied.policy_epoch);
-                Err(CardRefused::Dropped(lost))
-            }
-            Err(CardRefused::Lost(lost)) => {
-                self.spend_epoch(applied.policy_epoch);
-                Err(CardRefused::Lost(lost))
-            }
-            Err(CardRefused::InStore) => Err(CardRefused::InStore),
-        }
-    }
-
-    pub fn arm_journal(&self) {
-        let mut journal = self.journal.lock().unwrap_or_else(|p| p.into_inner());
-        if matches!(*journal, CardJournal::Off) {
-            *journal = CardJournal::Armed(Vec::new());
-        }
-    }
-
-    pub(crate) fn disarm_journal(&self) {
-        *self.journal.lock().unwrap_or_else(|p| p.into_inner()) = CardJournal::Off;
-    }
-
-    fn journal_applied(&self, applied: CardApplied) -> Result<(), CardRefused> {
-        let mut journal = self.journal.lock().unwrap_or_else(|p| p.into_inner());
-        match &mut *journal {
-            CardJournal::Off => Ok(()),
-            CardJournal::Armed(held) => {
-                held.push(applied);
-                Ok(())
-            }
-            CardJournal::Restored => Err(CardRefused::Unbound),
-            CardJournal::Bound { book, token } => {
-                let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
-                journal_card(&mut durability, &applied, token)
-                    .map(|_| ())
-                    .map_err(|lost| refusal_of(&durability, lost))
-            }
-        }
+        // Raw notifications cannot establish durable prices. Only the native
+        // prepare/activation/generation-commit sequence grants publication.
+        Err(if self.store.get().is_some() {
+            CardRefused::InStore
+        } else {
+            CardRefused::Unbound
+        })
     }
 
     pub(crate) fn restore(
@@ -531,82 +431,29 @@ impl RootHistory {
         }
     }
 
-    pub(crate) fn rebuild_from_chain(
+    pub(crate) async fn rebuild_from_chain(
         &'static self,
-        durability: &mut crate::root::durability::Durability,
+        _durability: &mut crate::root::durability::Durability,
         records: Option<&[busbar_kernel_wal::JournalRecord]>,
     ) -> Result<Vec<CorrectionRefused>, CardBootError> {
-        if let Some(store) = self.store.get() {
-            *self.journal.lock().unwrap_or_else(|p| p.into_inner()) = CardJournal::Off;
-            self.boot_store(store, records)
-                .map_err(CardBootError::Store)?;
-            durability.cards_from = Some(self);
-            return Ok(Vec::new());
-        }
-        let Some(records) = records else {
-            self.disarm_journal();
-            return Ok(Vec::new());
-        };
-        let mut journal = self.journal.lock().unwrap_or_else(|p| p.into_inner());
-        let CardJournal::Armed(held) = &mut *journal else {
-            return Ok(Vec::new());
-        };
-        let RestoredHistory {
-            history,
-            write,
-            next_epoch,
-            newest,
-            refused,
-        } = Self::restore(journalled_cards(records), std::mem::take(held));
-        let token = new_kernel().durability_token();
-        for applied in &write {
-            journal_card(durability, applied, &token)?;
-        }
-        if !history.is_empty() {
-            self.history.store(Some(Arc::new(history)));
-        }
-        self.resolutions
-            .fetch_max(next_epoch, std::sync::atomic::Ordering::Relaxed);
-        *self.in_force.lock().unwrap_or_else(|p| p.into_inner()) = newest;
-        *journal = CardJournal::Restored;
-        durability.cards_from = Some(self);
-        Ok(refused)
+        let store = self.store.get().ok_or_else(|| {
+            CardBootError::Store("canonical price history requires the configured CoreStore".into())
+        })?;
+        self.boot_store(store, records)
+            .await
+            .map_err(CardBootError::Store)?;
+        Ok(Vec::new())
     }
 
-    pub fn bind_journal(&self, book: &Arc<Mutex<crate::root::durability::Durability>>) {
-        if !matches!(
-            *self.journal.lock().unwrap_or_else(|p| p.into_inner()),
-            CardJournal::Restored
-        ) {
-            return;
-        }
-        let ours = book
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .cards_from
-            .is_some_and(|holder| std::ptr::eq(holder, self));
-        if !ours {
-            return;
-        }
-        let mut journal = self.journal.lock().unwrap_or_else(|p| p.into_inner());
-        if !matches!(*journal, CardJournal::Restored) {
-            return;
-        }
-        *journal = CardJournal::Bound {
-            book: Arc::clone(book),
-            token: new_kernel().durability_token(),
-        };
-    }
-
-    pub fn amend<E>(
+    pub async fn amend<E>(
         &self,
         correction: &Correction,
         seal: impl FnOnce(&busbar_kernel_ledger::cost::RateCard, CorrectionBase) -> Result<(), E>,
     ) -> Result<busbar_kernel_ledger::cost::HistorySeq, AmendRefused<E>> {
-        self.amend_by(correction, "admin", seal)
+        self.amend_by(correction, "admin", seal).await
     }
 
-    pub fn amend_by<E>(
+    pub async fn amend_by<E>(
         &self,
         correction: &Correction,
         actor: &str,
@@ -614,9 +461,6 @@ impl RootHistory {
     ) -> Result<busbar_kernel_ledger::cost::HistorySeq, AmendRefused<E>> {
         let store = self.card_store();
 
-        let _one_at_a_time = store
-            .is_none()
-            .then(|| self.applying.lock().unwrap_or_else(|p| p.into_inner()));
         let current = self.history().ok_or(AmendRefused::NoHistory)?;
 
         if let Some(cut) = current.current().correction_cut(
@@ -666,6 +510,7 @@ impl RootHistory {
                     reason_hash,
                     actor,
                 )
+                .await
                 .map_err(AmendRefused::Store)?;
             let history = store.history().ok_or(AmendRefused::NoHistory)?;
             return history
@@ -674,6 +519,7 @@ impl RootHistory {
                 .ok_or(AmendRefused::NoHistory);
         }
 
+        let _one_at_a_time = self.applying.lock().unwrap_or_else(|p| p.into_inner());
         let mut next = busbar_kernel_ledger::cost::History::clone(&current);
         let seq = next.append(draft);
         self.history.store(Some(Arc::new(next)));
@@ -729,101 +575,92 @@ pub(crate) fn card_from_config<'r>(
 pub struct CardRepricer;
 
 impl busbar_kernel::rate_apply::RateApply for CardRepricer {
-    fn prepare_recovery(
-        &self,
-        card: &busbar_kernel::config::card::CardFields,
-        rates: &busbar_kernel::rate_apply::RawRates<'_>,
-        origin: &str,
-    ) -> Result<Box<dyn busbar_kernel::rate_apply::PreparedRates>, String> {
+    fn prepare_recovery<'a>(
+        &'a self,
+        card: &'a busbar_kernel::config::card::CardFields,
+        rates: &'a busbar_kernel::rate_apply::RawRates<'_>,
+        origin: &'a str,
+    ) -> busbar_kernel::rate_apply::RateFuture<
+        'a,
+        Result<Box<dyn busbar_kernel::rate_apply::PreparedRates>, String>,
+    > {
         busbar_kernel::rate_apply::RateApply::prepare_recovery(&*ROOT_CARD, card, rates, origin)
     }
-
-    fn prepare(
-        &self,
-        card: &busbar_kernel::config::card::CardFields,
-        rates: &busbar_kernel::rate_apply::RawRates<'_>,
-        origin: &str,
-    ) -> Result<Box<dyn busbar_kernel::rate_apply::PreparedRates>, String> {
+    fn prepare<'a>(
+        &'a self,
+        card: &'a busbar_kernel::config::card::CardFields,
+        rates: &'a busbar_kernel::rate_apply::RawRates<'_>,
+        origin: &'a str,
+    ) -> busbar_kernel::rate_apply::RateFuture<
+        'a,
+        Result<Box<dyn busbar_kernel::rate_apply::PreparedRates>, String>,
+    > {
         busbar_kernel::rate_apply::RateApply::prepare(&*ROOT_CARD, card, rates, origin)
     }
-
     fn rates_applied(&self, rates: &busbar_kernel::rate_apply::RawRates<'_>) {
         match ROOT_CARD.apply_rates(rates, busbar_kernel::store::now_ms()) {
             Ok(_) | Err(CardRefused::InStore) => {}
             Err(refused) => tracing::error!(
                 ?refused,
-                "the journal did not take an applied rate card: the apply is refused and the card \
-                 in force is unchanged"
+                "the journal did not confirm the applied rate card"
             ),
         }
     }
-
     fn card_applied(&self, card: &busbar_kernel::config::card::CardFields, origin: &str) {
         ROOT_CARD.card_applied(card, origin);
     }
 }
-
 impl busbar_kernel::rate_apply::RateApply for RootHistory {
-    fn prepare_recovery(
-        &self,
-        card: &busbar_kernel::config::card::CardFields,
-        _rates: &busbar_kernel::rate_apply::RawRates<'_>,
-        origin: &str,
-    ) -> Result<Box<dyn busbar_kernel::rate_apply::PreparedRates>, String> {
-        let store = self
-            .store
-            .get()
-            .ok_or("rate recovery requires the configured Store")?;
-        store
-            .prepare_recovery(card, origin)
-            .map(|prepared| Box::new(prepared) as Box<dyn busbar_kernel::rate_apply::PreparedRates>)
+    fn prepare_recovery<'a>(
+        &'a self,
+        card: &'a busbar_kernel::config::card::CardFields,
+        _rates: &'a busbar_kernel::rate_apply::RawRates<'_>,
+        origin: &'a str,
+    ) -> busbar_kernel::rate_apply::RateFuture<
+        'a,
+        Result<Box<dyn busbar_kernel::rate_apply::PreparedRates>, String>,
+    > {
+        Box::pin(async move {
+            let store = self
+                .store
+                .get()
+                .ok_or("rate recovery requires the configured Store")?;
+            store.prepare_recovery(card, origin).await.map(|prepared| {
+                Box::new(prepared) as Box<dyn busbar_kernel::rate_apply::PreparedRates>
+            })
+        })
     }
-
-    fn prepare(
-        &self,
-        card: &busbar_kernel::config::card::CardFields,
-        _rates: &busbar_kernel::rate_apply::RawRates<'_>,
-        origin: &str,
-    ) -> Result<Box<dyn busbar_kernel::rate_apply::PreparedRates>, String> {
-        let store = self
-            .store
-            .get()
-            .ok_or("rate activation requires the configured Store; no rate-card Store is bound")?;
-        store
-            .prepare(card, origin)
-            .map(|prepared| Box::new(prepared) as Box<dyn busbar_kernel::rate_apply::PreparedRates>)
+    fn prepare<'a>(
+        &'a self,
+        card: &'a busbar_kernel::config::card::CardFields,
+        _rates: &'a busbar_kernel::rate_apply::RawRates<'_>,
+        origin: &'a str,
+    ) -> busbar_kernel::rate_apply::RateFuture<
+        'a,
+        Result<Box<dyn busbar_kernel::rate_apply::PreparedRates>, String>,
+    > {
+        Box::pin(async move {
+            let store = self
+                .store
+                .get()
+                .ok_or("rate activation requires the configured Store")?;
+            store.prepare(card, origin).await.map(|prepared| {
+                Box::new(prepared) as Box<dyn busbar_kernel::rate_apply::PreparedRates>
+            })
+        })
     }
-
     fn rates_applied(&self, rates: &busbar_kernel::rate_apply::RawRates<'_>) {
         if let Err(refused) = self.apply_rates(rates, busbar_kernel::store::now_ms()) {
             tracing::error!(
                 ?refused,
-                "a legacy rate notification could not activate its rates"
+                "legacy rate notification did not activate its rates"
             );
         }
     }
-
     fn card_applied(&self, card: &busbar_kernel::config::card::CardFields, origin: &str) {
         RootHistory::card_applied(self, card, origin);
     }
 }
-
-impl busbar_kernel::rate_apply::PreparedRates for crate::root::card_history::PreparedCard {
-    fn confirm_activation(
-        self: Box<Self>,
-    ) -> Result<Box<dyn busbar_kernel::rate_apply::RateCommit>, String> {
-        (*self)
-            .confirm_activation()
-            .map(|confirmed| Box::new(confirmed) as Box<dyn busbar_kernel::rate_apply::RateCommit>)
-    }
-}
-
-impl busbar_kernel::rate_apply::RateCommit for crate::root::card_history::ConfirmedCard {
-    fn commit(self: Box<Self>) {
-        crate::root::card_history::ConfirmedCard::commit(*self);
-    }
-}
-
 pub(crate) fn card_from_raw(
     rates: &busbar_kernel::rate_apply::RawRates<'_>,
 ) -> busbar_kernel_ledger::cost::RateCard {
@@ -1181,33 +1018,6 @@ impl CardApplied {
                 planes,
             },
         })
-    }
-}
-
-fn journal_card(
-    durability: &mut crate::root::durability::Durability,
-    applied: &CardApplied,
-    token: &Grant<busbar_contract::caps::DurableWrite>,
-) -> Result<busbar_kernel_wal::JournalAck, busbar_contract::caps::DurabilityLost> {
-    let entry =
-        busbar_kernel_wal::Entry::new(busbar_kernel_wal::RecordClass::Policy, applied.body())
-            .at(applied.appended_at / 1_000, 0);
-    durability
-        .journal
-        .append(token, busbar_contract::caps::StepName::Route, &[entry])
-}
-
-fn refusal_of(
-    durability: &crate::root::durability::Durability,
-    lost: busbar_contract::caps::DurabilityLost,
-) -> CardRefused {
-    let journal = &durability.journal;
-    let card = (journal.node(), journal.next_seq().saturating_sub(1));
-    let log = journal.log();
-    if log.holds(card.0, card.1) || log.owed().iter().any(|r| r.identity() == card) {
-        CardRefused::Lost(lost)
-    } else {
-        CardRefused::Dropped(lost)
     }
 }
 
@@ -1579,9 +1389,7 @@ impl busbar_kernel::rate_apply::RateEpoch for RootHistory {
     }
 }
 
-pub fn install_card_repricer() {
-    ROOT_CARD.arm_journal();
-}
+pub fn install_card_repricer() {}
 
 /// The admission unit, standing at the in-flight table's arrival door.
 ///
@@ -1599,7 +1407,8 @@ impl ArrivalDoor for AdmissionDoor {
     }
 }
 
-pub type VerbStoreHandle = Option<Arc<dyn busbar_kernel_seams::verb_store::Store + Send + Sync>>;
+pub type VerbStoreHandle =
+    Option<Arc<dyn busbar_kernel::persistence::recovery_api::Store + Send + Sync>>;
 
 pub struct ProductionUnits {
     pub auth_bindings: auth_bindings::AuthBindings,
@@ -1654,19 +1463,24 @@ impl ProductionUnits {
         }
     }
 
-    #[cfg(feature = "root-admin")]
-    #[must_use]
-    pub fn admin_only(
+    #[cfg(all(test, feature = "root-admin"))]
+    pub async fn admin_only(
         dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
         door: crate::root::units_admin::AdminDoorFn,
     ) -> Self {
-        let durability = crate::root::durability::build(
-            &crate::root::durability::DurabilityConfig { data_dir: None },
-            Box::new(busbar_kernel_wal::NullShipper::new()),
-        )
-        .expect("a memory-buffered journal cannot fail to open");
-
-        ProductionUnits::admin_only_sharing(dispatch, door, Arc::new(Mutex::new(durability)), None)
+        use busbar_kernel::persistence::journal::{BufferBudget, RuntimeJournal};
+        let core = crate::root::real_store::core().await;
+        let budget = BufferBudget {
+            records: 8192,
+            bytes: 16 * 1024 * 1024,
+        };
+        let journal = RuntimeJournal::open(core, 1, budget)
+            .await
+            .expect("native admin fixture journal");
+        let book = crate::root::durability::node_book(journal, budget)
+            .await
+            .expect("native admin fixture book");
+        ProductionUnits::admin_only_sharing(dispatch, door, book.durability, None)
     }
 
     #[cfg(feature = "root-admin")]
@@ -1700,7 +1514,6 @@ impl ProductionUnits {
             store,
         );
 
-        ROOT_CARD.bind_journal(&durability);
         units.admin.amendments = Some(Arc::new(crate::root::units_admin::AmendmentJournal::new(
             Arc::clone(&durability),
             kernel.durability_token(),

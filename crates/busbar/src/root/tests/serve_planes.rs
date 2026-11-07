@@ -16,9 +16,12 @@ use crate::root::loader::dispatch::{
     load_dropped, rendering_of_library, Bind, DispatchConfig, Dispatcher, NoSink,
 };
 
-pub(crate) fn money() -> Arc<PlaneMoney> {
-    let gov =
-        Arc::new(GovState::new(crate::root::real_store::records(), None).expect("governance"));
+pub(crate) async fn money() -> Arc<PlaneMoney> {
+    let gov = Arc::new(
+        GovState::new_with_core(crate::root::real_store::core().await, None, None)
+            .await
+            .expect("governance"),
+    );
     Arc::new(PlaneMoney::new(gov, post() as Arc<dyn EndPost>))
 }
 
@@ -77,24 +80,28 @@ pub(crate) fn composed_services() -> Arc<LateServices> {
     late
 }
 
-fn admin(tables: &busbar_kernel::plane_driver::serve::ServeTables, path: &str) -> Option<u16> {
+async fn admin(
+    tables: &busbar_kernel::plane_driver::serve::ServeTables,
+    path: &str,
+) -> Option<u16> {
     let req = axum::http::Request::builder()
         .method("POST")
         .uri(format!("{}{path}", busbar_kernel::api::ADMIN_PREFIX))
         .body(axum::body::Body::from("go"))
         .expect("a request");
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("a runtime");
-    rt.block_on(async { tables.answer(req).await.map(|r| r.status().as_u16()) })
+    tables
+        .answer(req)
+        .await
+        .map(|response| response.status().as_u16())
 }
 
-#[test]
-fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
+#[tokio::test]
+async fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
+    let native_money = money().await;
+    let money = || native_money.clone();
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let instance = "serve-compose-configured";
-    let _one = PUBLISHING.blocking_lock();
+    let _one = PUBLISHING.lock().await;
     let plane = bound(instance, &dispatcher);
     let doors = vec![(instance.to_string(), plane)];
     let mut sections = BTreeMap::new();
@@ -110,7 +117,7 @@ fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
         None,
         None,
         &busbar_kernel::plane_driver::serve::ServeTables::default(),
-    )
+    ).await
     .expect("the door plane composes (the plane_driver_test_plane example cdylib, current: run `cargo build --workspace --examples`)");
     assert_eq!(served.planes.len(), 1, "one plane composed");
     let p = &served.planes[0];
@@ -127,19 +134,21 @@ fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
         "its open published its claims"
     );
     assert_eq!(
-        admin(&served.tables, "/items/composed/act"),
+        admin(&served.tables, "/items/composed/act").await,
         Some(200),
         "its audited admin route is served by its `serve` op"
     );
     assert_eq!(
-        admin(&served.tables, "/items/composed/hook"),
+        admin(&served.tables, "/items/composed/hook").await,
         None,
         "a public route is never on the admin table"
     );
 }
 
-#[test]
-fn a_door_plane_whose_section_is_absent_stays_unopened() {
+#[tokio::test]
+async fn a_door_plane_whose_section_is_absent_stays_unopened() {
+    let native_money = money().await;
+    let money = || native_money.clone();
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let instance = "serve-compose-unconfigured";
     let plane = bound(instance, &dispatcher);
@@ -156,12 +165,15 @@ fn a_door_plane_whose_section_is_absent_stays_unopened() {
         None,
         &busbar_kernel::plane_driver::serve::ServeTables::default(),
     )
+    .await
     .expect("nothing to compose is not a refusal");
     assert!(served.planes.is_empty(), "LAW 7: no section, no plane");
 }
 
-#[test]
-fn no_door_plane_composes_nothing_and_needs_no_services() {
+#[tokio::test]
+async fn no_door_plane_composes_nothing_and_needs_no_services() {
+    let native_money = money().await;
+    let money = || native_money.clone();
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let served = compose_planes(
         &[],
@@ -174,6 +186,7 @@ fn no_door_plane_composes_nothing_and_needs_no_services() {
         None,
         &busbar_kernel::plane_driver::serve::ServeTables::default(),
     )
+    .await
     .expect("an empty composition");
     assert!(served.planes.is_empty());
 }
@@ -217,8 +230,10 @@ fn a_session_model_from_the_top_level_catalog_is_folded_into_the_route_table() {
     assert_eq!(super::catalog_routes(&own, &catalog), own);
 }
 
-#[test]
-fn an_interpolated_credential_reaches_a_door_plane_as_its_reference_never_its_bytes() {
+#[tokio::test]
+async fn an_interpolated_credential_reaches_a_door_plane_as_its_reference_never_its_bytes() {
+    let native_money = money().await;
+    let money = || native_money.clone();
     const PLAIN: &str = "sk-plane-bound-PLAINTEXT-0001";
     const RESOLVED: &str = "sk-plane-bound-RESOLVED-0002";
     let pid = std::process::id();
@@ -259,7 +274,7 @@ test_plane_owned:
     }
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let instance = "serve-compose-plane-bound";
-    let _one = PUBLISHING.blocking_lock();
+    let _one = PUBLISHING.lock().await;
     let plane = bound(instance, &dispatcher);
     let doors = vec![(instance.to_string(), plane)];
     let late = composed_services();
@@ -274,6 +289,7 @@ test_plane_owned:
         None,
         &busbar_kernel::plane_driver::serve::ServeTables::default(),
     )
+    .await
     .expect("the door plane composes");
     let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
@@ -287,6 +303,7 @@ test_plane_owned:
             secrets,
             &busbar_contract::config_time::ConfigScope::config_time(),
         )
+        .await
         .expect("the plane refreshes");
 
     let read = |name: &str| {
@@ -424,47 +441,49 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
 
 pub(crate) type ChainedRecords = (String, Vec<(Vec<u8>, u64)>);
 
-pub(crate) fn chained_records(
-    store: &Arc<crate::root::loader::store_v3::LoadedStore>,
+pub(crate) async fn chained_records(
+    store: &Arc<busbar_kernel::persistence::facade::CoreStore>,
+    instance: &str,
     kind: &'static str,
     framing: busbar_contract::abi::plane::RecordChain,
     want: usize,
 ) -> ChainedRecords {
     use busbar_contract::services::chain_key_parts;
-    use busbar_kernel::host_records::{RecordRows, StoreRows};
     let schema = busbar_contract::ids::RecordSchemaId::new(kind);
+    let store = busbar_kernel::persistence::scoped::ScopedStore::authorized(
+        store.clone(),
+        instance,
+        [kind.to_string()],
+    )
+    .expect("authorized instance records");
     let framing =
-        busbar_kernel::host_chains::ChainFraming::of(&framing).expect("a framing this host keeps");
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        busbar_kernel::host_chains::ChainFraming::of(&framing).expect("host chain framing");
+    let until = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     let rows = loop {
-        let rows = StoreRows(store.clone())
-            .record_scan(schema, b"", u32::MAX)
-            .expect("a read");
-        if rows.len() >= want || std::time::Instant::now() >= until {
+        let mut rows = Vec::new();
+        let mut after = None;
+        loop {
+            let page = store
+                .page(kind, b"", after.as_ref())
+                .await
+                .expect("native chain page");
+            rows.extend(
+                page.rows
+                    .into_iter()
+                    .map(|(key, value)| (key, value.expose(&busbar_kernel::seal::lend()).clone())),
+            );
+            after = page.next;
+            if after.is_none() {
+                break;
+            }
+        }
+        if rows.len() >= want || tokio::time::Instant::now() >= until {
             break rows;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     };
-    type Rows = Vec<(Vec<u8>, Vec<u8>)>;
-    let mut by_instance: BTreeMap<String, Rows> = BTreeMap::new();
-    for (key, value) in rows {
-        let len = usize::from(u16::from_be_bytes([key[0], key[1]]));
-        let label = String::from_utf8(key[2..2 + len].to_vec()).expect("a label");
-        by_instance
-            .entry(label)
-            .or_default()
-            .push((key[2 + len..].to_vec(), value.as_slice().to_vec()));
-    }
-    assert!(
-        by_instance.len() <= 1,
-        "one instance's records: {:?}",
-        by_instance.keys().collect::<Vec<_>>()
-    );
-    let Some((instance, rows)) = by_instance.into_iter().next() else {
-        return (String::new(), Vec::new());
-    };
-    let read = busbar_kernel::host_chains::verified(&instance, schema, rows, framing);
-    let records: Vec<(Vec<u8>, u64)> = read
+    let read = busbar_kernel::host_chains::verified(instance, schema, rows, framing);
+    let records = read
         .iter()
         .map(|(key, value)| {
             let (scope, seq) = chain_key_parts(key).unwrap_or_else(|| {
@@ -476,7 +495,7 @@ pub(crate) fn chained_records(
             (scope.to_vec(), seq)
         })
         .collect();
-    (instance, records)
+    (instance.to_string(), records)
 }
 
 #[test]
@@ -485,8 +504,10 @@ fn a_missing_fixture_cdylib_fails_the_test_and_names_its_build() {
     missing("no_such_fixture", BUILD_BUSBAR_EXAMPLES);
 }
 
-#[test]
-fn a_pools_refresh_whose_snapshot_the_host_refuses_is_retired() {
+#[tokio::test]
+async fn a_pools_refresh_whose_snapshot_the_host_refuses_is_retired() {
+    let native_money = money().await;
+    let money = || native_money.clone();
     use crate::root::loader::dispatch::kinds::plane::ServedFacts;
     let pid = std::process::id();
     let dir = std::env::temp_dir().join(format!("busbar-pools-refresh-refused-{pid}"));
@@ -500,7 +521,7 @@ fn a_pools_refresh_whose_snapshot_the_host_refuses_is_retired() {
     sections.insert("test_plane", section);
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let instance = "serve-pools-refresh-refused";
-    let _one = PUBLISHING.blocking_lock();
+    let _one = PUBLISHING.lock().await;
     let plane = bound(instance, &dispatcher);
     let late = composed_services();
     let served = compose_planes(
@@ -514,6 +535,7 @@ fn a_pools_refresh_whose_snapshot_the_host_refuses_is_retired() {
         None,
         &busbar_kernel::plane_driver::serve::ServeTables::default(),
     )
+    .await
     .expect("the door plane composes");
     let composed = &served.planes[0].live;
     let pools = Arc::new(super::DoorApply {

@@ -1,8 +1,9 @@
 # Contributing to Busbar
 
-The rules for how a change lands live in one place:
-[docs/design/BUSBAR-1.6.0.md, Part 6, "How work lands"](docs/design/BUSBAR-1.6.0.md#how-work-lands-the-pr-flow-and-the-rules-every-contributor-follows).
-This page is the short version. Where the two differ, Part 6 wins.
+Build on current `dev`; its source is the current architecture. Follow the owner's
+current change and publication instructions. [CoreFix.md](CoreFix.md) is the proposed
+forward redesign, not a description of already implemented behavior. GitHub Actions
+is retired; GitHub is the public code mirror.
 
 ## Ground rules
 
@@ -21,12 +22,7 @@ This page is the short version. Where the two differ, Part 6 wins.
    ```bash
    cargo fmt --all
    cargo metadata --format-version 1 >/dev/null   # refreshes a stale Cargo.lock
-   cargo xtask gate abi-header --write            # regenerates the C header
    ```
-
-   Once per clone, register the merge driver that settles `qa/kind-isolation.toml` count rows
-   both sides moved (theirs + ours − base; anything else stays a conflict):
-   `git config merge.ledger-count.driver "cargo xtask ledger-merge %O %A %B"`.
 
    Final CI evidence binds fmt, clippy/workspace lints, behavior tests, the assembled 1.5.5 oracle,
    and supply-chain checks (both `cargo deny` and `cargo vet`) to the actual final product revision.
@@ -38,8 +34,9 @@ This page is the short version. Where the two differ, Part 6 wins.
 
 - Red-before-green: every behaviour change ships a test that fails without it. Tests live in their
   own files, not inline in production code.
-- Customer-visible bytes stay 1.5.5's. Never bless a golden or a ratchet; `golden/1.5.5` is
-  read-only.
+- Preserve current dev behavior except for the change being implemented. Historical
+  1.5.5 fixtures are compatibility evidence, not architecture to restore. Do not rewrite
+  historical fixtures to conceal a regression.
 - A `$` (money) change is its own PR.
 - No `_ =>` catch-all arms in the disposition/breaker `match` statements: the exhaustive match is
   how the compiler proves every failure mode is handled. A backend is ejected for upstream faults,
@@ -48,7 +45,7 @@ This page is the short version. Where the two differ, Part 6 wins.
 - Fixing a defect: read
   [docs/testing.md § The remediation contract](docs/testing.md#the-remediation-contract). Fix the
   class at its choke point with one class-level test, and name the RED-before in the PR.
-- A design question the spec does not answer: open a `needs-owner` issue with a proposed option.
+- Bring unresolved design questions to the owner with the current code and a concrete proposal.
 
 ## Cutting a release
 

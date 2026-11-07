@@ -1,177 +1,122 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::*;
-use crate::store::plane_view::KIND_DEMOTION;
-use busbar_contract::records::RecordStoreResult;
+use super::native::*;
+use crate::{
+    host_services::{TrustRefused, POOL_REFUSED},
+    trust::book::{Distrust, Ruling},
+};
+use busbar_contract::services::HostServices;
+use busbar_contract::{
+    abi::{host::service as svc, mechanism::call::Outcome},
+    services::Ran,
+};
+use std::sync::{atomic::Ordering, Arc};
 
-fn demotion_rows(r: &Rig) -> Vec<Vec<u8>> {
-    RecordStore::list_plane_records(&*r.store, KIND_DEMOTION, &PlaneSelector::All).unwrap()
-}
-
-#[test]
-fn a_queued_drift_cannot_resurrect_quarantine_after_a_completed_approval() {
-    let r = rig();
+#[tokio::test]
+async fn a_queued_drift_cannot_resurrect_quarantine_after_a_completed_approval() {
+    let r = Rig::new().await;
+    r.approve().await;
     let held = Arc::new(Held::default());
-    let node = node(&r, &Arc::new(Probe::default()), Arc::new(Arc::clone(&held)));
-    node.trust_rule(WHOLE_KEY, Ruling::Approve).unwrap();
-    let (slot, later) = recorder();
+    let (node, record) = r.follower(held.clone()).await;
+    let (tx, rx) = tokio::sync::oneshot::channel();
     assert!(matches!(
-        node.trust_sight(&caller(INSTANCE), COUNTERPARTY, CHANGED, later),
+        node.trust_sight(
+            &caller(),
+            PEER,
+            CHANGED,
+            Box::new(move |result| {
+                let _ = tx.send(result);
+            })
+        ),
         Ran::Later
     ));
-    let approval = node.trust_rule(WHOLE_KEY, Ruling::Approve);
-    let typed = node.trust_decide(
-        &caller(INSTANCE),
-        busbar_contract::services::TrustKeyRef {
-            counterparty: COUNTERPARTY,
-            item: None,
-        },
-        Some(CHANGED),
-        true,
+    assert_eq!(
+        node.trust_rule(KEY, Ruling::Approve).await,
+        Err(TrustRefused::Stale)
     );
-
-    node.decide_key(
-        INSTANCE,
-        COUNTERPARTY,
-        Some(OTHER_ITEM),
-        Ruling::Revoke,
-        None,
-    )
-    .unwrap();
-    assert!(demotion_rows(&r).is_empty(), "the drift is still queued");
+    node.decide_key(INSTANCE, PEER, Some("other-tool"), Ruling::Revoke, None)
+        .await
+        .unwrap();
+    assert!(record.read().await.unwrap().is_empty());
     assert_eq!(judged(&node, None), Err(Distrust::Quarantined));
-    assert_eq!(held.drain(), 1);
-    assert_eq!(
-        slot.lock().unwrap().take().unwrap().value,
-        svc::TRUST_DRIFTED
-    );
-    assert_eq!(approval, Err(TrustRefused::Stale));
-    assert_eq!(typed.value, svc::UNDECIDED_STALE);
-    assert_eq!(demotion_rows(&r).len(), 1);
-    let before_approval = super::node(&r, &Arc::new(Probe::default()), Arc::new(Inline));
-    assert_eq!(judged(&before_approval, None), Err(Distrust::Quarantined));
-
-    node.trust_rule(WHOLE_KEY, Ruling::Approve).unwrap();
-    assert!(demotion_rows(&r).is_empty());
-    assert_eq!(judged(&node, None), Ok(()));
-    let restarted = super::node(&r, &Arc::new(Probe::default()), Arc::new(Inline));
-    assert_eq!(
-        judged(&restarted, None),
-        Ok(()),
-        "restart cannot resurrect the retired drift"
-    );
-    assert_eq!(kept(&r, None).approved.as_deref(), Some(CHANGED));
+    assert_eq!(held.drain().await, 1);
+    assert_eq!(rx.await.unwrap().value, svc::TRUST_DRIFTED);
+    assert_eq!(record.read().await.unwrap().len(), 1);
+    node.trust_rule(KEY, Ruling::Approve).await.unwrap();
+    assert!(record.read().await.unwrap().is_empty());
+    let (restarted, _) = r.follower(Arc::new(AsyncPool)).await;
+    assert_eq!(judged(&restarted, None), Ok(()));
 }
 
-#[test]
-fn dropping_an_unrun_drift_retires_ownership_before_answering_its_caller() {
-    let r = rig();
+#[tokio::test]
+async fn dropping_an_unrun_drift_retires_ownership_before_answering_its_caller() {
+    let r = Rig::new().await;
+    r.approve().await;
     let held = Arc::new(Held::default());
-    let node = node(&r, &Arc::new(Probe::default()), Arc::new(Arc::clone(&held)));
-    node.trust_rule(WHOLE_KEY, Ruling::Approve).unwrap();
-    let answered = Arc::new(AtomicBool::new(false));
-    let seen = Arc::clone(&answered);
-    let retry = Arc::clone(&node);
+    let (node, _) = r.follower(held.clone()).await;
+    let (tx, rx) = tokio::sync::oneshot::channel();
     assert!(matches!(
         node.trust_sight(
-            &caller(INSTANCE),
-            COUNTERPARTY,
+            &caller(),
+            PEER,
             CHANGED,
-            Box::new(move |answer| {
-                assert_eq!(
-                    (answer.outcome, answer.error),
-                    (Outcome::Failed, POOL_REFUSED)
-                );
-                assert_eq!(
-                    judged(&retry, None),
-                    Err(Distrust::Quarantined),
-                    "abandoning the Store work does not undo RAM quarantine"
-                );
-                retry.trust_rule(WHOLE_KEY, Ruling::Approve).unwrap();
-                seen.store(true, Ordering::SeqCst);
-            }),
+            Box::new(move |result| {
+                let _ = tx.send(result);
+            })
         ),
         Ran::Later
     ));
-    let jobs = std::mem::take(&mut *held.0.lock().unwrap());
-    assert_eq!(jobs.len(), 1);
-
-    drop(jobs);
-    assert!(answered.load(Ordering::SeqCst));
-    assert_eq!(judged(&node, None), Ok(()));
-    assert!(demotion_rows(&r).is_empty());
-}
-
-#[test]
-fn an_unwinding_drift_store_retires_ownership_before_the_failed_answer() {
-    let r = rig();
-    let probe = Arc::new(Probe::default());
-    assert!(probe
-        .demotion_write
-        .set(Arc::new(|_| -> RecordStoreResult<()> {
-            panic!("the demotion Store unwound");
-        }))
-        .is_ok());
-    let held = Arc::new(Held::default());
-    let node = node(&r, &probe, Arc::new(Arc::clone(&held)));
-    node.trust_rule(WHOLE_KEY, Ruling::Approve).unwrap();
-    let (slot, later) = recorder();
-    let reentered = Arc::new(Mutex::new(None));
-    let seen = Arc::clone(&reentered);
-    let retry = Arc::clone(&node);
-    assert!(matches!(
-        node.trust_sight(
-            &caller(INSTANCE),
-            COUNTERPARTY,
-            CHANGED,
-            Box::new(move |answer| {
-                *seen.lock().unwrap() = Some(retry.trust_rule(WHOLE_KEY, Ruling::Revoke));
-                later(answer);
-            }),
-        ),
-        Ran::Later
-    ));
-    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| held.drain())).is_err());
-    let answer = slot.lock().unwrap().take().unwrap();
+    assert_eq!(held.discard(), 1);
+    let failed = rx.await.unwrap();
     assert_eq!(
-        (answer.outcome, answer.error),
+        (failed.outcome, failed.error),
         (Outcome::Failed, POOL_REFUSED)
     );
-    reentered.lock().unwrap().take().unwrap().unwrap();
-    assert_eq!(kept(&r, None).approved, None);
     assert_eq!(judged(&node, None), Err(Distrust::Quarantined));
-    node.trust_rule(WHOLE_KEY, Ruling::Approve).unwrap();
+    node.trust_rule(KEY, Ruling::Approve).await.unwrap();
     assert_eq!(judged(&node, None), Ok(()));
 }
 
-#[test]
-fn a_refused_demotion_store_keeps_ram_quarantine_and_retires_ownership() {
-    let r = rig();
-    let probe = Arc::new(Probe::default());
-    assert!(probe
-        .demotion_write
-        .set(Arc::new(|_| Err("the demotion Store is down".into())))
-        .is_ok());
+#[tokio::test]
+async fn an_unwinding_drift_store_retires_ownership_before_the_failed_answer() {
+    let r = Rig::new().await;
+    r.approve().await;
     let held = Arc::new(Held::default());
-    let node = node(&r, &probe, Arc::new(Arc::clone(&held)));
-    node.trust_rule(WHOLE_KEY, Ruling::Approve).unwrap();
-    let (slot, later) = recorder();
+    let (node, _) = r.follower(held.clone()).await;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    r.backend.panic_commit.store(true, Ordering::SeqCst);
     assert!(matches!(
-        node.trust_sight(&caller(INSTANCE), COUNTERPARTY, CHANGED, later),
+        node.trust_sight(
+            &caller(),
+            PEER,
+            CHANGED,
+            Box::new(move |result| {
+                let _ = tx.send(result);
+            })
+        ),
         Ran::Later
     ));
-    assert_eq!(held.drain(), 1);
-    let answer = slot.lock().unwrap().take().unwrap();
-    assert_eq!(
-        (answer.outcome, answer.value),
-        (Outcome::Ready, svc::TRUST_DRIFTED)
-    );
+    let pool = held.clone();
+    assert!(tokio::spawn(async move { pool.drain().await })
+        .await
+        .unwrap_err()
+        .is_panic());
+    assert_eq!(rx.await.unwrap().outcome, Outcome::Failed);
     assert_eq!(judged(&node, None), Err(Distrust::Quarantined));
-    assert!(
-        demotion_rows(&r).is_empty(),
-        "failure costs durability, as before"
-    );
-    node.trust_rule(WHOLE_KEY, Ruling::Approve).unwrap();
+    node.trust_rule(KEY, Ruling::Approve).await.unwrap();
     assert_eq!(judged(&node, None), Ok(()));
+}
+
+#[tokio::test]
+async fn a_refused_demotion_store_keeps_ram_quarantine_and_retires_ownership() {
+    let r = Rig::new().await;
+    r.approve().await;
+    r.backend.refuse_commit.store(true, Ordering::SeqCst);
+    assert_eq!(r.observe(CHANGED).await.outcome, Outcome::Failed);
+    assert_eq!(judged(&r.node, None), Err(Distrust::Quarantined));
+    assert!(r.record.read().await.unwrap().is_empty());
+    r.backend.refuse_commit.store(false, Ordering::SeqCst);
+    r.node.trust_rule(KEY, Ruling::Approve).await.unwrap();
+    assert_eq!(judged(&r.node, None), Ok(()));
 }

@@ -39,18 +39,19 @@ pub struct RecoveryEvent {
 }
 
 /// Per-opened-Store persistence. A repeated operation/revision must name exactly
+#[async_trait::async_trait]
 pub trait RecoverySink: Send + Sync {
-    fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError>;
-    fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError>;
+    async fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError>;
+    async fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError>;
 
     /// Return one bounded summary per operation only AFTER verifying its complete
-    fn replay_selections(&self) -> Result<Vec<RecoverySelection>, RecoveryError> {
-        summarize_recovery_chains(self.replay()?)
+    async fn replay_selections(&self) -> Result<Vec<RecoverySelection>, RecoveryError> {
+        summarize_recovery_chains(self.replay().await?)
     }
 
     /// Confirm exact membership in the CURRENT selected predecessor chain. An
-    fn verify_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
-        let events = self.replay()?;
+    async fn verify_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        let events = self.replay().await?;
         let present = events.iter().any(|selected| selected == event);
         summarize_recovery_chains(events)?;
         if present {
@@ -63,8 +64,8 @@ pub trait RecoverySink: Send + Sync {
     }
 
     /// Confirm exact selected ancestry AND current ownership by this sink. The
-    fn confirm_owned_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
-        let events = self.replay()?;
+    async fn confirm_owned_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        let events = self.replay().await?;
         let present = events.iter().any(|selected| selected == event);
         summarize_recovery_chains(events)?;
         if present {
@@ -77,13 +78,13 @@ pub trait RecoverySink: Send + Sync {
     }
 
     /// Adopt through the same full ancestry proof, retaining only its verified
-    fn adopt_verdict_selection(
+    async fn adopt_verdict_selection(
         &self,
         resolution: &RecoveryResolution,
         transitions: &[RecoveryEvent],
     ) -> Result<RecoverySelection, RecoveryError> {
         let mut selections =
-            summarize_recovery_chains(self.adopt_verdict(resolution, transitions)?)?;
+            summarize_recovery_chains(self.adopt_verdict(resolution, transitions).await?)?;
         if selections.len() != 1 {
             return Err(RecoveryError::Invalid(
                 "adoption must select exactly one operation".into(),
@@ -99,19 +100,19 @@ pub trait RecoverySink: Send + Sync {
     }
 
     /// Foreign custody is visible without granting this process any write or send authority.
-    fn inspect_foreign(&self) -> Result<Vec<RecoveryInspection>, RecoveryError> {
+    async fn inspect_foreign(&self) -> Result<Vec<RecoveryInspection>, RecoveryError> {
         Ok(Vec::new())
     }
 
     /// Verify a child's immutable origin against the parent's currently selected
-    fn verify_origin(&self, _event: &RecoveryEvent) -> Result<(), RecoveryError> {
+    async fn verify_origin(&self, _event: &RecoveryEvent) -> Result<(), RecoveryError> {
         Err(RecoveryError::Unavailable(
             "recovery Store cannot verify external child origin".into(),
         ))
     }
 
     /// Select a fully journaled, audited ownership handover in one exact head CAS.
-    fn adopt_verdict(
+    async fn adopt_verdict(
         &self,
         _resolution: &RecoveryResolution,
         _transitions: &[RecoveryEvent],
@@ -382,10 +383,11 @@ impl RecoveryBook {
             .and_then(|entry| entry.selected.clone())
     }
 
-    fn replay(&self, sink: std::sync::Arc<dyn RecoverySink>) -> Result<(), RecoveryError> {
+    async fn replay(&self, sink: std::sync::Arc<dyn RecoverySink>) -> Result<(), RecoveryError> {
         let _attaching = self
             .attaching
             .enter(false)
+            .await
             .map_err(|reason| RecoveryError::Conflict(reason.into()))?;
         if self.attached() {
             return Err(RecoveryError::Conflict(
@@ -393,7 +395,7 @@ impl RecoveryBook {
             ));
         }
 
-        let selections = sink.replay_selections()?;
+        let selections = sink.replay_selections().await?;
         let mut replayed = std::collections::BTreeMap::<[u8; 16], RecoveryEntry>::new();
         for selection in selections {
             selection.validate_identity()?;
@@ -484,7 +486,7 @@ impl RecoveryBook {
         Ok(event)
     }
 
-    fn keep(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+    async fn keep(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         let sink = self
             .sink
             .get()
@@ -508,9 +510,10 @@ impl RecoveryBook {
         };
         let _running = runner
             .enter(false)
+            .await
             .map_err(|reason| RecoveryError::Conflict(reason.into()))?;
 
-        sink.persist(event)?;
+        sink.persist(event).await?;
         let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
         let entry = entries
             .get_mut(&event.operation_id)
@@ -561,7 +564,7 @@ pub struct RecoveryAdmin<'a> {
 }
 
 impl RecoveryAdmin<'_> {
-    pub fn resolve(
+    pub async fn resolve(
         &self,
         cost: &crate::cost::CostModel,
         resolution: RecoveryResolution,
@@ -593,6 +596,7 @@ impl RecoveryAdmin<'_> {
             .clone();
         let _running = runner
             .enter(false)
+            .await
             .map_err(|reason| RecoveryError::Conflict(reason.into()))?;
         let cached = governance
             .recovery_book
@@ -613,17 +617,18 @@ impl RecoveryAdmin<'_> {
                     })?;
                 governance
                     .keep_recovery_event(&current)
+                    .await
                     .map_err(|error| RecoveryError::Unavailable(error.to_string()))?;
-                return self.resume_adopted(cost, resolution.operation_id);
+                return self.resume_adopted(cost, resolution.operation_id).await;
             }
-            return self.adopt_foreign(cost, resolution, cached.clone());
+            return self.adopt_foreign(cost, resolution, cached.clone()).await;
         }
         if cached.as_ref().is_some_and(|cached| !cached.imported) {
             return Err(RecoveryError::Conflict(
                 "an immutable foreign adoption still awaits confirmation".into(),
             ));
         }
-        let inspections = governance.inspect_foreign_recovery()?;
+        let inspections = governance.inspect_foreign_recovery().await?;
         if let Some(inspection) = inspections
             .into_iter()
             .find(|inspection| inspection.event.operation_id == resolution.operation_id)
@@ -669,7 +674,7 @@ impl RecoveryAdmin<'_> {
                 .entry(resolution.operation_id)
                 .or_default()
                 .adoption = Some(adoption.clone());
-            return self.adopt_foreign(cost, resolution, adoption);
+            return self.adopt_foreign(cost, resolution, adoption).await;
         }
         let selected = governance
             .recovery_event(resolution.operation_id)
@@ -688,10 +693,12 @@ impl RecoveryAdmin<'_> {
         }
         match selected.kind {
             RecoveryKind::Correction => {
-                governance.resolve_correction_recovery(cost, &resolution)?
+                governance
+                    .resolve_correction_recovery(cost, &resolution)
+                    .await?
             }
             RecoveryKind::Usage | RecoveryKind::Metering => {
-                governance.resolve_raw_recovery(&resolution)?
+                governance.resolve_raw_recovery(&resolution).await?
             }
         }
         let event = governance
@@ -700,7 +707,7 @@ impl RecoveryAdmin<'_> {
         Ok(RecoveryItem::from_event(&event))
     }
 
-    fn adopt_foreign(
+    async fn adopt_foreign(
         &self,
         cost: &crate::cost::CostModel,
         resolution: RecoveryResolution,
@@ -712,6 +719,7 @@ impl RecoveryAdmin<'_> {
             .map_err(|error| RecoveryError::Unavailable(error.to_string()))?;
         let running = driver
             .enter(false)
+            .await
             .map_err(|reason| RecoveryError::Conflict(reason.into()))?;
         let correction_guard = if adoption.inspection.event.kind == RecoveryKind::Correction {
             governance.hold_foreign_correction_recovery(resolution.operation_id)?
@@ -735,7 +743,10 @@ impl RecoveryAdmin<'_> {
             governance.recovery_book.sink.get().ok_or_else(|| {
                 RecoveryError::Unavailable("recovery Store is not attached".into())
             })?;
-        let selection = match sink.adopt_verdict_selection(&resolution, &adoption.transitions) {
+        let selection = match sink
+            .adopt_verdict_selection(&resolution, &adoption.transitions)
+            .await
+        {
             Ok(selection) => selection,
             Err(error) => {
                 if matches!(error, RecoveryError::Conflict(_)) {
@@ -744,7 +755,9 @@ impl RecoveryAdmin<'_> {
                 return Err(error);
             }
         };
-        governance.import_adopted_recovery(&adoption, selection)?;
+        governance
+            .import_adopted_recovery(&adoption, selection)
+            .await?;
         let selected = governance
             .recovery_event(resolution.operation_id)
             .ok_or_else(|| {
@@ -752,6 +765,7 @@ impl RecoveryAdmin<'_> {
             })?;
         governance
             .validate_recovery_origin(&selected)
+            .await
             .map_err(|error| RecoveryError::Invalid(error.to_string()))?;
         match selected.kind {
             RecoveryKind::Correction => governance.restore_correction_recovery(&selected),
@@ -762,10 +776,10 @@ impl RecoveryAdmin<'_> {
         .map_err(|error| RecoveryError::Invalid(error.to_string()))?;
         drop(correction_guard);
         drop(running);
-        self.resume_adopted(cost, resolution.operation_id)
+        self.resume_adopted(cost, resolution.operation_id).await
     }
 
-    fn resume_adopted(
+    async fn resume_adopted(
         &self,
         cost: &crate::cost::CostModel,
         operation_id: [u8; 16],
@@ -775,16 +789,20 @@ impl RecoveryAdmin<'_> {
             RecoveryError::Unavailable("adopted recovery selection disappeared".into())
         })?;
         match event.kind {
-            RecoveryKind::Correction => governance.resume_adopted_correction(cost, operation_id)?,
+            RecoveryKind::Correction => {
+                Box::pin(governance.resume_adopted_correction(cost, operation_id)).await?
+            }
             RecoveryKind::Usage | RecoveryKind::Metering => {
                 governance
                     .drive_raw_recovery(operation_id)
+                    .await
                     .map_err(|error| RecoveryError::Unavailable(error.to_string()))?;
                 let current = governance.recovery_event(operation_id).ok_or_else(|| {
                     RecoveryError::Unavailable("adopted recovery selection disappeared".into())
                 })?;
                 governance
                     .resume_recovery_children(&current)
+                    .await
                     .map_err(|error| RecoveryError::Unavailable(error.to_string()))?;
             }
         }
@@ -797,7 +815,7 @@ impl RecoveryAdmin<'_> {
             })
     }
 
-    pub fn list(
+    pub async fn list(
         &self,
         after: Option<[u8; 16]>,
         limit: usize,
@@ -819,7 +837,7 @@ impl RecoveryAdmin<'_> {
             .filter(|event| event.state != RecoveryState::Settled)
             .map(|event| (event.operation_id, RecoveryItem::from_event(&event)))
             .collect();
-        for inspection in self.governance.inspect_foreign_recovery()? {
+        for inspection in self.governance.inspect_foreign_recovery().await? {
             if inspection.event.state == RecoveryState::Settled {
                 continue;
             }
@@ -838,9 +856,32 @@ impl RecoveryAdmin<'_> {
 }
 
 impl super::GovState {
+    pub(super) fn has_unsettled_recovery(&self) -> bool {
+        self.recovery_book.attaching.is_running()
+            || self
+                .recovery_book
+                .entries
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .values()
+                .any(|entry| {
+                    entry.pending.is_some()
+                        || entry
+                            .adoption
+                            .as_ref()
+                            .is_some_and(|adoption| !adoption.imported)
+                        || entry
+                            .selected
+                            .as_ref()
+                            .is_some_and(|event| event.state != RecoveryState::Settled)
+                        || entry.runner.is_running()
+                        || entry.resolution_runner.is_running()
+                        || entry.driver.is_running()
+                })
+    }
     /// A terminal unit can outlive an ACK when its named checkpoint deletion was interrupted.
     /// Reload that exact receipt even when ordinary settled-root pruning dropped its RAM cache.
-    pub(super) fn restore_unit_terminal_receipt(
+    pub(super) async fn restore_unit_terminal_receipt(
         &self,
         initial: &RecoveryEvent,
     ) -> super::RecordStoreResult<()> {
@@ -864,6 +905,7 @@ impl super::GovState {
         })?;
         let selected = sink
             .replay_selections()
+            .await
             .map_err(|error| super::RecordStoreError(error.to_string()))?
             .into_iter()
             .find(|selection| selection.initial.operation_id == initial.operation_id);
@@ -911,15 +953,16 @@ impl super::GovState {
         Ok(())
     }
 
-    pub fn attach_recovery_sink(
+    pub async fn attach_recovery_sink(
         &self,
         sink: std::sync::Arc<dyn RecoverySink>,
     ) -> super::RecordStoreResult<()> {
         self.recovery_book
             .replay(sink)
+            .await
             .map_err(|error| super::RecordStoreError(error.to_string()))?;
         for event in self.selected_recovery_events() {
-            self.validate_recovery_origin(&event)?;
+            self.validate_recovery_origin(&event).await?;
             match event.kind {
                 RecoveryKind::Correction => self.restore_correction_recovery(&event)?,
                 RecoveryKind::Usage | RecoveryKind::Metering => {
@@ -971,7 +1014,7 @@ impl super::GovState {
             })
     }
 
-    pub(super) fn confirm_pending_recovery(
+    pub(super) async fn confirm_pending_recovery(
         &self,
         operation_id: [u8; 16],
     ) -> super::RecordStoreResult<()> {
@@ -983,7 +1026,7 @@ impl super::GovState {
             .get(&operation_id)
             .and_then(|entry| entry.pending.clone());
         if let Some(event) = pending {
-            self.keep_recovery_event(&event)?;
+            self.keep_recovery_event(&event).await?;
         }
         Ok(())
     }
@@ -1029,7 +1072,7 @@ impl super::GovState {
             .fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 
-    pub(super) fn verify_external_recovery_origin(
+    pub(super) async fn verify_external_recovery_origin(
         &self,
         event: &RecoveryEvent,
     ) -> super::RecordStoreResult<()> {
@@ -1038,6 +1081,7 @@ impl super::GovState {
             .get()
             .ok_or_else(|| super::RecordStoreError("recovery Store is not attached".into()))?
             .verify_origin(event)
+            .await
             .map_err(|error| super::RecordStoreError(error.to_string()))
     }
 
@@ -1091,7 +1135,7 @@ impl super::GovState {
         Ok(())
     }
 
-    pub(super) fn inspect_foreign_recovery(
+    pub(super) async fn inspect_foreign_recovery(
         &self,
     ) -> Result<Vec<RecoveryInspection>, RecoveryError> {
         self.recovery_book
@@ -1099,9 +1143,10 @@ impl super::GovState {
             .get()
             .ok_or_else(|| RecoveryError::Unavailable("recovery Store is not attached".into()))?
             .inspect_foreign()
+            .await
     }
 
-    fn import_adopted_recovery(
+    async fn import_adopted_recovery(
         &self,
         adoption: &RecoveryAdoption,
         selection: RecoverySelection,
@@ -1124,7 +1169,8 @@ impl super::GovState {
                     .ok_or_else(|| {
                         RecoveryError::Unavailable("recovery Store is not attached".into())
                     })?
-                    .verify_checkpoint(previous)?;
+                    .verify_checkpoint(previous)
+                    .await?;
             }
             let mut entries = self
                 .recovery_book
@@ -1159,12 +1205,13 @@ impl super::GovState {
         }
     }
 
-    pub(super) fn foreign_recovery_receipt(
+    pub(super) async fn foreign_recovery_receipt(
         &self,
         operation_id: [u8; 16],
     ) -> Result<Option<RecoveryEvent>, RecoveryError> {
         let Some(receipt) = self
-            .inspect_foreign_recovery()?
+            .inspect_foreign_recovery()
+            .await?
             .into_iter()
             .find(|receipt| {
                 receipt.event.operation_id == operation_id
@@ -1177,11 +1224,12 @@ impl super::GovState {
             .sink
             .get()
             .expect("inspection requires sink")
-            .verify_origin(&receipt.event)?;
+            .verify_origin(&receipt.event)
+            .await?;
         Ok(Some(receipt.event))
     }
 
-    pub(super) fn confirm_owned_recovery_checkpoint(
+    pub(super) async fn confirm_owned_recovery_checkpoint(
         &self,
         event: &RecoveryEvent,
     ) -> super::RecordStoreResult<()> {
@@ -1190,10 +1238,11 @@ impl super::GovState {
             .get()
             .ok_or_else(|| super::RecordStoreError("recovery Store is not attached".into()))?
             .confirm_owned_checkpoint(event)
+            .await
             .map_err(|error| super::RecordStoreError(error.to_string()))
     }
 
-    pub(super) fn verify_current_recovery_checkpoint(
+    pub(super) async fn verify_current_recovery_checkpoint(
         &self,
         event: &RecoveryEvent,
     ) -> super::RecordStoreResult<()> {
@@ -1202,10 +1251,11 @@ impl super::GovState {
             .get()
             .ok_or_else(|| super::RecordStoreError("recovery Store is not attached".into()))?
             .verify_checkpoint(event)
+            .await
             .map_err(|error| super::RecordStoreError(error.to_string()))
     }
 
-    pub(super) fn verify_recovery_checkpoint(
+    pub(super) async fn verify_recovery_checkpoint(
         &self,
         event: &RecoveryEvent,
     ) -> super::RecordStoreResult<()> {
@@ -1226,6 +1276,7 @@ impl super::GovState {
             .get()
             .ok_or_else(|| super::RecordStoreError("recovery Store is not attached".into()))?
             .verify_checkpoint(event)
+            .await
             .map_err(|error| super::RecordStoreError(error.to_string()))
     }
 
@@ -1294,17 +1345,57 @@ impl super::GovState {
         )
     }
 
-    pub(super) fn keep_recovery_event(
+    pub(super) async fn keep_recovery_event(
         &self,
         event: &RecoveryEvent,
     ) -> super::RecordStoreResult<()> {
         self.recovery_book
             .keep(event)
+            .await
             .map_err(|error| super::RecordStoreError(error.to_string()))
     }
 }
 
 /// A sealed child template authorized by one selected parent checkpoint. The
+/// Identity and actual native-clock birth fixed by the core migration adopter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct MigratedChildContext {
+    pub(super) seed: [u8; 32],
+    pub(super) created_at_ms: u64,
+}
+impl MigratedChildContext {
+    pub(super) fn identify(
+        &self,
+        parent: [u8; 16],
+        child: &mut RecoveryChild,
+        ordinal: usize,
+    ) -> Result<(), RecoveryError> {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(b"busbar.recovery.imported-unsent-child/1\0");
+        hash.update(self.seed);
+        hash.update(parent);
+        hash.update((ordinal as u64).to_be_bytes());
+        hash.update(child.body_fingerprint);
+        hash.update([match child.kind {
+            RecoveryKind::Usage => 1,
+            RecoveryKind::Metering => 2,
+            RecoveryKind::Correction => 3,
+        }]);
+        let digest: [u8; 32] = hash.finalize().into();
+        let operation: [u8; 16] = digest[..16].try_into().expect("fixed digest");
+        if operation == [0; 16] || operation == parent {
+            return Err(RecoveryError::Invalid(
+                "migrated child identity collision".into(),
+            ));
+        }
+        child.operation_id = operation;
+        child.first_sent_at_ms = Some(self.created_at_ms);
+        Ok(())
+    }
+}
+
 /// child origin is derived AFTER selection, avoiding a circular event hash.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1342,11 +1433,12 @@ pub(in crate::governance) mod tests {
         confirmed_adoptions: Mutex<ConfirmedAdoptions>,
         lose_adoption_reply: AtomicBool,
     }
+    #[async_trait::async_trait]
     impl RecoverySink for Journal {
-        fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError> {
+        async fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError> {
             Ok(self.selected.lock().unwrap().clone())
         }
-        fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        async fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
             if self
                 .foreign
                 .lock()
@@ -1369,7 +1461,7 @@ pub(in crate::governance) mod tests {
                 Ok(())
             }
         }
-        fn verify_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        async fn verify_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
             let chain = self
                 .foreign
                 .lock()
@@ -1395,7 +1487,7 @@ pub(in crate::governance) mod tests {
                 ))
             }
         }
-        fn inspect_foreign(&self) -> Result<Vec<RecoveryInspection>, RecoveryError> {
+        async fn inspect_foreign(&self) -> Result<Vec<RecoveryInspection>, RecoveryError> {
             Ok(self
                 .foreign
                 .lock()
@@ -1407,7 +1499,7 @@ pub(in crate::governance) mod tests {
                 })
                 .collect())
         }
-        fn adopt_verdict(
+        async fn adopt_verdict(
             &self,
             resolution: &RecoveryResolution,
             transitions: &[RecoveryEvent],
@@ -1466,7 +1558,7 @@ pub(in crate::governance) mod tests {
             }
             Ok(chain)
         }
-        fn verify_origin(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        async fn verify_origin(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
             let owned: Vec<_> = self
                 .selected
                 .lock()
@@ -1562,38 +1654,38 @@ pub(in crate::governance) mod tests {
         }
     }
 
-    #[test]
-    fn ambiguous_selection_retains_exact_candidate_until_confirmed() {
+    #[tokio::test]
+    async fn ambiguous_selection_retains_exact_candidate_until_confirmed() {
         let sink = Arc::new(Journal::default());
         let book = RecoveryBook::default();
-        book.replay(sink.clone()).unwrap();
+        book.replay(sink.clone()).await.unwrap();
         let event = intent();
         sink.fail_after_write.store(true, Ordering::Relaxed);
-        assert!(book.keep(&event).is_err());
+        assert!(book.keep(&event).await.is_err());
         assert!(book.selected(event.operation_id).is_none());
         let mut different = event.clone();
         different.payload.push(9);
         assert!(matches!(
-            book.keep(&different),
+            book.keep(&different).await,
             Err(RecoveryError::Conflict(_))
         ));
         sink.fail_after_write.store(false, Ordering::Relaxed);
-        book.keep(&event).unwrap();
+        book.keep(&event).await.unwrap();
         assert_eq!(book.selected(event.operation_id), Some(event.clone()));
-        book.keep(&event).unwrap();
+        book.keep(&event).await.unwrap();
         sink.fail_after_write.store(true, Ordering::Relaxed);
         assert!(
-            book.keep(&event).is_err(),
+            book.keep(&event).await.is_err(),
             "cached selected events still require Store authority confirmation"
         );
         assert_eq!(sink.selected.lock().unwrap().as_slice(), &[event]);
     }
 
-    #[test]
-    fn staged_candidate_survives_failed_persistence_and_cannot_change() {
+    #[tokio::test]
+    async fn staged_candidate_survives_failed_persistence_and_cannot_change() {
         let sink = Arc::new(Journal::default());
         let book = RecoveryBook::default();
-        book.replay(sink.clone()).unwrap();
+        book.replay(sink.clone()).await.unwrap();
         let event = intent();
         let stage = |payload| {
             book.stage(
@@ -1608,12 +1700,12 @@ pub(in crate::governance) mod tests {
         assert_eq!(stage(event.payload.clone()).unwrap(), event);
         assert!(stage(vec![99]).is_err());
         sink.fail_after_write.store(true, Ordering::Relaxed);
-        assert!(book.keep(&event).is_err());
+        assert!(book.keep(&event).await.is_err());
         assert_eq!(stage(event.payload.clone()).unwrap(), event);
     }
 
-    #[test]
-    fn replay_rejects_gap_and_same_revision_fork() {
+    #[tokio::test]
+    async fn replay_rejects_gap_and_same_revision_fork() {
         let event = intent();
         for invalid in [
             RecoveryEvent {
@@ -1627,7 +1719,7 @@ pub(in crate::governance) mod tests {
         ] {
             let sink = Arc::new(Journal::default());
             *sink.selected.lock().unwrap() = vec![event.clone(), invalid];
-            assert!(RecoveryBook::default().replay(sink).is_err());
+            assert!(RecoveryBook::default().replay(sink).await.is_err());
         }
     }
 
@@ -1649,9 +1741,11 @@ pub(in crate::governance) mod tests {
             successor(&previous, decision)
                 .follows(Some(&previous))
                 .unwrap();
-            assert!(successor(&previous, RecoveryState::Intent)
-                .follows(Some(&previous))
-                .is_err());
+            assert!(
+                successor(&previous, RecoveryState::Intent)
+                    .follows(Some(&previous))
+                    .is_err()
+            );
         }
     }
 
@@ -1675,7 +1769,7 @@ pub(in crate::governance) mod tests {
             assert!(invalid.follows(Some(&event)).is_err());
         }
     }
-    fn raw_intent(gov: &super::super::GovState, requests: i128) -> RecoveryEvent {
+    async fn raw_intent(gov: &super::super::GovState, requests: i128) -> RecoveryEvent {
         let child = super::super::GovState::usage_recovery_child(
             "recovery-bucket",
             0,
@@ -1697,27 +1791,31 @@ pub(in crate::governance) mod tests {
                 child.payload,
             )
             .unwrap();
-        gov.keep_recovery_event(&event).unwrap();
+        gov.keep_recovery_event(&event).await.unwrap();
         event
     }
 
-    #[test]
-    fn restart_cannot_turn_recent_wall_time_into_receipt_age_authority() {
-        use super::super::{GovState, RecordStore};
-        let store = crate::real_store::store();
+    #[tokio::test]
+    async fn restart_cannot_turn_recent_wall_time_into_receipt_age_authority() {
+        use super::super::GovState;
+        let store = crate::real_store::core().await;
         let sink = Arc::new(Journal::default());
-        let first = GovState::new(store.clone(), None).unwrap();
-        first.attach_recovery_sink(sink.clone()).unwrap();
-        first.resume_raw_recovery().unwrap();
-        let intent = raw_intent(&first, 7);
+        let first = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        first.attach_recovery_sink(sink.clone()).await.unwrap();
+        first.resume_raw_recovery().await.unwrap();
+        let intent = raw_intent(&first, 7).await;
         assert_eq!(
             first.recovery_retention_expired(intent.operation_id),
             Some(false)
         );
         drop(first);
-        let restarted = GovState::new(store.clone(), None).unwrap();
-        restarted.attach_recovery_sink(sink).unwrap();
-        restarted.resume_raw_recovery().unwrap();
+        let restarted = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        restarted.attach_recovery_sink(sink).await.unwrap();
+        restarted.resume_raw_recovery().await.unwrap();
         assert_eq!(
             restarted.recovery_event(intent.operation_id).unwrap().state,
             RecoveryState::LandedUnknown
@@ -1734,22 +1832,34 @@ pub(in crate::governance) mod tests {
         )
         .unwrap();
         assert_eq!(raw["age_unknown"], true);
-        assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 0);
+        assert_eq!(
+            store
+                .ledger()
+                .get_usage("recovery-bucket", 0)
+                .await
+                .unwrap()
+                .requests,
+            0
+        );
     }
 
-    #[test]
-    fn unknown_usage_absorbs_negative_then_not_landed_reposts_only_net_raw_debt() {
-        use super::super::{GovState, RecordStore};
-        let store = crate::real_store::store();
+    #[tokio::test]
+    async fn unknown_usage_absorbs_negative_then_not_landed_reposts_only_net_raw_debt() {
+        use super::super::GovState;
+        let store = crate::real_store::core().await;
         let sink = Arc::new(Journal::default());
-        let original = GovState::new(store.clone(), None).unwrap();
-        original.attach_recovery_sink(sink.clone()).unwrap();
-        original.resume_raw_recovery().unwrap();
-        let intent = raw_intent(&original, 7);
+        let original = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        original.attach_recovery_sink(sink.clone()).await.unwrap();
+        original.resume_raw_recovery().await.unwrap();
+        let intent = raw_intent(&original, 7).await;
         drop(original);
-        let gov = GovState::new(store.clone(), None).unwrap();
-        gov.attach_recovery_sink(sink).unwrap();
-        gov.resume_raw_recovery().unwrap();
+        let gov = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        gov.attach_recovery_sink(sink).await.unwrap();
+        gov.resume_raw_recovery().await.unwrap();
         let negative = super::super::ExactUsageDelta {
             requests: -3,
             ..Default::default()
@@ -1760,12 +1870,20 @@ pub(in crate::governance) mod tests {
                 0,
                 negative,
                 super::super::ExactUsageDelta::default(),
-                &gov.capture_foreign_settled_snapshot(),
+                &gov.capture_foreign_settled_snapshot().await,
             )
             .unwrap();
         assert!(captured.child.is_none());
-        gov.drive_durable_usage_flight(&captured).unwrap();
-        assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 0);
+        gov.drive_durable_usage_flight(&captured).await.unwrap();
+        assert_eq!(
+            store
+                .ledger()
+                .get_usage("recovery-bucket", 0)
+                .await
+                .unwrap()
+                .requests,
+            0
+        );
         let unknown = gov.recovery_event(intent.operation_id).unwrap();
         gov.resolve_raw_recovery(&RecoveryResolution {
             operation_id: intent.operation_id,
@@ -1777,26 +1895,38 @@ pub(in crate::governance) mod tests {
             actor: "operator".into(),
             reason: "backend outcome independently checked".into(),
         })
+        .await
         .unwrap();
-        assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 4);
+        assert_eq!(
+            store
+                .ledger()
+                .get_usage("recovery-bucket", 0)
+                .await
+                .unwrap()
+                .requests,
+            4
+        );
         assert_eq!(
             gov.recovery_event(intent.operation_id).unwrap().state,
             RecoveryState::Settled
         );
     }
 
-    #[test]
-    fn selected_parent_checkpoint_reconstructs_exact_missing_usage_child() {
-        use super::super::{GovState, RecordStore};
-        let store = crate::real_store::store();
+    #[tokio::test]
+    async fn selected_parent_checkpoint_reconstructs_exact_missing_usage_child() {
+        use super::super::GovState;
+        let store = crate::real_store::core().await;
         let sink = Arc::new(Journal::default());
-        let first = GovState::new(store.clone(), None).unwrap();
-        first.attach_recovery_sink(sink.clone()).unwrap();
-        first.resume_raw_recovery().unwrap();
-        let intent = raw_intent(&first, 1);
+        let first = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        first.attach_recovery_sink(sink.clone()).await.unwrap();
+        first.resume_raw_recovery().await.unwrap();
+        let intent = raw_intent(&first, 1).await;
         store
+            .ledger()
             .add_usage_batch_deduped(
-                busbar_contract::abi::store::OpId(intent.operation_id),
+                busbar_contract::records::OpId(intent.operation_id),
                 &[(
                     "recovery-bucket",
                     0,
@@ -1806,6 +1936,7 @@ pub(in crate::governance) mod tests {
                     },
                 )],
             )
+            .await
             .unwrap();
         let child = GovState::usage_recovery_child(
             "child-bucket",
@@ -1832,32 +1963,54 @@ pub(in crate::governance) mod tests {
                 serde_json::to_vec(&custody).unwrap(),
             )
             .unwrap();
-        first.keep_recovery_event(&applied).unwrap();
+        first.keep_recovery_event(&applied).await.unwrap();
         assert!(first.recovery_event(child.operation_id).is_none());
         drop(first);
-        let restarted = GovState::new(store.clone(), None).unwrap();
-        restarted.attach_recovery_sink(sink).unwrap();
-        restarted.resume_raw_recovery().unwrap();
+        let restarted = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        restarted.attach_recovery_sink(sink).await.unwrap();
+        restarted.resume_raw_recovery().await.unwrap();
         let restored = restarted.recovery_event(child.operation_id).unwrap();
         assert_eq!(restored.body_fingerprint, child.body_fingerprint);
-        assert_eq!(store.get_usage("child-bucket", 0).unwrap().requests, 7);
-        restarted.resume_raw_recovery().unwrap();
-        assert_eq!(store.get_usage("child-bucket", 0).unwrap().requests, 7);
+        assert_eq!(
+            store
+                .ledger()
+                .get_usage("child-bucket", 0)
+                .await
+                .unwrap()
+                .requests,
+            7
+        );
+        restarted.resume_raw_recovery().await.unwrap();
+        assert_eq!(
+            store
+                .ledger()
+                .get_usage("child-bucket", 0)
+                .await
+                .unwrap()
+                .requests,
+            7
+        );
     }
-    #[test]
-    fn two_unknown_positives_cannot_release_each_others_dependent_negatives() {
-        use super::super::{GovState, RecordStore};
-        let store = crate::real_store::store();
+    #[tokio::test]
+    async fn two_unknown_positives_cannot_release_each_others_dependent_negatives() {
+        use super::super::GovState;
+        let store = crate::real_store::core().await;
         let sink = Arc::new(Journal::default());
-        let original = GovState::new(store.clone(), None).unwrap();
-        original.attach_recovery_sink(sink.clone()).unwrap();
-        original.resume_raw_recovery().unwrap();
-        let first = raw_intent(&original, 7);
-        let second = raw_intent(&original, 11);
+        let original = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        original.attach_recovery_sink(sink.clone()).await.unwrap();
+        original.resume_raw_recovery().await.unwrap();
+        let first = raw_intent(&original, 7).await;
+        let second = raw_intent(&original, 11).await;
         drop(original);
-        let gov = GovState::new(store.clone(), None).unwrap();
-        gov.attach_recovery_sink(sink).unwrap();
-        gov.resume_raw_recovery().unwrap();
+        let gov = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        gov.attach_recovery_sink(sink).await.unwrap();
+        gov.resume_raw_recovery().await.unwrap();
         let captured = gov
             .capture_usage_recovery(
                 "recovery-bucket",
@@ -1867,24 +2020,24 @@ pub(in crate::governance) mod tests {
                     ..Default::default()
                 },
                 Default::default(),
-                &gov.capture_foreign_settled_snapshot(),
+                &gov.capture_foreign_settled_snapshot().await,
             )
             .unwrap();
         assert!(captured.child.is_none());
         assert!(captured.deferred_plain.requests < 0);
-        gov.drive_durable_usage_flight(&captured).unwrap();
+        gov.drive_durable_usage_flight(&captured).await.unwrap();
         let remaining = gov
             .capture_usage_recovery(
                 "recovery-bucket",
                 0,
                 captured.deferred_plain,
                 captured.deferred_dated,
-                &gov.capture_foreign_settled_snapshot(),
+                &gov.capture_foreign_settled_snapshot().await,
             )
             .unwrap();
         assert!(remaining.child.is_none());
         assert!(remaining.deferred_plain.is_zero());
-        gov.drive_durable_usage_flight(&remaining).unwrap();
+        gov.drive_durable_usage_flight(&remaining).await.unwrap();
         for intent in [first, second] {
             let selected = gov.recovery_event(intent.operation_id).unwrap();
             gov.resolve_raw_recovery(&RecoveryResolution {
@@ -1897,47 +2050,69 @@ pub(in crate::governance) mod tests {
                 actor: "operator".into(),
                 reason: "neither original operation reached backend".into(),
             })
+            .await
             .unwrap();
         }
-        assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 0);
+        assert_eq!(
+            store
+                .ledger()
+                .get_usage("recovery-bucket", 0)
+                .await
+                .unwrap()
+                .requests,
+            0
+        );
     }
 
-    #[test]
-    fn unknown_chunk_transfers_never_sent_unsigned_remainder_to_fresh_children() {
-        use super::super::{GovState, RecordStore};
-        let store = crate::real_store::store();
+    #[tokio::test]
+    async fn unknown_chunk_transfers_never_sent_unsigned_remainder_to_fresh_children() {
+        use super::super::GovState;
+        let store = crate::real_store::core().await;
         let sink = Arc::new(Journal::default());
-        let original = GovState::new(store.clone(), None).unwrap();
-        original.attach_recovery_sink(sink.clone()).unwrap();
-        original.resume_raw_recovery().unwrap();
-        let intent = raw_intent(&original, i128::from(u64::MAX));
+        let original = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        original.attach_recovery_sink(sink.clone()).await.unwrap();
+        original.resume_raw_recovery().await.unwrap();
+        let intent = raw_intent(&original, i128::from(u64::MAX)).await;
         drop(original);
-        let gov = GovState::new(store.clone(), None).unwrap();
-        gov.attach_recovery_sink(sink).unwrap();
-        gov.resume_raw_recovery().unwrap();
+        let gov = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        gov.attach_recovery_sink(sink).await.unwrap();
+        gov.resume_raw_recovery().await.unwrap();
         assert_eq!(
             gov.recovery_event(intent.operation_id).unwrap().state,
             RecoveryState::LandedUnknown
         );
         assert_eq!(
-            store.get_usage("recovery-bucket", 0).unwrap().requests,
+            store
+                .ledger()
+                .get_usage("recovery-bucket", 0)
+                .await
+                .unwrap()
+                .requests,
             u64::MAX - i64::MAX as u64,
             "only the old sent chunk is unknown; never-sent remainder keeps progressing"
         );
     }
-    #[test]
-    fn verdict_without_both_quiescence_attestations_persists_nothing() {
-        use super::super::{GovState, RecordStore};
-        let store = crate::real_store::store();
+    #[tokio::test]
+    async fn verdict_without_both_quiescence_attestations_persists_nothing() {
+        use super::super::GovState;
+        let store = crate::real_store::core().await;
         let sink = Arc::new(Journal::default());
-        let original = GovState::new(store.clone(), None).unwrap();
-        original.attach_recovery_sink(sink.clone()).unwrap();
-        original.resume_raw_recovery().unwrap();
-        let intent = raw_intent(&original, 7);
+        let original = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        original.attach_recovery_sink(sink.clone()).await.unwrap();
+        original.resume_raw_recovery().await.unwrap();
+        let intent = raw_intent(&original, 7).await;
         drop(original);
-        let gov = GovState::new(store.clone(), None).unwrap();
-        gov.attach_recovery_sink(sink.clone()).unwrap();
-        gov.resume_raw_recovery().unwrap();
+        let gov = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        gov.attach_recovery_sink(sink.clone()).await.unwrap();
+        gov.resume_raw_recovery().await.unwrap();
         let selected = gov.recovery_event(intent.operation_id).unwrap();
         let count = sink.selected.lock().unwrap().len();
         let cost = crate::cost::CostModel::flat(0);
@@ -1953,11 +2128,11 @@ pub(in crate::governance) mod tests {
                 reason: "quiescence is not confirmed".into(),
             };
             assert!(matches!(
-                gov.recovery().resolve(&cost, resolution.clone()),
+                gov.recovery().resolve(&cost, resolution.clone()).await,
                 Err(RecoveryError::Invalid(_))
             ));
             assert!(matches!(
-                gov.resolve_raw_recovery(&resolution),
+                gov.resolve_raw_recovery(&resolution).await,
                 Err(RecoveryError::Invalid(_))
             ));
             assert_eq!(
@@ -1965,26 +2140,38 @@ pub(in crate::governance) mod tests {
                 Some(selected.clone())
             );
             assert_eq!(sink.selected.lock().unwrap().len(), count);
-            assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 0);
+            assert_eq!(
+                store
+                    .ledger()
+                    .get_usage("recovery-bucket", 0)
+                    .await
+                    .unwrap()
+                    .requests,
+                0
+            );
         }
     }
 
-    #[test]
-    fn attested_verdict_still_requires_same_process_driver_quiescence() {
+    #[tokio::test]
+    async fn attested_verdict_still_requires_same_process_driver_quiescence() {
         use super::super::GovState;
         let sink = Arc::new(Journal::default());
-        let original = GovState::new(crate::real_store::store(), None).unwrap();
-        original.attach_recovery_sink(sink.clone()).unwrap();
-        original.resume_raw_recovery().unwrap();
-        let intent = raw_intent(&original, 7);
+        let original = GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .unwrap();
+        original.attach_recovery_sink(sink.clone()).await.unwrap();
+        original.resume_raw_recovery().await.unwrap();
+        let intent = raw_intent(&original, 7).await;
         drop(original);
-        let gov = GovState::new(crate::real_store::store(), None).unwrap();
-        gov.attach_recovery_sink(sink.clone()).unwrap();
-        gov.resume_raw_recovery().unwrap();
+        let gov = GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .unwrap();
+        gov.attach_recovery_sink(sink.clone()).await.unwrap();
+        gov.resume_raw_recovery().await.unwrap();
         let selected = gov.recovery_event(intent.operation_id).unwrap();
         let count = sink.selected.lock().unwrap().len();
         let driver = gov.recovery_driver(intent.operation_id).unwrap();
-        let _running = driver.enter(false).unwrap();
+        let _running = driver.enter(false).await.unwrap();
         let resolution = RecoveryResolution {
             operation_id: intent.operation_id,
             body_fingerprint: intent.body_fingerprint,
@@ -1997,53 +2184,70 @@ pub(in crate::governance) mod tests {
         };
         assert!(matches!(
             gov.recovery()
-                .resolve(&crate::cost::CostModel::flat(0), resolution),
+                .resolve(&crate::cost::CostModel::flat(0), resolution)
+                .await,
             Err(RecoveryError::Conflict(_))
         ));
         assert_eq!(gov.recovery_event(intent.operation_id), Some(selected));
         assert_eq!(sink.selected.lock().unwrap().len(), count);
     }
-    #[test]
-    fn retiring_a_successful_root_releases_ram_without_deleting_its_store_chain() {
-        use super::super::{GovState, RecordStore};
-        let store = crate::real_store::store();
+    #[tokio::test]
+    async fn retiring_a_successful_root_releases_ram_without_deleting_its_store_chain() {
+        use super::super::GovState;
+        let store = crate::real_store::core().await;
         let sink = Arc::new(Journal::default());
-        let gov = GovState::new(store.clone(), None).unwrap();
-        gov.attach_recovery_sink(sink.clone()).unwrap();
-        gov.resume_raw_recovery().unwrap();
-        let intent = raw_intent(&gov, 7);
-        gov.drive_raw_recovery(intent.operation_id).unwrap();
+        let gov = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        gov.attach_recovery_sink(sink.clone()).await.unwrap();
+        gov.resume_raw_recovery().await.unwrap();
+        let intent = raw_intent(&gov, 7).await;
+        gov.drive_raw_recovery(intent.operation_id).await.unwrap();
         let journal_len = sink.selected.lock().unwrap().len();
         assert_eq!(journal_len, 3);
         gov.forget_confirmed_recovery(intent.operation_id);
         assert!(gov.recovery_event(intent.operation_id).is_none());
         assert_eq!(sink.selected.lock().unwrap().len(), journal_len);
         drop(gov);
-        let restarted = GovState::new(store.clone(), None).unwrap();
-        restarted.attach_recovery_sink(sink.clone()).unwrap();
-        restarted.resume_raw_recovery().unwrap();
+        let restarted = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        restarted.attach_recovery_sink(sink.clone()).await.unwrap();
+        restarted.resume_raw_recovery().await.unwrap();
         assert!(restarted.recovery_event(intent.operation_id).is_none());
-        assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 7);
+        assert_eq!(
+            store
+                .ledger()
+                .get_usage("recovery-bucket", 0)
+                .await
+                .unwrap()
+                .requests,
+            7
+        );
         assert_eq!(sink.selected.lock().unwrap().len(), journal_len);
     }
 
-    #[test]
-    fn retiring_live_or_unknown_custody_cannot_discard_its_authority() {
+    #[tokio::test]
+    async fn retiring_live_or_unknown_custody_cannot_discard_its_authority() {
         use super::super::GovState;
         let sink = Arc::new(Journal::default());
-        let original = GovState::new(crate::real_store::store(), None).unwrap();
-        original.attach_recovery_sink(sink.clone()).unwrap();
-        original.resume_raw_recovery().unwrap();
-        let intent = raw_intent(&original, 7);
+        let original = GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .unwrap();
+        original.attach_recovery_sink(sink.clone()).await.unwrap();
+        original.resume_raw_recovery().await.unwrap();
+        let intent = raw_intent(&original, 7).await;
         original.forget_confirmed_recovery(intent.operation_id);
         assert_eq!(
             original.recovery_event(intent.operation_id),
             Some(intent.clone())
         );
         drop(original);
-        let gov = GovState::new(crate::real_store::store(), None).unwrap();
-        gov.attach_recovery_sink(sink).unwrap();
-        gov.resume_raw_recovery().unwrap();
+        let gov = GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .unwrap();
+        gov.attach_recovery_sink(sink).await.unwrap();
+        gov.resume_raw_recovery().await.unwrap();
         gov.forget_confirmed_recovery(intent.operation_id);
         assert_eq!(
             gov.recovery_event(intent.operation_id).unwrap().state,
@@ -2060,6 +2264,7 @@ pub(in crate::governance) mod tests {
             actor: "operator".into(),
             reason: "original never reached backend".into(),
         })
+        .await
         .unwrap();
         gov.forget_confirmed_recovery(intent.operation_id);
         assert_eq!(
@@ -2072,25 +2277,31 @@ pub(in crate::governance) mod tests {
                 .find(|event| event.operation_id != intent.operation_id)
                 .unwrap(),
         )
+        .await
         .unwrap();
     }
-    #[test]
-    fn foreign_adoption_lost_reply_retains_exact_children_and_sends_only_after_confirmation() {
-        use super::super::{GovState, RecordStore};
-        let store = crate::real_store::store();
+    #[tokio::test]
+    async fn foreign_adoption_lost_reply_retains_exact_children_and_sends_only_after_confirmation()
+    {
+        use super::super::GovState;
+        let store = crate::real_store::core().await;
         let sink = Arc::new(Journal::default());
-        let original = GovState::new(store.clone(), None).unwrap();
-        original.attach_recovery_sink(sink.clone()).unwrap();
-        let intent = raw_intent(&original, 7);
+        let original = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        original.attach_recovery_sink(sink.clone()).await.unwrap();
+        let intent = raw_intent(&original, 7).await;
         sink.make_foreign(intent.operation_id, 17);
         drop(original);
-        let gov = GovState::new(store.clone(), None).unwrap();
-        gov.attach_recovery_sink(sink.clone()).unwrap();
+        let gov = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        gov.attach_recovery_sink(sink.clone()).await.unwrap();
         assert!(
             gov.recovery_event(intent.operation_id).is_none(),
             "inspection grants no writable custody"
         );
-        let listed = gov.recovery().list(None, 10).unwrap().pop().unwrap();
+        let listed = gov.recovery().list(None, 10).await.unwrap().pop().unwrap();
         assert_eq!(listed.owner_node, Some(17));
         assert!(!listed.can_resolve);
         let resolution = RecoveryResolution {
@@ -2106,41 +2317,68 @@ pub(in crate::governance) mod tests {
         let cost = crate::cost::CostModel::flat(0);
         sink.lose_adoption_reply.store(true, Ordering::Relaxed);
         assert!(matches!(
-            gov.recovery().resolve(&cost, resolution.clone()),
+            gov.recovery().resolve(&cost, resolution.clone()).await,
             Err(RecoveryError::Unavailable(_))
         ));
         assert_eq!(
-            store.get_usage("recovery-bucket", 0).unwrap().requests,
+            store
+                .ledger()
+                .get_usage("recovery-bucket", 0)
+                .await
+                .unwrap()
+                .requests,
             0,
             "a selected adoption with an unknown reply cannot authorize local backend effects yet"
         );
-        assert!(sink.inspect_foreign().unwrap().is_empty());
-        let settled = gov.recovery().resolve(&cost, resolution.clone()).unwrap();
+        assert!(sink.inspect_foreign().await.unwrap().is_empty());
+        let settled = gov
+            .recovery()
+            .resolve(&cost, resolution.clone())
+            .await
+            .unwrap();
         assert_eq!(settled.state, RecoveryState::Settled);
         assert_eq!(settled.owner_node, None);
-        assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 7);
+        assert_eq!(
+            store
+                .ledger()
+                .get_usage("recovery-bucket", 0)
+                .await
+                .unwrap()
+                .requests,
+            7
+        );
         let attempts = sink.adoption_attempts.lock().unwrap().clone();
         assert_eq!(attempts.len(), 2);
         assert_eq!(
             attempts[0], attempts[1],
             "retry must retain exact child IDs and raw candidate bytes"
         );
-        gov.recovery().resolve(&cost, resolution).unwrap();
-        assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 7);
+        gov.recovery().resolve(&cost, resolution).await.unwrap();
+        assert_eq!(
+            store
+                .ledger()
+                .get_usage("recovery-bucket", 0)
+                .await
+                .unwrap()
+                .requests,
+            7
+        );
     }
 
-    #[test]
-    fn foreign_reaffirmation_preserves_original_decision_audit_and_rejects_opposite_choice() {
-        use super::super::{GovState, RecordStore};
-        let store = crate::real_store::store();
+    #[tokio::test]
+    async fn foreign_reaffirmation_preserves_original_decision_audit_and_rejects_opposite_choice() {
+        use super::super::GovState;
+        let store = crate::real_store::core().await;
         let sink = Arc::new(Journal::default());
-        let original = GovState::new(store.clone(), None).unwrap();
-        original.attach_recovery_sink(sink.clone()).unwrap();
-        let intent = raw_intent(&original, 7);
+        let original = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        original.attach_recovery_sink(sink.clone()).await.unwrap();
+        let intent = raw_intent(&original, 7).await;
         let unknown = intent
             .checkpoint(RecoveryState::LandedUnknown, intent.payload.clone())
             .unwrap();
-        original.keep_recovery_event(&unknown).unwrap();
+        original.keep_recovery_event(&unknown).await.unwrap();
         let old_resolution = RecoveryResolution {
             operation_id: intent.operation_id,
             body_fingerprint: intent.body_fingerprint,
@@ -2155,11 +2393,13 @@ pub(in crate::governance) mod tests {
             .unwrap()
             .pop()
             .unwrap();
-        original.keep_recovery_event(&verdict).unwrap();
+        original.keep_recovery_event(&verdict).await.unwrap();
         sink.make_foreign(intent.operation_id, 23);
         drop(original);
-        let gov = GovState::new(store.clone(), None).unwrap();
-        gov.attach_recovery_sink(sink.clone()).unwrap();
+        let gov = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        gov.attach_recovery_sink(sink.clone()).await.unwrap();
         let mut adoption = RecoveryResolution {
             expected_revision: verdict.revision,
             actor: "new-operator".into(),
@@ -2169,12 +2409,15 @@ pub(in crate::governance) mod tests {
         let cost = crate::cost::CostModel::flat(0);
         adoption.verdict = RecoveryVerdict::Landed;
         assert!(matches!(
-            gov.recovery().resolve(&cost, adoption.clone()),
+            gov.recovery().resolve(&cost, adoption.clone()).await,
             Err(RecoveryError::Conflict(_))
         ));
         assert!(sink.adoption_attempts.lock().unwrap().is_empty());
         adoption.verdict = RecoveryVerdict::NotLanded;
-        gov.recovery().resolve(&cost, adoption.clone()).unwrap();
+        gov.recovery()
+            .resolve(&cost, adoption.clone())
+            .await
+            .unwrap();
         let selected = gov.recovery_event(intent.operation_id).unwrap();
         let raw: serde_json::Value = serde_json::from_slice(&selected.payload).unwrap();
         assert_eq!(raw["verdict"]["actor"], "original-operator");
@@ -2183,20 +2426,31 @@ pub(in crate::governance) mod tests {
             sink.adoption_attempts.lock().unwrap()[0].0.actor,
             "new-operator"
         );
-        gov.recovery().resolve(&cost, adoption).unwrap();
-        assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 7);
+        gov.recovery().resolve(&cost, adoption).await.unwrap();
+        assert_eq!(
+            store
+                .ledger()
+                .get_usage("recovery-bucket", 0)
+                .await
+                .unwrap()
+                .requests,
+            7
+        );
     }
-    #[test]
-    fn foreign_settled_child_is_observed_as_receipt_without_adoption_or_reposting() {
-        use super::super::{GovState, RecordStore};
-        let store = crate::real_store::store();
+    #[tokio::test]
+    async fn foreign_settled_child_is_observed_as_receipt_without_adoption_or_reposting() {
+        use super::super::GovState;
+        let store = crate::real_store::core().await;
         let sink = Arc::new(Journal::default());
-        let original = GovState::new(store.clone(), None).unwrap();
-        original.attach_recovery_sink(sink.clone()).unwrap();
-        let intent = raw_intent(&original, 1);
+        let original = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        original.attach_recovery_sink(sink.clone()).await.unwrap();
+        let intent = raw_intent(&original, 1).await;
         store
+            .ledger()
             .add_usage_batch_deduped(
-                busbar_contract::abi::store::OpId(intent.operation_id),
+                busbar_contract::records::OpId(intent.operation_id),
                 &[(
                     "recovery-bucket",
                     0,
@@ -2206,6 +2460,7 @@ pub(in crate::governance) mod tests {
                     },
                 )],
             )
+            .await
             .unwrap();
         let child = GovState::usage_recovery_child(
             "receipt-child",
@@ -2232,36 +2487,59 @@ pub(in crate::governance) mod tests {
                 serde_json::to_vec(&custody).unwrap(),
             )
             .unwrap();
-        original.keep_recovery_event(&applied).unwrap();
-        original.drive_recovery_children(&applied).unwrap();
-        original.drive_raw_recovery(child.operation_id).unwrap();
-        assert_eq!(store.get_usage("receipt-child", 0).unwrap().requests, 7);
+        original.keep_recovery_event(&applied).await.unwrap();
+        original.drive_recovery_children(&applied).await.unwrap();
+        original
+            .drive_raw_recovery(child.operation_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .ledger()
+                .get_usage("receipt-child", 0)
+                .await
+                .unwrap()
+                .requests,
+            7
+        );
         sink.make_foreign(child.operation_id, 42);
         drop(original);
 
-        let gov = GovState::new(store.clone(), None).unwrap();
-        gov.attach_recovery_sink(sink.clone()).unwrap();
+        let gov = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        gov.attach_recovery_sink(sink.clone()).await.unwrap();
         assert!(gov.recovery_event(child.operation_id).is_none());
-        gov.resume_raw_recovery().unwrap();
+        gov.resume_raw_recovery().await.unwrap();
         let settled = gov.recovery_event(intent.operation_id).unwrap();
         assert_eq!(settled.state, RecoveryState::Settled);
-        assert!(gov.recovery_children_settled(&settled).unwrap());
-        gov.resume_recovery_children(&settled).unwrap();
+        assert!(gov.recovery_children_settled(&settled).await.unwrap());
+        gov.resume_recovery_children(&settled).await.unwrap();
         assert!(
             gov.recovery_event(child.operation_id).is_none(),
             "readonly receipt grants no child write ownership"
         );
         assert!(sink.adoption_attempts.lock().unwrap().is_empty());
-        assert_eq!(store.get_usage("receipt-child", 0).unwrap().requests, 7);
+        assert_eq!(
+            store
+                .ledger()
+                .get_usage("receipt-child", 0)
+                .await
+                .unwrap()
+                .requests,
+            7
+        );
     }
-    #[test]
-    fn many_selected_revisions_keep_endpoints_and_verify_old_checkpoints_cold() {
-        use super::super::{GovState, RecordStore};
-        let store = crate::real_store::store();
+    #[tokio::test]
+    async fn many_selected_revisions_keep_endpoints_and_verify_old_checkpoints_cold() {
+        use super::super::GovState;
+        let store = crate::real_store::core().await;
         let sink = Arc::new(Journal::default());
-        let gov = GovState::new(store.clone(), None).unwrap();
-        gov.attach_recovery_sink(sink.clone()).unwrap();
-        let initial = raw_intent(&gov, 7);
+        let gov = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        gov.attach_recovery_sink(sink.clone()).await.unwrap();
+        let initial = raw_intent(&gov, 7).await;
         let mut current = initial.clone();
         let mut old = None;
         for revision in 1..=256 {
@@ -2275,7 +2553,7 @@ pub(in crate::governance) mod tests {
                     current.payload.clone(),
                 )
                 .unwrap();
-            gov.keep_recovery_event(&current).unwrap();
+            gov.keep_recovery_event(&current).await.unwrap();
             if revision == 64 {
                 old = Some(current.clone());
             }
@@ -2291,27 +2569,32 @@ pub(in crate::governance) mod tests {
                 .is_none(),
             "historical payloads are not retained in the live per-operation Book"
         );
-        gov.verify_recovery_checkpoint(&old).unwrap();
+        gov.verify_recovery_checkpoint(&old).await.unwrap();
         let owned = gov.recovery_book.entries.lock().unwrap();
         let entry = owned.get(&initial.operation_id).unwrap();
         assert!(entry.pending.is_none() && entry.adoption.is_none());
         assert_eq!(entry.initial.as_ref(), Some(&initial));
         drop(owned);
         assert_eq!(
-            store.get_usage("recovery-bucket", 0).unwrap().requests,
+            store
+                .ledger()
+                .get_usage("recovery-bucket", 0)
+                .await
+                .unwrap()
+                .requests,
             0,
             "ancestry verification performs no usage effect"
         );
     }
 
-    #[test]
-    fn compatibility_selection_and_checkpoint_proofs_reject_unselected_forks_and_gaps() {
+    #[tokio::test]
+    async fn compatibility_selection_and_checkpoint_proofs_reject_unselected_forks_and_gaps() {
         let sink = Journal::default();
         let initial = intent();
         let applied = successor(&initial, RecoveryState::Applied);
         let settled = successor(&applied, RecoveryState::Settled);
         *sink.selected.lock().unwrap() = vec![initial.clone(), applied.clone(), settled.clone()];
-        let selections = sink.replay_selections().unwrap();
+        let selections = sink.replay_selections().await.unwrap();
         assert_eq!(
             selections,
             vec![RecoverySelection {
@@ -2319,11 +2602,11 @@ pub(in crate::governance) mod tests {
                 selected: settled
             }]
         );
-        sink.verify_checkpoint(&applied).unwrap();
+        sink.verify_checkpoint(&applied).await.unwrap();
         let unselected = successor(&initial, RecoveryState::LandedUnknown);
         assert!(
             matches!(
-                sink.verify_checkpoint(&unselected),
+                sink.verify_checkpoint(&unselected).await,
                 Err(RecoveryError::Conflict(_))
             ),
             "an otherwise legal journal candidate is not current selected ancestry"
@@ -2334,17 +2617,22 @@ pub(in crate::governance) mod tests {
         };
         *sink.selected.lock().unwrap() = vec![initial, gap];
         assert!(
-            matches!(sink.replay_selections(), Err(RecoveryError::Invalid(_))),
+            matches!(
+                sink.replay_selections().await,
+                Err(RecoveryError::Invalid(_))
+            ),
             "matching initial/current identity cannot replace full legal predecessor verification"
         );
     }
-    #[test]
-    fn admin_resume_can_advance_a_captured_prerequisite_without_wedging_its_flight() {
-        use super::super::{GovState, RecordStore};
-        let store = crate::real_store::store();
+    #[tokio::test]
+    async fn admin_resume_can_advance_a_captured_prerequisite_without_wedging_its_flight() {
+        use super::super::GovState;
+        let store = crate::real_store::core().await;
         let sink = Arc::new(Journal::default());
-        let first = GovState::new(store.clone(), None).unwrap();
-        first.attach_recovery_sink(sink.clone()).unwrap();
+        let first = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        first.attach_recovery_sink(sink.clone()).await.unwrap();
         let admin = GovState::usage_recovery_child(
             "admin-bucket",
             0,
@@ -2366,14 +2654,16 @@ pub(in crate::governance) mod tests {
                 admin.payload,
             )
             .unwrap();
-        first.keep_recovery_event(&admin_intent).unwrap();
+        first.keep_recovery_event(&admin_intent).await.unwrap();
         drop(first);
-        let gov = GovState::new(store.clone(), None).unwrap();
-        gov.attach_recovery_sink(sink.clone()).unwrap();
-        gov.resume_raw_recovery().unwrap();
+        let gov = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
+        gov.attach_recovery_sink(sink.clone()).await.unwrap();
+        gov.resume_raw_recovery().await.unwrap();
         let admin_unknown = gov.recovery_event(admin_intent.operation_id).unwrap();
         assert_eq!(admin_unknown.state, RecoveryState::LandedUnknown);
-        let owner = raw_intent(&gov, 7);
+        let owner = raw_intent(&gov, 7).await;
         let captured = gov
             .capture_usage_recovery(
                 "recovery-bucket",
@@ -2383,7 +2673,7 @@ pub(in crate::governance) mod tests {
                     ..Default::default()
                 },
                 Default::default(),
-                &gov.capture_foreign_settled_snapshot(),
+                &gov.capture_foreign_settled_snapshot().await,
             )
             .unwrap();
         let prerequisite = captured.prerequisite.as_ref().unwrap().clone();
@@ -2405,20 +2695,37 @@ pub(in crate::governance) mod tests {
                     reason: "admin operation independently confirmed not landed".into(),
                 },
             )
+            .await
             .unwrap();
         let settled = gov.recovery_event(owner.operation_id).unwrap();
         assert_eq!(settled.state, RecoveryState::Settled);
         assert!(settled.revision > prerequisite.revision);
         assert!(
-            gov.keep_recovery_event(&prerequisite).is_err(),
+            gov.keep_recovery_event(&prerequisite).await.is_err(),
             "Book.keep never rewinds a selected head"
         );
         let count = sink.selected.lock().unwrap().len();
-        gov.drive_durable_usage_flight(&captured).unwrap();
+        gov.drive_durable_usage_flight(&captured).await.unwrap();
         assert_eq!(sink.selected.lock().unwrap().len(), count);
         assert_eq!(gov.recovery_event(owner.operation_id), Some(settled));
-        assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 4);
-        assert_eq!(store.get_usage("admin-bucket", 0).unwrap().requests, 1);
+        assert_eq!(
+            store
+                .ledger()
+                .get_usage("recovery-bucket", 0)
+                .await
+                .unwrap()
+                .requests,
+            4
+        );
+        assert_eq!(
+            store
+                .ledger()
+                .get_usage("admin-bucket", 0)
+                .await
+                .unwrap()
+                .requests,
+            1
+        );
 
         let mut forged = captured;
         let parent = forged.prerequisite.as_mut().unwrap();
@@ -2426,16 +2733,24 @@ pub(in crate::governance) mod tests {
         payload["absorbed_plain"]["requests"] = serde_json::Value::String("-2".into());
         parent.payload = serde_json::to_vec(&payload).unwrap();
         assert!(
-            gov.drive_durable_usage_flight(&forged).is_err(),
+            gov.drive_durable_usage_flight(&forged).await.is_err(),
             "a different legal candidate at that revision is not selected ancestry"
         );
-        assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 4);
+        assert_eq!(
+            store
+                .ledger()
+                .get_usage("recovery-bucket", 0)
+                .await
+                .unwrap()
+                .requests,
+            4
+        );
     }
-    #[test]
-    fn reused_host_flushes_fresh_refund_only_after_exact_foreign_settled_subtree_proof() {
-        use super::super::{GovState, RecordStore, VirtualKey};
+    #[tokio::test]
+    async fn reused_host_flushes_fresh_refund_only_after_exact_foreign_settled_subtree_proof() {
+        use super::super::{GovState, VirtualKey};
         for mode in 0..5 {
-            let store = crate::real_store::store();
+            let store = crate::real_store::core().await;
             let sink = Arc::new(Journal::default());
             let key_id = format!("vk_foreign_snapshot_{mode}");
             let key = VirtualKey {
@@ -2444,9 +2759,11 @@ pub(in crate::governance) mod tests {
                 enabled: true,
                 ..Default::default()
             };
-            store.put_key(&key).unwrap();
-            let first = GovState::new(store.clone(), None).unwrap();
-            first.attach_recovery_sink(sink.clone()).unwrap();
+            store.identity().put_key(&key).await.unwrap();
+            let first = GovState::new_with_core(store.clone(), None, None)
+                .await
+                .unwrap();
+            first.attach_recovery_sink(sink.clone()).await.unwrap();
             let total = if mode == 4 {
                 u64::MAX
             } else {
@@ -2474,14 +2791,16 @@ pub(in crate::governance) mod tests {
                     root.payload,
                 )
                 .unwrap();
-            first.keep_recovery_event(&initial).unwrap();
+            first.keep_recovery_event(&initial).await.unwrap();
             let mut custody: super::super::raw_recovery::UsageCustody =
                 serde_json::from_slice(&initial.payload).unwrap();
             store
+                .ledger()
                 .add_usage_batch_deduped(
-                    busbar_contract::abi::store::OpId(initial.operation_id),
+                    busbar_contract::records::OpId(initial.operation_id),
                     &[(key.id.as_str(), 0, custody.chunk_plain.clone())],
                 )
+                .await
                 .unwrap();
             let remainder = total - i64::MAX as u64;
             let child = GovState::usage_recovery_child(
@@ -2509,8 +2828,8 @@ pub(in crate::governance) mod tests {
                     serde_json::to_vec(&custody).unwrap(),
                 )
                 .unwrap();
-            first.keep_recovery_event(&applied).unwrap();
-            first.drive_recovery_children(&applied).unwrap();
+            first.keep_recovery_event(&applied).await.unwrap();
+            first.drive_recovery_children(&applied).await.unwrap();
             let child_initial = first.recovery_event(child.operation_id).unwrap();
             let mut unselected = None;
             match mode {
@@ -2519,10 +2838,12 @@ pub(in crate::governance) mod tests {
                     let mut raw: super::super::raw_recovery::UsageCustody =
                         serde_json::from_slice(&child_initial.payload).unwrap();
                     store
+                        .ledger()
                         .add_usage_batch_deduped(
-                            busbar_contract::abi::store::OpId(child.operation_id),
+                            busbar_contract::records::OpId(child.operation_id),
                             &[(key.id.as_str(), 0, raw.chunk_plain.clone())],
                         )
+                        .await
                         .unwrap();
                     raw.plain = Default::default();
                     raw.dated = Default::default();
@@ -2536,7 +2857,7 @@ pub(in crate::governance) mod tests {
                     );
                 }
                 _ => {
-                    first.drive_raw_recovery(child.operation_id).unwrap();
+                    first.drive_raw_recovery(child.operation_id).await.unwrap();
                     if mode == 3 {
                         let mut changed = custody.clone();
                         let mut payload: serde_json::Value =
@@ -2555,7 +2876,7 @@ pub(in crate::governance) mod tests {
                                 serde_json::to_vec(&changed).unwrap(),
                             )
                             .unwrap();
-                        first.keep_recovery_event(&checkpoint).unwrap();
+                        first.keep_recovery_event(&checkpoint).await.unwrap();
                     }
                     if mode == 4 {
                         let child_done = first.recovery_event(child.operation_id).unwrap();
@@ -2573,19 +2894,23 @@ pub(in crate::governance) mod tests {
             sink.make_foreign(child.operation_id, 42);
             drop(first);
 
-            let gov = GovState::new(store.clone(), None).unwrap();
-            gov.attach_recovery_sink(sink.clone()).unwrap();
+            let gov = GovState::new_with_core(store.clone(), None, None)
+                .await
+                .unwrap();
+            gov.attach_recovery_sink(sink.clone()).await.unwrap();
             let cost = crate::cost::CostModel::flat(0);
-            gov.hydrate_budgets(&cost, crate::store::now()).unwrap();
+            gov.hydrate_budgets_async(&cost, crate::store::now())
+                .await
+                .unwrap();
             assert!(gov.recovery_event(child.operation_id).is_none());
             if let Some(candidate) = unselected {
                 assert!(
-                    sink.verify_checkpoint(&candidate).is_err(),
+                    sink.verify_checkpoint(&candidate).await.is_err(),
                     "unselected final-looking candidate is not a receipt"
                 );
             }
             if mode == 4 {
-                let proof = gov.capture_foreign_settled_snapshot();
+                let proof = gov.capture_foreign_settled_snapshot().await;
                 let held = gov
                     .capture_usage_recovery(
                         &key.id,
@@ -2604,16 +2929,31 @@ pub(in crate::governance) mod tests {
                 );
                 continue;
             }
-            let before = store.get_usage(&key.id, 0).unwrap().billable_requests;
+            let before = store
+                .ledger()
+                .get_usage(&key.id, 0)
+                .await
+                .unwrap()
+                .billable_requests;
             let grant = gov.try_admit(&cost, &key, "", crate::store::now()).unwrap();
-            gov.flush_budgets();
+            gov.flush_budgets().await;
             assert_eq!(
-                store.get_usage(&key.id, 0).unwrap().billable_requests,
+                store
+                    .ledger()
+                    .get_usage(&key.id, 0)
+                    .await
+                    .unwrap()
+                    .billable_requests,
                 before + 1
             );
             gov.refund_charge(grant.charge());
-            gov.flush_budgets();
-            let after = store.get_usage(&key.id, 0).unwrap().billable_requests;
+            gov.flush_budgets().await;
+            let after = store
+                .ledger()
+                .get_usage(&key.id, 0)
+                .await
+                .unwrap()
+                .billable_requests;
             assert_eq!(
                 after,
                 if mode == 0 { before } else { before + 1 },

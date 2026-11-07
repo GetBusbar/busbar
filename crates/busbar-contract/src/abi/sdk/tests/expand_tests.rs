@@ -465,15 +465,31 @@ fn actual_abi_frames_lend_the_owned_fields_their_accessors_name() {
     assert_eq!((f.name.len, f.value.len), (1, 1));
     assert_eq!(a.body().bytes(), b"{}");
 
-    let records = [Blob::of(b"x"), Blob::of(b"yz")];
-    let blobs = crate::abi::store::OpBlobsIn {
-        records: records.as_ptr(),
-        records_len: records.len(),
+    use crate::abi::store::v4::{Address, Bytes, ReadIn};
+    let addresses = [
+        Address {
+            namespace: [1; 16],
+            key: Bytes {
+                ptr: b"x".as_ptr(),
+                len: 1,
+            },
+        },
+        Address {
+            namespace: [2; 16],
+            key: Bytes {
+                ptr: b"yz".as_ptr(),
+                len: 2,
+            },
+        },
+    ];
+    let read = ReadIn {
+        addresses: addresses.as_ptr(),
+        addresses_len: addresses.len(),
         ..crate::abi::sdk::door::blank_in()
     };
-    assert_eq!(blobs.records_len, 2);
-    let second = records[1];
-    assert_eq!((second.len, second.fmt), (2, BLOB_OCTETS));
+    assert_eq!(read.addresses_len, 2);
+    let second = addresses[1];
+    assert_eq!((second.key.len, second.namespace), (2, [2; 16]));
 }
 
 #[test]

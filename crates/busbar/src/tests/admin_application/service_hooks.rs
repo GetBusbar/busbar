@@ -94,7 +94,7 @@ async fn build_with_hook_registers_and_wires_global_tap() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -104,6 +104,7 @@ async fn build_with_hook_registers_and_wires_global_tap() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(
@@ -112,10 +113,11 @@ async fn build_with_hook_registers_and_wires_global_tap() {
             .as_deref()
             .expect("the actual Store was staged"),
     )
+    .await
     .expect("the actual Store binds the rate-card authority before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let hook_module = hook_module.expect("the actual hook was staged");
@@ -203,7 +205,7 @@ async fn build_with_hook_demotes_global_false_removes_wiring() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -213,6 +215,7 @@ async fn build_with_hook_demotes_global_false_removes_wiring() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(
@@ -221,10 +224,11 @@ async fn build_with_hook_demotes_global_false_removes_wiring() {
             .as_deref()
             .expect("the actual Store was staged"),
     )
+    .await
     .expect("the actual Store binds the rate-card authority before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let hook_module = hook_module.expect("the actual hook was staged");
@@ -319,7 +323,7 @@ async fn build_with_hook_caps_oversized_name() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -329,6 +333,7 @@ async fn build_with_hook_caps_oversized_name() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(
@@ -337,10 +342,11 @@ async fn build_with_hook_caps_oversized_name() {
             .as_deref()
             .expect("the actual Store was staged"),
     )
+    .await
     .expect("the actual Store binds the rate-card authority before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let hook_module = hook_module.expect("the actual hook was staged");
@@ -421,7 +427,7 @@ async fn build_with_hook_rejects_invalid_definitions() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -431,6 +437,7 @@ async fn build_with_hook_rejects_invalid_definitions() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(
@@ -439,10 +446,11 @@ async fn build_with_hook_rejects_invalid_definitions() {
             .as_deref()
             .expect("the actual Store was staged"),
     )
+    .await
     .expect("the actual Store binds the rate-card authority before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let hook_module = hook_module.expect("the actual hook was staged");
@@ -531,7 +539,7 @@ async fn build_with_hook_enforces_grant_immutability() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -541,6 +549,7 @@ async fn build_with_hook_enforces_grant_immutability() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(
@@ -549,10 +558,11 @@ async fn build_with_hook_enforces_grant_immutability() {
             .as_deref()
             .expect("the actual Store was staged"),
     )
+    .await
     .expect("the actual Store binds the rate-card authority before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let hook_module = hook_module.expect("the actual hook was staged");
@@ -640,7 +650,7 @@ async fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -650,6 +660,7 @@ async fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(
@@ -658,10 +669,11 @@ async fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
             .as_deref()
             .expect("the actual Store was staged"),
     )
+    .await
     .expect("the actual Store binds the rate-card authority before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let hook_module = hook_module.expect("the actual hook was staged");
@@ -745,7 +757,7 @@ async fn build_with_hook_demote_only_removes_the_target_hook() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -755,6 +767,7 @@ async fn build_with_hook_demote_only_removes_the_target_hook() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(
@@ -763,10 +776,11 @@ async fn build_with_hook_demote_only_removes_the_target_hook() {
             .as_deref()
             .expect("the actual Store was staged"),
     )
+    .await
     .expect("the actual Store binds the rate-card authority before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let hook_module = hook_module.expect("the actual hook was staged");
@@ -857,7 +871,7 @@ async fn build_without_hook_only_removes_the_target_from_global_wiring() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -867,6 +881,7 @@ async fn build_without_hook_only_removes_the_target_from_global_wiring() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(
@@ -875,10 +890,11 @@ async fn build_without_hook_only_removes_the_target_from_global_wiring() {
             .as_deref()
             .expect("the actual Store was staged"),
     )
+    .await
     .expect("the actual Store binds the rate-card authority before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let hook_module = hook_module.expect("the actual hook was staged");
@@ -964,7 +980,7 @@ async fn build_with_hook_caps_oversized_settings() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -974,6 +990,7 @@ async fn build_with_hook_caps_oversized_settings() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(
@@ -982,10 +999,11 @@ async fn build_with_hook_caps_oversized_settings() {
             .as_deref()
             .expect("the actual Store was staged"),
     )
+    .await
     .expect("the actual Store binds the rate-card authority before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let hook_module = hook_module.expect("the actual hook was staged");

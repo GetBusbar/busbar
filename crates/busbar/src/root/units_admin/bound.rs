@@ -19,8 +19,22 @@ pub fn no_planes() -> PlaneLookup {
     Arc::new(|_| None)
 }
 
+#[derive(Debug)]
+pub enum PlaneWriteFailure {
+    /// Native refusal or conflict proves this submission did not publish.
+    Unapplied,
+    /// The exact native attempt remains held; never replan it from the record.
+    Unknown(Option<[u8; 16]>),
+}
+
 pub type PlaneRecordSink = Arc<
-    dyn Fn(&PlaneRecord) -> Result<(), busbar_contract::store_calls::StoreFailure> + Send + Sync,
+    dyn for<'a> Fn(
+            &'a PlaneDeclaration,
+            &'a PlaneRecord,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), PlaneWriteFailure>> + Send + 'a>,
+        > + Send
+        + Sync,
 >;
 
 /// The operation already sealed, or submitted with an unknown Store outcome. These bytes and
@@ -35,6 +49,8 @@ pub(crate) enum EffectReceipt {
     },
     PlaneRecordWrite {
         record: PlaneRecord,
+        #[serde(default)]
+        pending: Option<[u8; 16]>,
     },
 }
 
@@ -136,12 +152,12 @@ fn query_param<'t>(target: &'t str, name: &str) -> Option<&'t str> {
         .map(|(_, value)| value)
 }
 
-pub(crate) fn verify_effect(
+pub(crate) async fn verify_effect(
     ledger: &dyn LedgerView,
     audit: Option<&dyn AuditView>,
     journal: Option<&busbar_kernel_audit::amend::NodeAmendments>,
 ) -> Result<AdminAnswer, GovernanceError> {
-    let priced = ledger.priced().map_err(|why| {
+    let priced = ledger.priced().await.map_err(|why| {
         tracing::warn!(why = %why, "verify could not read the ledger's counts");
         GovernanceError::Store
     })?;
@@ -180,6 +196,7 @@ pub(crate) fn verify_effect(
         findings.extend(
             audit
                 .stored_chain_findings()
+                .await
                 .into_iter()
                 .map(|finding| format!("stored chain: {finding}")),
         );
@@ -197,7 +214,7 @@ pub(crate) fn verify_effect(
 
 pub(crate) fn plane_facts_effect(
     target: &str,
-    planes: &dyn Fn(&str) -> Option<PlaneDeclaration>,
+    planes: &(dyn Fn(&str) -> Option<PlaneDeclaration> + Send + Sync),
 ) -> Result<AdminAnswer, GovernanceError> {
     let Some(key) = query_param(target, "plane").filter(|k| !k.is_empty()) else {
         return Ok(refused(400, "invalid_request", "plane is required"));
@@ -238,10 +255,10 @@ pub(crate) fn plane_facts_effect(
     }))
 }
 
-pub(crate) fn plane_record_write_effect(
+pub(crate) async fn plane_record_write_effect(
     body: &[u8],
     at: u64,
-    planes: &dyn Fn(&str) -> Option<PlaneDeclaration>,
+    planes: &(dyn Fn(&str) -> Option<PlaneDeclaration> + Send + Sync),
     sink: Option<&PlaneRecordSink>,
 ) -> Result<EffectAnswer, GovernanceError> {
     let doc: serde_json::Value =
@@ -352,25 +369,26 @@ pub(crate) fn plane_record_write_effect(
         "terminal": terminal,
         "written_at": at,
     }))?;
-    use busbar_contract::store_calls::StoreFailure;
-    match sink(&record) {
+    match sink(&decl, &record).await {
         Ok(()) => Ok(EffectAnswer::applied(applied)),
-        Err(
-            why @ (StoreFailure::Refused(_) | StoreFailure::Overloaded | StoreFailure::Conflict),
-        ) => Ok(EffectAnswer::unapplied(journal_unavailable(
-            &why.to_string(),
+        Err(PlaneWriteFailure::Unapplied) => Ok(EffectAnswer::unapplied(journal_unavailable(
+            "the store refused this record write; nothing was published",
         ))),
-        Err(why @ (StoreFailure::Failed(_) | StoreFailure::Fault(_))) => {
-            tracing::error!(reason = %why, "the plane record write has an unknown outcome; its exact record remains in custody");
+        Err(PlaneWriteFailure::Unknown(pending)) => {
+            tracing::error!(
+                "the plane record write has an unknown outcome; its exact record and native attempt remain in custody"
+            );
             Ok(EffectAnswer::unknown(
-                journal_unavailable("the store did not acknowledge this record write; its outcome is unknown; do not re-submit"),
-                EffectReceipt::PlaneRecordWrite { record },
+                journal_unavailable(
+                    "the store did not acknowledge this record write; its outcome is unknown; do not re-submit",
+                ),
+                EffectReceipt::PlaneRecordWrite { record, pending },
             ))
         }
     }
 }
 
-pub(crate) fn commit_upgrade_effect(
+pub(crate) async fn commit_upgrade_effect(
     body: &[u8],
     at: u64,
     principal: &str,
@@ -398,7 +416,7 @@ pub(crate) fn commit_upgrade_effect(
         ));
     }
     let journal = journal.ok_or(GovernanceError::Store)?;
-    if let Err(why) = journal.admit() {
+    if let Err(why) = journal.admit().await {
         return Ok(EffectAnswer::unapplied(journal_unavailable(&why)));
     }
     let mut record = busbar_kernel_wal::BodyWriter::new();
@@ -420,12 +438,12 @@ pub(crate) fn commit_upgrade_effect(
         hash,
         body,
     };
-    if let Err(why) = journal.acked(node_seq) {
+    if let Err(why) = journal.acked(node_seq).await {
         return Ok(EffectAnswer::pending(
             journal_unavailable(&format!(
-            "the commit is sealed at journal position {node_seq} and not yet kept by the store: \
+                "the commit is sealed at journal position {node_seq} and not yet kept by the store: \
              {why}; do not re-submit"
-        )),
+            )),
             receipt,
         ));
     }
@@ -464,7 +482,7 @@ pub(crate) fn trust_list_effect(desk: &TrustDesk) -> Result<AdminAnswer, Governa
     }))
 }
 
-pub(crate) fn trust_decide_effect(
+pub(crate) async fn trust_decide_effect(
     body: &[u8],
     ruling: Ruling,
     desk: &TrustDesk,
@@ -502,7 +520,10 @@ pub(crate) fn trust_decide_effect(
     let Some(kernel) = desk() else {
         return not_found();
     };
-    match kernel.trust_rule_if_seen(key, ruling, expected_digest) {
+    match kernel
+        .trust_rule_if_seen(key, ruling, expected_digest)
+        .await
+    {
         Ok(row) => answer(&trust_row(&row)),
         Err(TrustRefused::NoSuchKey) => not_found(),
         Err(TrustRefused::NothingSighted) => Ok(refused(
@@ -560,20 +581,42 @@ pub fn live_admin_door(app: Arc<busbar_kernel::state::AppHandle>) -> super::Admi
 }
 
 #[must_use]
-pub fn live_records(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneRecordSink {
-    Arc::new(move |record: &PlaneRecord| {
-        let snapshot = app.load();
-        let calls = snapshot
-            .governance
-            .as_ref()
-            .and_then(|gov| gov.store_calls())
-            .ok_or_else(|| {
-                busbar_contract::store_calls::StoreFailure::Refused(
-                    "no record store is configured".to_string(),
-                )
-            })?;
-        crate::root::durability::off_runtime(|| {
-            crate::root::durability::wait_for(calls.upsert_plane_record(record.view()))
+pub fn live_records(core: Arc<busbar_kernel::persistence::facade::CoreStore>) -> PlaneRecordSink {
+    Arc::new(move |decl, record| {
+        let core = Arc::clone(&core);
+        Box::pin(async move {
+            use busbar_kernel::host_records_async::{AsyncHistory, HistoryError, HistoryOutcome};
+            // This administrative envelope seam has always upserted seq=0 records. Its
+            // objects are separate from raw plugin HostRecords; opaque parent metadata
+            // never declares a parent collection or authorizes a cascade.
+            let kinds = decl
+                .record_kinds
+                .iter()
+                .map(|kind| {
+                    busbar_kernel::store::plane_view::plane_owned_kind(decl.key, kind)
+                        .ok_or(PlaneWriteFailure::Unapplied)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let owner = format!("busbar.admin.envelopes/{}", decl.key);
+            let history = AsyncHistory::authorized_upserts(core, &owner, kinds)
+                .map_err(|_| PlaneWriteFailure::Unapplied)?;
+            match history
+                .upsert(record.view())
+                .await
+                .map_err(|error| match error {
+                    HistoryError::Unauthorized
+                    | HistoryError::Invalid
+                    | HistoryError::MissingParent => PlaneWriteFailure::Unapplied,
+                    _ => PlaneWriteFailure::Unknown(None),
+                })? {
+                HistoryOutcome::Applied => Ok(()),
+                HistoryOutcome::Pending(id)
+                | HistoryOutcome::Reconcile(id)
+                | HistoryOutcome::Busy(id) => Err(PlaneWriteFailure::Unknown(Some(id.0))),
+                HistoryOutcome::Conflict
+                | HistoryOutcome::OpIdConflict
+                | HistoryOutcome::NoEffect(_) => Err(PlaneWriteFailure::Unapplied),
+            }
         })
     })
 }
@@ -617,29 +660,49 @@ struct HeldReplay {
 }
 
 struct HeldSettlement {
-    store: Arc<dyn busbar_contract::records::RecordStore>,
+    store: Arc<busbar_kernel::persistence::scoped::ScopedStore>,
     claim: busbar_core_admin::idempotency::durable::Claim,
     at: u64,
     settled: busbar_core_admin::idempotency::durable::Settled,
 }
 
 impl HeldSettlement {
-    fn retry(&self) {
+    async fn retry(&self) {
         if let Err(why) = busbar_core_admin::idempotency::durable::settle(
-            &*self.store,
+            &self.store,
             &self.claim,
             self.at,
             &self.settled,
-        ) {
+        )
+        .await
+        {
             tracing::error!(reason = %why, "the store did not acknowledge the retained Idempotency-Key receipt; its original claim remains held");
         }
     }
 }
 
 impl HeldReplay {
-    fn replay(&self, journal: Option<&AmendmentJournal>) -> AdminAnswer {
+    async fn replay(&self, journal: Option<&AmendmentJournal>) -> AdminAnswer {
         if let Some(settlement) = &self.settlement {
-            settlement.retry();
+            if let Some(EffectReceipt::PlaneRecordWrite {
+                pending: Some(id), ..
+            }) = &self.value.receipt
+            {
+                // Only this live retained entry carries the original CoreStore handle.
+                // A receipt loaded after restart has no settlement and cannot restore
+                // an in-memory operation from its ID. Never replan the saved record.
+                if let Err(error) = settlement
+                    .store
+                    .retry(busbar_kernel::persistence::facade::PendingId(*id))
+                    .await
+                {
+                    tracing::warn!(
+                        ?error,
+                        "the exact retained record attempt could not be reconciled"
+                    );
+                }
+            }
+            settlement.retry().await;
         }
         if let (
             Some(EffectReceipt::CommitUpgrade {
@@ -655,7 +718,11 @@ impl HeldReplay {
                 let book = journal.book.lock().unwrap_or_else(|p| p.into_inner());
                 (book.journal.node() == *node).then(|| book.chain_at())
             };
-            if let Some(Ok(Ok(records))) = chain.map(|chain| chain.read()) {
+            let records = match chain {
+                Some(chain) => Some(chain.read().await),
+                None => None,
+            };
+            if let Some(Ok(Ok(records))) = records {
                 if records.iter().any(|record| {
                     record.node == *node
                         && record.node_seq == *seq
@@ -663,7 +730,7 @@ impl HeldReplay {
                         && record.class == busbar_kernel_wal::RecordClass::Policy
                         && record.body == *body
                 }) {
-                    let _acknowledged = journal.acked(*seq);
+                    let _acknowledged = journal.acked(*seq).await;
                 }
             }
         }
@@ -673,11 +740,13 @@ impl HeldReplay {
 }
 
 pub type ReplayStore =
-    Arc<dyn Fn() -> Option<Arc<dyn busbar_contract::records::RecordStore>> + Send + Sync>;
+    Arc<dyn Fn() -> Option<Arc<busbar_kernel::persistence::scoped::ScopedStore>> + Send + Sync>;
 
-#[must_use]
-pub fn live_replay_store(app: Arc<busbar_kernel::state::AppHandle>) -> ReplayStore {
-    Arc::new(move || app.load().governance.as_ref().map(|gov| gov.store()))
+pub fn live_replay_store(
+    core: Arc<busbar_kernel::persistence::facade::CoreStore>,
+) -> Result<ReplayStore, busbar_kernel::persistence::scoped::Error> {
+    let store = Arc::new(busbar_core_admin::idempotency::durable::scoped_store(core)?);
+    Ok(Arc::new(move || Some(Arc::clone(&store))))
 }
 
 fn stored_answer(value: &ReplayValue) -> Vec<u8> {
@@ -753,15 +822,19 @@ pub(crate) struct ReplayScope<'a> {
     pub actor: &'a str,
 }
 
-pub(crate) fn replayable(
+pub(crate) async fn replayable<F, Fut>(
     cache: &ReplayCache,
     store: Option<&ReplayStore>,
     scope: ReplayScope<'_>,
     unit: &super::AdminRequest,
     body: &[u8],
     journal: Option<&AmendmentJournal>,
-    effect: impl FnOnce() -> Result<EffectAnswer, GovernanceError>,
-) -> Result<AdminAnswer, GovernanceError> {
+    effect: F,
+) -> Result<AdminAnswer, GovernanceError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<EffectAnswer, GovernanceError>>,
+{
     use busbar_core_admin::idempotency::Probe;
 
     let ReplayScope { verb, actor } = scope;
@@ -772,7 +845,7 @@ pub(crate) fn replayable(
         .map(|(_, value)| value.as_str())
         .filter(|value| !value.is_empty())
     else {
-        return effect().map(|outcome| outcome.answer);
+        return effect().await.map(|outcome| outcome.answer);
     };
     let name = busbar_core_admin::verb_name(verb).unwrap_or_default();
     let digest: [u8; 32] = busbar_contract::abi::sdk::digest::sha256(body);
@@ -802,7 +875,7 @@ pub(crate) fn replayable(
         .cloned();
     if let Some(held) = held {
         return if held.value.digest == digest {
-            Ok(held.replay(journal))
+            Ok(held.replay(journal).await)
         } else {
             other_body()
         };
@@ -811,11 +884,11 @@ pub(crate) fn replayable(
         Probe::Replay(value) if value.digest == digest => Ok(value.answer),
         Probe::Replay(_) => other_body(),
         Probe::InFlight => in_flight(),
-        Probe::NoKey => effect().map(|outcome| outcome.answer),
+        Probe::NoKey => effect().await.map(|outcome| outcome.answer),
         Probe::Reserved(mut reservation) => {
             let store = store.and_then(|store| store());
             let claim = match &store {
-                Some(store) => match durable::claim_held(&**store, reservation.key(), unit.at) {
+                Some(store) => match durable::claim_held(store, reservation.key(), unit.at).await {
                     Ok(claim) => Some(claim),
                     Err(Refused::Answer(kept) | Refused::Retained(kept)) => {
                         return match kept_answer(&kept) {
@@ -827,7 +900,7 @@ pub(crate) fn replayable(
                                     };
                                     cache.retain(key, held.clone());
                                     reservation.in_flight();
-                                    Ok(held.replay(journal))
+                                    Ok(held.replay(journal).await)
                                 } else {
                                     let answer = value.answer.clone();
                                     reservation.commit(value, unit.at);
@@ -836,10 +909,12 @@ pub(crate) fn replayable(
                             }
                             Some(_) => other_body(),
                             None => {
-                                tracing::error!("the store keeps an Idempotency-Key's first answer in a form this node cannot read");
+                                tracing::error!(
+                                        "the store keeps an Idempotency-Key's first answer in a form this node cannot read"
+                                    );
                                 Ok(journal_unavailable(
-                                    "the first answer to this Idempotency-Key cannot be read back; nothing was done",
-                                ))
+                                        "the first answer to this Idempotency-Key cannot be read back; nothing was done",
+                                    ))
                             }
                         };
                     }
@@ -857,7 +932,7 @@ pub(crate) fn replayable(
             };
 
             reservation.in_flight();
-            let (answer, settled) = match effect() {
+            let (answer, settled) = match effect().await {
                 Ok(EffectAnswer {
                     answer,
                     disposition: EffectDisposition::Applied,
@@ -906,7 +981,7 @@ pub(crate) fn replayable(
                 }
             };
             if let (Some(store), Some(claim)) = (&store, &claim) {
-                if let Err(why) = durable::settle(&**store, claim, unit.at, &settled) {
+                if let Err(why) = durable::settle(store, claim, unit.at, &settled).await {
                     tracing::error!(reason = %why, "the store did not keep an Idempotency-Key's outcome; its original claim remains held");
                 }
             }

@@ -9,23 +9,22 @@ use oauth_as::store::Storage as _;
 
 use crate::plane::AsPlane;
 
-fn generation(
-    rt: &tokio::runtime::Runtime,
+async fn generation(
     prior: Option<&Arc<dyn Any + Send + Sync>>,
 ) -> (Arc<dyn Any + Send + Sync>, Arc<AsPlane>) {
-    let _on = rt.enter();
     let block = serde_yaml::to_value(crate::config::OauthAsCfg {
         issuer: "https://as.example.com".into(),
         ..Default::default()
     })
     .expect("the owner config serializes");
     let carried = crate::plane::seam_build::<crate::NoConnections>(
-        &block,
+        block,
         Vec::new(),
         Vec::new(),
-        prior,
-        Some(crate::testkit::store_calls()),
+        prior.cloned(),
+        Some(crate::testkit::memory_store().await),
     )
+    .await
     .expect("the owner's real generation builds");
     let plane = Arc::clone(&carried)
         .downcast::<AsPlane>()
@@ -46,14 +45,13 @@ fn client(id: &str) -> oauth_as::client::Client {
     }
 }
 
-#[test]
-fn a_reload_carries_the_servers_records_sessions_and_key() {
+#[tokio::test]
+async fn a_reload_carries_the_servers_records_sessions_and_key() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let rt = tokio::runtime::Runtime::new().expect("a runtime");
     let until = SystemTime::now() + Duration::from_secs(300);
 
-    let (boot, first) = generation(&rt, None);
-    rt.block_on(async {
+    let (boot, first) = generation(None).await;
+    {
         assert!(matches!(
             first.server().store().claim_replay_id("jti-1", until).await,
             Ok(true)
@@ -64,7 +62,7 @@ fn a_reload_carries_the_servers_records_sessions_and_key() {
             .put_client(client("registered-1"))
             .await
             .expect("the client is stored");
-    });
+    }
     let session = first.sessions().open("operator", "session-1".to_string());
     first
         .sessions()
@@ -72,12 +70,12 @@ fn a_reload_carries_the_servers_records_sessions_and_key() {
     let key = first.server().jwks();
     assert!(key.is_some(), "the server publishes its key");
 
-    let (_reload, second) = generation(&rt, Some(&boot));
+    let (_reload, second) = generation(Some(&boot)).await;
     assert!(
         !Arc::ptr_eq(&first, &second),
         "the reload built a new generation"
     );
-    rt.block_on(async {
+    {
         assert!(
             matches!(
                 second
@@ -100,7 +98,7 @@ fn a_reload_carries_the_servers_records_sessions_and_key() {
             ),
             "a client registered before the reload is known after it"
         );
-    });
+    }
     assert!(
         second.sessions().is_staked(&session, "request-1"),
         "the operator's consent session and its staked answer survive the reload"

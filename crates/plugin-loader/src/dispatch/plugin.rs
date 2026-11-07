@@ -718,6 +718,8 @@ pub struct Instance {
     ptr: AtomicPtr<c_void>,
 
     opened: AtomicBool,
+    store_phase: AtomicU32,
+    store_target: AtomicBool,
     pub(crate) faulted: AtomicBool,
 
     pub(crate) breaches: AtomicU32,
@@ -931,6 +933,66 @@ impl Instance {
 
     pub(crate) fn half_open(&self) -> bool {
         !self.is_open() && !self.ptr.load(Ordering::Acquire).is_null()
+    }
+
+    fn store_bootstrap(&self, slot: u32) -> bool {
+        self.kind == KindCode::Store && slot == busbar_contract::abi::store::v4::slot::BOOTSTRAP
+    }
+    fn store_prepared(&self) -> bool {
+        self.kind == KindCode::Store
+            && self.store_phase.load(Ordering::Acquire) != 0
+            && !self.ptr.load(Ordering::Acquire).is_null()
+    }
+    pub(crate) fn store_phase(&self) -> busbar_contract::persistence::lifecycle::Phase {
+        use busbar_contract::persistence::lifecycle::Phase;
+        match self.store_phase.load(Ordering::Acquire) {
+            1 => Phase::Prepared,
+            2 => Phase::Upgrading,
+            3 => Phase::RecoveryReady,
+            4 => Phase::Open,
+            _ => Phase::Bound,
+        }
+    }
+    pub(crate) fn advance_store_phase(
+        &self,
+        phase: busbar_contract::persistence::lifecycle::Phase,
+    ) -> bool {
+        use busbar_contract::persistence::lifecycle::Phase;
+        if self.kind != KindCode::Store || self.is_closed() || self.faulted.load(Ordering::Acquire)
+        {
+            return false;
+        }
+        let next = match phase {
+            Phase::Bound => 0,
+            Phase::Prepared => 1,
+            Phase::Upgrading => 2,
+            Phase::RecoveryReady => 3,
+            Phase::Open => 4,
+        };
+        self.store_phase
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |previous| {
+                ((previous == next)
+                    || matches!((previous, next), (1, 2) | (2, 3) | (3, 4))
+                        && (next != 4 || self.is_open()))
+                .then_some(next)
+            })
+            .is_ok()
+    }
+    pub(crate) fn admit_store_target(&self) -> bool {
+        if self.kind != KindCode::Store
+            || !matches!(self.store_phase.load(Ordering::Acquire), 2 | 3)
+        {
+            return false;
+        }
+        self.store_target.store(true, Ordering::Release);
+        true
+    }
+    fn store_primitive(&self, slot: u32) -> bool {
+        self.kind == KindCode::Store
+            && (busbar_contract::abi::store::v4::slot::READ
+                ..=busbar_contract::abi::store::v4::slot::CLOCK)
+                .contains(&slot)
+            && self.store_target.load(Ordering::Acquire)
     }
 
     pub(crate) fn acquire(&self, s: u32) -> Option<u32> {
@@ -1327,11 +1389,19 @@ impl Instance {
             return Some(Outcome::Fault);
         }
         if s == slot::READY {
-            let fits = self.ready.is_some() && self.is_open() && in_size >= size_of::<ReadyIn>();
+            let fits = self.ready.is_some()
+                && self.is_open()
+                && (self.kind != KindCode::Store || self.store_phase.load(Ordering::Acquire) == 4)
+                && in_size >= size_of::<ReadyIn>();
             return (!fits).then_some(Outcome::Refused);
         }
         if s >= self.slot_count() {
             return Some(Outcome::Refused);
+        }
+        if self.store_bootstrap(s) {
+            return (in_size < size_of::<busbar_contract::abi::store::v4::BootstrapIn>()
+                || out_size < size_of::<busbar_contract::abi::store::v4::BootstrapOut>())
+            .then_some(Outcome::Refused);
         }
         if self.instance_free(s) {
             let (input, output) = if self.kind == KindCode::Transport {
@@ -1353,12 +1423,14 @@ impl Instance {
         match s {
             slot::VALIDATE if in_size < size_of::<ValidateIn>() => Some(Outcome::Refused),
             slot::VALIDATE => None,
-            slot::OPEN if open || half_open => Some(Outcome::Refused),
+            slot::OPEN if open || (half_open && !self.store_prepared()) => Some(Outcome::Refused),
             slot::OPEN if in_size < size_of::<OpenIn>() || out_size < size_of::<OpenOut>() => {
                 Some(Outcome::Refused)
             }
             slot::OPEN => None,
             slot::CLOSE if half_open => None,
+            slot::CANCEL | slot::RELEASE if self.store_prepared() => None,
+            _ if self.store_primitive(s) && self.store_prepared() => None,
             _ if !open => Some(Outcome::Refused),
             _ => None,
         }
@@ -1441,7 +1513,7 @@ impl Instance {
         let mut shut = false;
         if s == slot::CLOSE && matches!(crossed.outcome, Outcome::Ready | Outcome::Fault) {
             let was_open = self.opened.swap(false, Ordering::AcqRel);
-            shut = was_open || crossed.outcome == Outcome::Fault;
+            shut = was_open || self.store_prepared() || crossed.outcome == Outcome::Fault;
             if shut {
                 self.closed.store(true, Ordering::Release);
 
@@ -1457,7 +1529,12 @@ impl Instance {
             self.wake.exports.wake_waiters(self.wake);
         }
         let ended = !matches!(crossed.outcome, Outcome::Ready | Outcome::Pending);
-        if s == slot::OPEN && ended && self.half_open() && !self.faulted.load(Ordering::Acquire) {
+        if s == slot::OPEN
+            && ended
+            && self.half_open()
+            && !self.store_prepared()
+            && !self.faulted.load(Ordering::Acquire)
+        {
             self.close_half_open();
         }
         if crossed.unread != 0 && s != slot::RELEASE {
@@ -1470,7 +1547,7 @@ impl Instance {
     }
 
     pub(crate) fn release_unread(&self, lease: u64) {
-        if !self.is_open() || self.faulted.load(Ordering::Acquire) {
+        if (!self.is_open() && !self.store_prepared()) || self.faulted.load(Ordering::Acquire) {
             return;
         }
         let mut input = ReleaseIn {
@@ -1581,10 +1658,12 @@ impl Instance {
             generation: None,
             pending: false,
         };
-        let needs_instance = !matches!(s, slot::VALIDATE | slot::OPEN) && !instance_free;
+        let needs_instance =
+            !matches!(s, slot::VALIDATE | slot::OPEN) && !instance_free && !self.store_bootstrap(s);
 
-        let crossable =
-            self.is_open() || (matches!(s, slot::CANCEL | slot::CLOSE) && self.half_open());
+        let crossable = self.is_open()
+            || (matches!(s, slot::CANCEL | slot::CLOSE | slot::RELEASE) && self.half_open())
+            || (self.store_prepared() && (self.store_bootstrap(s) || self.store_primitive(s)));
         if self.is_closed() || (needs_instance && !crossable) {
             return Crossed::host(Outcome::Fault);
         }
@@ -1655,6 +1734,14 @@ impl Instance {
 
         let mut trust_refused = None;
         let mut proposed_binding = None;
+        if self.store_bootstrap(s) {
+            // SAFETY: refuse checked the complete bootstrap frame; host tables
+            // belong to this retained instance and outlive every native ticket.
+            unsafe {
+                (*input.cast::<busbar_contract::abi::store::v4::BootstrapIn>()).host =
+                    &*self.tables.0;
+            }
+        }
         if s == slot::OPEN {
             let (err_buf, err_cap) = self.lend_open_reason();
             // SAFETY: `refuse` checked the frame holds an `OpenIn`.
@@ -1798,10 +1885,13 @@ impl Instance {
         });
 
         let mut open_ended = OpenEnded {
-            ptr: (s == slot::OPEN).then_some(&self.ptr),
-            live: std::ptr::null_mut(),
+            ptr: (s == slot::OPEN || self.store_bootstrap(s)).then_some(&self.ptr),
+            live: self.ptr.load(Ordering::Acquire),
         };
-        let (raw, _head_snapshot) = if s == slot::VALIDATE || is_lifecycle(s) {
+        let (raw, _head_snapshot) = if s == slot::VALIDATE
+            || is_lifecycle(s)
+            || self.store_bootstrap(s)
+        {
             let acting = super::worker::worker_mark();
             let runtime = tokio::runtime::Handle::try_current().ok();
             let framing = super::framing_context::current();
@@ -1868,13 +1958,39 @@ impl Instance {
             });
             (raw, None)
         };
-        if s == slot::OPEN
-            && (raw == RawOutcome::of(Outcome::Ready) || raw == RawOutcome::of(Outcome::Pending))
-        {
-            // What the plugin answered READY or PENDING still holds its box, whatever the host
-            // judges below.
+        if self.store_bootstrap(s) {
+            // SAFETY: the checked host output allocation contains BootstrapOut.
+            let instance =
+                unsafe { (*out.cast::<busbar_contract::abi::store::v4::BootstrapOut>()).instance };
+            let prior = self.ptr.load(Ordering::Acquire);
+            if !instance.is_null() {
+                if !prior.is_null() && prior != instance {
+                    return Crossed::host(Outcome::Fault);
+                }
+                open_ended.live = instance;
+                self.ptr.store(instance, Ordering::Release);
+                let _ =
+                    self.store_phase
+                        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire);
+            } else if !prior.is_null()
+                || raw == RawOutcome::of(Outcome::Ready)
+                || raw == RawOutcome::of(Outcome::Pending)
+            {
+                return Crossed::host(Outcome::Fault);
+            }
+        }
+        if s == slot::OPEN {
+            // OPEN returns the instance it still owns on every outcome. In
+            // particular, the SDK drops an ordinary pending instance when its
+            // resumed OPEN fails and returns NULL. Never restore that freed
+            // pointer or send it a cleanup CLOSE. A native READY/PENDING still
+            // holds its returned box even if host validation rejects the answer.
             // SAFETY: `refuse` checked the frame holds an `OpenOut`.
-            open_ended.live = unsafe { (*out.cast::<OpenOut>()).instance };
+            let opened = unsafe { (*out.cast::<OpenOut>()).instance };
+            if self.store_prepared() && opened != self.ptr.load(Ordering::Acquire) {
+                return Crossed::host(Outcome::Fault);
+            }
+            open_ended.live = opened;
         }
 
         if self.faulted.load(Ordering::Acquire) {
@@ -2077,6 +2193,9 @@ impl Instance {
 
             if outcome == Outcome::Ready {
                 self.opened.store(true, Ordering::Release);
+                if self.kind == KindCode::Store && self.store_phase.load(Ordering::Acquire) != 3 {
+                    self.store_phase.store(4, Ordering::Release);
+                }
             }
         }
         // No result retirement precedes an output validation that could still reject this
@@ -2566,6 +2685,8 @@ impl<K: Kind> Plugin<K> {
                 },
                 ptr: AtomicPtr::new(std::ptr::null_mut()),
                 opened: AtomicBool::new(false),
+                store_phase: AtomicU32::new(0),
+                store_target: AtomicBool::new(false),
                 faulted: AtomicBool::new(false),
                 breaches: AtomicU32::new(0),
                 closed: AtomicBool::new(false),
@@ -2715,6 +2836,19 @@ impl<K: Kind> Plugin<K> {
 
     pub fn targets_from_settings(&self) -> bool {
         self.inner.needs.iter().any(|n| !n.target_from.is_empty())
+    }
+
+    pub(crate) fn store_phase(&self) -> busbar_contract::persistence::lifecycle::Phase {
+        self.inner.store_phase()
+    }
+    pub(crate) fn advance_store_phase(
+        &self,
+        phase: busbar_contract::persistence::lifecycle::Phase,
+    ) -> bool {
+        self.inner.advance_store_phase(phase)
+    }
+    pub(crate) fn admit_store_target(&self) -> bool {
+        self.inner.admit_store_target()
     }
 
     pub fn is_open(&self) -> bool {

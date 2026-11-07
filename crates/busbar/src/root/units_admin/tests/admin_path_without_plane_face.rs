@@ -147,17 +147,14 @@ struct ANodeWhoseChainThisCellReads {
 }
 
 #[cfg(feature = "root-admin")]
-fn mounted_over(
+async fn mounted_over(
     inner: axum::Router,
     request_body_max_bytes: usize,
     door: busbar_kernel_identity::AuthChain,
     tweak: impl FnOnce(&mut crate::root::kernel::ProductionUnits),
 ) -> axum::Router {
-    let durability = crate::root::durability::build(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
+    let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
+    let durability = fixture.book().await;
     let held = Arc::new(std::sync::Mutex::new(durability));
     mount(
         inner,
@@ -180,7 +177,7 @@ fn mounted_over(
 }
 
 #[cfg(feature = "root-admin")]
-fn a_node() -> ANodeWhoseChainThisCellReads {
+async fn a_node() -> ANodeWhoseChainThisCellReads {
     let surface = Arc::new(SurfaceLog::default());
 
     let router = mounted_over(
@@ -188,26 +185,19 @@ fn a_node() -> ANodeWhoseChainThisCellReads {
         64 * 1024,
         a_door_that_identifies_the_operator(),
         |_| {},
-    );
+    )
+    .await;
     ANodeWhoseChainThisCellReads { router, surface }
 }
 
 #[cfg(feature = "root-admin")]
-fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
+async fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
     crate::dist_root_install::install();
     busbar_core_admin::install();
 
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[0x5a; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,
-    );
-    let gov = Arc::new(
-        busbar_kernel::governance::GovState::new_with_signer(
-            crate::root::real_store::records(),
-            None,
-            Some(signer),
-        )
-        .expect("governance"),
     );
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
@@ -250,7 +240,7 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
         .expect("the real admin deployment resolves");
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut built, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut built, rotate, limits) = crate::root::real_store::build_app(
         config,
         crate::root::test_plugins::trusted_config(&directory),
         None,
@@ -260,29 +250,46 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
         None,
         &rules,
     )
+    .await
     .expect("the product builds the actual admin application");
     if !crate::root::kernel::ROOT_CARD.keeps_store() {
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            built
-                .governance
-                .as_ref()
-                .expect("the application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes its actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                built
+                    .governance
+                    .as_ref()
+                    .expect("the application has its configured governance Store")
+                    .core_store_handle()
+                    .expect("the configured Store exposes its actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            )
+            .expect("bind native price history");
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the actual configured Store boots its initial rate history");
     }
-    limits.keep().expect("the real application limits commit");
+    limits
+        .keep()
+        .await
+        .expect("the real application limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
-    built.governance = Some(gov);
+    let core = built
+        .governance
+        .as_ref()
+        .unwrap()
+        .core_store_handle()
+        .unwrap();
+    built.governance = Some(Arc::new(
+        busbar_kernel::governance::GovState::new_with_core(core, None, Some(signer))
+            .await
+            .unwrap(),
+    ));
     let app = std::sync::Arc::new(built);
-    busbar_kernel::audit::auditlog::register_test_audit_stream(&app);
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&app).await;
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
     let mounted = mounted_over(
@@ -290,7 +297,8 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
         1 << 20,
         a_door_that_identifies_the_operator(),
         |_| {},
-    );
+    )
+    .await;
     (bare, mounted)
 }
 
@@ -435,7 +443,7 @@ async fn the_mounted_live_admin_door_keeps_no_verdict_apart_from_bad_credentials
             .expect("the real admin deployment resolves");
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut built, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (mut built, rotate, limits) = crate::root::real_store::build_app(
             config,
             crate::root::test_plugins::trusted_config(&directory),
             None,
@@ -445,25 +453,32 @@ async fn the_mounted_live_admin_door_keeps_no_verdict_apart_from_bad_credentials
             None,
             &rules,
         )
+        .await
         .expect("the product builds the actual admin application");
         if !crate::root::kernel::ROOT_CARD.keeps_store() {
             limits.stage_boot();
-            crate::root::kernel::ROOT_CARD.keep_in_store(
-                built
-                    .governance
-                    .as_ref()
-                    .expect("the application has its configured governance Store")
-                    .store_calls()
-                    .expect("the configured Store exposes its actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            );
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    built
+                        .governance
+                        .as_ref()
+                        .expect("the application has its configured governance Store")
+                        .core_store_handle()
+                        .expect("the configured Store exposes its actual rate-history calls"),
+                    busbar_kernel::door::op_id().counter(),
+                )
+                .expect("bind native price history");
             crate::root::kernel::ROOT_CARD
                 .boot_in_store(None)
+                .await
                 .expect("the actual configured Store boots its initial rate history");
         }
-        limits.keep().expect("the real application limits commit");
+        limits
+            .keep()
+            .await
+            .expect("the real application limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         built.admin_chain = vec!["external".to_string()];
         std::sync::Arc::get_mut(&mut built.admin_modules)
@@ -478,17 +493,25 @@ async fn the_mounted_live_admin_door_keeps_no_verdict_apart_from_bad_credentials
         let snapshot = std::sync::Arc::new(built);
         let app = Arc::new(busbar_kernel::state::AppHandle::new(snapshot));
         let surface = Arc::new(SurfaceLog::default());
-        let book = crate::root::durability::node_book();
+        let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
+        let book = crate::root::durability::node_book(
+            fixture.journal.clone(),
+            crate::root::durability::tests::BUDGET,
+        )
+        .await
+        .unwrap();
         let late = crate::root::serve::LateServices::new();
         let router = mount_node(
             a_recording_surface(surface.clone()),
             64 * 1024,
             &app,
+            fixture.core.clone(),
             &book,
             None,
             &late,
             crate::root::adapters::BreakerPolicy::new(),
-        );
+        )
+        .expect("native admin bindings");
         let (status, body, headers) = send(
             &router,
             "POST",
@@ -516,7 +539,7 @@ async fn the_mounted_live_admin_door_keeps_no_verdict_apart_from_bad_credentials
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_real_verb_still_answers_end_to_end_over_the_admin_listener() {
-    let node = a_node();
+    let node = a_node().await;
     let (status, body, headers) =
         over_the_listener(&node, "GET", "/api/v1/admin/audit?limit=4", b"").await;
 
@@ -588,7 +611,7 @@ async fn a_key_minted_over(router: &axum::Router, name: &str) -> String {
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_mutating_verb_still_seals_exactly_one_entry_onto_the_audit_chain() {
-    let (_bare, mounted) = the_real_surface_bare_and_mounted();
+    let (_bare, mounted) = the_real_surface_bare_and_mounted().await;
     let resource = a_key_minted_over(&mounted, "p2-rootcleanup-one-entry").await;
 
     let (status, body) = audit_rows_for(&mounted, &resource).await;
@@ -603,7 +626,7 @@ async fn a_mutating_verb_still_seals_exactly_one_entry_onto_the_audit_chain() {
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_read_verb_still_seals_nothing_onto_the_audit_chain() {
-    let (_bare, mounted) = the_real_surface_bare_and_mounted();
+    let (_bare, mounted) = the_real_surface_bare_and_mounted().await;
     let resource = a_key_minted_over(&mounted, "p2-rootcleanup-read-seals-nothing").await;
     let (_status, after_the_mutation) = audit_rows_for(&mounted, &resource).await;
 
@@ -626,7 +649,7 @@ async fn a_read_verb_still_seals_nothing_onto_the_audit_chain() {
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_served_audit_body_is_byte_identical_with_and_without_the_root() {
-    let (bare, mounted) = the_real_surface_bare_and_mounted();
+    let (bare, mounted) = the_real_surface_bare_and_mounted().await;
     let resource = a_key_minted_over(&mounted, "p2-rootcleanup-byte-identity").await;
     let path = format!("/api/v1/admin/{}", resource.replacen("key:", "keys/", 1));
 
@@ -662,20 +685,23 @@ async fn the_served_audit_body_is_byte_identical_with_and_without_the_root() {
 struct AnApplyingStore;
 
 #[cfg(feature = "root-admin")]
-impl busbar_kernel_seams::verb_store::Store for AnApplyingStore {
-    fn chain_break(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
-        Ok(())
+impl busbar_kernel::persistence::recovery_api::Store for AnApplyingStore {
+    fn chain_break<'a>(
+        &'a self,
+        _admin: &'a busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+    ) -> busbar_kernel::persistence::recovery_api::StoreCall<'a> {
+        Box::pin(async move { Ok(()) })
     }
 
-    fn store_restore(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        _backup_ref: &str,
-    ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
-        Ok(())
+    fn store_restore<'a>(
+        &'a self,
+        _admin: &'a busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+        backup_ref: &'a str,
+    ) -> busbar_kernel::persistence::recovery_api::StoreCall<'a> {
+        Box::pin(async move {
+            let _ = backup_ref;
+            Ok(())
+        })
     }
 }
 
@@ -744,7 +770,7 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
         .expect("the real admin deployment resolves");
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (built, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (built, rotate, limits) = crate::root::real_store::build_app(
         config,
         crate::root::test_plugins::trusted_config(&directory),
         None,
@@ -754,28 +780,35 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
         None,
         &rules,
     )
+    .await
     .expect("the product builds the actual admin application");
     if !crate::root::kernel::ROOT_CARD.keeps_store() {
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            built
-                .governance
-                .as_ref()
-                .expect("the application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes its actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                built
+                    .governance
+                    .as_ref()
+                    .expect("the application has its configured governance Store")
+                    .core_store_handle()
+                    .expect("the configured Store exposes its actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            )
+            .expect("bind native price history");
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the actual configured Store boots its initial rate history");
     }
-    limits.keep().expect("the real application limits commit");
+    limits
+        .keep()
+        .await
+        .expect("the real application limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = std::sync::Arc::new(built);
-    busbar_kernel::audit::auditlog::register_test_audit_stream(&app);
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&app).await;
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
     let mounted = mounted_over(
@@ -783,7 +816,8 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
         1 << 20,
         a_door_that_identifies_the_operator(),
         |units| units.store = Some(Arc::new(AnApplyingStore)),
-    );
+    )
+    .await;
 
     let applied = [
         ("/api/v1/admin/chain-break", "{}", "chain_break"),
@@ -839,12 +873,6 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
     crate::dist_root_install::install();
     busbar_core_admin::install();
 
-    let configured_store = crate::root::real_store::store();
-    let gov = Arc::new(
-        busbar_kernel::governance::GovState::new(configured_store.clone(), None)
-            .expect("governance over the actual configured Store"),
-    );
-    gov.attach_store_calls(configured_store);
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
@@ -886,7 +914,7 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
         .expect("the real admin deployment resolves");
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut built, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (built, rotate, limits) = crate::root::real_store::build_app(
         config,
         crate::root::test_plugins::trusted_config(&directory),
         None,
@@ -896,29 +924,38 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
         None,
         &rules,
     )
+    .await
     .expect("the product builds the actual admin application");
     if !crate::root::kernel::ROOT_CARD.keeps_store() {
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            built
-                .governance
-                .as_ref()
-                .expect("the application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes its actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                built
+                    .governance
+                    .as_ref()
+                    .expect("the application has its configured governance Store")
+                    .core_store_handle()
+                    .expect("the configured Store exposes its actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            )
+            .expect("bind native price history");
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the actual configured Store boots its initial rate history");
     }
-    limits.keep().expect("the real application limits commit");
+    limits
+        .keep()
+        .await
+        .expect("the real application limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
-    built.governance = Some(gov);
+
     let booted = std::sync::Arc::new(built);
-    let book = crate::root::boot::book(&booted, "test-store").expect("the boot book opens");
+    let book = crate::root::boot::book(&booted, "test-store")
+        .await
+        .expect("the boot book opens");
     assert!(
         book.verb_store.is_some(),
         "a node with a configured store carries it on its book"
@@ -965,7 +1002,7 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
         .expect("the real admin deployment resolves");
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (built, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (built, rotate, limits) = crate::root::real_store::build_app(
         config,
         crate::root::test_plugins::trusted_config(&directory),
         None,
@@ -975,28 +1012,35 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
         None,
         &rules,
     )
+    .await
     .expect("the product builds the actual admin application");
     if !crate::root::kernel::ROOT_CARD.keeps_store() {
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            built
-                .governance
-                .as_ref()
-                .expect("the application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes its actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                built
+                    .governance
+                    .as_ref()
+                    .expect("the application has its configured governance Store")
+                    .core_store_handle()
+                    .expect("the configured Store exposes its actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            )
+            .expect("bind native price history");
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the actual configured Store boots its initial rate history");
     }
-    limits.keep().expect("the real application limits commit");
+    limits
+        .keep()
+        .await
+        .expect("the real application limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = std::sync::Arc::new(built);
-    busbar_kernel::audit::auditlog::register_test_audit_stream(&app);
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&app).await;
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
     let mounted = mount(
@@ -1097,7 +1141,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
         .expect("the real admin deployment resolves");
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (built, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (built, rotate, limits) = crate::root::real_store::build_app(
         config,
         crate::root::test_plugins::trusted_config(&directory),
         None,
@@ -1107,31 +1151,38 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
         None,
         &rules,
     )
+    .await
     .expect("the product builds the actual admin application");
     if !crate::root::kernel::ROOT_CARD.keeps_store() {
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            built
-                .governance
-                .as_ref()
-                .expect("the application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes its actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                built
+                    .governance
+                    .as_ref()
+                    .expect("the application has its configured governance Store")
+                    .core_store_handle()
+                    .expect("the configured Store exposes its actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            )
+            .expect("bind native price history");
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the actual configured Store boots its initial rate history");
     }
-    limits.keep().expect("the real application limits commit");
+    limits
+        .keep()
+        .await
+        .expect("the real application limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = std::sync::Arc::new(built);
-    busbar_kernel::audit::auditlog::register_test_audit_stream(&app);
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&app).await;
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
-    let mounted = mounted_over(bare, 1 << 20, a_door_that_identifies_the_operator(), |_| {});
+    let mounted = mounted_over(bare, 1 << 20, a_door_that_identifies_the_operator(), |_| {}).await;
     let (unmounted_status, unmounted, _) = over(
         &mounted,
         "POST",
@@ -1193,7 +1244,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn an_admin_verb_still_meters_to_nothing_and_posts_nothing() {
-    let node = a_node();
+    let node = a_node().await;
 
     let (status, body, _headers) =
         over_the_listener(&node, "GET", "/api/v1/admin/audit", b"").await;
@@ -1216,7 +1267,7 @@ async fn an_admin_verb_still_meters_to_nothing_and_posts_nothing() {
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_path_the_table_does_not_declare_reaches_the_surface_without_the_loop() {
-    let node = a_node();
+    let node = a_node().await;
 
     let (status, body, _headers) = over_the_listener(&node, "GET", "/healthz", b"").await;
     assert_eq!(status, 200);
@@ -1276,17 +1327,17 @@ impl busbar_kernel_identity::module::AuthModule for IdentifiesATenant {
 }
 
 #[cfg(feature = "root-admin")]
-fn a_q71_node(
+async fn a_q71_node(
     door: busbar_kernel_identity::AuthChain,
 ) -> (
     axum::Router,
     Arc<std::sync::Mutex<Vec<busbar_contract::records::PlaneRecord>>>,
 ) {
-    a_q71_node_trusting(door, crate::root::units_admin::no_trust())
+    a_q71_node_trusting(door, crate::root::units_admin::no_trust()).await
 }
 
 #[cfg(feature = "root-admin")]
-fn a_q71_node_trusting(
+async fn a_q71_node_trusting(
     door: busbar_kernel_identity::AuthChain,
     trust: crate::root::units_admin::TrustDesk,
 ) -> (
@@ -1336,7 +1387,7 @@ fn a_q71_node_trusting(
         .expect("the real admin deployment resolves");
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (built, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (built, rotate, limits) = crate::root::real_store::build_app(
         config,
         crate::root::test_plugins::trusted_config(&directory),
         None,
@@ -1346,28 +1397,35 @@ fn a_q71_node_trusting(
         None,
         &rules,
     )
+    .await
     .expect("the product builds the actual admin application");
     if !crate::root::kernel::ROOT_CARD.keeps_store() {
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            built
-                .governance
-                .as_ref()
-                .expect("the application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes its actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                built
+                    .governance
+                    .as_ref()
+                    .expect("the application has its configured governance Store")
+                    .core_store_handle()
+                    .expect("the configured Store exposes its actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            )
+            .expect("bind native price history");
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the actual configured Store boots its initial rate history");
     }
-    limits.keep().expect("the real application limits commit");
+    limits
+        .keep()
+        .await
+        .expect("the real application limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = std::sync::Arc::new(built);
-    busbar_kernel::audit::auditlog::register_test_audit_stream(&app);
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&app).await;
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
     let kept = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1376,13 +1434,15 @@ fn a_q71_node_trusting(
         units.admin.planes =
             Arc::new(|key: &str| (key == A_SERVED_PLANE.key).then_some(A_SERVED_PLANE));
         units.admin.records = Some(Arc::new(
-            move |record: &busbar_contract::records::PlaneRecord| {
+            move |_: &busbar_contract::plane::PlaneDeclaration,
+                  record: &busbar_contract::records::PlaneRecord| {
                 sink.lock().expect("the sink").push(record.clone());
-                Ok(())
+                Box::pin(async { Ok(()) })
             },
         ));
         units.admin.trust = trust;
-    });
+    })
+    .await;
     (mounted, kept)
 }
 
@@ -1415,12 +1475,14 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
                 ..InstanceFacts::default()
             },
         )
+        .await
         .expect("admitted");
     let desk = Arc::clone(&kernel);
     let (node, _) = a_q71_node_trusting(
         a_door_that_identifies_the_operator(),
         Arc::new(move || Some(Arc::clone(&desk))),
-    );
+    )
+    .await;
     let op = Some(THE_OPERATORS_CREDENTIAL);
 
     let approvals_before = the_operators_rows_for(&node, "/api/v1/admin/trust/approve")
@@ -1583,12 +1645,14 @@ async fn a_rejected_approval_is_audited() {
                 ..InstanceFacts::default()
             },
         )
+        .await
         .expect("admitted");
     let desk = Arc::clone(&kernel);
     let (node, _) = a_q71_node_trusting(
         a_door_that_identifies_the_operator(),
         Arc::new(move || Some(Arc::clone(&desk))),
-    );
+    )
+    .await;
     let op = Some(THE_OPERATORS_CREDENTIAL);
     let before = the_operators_rows_for(&node, "/api/v1/admin/trust/approve")
         .await
@@ -1640,7 +1704,7 @@ async fn a_rejected_approval_is_audited() {
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_new_verb_past_the_nodes_mutation_budget_is_refused() {
-    let (node, _) = a_q71_node(a_door_that_identifies_the_operator());
+    let (node, _) = a_q71_node(a_door_that_identifies_the_operator()).await;
     let op = Some(THE_OPERATORS_CREDENTIAL);
     let revoke = || {
         over_as(
@@ -1732,7 +1796,7 @@ fn the_q71_verbs() -> [(&'static str, &'static str, String); 4] {
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
-    let (node, kept) = a_q71_node(a_door_that_identifies_the_operator());
+    let (node, kept) = a_q71_node(a_door_that_identifies_the_operator()).await;
     let op = Some(THE_OPERATORS_CREDENTIAL);
 
     let (status, body) = over_as(&node, "GET", "/api/v1/admin/verify", "", op).await;
@@ -1895,7 +1959,7 @@ async fn the_four_q71_verbs_refuse_an_unauthorized_caller_by_text() {
         )
     };
 
-    let (node, kept) = a_q71_node(a_door_that_identifies_the_operator());
+    let (node, kept) = a_q71_node(a_door_that_identifies_the_operator()).await;
     for (method, path, body) in the_q71_verbs() {
         assert_eq!(
             over_as(&node, method, path, &body, None).await,
@@ -1911,7 +1975,7 @@ async fn the_four_q71_verbs_refuse_an_unauthorized_caller_by_text() {
         }],
         false,
     );
-    let (tenants_node, tenants_kept) = a_q71_node(tenant);
+    let (tenants_node, tenants_kept) = a_q71_node(tenant).await;
     for (method, path, body) in the_q71_verbs() {
         let needed = if method == "GET" { "read-only" } else { "full" };
         assert_eq!(
@@ -1928,7 +1992,7 @@ async fn the_four_q71_verbs_refuse_an_unauthorized_caller_by_text() {
         );
     }
 
-    let (plain, _) = a_q71_node(a_door_that_identifies_the_operator());
+    let (plain, _) = a_q71_node(a_door_that_identifies_the_operator()).await;
     let (_, _, commit) = the_q71_verbs()[3].clone();
     assert_ne!(
         over_as(
@@ -1972,7 +2036,7 @@ async fn over_with_key(router: &axum::Router, path: &str, body: &str, key: &str)
 #[tokio::test]
 async fn the_q71_writes_replay_under_an_idempotency_key() {
     const MISMATCH: &str = r#"{"error":{"code":"conflict","message":"this Idempotency-Key was already used with a different request body"}}"#;
-    let (node, kept) = a_q71_node(a_door_that_identifies_the_operator());
+    let (node, kept) = a_q71_node(a_door_that_identifies_the_operator()).await;
 
     let (_, _, write) = the_q71_verbs()[2].clone();
     let path = "/api/v1/admin/plane-record-write";

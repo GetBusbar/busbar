@@ -64,6 +64,18 @@ pub struct LinkedRow {
 }
 
 impl LinkedRow {
+    /// Register a linked door against an explicitly selected kind ABI. This uses
+    /// the same complete table, layout and Statement validation as typed loading;
+    /// it does not change the ABI selected by the untyped registry.
+    pub fn of_kind<K: Kind>(door: impl Into<LoadedDoor>) -> Result<Self, LoadError> {
+        let door = door.into().door;
+        let validated = validate::<K>(door)?;
+        // SAFETY: typed validation checked every Statement list and its lifetime.
+        let statement = unsafe { render(&validated.statement) }
+            .map_err(|e| LoadError::Rendering(e.to_string()))?;
+        Ok(Self { statement, door })
+    }
+
     pub fn of(door: DoorFn) -> Result<Self, LoadError> {
         Ok(Self {
             statement: rendering_of(door)?,
@@ -203,8 +215,8 @@ pub fn admit_linked(door: DoorFn) -> Result<LoadedDoor, LoadError> {
 
 pub(crate) fn validate_any(p: *const Door) -> Result<Validated, LoadError> {
     use super::kinds::{
-        auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, store::Store,
-        transport::Transport,
+        auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret,
+        store_v4::StoreV4 as Store, transport::Transport,
     };
     let (_, kind) = read_door(p, None)?;
     match kind {
@@ -777,10 +789,10 @@ fn check_facts<K: Kind>(stated: &[u8]) -> Result<(), LoadError> {
             want: K::CODE,
         });
     }
-    if facts.kind_abi != K::CODE.abi_version() {
+    if facts.kind_abi != K::ABI_VERSION {
         return Err(LoadError::ManifestKindAbi {
             stated: facts.kind_abi,
-            host: K::CODE.abi_version(),
+            host: K::ABI_VERSION,
         });
     }
     Ok(())
@@ -847,6 +859,14 @@ pub(crate) fn read_door(
     p: *const Door,
     want: Option<KindCode>,
 ) -> Result<(DoorParts, KindCode), LoadError> {
+    read_door_with_abi(p, want, None)
+}
+
+fn read_door_with_abi(
+    p: *const Door,
+    want: Option<KindCode>,
+    expected_abi: Option<u32>,
+) -> Result<(DoorParts, KindCode), LoadError> {
     if p.is_null() {
         return Err(LoadError::NullDoor);
     }
@@ -876,20 +896,21 @@ pub(crate) fn read_door(
     if let Some(want) = want.filter(|w| *w != kind) {
         return Err(LoadError::WrongKind { door: kind, want });
     }
-    if door.kind_abi != kind.abi_version() {
+    let host = expected_abi.unwrap_or_else(|| kind.abi_version());
+    if door.kind_abi != host {
         return Err(LoadError::KindAbi {
             kind,
             door: door.kind_abi,
-            host: kind.abi_version(),
+            host,
         });
     }
     Ok((door, kind))
 }
 
 pub(crate) fn validate_door<K: Kind>(p: *const Door) -> Result<Validated, LoadError> {
-    let (door, kind) = read_door(p, Some(K::CODE))?;
+    let (door, kind) = read_door_with_abi(p, Some(K::CODE), Some(K::ABI_VERSION))?;
 
-    let stated = statement(&door);
+    let stated = statement_with_layout(&door, Some(K::LAYOUT_FINGERPRINT));
     let by_statement = |i| {
         stated
             .as_ref()
@@ -967,6 +988,13 @@ fn table<K: Kind>(
 }
 
 pub(crate) fn statement(door: &DoorParts) -> Result<Statement, LoadError> {
+    statement_with_layout(door, None)
+}
+
+fn statement_with_layout(
+    door: &DoorParts,
+    expected_layout: Option<u64>,
+) -> Result<Statement, LoadError> {
     let p = door.statement;
     if p.is_null() {
         return Err(LoadError::NullStatement);
@@ -1002,7 +1030,7 @@ pub(crate) fn statement(door: &DoorParts) -> Result<Statement, LoadError> {
     // SAFETY: a door's Statement is `'static` plugin data; every list is checked before it is read.
     unsafe { check_statement(&st) }
         .map_err(|f| LoadError::BadStatement(format!("{} breaks {:?}", f.field, f.rule)))?;
-    kind_layout(door, &st)?;
+    kind_layout(door, &st, expected_layout)?;
     reference_fields(&st)?;
     for i in 0..st.families_len {
         // SAFETY: `families` holds `families_len` `'static` entries, at most STATEMENT_LIST_MAX.
@@ -1052,11 +1080,15 @@ pub(crate) fn reference_fields(st: &Statement) -> Result<Vec<String>, LoadError>
     }
 }
 
-fn kind_layout(door: &DoorParts, st: &Statement) -> Result<(), LoadError> {
+fn kind_layout(
+    door: &DoorParts,
+    st: &Statement,
+    expected_layout: Option<u64>,
+) -> Result<(), LoadError> {
     let Some(kind) = KindCode::from_raw(door.kind) else {
         return Err(LoadError::UnknownKind(door.kind));
     };
-    let host = kind.layout_fingerprint();
+    let host = expected_layout.unwrap_or_else(|| kind.layout_fingerprint());
     if door.layout == host {
         return Ok(());
     }

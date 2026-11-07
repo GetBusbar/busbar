@@ -34,8 +34,8 @@ fn tagged_limits(tag: u64) -> busbar_kernel::config::LimitsResolved {
     }
 }
 
-#[test]
-fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
+#[tokio::test]
+async fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
     const CHILD: &str = "BUSBAR_CENTRAL2_LIMITS_CHILD";
     const WITNESS: &str = "actual root generation limits completed";
     if std::env::var_os(CHILD).is_none() {
@@ -130,25 +130,36 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let running = tagged_limits(1);
     config.limits = running.clone();
+    let native_config = config;
+    let native_plugins = plugin_config.clone();
+    let native_core = crate::root::real_store::core_over(
+        busbar_kernel::appbuild::bootstrap_config_store(&native_config, &native_plugins)
+            .await
+            .expect("actual Store opens for native startup"),
+    )
+    .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
-        plugin_config.clone(),
+        native_config,
+        native_plugins,
         None,
         Default::default(),
         Default::default(),
         (None, None),
         None,
         &rules,
-        None,
+        Some(native_core),
         true,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
-    let book = crate::root::boot::book(&app, &module).expect("the actual Store boots rate history");
+    let book = crate::root::boot::book(&app, &module)
+        .await
+        .expect("the actual Store boots rate history");
     let _book = book;
-    limits.keep().expect("actual rates and limits commit");
+    limits.keep().await.expect("actual rates and limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let before = live_limits();
     assert_eq!(
@@ -162,7 +173,7 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
     );
     let mut refused = tagged_limits(2);
     refused.hard_down_cooldown_secs = 0;
-    let Err(refusal) = busbar_kernel::build_app_from_config(
+    let Err(refusal) = crate::root::real_store::build_app(
         {
             let mut trial = resolve();
             trial.limits = refused;
@@ -175,7 +186,9 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
         (None, None),
         Some(&app),
         &rules,
-    ) else {
+    )
+    .await
+    else {
         panic!("validation refuses it");
     };
     assert!(
@@ -189,7 +202,7 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
     );
 
     let candidate = tagged_limits(3);
-    let (next, candidate_rotate, unkept) = busbar_kernel::build_app_from_config(
+    let (next, candidate_rotate, unkept) = crate::root::real_store::build_app(
         {
             let mut trial = resolve();
             trial.limits = candidate.clone();
@@ -203,9 +216,10 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
         Some(&app),
         &rules,
     )
+    .await
     .expect("builds");
     if let Some(rotate) = candidate_rotate {
-        rotate();
+        rotate.await;
     }
     assert_eq!(
         live_limits(),
@@ -219,7 +233,7 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
     );
 
     let handle = busbar_kernel::state::AppHandle::new(Arc::new(app));
-    handle.swap(std::sync::Arc::new(next));
+    handle.swap(std::sync::Arc::new(next)).await;
     let after = (
         Some(format!("{candidate:?}")),
         candidate.request_body_max_bytes,
@@ -229,6 +243,7 @@ fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
 
     unkept
         .keep()
+        .await
         .expect("the test generation confirms its rates");
     assert_eq!(live_limits(), after);
     println!("{WITNESS}");

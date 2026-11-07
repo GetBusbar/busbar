@@ -218,13 +218,6 @@ impl Leases {
         id
     }
 
-    /// Hold `lease` under a new lease of its own; its number.
-    fn fresh(&self, lease: Lease) -> u64 {
-        let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
-        self.lock().insert((id, 0), lease);
-        id
-    }
-
     /// Hold `bytes` under a new lease named in `head.lease`; the blob of `fmt` naming them. Empty
     pub fn blob(&self, head: &mut OutHead, bytes: Vec<u8>, fmt: u32) -> Blob {
         if bytes.is_empty() {
@@ -275,11 +268,6 @@ impl Leases {
     /// Hold `owned` — an answer's storage of any shape (several buffers, the arrays naming them) —
     pub fn keep<T: Send + Sync + 'static>(&self, head: &mut OutHead, owned: T) -> u64 {
         self.hold(head, Lease::Kept(Box::new(owned)))
-    }
-
-    /// As [`Leases::keep`], always under a new lease, for a kind door that writes the number into
-    pub(crate) fn keep_new<T: Send + Sync + 'static>(&self, owned: T) -> u64 {
-        self.fresh(Lease::Kept(Box::new(owned)))
     }
 
     /// Borrow typed shared storage without running caller code or dropping it under the lock.

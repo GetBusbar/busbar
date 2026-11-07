@@ -1,5 +1,9 @@
 # OpenSSF Best Practices Badge — criteria mapping
 
+Historical assessment: these rows contain references to retired workflows and are
+not current certification or architecture evidence. Reassess against current dev
+and live CI evidence before using any status below as an acceptance claim.
+
 **Purpose.** A self-certification worksheet for the
 [OpenSSF Best Practices Badge](https://www.bestpractices.dev/) (formerly the CII Best
 Practices Badge). Each **passing**-level criterion is listed with the concrete evidence in
@@ -74,7 +78,7 @@ The badge criteria are grouped as the bestpractices.dev form groups them. Answer
 | `crypto_published` + `crypto_call` + `crypto_floss` | Met | No home-grown crypto; standard vetted crates. Constant-time secret comparison (`constant_time_eq`, `crates/busbar-contract/src/redacted.rs`), SHA-256 digests, Ed25519 signatures. |
 | `crypto_keylength` + `crypto_working` + `crypto_weaknesses` | Met | SHA-256, ed25519 plugin signing key, TLS/mTLS. See posture doc §2.6, §2.3. |
 | `crypto_pfs` + `crypto_password_storage` + `crypto_random` | Partial | TLS; in-memory secrets held as `Secret<T>` / `SecretRef` (posture doc §2.2); virtual keys are signed tokens, not stored secrets. **Not met for recoverable credentials:** signed-request secrets Busbar mints are stored in the configured store as plaintext behind a `v1:plain:` tag (`crates/busbar-contract/src/records.rs`); at-rest encryption is designed but not in this tree (THREAT_MODEL T10). |
-| `delivery_mitm` — signed/hash-verified delivery | Unmet | The release build, SBOM, build-provenance attestation and cosign signing lived in the deleted release workflows; nothing builds or publishes until ModernCI's `qa` → `main` branch file (`.ci/qa.yaml`) signs and publishes the judged build on landing (`docs/design/BUSBAR-1.6.0.md` Part 6). Verify recipes for past releases: <https://getbusbar.com/security/>. |
+| `delivery_mitm` — signed/hash-verified delivery | Unmet | The release build, SBOM, build-provenance attestation and cosign signing lived in the deleted release workflows; nothing builds or publishes until ModernCI's `qa` → `main` branch file (`.ci/qa.yaml`) signs and publishes the judged build on landing (historical workflow description; see current `RELEASE.md`). Verify recipes for past releases: <https://getbusbar.com/security/>. |
 | `delivery_unsigned` — no unsigned critical delivery | Unmet | Nothing is published until the engine ports the builds; see `RELEASE.md`. |
 | `vulnerabilities_fixed_60_days` | Met | `SECURITY.md` backport policy: fix on `dev` first, severity-driven backport window. |
 | `vulnerabilities_critical_fixed` | Met | Critical/High cherry-picked to the latest two minor lines with a GitHub Security Advisory + CVE (`SECURITY.md`). |
@@ -116,7 +120,7 @@ unmet for a solo-maintained project — we leave those open rather than overclai
 | `governance` — documented governance | Met | Maintainer-led governance; roles in `SECURITY.md` + `CONTRIBUTING.md`. |
 | `code_of_conduct` | Met | [`CODE_OF_CONDUCT.md`](../../CODE_OF_CONDUCT.md). |
 | `roles_responsibilities` — roles documented | Met | Maintainer role + **named security contact** (`SECURITY.md`). |
-| `documentation_roadmap` | Met | `docs/roadmap.md`; `docs/design/BUSBAR-1.6.0.md`. |
+| `documentation_roadmap` | Needs reassessment | Superseded architecture documents were removed. `CoreFix.md` is a forward implementation plan, not release qualification. |
 | `documentation_architecture` | Met | `README.md` architecture; `docs/security/1.6.0-security-posture.md`; `THREAT_MODEL.md`. |
 | `documentation_security` — how to report + secure use | Met | `SECURITY.md`, posture doc, k8s `securityContext` example in README. |
 | `documentation_quick_start` | Met | `README.md` quick start; `docs/` getting-started. |

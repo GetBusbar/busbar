@@ -1,0 +1,11 @@
+# what	value
+busbar	v1.5.5 busbar-aarch64-apple-darwin 48e2800cc1fbf229104d73c23039ba4d4a703c0a8db9e7872e22fec33f9b1e48
+plugin	v1.0.6 busbar-store-mysql-1.0.6-aarch64-apple-darwin.tar.gz 572ead273ffb20d0af68e1081a7bdd7365e08655627cde8febb0a8276d293a4f
+backend	mysql
+recorder	c353cf689d06222191b3f876b3e2520ca340d1c4
+requests	200 200 200 503 200 200 
+file	dump.sql 8714c6338f09de712865968549bd281e581a82638c10dcce69bf9bbe951fd45e
+file	readback/key-fixture-grouped.json 74bcf87f16ea872d75571280b1527182f1ae033ec8dd405e3894b0603b397d86
+file	readback/key-fixture-ungrouped.json c50369cbf66f697dba1248fef8bd8e031a22f82a0c385f4617656934012d89ef
+file	readback/usage.json 01d076964304ba233efc65468f2673b7ba98bd777275e30ce0bf8761fe505c41
+file	rows.json 969b891c189445f42d819d6e023a6e6fae8fa412026b2e13049fed1e11603f4c

@@ -55,7 +55,7 @@ pub mod sign;
 #[allow(unsafe_code)]
 mod stage;
 #[allow(unsafe_code)]
-pub mod store_v3;
+pub mod store_v4;
 pub mod tarball;
 
 pub mod rows;
@@ -252,16 +252,6 @@ mod dispatch_kind_plane_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
-#[path = "tests/dispatch_kind_store_tests.rs"]
-mod dispatch_kind_store_tests;
-
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/stub_store_plane_tests.rs"]
-mod stub_store_plane_tests;
-
-#[cfg(test)]
-#[allow(unsafe_code)]
 #[path = "tests/dispatch_kind_hook_tests.rs"]
 mod dispatch_kind_hook_tests;
 
@@ -274,10 +264,6 @@ mod dispatch_kind_auth_tests;
 #[allow(unsafe_code)]
 #[path = "tests/door_both_ways.rs"]
 mod door_both_ways;
-
-#[cfg(test)]
-#[path = "tests/store_door_conformance_tests.rs"]
-mod store_door_conformance_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
@@ -405,20 +391,5 @@ mod ordinary_declared_metadata;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
-#[path = "tests/store_lifecycle_actual.rs"]
-mod store_lifecycle_actual;
-
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/store_actual_opid_tests.rs"]
-mod store_actual_opid_tests;
-
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/store_actual_pending_tests.rs"]
-mod store_actual_pending_tests;
-
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/actual_rewrap_contracts.rs"]
-mod actual_rewrap_contracts;
+#[path = "tests/retired_store_fixture.rs"]
+mod retired_store_fixture;

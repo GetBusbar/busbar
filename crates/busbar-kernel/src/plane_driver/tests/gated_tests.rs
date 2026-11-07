@@ -248,7 +248,7 @@ fn unavailable_projection_cannot_clear_a_configured_gate_even_when_advisory() {
         rewrites: Vec::new(),
         key: None,
         scan: None,
-        reads: Arc::new(|_, _, _, _| {}),
+        reads: Arc::new(|_, _, _, _| Box::pin(async { Ok(()) })),
     };
     for marked in [true, false] {
         assert!(matches!(

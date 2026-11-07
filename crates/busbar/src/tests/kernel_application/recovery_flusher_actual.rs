@@ -2,95 +2,20 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
-use busbar_contract::abi::store::OpId;
-use busbar_contract::records::{
-    MeteringDelta, MeteringRow, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta,
-    UsageLedger, VirtualKey,
-};
+use busbar_contract::records::{MeteringDelta, VirtualKey};
 use busbar_kernel::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
 use busbar_kernel::cost::CostModel;
+use busbar_kernel::governance::GovState;
 use busbar_kernel::governance::recovery::{
     RecoveryError, RecoveryEvent, RecoveryKind, RecoveryResolution, RecoverySink, RecoveryState,
     RecoveryVerdict,
 };
-use busbar_kernel::governance::GovState;
-use std::collections::{BTreeMap, VecDeque};
+use busbar_kernel::persistence::facade::CoreStore;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 const MODEL: &str = "m";
-#[derive(Clone, Copy)]
-enum Reply {
-    Confirm,
-    FailBefore,
-}
-struct ChunkStore {
-    inner: Arc<dyn RecordStore>,
-    replies: std::sync::Mutex<VecDeque<Reply>>,
-    before_batch: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
-}
-impl RecordStore for ChunkStore {
-    fn supports_usage_batch_deduped(&self) -> bool {
-        true
-    }
-    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
-        self.inner.put_key(key)
-    }
-    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-        self.inner.get_key(id)
-    }
-    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.inner.list_keys()
-    }
-    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-        self.inner.delete_key(id)
-    }
-    fn get_usage(&self, id: &str, window: u64) -> RecordStoreResult<UsageLedger> {
-        self.inner.get_usage(id, window)
-    }
-    fn put_usage(&self, id: &str, window: u64, row: &UsageLedger) -> RecordStoreResult<()> {
-        self.inner.put_usage(id, window, row)
-    }
-    fn add_usage(&self, id: &str, window: u64, delta: &UsageDelta) -> RecordStoreResult<()> {
-        self.add_usage_batch_deduped(busbar_kernel::door::op_id(), &[(id, window, delta.clone())])
-    }
-    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
-        self.inner.add_metering(delta)
-    }
-    fn list_metering(&self, day: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-        self.inner.list_metering(day)
-    }
-    fn supports_usage_correction(&self) -> bool {
-        true
-    }
-    fn apply_usage_correction(
-        &self,
-        request: &busbar_contract::records::correction::Request,
-    ) -> RecordStoreResult<busbar_contract::records::correction::Decision> {
-        self.inner.apply_usage_correction(request)
-    }
-    fn add_usage_batch_deduped(
-        &self,
-        op: OpId,
-        cells: &[(&str, u64, UsageDelta)],
-    ) -> RecordStoreResult<()> {
-        let reply = self
-            .replies
-            .lock()
-            .unwrap()
-            .pop_front()
-            .unwrap_or(Reply::Confirm);
-        let hook = self.before_batch.lock().unwrap().take();
-        if let Some(hook) = hook {
-            hook();
-        }
-        if matches!(reply, Reply::FailBefore) {
-            return Err(RecordStoreError("planted pre-commit chunk failure".into()));
-        }
-        self.inner.add_usage_batch_deduped(op, cells)?;
-        Ok(())
-    }
-}
-fn input(store: &dyn RecordStore, bucket: &str, window: u64) -> i128 {
-    let usage = store.get_usage(bucket, window).unwrap();
+async fn input(store: &CoreStore, bucket: &str, window: u64) -> i128 {
+    let usage = store.ledger().get_usage(bucket, window).await.unwrap();
     let count =
         busbar_contract::Count::total(usage.models.iter().filter(|row| row.model == MODEL).map(
             |row| {
@@ -114,11 +39,18 @@ fn input(store: &dyn RecordStore, bucket: &str, window: u64) -> i128 {
     count.micros() / unit
 }
 
+type Pause = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+    Arc<std::sync::atomic::AtomicBool>,
+);
 struct Journal {
     inner: Arc<dyn RecoverySink>,
     selected: std::sync::Mutex<Vec<RecoveryEvent>>,
     fail_after_write: std::sync::atomic::AtomicBool,
+    before_write: std::sync::Mutex<Option<Pause>>,
 }
+
 impl Journal {
     fn current(&self, id: [u8; 16]) -> RecoveryEvent {
         self.selected
@@ -131,26 +63,34 @@ impl Journal {
             .clone()
     }
 }
+#[async_trait::async_trait]
 impl RecoverySink for Journal {
-    fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError> {
-        self.inner.replay()
+    async fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError> {
+        self.inner.replay().await
     }
-    fn replay_selections(
+    async fn replay_selections(
         &self,
     ) -> Result<Vec<busbar_kernel::governance::recovery::RecoverySelection>, RecoveryError> {
-        self.inner.replay_selections()
+        self.inner.replay_selections().await
     }
-    fn verify_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
-        self.inner.verify_checkpoint(event)
+    async fn verify_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        self.inner.verify_checkpoint(event).await
     }
-    fn confirm_owned_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
-        self.inner.confirm_owned_checkpoint(event)
+    async fn confirm_owned_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        self.inner.confirm_owned_checkpoint(event).await
     }
-    fn verify_origin(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
-        self.inner.verify_origin(event)
+    async fn verify_origin(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        self.inner.verify_origin(event).await
     }
-    fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
-        self.inner.persist(event)?;
+    async fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        let pause = self.before_write.lock().unwrap().take();
+        if let Some((entered, release, blocked)) = pause {
+            blocked.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = entered.send(());
+            let _ = release.await;
+            blocked.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+        self.inner.persist(event).await?;
         let mut selected = self.selected.lock().unwrap();
         if !selected.contains(event) {
             selected.push(event.clone());
@@ -219,9 +159,10 @@ fn toks(input: u64, output: u64) -> BTreeMap<String, u64> {
 fn era_now() -> u64 {
     busbar_kernel::rate_apply::effective_from_at(busbar_kernel::store::now_ms())
 }
-fn metered(store: &dyn RecordStore, key_id: &str, model: &str, n: u64, now: u64) {
+async fn metered(store: &CoreStore, key_id: &str, model: &str, n: u64, now: u64) {
     let era = busbar_kernel::rate_apply::era_at(busbar_kernel::store::now_ms());
     store
+        .ledger()
         .add_metering(&MeteringDelta {
             scale: 0,
             key_id: key_id.into(),
@@ -242,6 +183,7 @@ fn metered(store: &dyn RecordStore, key_id: &str, model: &str, n: u64, now: u64)
             priced_from_ms: era.effective_from,
             usage_units: Default::default(),
         })
+        .await
         .unwrap();
 }
 #[tokio::test]
@@ -325,37 +267,49 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
         });
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let native_config = config;
+    let native_plugins = plugin_config;
+    let native_core = crate::root::real_store::core_over(
+        busbar_kernel::appbuild::bootstrap_config_store(&native_config, &native_plugins)
+            .await
+            .expect("actual Store opens for native startup"),
+    )
+    .await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
-        plugin_config,
+        native_config,
+        native_plugins,
         None,
         Default::default(),
         Default::default(),
         (None, None),
         None,
         &rules,
-        None,
+        Some(native_core),
         true,
     )
+    .await
     .expect("the actual product builds the session deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
 
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let store = Arc::new(ChunkStore {
-        inner: app.governance.as_ref().unwrap().store(),
-        replies: Default::default(),
-        before_batch: Default::default(),
-    });
+    let store = app
+        .governance
+        .as_ref()
+        .unwrap()
+        .core_store_handle()
+        .unwrap();
     let journal = Arc::new(Journal {
-        inner: crate::root::durability::usage_recovery_sink(&_book.durability),
+        inner: crate::root::durability::usage_recovery_sink(_book.runtime_journal.clone()).unwrap(),
         selected: Default::default(),
         fail_after_write: Default::default(),
+        before_write: Default::default(),
     });
     let old_cost = model(&[(
         "g",
@@ -382,15 +336,17 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
         ),
     )]);
     let key = virtual_key("vk_live_cost_verdict", Some("g"));
-    store.put_key(&key).unwrap();
+    store.identity().put_key(&key).await.unwrap();
 
     let card_epoch_ms = busbar_kernel::store::now_ms();
     let now = card_epoch_ms / 1_000;
-    let first = GovState::new(store.clone(), None).unwrap();
-    first.attach_recovery_sink(journal.clone()).unwrap();
+    let first = GovState::new_with_core(store.clone(), None, None)
+        .await
+        .unwrap();
+    first.attach_recovery_sink(journal.clone()).await.unwrap();
     first.try_admit(&old_cost, &key, "", now).unwrap();
     first.record_usage(&old_cost, &key, "", MODEL, &toks(100, 0), now);
-    metered(store.as_ref(), &key.id, MODEL, 100, now);
+    metered(store.as_ref(), &key.id, MODEL, 100, now).await;
     journal
         .fail_after_write
         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -405,7 +361,7 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
         delta: &correction_delta,
         now,
     };
-    let adjusted = first.adjust_usage(&old_cost, &adjustment);
+    let adjusted = first.adjust_usage_async(&old_cost, &adjustment).await;
     assert!(
         adjusted.is_err(),
         "the journal's lost selection reply must fail the adjustment: {adjusted:?}"
@@ -418,7 +374,7 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
         .find(|event| event.kind == RecoveryKind::Correction)
         .unwrap()
         .clone();
-    assert_eq!(input(store.as_ref(), &key.id, 0), 0);
+    assert_eq!(input(store.as_ref(), &key.id, 0).await, 0);
     drop(first);
     journal
         .fail_after_write
@@ -429,59 +385,67 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
         busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_DAY, now);
 
     let foreign_key = virtual_key("vk_foreign_day_usage", Some("g"));
-    store.put_key(&foreign_key).unwrap();
-    let foreign = GovState::new(store.clone(), None).unwrap();
+    store.identity().put_key(&foreign_key).await.unwrap();
+    let foreign = GovState::new_with_core(store.clone(), None, None)
+        .await
+        .unwrap();
     foreign
         .try_admit(&current_cost, &foreign_key, "", now)
         .unwrap();
     foreign.record_usage(&current_cost, &foreign_key, "", MODEL, &toks(100, 0), now);
-    metered(store.as_ref(), &foreign_key.id, MODEL, 100, now);
-    foreign.flush_budgets();
-    assert_eq!(input(store.as_ref(), day_bucket, day_window), 100);
+    metered(store.as_ref(), &foreign_key.id, MODEL, 100, now).await;
+    foreign.flush_budgets().await;
+    assert_eq!(input(store.as_ref(), day_bucket, day_window).await, 100);
     drop(foreign);
-    let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
-    gov.attach_recovery_sink(journal.clone()).unwrap();
-    gov.hydrate_budgets(&old_cost, now).unwrap();
-    gov.flush_budgets();
+    let gov = Arc::new(
+        GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap(),
+    );
+    gov.attach_recovery_sink(journal.clone()).await.unwrap();
+    gov.hydrate_budgets_async(&old_cost, now).await.unwrap();
+    gov.flush_budgets().await;
     let unknown = journal.current(original.operation_id);
     assert_eq!(unknown.state, RecoveryState::LandedUnknown);
-    store.replies.lock().unwrap().push_back(Reply::FailBefore);
-    assert!(gov
-        .recovery()
-        .resolve(
-            &old_cost,
-            RecoveryResolution {
-                operation_id: unknown.operation_id,
-                body_fingerprint: unknown.body_fingerprint,
-                expected_revision: unknown.revision,
-                verdict: RecoveryVerdict::NotLanded,
-                sender_quiesced: true,
-                backend_quiesced: true,
-                actor: "operator".into(),
-                reason: "old sender retired; backend confirms no original mutation".into(),
-            }
-        )
-        .is_err());
+    journal
+        .fail_after_write
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        gov.recovery()
+            .resolve(
+                &old_cost,
+                RecoveryResolution {
+                    operation_id: unknown.operation_id,
+                    body_fingerprint: unknown.body_fingerprint,
+                    expected_revision: unknown.revision,
+                    verdict: RecoveryVerdict::NotLanded,
+                    sender_quiesced: true,
+                    backend_quiesced: true,
+                    actor: "operator".into(),
+                    reason: "old sender retired; backend confirms no original mutation".into(),
+                }
+            )
+            .await
+            .is_err()
+    );
     assert_eq!(
         journal.current(original.operation_id).state,
         RecoveryState::VerdictNotLanded
     );
 
+    journal
+        .fail_after_write
+        .store(false, std::sync::atomic::Ordering::SeqCst);
     app.governance = Some(gov.clone());
     app.amendments = Arc::clone(gov.amendments());
     app.cost = Arc::new(old_cost);
     let app = Arc::new(app);
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(app.clone()));
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     let blocked = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let in_worker = blocked.clone();
-    *store.before_batch.lock().unwrap() = Some(Box::new(move || {
-        in_worker.store(true, std::sync::atomic::Ordering::SeqCst);
-        let _ = entered_tx.send(());
-        let _ = release_rx.recv();
-        in_worker.store(false, std::sync::atomic::Ordering::SeqCst);
-    }));
+    *journal.before_write.lock().unwrap() = Some((entered_tx, release_rx, in_worker));
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
     let flusher = busbar_kernel::governance::spawn_budget_flusher(
         gov.clone(),
@@ -492,7 +456,7 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
     let mut next = (*app).clone();
     next.cost = Arc::new(current_cost);
     next.config_version += 1;
-    handle.swap(Arc::new(next));
+    handle.swap(Arc::new(next)).await;
 
     tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx)
         .await
@@ -503,7 +467,9 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
         assert!(blocked.load(std::sync::atomic::Ordering::SeqCst));
     })
     .await
-    .expect("the single Tokio reactor continues while the Store worker is blocked");
+    .expect(
+        "the single Tokio reactor continues while the native recovery acknowledgment is suspended",
+    );
     release_tx.send(()).unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
@@ -517,16 +483,16 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
         .unwrap()
         .unwrap();
 
-    assert_eq!(input(store.as_ref(), &key.id, 0), 40);
+    assert_eq!(input(store.as_ref(), &key.id, 0).await, 40);
     assert_eq!(
-        input(store.as_ref(), day_bucket, day_window),
+        input(store.as_ref(), day_bucket, day_window).await,
         40,
         "fresh conditional revalidation uses the swapped current day-window cost model"
     );
     let month_window =
         busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_MONTH, now);
     assert_eq!(
-        input(store.as_ref(), "group:g@month", month_window),
+        input(store.as_ref(), "group:g@month", month_window).await,
         100,
         "the previous model's raw month-window debt is recorded, not corrected under stale configuration"
     );

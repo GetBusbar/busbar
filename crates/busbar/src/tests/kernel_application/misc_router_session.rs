@@ -68,7 +68,7 @@ async fn real_session_framer(
     use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
     use busbar_plugin_loader::dispatch::kinds::transport::Transport;
     use busbar_plugin_loader::dispatch::{
-        load_dropped, rendering_of_library, DispatchConfig, Dispatcher,
+        DispatchConfig, Dispatcher, load_dropped, rendering_of_library,
     };
 
     let publishing = crate::root::PUBLISHING.lock().await;
@@ -175,7 +175,7 @@ async fn serve() -> (
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules =
         Arc::new(crate::root::door_steps::Rules::default()) as Arc<dyn kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -185,22 +185,28 @@ async fn serve() -> (
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the host deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .expect("the application has its configured governance Store")
-            .store_calls()
-            .expect("the configured product Store exposes actual calls"),
-        busbar_kernel::door::op_id().counter(),
-    );
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the application has its configured governance Store")
+                    .core_store_handle()
+                    .expect("the configured product Store exposes actual calls"),
+                busbar_kernel::door::op_id().counter(),
+            )
+            .expect("the native rate-card Store binds");
+    };
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the configured product Store boots its rate-card history");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let (publishing, framer) = real_session_framer(&app).await;
@@ -355,7 +361,7 @@ async fn a_websocket_plane_receives_no_scheme_derived_from_a_raw_credential() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules =
         Arc::new(crate::root::door_steps::Rules::default()) as Arc<dyn kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -365,22 +371,28 @@ async fn a_websocket_plane_receives_no_scheme_derived_from_a_raw_credential() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the host deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .expect("the application has its configured governance Store")
-            .store_calls()
-            .expect("the configured product Store exposes actual calls"),
-        busbar_kernel::door::op_id().counter(),
-    );
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the application has its configured governance Store")
+                    .core_store_handle()
+                    .expect("the configured product Store exposes actual calls"),
+                busbar_kernel::door::op_id().counter(),
+            )
+            .expect("the native rate-card Store binds");
+    };
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the configured product Store boots its rate-card history");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let (_publishing, framer) = real_session_framer(&app).await;

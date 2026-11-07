@@ -7,64 +7,6 @@ const MODEL: &str = "ordinary-unknown-model";
 const FIRST_INPUT: u64 = 7;
 const LATER_INPUT: u64 = 11;
 
-struct UnknownFlushStore {
-    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
-    fail_after_commit: std::sync::atomic::AtomicBool,
-    unwind: bool,
-}
-impl RecordStore for UnknownFlushStore {
-    fn supports_usage_batch_deduped(&self) -> bool {
-        true
-    }
-    fn add_usage_batch_deduped(
-        &self,
-        op: busbar_contract::abi::store::OpId,
-        cells: &[(&str, u64, UsageDelta)],
-    ) -> RecordStoreResult<()> {
-        self.inner.add_usage_batch_deduped(op, cells)?;
-        self.after_commit()
-    }
-    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
-        self.inner.put_key(key)
-    }
-    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-        self.inner.get_key(id)
-    }
-    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.inner.list_keys()
-    }
-    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-        self.inner.delete_key(id)
-    }
-    fn get_usage(&self, bucket: &str, window: u64) -> RecordStoreResult<UsageLedger> {
-        self.inner.get_usage(bucket, window)
-    }
-    fn put_usage(&self, bucket: &str, window: u64, row: &UsageLedger) -> RecordStoreResult<()> {
-        self.inner.put_usage(bucket, window, row)
-    }
-    fn add_usage(&self, bucket: &str, window: u64, delta: &UsageDelta) -> RecordStoreResult<()> {
-        self.inner.add_usage(bucket, window, delta)?;
-        self.after_commit()
-    }
-    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
-        self.inner.add_metering(delta)
-    }
-    fn list_metering(&self, day: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-        self.inner.list_metering(day)
-    }
-}
-impl UnknownFlushStore {
-    fn after_commit(&self) -> RecordStoreResult<()> {
-        if self.fail_after_commit.swap(false, Ordering::SeqCst) {
-            if self.unwind {
-                panic!("planted unwind after ordinary usage commit");
-            }
-            return Err(RecordStoreError("planted lost ordinary usage reply".into()));
-        }
-        Ok(())
-    }
-}
-
 fn accrue_plain(gov: &GovState, bucket: &str, count: u64) {
     let mut cells = gov.budget.write(bucket);
     let cell = cells
@@ -75,30 +17,37 @@ fn accrue_plain(gov: &GovState, bucket: &str, count: u64) {
     cell.last_touch = crate::store::now();
 }
 
-fn ordinary_unknown_result_retries_once(unwind: bool) {
-    let store = Arc::new(UnknownFlushStore {
-        inner: crate::real_store::store(),
-        fail_after_commit: std::sync::atomic::AtomicBool::new(true),
-        unwind,
-    });
+async fn ordinary_unknown_result_retries_once(unwind: bool) {
+    let store = Arc::new(FlakyStore::new().await);
+    store.lose_usage_reply.store(true, Ordering::SeqCst);
+    store.unwind_usage.store(unwind, Ordering::SeqCst);
     let key = sample_key("vk_ordinary_unknown_commit", "ordinary-unknown-generation");
-    store.put_key(&key).unwrap();
-    let gov = GovState::new(store.clone(), None).unwrap();
+    store.identity().put_key(&key).await.unwrap();
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     accrue_plain(&gov, &key.id, FIRST_INPUT);
-    let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gov.flush_budgets()));
+    use futures::FutureExt;
+    let first = std::panic::AssertUnwindSafe(gov.flush_budgets())
+        .catch_unwind()
+        .await;
     assert_eq!(first.is_err(), unwind);
     assert_eq!(
         store
+            .ledger()
             .get_usage(&key.id, 0)
+            .await
             .unwrap()
             .tokens_for_whole_test(MODEL),
         Some(FIRST_INPUT)
     );
     accrue_plain(&gov, &key.id, LATER_INPUT);
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     assert_eq!(
         store
+            .ledger()
             .get_usage(&key.id, 0)
+            .await
             .unwrap()
             .tokens_for_whole_test(MODEL),
         Some(FIRST_INPUT + LATER_INPUT),
@@ -106,26 +55,27 @@ fn ordinary_unknown_result_retries_once(unwind: bool) {
     );
 }
 
-#[test]
-fn ordinary_small_usage_unknown_reply_does_not_duplicate_committed_effect() {
-    ordinary_unknown_result_retries_once(false);
+#[tokio::test]
+async fn ordinary_small_usage_unknown_reply_does_not_duplicate_committed_effect() {
+    ordinary_unknown_result_retries_once(false).await;
 }
 
-#[test]
-fn ordinary_small_usage_unwind_does_not_duplicate_committed_effect() {
-    ordinary_unknown_result_retries_once(true);
+#[tokio::test]
+async fn ordinary_small_usage_unwind_does_not_duplicate_committed_effect() {
+    ordinary_unknown_result_retries_once(true).await;
 }
 
 #[derive(Default)]
 struct RecoveryJournal(std::sync::Mutex<Vec<super::super::recovery::RecoveryEvent>>);
+#[async_trait::async_trait]
 impl super::super::recovery::RecoverySink for RecoveryJournal {
-    fn replay(
+    async fn replay(
         &self,
     ) -> Result<Vec<super::super::recovery::RecoveryEvent>, super::super::recovery::RecoveryError>
     {
         Ok(self.0.lock().unwrap().clone())
     }
-    fn persist(
+    async fn persist(
         &self,
         event: &super::super::recovery::RecoveryEvent,
     ) -> Result<(), super::super::recovery::RecoveryError> {
@@ -135,13 +85,13 @@ impl super::super::recovery::RecoverySink for RecoveryJournal {
         }
         Ok(())
     }
-    fn verify_origin(
+    async fn verify_origin(
         &self,
         event: &super::super::recovery::RecoveryEvent,
     ) -> Result<(), super::super::recovery::RecoveryError> {
         use super::super::recovery::RecoveryError;
 
-        self.replay_selections()?;
+        self.replay_selections().await?;
         let events = self.0.lock().unwrap();
         let genesis = events
             .iter()
@@ -169,44 +119,60 @@ impl super::super::recovery::RecoverySink for RecoveryJournal {
     }
 }
 
-#[test]
-fn ordinary_product_flush_quarantines_old_unknown_and_continues_fresh_positive_usage() {
+#[tokio::test]
+async fn ordinary_product_flush_quarantines_old_unknown_and_continues_fresh_positive_usage() {
     use super::super::recovery::{RecoveryResolution, RecoveryState, RecoveryVerdict};
-    let store = Arc::new(UnknownFlushStore {
-        inner: crate::real_store::store(),
-        fail_after_commit: std::sync::atomic::AtomicBool::new(true),
-        unwind: false,
-    });
+    let store = Arc::new(FlakyStore::new().await);
+    store.lose_usage_reply.store(true, Ordering::SeqCst);
     let key = sample_key("vk_durable_unknown_commit", "durable-unknown-generation");
-    store.put_key(&key).unwrap();
+    store.identity().put_key(&key).await.unwrap();
     let journal = Arc::new(RecoveryJournal::default());
-    let original = GovState::new(store.clone(), None).unwrap();
-    original.attach_recovery_sink(journal.clone()).unwrap();
+    let original = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    original
+        .attach_recovery_sink(journal.clone())
+        .await
+        .unwrap();
     accrue_plain(&original, &key.id, FIRST_INPUT);
-    original.flush_budgets();
+    original.flush_budgets().await;
     assert_eq!(
         store
+            .ledger()
             .get_usage(&key.id, 0)
+            .await
             .unwrap()
             .tokens_for_whole_test(MODEL),
         Some(FIRST_INPUT)
     );
-    let intent = original.recovery().list(None, 10).unwrap().pop().unwrap();
+    let intent = original
+        .recovery()
+        .list(None, 10)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
     assert_eq!(intent.state, RecoveryState::Intent);
     drop(original);
 
-    let gov = GovState::new(store.clone(), None).unwrap();
-    gov.attach_recovery_sink(journal).unwrap();
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    gov.attach_recovery_sink(journal).await.unwrap();
     let cost = flat_cost(0);
-    gov.hydrate_budgets(&cost, crate::store::now()).unwrap();
-    gov.resume_raw_recovery().unwrap();
+    gov.hydrate_budgets_async(&cost, crate::store::now())
+        .await
+        .unwrap();
+    gov.resume_raw_recovery().await.unwrap();
     let unknown = gov.recovery_event(intent.operation_id).unwrap();
     assert_eq!(unknown.state, RecoveryState::LandedUnknown);
     accrue_plain(&gov, &key.id, LATER_INPUT);
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     assert_eq!(
         store
+            .ledger()
             .get_usage(&key.id, 0)
+            .await
             .unwrap()
             .tokens_for_whole_test(MODEL),
         Some(FIRST_INPUT + LATER_INPUT)
@@ -227,10 +193,12 @@ fn ordinary_product_flush_quarantines_old_unknown_and_continues_fresh_positive_u
             cell.dirty = true;
         });
     }
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     assert_eq!(
         store
+            .ledger()
             .get_usage(&key.id, 0)
+            .await
             .unwrap()
             .tokens_for_whole_test(MODEL),
         Some(FIRST_INPUT + LATER_INPUT),
@@ -247,16 +215,22 @@ fn ordinary_product_flush_quarantines_old_unknown_and_continues_fresh_positive_u
         actor: "operator".into(),
         reason: "original backend receipt confirmed after sender retirement".into(),
     };
-    let settled = gov.recovery().resolve(&cost, resolution.clone()).unwrap();
+    let settled = gov
+        .recovery()
+        .resolve(&cost, resolution.clone())
+        .await
+        .unwrap();
     assert_eq!(settled.state, RecoveryState::Settled);
     let audit: serde_json::Value =
         serde_json::from_slice(&gov.recovery_event(intent.operation_id).unwrap().payload).unwrap();
     assert_eq!(audit["verdict"]["sender_quiesced"], true);
     assert_eq!(audit["verdict"]["backend_quiesced"], true);
-    gov.recovery().resolve(&cost, resolution).unwrap();
+    gov.recovery().resolve(&cost, resolution).await.unwrap();
     assert_eq!(
         store
+            .ledger()
             .get_usage(&key.id, 0)
+            .await
             .unwrap()
             .tokens_for_whole_test(MODEL),
         Some(LATER_INPUT)

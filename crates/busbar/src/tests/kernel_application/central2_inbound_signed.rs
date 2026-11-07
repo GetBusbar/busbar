@@ -6,7 +6,7 @@
 use crate::root::test_plugins as plugins;
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY};
 use busbar_contract::abi::host::service::{
-    UnitRef, FLOW_CONTINUE, FLOW_STOP, REFUSE_OVER_GATE, REFUSE_STOPPED,
+    FLOW_CONTINUE, FLOW_STOP, REFUSE_OVER_GATE, REFUSE_STOPPED, UnitRef,
 };
 use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
 use busbar_contract::auth_calls::Strip;
@@ -203,25 +203,36 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
         });
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let native_config = config;
+    let native_plugins = plugin_config;
+    let native_core = crate::root::real_store::core_over(
+        busbar_kernel::appbuild::bootstrap_config_store(&native_config, &native_plugins)
+            .await
+            .expect("actual Store opens for native startup"),
+    )
+    .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
-        plugin_config,
+        native_config,
+        native_plugins,
         None,
         Default::default(),
         Default::default(),
         (None, None),
         None,
         &rules,
-        None,
+        Some(native_core),
         true,
     )
+    .await
     .expect("the actual product builds the session deployment");
     limits.stage_boot();
-    let book = crate::root::boot::book(&app, &module).expect("the actual Store boots rate history");
-    limits.keep().expect("the product limits commit");
+    let book = crate::root::boot::book(&app, &module)
+        .await
+        .expect("the actual Store boots rate history");
+    limits.keep().await.expect("the product limits commit");
     let _book = book;
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let credential_owner = Arc::new(busbar_kernel::state::AppHandle::new(app.clone()));
@@ -238,7 +249,7 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
     assert_eq!(kind, "sigv4");
     let now = busbar_kernel::store::now();
     let (key, bearer, public_id, secret) = gov
-        .mint_signed_with_credential(
+        .mint_signed_with_credential_async(
             NewKeySpec {
                 name: "actual inbound signed reader".into(),
                 ..Default::default()
@@ -248,6 +259,7 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
             &kind,
             &shape,
         )
+        .await
         .expect("actual signed Store issues an encrypted recoverable credential");
     let secret = secret.expose(&busbar_kernel::seal::lend()).clone();
     let inbound = Arc::clone(crate::root::inbound::host());
@@ -685,7 +697,8 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
         "cancellation never revives the old unit"
     );
     assert!(inbound.admitted(cancelled.unit.id).is_none());
-    gov.revoke(&key.id, "actual signed-reader revocation")
+    gov.revoke_async(&key.id, "actual signed-reader revocation")
+        .await
         .expect("actual Store revokes credential");
     let revoked = call(head.clone(), Some(body), POINT_HEAD_BODY, UnitRef::NONE, 4).await;
     assert_eq!(revoked.flow, FLOW_STOP);

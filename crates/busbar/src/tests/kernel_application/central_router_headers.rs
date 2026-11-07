@@ -48,7 +48,7 @@ async fn server_timing_header_absent_by_default_present_when_enabled() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -58,22 +58,28 @@ async fn server_timing_header_absent_by_default_present_when_enabled() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .expect("the application has its configured governance Store")
-            .store_calls()
-            .expect("the configured product Store exposes actual calls"),
-        busbar_kernel::door::op_id().counter(),
-    );
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the application has its configured governance Store")
+                    .core_store_handle()
+                    .expect("the configured product Store exposes actual calls"),
+                busbar_kernel::door::op_id().counter(),
+            )
+            .expect("the native rate-card Store binds");
+    };
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the configured product Store boots its rate-card history");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let (router, _handle) =
@@ -132,7 +138,7 @@ async fn server_timing_header_absent_by_default_present_when_enabled() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -142,22 +148,28 @@ async fn server_timing_header_absent_by_default_present_when_enabled() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .expect("the application has its configured governance Store")
-            .store_calls()
-            .expect("the configured product Store exposes actual calls"),
-        busbar_kernel::door::op_id().counter(),
-    );
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the application has its configured governance Store")
+                    .core_store_handle()
+                    .expect("the configured product Store exposes actual calls"),
+                busbar_kernel::door::op_id().counter(),
+            )
+            .expect("the native rate-card Store binds");
+    }
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the configured product Store boots its rate-card history");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let (router, _handle) =
@@ -224,7 +236,7 @@ async fn route_policy_headers_absent_by_default_on_the_live_stack() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -234,22 +246,28 @@ async fn route_policy_headers_absent_by_default_on_the_live_stack() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .expect("the application has its configured governance Store")
-            .store_calls()
-            .expect("the configured product Store exposes actual calls"),
-        busbar_kernel::door::op_id().counter(),
-    );
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the application has its configured governance Store")
+                    .core_store_handle()
+                    .expect("the configured product Store exposes actual calls"),
+                busbar_kernel::door::op_id().counter(),
+            )
+            .expect("the native rate-card Store binds");
+    };
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the configured product Store boots its rate-card history");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let (router, _handle) =

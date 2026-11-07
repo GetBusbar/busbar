@@ -83,11 +83,12 @@ impl UnitCheckpoint {
 }
 
 /// The root implements this with kernel-owned named Store slots and journal evidence.
+#[async_trait::async_trait]
 pub trait UnitCheckpointSink: Send + Sync {
-    fn persist(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()>;
-    fn remove(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()>;
-    fn replay(&self) -> RecordStoreResult<Vec<UnitCheckpoint>>;
-    fn recover_audit(&self, _snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
+    async fn persist(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()>;
+    async fn remove(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()>;
+    async fn replay(&self) -> RecordStoreResult<Vec<UnitCheckpoint>>;
+    async fn recover_audit(&self, _snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
         Ok(())
     }
 }
@@ -96,7 +97,7 @@ pub trait UnitCheckpointSink: Send + Sync {
 pub(super) struct UnitCheckpointBook {
     sink: OnceLock<Arc<dyn UnitCheckpointSink>>,
     pending: Mutex<BTreeMap<[u8; 16], Pending>>,
-    flushing: Mutex<()>,
+    flushing: tokio::sync::Mutex<()>,
 }
 
 struct Pending {
@@ -112,52 +113,53 @@ fn error(message: impl ToString) -> RecordStoreError {
 impl GovState {
     /// Bind after usage recovery is attached and before admitting any units. A recovered running
     /// unit ends at its last confirmed report, without reconstructing an admission or a fee.
-    pub fn attach_unit_checkpoint_sink(
+    pub async fn attach_unit_checkpoint_sink(
         &self,
         sink: Arc<dyn UnitCheckpointSink>,
     ) -> RecordStoreResult<()> {
         if !self.recovery_enabled() {
             return Err(error("running unit custody requires usage recovery"));
         }
-        let recovered = sink.replay()?;
+        let recovered = sink.replay().await?;
         for snapshot in &recovered {
             snapshot.validate()?;
-            sink.recover_audit(snapshot)?;
+            sink.recover_audit(snapshot).await?;
         }
         self.unit_checkpoints
             .sink
             .set(sink)
             .map_err(|_| error("unit checkpoint sink already attached"))?;
-        let mut pending = self
-            .unit_checkpoints
-            .pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        for mut snapshot in recovered {
-            let persisted = Some(snapshot.revision);
-            if !snapshot.ended {
-                snapshot.ended = true;
-                snapshot.revision = snapshot
-                    .revision
-                    .checked_add(1)
-                    .ok_or_else(|| error("unit checkpoint revision exhausted"))?;
-            }
-            if pending
-                .insert(
-                    snapshot.id,
-                    Pending {
-                        snapshot,
-                        persisted,
-                        recovered: true,
-                    },
-                )
-                .is_some()
-            {
-                return Err(error("duplicate running unit checkpoint"));
+        {
+            let mut pending = self
+                .unit_checkpoints
+                .pending
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            for mut snapshot in recovered {
+                let persisted = Some(snapshot.revision);
+                if !snapshot.ended {
+                    snapshot.ended = true;
+                    snapshot.revision = snapshot
+                        .revision
+                        .checked_add(1)
+                        .ok_or_else(|| error("unit checkpoint revision exhausted"))?;
+                }
+                if pending
+                    .insert(
+                        snapshot.id,
+                        Pending {
+                            snapshot,
+                            persisted,
+                            recovered: true,
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(error("duplicate running unit checkpoint"));
+                }
             }
         }
-        drop(pending);
-        if let Err(failed) = self.flush_unit_checkpoints() {
+        if let Err(failed) = self.flush_unit_checkpoints().await {
             let pending = self
                 .unit_checkpoints
                 .pending
@@ -193,6 +195,18 @@ impl GovState {
                         .iter()
                         .any(|target| target.bucket == bucket && target.window == window)
             })
+    }
+
+    /// Synchronous shutdown barrier: reports and an active native flush retain
+    /// custody even when no RPC is currently being polled.
+    pub(super) fn has_unsettled_unit_checkpoints(&self) -> bool {
+        !self
+            .unit_checkpoints
+            .pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_empty()
+            || self.unit_checkpoints.flushing.try_lock().is_err()
     }
 
     pub fn unit_checkpoints_enabled(&self) -> bool {
@@ -274,15 +288,11 @@ impl GovState {
     }
 
     /// Called by the existing usage flusher, including its final shutdown pass.
-    pub fn flush_unit_checkpoints(&self) -> RecordStoreResult<()> {
+    pub async fn flush_unit_checkpoints(&self) -> RecordStoreResult<()> {
         let Some(sink) = self.unit_checkpoints.sink.get() else {
             return Ok(());
         };
-        let _flush = self
-            .unit_checkpoints
-            .flushing
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let _flush = self.unit_checkpoints.flushing.lock().await;
         let ids: Vec<_> = self
             .unit_checkpoints
             .pending
@@ -293,7 +303,7 @@ impl GovState {
             .collect();
         let mut first_error = None;
         for id in ids {
-            if let Err(failed) = self.flush_unit_checkpoint(sink.as_ref(), id) {
+            if let Err(failed) = self.flush_unit_checkpoint(sink.as_ref(), id).await {
                 tracing::warn!(checkpoint = %hex::encode(id), error = %failed,
                     "running money checkpoint remains unresolved and will retry");
                 first_error.get_or_insert(failed);
@@ -302,7 +312,7 @@ impl GovState {
         first_error.map_or(Ok(()), Err)
     }
 
-    fn flush_unit_checkpoint(
+    async fn flush_unit_checkpoint(
         &self,
         sink: &dyn UnitCheckpointSink,
         id: [u8; 16],
@@ -328,7 +338,7 @@ impl GovState {
             (entry.snapshot.clone(), entry.persisted, entry.recovered)
         };
         if persisted != Some(snapshot.revision) {
-            sink.persist(&snapshot)?;
+            sink.persist(&snapshot).await?;
             if let Some(entry) = self
                 .unit_checkpoints
                 .pending
@@ -343,9 +353,9 @@ impl GovState {
             return Ok(());
         };
         for initial in events {
-            self.restore_unit_terminal_receipt(initial)?;
+            self.restore_unit_terminal_receipt(initial).await?;
             if self.recovery_event(initial.operation_id).is_none() {
-                self.keep_recovery_event(initial)?;
+                self.keep_recovery_event(initial).await?;
             } else if self.recovery_initial_event(initial.operation_id).as_ref() != Some(initial) {
                 return Err(error(
                     "terminal unit operation identity differs from recovery custody",
@@ -356,7 +366,7 @@ impl GovState {
         // not strand its siblings without durable custody or hide the operator recovery surface.
         let mut first_error = None;
         for initial in events {
-            if let Err(failed) = self.drive_raw_recovery(initial.operation_id) {
+            if let Err(failed) = self.drive_raw_recovery(initial.operation_id).await {
                 first_error.get_or_insert(failed);
             }
             if !self
@@ -372,9 +382,9 @@ impl GovState {
             return Err(failed);
         }
         if recovered {
-            self.refresh_recovered_unit_targets(&snapshot)?;
+            self.refresh_recovered_unit_targets(&snapshot).await?;
         }
-        sink.remove(&snapshot)?;
+        sink.remove(&snapshot).await?;
         self.unit_checkpoints
             .pending
             .lock()

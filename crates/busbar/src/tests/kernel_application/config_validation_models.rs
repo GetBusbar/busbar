@@ -216,9 +216,9 @@ fn test_error_map_invalid_class_message_lists_full_valid_set() {
         .find(|e| e.contains("invalid StatusClass 'not_a_class'"))
         .unwrap_or_else(|| panic!("expected invalid-StatusClass error; got: {errs:?}"));
     assert!(
-            msg.contains("context_length"),
-            "valid-values list must include 'context_length' (it is accepted by StatusClass::parse); got: {msg}"
-        );
+        msg.contains("context_length"),
+        "valid-values list must include 'context_length' (it is accepted by StatusClass::parse); got: {msg}"
+    );
 
     for class in [
         "rate_limit",

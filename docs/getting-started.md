@@ -548,4 +548,4 @@ Before taking Busbar out of dev mode:
 - **Pools, breakers, and failover**: weighting, breaker tuning, session affinity, context-length failover, and exhaustion policies ([`docs/configuration.md#pools`](configuration.md#pools))
 - **Running in production**: TLS termination, systemd, Docker, `/stats` monitoring, and breaker diagnosis ([`docs/operations.md`](operations.md))
 - **Governance**: signed expiring keys, group limits, and the `/admin` API ([`docs/operations.md`](operations.md))
-- **Architecture**: how the IR works, the six-protocol model, and why `f64` instead of `f32` ([`docs/architecture.md`](architecture.md))
+- **Development**: current crate ownership and plugin extension points ([development guide](development.md))

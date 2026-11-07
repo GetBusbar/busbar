@@ -1,0 +1,200 @@
+{
+  "api_keys": [
+    {
+      "allowed_pools": null,
+      "created_at": 1791956529,
+      "deleted_at": null,
+      "enabled": 1,
+      "expires_at": null,
+      "generation_hash": "binding:vk_55cb1808aabb09e6e14e517d91ce0c13:be7e38dbe55cd386d05aaf4e2dcdacb1",
+      "id": "vk_55cb1808aabb09e6e14e517d91ce0c13",
+      "key_group": "fixture",
+      "labels": {},
+      "name": "fixture-grouped",
+      "revision": 1,
+      "updated_at": 1791956529
+    },
+    {
+      "allowed_pools": null,
+      "created_at": 1791956529,
+      "deleted_at": null,
+      "enabled": 1,
+      "expires_at": null,
+      "generation_hash": "binding:vk_c178b4fe1d02f68e5583171e0dc5b7c2:b510e86e5d5517abfe6934295746ba8e",
+      "id": "vk_c178b4fe1d02f68e5583171e0dc5b7c2",
+      "key_group": "",
+      "labels": {},
+      "name": "fixture-ungrouped",
+      "revision": 2,
+      "updated_at": 1791956529
+    }
+  ],
+  "audit_log": [
+    {
+      "action": "key.create",
+      "hash": "943e589374a96ca67f363de09c6ecc81e202dd2be8b2f233bf73d80b2ccf757a",
+      "outcome": "applied",
+      "prev_hash": "",
+      "principal": "admin",
+      "resource": "key:vk_55cb1808aabb09e6e14e517d91ce0c13",
+      "seq": 1,
+      "ts": 1791956529
+    },
+    {
+      "action": "key.create",
+      "hash": "ba8b217909a2587b7b2ddf5df6f712bc49c472f9c0b8a7b9189856b4a68d7424",
+      "outcome": "applied",
+      "prev_hash": "943e589374a96ca67f363de09c6ecc81e202dd2be8b2f233bf73d80b2ccf757a",
+      "principal": "admin",
+      "resource": "key:vk_c178b4fe1d02f68e5583171e0dc5b7c2",
+      "seq": 2,
+      "ts": 1791956529
+    }
+  ],
+  "credentials": [],
+  "denylist": [],
+  "store_meta": [
+    {
+      "k": "schema_version",
+      "v": "3"
+    }
+  ],
+  "store_sequence": [
+    {
+      "id": 1,
+      "revision": 2
+    }
+  ],
+  "usage_metering": [
+    {
+      "billable_requests": 1,
+      "bucket": "1791936000",
+      "key_group_at_use": "",
+      "key_id": "vk_55cb1808aabb09e6e14e517d91ce0c13",
+      "model": "m-cache",
+      "pricing_version": "",
+      "provider": "fixture-openai",
+      "requests": 1,
+      "tokens_cache_read": 4,
+      "tokens_cache_write": 0,
+      "tokens_input": 7,
+      "tokens_output": 7
+    },
+    {
+      "billable_requests": 1,
+      "bucket": "1791936000",
+      "key_group_at_use": "",
+      "key_id": "vk_c178b4fe1d02f68e5583171e0dc5b7c2",
+      "model": "m-cache",
+      "pricing_version": "",
+      "provider": "fixture-openai",
+      "requests": 1,
+      "tokens_cache_read": 4,
+      "tokens_cache_write": 0,
+      "tokens_input": 7,
+      "tokens_output": 7
+    },
+    {
+      "billable_requests": 2,
+      "bucket": "1791936000",
+      "key_group_at_use": "",
+      "key_id": "vk_55cb1808aabb09e6e14e517d91ce0c13",
+      "model": "m-chat",
+      "pricing_version": "",
+      "provider": "fixture-openai",
+      "requests": 2,
+      "tokens_cache_read": 0,
+      "tokens_cache_write": 0,
+      "tokens_input": 22,
+      "tokens_output": 14
+    },
+    {
+      "billable_requests": 1,
+      "bucket": "1791936000",
+      "key_group_at_use": "",
+      "key_id": "vk_c178b4fe1d02f68e5583171e0dc5b7c2",
+      "model": "m-chat",
+      "pricing_version": "",
+      "provider": "fixture-openai",
+      "requests": 1,
+      "tokens_cache_read": 0,
+      "tokens_cache_write": 0,
+      "tokens_input": 11,
+      "tokens_output": 7
+    }
+  ],
+  "usage_windows": [
+    {
+      "billable_requests": 2,
+      "bucket_id": "vk_c178b4fe1d02f68e5583171e0dc5b7c2",
+      "bucket_scope": "key",
+      "model": "m-cache",
+      "requests": 2,
+      "tokens_cache_read": 4,
+      "tokens_cache_write": 0,
+      "tokens_input": 7,
+      "tokens_output": 7,
+      "window_start": 0
+    },
+    {
+      "billable_requests": 3,
+      "bucket_id": "group:fixture@day",
+      "bucket_scope": "key",
+      "model": "m-cache",
+      "requests": 4,
+      "tokens_cache_read": 4,
+      "tokens_cache_write": 0,
+      "tokens_input": 7,
+      "tokens_output": 7,
+      "window_start": 1791936000
+    },
+    {
+      "billable_requests": 3,
+      "bucket_id": "vk_55cb1808aabb09e6e14e517d91ce0c13",
+      "bucket_scope": "key",
+      "model": "m-cache",
+      "requests": 4,
+      "tokens_cache_read": 4,
+      "tokens_cache_write": 0,
+      "tokens_input": 7,
+      "tokens_output": 7,
+      "window_start": 0
+    },
+    {
+      "billable_requests": 2,
+      "bucket_id": "vk_c178b4fe1d02f68e5583171e0dc5b7c2",
+      "bucket_scope": "key",
+      "model": "m-chat",
+      "requests": 2,
+      "tokens_cache_read": 0,
+      "tokens_cache_write": 0,
+      "tokens_input": 11,
+      "tokens_output": 7,
+      "window_start": 0
+    },
+    {
+      "billable_requests": 3,
+      "bucket_id": "group:fixture@day",
+      "bucket_scope": "key",
+      "model": "m-chat",
+      "requests": 4,
+      "tokens_cache_read": 0,
+      "tokens_cache_write": 0,
+      "tokens_input": 22,
+      "tokens_output": 14,
+      "window_start": 1791936000
+    },
+    {
+      "billable_requests": 3,
+      "bucket_id": "vk_55cb1808aabb09e6e14e517d91ce0c13",
+      "bucket_scope": "key",
+      "model": "m-chat",
+      "requests": 4,
+      "tokens_cache_read": 0,
+      "tokens_cache_write": 0,
+      "tokens_input": 22,
+      "tokens_output": 14,
+      "window_start": 0
+    }
+  ]
+}

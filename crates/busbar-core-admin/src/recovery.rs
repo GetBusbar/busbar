@@ -167,8 +167,8 @@ pub(crate) async fn list(State(handle): State<Arc<AppHandle>>, body: Bytes) -> R
     let Some(governance) = handle.load().governance.clone() else {
         return recovery_error(RecoveryError::Unavailable(String::new()));
     };
-    match tokio::task::spawn_blocking(move || governance.recovery().list(after, limit + 1)).await {
-        Ok(Ok(mut items)) => {
+    match governance.recovery().list(after, limit + 1).await {
+        Ok(mut items) => {
             let more = items.len() > limit;
             items.truncate(limit);
             let next_cursor = if more {
@@ -186,8 +186,7 @@ pub(crate) async fn list(State(handle): State<Arc<AppHandle>>, body: Bytes) -> R
                 },
             )
         }
-        Ok(Err(error)) => recovery_error(error),
-        Err(_) => join_error(),
+        Err(error) => recovery_error(error),
     }
 }
 
@@ -224,8 +223,7 @@ pub(crate) async fn resolve(
         backend_quiesced: request.backend_quiesced,
     };
 
-    match tokio::task::spawn_blocking(move || governance.recovery().resolve(&cost, resolution))
-        .await
+    match tokio::spawn(async move { governance.recovery().resolve(&cost, resolution).await }).await
     {
         Ok(Ok(item)) => ok_json(StatusCode::OK, &ItemView::from(item)),
         Ok(Err(error)) => recovery_error(error),

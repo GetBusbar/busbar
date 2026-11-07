@@ -216,12 +216,12 @@ impl SelfGroupProvisioner for HandleProvisioner {
                 return Ok(txn.done(()));
             };
 
-            let persist = crate::governance::group_provision::persist_provisioned_group(
+            let persist = crate::governance::group_provision::persist_provisioned_group_async(
                 installed.clone(),
                 leaf.clone(),
                 actor.clone(),
             );
-            Ok(txn.commit(installed, persist, ()))
+            Ok(txn.commit_async(installed, persist, ()))
         })
         .await
         .map_err(|e: crate::config::transaction::TxnError| e.message())

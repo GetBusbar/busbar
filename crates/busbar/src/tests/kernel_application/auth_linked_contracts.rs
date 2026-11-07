@@ -93,17 +93,23 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let build = |prior: Option<&busbar_kernel::state::App>| {
+    let build = async |prior: Option<&busbar_kernel::state::App>| {
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .map_err(|errors| errors.join("; "))?;
-        let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)?;
-        let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-            anchor
-                .calls
+        let anchor = if let Some(prior) = prior {
+            prior
+                .governance
                 .as_ref()
-                .cloned()
-                .expect("actual conditional Store calls"),
-        )?;
+                .ok_or("prior governance missing")?
+                .core_store_handle()
+                .map_err(|error| error.to_string())?
+        } else {
+            crate::root::real_store::core_over(
+                busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config).await?,
+            )
+            .await
+        };
+        let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())?;
         busbar_kernel::appbuild::build_app_from_config_with_store(
             config,
             plugin_config.clone(),
@@ -116,13 +122,16 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
             Some(anchor),
             prior.is_none(),
         )
+        .await
     };
-    let (prior, rotate, limits) = build(None).expect("normal cold root builds");
+    let (prior, rotate, limits) = build(None).await.expect("normal cold root builds");
     limits.stage_boot();
-    let _book = crate::root::boot::book(&prior, &store).expect("same Store boot history binds");
-    limits.keep().unwrap();
+    let _book = crate::root::boot::book(&prior, &store)
+        .await
+        .expect("same Store boot history binds");
+    limits.keep().await.unwrap();
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let gov = prior.governance.as_ref().unwrap().clone();
     assert_eq!(
@@ -131,7 +140,7 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
     );
     let now = busbar_kernel::store::now();
     let (_, old_token) = gov
-        .mint_signed(
+        .mint_signed_async(
             busbar_kernel::governance::NewKeySpec {
                 name: "before-rotation".into(),
                 ..Default::default()
@@ -139,19 +148,24 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
             now + 3600,
             now,
         )
+        .await
         .unwrap();
     assert!(gov
         .verify_token(old_token.expose(&busbar_kernel::seal::lend()), now, None)
         .is_some());
     std::fs::write(&token_path, "tok-v2").unwrap();
     std::fs::write(&signing_path, hex::encode([9u8; 32])).unwrap();
-    let (next, rotate, limits) = build(Some(&prior)).expect("actual reload resolves both files");
+    let (next, rotate, limits) = build(Some(&prior))
+        .await
+        .expect("actual reload resolves both files");
     assert!(
         Arc::ptr_eq(next.governance.as_ref().unwrap(), &gov),
         "reload retains actual keys and ledgers"
     );
-    limits.keep().unwrap();
-    rotate.expect("changed credentials install only on commit")();
+    limits.keep().await.unwrap();
+    rotate
+        .expect("changed credentials install only on commit")
+        .await;
     assert_eq!(
         gov.admin_token_hash().as_deref(),
         Some(busbar_contract::redacted::sha256_hex(b"tok-v2").as_str())
@@ -160,7 +174,7 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
         .verify_token(old_token.expose(&busbar_kernel::seal::lend()), now, None)
         .is_none());
     let (_, fresh) = gov
-        .mint_signed(
+        .mint_signed_async(
             busbar_kernel::governance::NewKeySpec {
                 name: "after-rotation".into(),
                 ..Default::default()
@@ -168,6 +182,7 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
             now + 3600,
             now,
         )
+        .await
         .unwrap();
     assert!(gov
         .verify_token(fresh.expose(&busbar_kernel::seal::lend()), now, None)
@@ -185,7 +200,7 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
         );
     }
     std::fs::remove_file(&signing_path).unwrap();
-    let refusal = match build(Some(&next)) {
+    let refusal = match build(Some(&next)).await {
         Err(refusal) => refusal,
         Ok(_) => panic!("missing signing ref must refuse reload"),
     };
@@ -198,7 +213,7 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
     std::fs::write(&signing_path, hex::encode([9u8; 32])).unwrap();
     for blank in ["", "   ", "\n\t "] {
         std::fs::write(&token_path, blank).unwrap();
-        let refusal = match build(None) {
+        let refusal = match build(None).await {
             Err(refusal) => refusal,
             Ok(_) => panic!("blank operator token must refuse cold boot"),
         };

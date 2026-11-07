@@ -670,8 +670,8 @@ impl PluginRegistry {
     pub fn store_door(
         &self,
         name_or_alias: &str,
-    ) -> Result<busbar_contract::store_calls::StoreDoor, String> {
-        use busbar_contract::store_calls::StoreDoor;
+    ) -> Result<busbar_contract::persistence::axis::StoreDoor, String> {
+        use busbar_contract::persistence::axis::StoreDoor;
         let p = self.resolve_store(name_or_alias)?;
         let no_door = || {
             format!(

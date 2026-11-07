@@ -604,6 +604,9 @@ impl From<RawDecision> for Decision {
 }
 
 impl Custody {
+    pub(super) fn receipt_digest(&self) -> [u8; 32] {
+        *busbar_contract::records::dedupe::Dedupe::usage_correction(&self.request).body()
+    }
     pub(super) fn release_common_positives(&mut self) -> RecordStoreResult<bool> {
         if self.terminal || self.decision.is_some() {
             return Ok(false);

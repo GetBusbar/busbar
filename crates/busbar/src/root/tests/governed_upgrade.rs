@@ -145,7 +145,7 @@ fn opened_transport(claim: &str, dispatcher: &Arc<Dispatcher>) -> Arc<dyn Framer
 
 async fn exercise(case: Case) {
     let _publishing = PUBLISHING.lock().await;
-    let g = governed("governed-upgrade-witness", true);
+    let g = governed("governed-upgrade-witness", true).await;
     let plane = Arc::clone(&g.served.planes[0].live.plugin);
     assert_eq!(handler_pieces(&plane), 0);
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
@@ -259,7 +259,8 @@ async fn exercise(case: Case) {
         stopped,
     ));
     let request = format!(
-        "GET /framed/upgrade HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n", g.token
+        "GET /framed/upgrade HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        g.token
     );
     client.write_all(request.as_bytes()).await.unwrap();
     let mut wire = Vec::new();
@@ -281,7 +282,7 @@ async fn exercise(case: Case) {
         assert_eq!(*selected.lock().unwrap(), ["wss"]);
         assert_eq!(*claimed.lock().unwrap(), ["wss"]);
         assert_eq!(
-            g.requests(),
+            g.requests().await,
             1,
             "the same authenticated admission is charged once"
         );
@@ -344,7 +345,7 @@ async fn exercise(case: Case) {
             0,
             "no invalid upgrade enters the actual plane handler"
         );
-        assert_eq!(g.requests(), 0);
+        assert_eq!(g.requests().await, 0);
         assert_eq!(
             *selected.lock().unwrap(),
             if case == Case::WrongClaim {
@@ -377,7 +378,7 @@ async fn exercise(case: Case) {
     .await
     .expect("the actual governed session settles when its transport closes");
     assert_eq!(g.post.node().sweep(g.post.node().arrived()), 0);
-    assert_eq!(g.requests(), u64::from(case == Case::Accepted));
+    assert_eq!(g.requests().await, u64::from(case == Case::Accepted));
     assert_eq!(
         g.book.lock().unwrap().audit_records.len(),
         usize::from(case == Case::Accepted),

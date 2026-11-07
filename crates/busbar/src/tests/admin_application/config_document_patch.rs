@@ -204,8 +204,10 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual configured Store opens");
-    let overlay = OverlayStore::new(anchor.calls.as_ref().cloned().unwrap())
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config persistence");
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
@@ -219,18 +221,23 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         Some(anchor),
         true,
     )
+    .await
     .expect("the actual root builds the admin application");
     // This fixture models the executable with no explicit CLI/environment catalog override.
     app.providers_override = None;
     busbar_kernel::config::readback::ConfiguredView::capture_documents(&mut app, &deploy, &defs);
     limits.stage_boot();
-    let _book = crate::root::boot::book(&app, &module).expect("actual Store rate history boots");
-    limits.keep().expect("actual boot limits activate");
+    let _book = crate::root::boot::book(&app, &module)
+        .await
+        .expect("actual Store rate history boots");
+    limits.keep().await.expect("actual boot limits activate");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
-    busbar_kernel::boot::hydrate_all(&app).expect("the actual Store hydrates before writes");
+    busbar_kernel::boot::hydrate_all(&app)
+        .await
+        .expect("the actual Store hydrates before writes");
     let (_data, admin, handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
     // Exercise the response projection through the same synchronous callback seam used by doors.
@@ -274,7 +281,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         let external = serde_json::to_vec_pretty(&document).unwrap();
         std::fs::write(&config_path, &external).unwrap();
         let stable = handle.load();
-        let stable_bytes = overlay.read_bytes().unwrap();
+        let stable_bytes = overlay.read_bytes_async().await.unwrap();
         let requests = if phase == "source-root-drift" {
             vec![
                 patch("/pools/work/hooks", json!(["weighted"])),
@@ -299,7 +306,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
                 "source root drift must refuse {phase}: {text}"
             );
             assert!(Arc::ptr_eq(&stable, &handle.load()));
-            assert_eq!(overlay.read_bytes().unwrap(), stable_bytes);
+            assert_eq!(overlay.read_bytes_async().await.unwrap(), stable_bytes);
         }
         let reload = client
             .post(format!("http://{addr}/api/v1/admin/config/reload"))
@@ -331,6 +338,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
             &*rules,
             handle.load().overlay_path.clone(),
         )
+        .await
         .unwrap();
         assert_eq!(
             loaded.deploy.pools.pools["work"].members[1].tags,
@@ -353,7 +361,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         let external = serde_json::to_vec_pretty(&document).unwrap();
         std::fs::write(&config_path, &external).unwrap();
         let stable = handle.load();
-        let stable_bytes = overlay.read_bytes().unwrap();
+        let stable_bytes = overlay.read_bytes_async().await.unwrap();
         let response = put(
             &client,
             &endpoint,
@@ -365,7 +373,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         let refusal: Value = response.json().await.unwrap();
         assert!(!refusal.to_string().contains("hidden-routing-tag"));
         assert!(Arc::ptr_eq(&stable, &handle.load()));
-        assert_eq!(overlay.read_bytes().unwrap(), stable_bytes);
+        assert_eq!(overlay.read_bytes_async().await.unwrap(), stable_bytes);
         let reload = client
             .post(format!("http://{addr}/api/v1/admin/config/reload"))
             .send()
@@ -402,6 +410,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
             &*rules,
             handle.load().overlay_path.clone(),
         )
+        .await
         .unwrap();
         assert_eq!(loaded.deploy.pools.pools["work"].members[0].model, "b");
         assert_eq!(loaded.deploy.pools.pools["work"].members[0].weight, 23);
@@ -470,7 +479,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
             assert!(!body.to_string().contains("hidden-routing-tag"));
         }
         let stable = handle.load();
-        let stable_bytes = overlay.read_bytes().unwrap();
+        let stable_bytes = overlay.read_bytes_async().await.unwrap();
         let stale = put(
             &client,
             &endpoint,
@@ -490,7 +499,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         .await;
         assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
         assert!(Arc::ptr_eq(&stable, &handle.load()));
-        assert_eq!(overlay.read_bytes().unwrap(), stable_bytes);
+        assert_eq!(overlay.read_bytes_async().await.unwrap(), stable_bytes);
         let reload = client
             .post(format!("http://{addr}/api/v1/admin/config/reload"))
             .send()
@@ -517,6 +526,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
             &*rules,
             handle.load().overlay_path.clone(),
         )
+        .await
         .unwrap();
         let members = &loaded.deploy.pools.pools["work"].members;
         assert_eq!(
@@ -583,7 +593,8 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
     );
     assert_eq!(configured_cap(&body), PATCH_CAP);
     assert!(overlay
-        .read_required()
+        .read_required_async()
+        .await
         .unwrap()
         .unwrap()
         .document_patch
@@ -625,6 +636,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         &*rules,
         handle.load().overlay_path.clone(),
     )
+    .await
     .expect("the committed document composes through the normal loader");
     assert_eq!(loaded.deploy.limits.request_body_max_bytes, PATCH_CAP);
     assert_eq!(loaded.deploy.advanced.worker_threads, Some(3));
@@ -692,13 +704,14 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         &*rules,
         handle.load().overlay_path.clone(),
     )
+    .await
     .unwrap();
     assert_eq!(recovered.providers_path, alternate_path);
     assert_eq!(recovered.defs["spare"].base_url, "https://base.example.com");
 
     // Stale optimistic concurrency and invalid boot values cannot alter either authority.
     let stable = handle.load();
-    let stable_bytes = overlay.read_bytes().unwrap();
+    let stable_bytes = overlay.read_bytes_async().await.unwrap();
     if phase == "persistence" {
         let stale = put(
             &client,
@@ -709,7 +722,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         .await;
         assert_eq!(stale.status(), StatusCode::CONFLICT);
         assert!(Arc::ptr_eq(&stable, &handle.load()));
-        assert_eq!(overlay.read_bytes().unwrap(), stable_bytes);
+        assert_eq!(overlay.read_bytes_async().await.unwrap(), stable_bytes);
         for invalid in [
             patch("/limits/request_body_max_bytes", json!("invalid-cap")),
             patch("/unknown-config-section", json!(true)),
@@ -719,7 +732,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
             let response = put(&client, &endpoint, stable.config_version, &invalid).await;
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
             assert!(Arc::ptr_eq(&stable, &handle.load()));
-            assert_eq!(overlay.read_bytes().unwrap(), stable_bytes);
+            assert_eq!(overlay.read_bytes_async().await.unwrap(), stable_bytes);
             assert_eq!(
                 busbar_kernel::config::limits::installed()
                     .unwrap()
@@ -741,7 +754,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         assert_eq!(typed.status(), StatusCode::OK);
         assert_eq!(configured_cap(&get(&client, &endpoint).await), TYPED_CAP);
         let typed_generation = handle.load();
-        let typed_bytes = overlay.read_bytes().unwrap();
+        let typed_bytes = overlay.read_bytes_async().await.unwrap();
         let conflict = put(
             &client,
             &endpoint,
@@ -751,7 +764,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         .await;
         assert_eq!(conflict.status(), StatusCode::CONFLICT);
         assert!(Arc::ptr_eq(&typed_generation, &handle.load()));
-        assert_eq!(overlay.read_bytes().unwrap(), typed_bytes);
+        assert_eq!(overlay.read_bytes_async().await.unwrap(), typed_bytes);
         assert_eq!(configured_cap(&get(&client, &endpoint).await), TYPED_CAP);
 
         // Locking through the shared boot schema removes the writable Store overlay from the next App.
@@ -765,7 +778,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         assert_eq!(lock.status(), StatusCode::OK);
         let locked = handle.load();
         assert!(locked.overlay_path.is_none());
-        let locked_bytes = overlay.read_bytes().unwrap();
+        let locked_bytes = overlay.read_bytes_async().await.unwrap();
         let refused = put(
             &client,
             &endpoint,
@@ -775,7 +788,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         .await;
         assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
         assert!(Arc::ptr_eq(&locked, &handle.load()));
-        assert_eq!(overlay.read_bytes().unwrap(), locked_bytes);
+        assert_eq!(overlay.read_bytes_async().await.unwrap(), locked_bytes);
     }
     assert_eq!(std::fs::read(config_path).unwrap(), base_bytes);
     server.abort();

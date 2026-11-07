@@ -34,7 +34,7 @@ fn isolated() -> bool {
     true
 }
 
-fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
+async fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
     crate::dist_root_install::install();
     let store_library = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
@@ -86,15 +86,11 @@ fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -107,16 +103,20 @@ fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
-    busbar_kernel::boot::hydrate_all(&app).expect("the actual Store hydrates");
+    busbar_kernel::boot::hydrate_all(&app)
+        .await
+        .expect("the actual Store hydrates");
     (app, Scratch(directory))
 }
 
@@ -174,7 +174,7 @@ fn declaration_candidate(
     for _ in 0..8 {
         word(&mut rendering, 0);
     } // families, diagnostics, tail, tail facts,
-      // extension blob (3 words), secret refs
+    // extension blob (3 words), secret refs
     word(
         &mut rendering,
         if schema.is_empty() {
@@ -216,7 +216,7 @@ async fn installed_schema_urls_bind_actual_archive_before_reload_and_refuse_stal
     if isolated() {
         return;
     }
-    let (app, scratch) = application();
+    let (app, scratch) = application().await;
     let router = busbar_core_admin::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -312,7 +312,9 @@ async fn installed_schema_urls_bind_actual_archive_before_reload_and_refuse_stal
     body(client.post(format!("{base}/plugins")).bearer_auth(TOKEN)
         .json(&serde_json::json!({"file":"reviewed.tar.gz","tarball_b64":base64::engine::general_purpose::STANDARD.encode(&absent)}))
         .send().await.unwrap(),201).await;
-    let url = format!("{base}/plugins/reviewed.tar.gz/schema?source=installed_archive&expected_archive_sha256={digest}");
+    let url = format!(
+        "{base}/plugins/reviewed.tar.gz/schema?source=installed_archive&expected_archive_sha256={digest}"
+    );
     let read = body(
         client.get(url).bearer_auth(TOKEN).send().await.unwrap(),
         200,
@@ -355,7 +357,9 @@ async fn installed_schema_urls_bind_actual_archive_before_reload_and_refuse_stal
         )
         .await;
     }
-    let missing = format!("{base}/plugins/missing.tar.gz/schema?source=installed_archive&expected_archive_sha256={digest}");
+    let missing = format!(
+        "{base}/plugins/missing.tar.gz/schema?source=installed_archive&expected_archive_sha256={digest}"
+    );
     body(
         client.get(missing).bearer_auth(TOKEN).send().await.unwrap(),
         409,
@@ -388,7 +392,7 @@ async fn plugin_configuration_inactive_signed_archives_report_declarations_witho
     use busbar_contract::abi::mechanism::door::{
         SECTION_CONSUMED, SECTION_DECLARING, SECTION_SELECTS,
     };
-    let (app, scratch) = application();
+    let (app, scratch) = application().await;
     let router = busbar_core_admin::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -503,7 +507,9 @@ async fn plugin_configuration_inactive_signed_archives_report_declarations_witho
             );
             assert_eq!(metadata["claims"], serde_json::json!(["fixture-wire"]));
         }
-        let url = format!("{base}/plugins/inactive.tar.gz/schema?source=installed_archive&expected_archive_sha256={digest}");
+        let url = format!(
+            "{base}/plugins/inactive.tar.gz/schema?source=installed_archive&expected_archive_sha256={digest}"
+        );
         let inspected = body(
             client.get(&url).bearer_auth(TOKEN).send().await.unwrap(),
             200,
@@ -566,7 +572,7 @@ async fn plugin_configuration_actual_linked_plane_and_transport_reads_never_call
         None,
         &[(transport_key, transport_door)],
     );
-    let (app, _scratch) = application();
+    let (app, _scratch) = application().await;
     let expected = crate::root::settings_public::linked_configuration();
     assert_eq!(expected.iter().filter(|row| row.kind == "plane").count(), 1);
     assert_eq!(

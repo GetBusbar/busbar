@@ -116,7 +116,8 @@ impl HookBinder for HostGatedHooks {
             scan,
             reads: Arc::new(
                 move |hook: &str, principal: Option<&str>, op: &str, identity: bool| {
-                    host.hook_read(hook, principal, op, identity);
+                    let host = host.clone();
+                    Box::pin(async move { host.hook_read(hook, principal, op, identity).await })
                 },
             ),
         })
@@ -207,7 +208,9 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         for (timeout, hook) in &hooks.rewrites {
             let req = view.request(hooks.request_id, &view.pool, true, None);
             if req.prompt.is_some() {
-                (hooks.reads)(hook.name(), principal.as_deref(), &view.dialect, false);
+                (hooks.reads)(hook.name(), principal.as_deref(), &view.dialect, false)
+                    .await
+                    .map_err(|_| super::fault_veto())?;
             }
             let outcome = hook.transform(&req, *timeout).await;
             drop(req);

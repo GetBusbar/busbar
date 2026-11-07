@@ -118,16 +118,14 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
             name: PUBLISHER.into(),
             public_key: hex::encode(publisher_key.verifying_key().as_bytes()),
         });
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store bootstraps its config authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
+    let anchor = crate::root::real_store::core_over(
+        busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+            .await
+            .expect("the actual Store bootstraps its config authority"),
     )
-    .expect("the actual Store supports conditional config records");
+    .await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional config records");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -142,13 +140,15 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
         Some(anchor),
         true,
     )
+    .await
     .expect("the actual product builds the session deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 

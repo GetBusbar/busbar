@@ -1200,7 +1200,8 @@ impl DriverSteps for DoorSteps<'_> {
                 FeeRefund::PlaneFeeUnits(Arc::clone(&self.facts.fee_units)),
                 node,
                 instance,
-                &gov.store(),
+                &gov.core_store_handle()
+                    .map_err(|_| Refusal::new(ReasonCode::Unpriced))?,
             ) {
                 Ok(lineage) => {
                     {
@@ -1805,6 +1806,7 @@ pub fn owned_anchors_refusal<P: AsRef<str>>(
 /// one destination guard, which hears each committed configuration's destinations through them.
 #[derive(Default)]
 pub struct Rules {
+    documents: Arc<crate::root::startup_upgrade::documents::Documents>,
     member_tls_sections: Mutex<Vec<&'static str>>,
     listeners: std::sync::OnceLock<Arc<crate::root::serve::ListenerPlan>>,
     /// The owned trust anchors the composed door planes name, held as each plane is composed.
@@ -1835,6 +1837,16 @@ impl std::fmt::Debug for Rules {
 }
 
 impl Rules {
+    pub fn hearing_with_documents(
+        guard: Arc<dyn busbar_kernel::host_services::DestJudge>,
+        documents: Arc<crate::root::startup_upgrade::documents::Documents>,
+    ) -> Self {
+        Self {
+            guard: Some(guard),
+            documents,
+            ..Self::default()
+        }
+    }
     pub fn hold_listeners(
         &self,
         listeners: Arc<crate::root::serve::ListenerPlan>,
@@ -1939,6 +1951,14 @@ pub fn unloaded_plane_refusal(
 }
 
 impl busbar_kernel::appbuild::RootRules for Rules {
+    fn normalize_document(
+        &self,
+        kind: busbar_kernel::appbuild::ConfigDocument,
+        path: &std::path::Path,
+        raw: &str,
+    ) -> Result<Option<zeroize::Zeroizing<String>>, String> {
+        self.documents.normalize(kind, path, raw)
+    }
     fn claim_ticket_admission(
         &self,
         identity: &busbar_kernel::host_services::VerifiedTicketIdentity,

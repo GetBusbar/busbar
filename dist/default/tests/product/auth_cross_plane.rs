@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use crate::root::test_plugins as plugins;
 
-#[test]
-fn test_open_door_regardless_of_upstream_creds() {
+#[tokio::test]
+async fn test_open_door_regardless_of_upstream_creds() {
     crate::dist_root_install::install();
     for upstream_creds in [UpstreamCreds::Own, UpstreamCreds::Passthrough] {
         crate::dist_root_install::install();
@@ -47,7 +47,7 @@ fn test_open_door_regardless_of_upstream_creds() {
         let plugin_config = plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (app, rotate, limits) = crate::root::real_store::build_app(
             config,
             plugin_config,
             None,
@@ -57,6 +57,7 @@ fn test_open_door_regardless_of_upstream_creds() {
             None,
             &rules,
         )
+        .await
         .expect("the actual product builds the door deployment");
 
         assert!(app.auth.validate_token(None));

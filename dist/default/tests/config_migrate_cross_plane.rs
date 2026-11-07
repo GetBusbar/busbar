@@ -7,11 +7,11 @@ mod migration {
     include!(concat!(env!("OUT_DIR"), "/migration_table.rs"));
 }
 
-use busbar_kernel::config::migrate::migrate_config;
 use busbar_kernel::config::{deploy_from_yaml_str, resolve, DeployCfg, ProviderDef};
+use busbar_migrations::config::migrate::migrate_config;
 
 fn register_planes() {
-    busbar_kernel::config::migration_table::install(migration::MIGRATION_ROWS);
+    busbar_kernel::config::declared_vocabulary::install(migration::MIGRATION_ROWS);
     linked::install();
 }
 

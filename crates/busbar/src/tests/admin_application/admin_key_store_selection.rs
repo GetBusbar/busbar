@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::records::*;
+use busbar_contract::persistence::*;
 use busbar_kernel::governance::NewKeySpec;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -9,12 +9,12 @@ use std::sync::Arc;
 use crate::root::test_plugins as plugins;
 
 struct CountingStore {
-    inner: Arc<dyn RecordStore>,
+    inner: Arc<dyn PersistenceBackend>,
     list_keys_calls: std::sync::atomic::AtomicUsize,
     get_key_calls: std::sync::atomic::AtomicUsize,
 }
 impl CountingStore {
-    fn new(inner: Arc<dyn RecordStore>) -> Self {
+    fn new(inner: Arc<dyn PersistenceBackend>) -> Self {
         Self {
             inner,
             list_keys_calls: std::sync::atomic::AtomicUsize::new(0),
@@ -28,171 +28,34 @@ impl CountingStore {
             .store(0, std::sync::atomic::Ordering::SeqCst);
     }
 }
-impl RecordStore for CountingStore {
-    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
-        self.inner.put_key(key)
+impl PersistenceBackend for CountingStore {
+    fn info(&self) -> BackendInfo {
+        self.inner.info()
     }
-    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-        self.get_key_calls
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.inner.get_key(id)
+    fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
+        self.inner.clock(dataset)
     }
-    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.list_keys_calls
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.inner.list_keys()
+    fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
+        Box::pin(async move {
+            if request.addresses.iter().any(identity_key) {
+                self.get_key_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            self.inner.read(request).await
+        })
     }
-    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-        self.inner.delete_key(id)
+    fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
+        Box::pin(async move {
+            if request.namespace.0 == *b"busbar.identity1" && request.prefix.first() == Some(&b'K')
+            {
+                self.list_keys_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            self.inner.scan(request).await
+        })
     }
-    fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.inner.list_keys_since(since)
-    }
-    fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
-        self.inner.get_usage(bucket_id, window_start)
-    }
-    fn apply_usage_correction(
-        &self,
-        request: &correction::Request,
-    ) -> RecordStoreResult<correction::Decision> {
-        self.inner.apply_usage_correction(request)
-    }
-    fn supports_usage_correction(&self) -> bool {
-        self.inner.supports_usage_correction()
-    }
-    fn put_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        ledger: &UsageLedger,
-    ) -> RecordStoreResult<()> {
-        self.inner.put_usage(bucket_id, window_start, ledger)
-    }
-    fn add_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        delta: &UsageDelta,
-    ) -> RecordStoreResult<()> {
-        self.inner.add_usage(bucket_id, window_start, delta)
-    }
-    fn add_usage_batch_deduped(
-        &self,
-        op: busbar_contract::abi::store::OpId,
-        cells: &[(&str, u64, UsageDelta)],
-    ) -> RecordStoreResult<()> {
-        self.inner.add_usage_batch_deduped(op, cells)
-    }
-    fn supports_usage_batch_deduped(&self) -> bool {
-        self.inner.supports_usage_batch_deduped()
-    }
-    fn supports_metering_batch_deduped(&self) -> bool {
-        self.inner.supports_metering_batch_deduped()
-    }
-    fn add_metering_batch_deduped(
-        &self,
-        op: busbar_contract::abi::store::OpId,
-        deltas: &[MeteringDelta],
-    ) -> RecordStoreResult<()> {
-        self.inner.add_metering_batch_deduped(op, deltas)
-    }
-    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
-        self.inner.add_metering(delta)
-    }
-    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-        self.inner.list_metering(bucket)
-    }
-    fn put_credential(&self, secret: &CredentialSecret) -> RecordStoreResult<()> {
-        self.inner.put_credential(secret)
-    }
-    fn rewrap_credential(
-        &self,
-        expected: &CredentialSecret,
-        replacement: &str,
-    ) -> RecordStoreResult<bool> {
-        self.inner.rewrap_credential(expected, replacement)
-    }
-    fn put_key_with_credential(
-        &self,
-        key: &VirtualKey,
-        secret: &CredentialSecret,
-    ) -> RecordStoreResult<()> {
-        self.inner.put_key_with_credential(key, secret)
-    }
-    fn list_credentials(&self, key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
-        self.inner.list_credentials(key_id)
-    }
-    fn revoke_credential(&self, id: &str, reason: &str) -> RecordStoreResult<()> {
-        self.inner.revoke_credential(id, reason)
-    }
-    fn list_credentials_since(&self, since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
-        self.inner.list_credentials_since(since)
-    }
-    fn append_audit(&self, entry: &AuditRecord) -> RecordStoreResult<()> {
-        self.inner.append_audit(entry)
-    }
-    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
-        self.inner.list_audit()
-    }
-    fn add_denylist(&self, sub: &str, reason: &str) -> RecordStoreResult<()> {
-        self.inner.add_denylist(sub, reason)
-    }
-    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
-        self.inner.list_denylist()
-    }
-    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
-        self.inner.list_audit_tail(limit)
-    }
-    fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        self.inner.upsert_plane_record(record)
-    }
-    fn get_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
-        self.inner.get_plane_record(kind, id)
-    }
-    fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        self.inner.append_plane_record(record)
-    }
-    fn list_plane_records(
-        &self,
-        kind: &str,
-        selector: &PlaneSelector<'_>,
-    ) -> RecordStoreResult<Vec<Vec<u8>>> {
-        self.inner.list_plane_records(kind, selector)
-    }
-    fn list_plane_record_parents(&self, kind: &str) -> RecordStoreResult<Vec<String>> {
-        self.inner.list_plane_record_parents(kind)
-    }
-    fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
-        self.inner.purge_plane_records_before(kind, before)
-    }
-    fn purge_plane_records(
-        &self,
-        kind: &str,
-        before: u64,
-        retention: Retention,
-    ) -> RecordStoreResult<u64> {
-        self.inner.purge_plane_records(kind, before, retention)
-    }
-    fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()> {
-        self.inner.delete_plane_record(kind, id)
-    }
-    fn redeem_plane_token(
-        &self,
-        kind: &str,
-        token: &str,
-        expires_at: u64,
-        now: u64,
-    ) -> RecordStoreResult<bool> {
-        self.inner.redeem_plane_token(kind, token, expires_at, now)
-    }
-    fn plane_token_live(
-        &self,
-        kind: &str,
-        token: &str,
-        expires_at: u64,
-        now: u64,
-    ) -> RecordStoreResult<bool> {
-        self.inner.plane_token_live(kind, token, expires_at, now)
+    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+        Box::pin(async move { self.inner.commit(candidate).await })
     }
 }
 
@@ -303,20 +166,12 @@ async fn test_single_key_reads_use_get_key_not_list_keys() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let store = Arc::new(CountingStore::new(anchor.records.clone()));
-    let anchor = busbar_contract::store_calls::OpenedStore {
-        records: store.clone(),
-        calls: anchor.calls,
-    };
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let store = Arc::new(CountingStore::new(anchor.clone()));
+    let anchor = crate::root::real_store::core_over(store.clone()).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -329,13 +184,15 @@ async fn test_single_key_reads_use_get_key_not_list_keys() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let gov = app
         .governance
@@ -343,7 +200,7 @@ async fn test_single_key_reads_use_get_key_not_list_keys() {
         .expect("actual opened Store governance")
         .clone();
     let (key_a, _) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "a".to_string(),
                 allowed_pools: None,
@@ -354,9 +211,10 @@ async fn test_single_key_reads_use_get_key_not_list_keys() {
             2_000_000_000,
             0,
         )
+        .await
         .unwrap();
     let (key_b, _) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "b".to_string(),
                 allowed_pools: None,
@@ -367,9 +225,10 @@ async fn test_single_key_reads_use_get_key_not_list_keys() {
             2_000_000_000,
             0,
         )
+        .await
         .unwrap();
     let (key_c, _) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "c".to_string(),
                 allowed_pools: None,
@@ -380,6 +239,7 @@ async fn test_single_key_reads_use_get_key_not_list_keys() {
             2_000_000_000,
             0,
         )
+        .await
         .unwrap();
     let router = busbar_kernel::build_router(Arc::new(app));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -573,20 +433,12 @@ async fn test_single_key_writes_use_get_key_for_their_existence_check() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let store = Arc::new(CountingStore::new(anchor.records.clone()));
-    let anchor = busbar_contract::store_calls::OpenedStore {
-        records: store.clone(),
-        calls: anchor.calls,
-    };
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let store = Arc::new(CountingStore::new(anchor.clone()));
+    let anchor = crate::root::real_store::core_over(store.clone()).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -599,13 +451,15 @@ async fn test_single_key_writes_use_get_key_for_their_existence_check() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let gov = app
         .governance
@@ -613,7 +467,7 @@ async fn test_single_key_writes_use_get_key_for_their_existence_check() {
         .expect("actual opened Store governance")
         .clone();
     let (key_a, _) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "a".to_string(),
                 allowed_pools: None,
@@ -624,9 +478,10 @@ async fn test_single_key_writes_use_get_key_for_their_existence_check() {
             2_000_000_000,
             0,
         )
+        .await
         .unwrap();
     let (key_b, _) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "b".to_string(),
                 allowed_pools: None,
@@ -637,6 +492,7 @@ async fn test_single_key_writes_use_get_key_for_their_existence_check() {
             2_000_000_000,
             0,
         )
+        .await
         .unwrap();
     let router = busbar_kernel::build_router(Arc::new(app));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -656,9 +512,8 @@ async fn test_single_key_writes_use_get_key_for_their_existence_check() {
         store
             .list_keys_calls
             .load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "PATCH /keys/{{id}} must call list_keys only once, for the post-write cache refresh — \
-         not a second time to locate the row"
+        0,
+        "PATCH publishes exact Applied rows without scanning the identity table"
     );
     assert!(
         store
@@ -680,9 +535,8 @@ async fn test_single_key_writes_use_get_key_for_their_existence_check() {
         store
             .list_keys_calls
             .load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "DELETE /keys/{{id}} must call list_keys only once, for the post-write cache refresh — \
-         not a second time to locate the row"
+        0,
+        "DELETE publishes exact Applied rows without scanning the identity table"
     );
     assert!(
         store
@@ -694,4 +548,8 @@ async fn test_single_key_writes_use_get_key_for_their_existence_check() {
     handle.abort();
     let _ = handle.await;
     println!("{WITNESS}");
+}
+
+fn identity_key(address: &Address) -> bool {
+    address.namespace == *b"busbar.identity1" && address.key.first() == Some(&b'K')
 }

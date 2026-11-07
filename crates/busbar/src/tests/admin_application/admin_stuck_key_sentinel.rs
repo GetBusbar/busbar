@@ -127,15 +127,11 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
             public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
         });
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -148,13 +144,15 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let gov = app
         .governance
@@ -180,14 +178,15 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
         .await
         .unwrap();
     let id = created["id"].as_str().unwrap().to_string();
-    let generation = || {
-        gov.all_keys()
+    let generation = async || {
+        gov.all_keys_async()
+            .await
             .unwrap()
             .into_iter()
             .find(|k| k.id == id)
             .map(|k| k.generation_hash)
     };
-    let before = generation();
+    let before = generation().await;
 
     for key in [
         ("admin".to_string(), "create:10:stuck-mint".to_string()),
@@ -229,12 +228,12 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
         "the retry of a rotate still in flight is refused, not rotated a second time"
     );
     assert_eq!(
-        gov.all_keys().unwrap().len(),
+        gov.all_keys_async().await.unwrap().len(),
         1,
         "the retried mint minted nothing"
     );
     assert_eq!(
-        generation(),
+        generation().await,
         before,
         "the retried rotate issued no new credential"
     );

@@ -165,13 +165,15 @@ async fn actual_export_dispatch_resolves_the_live_table_on_the_same_listener() {
         None,
         true,
     )
+    .await
     .expect("the actual product builds the session deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
 
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
@@ -246,7 +248,7 @@ async fn actual_export_dispatch_resolves_the_live_table_on_the_same_listener() {
     );
     let mut withdrawn = (*app).clone();
     withdrawn.plugin_routes = Arc::new(busbar_kernel::plugin_routes::PluginRouteTable::empty());
-    handle.swap(Arc::new(withdrawn));
+    handle.swap(Arc::new(withdrawn)).await;
     assert_eq!(
         client.get(&url).send().await.unwrap().status().as_u16(),
         404,
@@ -257,7 +259,7 @@ async fn actual_export_dispatch_resolves_the_live_table_on_the_same_listener() {
         404,
         "HEAD also resolves the withdrawn owner rather than a stale GET handler"
     );
-    handle.swap(app);
+    handle.swap(app).await;
     assert_eq!(
         client.get(&url).send().await.unwrap().status().as_u16(),
         200,

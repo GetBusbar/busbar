@@ -26,7 +26,7 @@ use std::time::Duration;
 use axum::Router;
 
 use busbar_kernel::{config, config_validate, diagnostics, export, snapshot};
-use busbar_kernel::{load_config_from_disk, LoadedConfig, ENV_CONFIG};
+use busbar_kernel::{LoadedConfig, ENV_CONFIG};
 
 #[cfg(unix)]
 use busbar_core_connector::listen::DEFAULT_HANDSHAKE_TIMEOUT;
@@ -333,8 +333,9 @@ fn main() {
 
     let catalogue = register_diagnostics();
 
-    if let Some(code) = root::cli::handle_cli_flags() {
-        std::process::exit(code);
+    match root::cli::handle_cli_flags() {
+        root::cli::Parsed::Exit(code) => std::process::exit(code),
+        root::cli::Parsed::Serve => {}
     }
 
     #[cfg(not(target_env = "msvc"))]
@@ -584,11 +585,14 @@ async fn run(
             detail
         }
     };
-    let loaded = load_config_from_disk(
+    let documents = Arc::new(root::startup_upgrade::documents::Documents::default());
+    let bootstrap_rules = root::startup_upgrade::documents::BootstrapRules(documents.clone());
+    let loaded = busbar_kernel::appbuild::load_config_from_disk_judged(
         &config_path,
         providers_override.as_deref(),
         safe_mode,
         config::EnvSubst::Strict,
+        &bootstrap_rules,
     )
     .unwrap_or_else(|e| {
         die(boot_error(
@@ -597,9 +601,9 @@ async fn run(
         ))
     });
     let LoadedConfig {
-        mut deploy,
-        mut defs,
-        mut providers_path,
+        deploy,
+        defs: _,
+        providers_path: _,
         overlay_path: _,
         config_locked,
         config_read_only: _,
@@ -607,7 +611,7 @@ async fn run(
         unset_env_vars: _,
     } = loaded;
 
-    let base_cfg = config::bootstrap::resolve_store_bootstrap(&deploy).unwrap_or_else(|errors| {
+    let base_cfg = root::startup_upgrade::bootstrap::bootstrap(&deploy).unwrap_or_else(|errors| {
         die(boot_error(
             "Store bootstrap configuration refused",
             format!(
@@ -644,23 +648,165 @@ async fn run(
         dest.clone(),
         &[base_cfg.listen.as_str(), base_cfg.admin_listen.as_str()],
     );
-    let anchor_store = busbar_kernel::appbuild::bootstrap_config_store(&base_cfg, &deploy.plugins)
+    let prepared_store = busbar_kernel::appbuild::prepare_config_store(&base_cfg, &deploy.plugins)
+        .await
         .unwrap_or_else(|error| {
             die(boot_error(
                 "principal transition base Store opening refused",
                 format!("base Store overlay anchor: {error}"),
             ))
         });
+    let binding_inventory = root::startup_upgrade::bindings::inventory()
+        .unwrap_or_else(|_| die("startup plane declaration inventory refused"));
+    let binding_resolver = Arc::new(
+        root::startup_upgrade::bindings::Resolver::new(
+            documents.clone(),
+            config_path.clone(),
+            providers_override.clone(),
+            safe_mode,
+            base_cfg.limits.migration_index_bytes,
+            base_cfg.limits.migration_value_bytes,
+            &binding_inventory,
+        )
+        .unwrap_or_else(|_| die("startup plane binding inventory refused")),
+    );
+    let mut upgrade = busbar_migrations::StartupUpgrade::new(
+        prepared_store,
+        busbar_contract::persistence::lifecycle::Bounds {
+            items: 4096,
+            bytes: u32::try_from(base_cfg.limits.migration_value_bytes).unwrap_or_else(|_| {
+                die("limits.migration_value_bytes exceeds native frame capacity")
+            }),
+        },
+    )
+    .with_source_spool(
+        Arc::new(root::startup_upgrade::spool::Factory),
+        busbar_contract::persistence::archive::Limits {
+            frame_bytes: base_cfg.limits.migration_value_bytes,
+            total_bytes: u64::MAX,
+            rows: u64::MAX,
+            tables: u32::MAX,
+            columns: u32::MAX,
+            index_bytes: base_cfg.limits.migration_index_bytes,
+        },
+        base_cfg.limits.migration_index_bytes,
+        base_cfg.limits.migration_value_bytes,
+    )
+    .unwrap_or_else(|_| die("startup migration allocation limits must be positive"))
+    .with_binding_inventory(binding_inventory.clone(), binding_resolver)
+    .unwrap_or_else(|_| die("startup frozen binding resolver admission refused"));
+    let released_source = loop {
+        if *control_work.shutdown_rx.borrow() {
+            die("shutdown requested during native Store inspection");
+        }
+        match upgrade.inspect_released().await {
+            Ok(source) => break source,
+            Err(busbar_migrations::Error::IntentPending) => {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            Err(error) => die(format!("automatic Store inspection refused: {error:?}")),
+        }
+    };
+    if let Some(source) = released_source.as_ref() {
+        documents
+            .enter_released_source(source)
+            .unwrap_or_else(|error| die(error));
+        let normalized = busbar_kernel::appbuild::load_config_from_disk_judged(
+            &config_path,
+            providers_override.as_deref(),
+            safe_mode,
+            config::EnvSubst::Strict,
+            &bootstrap_rules,
+        )
+        .unwrap_or_else(|error| die(error));
+        let normalized_bootstrap = root::startup_upgrade::bootstrap::bootstrap(&normalized.deploy)
+            .unwrap_or_else(|errors| die(errors.join("; ")));
+        let same_store = documents
+            .bootstrap_equivalent(&base_cfg.store, &normalized_bootstrap.store, &config_path)
+            .unwrap_or_else(|error| die(error));
+        if !same_store
+            || normalized.deploy.plugins != deploy.plugins
+            || normalized.config_locked != config_locked
+        {
+            die("configuration conversion changed its prepared Store bootstrap binding");
+        }
+    }
+    let prepared = loop {
+        if *control_work.shutdown_rx.borrow() {
+            die("shutdown requested during native Store preparation");
+        }
+        match upgrade
+            .prepare()
+            .await
+            .unwrap_or_else(|error| die(format!("automatic Store upgrade refused: {error:?}")))
+        {
+            busbar_migrations::Preparation::Recovery(prepared) => break prepared,
+            busbar_migrations::Preparation::Pending => {
+                tokio::time::sleep(Duration::from_millis(250)).await
+            }
+        }
+    };
+    let store_admission = root::boot::admit_prepared_store(&prepared)
+        .await
+        .unwrap_or_else(|error| die(error));
+    let anchor_store = store_admission.store().expect("confirmed Store admission");
+    let root::startup_upgrade::publication::Preparation {
+        mut publication,
+        mut progress,
+    } = root::startup_upgrade::publication::Publication::prepare(
+        &mut upgrade,
+        root::startup_upgrade::publication::Inputs {
+            backend: prepared.backend.clone(),
+            core: anchor_store.clone(),
+            documents: documents.clone(),
+            native_upgrade_id: prepared.upgrade_id,
+            host: root::durability::host_identity(),
+            checkpoint_budget: base_cfg.limits.migration_value_bytes,
+            fs: Arc::new(root::admission::RootDurable),
+        },
+    )
+    .await
+    .unwrap_or_else(|error| die(error));
+    while progress == root::startup_upgrade::publication::PrepareProgress::Pending {
+        if *control_work.shutdown_rx.borrow() {
+            die("shutdown requested during configuration preparation");
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        progress = publication
+            .prepare_more(&mut upgrade)
+            .await
+            .unwrap_or_else(|error| die(error));
+    }
+    // A recovered inventory may contain a mixture of original and published files.
+    // Reload through its retained transformations before constructing the one App.
+    let resumed = busbar_kernel::appbuild::load_config_from_disk_judged(
+        &config_path,
+        providers_override.as_deref(),
+        safe_mode,
+        config::EnvSubst::Strict,
+        &bootstrap_rules,
+    )
+    .unwrap_or_else(|error| die(error));
+    let resumed_bootstrap = root::startup_upgrade::bootstrap::bootstrap(&resumed.deploy)
+        .unwrap_or_else(|errors| die(errors.join("; ")));
+    let same_store = documents
+        .bootstrap_equivalent(&base_cfg.store, &resumed_bootstrap.store, &config_path)
+        .unwrap_or_else(|error| die(error));
+    if !same_store
+        || resumed.deploy.plugins != deploy.plugins
+        || resumed.config_locked != config_locked
+    {
+        die("restored configuration changed its prepared Store bootstrap binding");
+    }
+    let mut deploy = resumed.deploy;
+    let mut defs = resumed.defs;
+    let mut providers_path = resumed.providers_path;
     // Even safe-mode must observe a pending transition in the anchor namespace before
     // overlay recovery or application construction can open another effective Store.
     if principal_transition.is_none() {
-        busbar_kernel::governance::principal_transition::pending_guard(
-            anchor_store
-                .calls
-                .clone()
-                .unwrap_or_else(|| die("base Store has no typed principal transition calls")),
-        )
-        .unwrap_or_else(|error| die(error));
+        busbar_kernel::governance::principal_transition::pending_guard_native(anchor_store.clone())
+            .await
+            .unwrap_or_else(|error| die(error));
     }
     if let Some(old_config) = overlay_migration.as_ref() {
         root::overlay_migrate::run(
@@ -671,51 +817,30 @@ async fn run(
             &anchor_store,
             config_locked,
         )
+        .await
         .unwrap_or_else(|error| die(error));
         return;
     }
-    let floor_calls = anchor_store
-        .calls
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(|| die("base Store has no typed plugin-floor calls"));
-    root::boot::bind_plugin_floor(floor_calls).unwrap_or_else(|error| {
-        die(boot_error(
-            "principal transition Store plugin-floor authority refused",
-            format!("Store plugin-floor authority: {error}"),
-        ))
-    });
+    root::boot::bind_plugin_floor(anchor_store.clone())
+        .await
+        .unwrap_or_else(|error| die(boot_error("Store plugin-floor authority refused", error)));
     let mut overlay_path = if config_locked && principal_transition.is_none() {
         None
     } else {
-        let calls = anchor_store
-            .calls
-            .as_ref()
-            .cloned()
-            .unwrap_or_else(|| die("base Store has no typed config-overlay calls"));
         Some(
-            config::overlay::OverlayStore::new(calls).unwrap_or_else(|error| {
-                die(boot_error(
-                    "principal transition Store overlay unavailable",
-                    error,
-                ))
-            }),
+            config::overlay::OverlayStore::from_core(anchor_store.clone())
+                .unwrap_or_else(|error| die(boot_error("Store overlay unavailable", error))),
         )
     };
     let overlay_doc = if safe_mode {
         None
+    } else if let Some(store) = overlay_path.as_ref() {
+        store
+            .read_required_async()
+            .await
+            .unwrap_or_else(|error| die(boot_error("Store overlay recovery refused", error)))
     } else {
-        overlay_path
-            .as_ref()
-            .map(|store| store.read_required())
-            .transpose()
-            .unwrap_or_else(|error| {
-                die(boot_error(
-                    "principal transition Store overlay recovery refused",
-                    format!("Store config overlay recovery refused: {error}"),
-                ))
-            })
-            .flatten()
+        None
     };
 
     // The base Store remains the bootstrap anchor. Its durable document layer is parsed with
@@ -729,7 +854,7 @@ async fn run(
             providers_override.as_deref(),
             false,
             config::EnvSubst::Strict,
-            &busbar_kernel::appbuild::AcceptAll,
+            &bootstrap_rules,
             doc.document_patch.as_ref(),
             doc.providers_patch.as_ref(),
         )
@@ -794,6 +919,7 @@ async fn run(
             &transition_source_sha256,
             overlay_doc.as_ref(),
         )
+        .await
         .unwrap_or_else(|_| die("principal transition refused; input or bound Store state does not satisfy cold transition requirements"));
         println!(
             "{}",
@@ -806,13 +932,9 @@ async fn run(
         }
         // The explicit fresh-instance action resumes every ordinary admission below. The same
         // anchor is handed to appbuild; it must never be reopened as a new ephemeral namespace.
-        busbar_kernel::governance::principal_transition::pending_guard(
-            anchor_store
-                .calls
-                .clone()
-                .unwrap_or_else(|| die("fresh Store has no typed principal transition calls")),
-        )
-        .unwrap_or_else(|_| die("fresh principal baseline is not ready for serving"));
+        busbar_kernel::governance::principal_transition::pending_guard_native(anchor_store.clone())
+            .await
+            .unwrap_or_else(|_| die("fresh principal baseline is not ready for serving"));
         if config_locked {
             overlay_path = None;
         }
@@ -847,6 +969,7 @@ async fn run(
 
     let plugins_cfg = deploy.plugins.clone();
     root::boot::admit_recovered_plugins(&plugins_cfg)
+        .await
         .unwrap_or_else(|error| die(format!("Store plugin-floor admission: {error}")));
 
     let swept = root::loader::sweep_dead_staging();
@@ -941,16 +1064,6 @@ async fn run(
 
     export::plugin::open(&cfg.export).unwrap_or_else(|e| die(format!("config errors:\n  - {e}")));
 
-    for step in ROOT_UNITS.iter().filter_map(|u| u.on_config) {
-        step(&cfg.limits);
-    }
-
-    let composes: Vec<root::linked::Compose> = LINKED
-        .compose
-        .iter()
-        .filter_map(|capture| capture(&cfg))
-        .collect();
-
     let door_providers = root::door_steps::provider_routes(
         &cfg.providers,
         &config_validate::MetadataPosture::global(&cfg),
@@ -960,7 +1073,10 @@ async fn run(
 
     let door_pools = root::serve::door_pools(&cfg.plane_pools);
 
-    let root_rules = Arc::new(root::door_steps::Rules::hearing(commit_guard));
+    let root_rules = Arc::new(root::door_steps::Rules::hearing_with_documents(
+        commit_guard,
+        documents.clone(),
+    ));
 
     root_rules.hold_unloaded(root::door_steps::unloaded_doors());
     let listener_plan = Arc::new(root::serve::ListenerPlan::new(
@@ -974,10 +1090,6 @@ async fn run(
 
     let record_bootstrap_store = serde_json::to_value(&cfg.store)
         .unwrap_or_else(|error| die(format!("effective Store settings: {error}")));
-    let store_module = cfg
-        .store
-        .as_ref()
-        .map_or_else(String::new, |store| store.module.clone());
     let boot_store = if serde_json::to_value(&cfg.store)
         .unwrap_or_else(|error| die(format!("effective Store settings: {error}")))
         == base_store_settings
@@ -990,36 +1102,100 @@ async fn run(
         {
             die("fresh principal initialization lost its bootstrap Store binding");
         }
-        None
+        die(
+            "recovered configuration changes the admitted Store; use an explicit Store migration and update the bootstrap Store binding before serving",
+        )
     };
 
-    let (mut boot_app, _boot_gov_rotate, boot_limits) =
-        busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
-            plugins_cfg,
-            overlay_path,
+    let _boot_store_binding = boot_store;
+    let continuation = root::startup_upgrade::continuation::StartupContinuation::for_upgrade(
+        root::startup_upgrade::continuation::Preparation {
+            startup: store_admission,
+            config: cfg,
+            plugins: plugins_cfg,
+            overlay: overlay_path,
+            deploy,
+            definitions: defs,
             base_hook_names,
             base_group_names,
-            (Some(config_path.clone()), Some(providers_path.clone())),
-            None,
-            &(Arc::clone(&root_rules) as Arc<dyn busbar_kernel::appbuild::RootRules>),
-            boot_store,
-            true,
-        )
-        .unwrap_or_else(|e| die(e));
-
-    boot_app.providers_override = providers_override.clone();
-    config::readback::ConfiguredView::capture_documents(&mut boot_app, &deploy, &defs);
-    boot_limits.stage_boot();
-    let app = Arc::new(boot_app);
-
-    for compose in composes {
-        compose(&*app.secret_resolver);
+            config_path: config_path.clone(),
+            providers_path: providers_path.clone(),
+            providers_override: providers_override.clone(),
+            rules: root_rules.clone(),
+            shutdown_rx: control_work.shutdown_rx.clone(),
+            shutdown_tx: control_work.shutdown_tx.clone(),
+            configuration_fingerprint: documents.fingerprint().unwrap_or_else(|error| die(error)),
+        },
+        root::startup_upgrade::continuation::UpgradeBinding {
+            upgrade_id: prepared.upgrade_id,
+            target: prepared.target,
+        },
+    );
+    let readiness = loop {
+        if *control_work.shutdown_rx.borrow() {
+            die("shutdown requested during startup validation");
+        }
+        if let Some(readiness) = continuation
+            .readiness()
+            .await
+            .unwrap_or_else(|error| die(error))
+        {
+            break readiness;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    loop {
+        if *control_work.shutdown_rx.borrow() {
+            die("shutdown requested during configuration publication");
+        }
+        match publication
+            .publish_complete(readiness)
+            .await
+            .unwrap_or_else(|error| die(error))
+        {
+            root::startup_upgrade::publication::PublishProgress::Complete => break,
+            root::startup_upgrade::publication::PublishProgress::Pending => {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
     }
-
-    busbar_kernel::admin::seam::record_boot(&app);
-
-    busbar_kernel::boot::hydrate_all(&app).unwrap_or_else(|e| die(e));
+    let completion = loop {
+        if *control_work.shutdown_rx.borrow() {
+            die("shutdown requested during Store completion");
+        }
+        match upgrade.finalize(readiness).await {
+            Ok(completion) => break completion,
+            Err(busbar_migrations::Error::IntentPending) => {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            Err(error) => die(format!("automatic Store completion refused: {error:?}")),
+        }
+    };
+    let ready = loop {
+        if *control_work.shutdown_rx.borrow() {
+            die("shutdown requested before startup publication");
+        }
+        if let Some(candidate) = continuation
+            .take_ready(&completion)
+            .await
+            .unwrap_or_else(|error| die(error))
+        {
+            break candidate;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    let root::startup_upgrade::continuation::ReadyCandidate {
+        startup: mut store_admission,
+        app,
+        book,
+        limits: boot_limits,
+        node_lease_task,
+        deploy,
+        ..
+    } = ready;
+    let book = Some(book);
+    // The same durably confirmed generation becomes live before any producer starts.
+    boot_limits.keep().notify();
 
     let planes: Vec<_> = busbar_kernel::plane_driver::registry::plane_decls()
         .iter()
@@ -1048,9 +1224,12 @@ async fn run(
         let kernel = late_services
             .kernel()
             .unwrap_or_else(|| die("record bootstrap has no installed kernel"));
-        tokio::task::spawn_blocking(move || kernel.arm_record_bootstrap(receipt, &fingerprint))
+        let instance = receipt.instance.clone();
+        kernel
+            .arm_record_bootstrap(receipt, &fingerprint, |schema, key, value| {
+                root::boot::bootstrap_witness(&instance, schema, key, value)
+            })
             .await
-            .unwrap_or_else(|error| die(format!("fresh record bootstrap failed: {error}")))
             .unwrap_or_else(|error| die(format!("fresh record bootstrap refused: {error}")));
     }
 
@@ -1062,26 +1241,33 @@ async fn run(
         let kernel = late_services
             .kernel()
             .unwrap_or_else(|| die("record bootstrap has no installed kernel"));
-        let consumed = tokio::task::spawn_blocking(move || -> Result<(), String> {
-            use std::io::Read;
-            let file = std::fs::File::open(path)
-                .map_err(|error| format!("read cold record bootstrap receipt: {error}"))?;
-            let mut bytes = Vec::new();
-            file.take(16_385)
-                .read_to_end(&mut bytes)
-                .map_err(|error| format!("read cold record bootstrap receipt: {error}"))?;
-            if bytes.len() > 16_384 {
-                return Err("cold record bootstrap receipt exceeds 16384 bytes".into());
-            }
-            let receipt = serde_json::from_slice(&bytes)
-                .map_err(|error| format!("parse cold record bootstrap receipt: {error}"))?;
-            kernel
-                .arm_record_bootstrap(receipt, &fingerprint)
-                .map_err(str::to_string)
-        })
+        let receipt = tokio::task::spawn_blocking(
+            move || -> Result<busbar_kernel::host_record_bootstrap::ColdRecordReceipt, String> {
+                use std::io::Read;
+                let file = std::fs::File::open(path)
+                    .map_err(|error| format!("read cold record bootstrap receipt: {error}"))?;
+                let mut bytes = Vec::new();
+                file.take(16_385)
+                    .read_to_end(&mut bytes)
+                    .map_err(|error| format!("read cold record bootstrap receipt: {error}"))?;
+                if bytes.len() > 16_384 {
+                    return Err("cold record bootstrap receipt exceeds 16384 bytes".into());
+                }
+                serde_json::from_slice(&bytes)
+                    .map_err(|error| format!("parse cold record bootstrap receipt: {error}"))
+            },
+        )
         .await
         .unwrap_or_else(|error| die(format!("cold record bootstrap failed: {error}")));
-        consumed.unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
+        let receipt =
+            receipt.unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
+        let instance = receipt.instance.clone();
+        kernel
+            .arm_record_bootstrap(receipt, &fingerprint, |schema, key, value| {
+                root::boot::bootstrap_witness(&instance, schema, key, value)
+            })
+            .await
+            .unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
     }
 
     let door_auths = root::door_steps::process_auths();
@@ -1159,6 +1345,7 @@ async fn run(
             Ok(listener_plan.binds().to_vec())
         },
     )
+    .await
     .unwrap_or_else(|e| die(e));
     listener_plan
         .share_claim_doors(&mut served)
@@ -1192,14 +1379,6 @@ async fn run(
     }
 
     let tls_secret_resolver = app.secret_resolver.clone();
-
-    let book = (app.governance.is_some()
-        || cfg!(feature = "root-admin")
-        || ROOT_UNITS.iter().any(|u| u.opens_book)
-        || !served.planes.is_empty())
-    .then(|| root::boot::book(&app, &store_module).unwrap_or_else(|e| die(e)));
-
-    boot_limits.keep().unwrap_or_else(|e| die(e));
 
     let door_appliers = served.appliers();
     let door_post = served.post.clone();
@@ -1276,9 +1455,12 @@ async fn run(
             let _ = root::inbound::publish(app);
         }
     }));
-    app_handle.on_apply(Box::new({
+    app_handle.on_apply_async(Box::new({
         let door_appliers = door_appliers.clone();
-        move |app| door_appliers.apply(app)
+        move |app| {
+            let appliers = door_appliers.clone();
+            Box::pin(async move { appliers.apply(&app).await })
+        }
     }));
 
     if let Some(post) = door_post {
@@ -1374,11 +1556,19 @@ async fn run(
             admin_router,
             req_body_max,
             &app_handle,
+            app_handle
+                .load()
+                .governance
+                .as_ref()
+                .expect("governance for admin")
+                .core_store_handle()
+                .unwrap_or_else(|error| die(error)),
             book,
             None,
             &late_services,
             root::adapters::BreakerPolicy::new(),
-        ),
+        )
+        .unwrap_or_else(|error| die(format!("admin persistence admission refused: {error:?}"))),
         None => admin_router,
     };
 
@@ -1391,6 +1581,18 @@ async fn run(
     }
 
     let (shutdown_tx, _keep_open) = tokio::sync::broadcast::channel::<()>(1);
+    // Persistence failure can request shutdown before a listener exists. A watch
+    // receiver carries that level into the listener's broadcast shutdown path.
+    {
+        let mut stop = control_work.shutdown_rx.clone();
+        let shutdown = shutdown_tx.clone();
+        tokio::spawn(async move {
+            if !*stop.borrow_and_update() {
+                let _ = stop.wait_for(|stopping| *stopping).await;
+            }
+            let _ = shutdown.send(());
+        });
+    }
     let worker_shutdown_rx = control_work.shutdown_rx.clone();
     {
         let rx = shutdown_tx.subscribe();
@@ -1432,15 +1634,24 @@ async fn run(
         )
         .await;
         control_work.drain().await;
+        let lease_result = join_node_lease(node_lease_task).await;
         let gov = app_handle.load().governance.clone();
-        root::shutdown::tail_after_flusher(
+        let drained = root::shutdown::tail_after_flusher(
             gov,
             &late_services,
             book.as_ref().map(|b| &b.durability),
             &shutdown_tx,
             budget_flusher,
         )
-        .await;
+        .await
+        .unwrap_or_else(|error| die(error));
+        if let Err(error) =
+            root::shutdown::retire_storage(&mut store_admission, book.as_ref(), drained).await
+        {
+            tracing::error!(%error, "storage shutdown incomplete");
+            std::process::exit(1);
+        }
+        lease_result.unwrap_or_else(|error| die(error));
         std::process::exit(code);
     }
 
@@ -1601,16 +1812,66 @@ async fn run(
     })
     .await;
     control_work.drain().await;
+    let lease_result = join_node_lease(node_lease_task).await;
 
     let gov = app_handle.load().governance.clone();
-    root::shutdown::tail_after_flusher(
+    let drained = root::shutdown::tail_after_flusher(
         gov,
         &late_services,
         book.as_ref().map(|b| &b.durability),
         &shutdown_tx,
         budget_flusher,
     )
-    .await;
+    .await
+    .unwrap_or_else(|error| die(error));
+    if let Err(error) =
+        root::shutdown::retire_storage(&mut store_admission, book.as_ref(), drained).await
+    {
+        tracing::error!(%error, "storage shutdown incomplete");
+        std::process::exit(1);
+    }
+    lease_result.unwrap_or_else(|error| die(error));
+}
+
+async fn refresh_node_lease(
+    lease: Arc<busbar_kernel::persistence::boot_identity::NodeLease>,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+    failure: tokio::sync::watch::Sender<bool>,
+) -> Result<(), String> {
+    let every = Duration::from_millis(busbar_kernel::persistence::boot_identity::LEASE_TTL_MS / 3);
+    let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            biased;
+            _ = stop.wait_for(|stopping| *stopping) => return Ok(()),
+            _ = ticks.tick() => {}
+        }
+        let result = tokio::select! {
+            biased;
+            _ = stop.wait_for(|stopping| *stopping) => return Ok(()),
+            result = tokio::time::timeout(every, lease.refresh()) => result,
+        };
+        let error = match result {
+            Ok(Ok(true)) => continue,
+            Ok(Ok(false)) => "native node lease no longer belongs to this writer".to_owned(),
+            Ok(Err(error)) => format!("native node lease refresh refused: {error}"),
+            Err(_) => "native node lease refresh remains unconfirmed".to_owned(),
+        };
+        let _ = failure.send(true);
+        return Err(error);
+    }
+}
+
+async fn join_node_lease(
+    task: Option<tokio::task::JoinHandle<Result<(), String>>>,
+) -> Result<(), String> {
+    match task {
+        Some(task) => task
+            .await
+            .map_err(|_| "node lease task failed".to_owned())?,
+        None => Ok(()),
+    }
 }
 
 #[cfg(unix)]

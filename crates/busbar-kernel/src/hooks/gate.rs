@@ -38,7 +38,10 @@ pub(crate) struct GateSubject<'a> {
     pub(crate) reads: &'a HookReads<'a>,
 }
 
-pub(crate) type HookReads<'a> = dyn Fn(&str, Option<&str>, &str, bool) + Send + Sync + 'a;
+pub(crate) type HookReads<'a> = dyn for<'r> Fn(&'r str, Option<&'r str>, &'r str, bool) -> crate::audit::amend::ReadConfirmation<'r>
+    + Send
+    + Sync
+    + 'a;
 
 /// The gate's tenant of the session substrate: one bounded cache slot per content piece screened
 /// clean for a `(session, hook)`, so a long session re-screens only NEW or evicted content instead
@@ -207,13 +210,21 @@ pub(crate) async fn decide_over(
             continue;
         }
         let (req, content_delivered) = project(subject, content, *send_prompt, *send_user);
-        if *send_prompt {
-            (subject.reads)(
+        if *send_prompt
+            && (subject.reads)(
                 policy.name(),
                 subject.key.map(|k| k.id.as_str()),
                 subject.ingress_protocol,
                 *send_user,
-            );
+            )
+            .await
+            .is_err()
+        {
+            return GateVerdict::Reject {
+                status: 503,
+                message: "content access audit is unconfirmed".into(),
+                hook: policy.name().into(),
+            };
         }
         let ctx = context(subject);
         let answer = match tokio::time::timeout(
@@ -349,13 +360,21 @@ impl Fallback<'_, '_> {
                 continue;
             }
             let (req, _) = project(subject, self.content, send_prompt, send_user);
-            if send_prompt {
-                (subject.reads)(
+            if send_prompt
+                && (subject.reads)(
                     fb.policy.name(),
                     subject.key.map(|k| k.id.as_str()),
                     subject.ingress_protocol,
                     send_user,
-                );
+                )
+                .await
+                .is_err()
+            {
+                return Some(GateVerdict::Reject {
+                    status: 503,
+                    message: "content access audit is unconfirmed".into(),
+                    hook: fb.policy.name().into(),
+                });
             }
             let ctx = context(subject);
             match tokio::time::timeout(

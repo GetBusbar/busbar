@@ -104,7 +104,7 @@ async fn hook_snapshot_builders_recompute_the_content_gate() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -114,22 +114,24 @@ async fn hook_snapshot_builders_recompute_the_content_gate() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &store_module)
+        .await
         .expect("the actual Store binds the rate-card authority before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let calls = app
         .governance
         .as_ref()
         .expect("actual governance")
-        .store_calls()
+        .core_store_handle()
         .expect("actual Store calls");
     app.overlay_path = Some(
-        busbar_kernel::config::overlay::OverlayStore::new(calls)
+        busbar_kernel::config::overlay::OverlayStore::from_core(calls)
             .expect("the actual Store supports its config overlay"),
     );
     let app = Arc::new(app);
@@ -275,7 +277,7 @@ async fn hook_derived_fields_follow_the_registry() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -285,22 +287,24 @@ async fn hook_derived_fields_follow_the_registry() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &store_module)
+        .await
         .expect("the actual Store binds the rate-card authority before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let calls = app
         .governance
         .as_ref()
         .expect("actual governance")
-        .store_calls()
+        .core_store_handle()
         .expect("actual Store calls");
     app.overlay_path = Some(
-        busbar_kernel::config::overlay::OverlayStore::new(calls)
+        busbar_kernel::config::overlay::OverlayStore::from_core(calls)
             .expect("the actual Store supports its config overlay"),
     );
     let app = Arc::new(app);
@@ -433,7 +437,7 @@ async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -443,22 +447,24 @@ async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &store_module)
+        .await
         .expect("the actual Store binds the rate-card authority before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let calls = app
         .governance
         .as_ref()
         .expect("actual governance")
-        .store_calls()
+        .core_store_handle()
         .expect("actual Store calls");
     app.overlay_path = Some(
-        busbar_kernel::config::overlay::OverlayStore::new(calls)
+        busbar_kernel::config::overlay::OverlayStore::from_core(calls)
             .expect("the actual Store supports its config overlay"),
     );
     let app = Arc::new(app);

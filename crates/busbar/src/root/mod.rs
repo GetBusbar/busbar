@@ -8,7 +8,6 @@ pub mod admission;
 pub mod auth_bindings;
 pub mod boot;
 pub mod card_history;
-pub mod card_store;
 pub mod cli;
 pub mod config_migrate;
 pub mod connector;
@@ -43,6 +42,7 @@ pub mod registry;
 pub mod serve;
 pub mod settings_public;
 pub mod shutdown;
+pub mod startup_upgrade;
 pub mod transports;
 #[cfg(feature = "root-admin")]
 pub mod units_admin;

@@ -7,7 +7,7 @@ use busbar_kernel_audit::amend::{
     NodeAmendments, Reader,
 };
 use busbar_kernel_audit::record::OpClassId;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "root-admin")]
 pub(crate) fn verify_held(journal: &NodeAmendments) -> Result<(), String> {
@@ -158,7 +158,7 @@ fn linked_run(records: &[JournalRecord]) -> (Vec<Amendment>, usize) {
 }
 
 impl Durability {
-    pub fn restore_amendments(
+    pub async fn restore_amendments(
         &mut self,
         journal: &NodeAmendments,
         token: &Grant<DurableWrite>,
@@ -166,7 +166,7 @@ impl Durability {
         if !self.keeps_chain() {
             return Ok(());
         }
-        let (run, set_aside) = match self.chain() {
+        let (run, set_aside) = match self.chain().await {
             Ok(Ok(records)) => linked_run(&records),
 
             Ok(Err(broken)) => return Err(format!("the journal does not verify: {broken}")),
@@ -190,50 +190,82 @@ impl Durability {
     }
 }
 
+type PendingAmendments = std::collections::BTreeMap<
+    u64,
+    (
+        String,
+        Arc<busbar_kernel::persistence::journal::runtime::StagedRun>,
+    ),
+>;
+
 struct BookAmendments {
-    book: Weak<Mutex<Durability>>,
+    journal: Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>,
+    pending: Arc<Mutex<PendingAmendments>>,
     token: Grant<DurableWrite>,
 }
 
 impl AmendSink for BookAmendments {
-    fn sealed(&self, amendment: &Amendment) {
-        let Some(book) = self.book.upgrade() else {
-            return;
-        };
-        let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
-
-        if let Err(lost) =
-            durability
+    fn sealed(
+        &self,
+        amendment: &Amendment,
+    ) -> Result<
+        busbar_kernel_audit::amend::AmendCommit,
+        busbar_kernel_audit::amend::AmendPersistError,
+    > {
+        use busbar_kernel_audit::amend::AmendPersistError;
+        let staged = (|| {
+            let mut pending = self.pending.lock().map_err(|_| AmendPersistError)?;
+            pending.retain(|_, (_, run)| !matches!(self.journal.is_confirmed(run), Ok(true)));
+            if let Some((hash, run)) = pending.get(&amendment.seq) {
+                if hash != &amendment.hash {
+                    return Err(AmendPersistError);
+                }
+                return Ok(run.clone());
+            }
+            let run = self
                 .journal
-                .append(&self.token, StepName::Audit, &[entry(amendment)])
-        {
-            tracing::error!(
-                step = lost.step().as_str(),
-                seq = amendment.seq,
-                "the journal lost an amendment: a restart will not reproduce it"
-            );
-        }
+                .stage_run(&[entry(amendment)])
+                .map_err(|_| AmendPersistError)?;
+            pending.insert(amendment.seq, (amendment.hash.clone(), run.clone()));
+            Ok(run)
+        })()?;
+        let journal = self.journal.clone();
+        let pending = self.pending.clone();
+        let seq = amendment.seq;
+        Ok(Box::pin(async move {
+            let run = staged;
+            journal.confirm(&run).await.map_err(|_| AmendPersistError)?;
+            pending.lock().map_err(|_| AmendPersistError)?.remove(&seq);
+            Ok(())
+        }))
     }
 }
 
-pub fn bind_amendments(book: &Arc<Mutex<Durability>>, journal: &NodeAmendments) {
-    let Some(through) = book
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .amendments_through
-    else {
-        return;
+pub async fn bind_amendments(
+    book: &Arc<Mutex<Durability>>,
+    journal: &NodeAmendments,
+) -> Result<(), String> {
+    let (through, runtime) = {
+        let book = book.lock().unwrap_or_else(|poison| poison.into_inner());
+        (
+            book.amendments_through
+                .ok_or("amendment restoration has not completed")?,
+            book.journal.clone(),
+        )
     };
-
     let sink = Arc::new(BookAmendments {
-        book: Arc::downgrade(book),
+        journal: runtime,
+        pending: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
         token: busbar_kernel::teller::Kernel::new().durability_token(),
     });
-    journal.bind(
-        Some(Arc::clone(&sink) as Arc<dyn AmendSink>),
-        through,
-        &sink.token,
-    );
+    journal
+        .bind(
+            Some(sink.clone() as Arc<dyn AmendSink>),
+            through,
+            &sink.token,
+        )
+        .await
+        .map_err(|_| "amendment binding remains unconfirmed in the native journal".into())
 }
 
 #[cfg(test)]

@@ -3,8 +3,8 @@
 
 use crate::config::{ExportDefCfg, ExportDefs};
 use crate::export::projection::{
-    produced_fields, resolve_projection, ProjectedRecord, Projection, ProjectionUnion,
-    PRODUCED_STREAMS,
+    PRODUCED_STREAMS, ProjectedRecord, Projection, ProjectionUnion, produced_fields,
+    resolve_projection,
 };
 use busbar_contract::abi::export::{ExportField, ExportStream};
 

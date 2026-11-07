@@ -99,8 +99,8 @@ fn the_not_found_names_the_plane_s_own_subject() {
     }
 }
 
-#[test]
-fn the_audit_naming_is_derived_from_the_plane() {
+#[tokio::test]
+async fn the_audit_naming_is_derived_from_the_plane() {
     use busbar_kernel::audit::auditlog::AUDIT_LOG as AUDIT;
 
     use crate::root::test_plugins as plugins;
@@ -142,7 +142,7 @@ fn the_audit_naming_is_derived_from_the_plane() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -152,16 +152,18 @@ fn the_audit_naming_is_derived_from_the_plane() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the audit deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, "configured-store")
+        .await
         .expect("the actual configured Store binds boot rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
-    busbar_kernel::audit::auditlog::register_test_audit_stream(&app);
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&app).await;
     let principal = busbar_contract::auth::AuthPrincipal(None);
     for decl in verb_planes() {
         assert_eq!(

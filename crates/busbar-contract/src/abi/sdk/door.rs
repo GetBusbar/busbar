@@ -85,6 +85,10 @@ unsafe impl AbiOut for CancelOut {}
 pub unsafe trait KindOps: Copy + 'static {
     /// The kind this table belongs to; the door's `kind` and `kind_abi` follow from it.
     const KIND: KindCode;
+    /// Exact version of this table; defaults to the currently admitted kind.
+    const ABI_VERSION: u32 = Self::KIND.abi_version();
+    /// Exact layout of this table; defaults to the currently admitted kind.
+    const LAYOUT_FINGERPRINT: u64 = Self::KIND.layout_fingerprint();
     /// The `in`/`out` of each of the nine LIFECYCLE slots, stated as [`KindSlot`]s at the slot's
     type Lifecycle: 'static;
 }
@@ -214,10 +218,6 @@ pub unsafe trait KindSlot<const INDEX: u32> {
 
 // SAFETY (all seven): each kind's `Ops` is `#[repr(C)]`, leads with `head: OpsHead`, and appends
 // only `Option<Op>` slots (`abi/<kind>/`).
-unsafe impl KindOps for crate::abi::store::Ops {
-    const KIND: KindCode = KindCode::Store;
-    type Lifecycle = Lifecycle;
-}
 unsafe impl KindOps for crate::abi::secret::Ops {
     const KIND: KindCode = KindCode::Secret;
     type Lifecycle = Lifecycle;
@@ -620,7 +620,7 @@ pub const fn stamp<T: KindOps>(statement: Statement) -> Statement {
     Statement {
         size: size_of::<Statement>() as u32,
         kind: T::KIND as u32,
-        kind_abi: T::KIND.abi_version(),
+        kind_abi: T::ABI_VERSION,
         ..statement
     }
 }
@@ -647,11 +647,11 @@ pub const unsafe fn door<T: KindOps>(
             mechanism_version: MECHANISM_VERSION,
             size: size_of::<Door>() as u32,
             kind: T::KIND as u32,
-            kind_abi: T::KIND.abi_version(),
+            kind_abi: T::ABI_VERSION,
             statement,
             ops: ptr::from_ref(ops).cast::<OpsHead>(),
             ready,
-            layout: T::KIND.layout_fingerprint(),
+            layout: T::LAYOUT_FINGERPRINT,
         })
     }
 }

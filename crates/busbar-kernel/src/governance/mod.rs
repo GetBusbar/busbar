@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::count::{Count, CountError, COUNT_SCALE};
+use busbar_contract::count::{COUNT_SCALE, Count, CountError};
 use busbar_kernel_ledger::cost::{EntryId, RawRateEra};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -10,6 +10,7 @@ use std::sync::{Arc, RwLock};
 type RawFeeEras = busbar_kernel_ledger::usage::FeeEras<RawRateEra>;
 
 mod exact_debt;
+pub mod persistence;
 pub mod principal_transition;
 pub mod recovery;
 use exact_debt::{BudgetFlushFlight, BudgetFlushRunner, ExactUsageDelta};
@@ -17,9 +18,10 @@ mod metering_flush;
 mod raw_recovery;
 pub mod unit_checkpoint;
 mod unit_checkpoint_counts;
+pub mod unit_checkpoint_store;
 
 use crate::diagnostics::{
-    diag_debug, diag_warn, GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION, LIMIT_WINDOW_UNRECOGNIZED,
+    GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION, LIMIT_WINDOW_UNRECOGNIZED, diag_debug, diag_warn,
 };
 
 pub const WINDOW_TOTAL: &str = "total";
@@ -116,11 +118,9 @@ struct BudgetCell {
     billable_requests: u64,
     /// The additive-flush watermark: durably acknowledged counts, or counts whose exact outbound
     /// debt has transferred to `budget_flushes`. That owner retains every unconfirmed chunk. Each
-    /// flush writes only the DELTA (current - flushed) via `Store::add_usage`, then advances the
-    /// baselines on success, so a shared store accumulates the TRUE fleet total across nodes. On
-    /// a failed flush the baseline does not advance and the cell is re-marked dirty, so the
-    /// unacked delta is retried (at-least-once: an ack lost after the write landed can
-    /// double-count at most one flush interval - documented).
+    /// flush transfers only the delta (current - flushed) into an owned native ledger request.
+    /// Unknown outcomes retain the original operation, body and first-send custody; retries
+    /// resolve that same logical receipt before publishing acknowledgement.
     flushed_requests: u64,
     /// The billable-request flush watermark (twin of `flushed_requests` for the fee-base counter).
     flushed_billable_requests: u64,
@@ -151,7 +151,7 @@ struct BudgetCell {
 
 #[derive(Clone)]
 struct CorrectionBranch {
-    op_id: busbar_contract::abi::store::OpId,
+    op_id: busbar_contract::records::OpId,
     window: u64,
     accepted: BudgetCell,
 }
@@ -217,12 +217,14 @@ impl BudgetCell {
         });
     }
 
+    #[cfg(test)]
     fn unflushed(&self) -> UsageDelta {
         ExactUsageDelta::of(self, false)
             .signed()
             .expect("legacy flush checks raw debt representability")
     }
 
+    #[cfg(test)]
     fn unflushed_eras(&self) -> UsageDelta {
         ExactUsageDelta::of(self, true)
             .signed()
@@ -288,7 +290,7 @@ impl BudgetCell {
         cost: &crate::cost::CostModel,
         include_fee: bool,
     ) -> Result<busbar_kernel_ledger::cost::Money, busbar_kernel_ledger::cost::MoneyError> {
-        use busbar_kernel_ledger::usage::{price_dated_counts_raw, DatedHistory};
+        use busbar_kernel_ledger::usage::{DatedHistory, price_dated_counts_raw};
         let history = crate::rate_apply::dated_history();
         let now_ms = crate::store::now_ms();
         let dated = history.as_deref().map(|h| DatedHistory::of(h, now_ms));
@@ -306,6 +308,7 @@ impl BudgetCell {
             .retain(|m| has_units(&m.cur) || has_units(&m.flushed) || has_units(&m.flushed_era));
     }
 
+    #[cfg(test)]
     fn advance_model_baselines(&mut self, acked: &[ModelCell], dated: bool) {
         self.mutate(|cell| {
             for s in acked {
@@ -436,7 +439,7 @@ fn era_bucket(bucket: &str) -> String {
 }
 
 pub fn is_token_class(class: &str) -> bool {
-    use crate::plane_driver::registry::{plane_decls, TOKEN_FAMILY};
+    use crate::plane_driver::registry::{TOKEN_FAMILY, plane_decls};
     busbar_contract::records::RESERVED_UNITS.contains(&class)
         || plane_decls().iter().any(|d| {
             (d.billable_classes.iter()).any(|c| c.family == TOKEN_FAMILY && c.class == class)
@@ -447,7 +450,7 @@ pub fn token_series(
     lane: &str,
     counts: &std::collections::BTreeMap<String, Count>,
 ) -> Vec<(String, Count)> {
-    use crate::plane_driver::registry::{plane_decls, TOKEN_FAMILY};
+    use crate::plane_driver::registry::{TOKEN_FAMILY, plane_decls};
     let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(lane);
     let owner = plane_decls().iter().find(|d| {
         if plane.is_empty() {
@@ -673,7 +676,11 @@ impl<V> Sharded<V> {
     }
 }
 
+#[derive(Default)]
 struct GovCaches {
+    revision: u64,
+    key_revisions: HashMap<String, u64>,
+    credential_revisions: HashMap<String, u64>,
     by_id: HashMap<String, Arc<VirtualKey>>,
 
     by_credential: CredentialIndex,
@@ -682,7 +689,8 @@ struct GovCaches {
 pub type CredentialIndex = HashMap<(String, String), (Arc<VirtualKey>, CredentialSecret)>;
 
 pub struct GovState {
-    store: Arc<dyn RecordStore>,
+    core: Arc<crate::persistence::facade::CoreStore>,
+    identity_claims: claims::AsyncClaimSet<IdentityClaimKey>,
 
     caches: Arc<RwLock<GovCaches>>,
 
@@ -696,9 +704,10 @@ pub struct GovState {
 
     unit_checkpoints: unit_checkpoint::UnitCheckpointBook,
 
-    correction_claims: claims::ClaimSet<String>,
+    correction_claims: claims::AsyncClaimSet<String>,
 
     corrections: std::sync::Mutex<HashMap<String, state::ledger_adjust::PendingCorrection>>,
+    ticket_operations: tickets::TicketOperations,
 
     budget_flushes:
         std::sync::Mutex<std::collections::BTreeMap<(String, u64), Arc<BudgetFlushFlight>>>,
@@ -719,13 +728,12 @@ pub struct GovState {
 
     refresh_order: Arc<CacheOrder>,
 
-    mutation_claims: claims::ClaimSet<MutationKey>,
+    #[cfg(test)]
+    identity_wait_observer: std::sync::Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
 
     self_mint_holds: std::sync::atomic::AtomicBool,
 
     transition_self_holds: RwLock<std::collections::BTreeSet<String>>,
-
-    store_calls: std::sync::OnceLock<Arc<dyn busbar_contract::store_calls::StoreCalls>>,
 
     caller_refs: crate::plane_driver::CallerRefs,
 
@@ -734,12 +742,6 @@ pub struct GovState {
     amendments: Arc<crate::audit::amend::NodeAmendments>,
 
     boot_caller_ref: zeroize::Zeroizing<[u8; 32]>,
-}
-
-#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
-enum MutationKey {
-    Key(String),
-    Subject(String),
 }
 
 /// The order of the key caches' writes (see `GovState::refresh_order`). Every reload takes a
@@ -842,16 +844,20 @@ pub mod mint_policy;
 pub mod group_provision;
 
 mod state;
+pub use state::identity_runtime::{IdentityClaimKey, IdentityMutationGuard};
 pub(crate) use state::key_row_expired;
 pub use state::{
-    metering_lane, AdjustRefused, Adjustment, KeyMutationError, MintError, PricedBucket,
-    UsageAdjustment, ADJUST_DOWN_BUCKET, ADJUST_UP_BUCKET,
+    ADJUST_DOWN_BUCKET, ADJUST_UP_BUCKET, AdjustRefused, Adjustment, KeyMutationError, MintError,
+    PricedBucket, UsageAdjustment, metering_lane,
 };
 
 mod tickets;
-pub use tickets::{TicketRefusal, TICKET_RECORD_KIND, TICKET_SPENT_KIND};
+pub use tickets::{TICKET_RECORD_KIND, TICKET_SPENT_KIND, TicketRefusal, ticket_record_live};
+pub(crate) use tickets::{
+    legacy_ticket_authorizes, legacy_ticket_expiry, legacy_ticket_record, legacy_ticket_token,
+};
 
-/// Which self-serve mint operation [`mint_self_offloaded`] should run on the blocking pool.
+/// Which native asynchronous self-serve mint operation to perform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelfMintOp {
     Issue,
@@ -911,18 +917,16 @@ pub async fn mint_self_offloaded(
     exp: u64,
     now: u64,
 ) -> Result<(VirtualKey, String), SelfMintError> {
-    tokio::task::spawn_blocking(move || match op {
-        SelfMintOp::Issue => gov.issue_self_scoped(&user_sub, &provider, allowed_scopes, exp, now),
+    match op {
+        SelfMintOp::Issue => {
+            gov.issue_self_scoped(&user_sub, &provider, allowed_scopes, exp, now)
+                .await
+        }
         SelfMintOp::Refresh => {
             gov.refresh_self_scoped(&user_sub, &provider, allowed_scopes, exp, now)
+                .await
         }
-    })
-    .await
-    .unwrap_or_else(|e| {
-        Err(SelfMintError::Store(RecordStoreError(format!(
-            "self-serve mint task failed to join: {e}"
-        ))))
-    })
+    }
 }
 
 pub fn synthesize_principal_key(
@@ -1206,7 +1210,7 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 }
 
 pub use busbar_contract::records::{
-    CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, RecordStore, RecordStoreError,
+    CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, RecordStoreError,
     RecordStoreResult, SecretForm, UsageDelta, VirtualKey,
 };
 
@@ -1385,8 +1389,7 @@ pub struct PendingMetering {
     coalesce_warn: CoalesceWarn,
 
     flight: std::sync::Mutex<std::collections::VecDeque<metering_flush::MeteringWrite>>,
-    flushing: std::sync::Mutex<Option<std::thread::ThreadId>>,
-    flush_finished: std::sync::Condvar,
+    flush_runner: BudgetFlushRunner,
 }
 
 impl Default for PendingMetering {
@@ -1403,8 +1406,7 @@ impl PendingMetering {
             shards: shards.into_boxed_slice(),
             coalesce_warn: CoalesceWarn::default(),
             flight: std::sync::Mutex::new(std::collections::VecDeque::new()),
-            flushing: std::sync::Mutex::new(None),
-            flush_finished: std::sync::Condvar::new(),
+            flush_runner: BudgetFlushRunner::default(),
         }
     }
 
@@ -1490,48 +1492,32 @@ pub fn spawn_budget_flusher(
                         purge_usage_windows(&gov).await;
                         purged_at = std::time::Instant::now();
                     }
-                    // `flush_budgets` runs SYNCHRONOUS SQLite writes (store `*_inner` on a std Mutex);
-                    // calling it inline here would block a Tokio worker thread for the duration of the
-                    // durable write. Offload to the blocking pool so the async runtime keeps serving
-                    // requests. `gov` is an Arc, so clone the handle into the blocking task; we do not
-                    // await the join (write-behind is fire-and-forget - a store error re-marks the cell
-                    // dirty and the next tick retries).
-                    //
-                    // SKIP-IF-STILL-FLUSHING: acquire the flush gate with `try_lock`; if a prior flush
-                    // is still in flight, this tick is a no-op (its dirty cells stay dirty and the next
-                    // free tick flushes them) rather than racing a second overlapping flush. The guard
-                    // is moved INTO the blocking task and dropped when the flush returns, releasing the
-                    // gate for the next tick.
+                    // The held gate joins periodic work at shutdown and skips
+                    // overlapping ticks without blocking an executor thread.
                     let Ok(guard) = flush_gate.clone().try_lock_owned() else {
                         continue;
                     };
                     let gov = gov.clone();
                     let app = app.clone();
-                    tokio::task::spawn_blocking(move || {
-                        resume_current_correction_verdicts(&gov, app.as_ref());
-                        let _ = gov.flush_unit_checkpoints();
-                        gov.flush_budgets();
-                        gov.flush_metering();
+                    tokio::spawn(async move {
+                        resume_current_correction_verdicts(&gov, app.as_ref()).await;
+                        let _ = gov.flush_unit_checkpoints().await;
+                        gov.flush_budgets().await;
+                        gov.flush_metering().await;
                         drop(guard);
                     });
                 }
                 _ = shutdown.recv() => {
-                    // Graceful shutdown: one FINAL flush so no accrued spend/requests is lost, then exit.
-                    // WAIT for any in-flight periodic flush to drain first (`lock().await`) so the final
-                    // flush never overlaps one - otherwise the final flush's newer snapshot could be
-                    // overwritten by the older in-flight flush completing after it. This one is AWAITED
-                    // (via spawn_blocking + join) rather than fire-and-forget: the task is about to break
-                    // and stop ticking, so the final durable write must COMPLETE before we exit or the
-                    // last window's accrued spend is lost. It still runs on the blocking pool (not inline
-                    // on the worker), and a join error falls back to nothing flushed - best-effort.
+                    // Drain the current driver before final flushes. Admission
+                    // has stopped; unresolved custody remains explicitly held.
                     let guard = flush_gate.clone().lock_owned().await;
                     let gov = gov.clone();
                     let app = app.clone();
-                    let _ = tokio::task::spawn_blocking(move || {
-                        resume_current_correction_verdicts(&gov, app.as_ref());
-                        let _ = gov.flush_unit_checkpoints();
-                        gov.flush_budgets_final();
-                        gov.flush_metering_final();
+                    let _ = tokio::spawn(async move {
+                        resume_current_correction_verdicts(&gov, app.as_ref()).await;
+                        let _ = gov.flush_unit_checkpoints().await;
+                        gov.flush_budgets_final().await;
+                        gov.flush_metering_final().await;
                         drop(guard);
                     })
                     .await;
@@ -1542,7 +1528,7 @@ pub fn spawn_budget_flusher(
     })
 }
 
-fn resume_current_correction_verdicts(
+async fn resume_current_correction_verdicts(
     gov: &Arc<GovState>,
     app: Option<&Arc<crate::state::AppHandle>>,
 ) {
@@ -1555,7 +1541,7 @@ fn resume_current_correction_verdicts(
             .map(|_| snapshot.cost.clone())
     });
     if let Some(cost) = cost {
-        if let Err(error) = gov.resume_correction_verdicts(&cost) {
+        if let Err(error) = gov.resume_correction_verdicts(&cost).await {
             diag_warn!(crate::diagnostics::BUDGET_FLUSH_PARTIAL_FAILURE,
                 error = %error, "audited correction verdict remains retained for a later flush");
         }
@@ -1567,14 +1553,14 @@ pub const USAGE_WINDOW_HORIZON_SECS: u64 = 31 * SECS_PER_DAY;
 pub const USAGE_PURGE_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 pub async fn purge_usage_windows(gov: &GovState) {
-    let Some(calls) = gov.store_calls() else {
+    let Ok(core) = gov.core_store() else {
         return;
     };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let before = now.saturating_sub(USAGE_WINDOW_HORIZON_SECS);
-    match calls.purge_usage_before(before).await {
+    match core.ledger().prune_usage_before(before).await {
         Ok(purged) => tracing::debug!(
             purged,
             before,
@@ -1582,8 +1568,7 @@ pub async fn purge_usage_windows(gov: &GovState) {
         ),
         Err(e) => tracing::warn!(
             error = %e,
-            "usage ledger: this store's usage windows are NOT purged past the {}-day horizon \
-             (it grows until the store implements the purge); retried in an hour",
+            "usage ledger: pruning beyond the {}-day horizon failed; retained for retry",
             USAGE_WINDOW_HORIZON_SECS / SECS_PER_DAY
         ),
     }
@@ -1596,6 +1581,10 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/metering_flush_custody.rs"]
 mod metering_flush_custody_tests;
+
+#[cfg(test)]
+#[path = "tests/native_ledger_fixture.rs"]
+mod native_ledger_fixture;
 
 #[cfg(test)]
 #[path = "tests/limits_tests.rs"]

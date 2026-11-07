@@ -1,0 +1,30 @@
+[package]
+name = "busbar-migrations"
+version = "1.6.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+license = "Apache-2.0"
+description = "Retained startup upgrades and supported historical Busbar formats."
+
+[dependencies]
+busbar-contract = { path = "../busbar-contract" }
+busbar-kernel = { path = "../busbar-kernel", default-features = false }
+busbar-kernel-identity = { path = "../busbar-kernel-identity" }
+busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
+busbar-kernel-wal = { path = "../busbar-kernel-wal" }
+busbar-kernel-audit = { path = "../busbar-kernel-audit" }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+sha2 = { workspace = true }
+zeroize = { workspace = true }
+getrandom = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+
+[dev-dependencies]
+busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }

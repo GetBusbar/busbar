@@ -34,7 +34,7 @@ fn isolated() -> bool {
     true
 }
 
-fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
+async fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
     crate::dist_root_install::install();
     let store_library = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
@@ -86,15 +86,11 @@ fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -107,16 +103,20 @@ fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
-    busbar_kernel::boot::hydrate_all(&app).expect("the actual Store hydrates");
+    busbar_kernel::boot::hydrate_all(&app)
+        .await
+        .expect("the actual Store hydrates");
     (app, Scratch(directory))
 }
 
@@ -145,7 +145,7 @@ async fn plugin_archive_preconditions_fence_replacement_delete_and_rollback() {
     if isolated() {
         return;
     }
-    let (app, scratch) = application();
+    let (app, scratch) = application().await;
     let overlay = app.overlay_path.clone().unwrap();
     let (_, router, handle) =
         busbar_core_admin::build_split_routers_with_limits(app, 1 << 20, 16, false);
@@ -182,7 +182,8 @@ async fn plugin_archive_preconditions_fence_replacement_delete_and_rollback() {
         .unwrap();
     assert_eq!(row["archive_sha256"], digest);
     let version = handle.load().config_version;
-    let before_overlay = serde_json::to_value(overlay.read_required().unwrap()).unwrap();
+    let before_overlay =
+        serde_json::to_value(overlay.read_required_async().await.unwrap()).unwrap();
     let mut replacement = archive.clone();
     // Gzip mtime belongs to the archive, outside the signed member. Same library, different archive.
     replacement[4..8].copy_from_slice(&42_u32.to_le_bytes());
@@ -264,7 +265,7 @@ async fn plugin_archive_preconditions_fence_replacement_delete_and_rollback() {
     assert_eq!(std::fs::read(&path).unwrap(), replacement);
     assert_eq!(handle.load().config_version, version);
     assert_eq!(
-        serde_json::to_value(overlay.read_required().unwrap()).unwrap(),
+        serde_json::to_value(overlay.read_required_async().await.unwrap()).unwrap(),
         before_overlay
     );
     body(
@@ -333,7 +334,7 @@ async fn restart_if_match_is_checked_at_serialized_admission_without_stale_drain
     if isolated() {
         return;
     }
-    let (app, _scratch) = application();
+    let (app, _scratch) = application().await;
     let (_, router, handle) =
         busbar_core_admin::build_split_routers_with_limits(app, 1 << 20, 16, false);
     let (shutdown, mut receiver) = tokio::sync::broadcast::channel(4);

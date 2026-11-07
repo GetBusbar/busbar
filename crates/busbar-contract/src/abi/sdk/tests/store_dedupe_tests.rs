@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use super::*;
-use crate::abi::store::OpId;
+use crate::records::OpId;
 use crate::records::{
     MeteringDelta, ModelTokensDelta, PlaneDisposition, PlaneRecordRef, UsageDelta,
 };

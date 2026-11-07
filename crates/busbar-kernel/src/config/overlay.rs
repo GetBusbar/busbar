@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-pub use super::overlay_legacy::{decode_legacy_overlay, parse_legacy_overlay};
+pub use super::overlay_native::{migration_rows, MigrationRows};
 pub use super::overlay_store::OverlayStore;
 use super::{ConfigMgmtCfg, DeployCfg, GroupCfg, HookCfg, RateEntryCfg, RootCfg, StoreCfg, TlsCfg};
 use crate::diagnostics::{diag_error, CONFIG_OVERLAY_PATCH_UNPARSABLE};
@@ -30,50 +30,6 @@ fn default_overlay_version() -> u32 {
 }
 fn backend(value: Option<&OverlayStore>) -> Result<&OverlayStore, String> {
     value.ok_or_else(|| NO_WRITABLE_OVERLAY_MSG.to_string())
-}
-pub fn persist(
-    store: Option<&OverlayStore>,
-    hooks: &HashMap<String, HookCfg>,
-    global_hooks: &[String],
-    deleted_add: Option<&str>,
-    deleted_remove: Option<&str>,
-    base_hook_names: &HashSet<String>,
-) -> Result<(), String> {
-    backend(store)?.update(|doc| {
-        if let Some(name) = deleted_add {
-            if !doc.deleted.iter().any(|n| n == name) {
-                doc.deleted.push(name.into());
-            }
-        }
-        if let Some(name) = deleted_remove {
-            doc.deleted.retain(|n| n != name);
-        }
-        doc.hooks = hooks.clone();
-        doc.global_hooks = global_hooks.to_vec();
-        doc.deleted
-            .retain(|name| !hooks.contains_key(name) && base_hook_names.contains(name));
-    })
-}
-pub fn persist_groups(
-    store: Option<&OverlayStore>,
-    groups: &BTreeMap<String, GroupCfg>,
-    deleted_add: Option<&str>,
-    deleted_remove: Option<&str>,
-    base_group_names: &HashSet<String>,
-) -> Result<(), String> {
-    backend(store)?.update(|doc| {
-        if let Some(name) = deleted_add {
-            if !doc.deleted_groups.iter().any(|n| n == name) {
-                doc.deleted_groups.push(name.into());
-            }
-        }
-        if let Some(name) = deleted_remove {
-            doc.deleted_groups.retain(|n| n != name);
-        }
-        doc.groups = groups.clone();
-        doc.deleted_groups
-            .retain(|name| !groups.contains_key(name) && base_group_names.contains(name));
-    })
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -198,21 +154,6 @@ impl RootSettings {
         }
     }
 }
-pub fn persist_root(store: Option<&OverlayStore>, settings: &RootSettings) -> Result<(), String> {
-    backend(store)?.update(|doc| {
-        doc.root = if settings.is_empty() {
-            None
-        } else {
-            Some(settings.clone())
-        }
-    })
-}
-pub fn try_persist_plugin_versions(
-    store: Option<&OverlayStore>,
-    pins: &BTreeMap<String, String>,
-) -> Result<(), String> {
-    backend(store)?.update(|doc| doc.plugin_versions = pins.clone())
-}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlaySection {
     Hooks,
@@ -274,9 +215,6 @@ impl OverlaySection {
     }
 }
 
-pub fn clear_section(store: Option<&OverlayStore>, section: OverlaySection) -> Result<(), String> {
-    backend(store)?.update(|doc| doc.clear_section(section))
-}
 /// The persisted overlay document: the API-applied hook registry + global-hook wiring, plus TOMBSTONES
 /// (`deleted`) — hooks removed via the API that must be subtracted from base config at boot. Tombstones
 /// are what let the additive `base + overlay` model express a DELETION (an additive merge alone cannot
@@ -416,37 +354,14 @@ impl OverlayDoc {
     }
 }
 
-pub fn read(store: &OverlayStore) -> Option<OverlayDoc> {
-    store.read_required().ok().flatten()
-}
 pub enum OverlayReadState {
     Absent,
     Loaded(Box<OverlayDoc>),
     Unreadable,
     VersionTooNew(u32),
 }
-pub fn read_state(store: &OverlayStore) -> OverlayReadState {
-    read_state_with_revision(store).1
-}
-
-/// A revision of the exact desired bytes read from Store, independent of the installed App version.
-/// The Store reader has already verified these bytes against its committed generation head.
-pub fn read_state_with_revision(store: &OverlayStore) -> (Option<String>, OverlayReadState) {
-    use sha2::Digest as _;
-    match store.read_bytes() {
-        Ok(bytes) => {
-            let revision = bytes
-                .as_ref()
-                .map(|bytes| hex::encode(sha2::Sha256::digest(bytes)));
-            (revision, classify_bytes(bytes))
-        }
-        Err(error) => {
-            tracing::error!(%error, "config overlay Store read failed");
-            (None, OverlayReadState::Unreadable)
-        }
-    }
-}
-pub(super) fn classify_bytes(bytes: Option<Vec<u8>>) -> OverlayReadState {
+/// Classify a current Store overlay without applying historical conversion.
+pub fn classify_bytes(bytes: Option<Vec<u8>>) -> OverlayReadState {
     let Some(bytes) = bytes else {
         return OverlayReadState::Absent;
     };
@@ -463,10 +378,6 @@ pub(super) fn classify_bytes(bytes: Option<Vec<u8>>) -> OverlayReadState {
         Err(_) => OverlayReadState::Unreadable,
     }
 }
-pub fn write(store: &OverlayStore, doc: &OverlayDoc) -> Result<(), String> {
-    store.update(|current| *current = doc.clone())
-}
-
 #[cfg(test)]
 pub fn from_state(hooks: &HashMap<String, HookCfg>, global_hooks: &[String]) -> OverlayDoc {
     OverlayDoc {
@@ -527,34 +438,6 @@ pub struct UnparseableNamedDef {
     pub raw: serde_json::Value,
 }
 
-pub fn unparseable_named_map_entries(
-    store: Option<&OverlayStore>,
-    section: crate::config::named_map::NamedMapSection,
-) -> Result<BTreeMap<String, UnparseableNamedDef>, String> {
-    let mut out = BTreeMap::new();
-    let Some(doc) = store
-        .map(OverlayStore::read_required)
-        .transpose()?
-        .flatten()
-    else {
-        return Ok(out);
-    };
-    let Some(entries) = doc.named_maps.get(section.key()) else {
-        return Ok(out);
-    };
-    for (name, def) in entries {
-        if let Err(error) = section.validate_def(name, def) {
-            out.insert(
-                name.clone(),
-                UnparseableNamedDef {
-                    error,
-                    raw: def.clone(),
-                },
-            );
-        }
-    }
-    Ok(out)
-}
 pub fn apply_pre_resolve_sections(deploy: &mut DeployCfg, doc: &OverlayDoc) {
     // Plane/config references must see overlay-owned hooks during resolution, just as they
     // already see overlay-owned named definitions. The full HookCfg (including runtime-only
@@ -592,30 +475,6 @@ pub fn apply_pre_resolve_sections(deploy: &mut DeployCfg, doc: &OverlayDoc) {
     apply_plugin_versions_to_deploy(deploy, doc);
     apply_named_maps_to_deploy(deploy, doc);
 }
-pub fn persist_named_map(
-    store: Option<&OverlayStore>,
-    section: crate::config::named_map::NamedMapSection,
-    name: &str,
-    def: Option<&serde_json::Value>,
-) -> Result<(), String> {
-    backend(store)?.update(|doc| match def {
-        Some(value) => {
-            doc.named_maps
-                .entry(section.key().into())
-                .or_default()
-                .insert(name.into(), value.clone());
-        }
-        None => {
-            if let Some(entries) = doc.named_maps.get_mut(section.key()) {
-                entries.remove(name);
-                if entries.is_empty() {
-                    doc.named_maps.remove(section.key());
-                }
-            }
-        }
-    })
-}
-
 pub fn merge_into(cfg: &mut RootCfg, doc: OverlayDoc) {
     for (name, hook) in doc.hooks {
         cfg.hooks.insert(name, hook);
@@ -650,3 +509,172 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/overlay_read_only_tests.rs"]
 mod overlay_read_only_tests;
+
+pub async fn persist_async(
+    store: Option<&OverlayStore>,
+    hooks: &HashMap<String, HookCfg>,
+    global_hooks: &[String],
+    deleted_add: Option<&str>,
+    deleted_remove: Option<&str>,
+    base_hook_names: &HashSet<String>,
+) -> Result<(), String> {
+    backend(store)?
+        .update_async(|doc| {
+            if let Some(name) = deleted_add {
+                if !doc.deleted.iter().any(|n| n == name) {
+                    doc.deleted.push(name.into());
+                }
+            }
+            if let Some(name) = deleted_remove {
+                doc.deleted.retain(|n| n != name);
+            }
+            doc.hooks = hooks.clone();
+            doc.global_hooks = global_hooks.to_vec();
+            doc.deleted
+                .retain(|name| !hooks.contains_key(name) && base_hook_names.contains(name));
+        })
+        .await
+}
+
+pub async fn persist_groups_async(
+    store: Option<&OverlayStore>,
+    groups: &BTreeMap<String, GroupCfg>,
+    deleted_add: Option<&str>,
+    deleted_remove: Option<&str>,
+    base_group_names: &HashSet<String>,
+) -> Result<(), String> {
+    backend(store)?
+        .update_async(|doc| {
+            if let Some(name) = deleted_add {
+                if !doc.deleted_groups.iter().any(|n| n == name) {
+                    doc.deleted_groups.push(name.into());
+                }
+            }
+            if let Some(name) = deleted_remove {
+                doc.deleted_groups.retain(|n| n != name);
+            }
+            doc.groups = groups.clone();
+            doc.deleted_groups
+                .retain(|name| !groups.contains_key(name) && base_group_names.contains(name));
+        })
+        .await
+}
+
+pub async fn persist_root_async(
+    store: Option<&OverlayStore>,
+    settings: &RootSettings,
+) -> Result<(), String> {
+    backend(store)?
+        .update_async(|doc| {
+            doc.root = if settings.is_empty() {
+                None
+            } else {
+                Some(settings.clone())
+            }
+        })
+        .await
+}
+
+pub async fn try_persist_plugin_versions_async(
+    store: Option<&OverlayStore>,
+    pins: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    backend(store)?
+        .update_async(|doc| doc.plugin_versions = pins.clone())
+        .await
+}
+
+pub async fn clear_section_async(
+    store: Option<&OverlayStore>,
+    section: OverlaySection,
+) -> Result<(), String> {
+    backend(store)?
+        .update_async(|doc| doc.clear_section(section))
+        .await
+}
+
+pub async fn write_async(store: &OverlayStore, doc: &OverlayDoc) -> Result<(), String> {
+    store.update_async(|current| *current = doc.clone()).await
+}
+
+pub async fn persist_named_map_async(
+    store: Option<&OverlayStore>,
+    section: crate::config::named_map::NamedMapSection,
+    name: &str,
+    def: Option<&serde_json::Value>,
+) -> Result<(), String> {
+    backend(store)?
+        .update_async(|doc| match def {
+            Some(value) => {
+                doc.named_maps
+                    .entry(section.key().into())
+                    .or_default()
+                    .insert(name.into(), value.clone());
+            }
+            None => {
+                if let Some(entries) = doc.named_maps.get_mut(section.key()) {
+                    entries.remove(name);
+                    if entries.is_empty() {
+                        doc.named_maps.remove(section.key());
+                    }
+                }
+            }
+        })
+        .await
+}
+
+pub async fn read_async(store: &OverlayStore) -> Option<OverlayDoc> {
+    store.read_required_async().await.ok().flatten()
+}
+
+pub async fn read_state_async(store: &OverlayStore) -> OverlayReadState {
+    read_state_with_revision_async(store).await.1
+}
+
+/// A revision of the exact desired bytes read from Store, independent of the installed App version.
+/// The Store reader has already verified these bytes against its committed generation head.
+pub async fn read_state_with_revision_async(
+    store: &OverlayStore,
+) -> (Option<String>, OverlayReadState) {
+    use sha2::Digest as _;
+    match store.read_bytes_async().await {
+        Ok(bytes) => {
+            let revision = bytes
+                .as_ref()
+                .map(|bytes| hex::encode(sha2::Sha256::digest(bytes)));
+            (revision, classify_bytes(bytes))
+        }
+        Err(error) => {
+            tracing::error!(%error, "config overlay Store read failed");
+            (None, OverlayReadState::Unreadable)
+        }
+    }
+}
+
+pub async fn unparseable_named_map_entries_async(
+    store: Option<&OverlayStore>,
+    section: crate::config::named_map::NamedMapSection,
+) -> Result<BTreeMap<String, UnparseableNamedDef>, String> {
+    let mut out = BTreeMap::new();
+    let Some(doc) = (match store {
+        Some(store) => store.read_required_async().await?,
+        None => None,
+    }) else {
+        return Ok(out);
+    };
+    let Some(entries) = doc.named_maps.get(section.key()) else {
+        return Ok(out);
+    };
+    for (name, def) in entries {
+        if let Err(error) = section.validate_def(name, def) {
+            out.insert(
+                name.clone(),
+                UnparseableNamedDef {
+                    error,
+                    raw: def.clone(),
+                },
+            );
+        }
+    }
+    Ok(out)
+}

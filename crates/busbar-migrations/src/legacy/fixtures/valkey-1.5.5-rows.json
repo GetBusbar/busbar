@@ -1,0 +1,175 @@
+{
+ "busbar:audit": {
+  "has_ttl": false,
+  "type": "zset",
+  "value": [
+   [
+    "{\"seq\":1,\"ts\":1791956409,\"action\":\"key.create\",\"resource\":\"key:vk_a935307745d2299267dcc3e91546489d\",\"outcome\":\"applied\",\"principal\":\"admin\",\"prev_hash\":\"\",\"hash\":\"cf23344f7e72706b42365070ff8790626902f4445793be0cea882f47638e4242\"}",
+    "1"
+   ],
+   [
+    "{\"seq\":2,\"ts\":1791956409,\"action\":\"key.create\",\"resource\":\"key:vk_86f7030e07da9fc22bd60ab1d7c5dd46\",\"outcome\":\"applied\",\"principal\":\"admin\",\"prev_hash\":\"cf23344f7e72706b42365070ff8790626902f4445793be0cea882f47638e4242\",\"hash\":\"fd251cb5128c8176a92a71d6531a43b9daa7b7c1185e4f74685dfc1463ce8b3b\"}",
+    "2"
+   ]
+  ]
+ },
+ "busbar:key:vk_86f7030e07da9fc22bd60ab1d7c5dd46": {
+  "has_ttl": false,
+  "type": "string",
+  "value": "{\"id\":\"vk_86f7030e07da9fc22bd60ab1d7c5dd46\",\"generation_hash\":\"binding:vk_86f7030e07da9fc22bd60ab1d7c5dd46:cebda1bcb1fe3a61429ab557250b6133\",\"name\":\"fixture-ungrouped\",\"allowed_pools\":null,\"enabled\":true,\"created_at\":1791956409,\"group\":null,\"labels\":{},\"expires_at\":null,\"deleted_at\":null,\"revision\":2}"
+ },
+ "busbar:key:vk_a935307745d2299267dcc3e91546489d": {
+  "has_ttl": false,
+  "type": "string",
+  "value": "{\"id\":\"vk_a935307745d2299267dcc3e91546489d\",\"generation_hash\":\"binding:vk_a935307745d2299267dcc3e91546489d:3d9c3ceba300264e1567d00e7f15c637\",\"name\":\"fixture-grouped\",\"allowed_pools\":null,\"enabled\":true,\"created_at\":1791956408,\"group\":\"fixture\",\"labels\":{},\"expires_at\":null,\"deleted_at\":null,\"revision\":1}"
+ },
+ "busbar:keys": {
+  "has_ttl": false,
+  "type": "set",
+  "value": [
+   "vk_86f7030e07da9fc22bd60ab1d7c5dd46",
+   "vk_a935307745d2299267dcc3e91546489d"
+  ]
+ },
+ "busbar:keys:byrev": {
+  "has_ttl": false,
+  "type": "zset",
+  "value": [
+   [
+    "vk_a935307745d2299267dcc3e91546489d",
+    "1"
+   ],
+   [
+    "vk_86f7030e07da9fc22bd60ab1d7c5dd46",
+    "2"
+   ]
+  ]
+ },
+ "busbar:metering:1791936000": {
+  "has_ttl": false,
+  "type": "set",
+  "value": [
+   "busbar:metering:1791936000:vk_86f7030e07da9fc22bd60ab1d7c5dd46|m-cache|fixture-openai",
+   "busbar:metering:1791936000:vk_86f7030e07da9fc22bd60ab1d7c5dd46|m-chat|fixture-openai",
+   "busbar:metering:1791936000:vk_a935307745d2299267dcc3e91546489d|m-cache|fixture-openai",
+   "busbar:metering:1791936000:vk_a935307745d2299267dcc3e91546489d|m-chat|fixture-openai"
+  ]
+ },
+ "busbar:metering:1791936000:vk_86f7030e07da9fc22bd60ab1d7c5dd46|m-cache|fixture-openai": {
+  "has_ttl": false,
+  "type": "hash",
+  "value": {
+   "billable_requests": "1",
+   "key_group_at_use": "",
+   "key_id": "vk_86f7030e07da9fc22bd60ab1d7c5dd46",
+   "model": "m-cache",
+   "pricing_version": "",
+   "provider": "fixture-openai",
+   "requests": "1",
+   "tokens_cache_read": "4",
+   "tokens_cache_write": "0",
+   "tokens_input": "7",
+   "tokens_output": "7"
+  }
+ },
+ "busbar:metering:1791936000:vk_86f7030e07da9fc22bd60ab1d7c5dd46|m-chat|fixture-openai": {
+  "has_ttl": false,
+  "type": "hash",
+  "value": {
+   "billable_requests": "1",
+   "key_group_at_use": "",
+   "key_id": "vk_86f7030e07da9fc22bd60ab1d7c5dd46",
+   "model": "m-chat",
+   "pricing_version": "",
+   "provider": "fixture-openai",
+   "requests": "1",
+   "tokens_cache_read": "0",
+   "tokens_cache_write": "0",
+   "tokens_input": "11",
+   "tokens_output": "7"
+  }
+ },
+ "busbar:metering:1791936000:vk_a935307745d2299267dcc3e91546489d|m-cache|fixture-openai": {
+  "has_ttl": false,
+  "type": "hash",
+  "value": {
+   "billable_requests": "1",
+   "key_group_at_use": "",
+   "key_id": "vk_a935307745d2299267dcc3e91546489d",
+   "model": "m-cache",
+   "pricing_version": "",
+   "provider": "fixture-openai",
+   "requests": "1",
+   "tokens_cache_read": "4",
+   "tokens_cache_write": "0",
+   "tokens_input": "7",
+   "tokens_output": "7"
+  }
+ },
+ "busbar:metering:1791936000:vk_a935307745d2299267dcc3e91546489d|m-chat|fixture-openai": {
+  "has_ttl": false,
+  "type": "hash",
+  "value": {
+   "billable_requests": "2",
+   "key_group_at_use": "",
+   "key_id": "vk_a935307745d2299267dcc3e91546489d",
+   "model": "m-chat",
+   "pricing_version": "",
+   "provider": "fixture-openai",
+   "requests": "2",
+   "tokens_cache_read": "0",
+   "tokens_cache_write": "0",
+   "tokens_input": "22",
+   "tokens_output": "14"
+  }
+ },
+ "busbar:revision": {
+  "has_ttl": false,
+  "type": "string",
+  "value": "2"
+ },
+ "busbar:schema": {
+  "has_ttl": false,
+  "type": "string",
+  "value": "6"
+ },
+ "busbar:usage:group:fixture@day:1791936000": {
+  "has_ttl": false,
+  "type": "hash",
+  "value": {
+   "billable_requests": "3",
+   "m:m-cache:cache_read": "4",
+   "m:m-cache:input": "7",
+   "m:m-cache:output": "7",
+   "m:m-chat:input": "22",
+   "m:m-chat:output": "14",
+   "requests": "4"
+  }
+ },
+ "busbar:usage:vk_86f7030e07da9fc22bd60ab1d7c5dd46:0": {
+  "has_ttl": false,
+  "type": "hash",
+  "value": {
+   "billable_requests": "2",
+   "m:m-cache:cache_read": "4",
+   "m:m-cache:input": "7",
+   "m:m-cache:output": "7",
+   "m:m-chat:input": "11",
+   "m:m-chat:output": "7",
+   "requests": "2"
+  }
+ },
+ "busbar:usage:vk_a935307745d2299267dcc3e91546489d:0": {
+  "has_ttl": false,
+  "type": "hash",
+  "value": {
+   "billable_requests": "3",
+   "m:m-cache:cache_read": "4",
+   "m:m-cache:input": "7",
+   "m:m-cache:output": "7",
+   "m:m-chat:input": "22",
+   "m:m-chat:output": "14",
+   "requests": "4"
+  }
+ }
+}

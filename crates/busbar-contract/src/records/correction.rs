@@ -3,8 +3,21 @@
 
 //! Exact atomic raw-usage correction. All comparisons observe one pre-state; replacements and
 
-use super::{MeteringRow, UsageLedger};
-use crate::abi::store::OpId;
+use super::{MeteringRow, OpId, UsageLedger};
+
+/// Normalize every stored count in a correction candidate to scale six without changing the
+/// original request. Fingerprints and dedupe must continue to use that original request.
+pub fn normalized(request: &Request) -> Result<Request, crate::count::CountError> {
+    let mut request = request.clone();
+    for row in &mut request.metering {
+        row.normalize_scale6()?;
+    }
+    for change in &mut request.usage {
+        change.expected.normalize_scale6()?;
+        change.replacement.normalize_scale6()?;
+    }
+    Ok(request)
+}
 
 /// Correction request and result version.
 pub const VERSION: u32 = 1;

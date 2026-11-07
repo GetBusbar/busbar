@@ -28,11 +28,7 @@ fn a_config_without_a_store_block_is_refused() {
         "the absent store is the one refusal"
     );
     let line = config::store_required();
-    for part in [
-        "store is required",
-        "`store: {module: memory}`",
-        "busbar --migrate-config <config.yaml>",
-    ] {
+    for part in ["store is required", "configured Store module"] {
         assert!(line.contains(part), "the refusal names `{part}`: {line}");
     }
 }
@@ -40,7 +36,8 @@ fn a_config_without_a_store_block_is_refused() {
 #[test]
 fn migrate_inserts_the_memory_store_into_a_config_without_one() {
     crate::dist_root_install::install();
-    let out = config::migrate::migrate_config(NO_STORE).expect("the no-store document migrates");
+    let out = busbar_migrations::config::migrate::migrate_config(NO_STORE)
+        .expect("the no-store document migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("the output is YAML");
     let store = doc.get("store").expect("the migrated config names a store");
     let want: serde_yaml::Value = serde_yaml::from_str("module: memory").expect("yaml");
@@ -63,7 +60,8 @@ fn migrate_inserts_the_memory_store_into_a_config_without_one() {
         "no banner on a migration with nothing to decide"
     );
 
-    let again = config::migrate::migrate_config(&out.yaml).expect("the output migrates");
+    let again =
+        busbar_migrations::config::migrate::migrate_config(&out.yaml).expect("the output migrates");
     assert_eq!(again.yaml, out.yaml, "a migrated config migrates to itself");
     assert!(
         !again.changes.iter().any(|c| c.starts_with("store")),
@@ -74,7 +72,7 @@ fn migrate_inserts_the_memory_store_into_a_config_without_one() {
     let deploy: config::DeployCfg = serde_yaml::from_str(&out.yaml).expect("the output parses");
     assert_eq!(
         deploy.store.map(|s| s.module),
-        Some(config::migrated_store_module().to_string())
+        Some(busbar_migrations::config::migrated_store_module().to_string())
     );
 }
 
@@ -82,14 +80,14 @@ fn migrate_inserts_the_memory_store_into_a_config_without_one() {
 fn migrate_names_the_module_of_a_store_block_without_one_and_leaves_a_named_one() {
     crate::dist_root_install::install();
     let unnamed = format!("{NO_STORE}store:\n  settings: {{ k: v }}\n");
-    let out = config::migrate::migrate_config(&unnamed).expect("migrates");
+    let out = busbar_migrations::config::migrate::migrate_config(&unnamed).expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("yaml");
     let want: serde_yaml::Value =
         serde_yaml::from_str("settings: { k: v }\nmodule: memory").expect("yaml");
     assert_eq!(doc.get("store"), Some(&want));
 
     let named = format!("{NO_STORE}store:\n  module: acme-durable\n");
-    let out = config::migrate::migrate_config(&named).expect("migrates");
+    let out = busbar_migrations::config::migrate::migrate_config(&named).expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("yaml");
     let want: serde_yaml::Value = serde_yaml::from_str("module: acme-durable").expect("yaml");
     assert_eq!(doc.get("store"), Some(&want));
@@ -100,16 +98,9 @@ fn migrate_names_the_module_of_a_store_block_without_one_and_leaves_a_named_one(
 fn the_store_double_answers_to_the_migrated_store_module() {
     crate::dist_root_install::install();
     assert_eq!(
-        busbar_kernel::config::migrated_store_module(),
-        busbar_kernel::config::migration_table::text("store_1_5_default")
+        busbar_migrations::config::migrated_store_module(),
+        busbar_kernel::config::declared_vocabulary::text("store_1_5_default")
     );
-    assert!(!busbar_kernel::config::migrated_store_module().is_empty());
-    let refusal = busbar_kernel::config::store_required();
-    assert!(
-        refusal.contains(&format!(
-            "store: {{module: {}}}",
-            busbar_kernel::config::migrated_store_module()
-        )),
-        "{refusal}"
-    );
+    assert!(!busbar_migrations::config::migrated_store_module().is_empty());
+    assert!(busbar_kernel::config::store_required().contains("store is required"));
 }

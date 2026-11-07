@@ -180,7 +180,16 @@ pub type GroupScope = Arc<dyn Fn(&[String]) -> bool + Send + Sync>;
 
 pub type RewriteChain = Vec<(Duration, Arc<dyn RoutingPolicy>)>;
 
-pub type HookRead = Arc<dyn Fn(&str, Option<&str>, &str, bool) + Send + Sync>;
+pub type HookRead = Arc<
+    dyn for<'a> Fn(
+            &'a str,
+            Option<&'a str>,
+            &'a str,
+            bool,
+        ) -> crate::audit::amend::ReadConfirmation<'a>
+        + Send
+        + Sync,
+>;
 
 pub struct UnitHooks {
     pub request_id: u64,
@@ -260,7 +269,13 @@ pub trait CallerFacts: Send + Sync {
 
     fn budget(&self, principal: &str) -> Vec<BudgetBucketState>;
 
-    fn hook_read(&self, hook: &str, principal: Option<&str>, dialect: &str, identity: bool);
+    fn hook_read<'a>(
+        &'a self,
+        hook: &'a str,
+        principal: Option<&'a str>,
+        dialect: &'a str,
+        identity: bool,
+    ) -> crate::audit::amend::ReadConfirmation<'a>;
 
     fn denied_taps(&self, taps: &[TapEntry], request_id: u64, dialect: &str, status: u16) {
         let shape = StageShape::zeroed(request_id, "", dialect, false);
@@ -344,7 +359,8 @@ impl Parts {
             }),
             reads: Arc::new(
                 move |hook: &str, principal: Option<&str>, dialect: &str, id: bool| {
-                    reads_caller.hook_read(hook, principal, dialect, id);
+                    let caller = reads_caller.clone();
+                    Box::pin(async move { caller.hook_read(hook, principal, dialect, id).await })
                 },
             ),
             dialect: dialects
@@ -886,9 +902,13 @@ impl Asked<'_> {
         }
     }
 
-    fn read(&self, hook: &str, identity: bool) {
+    async fn read(
+        &self,
+        hook: &str,
+        identity: bool,
+    ) -> Result<(), busbar_kernel_audit::amend::AmendPersistError> {
         let whose = self.hooks.key.as_ref().map(|k| k.id.as_str());
-        (self.hooks.reads)(hook, whose, &self.view.dialect, identity);
+        (self.hooks.reads)(hook, whose, &self.view.dialect, identity).await
     }
 
     async fn decide(&self, resolved: &ResolvedPolicy) -> (Decided, Option<HookApplied>) {
@@ -915,8 +935,13 @@ impl Asked<'_> {
             budget_remaining: None,
             budget: &self.hooks.budget,
         };
-        if req.prompt.is_some() {
-            self.read(policy.name(), req.identity.is_some());
+        if req.prompt.is_some()
+            && self
+                .read(policy.name(), req.identity.is_some())
+                .await
+                .is_err()
+        {
+            return (Decided::Reject, None);
         }
         let key = format!("{}@{}", policy.name(), self.pool);
         let decided = match tokio::time::timeout(
@@ -1001,8 +1026,13 @@ impl Asked<'_> {
                 },
                 ..req.clone()
             };
-            if fb_req.prompt.is_some() {
-                self.read(fb.policy.name(), fb_req.identity.is_some());
+            if fb_req.prompt.is_some()
+                && self
+                    .read(fb.policy.name(), fb_req.identity.is_some())
+                    .await
+                    .is_err()
+            {
+                return Decided::Reject;
             }
             let key = format!("{}@{}", fb.policy.name(), self.pool);
             match tokio::time::timeout(
@@ -1514,7 +1544,9 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         for (timeout, hook) in &hooks.rewrites {
             let req = view.request(hooks.request_id, &pool, true, None);
             if req.prompt.is_some() {
-                (hooks.reads)(hook.name(), None, &view.dialect, false);
+                (hooks.reads)(hook.name(), None, &view.dialect, false)
+                    .await
+                    .map_err(|_| fault_veto())?;
             }
             let outcome = hook.transform(&req, *timeout).await;
             drop(req);
@@ -1938,12 +1970,18 @@ fn fire_request_taps(hooks: &UnitHooks, view: &Projection, pool: &str) {
             shape_only.clone()
         };
         let Some(tap) = tap else { continue };
-        if *send_prompt {
-            (hooks.reads)(hook.name(), None, &view.dialect, false);
-        }
+        let reads = hooks.reads.clone();
+        let hook_name = hook.name().to_owned();
+        let dialect = view.dialect.clone();
+        let content = *send_prompt;
         let policy = Arc::clone(hook);
         let budget = *timeout;
-        spawn_bounded_tap(async move { policy.notify(tap, budget).await });
+        spawn_bounded_tap(async move {
+            if content && (reads)(&hook_name, None, &dialect, false).await.is_err() {
+                return;
+            }
+            policy.notify(tap, budget).await;
+        });
     }
 }
 
@@ -2115,13 +2153,20 @@ impl SessionStage {
                 *send_prompt,
                 send_user.then(|| identity.clone()),
             );
-            if req.prompt.is_some() {
-                (hooks.reads)(
+            if req.prompt.is_some()
+                && (hooks.reads)(
                     policy.name(),
                     self.principal.as_deref(),
                     &view.dialect,
                     req.identity.is_some(),
-                );
+                )
+                .await
+                .is_err()
+            {
+                return StageAnswer::Stop {
+                    status: 503,
+                    words: "content access audit is unconfirmed".into(),
+                };
             }
             let ctx = RoutingContext {
                 pool: &self.pool,
@@ -2172,8 +2217,15 @@ impl SessionStage {
             .skip(from as usize)
         {
             let req = view.request(hooks.request_id, &self.pool, true, None);
-            if req.prompt.is_some() {
-                (hooks.reads)(hook.name(), None, &view.dialect, false);
+            if req.prompt.is_some()
+                && (hooks.reads)(hook.name(), None, &view.dialect, false)
+                    .await
+                    .is_err()
+            {
+                return StageAnswer::Stop {
+                    status: 503,
+                    words: "content access audit is unconfirmed".into(),
+                };
             }
             match hook.transform(&req, *timeout).await {
                 TransformOutcome::Rewrite(rw) => {

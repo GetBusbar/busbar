@@ -160,15 +160,10 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
         &plugin_config,
         &directory,
     )
+    .await
     .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -181,13 +176,15 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("this independent actual Store binds its rate history and usage recovery");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let gov = app.governance.as_ref().expect("actual governance").clone();
     let router = busbar_kernel::build_router(Arc::new(app));
@@ -204,7 +201,8 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
         .unwrap();
     let status = resp.status().as_u16();
     let live = gov
-        .all_keys()
+        .all_keys_async()
+        .await
         .unwrap()
         .into_iter()
         .filter(|k| k.enabled && k.deleted_at.is_none())
@@ -369,15 +367,10 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin_allowed() {
         &plugin_config,
         &directory,
     )
+    .await
     .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -390,13 +383,15 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin_allowed() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("this independent actual Store binds its rate history and usage recovery");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let gov = app.governance.as_ref().expect("actual governance").clone();
     let router = busbar_kernel::build_router(Arc::new(app));
@@ -413,7 +408,8 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin_allowed() {
         .unwrap();
     let status = resp.status().as_u16();
     let live = gov
-        .all_keys()
+        .all_keys_async()
+        .await
         .unwrap()
         .into_iter()
         .filter(|k| k.enabled && k.deleted_at.is_none())
@@ -484,8 +480,9 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
     }
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
-    fn live_rows(gov: &GovState) -> usize {
-        gov.all_keys()
+    async fn live_rows(gov: &GovState) -> usize {
+        gov.all_keys_async()
+            .await
             .unwrap()
             .into_iter()
             .filter(|k| k.enabled && k.deleted_at.is_none())
@@ -549,15 +546,11 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -570,13 +563,15 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("this independent actual Store binds its rate history and usage recovery");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let gov = app.governance.as_ref().expect("actual governance").clone();
     let router = busbar_kernel::build_router(Arc::new(app));
@@ -601,7 +596,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
         "an explicit expires_in over the max_ttl ceiling MUST be refused"
     );
     assert_eq!(
-        live_rows(&gov_refused),
+        live_rows(&gov_refused).await,
         0,
         "the refused over-ask writes NO key row"
     );
@@ -724,15 +719,11 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default_default_clampe
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -745,13 +736,15 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default_default_clampe
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("this independent actual Store binds its rate history and usage recovery");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let gov = app.governance.as_ref().expect("actual governance").clone();
     let router = busbar_kernel::build_router(Arc::new(app));
@@ -938,15 +931,10 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
         &plugin_config,
         &directory,
     )
+    .await
     .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -959,13 +947,15 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("this independent actual Store binds its rate history and usage recovery");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let gov = app.governance.as_ref().expect("actual governance").clone();
     let router = busbar_kernel::build_router(Arc::new(app));
@@ -982,7 +972,8 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
         .unwrap();
     let status = resp.status().as_u16();
     let live = gov
-        .all_keys()
+        .all_keys_async()
+        .await
         .unwrap()
         .into_iter()
         .filter(|k| k.enabled && k.deleted_at.is_none())
@@ -1153,15 +1144,10 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_over_ttl() {
         &plugin_config,
         &directory,
     )
+    .await
     .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -1174,13 +1160,15 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_over_ttl() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("this independent actual Store binds its rate history and usage recovery");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let gov = app.governance.as_ref().expect("actual governance").clone();
     let router = busbar_kernel::build_router(Arc::new(app));
@@ -1197,7 +1185,8 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_over_ttl() {
         .unwrap();
     let status = resp.status().as_u16();
     let live = gov
-        .all_keys()
+        .all_keys_async()
+        .await
         .unwrap()
         .into_iter()
         .filter(|k| k.enabled && k.deleted_at.is_none())
@@ -1368,15 +1357,10 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_allowed() {
         &plugin_config,
         &directory,
     )
+    .await
     .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -1389,13 +1373,15 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_allowed() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("this independent actual Store binds its rate history and usage recovery");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let gov = app.governance.as_ref().expect("actual governance").clone();
     let router = busbar_kernel::build_router(Arc::new(app));
@@ -1412,7 +1398,8 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_allowed() {
         .unwrap();
     let status = resp.status().as_u16();
     let live = gov
-        .all_keys()
+        .all_keys_async()
+        .await
         .unwrap()
         .into_iter()
         .filter(|k| k.enabled && k.deleted_at.is_none())

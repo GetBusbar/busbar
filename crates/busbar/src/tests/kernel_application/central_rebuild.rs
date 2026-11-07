@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use crate::root::test_plugins as plugins;
 
-#[test]
-fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
+#[tokio::test]
+async fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -45,7 +45,7 @@ fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
         Arc::new(crate::root::door_steps::Rules::default());
-    let (prior, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (prior, rotate, limits) = crate::root::real_store::build_app(
         busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the same product deployment resolves"),
         plugin_config.clone(),
@@ -56,19 +56,21 @@ fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
         None,
         &rules,
     )
+    .await
     .expect("boot");
     limits.stage_boot();
     let _book = crate::root::boot::book(&prior, &module)
+        .await
         .expect("the actual Store binds the boot rate history before activation");
-    limits.keep().expect("the original limits commit");
+    limits.keep().await.expect("the original limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(
         !prior.incremental_scan,
         "with BUSBAR_INCREMENTAL_SCAN unset the gate incremental scan must default OFF"
     );
-    let (next, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (next, rotate, limits) = crate::root::real_store::build_app(
         busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the same product deployment resolves"),
         plugin_config.clone(),
@@ -79,10 +81,11 @@ fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
         Some(&prior),
         &rules,
     )
+    .await
     .expect("rebuild");
-    limits.keep().expect("the rebuilt limits commit");
+    limits.keep().await.expect("the rebuilt limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(
         std::sync::Arc::ptr_eq(&prior.session_store, &next.session_store),
@@ -90,8 +93,8 @@ fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
     );
 }
 
-#[test]
-fn an_apply_carries_the_node_amendment_journal_its_governance_owns() {
+#[tokio::test]
+async fn an_apply_carries_the_node_amendment_journal_its_governance_owns() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -130,7 +133,7 @@ fn an_apply_carries_the_node_amendment_journal_its_governance_owns() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
         Arc::new(crate::root::door_steps::Rules::default());
-    let (prior, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (prior, rotate, limits) = crate::root::real_store::build_app(
         busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the same product deployment resolves"),
         plugin_config.clone(),
@@ -141,13 +144,15 @@ fn an_apply_carries_the_node_amendment_journal_its_governance_owns() {
         None,
         &rules,
     )
+    .await
     .expect("boot");
     limits.stage_boot();
     let _book = crate::root::boot::book(&prior, &module)
+        .await
         .expect("the actual Store binds the boot rate history before activation");
-    limits.keep().expect("the original limits commit");
+    limits.keep().await.expect("the original limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let gov = prior
         .governance
@@ -157,7 +162,7 @@ fn an_apply_carries_the_node_amendment_journal_its_governance_owns() {
         std::sync::Arc::ptr_eq(&prior.amendments, gov.amendments()),
         "the boot generation carries the journal its governance owns"
     );
-    let (next, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (next, rotate, limits) = crate::root::real_store::build_app(
         busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the same product deployment resolves"),
         plugin_config.clone(),
@@ -168,10 +173,11 @@ fn an_apply_carries_the_node_amendment_journal_its_governance_owns() {
         Some(&prior),
         &rules,
     )
+    .await
     .expect("apply");
-    limits.keep().expect("the rebuilt limits commit");
+    limits.keep().await.expect("the rebuilt limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(
         std::sync::Arc::ptr_eq(&next.amendments, &prior.amendments),
@@ -184,8 +190,8 @@ fn an_apply_carries_the_node_amendment_journal_its_governance_owns() {
     );
 }
 
-#[test]
-fn a_rejected_config_leaves_no_limits_behind() {
+#[tokio::test]
+async fn a_rejected_config_leaves_no_limits_behind() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -232,7 +238,7 @@ fn a_rejected_config_leaves_no_limits_behind() {
 
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
         Arc::new(crate::root::door_steps::Rules::default());
-    let Err(err) = busbar_kernel::build_app_from_config(
+    let Err(err) = crate::root::real_store::build_app(
         cfg,
         plugin_config,
         None,
@@ -241,7 +247,9 @@ fn a_rejected_config_leaves_no_limits_behind() {
         (None, None),
         None,
         &rules,
-    ) else {
+    )
+    .await
+    else {
         panic!("a below-floor body cap must fail validation")
     };
     assert!(

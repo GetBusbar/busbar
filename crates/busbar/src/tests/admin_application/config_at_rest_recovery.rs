@@ -2,10 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 use crate::root::test_plugins as plugins;
 use axum::http::StatusCode;
-use busbar_contract::abi::store::OpId;
-use busbar_contract::kinds::RecordBytes;
+use busbar_contract::persistence::*;
 use busbar_contract::records::*;
-use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
 use busbar_kernel::governance::at_rest::{self, AtRestKeys};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -65,7 +63,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
             std::thread::park_timeout(Duration::from_millis(5));
         }
     }
-    for failure in ["listing", "claim"] {
+    for failure in ["listing", "rewrap"] {
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -105,7 +103,12 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let native = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+            .await
+            .expect("the actual native Store bootstraps");
+        let store = RewrapStore::new(native);
+        let core = crate::root::real_store::core_over(store.clone()).await;
+        let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             config,
             plugin_config,
             None,
@@ -114,24 +117,31 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
             (None, None),
             None,
             &rules,
+            Some(core.clone()),
+            false,
         )
+        .await
         .expect("the actual product builds the swap deployment");
         limits.stage_boot();
         let boot_calls = app
             .governance
             .as_ref()
             .expect("actual governance")
-            .store_calls()
+            .core_store_handle()
             .expect("actual boot Store calls");
-        crate::root::kernel::ROOT_CARD.keep_in_store(boot_calls, 101);
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(boot_calls, 101)
+            .expect("native rate history binding");
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the actual rate history boots before rates are committed");
         limits
             .keep()
+            .await
             .expect("the booted actual rates and limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         let dir = directory.clone();
         let config_path = dir.join("config.yaml");
@@ -145,21 +155,14 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         disk["credentials"] = serde_json::json!({"at_rest": {"key": {"file": new_path}, "previous": {"file": old_path}}});
         std::fs::write(&config_path, serde_yaml::to_string(&disk).unwrap()).unwrap();
         std::fs::write(&providers_path, "{}\n").unwrap();
-        let calls = app
-            .governance
-            .as_ref()
-            .unwrap()
-            .store_calls()
-            .expect("the actual Store calls");
-        let store = RewrapStore::new(app.governance.as_ref().unwrap().store());
-        store
-            .inner
+        core.identity()
             .put_key(&VirtualKey {
                 id: "rewrap-owner".into(),
                 generation_hash: "binding:rewrap-owner:0".into(),
                 enabled: true,
                 ..Default::default()
             })
+            .await
             .unwrap();
         let meta = CredentialMeta {
             id: "rewrap-credential".into(),
@@ -180,12 +183,12 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
             revision: 0,
         };
         let old_keys = AtRestKeys::new(&[3_u8; 32], None);
-        store
-            .inner
+        core.identity()
             .put_credential(&CredentialSecret {
                 secret: old_keys.seal(&meta, b"recoverable-test-secret").unwrap(),
                 meta,
             })
+            .await
             .unwrap();
         let actual_plugins = app.plugins_cfg.clone();
         drop(app);
@@ -200,39 +203,44 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
             (None, None),
             None,
             &rules,
-            Some(busbar_contract::store_calls::OpenedStore {
-                records: store.clone(),
-                calls: Some(calls.clone()),
-            }),
+            Some(core.clone()),
             false,
         )
-        .expect("normal composition uses the precise actual-Store record fault wrapper");
+        .await
+        .expect("normal composition uses the precise actual-Store primitive fault wrapper");
         limits.stage_boot();
         let boot_calls = app
             .governance
             .as_ref()
             .expect("actual governance")
-            .store_calls()
+            .core_store_handle()
             .expect("actual boot Store calls");
-        crate::root::kernel::ROOT_CARD.keep_in_store(boot_calls, 101);
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(boot_calls, 101)
+            .expect("native rate history binding");
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the actual rate history boots before rates are committed");
         limits
             .keep()
+            .await
             .expect("the booted actual rates and limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         app.config_path = Some(config_path);
         app.providers_path = Some(providers_path);
         let gov = app.governance.as_ref().unwrap().clone();
-        crate::root::kernel::ROOT_CARD.keep_in_store(calls.clone(), 93);
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(core.clone(), 93)
+            .expect("native rate history binding");
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("actual rate history boots");
-        let overlay_faults = RewrapOverlayFaults::new(calls);
-        let overlay = busbar_kernel::config::overlay::OverlayStore::new(overlay_faults.clone())
+        let overlay_faults = store.clone();
+        let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(core.clone())
             .expect("actual Store overlay");
         app.overlay_path = Some(overlay.clone());
         let (_data, admin, handle) =
@@ -244,7 +252,9 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         store
             .fail_listing
             .store(failure == "listing", Ordering::SeqCst);
-        store.deny_claim.store(failure == "claim", Ordering::SeqCst);
+        store
+            .deny_rewrap
+            .store(failure == "rewrap", Ordering::SeqCst);
         let first = client
             .post(format!("http://{addr}/api/v1/admin/config/reload"))
             .send()
@@ -255,7 +265,15 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
             StatusCode::OK,
             "{failure}: first reload commits even with maintenance debt"
         );
-        let pending = store.inner.list_credentials_since(0).unwrap().remove(0);
+        // The reply has completed its failed maintenance pass. Allow an independent
+        // identity read to inspect the retained ciphertext before retrying reload.
+        store.fail_listing.store(false, Ordering::SeqCst);
+        let pending = core
+            .identity()
+            .list_credentials_since(0)
+            .await
+            .unwrap()
+            .remove(0);
         assert_eq!(at_rest::sealed_kid(&pending.secret), Some(old_keys.kid()));
         let current_keys = AtRestKeys::new(&[4_u8; 32], Some(&[3_u8; 32]));
         assert_eq!(
@@ -266,7 +284,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         );
         let calls = store.listings.load(Ordering::SeqCst);
         store.fail_listing.store(false, Ordering::SeqCst);
-        store.deny_claim.store(false, Ordering::SeqCst);
+        store.deny_rewrap.store(false, Ordering::SeqCst);
         let second = client
             .post(format!("http://{addr}/api/v1/admin/config/reload"))
             .send()
@@ -277,7 +295,12 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
             store.listings.load(Ordering::SeqCst) > calls,
             "{failure}: unchanged kids must still retry the Store"
         );
-        let sealed = store.inner.list_credentials_since(0).unwrap().remove(0);
+        let sealed = core
+            .identity()
+            .list_credentials_since(0)
+            .await
+            .unwrap()
+            .remove(0);
         assert_eq!(
             at_rest::sealed_kid(&sealed.secret),
             Some(current_keys.kid())
@@ -319,387 +342,70 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
     }
     println!("{WITNESS}");
 }
+// Faults affect only native operations owned by the selected maintenance path.
+// Core continues to own credential interpretation, CAS and ciphertext custody.
 struct RewrapStore {
-    inner: Arc<dyn RecordStore>,
-    fail_listing: AtomicBool,
-    deny_claim: AtomicBool,
+    actual: Arc<dyn PersistenceBackend>,
     listings: AtomicUsize,
-}
-impl RewrapStore {
-    fn new(inner: Arc<dyn RecordStore>) -> Arc<Self> {
-        Arc::new(Self {
-            inner,
-            fail_listing: AtomicBool::new(false),
-            deny_claim: AtomicBool::new(false),
-            listings: AtomicUsize::new(0),
-        })
-    }
-}
-impl RecordStore for RewrapStore {
-    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
-        self.inner.put_key(key)
-    }
-    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-        self.inner.get_key(id)
-    }
-    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.inner.list_keys()
-    }
-    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-        self.inner.delete_key(id)
-    }
-    fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.inner.list_keys_since(since)
-    }
-    fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
-        self.inner.get_usage(bucket_id, window_start)
-    }
-    fn apply_usage_correction(
-        &self,
-        request: &correction::Request,
-    ) -> RecordStoreResult<correction::Decision> {
-        self.inner.apply_usage_correction(request)
-    }
-    fn supports_usage_correction(&self) -> bool {
-        self.inner.supports_usage_correction()
-    }
-    fn put_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        ledger: &UsageLedger,
-    ) -> RecordStoreResult<()> {
-        self.inner.put_usage(bucket_id, window_start, ledger)
-    }
-    fn add_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        delta: &UsageDelta,
-    ) -> RecordStoreResult<()> {
-        self.inner.add_usage(bucket_id, window_start, delta)
-    }
-    fn add_usage_batch_deduped(
-        &self,
-        op: busbar_contract::abi::store::OpId,
-        cells: &[(&str, u64, UsageDelta)],
-    ) -> RecordStoreResult<()> {
-        self.inner.add_usage_batch_deduped(op, cells)
-    }
-    fn supports_usage_batch_deduped(&self) -> bool {
-        self.inner.supports_usage_batch_deduped()
-    }
-    fn supports_metering_batch_deduped(&self) -> bool {
-        self.inner.supports_metering_batch_deduped()
-    }
-    fn add_metering_batch_deduped(
-        &self,
-        op: busbar_contract::abi::store::OpId,
-        deltas: &[MeteringDelta],
-    ) -> RecordStoreResult<()> {
-        self.inner.add_metering_batch_deduped(op, deltas)
-    }
-    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
-        self.inner.add_metering(delta)
-    }
-    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-        self.inner.list_metering(bucket)
-    }
-    fn put_credential(&self, _secret: &CredentialSecret) -> RecordStoreResult<()> {
-        self.inner.put_credential(_secret)
-    }
-    fn rewrap_credential(
-        &self,
-        _expected: &CredentialSecret,
-        _replacement: &str,
-    ) -> RecordStoreResult<bool> {
-        self.inner.rewrap_credential(_expected, _replacement)
-    }
-    fn put_key_with_credential(
-        &self,
-        key: &VirtualKey,
-        secret: &CredentialSecret,
-    ) -> RecordStoreResult<()> {
-        self.inner.put_key_with_credential(key, secret)
-    }
-    fn list_credentials(&self, _key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
-        self.inner.list_credentials(_key_id)
-    }
-    fn revoke_credential(&self, _id: &str, _reason: &str) -> RecordStoreResult<()> {
-        self.inner.revoke_credential(_id, _reason)
-    }
-    fn list_credentials_since(&self, _since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
-        self.listings.fetch_add(1, Ordering::SeqCst);
-        if self.fail_listing.load(Ordering::SeqCst) {
-            return Err(RecordStoreError("planted credential listing outage".into()));
-        }
-        self.inner.list_credentials_since(_since)
-    }
-    fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
-        self.inner.append_audit(_entry)
-    }
-    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
-        self.inner.list_audit()
-    }
-    fn add_denylist(&self, _sub: &str, _reason: &str) -> RecordStoreResult<()> {
-        self.inner.add_denylist(_sub, _reason)
-    }
-    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
-        self.inner.list_denylist()
-    }
-    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
-        self.inner.list_audit_tail(limit)
-    }
-    fn upsert_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        self.inner.upsert_plane_record(_record)
-    }
-    fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
-        self.inner.get_plane_record(_kind, _id)
-    }
-    fn append_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        self.inner.append_plane_record(_record)
-    }
-    fn list_plane_records(
-        &self,
-        _kind: &str,
-        _selector: &PlaneSelector<'_>,
-    ) -> RecordStoreResult<Vec<Vec<u8>>> {
-        self.inner.list_plane_records(_kind, _selector)
-    }
-    fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
-        self.inner.list_plane_record_parents(_kind)
-    }
-    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
-        self.inner.purge_plane_records_before(_kind, _before)
-    }
-    fn purge_plane_records(
-        &self,
-        kind: &str,
-        before: u64,
-        retention: Retention,
-    ) -> RecordStoreResult<u64> {
-        self.inner.purge_plane_records(kind, before, retention)
-    }
-    fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
-        self.inner.delete_plane_record(_kind, _id)
-    }
-    fn redeem_plane_token(
-        &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> RecordStoreResult<bool> {
-        if self.deny_claim.load(Ordering::SeqCst) {
-            return Ok(false);
-        }
-        self.inner
-            .redeem_plane_token(_kind, _token, _expires_at, _now)
-    }
-    fn plane_token_live(
-        &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> RecordStoreResult<bool> {
-        self.inner
-            .plane_token_live(_kind, _token, _expires_at, _now)
-    }
-}
-
-struct RewrapOverlayFaults {
-    inner: Arc<dyn StoreCalls>,
+    fail_listing: AtomicBool,
+    deny_rewrap: AtomicBool,
     fail_writes: AtomicBool,
 }
-impl RewrapOverlayFaults {
-    fn new(inner: Arc<dyn StoreCalls>) -> Arc<Self> {
+impl RewrapStore {
+    fn new(actual: Arc<dyn PersistenceBackend>) -> Arc<Self> {
         Arc::new(Self {
-            inner,
+            actual,
+            listings: AtomicUsize::new(0),
+            fail_listing: AtomicBool::new(false),
+            deny_rewrap: AtomicBool::new(false),
             fail_writes: AtomicBool::new(false),
         })
     }
 }
-impl StoreCalls for RewrapOverlayFaults {
-    fn supports_usage_correction(&self) -> bool {
-        self.inner.supports_usage_correction()
+impl PersistenceBackend for RewrapStore {
+    fn info(&self) -> BackendInfo {
+        self.actual.info()
     }
-    fn apply_usage_correction<'a>(
-        &'a self,
-        request: &'a busbar_contract::records::correction::Request,
-    ) -> StoreCall<'a, busbar_contract::records::correction::Decision> {
-        self.inner.apply_usage_correction(request)
+    fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
+        self.actual.clock(dataset)
     }
-    fn supports_record_transaction(&self) -> bool {
-        self.inner.supports_record_transaction()
+    fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
+        self.actual.read(request)
     }
-    fn record_transaction<'a>(
-        &'a self,
-        request: &'a busbar_contract::abi::sdk::store::conditional::Request,
-    ) -> StoreCall<'a, busbar_contract::abi::sdk::store::conditional::Decision> {
-        if self.fail_writes.load(Ordering::SeqCst) {
-            return Box::pin(async {
-                Err(StoreFailure::Refused(
-                    "planted overlay conditional refusal".into(),
-                ))
-            });
-        }
-        self.inner.record_transaction(request)
+    fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
+        Box::pin(async move {
+            if request.namespace == busbar_kernel::governance::persistence::identity::NAMESPACE {
+                self.listings.fetch_add(1, Ordering::SeqCst);
+                if self.fail_listing.load(Ordering::SeqCst) {
+                    return Err(Failure::Unavailable);
+                }
+            }
+            self.actual.scan(request).await
+        })
     }
-    fn add_usage_batch<'a>(
-        &'a self,
-        op: OpId,
-        cells: &'a [(&'a str, u64, UsageDelta)],
-    ) -> StoreCall<'a, ()> {
-        self.inner.add_usage_batch(op, cells)
-    }
-    fn add_metering_batch<'a>(
-        &'a self,
-        op: OpId,
-        deltas: &'a [MeteringDelta],
-    ) -> StoreCall<'a, ()> {
-        self.inner.add_metering_batch(op, deltas)
-    }
-    fn record_put<'a>(
-        &'a self,
-        schema: &'a str,
-        key: &'a [u8],
-        value: &'a RecordBytes,
-    ) -> StoreCall<'a, ()> {
-        if self.fail_writes.load(Ordering::SeqCst) {
-            return Box::pin(async {
-                Err(StoreFailure::Refused(
-                    "planted overlay write refusal".into(),
-                ))
-            });
-        }
-        self.inner.record_put(schema, key, value)
-    }
-    fn record_get<'a>(
-        &'a self,
-        schema: &'a str,
-        key: &'a [u8],
-    ) -> StoreCall<'a, Option<RecordBytes>> {
-        self.inner.record_get(schema, key)
-    }
-    fn record_scan<'a>(
-        &'a self,
-        schema: &'a str,
-        prefix: &'a [u8],
-        limit: u32,
-    ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
-        self.inner.record_scan(schema, prefix, limit)
-    }
-    fn put_key<'a>(&'a self, key: &'a busbar_contract::records::VirtualKey) -> StoreCall<'a, ()> {
-        self.inner.put_key(key)
-    }
-    fn get_key<'a>(
-        &'a self,
-        id: &'a str,
-    ) -> StoreCall<'a, Option<busbar_contract::records::VirtualKey>> {
-        self.inner.get_key(id)
-    }
-    fn list_keys(&self) -> StoreCall<'_, Vec<busbar_contract::records::VirtualKey>> {
-        self.inner.list_keys()
-    }
-    fn delete_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, ()> {
-        self.inner.delete_key(id)
-    }
-    fn put_key_with_credential<'a>(
-        &'a self,
-        key: &'a busbar_contract::records::VirtualKey,
-        secret: &'a busbar_contract::records::CredentialSecret,
-    ) -> StoreCall<'a, ()> {
-        self.inner.put_key_with_credential(key, secret)
-    }
-    fn list_credentials<'a>(
-        &'a self,
-        key_id: &'a str,
-    ) -> StoreCall<'a, Vec<busbar_contract::records::CredentialMeta>> {
-        self.inner.list_credentials(key_id)
-    }
-    fn revoke_credential<'a>(&'a self, id: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
-        self.inner.revoke_credential(id, reason)
-    }
-    fn list_credentials_since(
-        &self,
-        since: u64,
-    ) -> StoreCall<'_, Vec<busbar_contract::records::CredentialSecret>> {
-        self.inner.list_credentials_since(since)
-    }
-    fn add_denylist<'a>(&'a self, sub: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
-        self.inner.add_denylist(sub, reason)
-    }
-    fn list_denylist(&self) -> StoreCall<'_, Vec<String>> {
-        self.inner.list_denylist()
-    }
-    fn list_metering(
-        &self,
-        bucket: u64,
-    ) -> StoreCall<'_, Vec<busbar_contract::records::MeteringRow>> {
-        self.inner.list_metering(bucket)
-    }
-    fn list_audit(&self) -> StoreCall<'_, Vec<busbar_contract::records::AuditRecord>> {
-        self.inner.list_audit()
-    }
-    fn list_audit_tail(
-        &self,
-        limit: u64,
-    ) -> StoreCall<'_, Vec<busbar_contract::records::AuditRecord>> {
-        self.inner.list_audit_tail(limit)
-    }
-    fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
-        self.inner.upsert_plane_record(record)
-    }
-    fn get_plane_record<'a>(
-        &'a self,
-        kind: &'a str,
-        id: &'a str,
-    ) -> StoreCall<'a, Option<Vec<u8>>> {
-        self.inner.get_plane_record(kind, id)
-    }
-    fn append_plane_record<'a>(
-        &'a self,
-        op: OpId,
-        record: PlaneRecordRef<'a>,
-    ) -> StoreCall<'a, ()> {
-        self.inner.append_plane_record(op, record)
-    }
-    fn list_plane_records<'a>(
-        &'a self,
-        kind: &'a str,
-        selector: &'a PlaneSelector<'a>,
-    ) -> StoreCall<'a, Vec<Vec<u8>>> {
-        self.inner.list_plane_records(kind, selector)
-    }
-    fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
-        self.inner.delete_plane_record(kind, id)
-    }
-    fn redeem_plane_token<'a>(
-        &'a self,
-        kind: &'a str,
-        token: &'a str,
-        expires_at: u64,
-        now: u64,
-    ) -> StoreCall<'a, bool> {
-        self.inner.redeem_plane_token(kind, token, expires_at, now)
-    }
-    fn plane_token_live<'a>(
-        &'a self,
-        kind: &'a str,
-        token: &'a str,
-        expires_at: u64,
-        now: u64,
-    ) -> StoreCall<'a, bool> {
-        self.inner.plane_token_live(kind, token, expires_at, now)
-    }
-    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> StoreCall<'a, Vec<String>> {
-        self.inner.list_plane_record_parents(kind)
-    }
-    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
-        self.inner.purge_plane_records_before(kind, before)
-    }
-    fn purge_usage_before(&self, before: u64) -> StoreCall<'_, u64> {
-        self.inner.purge_usage_before(before)
+    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+        Box::pin(async move {
+            for mutation in &candidate.candidate().mutations {
+                let address = match mutation {
+                    Mutation::Put { address, .. } | Mutation::Delete(address) => address,
+                    Mutation::DeleteRange { .. } => continue,
+                };
+                if self.deny_rewrap.load(Ordering::SeqCst)
+                    && address.namespace
+                        == busbar_kernel::governance::persistence::identity::CONFIDENTIAL.0
+                {
+                    return Err(Failure::Refused);
+                }
+                if self.fail_writes.load(Ordering::SeqCst)
+                    && address
+                        .key
+                        .windows(b"busbar.config.overlay.v1".len())
+                        .any(|part| part == b"busbar.config.overlay.v1")
+                {
+                    return Err(Failure::Refused);
+                }
+            }
+            self.actual.commit(candidate).await
+        })
     }
 }

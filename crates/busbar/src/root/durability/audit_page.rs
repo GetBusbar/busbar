@@ -6,8 +6,8 @@ use busbar_core_admin::GovernanceError;
 use busbar_kernel_audit::expose;
 use serde_json::{json, Value};
 
-/// Each request examines at most this many journal positions, with at most 256
-/// 512-byte parts per position. The ring fast path holds at most AUDIT_RING records.
+/// Positions projected into one response after native whole-history verification
+/// within the configured memory budget. The ring holds at most AUDIT_RING records.
 const SCAN_POSITIONS: u64 = 64;
 
 struct Cursor {
@@ -80,8 +80,7 @@ pub struct AuditPagePlan {
     body: Value,
     cursor: Cursor,
     records: Vec<AuditRecord>,
-    stored: Option<store_chain::HeldChain>,
-    memory: Option<Vec<JournalRecord>>,
+    stored: Option<ChainAt>,
     scan_end: u64,
     exhausted: bool,
 }
@@ -151,7 +150,6 @@ impl Durability {
             .next_journal
             .saturating_add(SCAN_POSITIONS)
             .min(cursor.journal_end);
-        let mut memory = None;
         let (records, stored) = if exhausted || covered {
             (
                 self.audit_records
@@ -161,35 +159,14 @@ impl Durability {
                     .collect(),
                 None,
             )
-        } else if let Some(lane) = self.store_kept() {
-            (
-                Vec::new(),
-                Some(
-                    store_chain::HeldChain::of(&self.journal, lane)
-                        .map_err(|_| GovernanceError::Store)?,
-                ),
-            )
         } else {
-            // Root builders use a bounded memory journal; legacy data_dir is never opened.
-            let journal = self
-                .journal
-                .replay()
-                .map_err(|_| GovernanceError::Store)?
-                .map_err(|_| GovernanceError::Store)?;
-            memory = Some(
-                journal
-                    .into_iter()
-                    .filter(|r| r.node_seq >= cursor.next_journal && r.node_seq < scan_end)
-                    .collect(),
-            );
-            (Vec::new(), None)
+            (Vec::new(), Some(self.chain_at()))
         };
         Ok(AuditPagePlan {
             body,
             cursor,
             records,
             stored,
-            memory,
             scan_end,
             exhausted,
         })
@@ -197,19 +174,24 @@ impl Durability {
 }
 
 impl AuditPagePlan {
-    pub fn finish(mut self) -> Result<Vec<u8>, GovernanceError> {
+    pub async fn finish(mut self) -> Result<Vec<u8>, GovernanceError> {
         let journal_page = if let Some(stored) = self.stored.take() {
-            Some(
-                stored
-                    .read_audit_page(self.cursor.next_journal, self.scan_end)
-                    .map_err(|_| GovernanceError::Store)?,
-            )
+            let records = stored
+                .read()
+                .await
+                .map_err(|_| GovernanceError::Store)?
+                .map_err(|_| GovernanceError::Store)?;
+            let records: Vec<_> = records
+                .into_iter()
+                .filter(|record| {
+                    record.node_seq >= self.cursor.next_journal && record.node_seq < self.scan_end
+                })
+                .collect();
+            let incomplete =
+                records.len() as u64 != self.scan_end.saturating_sub(self.cursor.next_journal);
+            Some((records, incomplete))
         } else {
-            self.memory.take().map(|records| {
-                let incomplete =
-                    records.len() as u64 != self.scan_end.saturating_sub(self.cursor.next_journal);
-                (records, incomplete)
-            })
+            None
         };
         let scanned = if let Some((records, incomplete)) = journal_page {
             let scanned = self.scan_end.saturating_sub(self.cursor.next_journal);
@@ -266,44 +248,33 @@ impl AuditPagePlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::root::store_double::RecordSlots;
+    use crate::root::durability::tests::{seal, NativeFixture};
     use crate::root::units_admin::{AuditView, NodeAudit};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    fn seal_records(book: &mut Durability, units: std::ops::RangeInclusive<u64>) {
-        let kernel = crate::root::kernel::new_kernel();
-        let token = kernel.durability_token();
+    async fn seal_records(book: &Arc<Mutex<Durability>>, units: std::ops::RangeInclusive<u64>) {
         for unit in units {
-            book.seal_unit(
-                super::super::audit::tests::inputs(unit),
-                busbar_kernel::teller::verb_audit_pass(&kernel),
-                &token,
-            )
-            .unwrap();
+            seal(book, unit).await;
         }
     }
 
-    fn book(slots: &RecordSlots, count: u64) -> Arc<Mutex<Durability>> {
-        let lane = JournalLane::start(slots.calls(), "test-store").unwrap();
-        let mut book = build_on_store(&DurabilityConfig::default(), 47, lane, None).unwrap();
-        seal_records(&mut book, 1..=count);
-        assert!(book
-            .lane()
-            .unwrap()
-            .drain(std::time::Duration::from_secs(5)));
-        Arc::new(Mutex::new(book))
+    async fn book(fixture: &NativeFixture, count: u64) -> Arc<Mutex<Durability>> {
+        let book = Arc::new(Mutex::new(fixture.book().await));
+        seal_records(&book, 1..=count).await;
+        fixture.journal.flush().await.unwrap();
+        book
     }
 
-    fn page(view: &NodeAudit, from: u64, to: u64, cursor: Option<&str>) -> Value {
-        serde_json::from_slice(&view.range_page(from, to, cursor).unwrap()).unwrap()
+    async fn page(view: &NodeAudit, from: u64, to: u64, cursor: Option<&str>) -> Value {
+        serde_json::from_slice(&view.range_page(from, to, cursor).await.unwrap()).unwrap()
     }
 
-    #[test]
-    fn audit_range_pages_reconstruct_pinned_range_during_concurrent_appends() {
-        let slots = RecordSlots::new();
+    #[tokio::test]
+    async fn audit_range_pages_reconstruct_pinned_range_during_concurrent_appends() {
+        let fixture = NativeFixture::new(47).await;
         let count = AUDIT_RING as u64 + 200;
-        let book = book(&slots, count);
+        let book = book(&fixture, count).await;
         let view = NodeAudit::new(Arc::clone(&book));
         let scans = Arc::new(AtomicUsize::new(0));
         let appended = Arc::new(AtomicBool::new(false));
@@ -312,23 +283,48 @@ mod tests {
             Arc::clone(&appended),
             Arc::downgrade(&book),
         );
-        slots.on_scan(move || {
-            observed.fetch_add(1, Ordering::Relaxed);
-            let book = held.upgrade().unwrap();
-            let mut book = book
-                .try_lock()
-                .expect("Store scans run outside durability lock");
-            if !flag.swap(true, Ordering::SeqCst) {
-                seal_records(&mut book, (count + 1)..=(count + 1));
-            }
-        });
+        *fixture.faults.on_read.lock().unwrap() = Some(Arc::new(move |request| {
+            let (observed, flag, held) = (observed.clone(), flag.clone(), held.clone());
+            Box::pin(async move {
+                if request
+                    .addresses
+                    .iter()
+                    .any(|at| at.key.get(24) == Some(&b'R'))
+                {
+                    observed.fetch_add(1, Ordering::Relaxed);
+                    let book = held.upgrade().unwrap();
+                    // Native reads must cross the Store boundary outside the book lock.
+                    drop(
+                        book.try_lock()
+                            .expect("Store reads run outside durability lock"),
+                    );
+                    if !flag.swap(true, Ordering::SeqCst) {
+                        seal_records(&book, (count + 1)..=(count + 1)).await;
+                    }
+                }
+                Ok(())
+            })
+        }));
         let mut cursor = None;
         let mut positions = Vec::new();
         let mut pages = 0;
         loop {
             let before = scans.load(Ordering::Relaxed);
-            let body = page(&view, 1, count, cursor.as_deref());
-            assert!(scans.load(Ordering::Relaxed) - before <= SCAN_POSITIONS as usize);
+            let body = page(&view, 1, count, cursor.as_deref()).await;
+            if body["scanned_positions"] != "0" {
+                assert!(
+                    scans.load(Ordering::Relaxed) > before,
+                    "a durable page verifies the selected native history"
+                );
+            }
+            assert!(
+                body["scanned_positions"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap()
+                    <= SCAN_POSITIONS
+            );
             assert_eq!(body["snapshot_to"], count.to_string());
             assert_eq!(body["incomplete"], false);
             for record in body["records"].as_array().unwrap() {
@@ -346,16 +342,16 @@ mod tests {
         assert!(appended.load(Ordering::SeqCst));
         assert!(pages > 1);
         assert_eq!(positions, (1..=count).collect::<Vec<_>>());
-        slots.on_scan(|| {});
+        *fixture.faults.on_read.lock().unwrap() = None;
     }
 
-    #[test]
-    fn audit_range_reports_actual_bounds_gaps_and_unsealed_tail() {
-        let slots = RecordSlots::new();
-        let book = book(&slots, 5);
+    #[tokio::test]
+    async fn audit_range_reports_actual_bounds_gaps_and_unsealed_tail() {
+        let fixture = NativeFixture::new(47).await;
+        let book = book(&fixture, 5).await;
         book.lock().unwrap().audit_records.retain(|r| r.seq != 3);
         let view = NodeAudit::new(book);
-        let body = page(&view, 1, 7, None);
+        let body = page(&view, 1, 7, None).await;
         assert_eq!(body["returned_from"], "1");
         assert_eq!(body["returned_to"], "5");
         assert_eq!(body["snapshot_to"], "5");
@@ -370,39 +366,39 @@ mod tests {
         assert_eq!(body["retention"]["durable_from_known"], false);
     }
 
-    #[test]
-    fn audit_range_continues_empty_scan_pages_and_rejects_changed_scope() {
-        let slots = RecordSlots::new();
-        let book = book(&slots, AUDIT_RING as u64 + 200);
+    #[tokio::test]
+    async fn audit_range_continues_empty_scan_pages_and_rejects_changed_scope() {
+        let fixture = NativeFixture::new(47).await;
+        let book = book(&fixture, AUDIT_RING as u64 + 200).await;
         let view = NodeAudit::new(Arc::clone(&book));
         // First 64 journal positions precede the requested audit range.
-        let body = page(&view, 100, 150, None);
+        let body = page(&view, 100, 150, None).await;
         assert!(body["records"].as_array().unwrap().is_empty());
         assert!(body["returned_from"].is_null());
         assert_eq!(body["truncated"], true);
         assert_eq!(body["complete"], false);
         let cursor = body["next_cursor"].as_str().unwrap();
         assert!(matches!(
-            view.range_page(101, 150, Some(cursor)),
+            view.range_page(101, 150, Some(cursor)).await,
             Err(GovernanceError::Validation)
         ));
         book.lock().unwrap().incarnation += 1;
         assert!(matches!(
-            view.range_page(100, 150, Some(cursor)),
+            view.range_page(100, 150, Some(cursor)).await,
             Err(GovernanceError::Validation)
         ));
         assert!(matches!(
-            view.range_page(100, 150, Some("6f3a31")),
+            view.range_page(100, 150, Some("6f3a31")).await,
             Err(GovernanceError::Validation)
         ));
     }
 
-    #[test]
-    fn audit_range_retention_loss_between_pages_is_explicit() {
-        let slots = RecordSlots::new();
-        let book = book(&slots, AUDIT_RING as u64 + 200);
+    #[tokio::test]
+    async fn audit_range_retention_loss_between_pages_is_explicit() {
+        let fixture = NativeFixture::new(47).await;
+        let book = book(&fixture, AUDIT_RING as u64 + 200).await;
         let view = NodeAudit::new(Arc::clone(&book));
-        let first = page(&view, 1, 1200, None);
+        let first = page(&view, 1, 1200, None).await;
         assert_eq!(first["incomplete"], false);
         let mut cursor = first["next_cursor"].as_str().map(str::to_string);
         // Change the live retained set after the first page. The later ring page
@@ -410,7 +406,7 @@ mod tests {
         book.lock().unwrap().audit_records.retain(|r| r.seq != 300);
         let mut gap_seen = false;
         for _ in 0..100 {
-            let body = page(&view, 1, 1200, cursor.as_deref());
+            let body = page(&view, 1, 1200, cursor.as_deref()).await;
             gap_seen |= body["gaps"]
                 .as_array()
                 .unwrap()

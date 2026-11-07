@@ -6,6 +6,10 @@ use super::*;
 #[test]
 fn every_patch_mirrors_every_field_of_its_section() {
     let crate::config::LimitsCfg {
+        // Migration allocations are captured before the Store overlay can be read.
+        // Runtime patches cannot change the retained startup operation's budgets.
+        migration_index_bytes: _,
+        migration_value_bytes: _,
         upstream_request_timeout_secs,
         request_body_max_bytes,
         datagram_line_memory_bytes,

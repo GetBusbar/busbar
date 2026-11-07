@@ -126,27 +126,13 @@ pub fn plan_mint_group(
     }
 }
 
-pub fn persist_provisioned_group(
+pub async fn persist_provisioned_group_async(
     installed: Arc<App>,
     group: String,
     actor: String,
-) -> impl FnOnce() -> Result<(), String> + Send + 'static {
-    move || {
-        crate::config::overlay::persist_groups(
-            installed.overlay_path.as_deref(),
-            &installed.groups_registry,
-            None,
-            Some(&group),
-            &installed.base_group_names,
-        )
-        .map_err(|e| {
-            crate::audit_ring::AUDIT.record_by(
-                "group.provision",
-                &format!("group:{group}"),
-                crate::audit_ring::OUTCOME_REJECTED,
-                &actor,
-            );
-            format!("group persistence to the Store overlay was not confirmed: {e}; the running group tree is unaffected")
-        })
-    }
+) -> Result<(), String> {
+    crate::config::overlay::persist_groups_async(installed.overlay_path.as_deref(), &installed.groups_registry, None, Some(&group), &installed.base_group_names).await.map_err(|error| {
+        crate::audit_ring::AUDIT.record_by("group.provision", &format!("group:{group}"), crate::audit_ring::OUTCOME_REJECTED, &actor);
+        format!("group persistence to the Store overlay was not confirmed: {error}; the running group tree is unaffected")
+    })
 }

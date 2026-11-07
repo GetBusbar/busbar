@@ -4,7 +4,7 @@
 include!(concat!(env!("OUT_DIR"), "/migration_table.rs"));
 
 pub fn install() {
-    busbar_kernel::config::migration_table::install(MIGRATION_ROWS);
+    busbar_kernel::config::declared_vocabulary::install(MIGRATION_ROWS);
 }
 
 pub fn export_order() -> Vec<&'static str> {

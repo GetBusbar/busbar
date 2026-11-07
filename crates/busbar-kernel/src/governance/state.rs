@@ -1,18 +1,21 @@
 use super::*;
 use busbar_contract::redacted::Secret;
 use busbar_kernel_ledger::cost::{
-    plane_fee_lane, split_plane_lane, History, Money, MoneyError, MICROS_PER_CENT, PER_REQUEST,
+    History, MICROS_PER_CENT, Money, MoneyError, PER_REQUEST, plane_fee_lane, split_plane_lane,
 };
 use std::collections::BTreeMap;
 
 use crate::store::now_ms as wall_ms;
 
 use crate::diagnostics::{
-    diag_debug, diag_error, diag_warn, ACCRUAL_GROUP_MISSING, BUDGET_FLUSH_PARTIAL_FAILURE,
-    DELETE_KEY_CACHE_RECONCILE_FAILED, METERING_FLUSH_PARTIAL_FAILURE,
-    REFRESH_SELF_CACHE_REFRESH_FAILED, REFRESH_SELF_INCONSISTENT_BINDING,
-    ROTATE_KEY_CACHE_RECONCILE_FAILED,
+    ACCRUAL_GROUP_MISSING, BUDGET_FLUSH_PARTIAL_FAILURE, diag_debug, diag_error, diag_warn,
 };
+
+#[path = "native_runtime.rs"]
+pub(super) mod native_runtime;
+
+#[path = "identity_runtime.rs"]
+pub(super) mod identity_runtime;
 
 #[path = "self_serve.rs"]
 mod self_serve;
@@ -20,8 +23,8 @@ mod self_serve;
 #[path = "ledger_adjust.rs"]
 pub(super) mod ledger_adjust;
 pub use ledger_adjust::{
-    metering_lane, AdjustRefused, Adjustment, PricedBucket, UsageAdjustment, ADJUST_DOWN_BUCKET,
-    ADJUST_UP_BUCKET,
+    ADJUST_DOWN_BUCKET, ADJUST_UP_BUCKET, AdjustRefused, Adjustment, PricedBucket, UsageAdjustment,
+    metering_lane,
 };
 
 pub const REVOCATION_DURABLE_MARKER: &str = "REVOCATION APPLIED (cache reconcile degraded)";
@@ -153,46 +156,30 @@ fn signed_binding(spec: NewKeySpec, now: u64) -> RecordStoreResult<(VirtualKey, 
 }
 
 impl GovState {
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn new(
-        store: Arc<dyn RecordStore>,
-        admin_token: Option<String>,
-    ) -> RecordStoreResult<Self> {
-        Self::new_with_signer(store, admin_token, None)
+    pub fn core_store(&self) -> RecordStoreResult<&crate::persistence::facade::CoreStore> {
+        Ok(self.core.as_ref())
     }
 
-    pub fn new_with_signer(
-        store: Arc<dyn RecordStore>,
+    pub fn core_store_handle(
+        &self,
+    ) -> RecordStoreResult<Arc<crate::persistence::facade::CoreStore>> {
+        Ok(self.core.clone())
+    }
+
+    fn from_identity_cache(
+        core: Arc<crate::persistence::facade::CoreStore>,
         admin_token: Option<String>,
         signer: Option<crate::governance::signing::TokenSigner>,
+        caches: Arc<RwLock<GovCaches>>,
+        refresh_order: Arc<CacheOrder>,
+        denylist: Arc<revocation::RevocationSync>,
     ) -> RecordStoreResult<Self> {
-        let by_id = Self::load(store.as_ref())?;
-        let by_credential =
-            Self::load_by_credential(store.as_ref(), &by_id, busbar_kernel::store::now())?;
-
-        let denylist: std::collections::HashSet<String> =
-            store.list_denylist()?.into_iter().collect();
-        let caches = Arc::new(RwLock::new(GovCaches {
-            by_id,
-            by_credential,
-        }));
-        let refresh_order = Arc::new(CacheOrder::default());
-
-        let denylist = crate::governance::revocation::RevocationSync::reloading(
-            store.clone(),
-            denylist,
-            busbar_kernel::store::now(),
-            {
-                let (store, caches, order) = (store.clone(), caches.clone(), refresh_order.clone());
-                Box::new(move || reload_caches(store.as_ref(), &caches, &order))
-            },
-        );
-
         let mut boot_caller_ref = zeroize::Zeroizing::new([0u8; 32]);
         getrandom::fill(boot_caller_ref.as_mut_slice())
             .expect("OS randomness for the per-boot caller-reference key");
         Ok(Self {
-            store,
+            core,
+            identity_claims: claims::AsyncClaimSet::new(),
             caches,
             concurrent: RwLock::new(HashMap::new()),
             admin_token_hash: RwLock::new(
@@ -202,8 +189,9 @@ impl GovState {
             ),
             budget: Sharded::new(),
             recovery_book: recovery::RecoveryBook::default(),
-            correction_claims: claims::ClaimSet::new(),
+            correction_claims: claims::AsyncClaimSet::new(),
             corrections: std::sync::Mutex::new(HashMap::new()),
+            ticket_operations: tickets::TicketOperations::default(),
             budget_flushes: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             budget_flush_runner: BudgetFlushRunner::default(),
             deleting_budget_buckets: std::sync::Mutex::new(std::collections::BTreeSet::new()),
@@ -220,12 +208,12 @@ impl GovState {
             at_rest: RwLock::new(None),
             denylist,
             refresh_order,
-            mutation_claims: claims::ClaimSet::new(),
+            #[cfg(test)]
+            identity_wait_observer: std::sync::Mutex::new(None),
             self_mint_holds: std::sync::atomic::AtomicBool::new(
                 SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE,
             ),
             transition_self_holds: RwLock::new(Default::default()),
-            store_calls: std::sync::OnceLock::new(),
             amendments: Arc::default(),
         })
     }
@@ -241,18 +229,6 @@ impl GovState {
             .transition_self_holds
             .write()
             .unwrap_or_else(|p| p.into_inner()) = holds;
-    }
-
-    pub fn attach_store_calls(
-        &self,
-        calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
-    ) -> bool {
-        self.store_calls.set(calls).is_ok()
-    }
-
-    #[must_use]
-    pub fn store_calls(&self) -> Option<Arc<dyn busbar_contract::store_calls::StoreCalls>> {
-        self.store_calls.get().cloned()
     }
 
     fn sync_revocations_if_stale(&self, now: u64) {
@@ -323,42 +299,6 @@ impl GovState {
         self.caches_read().by_id.get(sub).cloned()
     }
 
-    pub fn revoke(&self, sub: &str, reason: &str) -> RecordStoreResult<()> {
-        let _claim = self.claim_key_mutation(sub)?;
-        for cred in self.store.list_credentials(sub)? {
-            if cred.revoked_at.is_none() {
-                self.store.revoke_credential(&cred.id, reason)?;
-            }
-
-            self.refresh_order.patch(|| {
-                self.caches_write()
-                    .by_credential
-                    .remove(&(cred.kind, cred.public_id));
-            });
-        }
-        self.store.add_denylist(sub, reason)?;
-        self.refresh_order.patch(|| self.denylist.insert(sub));
-        let mut new_key = None;
-        if let Some(mut key) = self.store.get_key(sub)? {
-            if key.deleted_at.is_none() {
-                let generation = generate_binding_generation().store()?;
-                key.generation_hash = binding_marker(&key.id, &generation);
-                key.enabled = false;
-                self.store.put_key(&key)?;
-                new_key = Some(Arc::new(key));
-            }
-        }
-
-        self.refresh_order.patch(|| {
-            let mut c = self.caches_write();
-            self.denylist.insert(sub);
-            if let Some(key) = new_key {
-                c.by_id.insert(sub.to_string(), key);
-            }
-        });
-        Ok(())
-    }
-
     pub fn is_revoked(&self, sub: &str) -> bool {
         self.is_revoked_at(sub, busbar_kernel::store::now())
     }
@@ -366,118 +306,6 @@ impl GovState {
     pub fn is_revoked_at(&self, sub: &str, now: u64) -> bool {
         self.sync_revocations_if_stale(now);
         self.denylist.contains(sub)
-    }
-
-    pub fn mint_signed(
-        &self,
-        spec: NewKeySpec,
-        exp: u64,
-        now: u64,
-    ) -> Result<(VirtualKey, Secret<String>), MintError> {
-        self.mint_signed_scoped(spec, exp, now, None)
-    }
-
-    /// Mint the same governed key with a token attenuated to one exact resource audience.
-    pub fn mint_signed_for_audience(
-        &self,
-        spec: NewKeySpec,
-        exp: u64,
-        now: u64,
-        audience: &str,
-    ) -> Result<(VirtualKey, Secret<String>), MintError> {
-        if audience.trim().is_empty() {
-            return Err(RecordStoreError("audience must be a nonempty string".into()).into());
-        }
-        self.mint_signed_scoped(spec, exp, now, Some(audience))
-    }
-
-    fn mint_signed_scoped(
-        &self,
-        spec: NewKeySpec,
-        exp: u64,
-        now: u64,
-        audience: Option<&str>,
-    ) -> Result<(VirtualKey, Secret<String>), MintError> {
-        let Some(material) = self.signing_material() else {
-            return Err(RecordStoreError(
-                "signed-token minting is unavailable: no signing key is configured".to_string(),
-            )
-            .into());
-        };
-        let (binding, generation) = signed_binding(spec, now)?;
-        self.store.put_key(&binding)?;
-        self.refresh().map_err(|reconcile| MintError::Applied {
-            key_id: binding.id.clone(),
-            reconcile,
-        })?;
-        let token = match audience {
-            Some(audience) => material.signer.mint_for_audience(
-                &binding.id,
-                exp,
-                Some(&generation),
-                audience,
-                None,
-            ),
-            None => material.signer.mint(&binding.id, exp, Some(&generation)),
-        };
-        Ok((binding, token.into()))
-    }
-
-    pub fn mint_signed_with_credential(
-        &self,
-        spec: NewKeySpec,
-        exp: u64,
-        now: u64,
-        kind: &str,
-        shape: &busbar_contract::auth_calls::IssuedShape,
-    ) -> Result<(VirtualKey, Secret<String>, String, Secret<String>), MintError> {
-        let Some(material) = self.signing_material() else {
-            return Err(RecordStoreError(
-                "signed-token minting is unavailable: no signing key is configured".to_string(),
-            )
-            .into());
-        };
-
-        let Some(keys) = self.at_rest_keys() else {
-            return Err(RecordStoreError(super::at_rest::NO_KEY_REFUSAL.to_string()).into());
-        };
-        let (binding, generation) = signed_binding(spec, now)?;
-        let (public_id, secret_value) = super::issue_credential(shape).store()?;
-        let secret_value = Secret::new(secret_value);
-        let mut cred_raw = [0u8; 16];
-        getrandom::fill(&mut cred_raw)
-            .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
-        let cred_id = format!("cred_{}", hex::encode(cred_raw));
-
-        let meta = CredentialMeta {
-            id: cred_id,
-            key_id: binding.id.clone(),
-            kind: kind.to_string(),
-            slot: 0,
-            public_id: public_id.clone(),
-            secret_form: SecretForm::Recoverable,
-            created_at: now,
-            updated_at: now,
-            expires_at: None,
-            revoked_at: None,
-            revoke_reason: None,
-            revision: 0,
-        };
-
-        let sealed = keys
-            .seal(&meta, secret_value.expose(&crate::seal::lend()).as_bytes())
-            .map_err(RecordStoreError)?;
-        let secret = CredentialSecret {
-            meta,
-            secret: sealed,
-        };
-        self.store.put_key_with_credential(&binding, &secret)?;
-        self.refresh().map_err(|reconcile| MintError::Applied {
-            key_id: binding.id.clone(),
-            reconcile,
-        })?;
-        let token = material.signer.mint(&binding.id, exp, Some(&generation));
-        Ok((binding, token.into(), public_id, secret_value))
     }
 
     #[must_use]
@@ -929,102 +757,79 @@ impl GovState {
         self.pending_metering.totals()
     }
 
-    pub fn flush_metering(&self) -> usize {
-        self.flush_metering_inner(false)
-    }
-
-    pub fn flush_metering_final(&self) -> usize {
-        self.flush_metering_inner(true)
-    }
-
-    fn flush_metering_inner(&self, shutdown: bool) -> usize {
-        if self.store.supports_metering_batch_deduped() {
-            return self.flush_metering_deduped(shutdown);
-        }
-        let mut taken: std::collections::VecDeque<_> = self.pending_metering.drain().into();
-        let mut flushed = 0usize;
-
-        let mut failed = 0usize;
-        let mut unrecorded: Vec<String> = Vec::new();
-        let mut last_error: Option<String> = None;
-        while let Some((
-            (key_id, bucket, model, provider, priced_from_ms, key_group_at_use, pricing_version),
-            counts,
-        )) = taken.pop_front()
+    /// Inspect retained domain custody after request admission has stopped and
+    /// the final drivers have returned. This is an owner-state observation, not
+    /// a claim that a backend transaction or another process has quiesced.
+    pub fn has_unsettled_persistence(&self) -> bool {
+        if self.budget_flush_runner.is_running()
+            || !self
+                .budget_flushes
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_empty()
+            || !self
+                .deleting_budget_buckets
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_empty()
         {
-            if counts.is_zero() {
-                continue;
-            }
-            let meter_key = (
-                key_id.clone(),
-                bucket,
-                model.clone(),
-                provider.clone(),
-                priced_from_ms,
-                key_group_at_use.clone(),
-                pricing_version.clone(),
-            );
-            let (delta, remainder) = super::metering_flush::metering_chunk(&meter_key, &counts);
-            match self.store.add_metering(&delta) {
-                Ok(()) => {
-                    flushed += 1;
-                    if !remainder.is_zero() {
-                        if shutdown {
-                            taken.push_back((meter_key, remainder));
-                        } else {
-                            self.pending_metering.accrue(meter_key, remainder);
-                        }
-                    }
-                }
-                Err(e) => {
-                    failed += 1;
-                    if shutdown {
-                        unrecorded.push(format!("{key_id}/{model}/{provider}@{bucket}"));
-                    } else {
-                        tracing::debug!(key = %key_id, error = %e, "metering flush failed for key; will retry next tick");
-                    }
-                    last_error = Some(e.to_string());
-
-                    self.pending_metering.accrue(
-                        (
-                            key_id,
-                            bucket,
-                            model,
-                            provider,
-                            priced_from_ms,
-                            key_group_at_use,
-                            pricing_version,
-                        ),
-                        counts,
-                    );
-                }
+            return true;
+        }
+        for index in 0..GOV_SHARDS {
+            let map = self
+                .budget
+                .shard_at(index)
+                .map
+                .read()
+                .unwrap_or_else(|p| p.into_inner());
+            if map.values().any(|cell| {
+                cell.dirty
+                    || cell.flushing != 0
+                    || cell.correction.is_some()
+                    || !cell.rolled.is_empty()
+                    || !cell.rolled_eras.is_empty()
+            }) {
+                return true;
             }
         }
-        if failed > 0 && shutdown {
-            diag_error!(
-                METERING_FLUSH_PARTIAL_FAILURE,
-                failed,
-                flushed,
-                error = last_error.as_deref().unwrap_or(""),
-                "shutdown metering flush: the store is unreachable and the process is exiting; \
-                 {failed} metering cell(s) are NOT recorded: {}",
-                unrecorded.join(", ")
-            );
-        } else if failed > 0 {
-            diag_warn!(
-                METERING_FLUSH_PARTIAL_FAILURE,
-                failed,
-                flushed,
-                error = last_error.as_deref().unwrap_or(""),
-                "metering flush: {failed} key(s) failed to persist this tick; retained and will \
-                 retry next tick (per-key detail at debug)"
-            );
+        let metering = &self.pending_metering;
+        if metering.flush_runner.is_running()
+            || !metering
+                .flight
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_empty()
+            || metering.shards.iter().any(|shard| {
+                shard
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .values()
+                    .any(|counts| !counts.is_zero())
+            })
+        {
+            return true;
         }
-        flushed
+        let corrections: Vec<_> = self
+            .corrections
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        corrections
+            .iter()
+            .any(|pending| pending.has_unsettled_persistence())
+            || self.has_unsettled_recovery()
+            || self.has_unsettled_unit_checkpoints()
+            || self.has_unsettled_ticket_operations()
     }
 
-    pub fn metering_for(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-        self.store.list_metering(bucket)
+    pub async fn flush_metering(&self) -> usize {
+        self.flush_metering_deduped(false).await
+    }
+
+    pub async fn flush_metering_final(&self) -> usize {
+        self.flush_metering_deduped(true).await
     }
 
     pub fn rate_headroom(
@@ -1130,82 +935,6 @@ impl GovState {
             .clone()
     }
 
-    pub fn rewrap_credentials(&self, now: u64) -> RecordStoreResult<super::at_rest::Rewrap> {
-        if self.at_rest_keys().is_none() {
-            return Ok(super::at_rest::Rewrap::default());
-        }
-        let rows = self.store.list_credentials_since(0)?;
-        self.rewrap_rows(rows, now)
-    }
-
-    pub fn rewrap_rows(
-        &self,
-        rows: Vec<CredentialSecret>,
-        now: u64,
-    ) -> RecordStoreResult<super::at_rest::Rewrap> {
-        let mut pass = super::at_rest::Rewrap::default();
-        let Some(keys) = self.at_rest_keys() else {
-            return Ok(pass);
-        };
-        for row in rows {
-            if row.meta.revoked_at.is_some() {
-                continue;
-            }
-            let Some(plain) = super::at_rest::stale(&keys, &row.meta, &row.secret) else {
-                continue;
-            };
-            let digest = ring::digest::digest(&ring::digest::SHA256, row.secret.as_bytes());
-            let token = format!(
-                "{}:{}:{}",
-                keys.kid(),
-                row.meta.id,
-                hex::encode(&digest.as_ref()[..16])
-            );
-            let claimed = self
-                .store
-                .redeem_plane_token(
-                    super::at_rest::REWRAP_CLAIM_KIND,
-                    &token,
-                    now.saturating_add(super::at_rest::REWRAP_CLAIM_SECS),
-                    now,
-                )
-                .unwrap_or(false);
-            if !claimed {
-                pass.pending += 1;
-                continue;
-            }
-            let written = keys.seal(&row.meta, plain.as_bytes()).and_then(|sealed| {
-                self.store
-                    .rewrap_credential(&row, &sealed)
-                    .map_err(|e| e.to_string())
-            });
-            match written {
-                Ok(true) => pass.resealed += 1,
-                Ok(false) => pass.pending += 1,
-                Err(e) => {
-                    pass.pending += 1;
-                    diag_warn!(
-                        crate::diagnostics::CREDENTIAL_AT_REST_REWRAP_PENDING,
-                        kind = %row.meta.kind,
-                        error = %e,
-                        "a recoverable credential could not be re-sealed under \
-                         credentials.at_rest.key; it still opens under the key it was sealed under"
-                    );
-                }
-            }
-        }
-        if pass.resealed > 0 {
-            self.refresh()?;
-            crate::audit_ring::AUDIT.record_by(
-                "credential.at_rest.rewrap",
-                &format!("kid:{} rows:{}", keys.kid(), pass.resealed),
-                crate::audit_ring::OUTCOME_APPLIED,
-                "busbar",
-            );
-        }
-        Ok(pass)
-    }
-
     pub(super) fn signing_material(&self) -> Option<Arc<SigningMaterial>> {
         self.signing
             .read()
@@ -1213,86 +942,12 @@ impl GovState {
             .clone()
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn ensure_id_free_for_hash(&self, id: &str, hash: &str) -> RecordStoreResult<()> {
-        if let Some(existing) = self.store.get_key(id)? {
-            if existing.generation_hash != hash {
-                return Err(RecordStoreError(format!(
-                    "virtual-key id collision: derived id '{id}' already belongs to a different key; \
-                     retry to mint with fresh entropy (this is a ~2^-64 birthday event)"
-                )));
-            }
-        }
-        Ok(())
+    pub async fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
+        self.delete_key_outcome_async(id).await.map_err(Into::into)
     }
 
-    pub fn all_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.store.list_keys()
-    }
-
-    pub fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-        self.delete_key_outcome(id).map_err(Into::into)
-    }
-
-    pub fn delete_key_outcome(&self, id: &str) -> Result<(), KeyMutationError> {
-        let _claim = self.claim_key_mutation(id)?;
-        let _correction = self.correction_claims.claim(id.to_string());
-        self.settle_correction_for_delete(id)?;
-        let _budget_delete = self.hold_budget_flush_deletion(id);
-        self.settle_budget_flush_for_delete(id)?;
-        self.store.delete_key(id)?;
-
-        self.evict_key_from_caches(id);
-        let refreshed = self.refresh();
-
-        let mut cells = self.budget.write(id);
-        if !cells.get(id).is_some_and(|cell| cell.correction.is_some()) {
-            cells.remove(id);
-        }
-        drop(cells);
-        self.money_view.forget(id);
-        if let Err(refresh_err) = refreshed {
-            diag_error!(
-                DELETE_KEY_CACHE_RECONCILE_FAILED,
-                key_id = %id,
-                refresh_err = %refresh_err,
-                "delete_key: the tombstone is COMMITTED in the store and the key was evicted from \
-                 the in-memory caches (it no longer authenticates), but the full cache reconcile \
-                 failed; other cache entries may be stale until the next successful refresh"
-            );
-            return Err(KeyMutationError::Applied {
-                key_id: id.into(),
-                operation: "key.delete",
-                reconcile: refresh_err,
-            });
-        }
-        Ok(())
-    }
-
-    fn evict_key_from_caches(&self, id: &str) {
-        self.refresh_order.patch(|| {
-            let mut c = self.caches_write();
-            c.by_id.remove(id);
-            c.by_credential.retain(|_, (key, _)| key.id != id);
-        });
-    }
-
-    fn patch_key_in_caches(&self, key: Arc<VirtualKey>) {
-        self.refresh_order.patch(|| {
-            let mut c = self.caches_write();
-            for (owner, _) in c.by_credential.values_mut() {
-                if owner.id == key.id {
-                    *owner = key.clone();
-                }
-            }
-            c.by_id.insert(key.id.clone(), key);
-        });
-    }
-
-    fn claim_key_mutation(&self, id: &str) -> RecordStoreResult<claims::Claim<'_, MutationKey>> {
-        self.mutation_claims
-            .claim_checked(MutationKey::Key(id.to_string()))
-            .ok_or_else(|| RecordStoreError("reentrant key mutation refused".into()))
+    pub async fn delete_key_outcome(&self, id: &str) -> Result<(), KeyMutationError> {
+        self.delete_key_outcome_async(id).await
     }
 
     pub fn reclaim_group_cells(&self, group: &str) -> usize {
@@ -1321,126 +976,38 @@ impl GovState {
         dropped
     }
 
-    pub fn rotate_key(&self, id: &str, exp: u64) -> RecordStoreResult<Option<RotatedCredential>> {
-        self.rotate_key_outcome(id, exp).map_err(Into::into)
-    }
-
-    pub fn rotate_key_outcome(
-        &self,
-        id: &str,
-        exp: u64,
-    ) -> Result<Option<RotatedCredential>, KeyMutationError> {
-        let _claim = self.claim_key_mutation(id)?;
-        let Some(mut key) = self.store.get_key(id)? else {
-            return Ok(None);
-        };
-
-        if key.deleted_at.is_some() {
-            return Ok(None);
-        }
-        let Some(material) = self.signing_material() else {
-            return Err(RecordStoreError(
-                "cannot rotate a signed-token key: no signing key is configured (rotation \
-                 re-mints the token)"
-                    .to_string(),
-            )
-            .into());
-        };
-        let generation = generate_binding_generation().store()?;
-        key.generation_hash = binding_marker(&key.id, &generation);
-        self.store.put_key(&key)?;
-
-        if let Err(refresh_err) = self.refresh() {
-            self.evict_key_from_caches(id);
-            diag_error!(
-                ROTATE_KEY_CACHE_RECONCILE_FAILED,
-                key_id = %id,
-                refresh_err = %refresh_err,
-                "rotate_key: the new generation is COMMITTED in the store (the previous credential \
-                 is dead) and the key was evicted from the in-memory caches, but the full cache \
-                 reconcile failed, so the freshly-minted token could not be returned"
-            );
-            return Err(KeyMutationError::Applied {
-                key_id: id.into(),
-                operation: "key.rotate",
-                reconcile: refresh_err,
-            });
-        }
-        let token: Secret<String> = material.signer.mint(&key.id, exp, Some(&generation)).into();
-        Ok(Some(RotatedCredential { key, token, exp }))
-    }
-
-    pub fn update_key(
-        &self,
-        id: &str,
-        enabled: Option<bool>,
-        group: Option<Option<String>>,
-    ) -> RecordStoreResult<Option<VirtualKey>> {
-        self.update_key_outcome(id, enabled, group)
-            .map_err(Into::into)
-    }
-
-    pub fn update_key_outcome(
-        &self,
-        id: &str,
-        enabled: Option<bool>,
-        group: Option<Option<String>>,
-    ) -> Result<Option<VirtualKey>, KeyMutationError> {
-        let _claim = self.claim_key_mutation(id)?;
-        let Some(mut key) = self.store.get_key(id)? else {
-            return Ok(None);
-        };
-
-        if key.deleted_at.is_some() {
-            return Ok(None);
-        }
-        if let Some(e) = enabled {
-            key.enabled = e;
-        }
-
-        if let Some(g) = group {
-            key.group = g;
-        }
-
-        self.store.put_key(&key)?;
-        self.patch_key_in_caches(Arc::new(key.clone()));
-        if let Err(reconcile) = self.refresh() {
-            return Err(KeyMutationError::Applied {
-                key_id: id.into(),
-                operation: "key.patch",
-                reconcile,
-            });
-        }
-        Ok(Some(key))
-    }
-
-    pub fn hydrate_budgets(
+    pub async fn hydrate_budgets_async(
         &self,
         cost: &crate::cost::CostModel,
         now: u64,
     ) -> RecordStoreResult<()> {
-        let keys = self.store.list_keys()?;
-        let key_buckets = keys
-            .iter()
-            .map(|k| (k.id.as_str(), super::WINDOW_TOTAL, None));
-        let group_buckets = cost.groups().iter().flat_map(|g| {
-            g.buckets
-                .iter()
-                .map(move |b| (b.bucket_id.as_str(), b.window, Some(g.name.as_str())))
-        });
-        for (bucket_id, period, group) in key_buckets.chain(group_buckets) {
+        let keys = self.core_store()?.identity().list_keys().await?;
+        let mut buckets = Vec::new();
+        for key in &keys {
+            buckets.push((key.id.clone(), super::WINDOW_TOTAL, None));
+        }
+        for group in cost.groups() {
+            for bucket in &group.buckets {
+                buckets.push((
+                    bucket.bucket_id.clone(),
+                    bucket.window,
+                    Some(group.name.clone()),
+                ));
+            }
+        }
+        for (bucket_id, period, group) in buckets {
             let window = budget_window(period, now);
-            let mut cell = self.stored_cell(bucket_id, window)?;
+            let mut cell = self.stored_cell_async(&bucket_id, window).await?;
             if cell.requests == 0 && cell.models.is_empty() {
                 continue;
             }
 
             cell.last_touch = now;
-            let mut cells = self.budget.write(bucket_id);
+            let mut cells = self.budget.write(&bucket_id);
             if let Some(group) = group {
-                cell.group_owners.insert(group.to_string());
+                cell.group_owners.insert(group);
             }
-            if let Some(previous) = cells.get(bucket_id) {
+            if let Some(previous) = cells.get(&bucket_id) {
                 if previous.correction.is_some() || previous.dirty || previous.flushing != 0 {
                     return Err(RecordStoreError(
                         "budget hydration has unresolved raw usage custody".into(),
@@ -1449,126 +1016,14 @@ impl GovState {
                 cell.group_owners
                     .extend(previous.group_owners.iter().cloned());
             }
-            cells.insert(bucket_id.to_string(), cell);
+            cells.insert(bucket_id, cell);
         }
         Ok(())
-    }
-
-    pub fn usage_for(
-        &self,
-        cost: &crate::cost::CostModel,
-        id: &str,
-        now: u64,
-    ) -> RecordStoreResult<Option<DerivedUsage>> {
-        self.key_usage(id, |id| {
-            self.derived_bucket_usage(cost, id, super::WINDOW_TOTAL, true, now)
-        })
-    }
-
-    fn key_usage(
-        &self,
-        id: &str,
-        read: impl FnOnce(&str) -> RecordStoreResult<DerivedUsage>,
-    ) -> RecordStoreResult<Option<DerivedUsage>> {
-        match self.store.get_key(id)? {
-            Some(_) => read(id).map(Some),
-            None => Ok(None),
-        }
-    }
-
-    pub fn derived_bucket_usage(
-        &self,
-        cost: &crate::cost::CostModel,
-        bucket_id: &str,
-        budget_period: &str,
-        include_request_fee: bool,
-        now: u64,
-    ) -> RecordStoreResult<DerivedUsage> {
-        self.derived_bucket_usage_priced(cost, bucket_id, budget_period, include_request_fee, now)?
-            .map_err(|e| money_refusal(bucket_id, &e))
-    }
-
-    pub fn derived_bucket_usage_priced(
-        &self,
-        cost: &crate::cost::CostModel,
-        bucket_id: &str,
-        budget_period: &str,
-        include_request_fee: bool,
-        now: u64,
-    ) -> RecordStoreResult<Result<DerivedUsage, busbar_kernel_ledger::cost::MoneyError>> {
-        let window = budget_window(budget_period, now);
-        let cell = self.bucket_cell(bucket_id, window)?;
-        self.price_cell(cost, include_request_fee, cell)
-    }
-
-    pub fn viewed_bucket_usage(
-        &self,
-        cost: &crate::cost::CostModel,
-        bucket_id: &str,
-        budget_period: &str,
-        include_request_fee: bool,
-        now: u64,
-    ) -> RecordStoreResult<DerivedUsage> {
-        let window = budget_window(budget_period, now);
-        let cell = self.bucket_cell(bucket_id, window)?;
-        let inputs = money_view::Inputs::of(cost, budget_period, include_request_fee, &cell);
-        let priced = match self.money_view.fresh(bucket_id, &inputs) {
-            Some(priced) => priced,
-            None => {
-                let priced = self.price_cell(cost, include_request_fee, cell)?;
-                self.money_view.keep(bucket_id, inputs, priced.clone());
-                priced
-            }
-        };
-        priced.map_err(|e| money_refusal(bucket_id, &e))
-    }
-
-    pub fn viewed_usage_for(
-        &self,
-        cost: &crate::cost::CostModel,
-        id: &str,
-        now: u64,
-    ) -> RecordStoreResult<Option<DerivedUsage>> {
-        self.key_usage(id, |id| {
-            self.viewed_bucket_usage(cost, id, super::WINDOW_TOTAL, true, now)
-        })
     }
 
     #[cfg(test)]
     pub fn money_view_pricings(&self) -> u64 {
         self.money_view.pricings()
-    }
-
-    fn bucket_cell(&self, bucket_id: &str, window: u64) -> RecordStoreResult<BudgetCell> {
-        let live = {
-            let cells = self.budget.read(bucket_id);
-            if cells
-                .get(bucket_id)
-                .is_some_and(|cell| cell.correction.is_some())
-            {
-                return Err(RecordStoreError(
-                    "usage correction outcome unresolved".into(),
-                ));
-            }
-            cells
-                .get(bucket_id)
-                .filter(|cell| cell.window_start == window)
-                .cloned()
-        };
-        Ok(match live {
-            Some(cell) => cell,
-            None => self.stored_cell(bucket_id, window)?,
-        })
-    }
-
-    fn stored_cell(&self, bucket_id: &str, window: u64) -> RecordStoreResult<BudgetCell> {
-        let row = self.store.get_usage(bucket_id, window)?;
-        let eras = if row.models.is_empty() && row.billable_requests == 0 {
-            busbar_contract::records::UsageLedger::default()
-        } else {
-            self.store.get_usage(&era_bucket(bucket_id), window)?
-        };
-        durable_cell(row, eras, window)
     }
 
     fn price_cell(
@@ -1587,30 +1042,6 @@ impl GovState {
                 tokens: cell.total_tokens(),
                 requests: cell.requests,
             }))
-    }
-
-    pub fn bucket_model_tokens(
-        &self,
-        bucket_id: &str,
-        budget_period: &str,
-        now: u64,
-    ) -> Vec<(String, std::collections::BTreeMap<String, Count>)> {
-        let window = budget_window(budget_period, now);
-        let live = (self.budget.read(bucket_id).get(bucket_id))
-            .filter(|c| c.window_start == window)
-            .map(|c| c.models.clone());
-        let read = live.map_or_else(
-            || (self.store.get_usage(bucket_id, window)).and_then(|l| durable_segments(l.models)),
-            Ok,
-        );
-        let Ok(models) = read else {
-            return Vec::new();
-        };
-
-        let models = models.iter().map(|m| (&*m.model, m.cur.clone()));
-        busbar_kernel_ledger::usage::by_lane(models, |a, b| {
-            a.checked_add(b).expect("lane count total overflow")
-        })
     }
 
     pub fn budget_state(
@@ -2160,16 +1591,16 @@ impl GovState {
         }
     }
 
-    pub fn flush_budgets(&self) -> usize {
-        self.flush_budgets_inner(false)
+    pub async fn flush_budgets(&self) -> usize {
+        self.flush_budgets_inner(false).await
     }
 
-    pub fn flush_budgets_final(&self) -> usize {
-        self.flush_budgets_inner(true)
+    pub async fn flush_budgets_final(&self) -> usize {
+        self.flush_budgets_inner(true).await
     }
 
-    fn flush_budgets_inner(&self, shutdown: bool) -> usize {
-        let _runner = match self.budget_flush_runner.enter(shutdown) {
+    async fn flush_budgets_inner(&self, shutdown: bool) -> usize {
+        let runner = match self.budget_flush_runner.enter(shutdown).await {
             Ok(runner) => runner,
             Err(message) => {
                 if shutdown {
@@ -2178,301 +1609,84 @@ impl GovState {
                 return 0;
             }
         };
-        let mut unresolved_corrections = self.retry_usage_corrections();
-        if self.recovery_enabled() {
-            if let Err(error) = self.resume_raw_recovery() {
-                unresolved_corrections.push(error.to_string());
-            }
-        }
-
-        let foreign_settled = self.capture_foreign_settled_snapshot();
-        for mut map in self.budget.write_all() {
-            for (id, cell) in map.iter_mut() {
-                if cell.dirty {
-                    let _ = self.capture_budget_flushes(id, cell, &foreign_settled);
-                }
-            }
-        }
-        let (mut flushed, chunk_errors) = self.resume_budget_flushes(shutdown);
-        unresolved_corrections.extend(chunk_errors);
-
-        struct Acked {
-            requests: u64,
-            billable_requests: u64,
-            models: Vec<ModelCell>,
-            fee_eras: RawFeeEras,
-        }
-
-        struct DirtySnap {
-            bucket_id: String,
-            window: u64,
-            delta: UsageDelta,
-
-            eras: UsageDelta,
-            acked: Option<Acked>,
-        }
-
-        let mut dirty: Vec<DirtySnap> = Vec::new();
-        let mut new_flights = Vec::new();
-        for mut map in self.budget.write_all() {
-            for (id, cell) in map.iter_mut() {
-                if !cell.dirty || self.budget_bucket_deleting(id) {
-                    continue;
+        runner
+            .scope(async {
+                let _ = self.settle_ticket_operations().await;
+                let mut errors = self.retry_usage_corrections().await;
+                if self.recovery_enabled() {
+                    if let Err(error) = self.resume_raw_recovery().await {
+                        errors.push(error.to_string());
+                    }
                 }
 
-                new_flights.extend(self.capture_budget_flushes(id, cell, &foreign_settled));
-                if self.store.supports_usage_batch_deduped() {
-                    let correcting = cell.correction.is_some();
-                    cell.mutate(|cell| {
-                        cell.dirty = correcting
-                            || !ExactUsageDelta::of(cell, false).is_zero()
-                            || !ExactUsageDelta::of(cell, true).is_zero()
-                            || !cell.rolled.is_empty()
-                            || !cell.rolled_eras.is_empty();
-                    });
-                    continue;
+                let foreign_settled = self.capture_foreign_settled_snapshot().await;
+                {
+                    for mut map in self.budget.write_all() {
+                        for (id, cell) in map.iter_mut() {
+                            if cell.dirty {
+                                let _ = self.capture_budget_flushes(id, cell, &foreign_settled);
+                            }
+                        }
+                    }
                 }
-                let reserved_window = cell.correction.as_ref().map(|branch| branch.window);
-                let mut rolled = BTreeMap::<u64, (UsageDelta, UsageDelta)>::new();
-                let mut drained_plain = std::collections::BTreeSet::new();
-                let mut drained_dated = std::collections::BTreeSet::new();
-                for (window, delta) in std::mem::take(&mut cell.rolled) {
-                    if Some(window) == reserved_window
-                        || cell.flushing_windows.contains_key(&window)
-                    {
-                        cell.rolled.push((window, delta));
+                let (mut flushed, retained_errors) = self.resume_budget_flushes(shutdown).await;
+                errors.extend(retained_errors);
+
+                // Include accrual that arrived while retained operations were awaiting their
+                // receipts. Capture is entirely in memory; each immutable flight owns its debt
+                // before any Store call can suspend this future.
+                let mut new_flights = Vec::new();
+                {
+                    for mut map in self.budget.write_all() {
+                        for (id, cell) in map.iter_mut() {
+                            if !cell.dirty || self.budget_bucket_deleting(id) {
+                                continue;
+                            }
+                            new_flights.extend(self.capture_budget_flushes(
+                                id,
+                                cell,
+                                &foreign_settled,
+                            ));
+                            cell.mutate(|cell| {
+                                cell.dirty = cell.correction.is_some()
+                                    || !ExactUsageDelta::of(cell, false).is_zero()
+                                    || !ExactUsageDelta::of(cell, true).is_zero()
+                                    || !cell.rolled.is_empty()
+                                    || !cell.rolled_eras.is_empty();
+                            });
+                        }
+                    }
+                }
+                let (late_flushed, late_errors) = if shutdown {
+                    self.resume_budget_flushes(true).await
+                } else {
+                    self.resume_budget_flush_list(new_flights, false).await
+                };
+                flushed += late_flushed;
+                errors.extend(late_errors);
+                if !errors.is_empty() {
+                    let failed = errors.len();
+                    if shutdown {
+                        diag_error!(
+                            BUDGET_FLUSH_PARTIAL_FAILURE,
+                            failed,
+                            flushed,
+                            "shutdown budget flush retains unresolved raw custody: {}",
+                            errors.join(", ")
+                        );
                     } else {
-                        drained_plain.insert(window);
-                        rolled.entry(window).or_default().0 =
-                            delta.signed().expect("checked representability");
+                        diag_warn!(
+                            BUDGET_FLUSH_PARTIAL_FAILURE,
+                            failed,
+                            flushed,
+                            "budget flush retains exact operations for retry: {}",
+                            errors.join(", ")
+                        );
                     }
                 }
-                for (window, eras) in std::mem::take(&mut cell.rolled_eras) {
-                    if Some(window) == reserved_window
-                        || cell.flushing_windows.contains_key(&window)
-                    {
-                        cell.rolled_eras.push((window, eras));
-                    } else {
-                        drained_dated.insert(window);
-                        rolled.entry(window).or_default().1 =
-                            eras.signed().expect("checked representability");
-                    }
-                }
-                let flush_current = Some(cell.window_start) != reserved_window
-                    && !cell.flushing_windows.contains_key(&cell.window_start);
-                cell.flushing += rolled.len() + usize::from(flush_current);
-                for window in rolled.keys() {
-                    *cell.flushing_windows.entry(*window).or_default() += 1;
-                }
-                if flush_current {
-                    *cell.flushing_windows.entry(cell.window_start).or_default() += 1;
-                }
-                if let Some(branch) = cell.correction.as_mut() {
-                    branch
-                        .accepted
-                        .rolled
-                        .retain(|(window, _)| !drained_plain.contains(window));
-                    branch
-                        .accepted
-                        .rolled_eras
-                        .retain(|(window, _)| !drained_dated.contains(window));
-                    branch.accepted.flushing = cell.flushing;
-                    branch.accepted.flushing_windows = cell.flushing_windows.clone();
-                    branch.accepted.dirty = true;
-                }
-                for (window, (delta, eras)) in rolled {
-                    dirty.push(DirtySnap {
-                        bucket_id: id.clone(),
-                        window,
-                        delta,
-                        eras,
-                        acked: None,
-                    });
-                }
-                if flush_current {
-                    dirty.push(DirtySnap {
-                        bucket_id: id.clone(),
-                        window: cell.window_start,
-                        delta: cell.unflushed(),
-                        eras: cell.unflushed_eras(),
-                        acked: Some(Acked {
-                            requests: cell.requests,
-                            billable_requests: cell.billable_requests,
-                            models: cell.models.clone(),
-                            fee_eras: cell.fee_eras.clone(),
-                        }),
-                    });
-                }
-                cell.dirty = cell.correction.is_some()
-                    || !cell.rolled.is_empty()
-                    || !cell.rolled_eras.is_empty()
-                    || !flush_current;
-            }
-        }
-
-        let mut failed = unresolved_corrections.len();
-        let mut unrecorded: Vec<String> = if shutdown {
-            unresolved_corrections.clone()
-        } else {
-            Vec::new()
-        };
-        let mut last_error: Option<String> = unresolved_corrections.last().cloned();
-        for snap in dirty {
-            let outcome = if snap.delta.is_zero() {
-                Ok(())
-            } else {
-                self.store
-                    .add_usage(&snap.bucket_id, snap.window, &snap.delta)
-            };
-            let era_outcome = if outcome.is_err() {
-                None
-            } else if snap.eras.is_zero() {
-                Some(Ok(()))
-            } else {
-                Some(
-                    self.store
-                        .add_usage(&era_bucket(&snap.bucket_id), snap.window, &snap.eras),
-                )
-            };
-            let mut map = self.budget.write(&snap.bucket_id);
-            if let Some(cell) = map.get_mut(&snap.bucket_id) {
-                cell.mutate(|cell| {
-                    if cell.flushing != 0 {
-                        cell.flushing -= 1;
-                    }
-                    if let Some(count) = cell.flushing_windows.get_mut(&snap.window) {
-                        *count -= 1;
-                        if *count == 0 {
-                            cell.flushing_windows.remove(&snap.window);
-                        }
-                    }
-                });
-            }
-            let plain_ok = outcome.is_ok();
-            let era_ok = matches!(era_outcome, Some(Ok(())));
-            if let Some(cell) = map.get_mut(&snap.bucket_id) {
-                cell.mutate(|cell| {
-                    if let Some(acked) = &snap.acked {
-                        if cell.window_start == snap.window {
-                            if plain_ok {
-                                cell.flushed_requests = acked.requests;
-                                cell.flushed_billable_requests = acked.billable_requests;
-                                cell.advance_model_baselines(&acked.models, false);
-                            }
-                            if era_ok {
-                                cell.flushed_fee_eras = acked.fee_eras.clone();
-                                cell.advance_model_baselines(&acked.models, true);
-                            }
-                        } else if cell.window_start > snap.window {
-                            if plain_ok {
-                                park_window(&mut cell.rolled, snap.window, negated(&snap.delta));
-                            }
-                            if era_ok {
-                                park_window(
-                                    &mut cell.rolled_eras,
-                                    snap.window,
-                                    negated(&snap.eras),
-                                );
-                            }
-                            cell.dirty = true;
-                        }
-                    } else {
-                        if !plain_ok {
-                            cell.park(snap.window, snap.delta.clone());
-                        }
-                        if !era_ok {
-                            cell.park_eras(snap.window, snap.eras.clone());
-                        }
-                    }
-                    cell.dirty |= !plain_ok || !era_ok;
-                });
-            } else if !plain_ok || !era_ok {
-                let mut cell = BudgetCell::fresh(snap.window);
-                if !plain_ok {
-                    cell.park(snap.window, snap.delta.clone());
-                }
-                if !era_ok {
-                    cell.park_eras(snap.window, snap.eras.clone());
-                }
-                cell.dirty = true;
-                map.insert(snap.bucket_id.clone(), cell);
-            }
-            if plain_ok && era_ok {
-                flushed += 1;
-            } else {
-                failed += 1;
-                let error = outcome.err().or_else(|| era_outcome.and_then(Result::err));
-                if shutdown {
-                    unrecorded.push(format!("{}@{}", snap.bucket_id, snap.window));
-                } else if let Some(error) = &error {
-                    tracing::debug!(bucket = %snap.bucket_id, %error, "budget flush failed for bucket; will retry next tick");
-                }
-                last_error = error.map(|error| error.to_string());
-            }
-        }
-        let (late_flushed, late_errors) = if shutdown {
-            self.resume_budget_flushes(true)
-        } else {
-            self.resume_budget_flush_list(new_flights, false)
-        };
-        flushed += late_flushed;
-        failed += late_errors.len();
-        if let Some(error) = late_errors.last() {
-            last_error = Some(error.clone());
-        }
-        if shutdown {
-            unrecorded.extend(late_errors);
-        }
-        if failed > 0 && shutdown {
-            diag_error!(
-                BUDGET_FLUSH_PARTIAL_FAILURE,
-                failed,
-                flushed,
-                error = last_error.as_deref().unwrap_or(""),
-                "shutdown budget flush: the store is unreachable and the process is exiting; \
-                 {failed} bucket window(s) are NOT recorded: {}",
-                unrecorded.join(", ")
-            );
-        } else if failed > 0 {
-            diag_warn!(
-                BUDGET_FLUSH_PARTIAL_FAILURE,
-                failed,
-                flushed,
-                error = last_error.as_deref().unwrap_or(""),
-                "budget flush: {failed} bucket(s) failed to persist this tick; retained for \
-                 retry next tick (per-bucket detail at debug)"
-            );
-        }
-        flushed
-    }
-
-    pub fn load(store: &dyn RecordStore) -> RecordStoreResult<HashMap<String, Arc<VirtualKey>>> {
-        Ok(store
-            .list_keys()?
-            .into_iter()
-            .filter(|k| k.deleted_at.is_none())
-            .map(|k| (k.id.clone(), Arc::new(k)))
-            .collect())
-    }
-
-    pub fn load_by_credential(
-        store: &dyn RecordStore,
-        by_id: &HashMap<String, Arc<VirtualKey>>,
-        now: u64,
-    ) -> RecordStoreResult<super::CredentialIndex> {
-        let mut map = HashMap::new();
-        for cred in store.list_credentials_since(0)? {
-            if !cred.meta.is_live(now) {
-                continue;
-            }
-            if let Some(key) = by_id.get(cred.meta.key_id.as_str()) {
-                map.insert(
-                    (cred.meta.kind.clone(), cred.meta.public_id.clone()),
-                    (key.clone(), cred),
-                );
-            }
-        }
-        Ok(map)
+                flushed
+            })
+            .await
     }
 
     pub fn lookup_credential(
@@ -2502,7 +1716,11 @@ impl GovState {
                 } else {
                     None
                 };
-                (key.id.clone(), plain, key.enabled)
+                (
+                    key.id.clone(),
+                    plain,
+                    key.enabled && !key_row_expired(&key, now),
+                )
             }
             None => (String::new(), None, false),
         };
@@ -2510,36 +1728,6 @@ impl GovState {
         let live = enabled && plain.is_some() && !revoked;
         let secret = plain.unwrap_or_default();
         (busbar_contract::redacted::Secret::new(secret), live)
-    }
-
-    pub fn store(&self) -> Arc<dyn RecordStore> {
-        self.store.clone()
-    }
-
-    pub fn refresh(&self) -> RecordStoreResult<()> {
-        reload_caches(self.store.as_ref(), &self.caches, &self.refresh_order)
-    }
-}
-
-fn reload_caches(
-    store: &dyn RecordStore,
-    caches: &RwLock<GovCaches>,
-    order: &CacheOrder,
-) -> RecordStoreResult<()> {
-    loop {
-        let ticket = order.ticket();
-        let fresh = GovState::load(store)?;
-        let fresh_cred = GovState::load_by_credential(store, &fresh, busbar_kernel::store::now())?;
-        match order.turn(ticket) {
-            CacheTurn::Swap(_turn) => {
-                let mut c = caches.write().unwrap_or_else(|p| p.into_inner());
-                c.by_id = fresh;
-                c.by_credential = fresh_cred;
-                return Ok(());
-            }
-            CacheTurn::Stale => return Ok(()),
-            CacheTurn::Reload => continue,
-        }
     }
 }
 
@@ -2578,18 +1766,6 @@ fn take_one(counts: &mut BTreeMap<String, Count>, unit: &str) {
             counts.remove(unit);
         }
     }
-}
-
-fn negated(delta: &UsageDelta) -> ExactUsageDelta {
-    let mut exact = ExactUsageDelta::from_signed(delta);
-    exact.requests = -exact.requests;
-    exact.billable_requests = -exact.billable_requests;
-    for model in &mut exact.models {
-        for count in model.usage_units.values_mut() {
-            *count = -*count;
-        }
-    }
-    exact
 }
 
 fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) -> RecordStoreError {

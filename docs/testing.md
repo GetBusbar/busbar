@@ -1,9 +1,9 @@
 # Testing strategy
 
 How Busbar is tested, and how to add a test. Companion to
-[development.md](development.md) (build/lint commands) and
-[internals.md](internals.md) (the systems under test). The disposition taxonomy
-is [ADR-0002](adr/0002-circuit-breaker.md).
+[development.md](development.md) (build/lint commands). The current disposition
+taxonomy is implemented in
+[`busbar-kernel-breaker`](../crates/busbar-kernel-breaker/src/classify.rs).
 
 ## Shape of the suite
 
@@ -311,7 +311,7 @@ branch reached by zero fixtures asserts nothing while reporting green, and is
 itself a hard failure. In Rust the analogue is per-branch coverage over the
 choke-point modules plus an "every enum variant has a behavioral test" census.
 An exhaustive `match` (e.g. the `StatusClass → Disposition` taxonomy of
-[ADR-0002](adr/0002-circuit-breaker.md)) makes the compiler the existence guard,
+[`classify.rs`](../crates/busbar-kernel-breaker/src/classify.rs)) makes the compiler the existence guard,
 so only the behavioral arm needs asserting.
 
 ### R3: A defect test must not encode the defect

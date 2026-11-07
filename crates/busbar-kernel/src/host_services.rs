@@ -11,7 +11,7 @@ use busbar_contract::abi::mechanism::call::{Outcome, Span};
 use busbar_contract::caps::IdempotencyKey;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
-use busbar_contract::records::{RecordStore, RecordStoreResult, Retention};
+use busbar_contract::records::Retention;
 use busbar_contract::services::{
     merge_list, Caller, CredentialRead, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran,
     Reading, RecordsList, Stored,
@@ -186,8 +186,15 @@ impl From<u64> for Refused {
 
 pub const NO_DEST_JUDGE: &str = "no destination judge is installed";
 
+pub type AsyncJob = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
+
 pub trait Offload: Send + Sync {
     fn run(&self, job: Box<dyn FnOnce() + Send>);
+    /// Existing executors opt into asynchronous host jobs. Dropping an unrun job
+    /// preserves the same callback refusal behavior as the blocking lane.
+    fn run_async(&self, job: AsyncJob) {
+        drop(job);
+    }
 }
 
 /// The runtime's blocking pool, with an explicit bound on the jobs it holds: at most `bound` are
@@ -221,6 +228,19 @@ impl Drop for Place {
 }
 
 impl Offload for BlockingPool {
+    fn run_async(&self, job: AsyncJob) {
+        use std::sync::atomic::Ordering;
+        if self.held.fetch_add(1, Ordering::AcqRel) >= self.bound {
+            self.held.fetch_sub(1, Ordering::AcqRel);
+            return;
+        }
+        let place = Place(Arc::clone(&self.held));
+        drop(self.handle.spawn(async move {
+            let _place = place;
+            job.await;
+        }));
+    }
+
     fn run(&self, job: Box<dyn FnOnce() + Send>) {
         use std::sync::atomic::Ordering;
         if self.held.fetch_add(1, Ordering::AcqRel) >= self.bound {
@@ -395,7 +415,7 @@ struct LifeObservationOwed(Option<crate::host_records::ChainLifeAcked>);
 impl LifeObservationOwed {
     fn answer(
         mut self,
-        result: Result<busbar_contract::abi::sdk::store::conditional::Expected, &'static str>,
+        result: Result<busbar_contract::host_records::conditional::Expected, &'static str>,
     ) {
         if let Some(done) = self.0.take() {
             done(result);
@@ -414,6 +434,32 @@ impl Drop for LifeObservationOwed {
 fn submit(pool: &dyn Offload, later: Later, job: impl FnOnce() -> Stored + Send + 'static) -> Ran {
     let owed = Owed(Some(later));
     pool.run(Box::new(move || owed.answer(job())));
+    Ran::Later
+}
+
+fn native_record_found(value: Vec<u8>) -> Stored {
+    if value.is_empty() {
+        return Stored::ready(svc::ABSENT);
+    };
+    let mut stored = Stored::ready(svc::FOUND);
+    let length = value.len();
+    stored.bytes = value;
+    stored.spans.push(ItemSpan {
+        key: absent_span(),
+        ..span(0, 0, 0, length)
+    });
+    stored
+}
+
+fn submit_async(
+    pool: &dyn Offload,
+    later: Later,
+    job: impl std::future::Future<Output = Stored> + Send + 'static,
+) -> Ran {
+    let owed = Owed(Some(later));
+    pool.run_async(Box::pin(async move {
+        owed.answer(job.await);
+    }));
     Ran::Later
 }
 
@@ -442,6 +488,8 @@ pub struct Signing {
 pub struct InstanceFacts {
     /// Its record kinds, each the schema its records are kept under.
     pub record_kinds: Vec<RecordSchemaId>,
+    /// Validated collection declarations; kind and parent indices are instance-local.
+    pub record_collections: Vec<busbar_contract::abi::plane::RecordCollection>,
     /// Declared kind indices requiring conditional publication, established before admission.
     /// Ordinary record writes must never share these namespaces with conditional candidates.
     pub conditional_record_kinds: Vec<u32>,
@@ -471,7 +519,7 @@ pub struct VerifiedTicketIdentity {
     pub(crate) id: String,
     pub(crate) principal: Arc<busbar_contract::records::VirtualKey>,
     pub(crate) expires_at: u64,
-    pub(crate) store: Arc<dyn RecordStore>,
+    pub(crate) store: Arc<crate::persistence::facade::CoreStore>,
     pub(crate) prefix: String,
     pub(crate) credential: zeroize::Zeroizing<String>,
 }
@@ -486,7 +534,7 @@ impl VerifiedTicketIdentity {
     pub fn expires_at(&self) -> u64 {
         self.expires_at
     }
-    pub fn store(&self) -> &Arc<dyn RecordStore> {
+    pub fn store(&self) -> &Arc<crate::persistence::facade::CoreStore> {
         &self.store
     }
     pub fn prefix(&self) -> &str {
@@ -532,10 +580,11 @@ impl std::fmt::Debug for HostTicketAdmission {
     }
 }
 
+#[async_trait::async_trait]
 pub trait TicketPress: Send + Sync {
     /// Mint with the host's exact admitted unit and caller identity. Reservation-aware presses
     #[allow(clippy::too_many_arguments)]
-    fn mint_for_unit(
+    async fn mint_for_unit(
         &self,
         unit: u64,
         caller: &Caller,
@@ -547,9 +596,10 @@ pub trait TicketPress: Send + Sync {
     ) -> Result<(String, u64), &'static str> {
         let _ = (unit, caller);
         self.mint(&principal.id, prefix, ttl_secs, record, now)
+            .await
     }
 
-    fn mint(
+    async fn mint(
         &self,
         key_id: &str,
         prefix: &str,
@@ -625,6 +675,11 @@ pub enum AdmitRefused {
         /// The invalid declared-kind index.
         kind: u32,
     },
+    /// Native claim retention could not bind an admitted record scope.
+    ClaimMaintenance {
+        /// The declared record kind.
+        kind: String,
+    },
     /// The store could not be read for the demotions and the operator's trust decisions this
     /// instance's trust stands on.
     TrustUnread(String),
@@ -676,6 +731,7 @@ impl std::fmt::Display for AdmitRefused {
                  this host cannot chain: a declared chain is kept, never dropped to plain records"
             ),
             Self::ConditionalKind { kind } => write!(f, "invalid conditional record kind {kind}"),
+            Self::ClaimMaintenance {kind}=>write!(f,"native claim retention could not be registered for record kind `{kind}`"),
             Self::TrustUnread(why) => write!(
                 f,
                 "{why}; the instance is not admitted over trust it cannot read"
@@ -702,6 +758,11 @@ fn trust_unread(why: String) -> AdmitRefused {
     AdmitRefused::TrustUnread(why)
 }
 
+struct NativeRecordScope {
+    rows: crate::host_records_async::AsyncRecords,
+    facts: Arc<InstanceFacts>,
+}
+
 struct Records {
     reads: Arc<dyn RecordRows>,
 }
@@ -725,6 +786,110 @@ fn system_wall_ms() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
+struct NativeWorkWriter {
+    instance: Arc<str>,
+    store: Arc<crate::persistence::facade::CoreStore>,
+    batcher: Arc<WriteBehind>,
+    pending: Arc<PendingRecords>,
+    chains: Arc<crate::host_chains::ChainBook>,
+    pool: Arc<dyn Offload>,
+}
+impl NativeWorkWriter {
+    fn rows(
+        &self,
+    ) -> Result<crate::persistence::scoped::ScopedStore, crate::persistence::scoped::Error> {
+        crate::persistence::scoped::ScopedStore::host_private(
+            Arc::clone(&self.store),
+            &self.instance,
+            [WORK_SCHEMA.as_str().to_string()],
+        )
+    }
+    fn put(&self, key: Vec<u8>, value: RecordBytes, acked: Acked) {
+        let instance = Arc::clone(&self.instance);
+        let owed = WriteOwed::new(acked);
+        if self.batcher.push_native_private_with(move || Write {
+            instance,
+            schema: WORK_SCHEMA,
+            key,
+            value,
+            seq: 0,
+            owed,
+            chain: None,
+        }) == Some(true)
+        {
+            let unrun = Unrun(Some(Arc::clone(&self.batcher)));
+            let pending = Arc::clone(&self.pending);
+            let store = Arc::clone(&self.store);
+            let chains = Arc::clone(&self.chains);
+            self.pool.run_async(Box::pin(async move {
+                if let Some(batcher) = unrun.run() {
+                    batcher.flush_native(&pending, &store, &chains).await;
+                }
+            }));
+        }
+    }
+}
+
+struct WorkOpening {
+    book: Arc<WorkBook>,
+    handle: u64,
+    reference: crate::host_work::Reference,
+    owed: Option<Owed>,
+}
+impl WorkOpening {
+    fn answer(mut self, result: Result<(), &'static str>) {
+        let stored = if result.is_ok() {
+            let text = reference_text(&self.reference).into_bytes();
+            let len = text.len();
+            let mut stored = Stored::ready(self.handle);
+            stored.bytes = text;
+            stored.spans.push(ItemSpan {
+                value: absent_span(),
+                ..span(0, len, 0, 0)
+            });
+            stored
+        } else {
+            self.book.unreserve(self.handle);
+            failed(STORE_FAILED)
+        };
+        if let Some(owed) = self.owed.take() {
+            owed.answer(stored);
+        }
+    }
+}
+impl Drop for WorkOpening {
+    fn drop(&mut self) {
+        if self.owed.is_some() {
+            self.book.unreserve(self.handle);
+        }
+    }
+}
+
+type NativeClaimKey = (Arc<str>, String, String);
+#[derive(Clone, Copy)]
+struct NativeClaimAttempt {
+    expires_at: u64,
+    pending: Option<crate::persistence::scoped::PendingClaim>,
+    driving: bool,
+}
+type NativeClaims = Arc<Mutex<HashMap<NativeClaimKey, NativeClaimAttempt>>>;
+struct NativeClaimGuard {
+    claims: NativeClaims,
+    key: NativeClaimKey,
+}
+impl Drop for NativeClaimGuard {
+    fn drop(&mut self) {
+        if let Some(attempt) = self
+            .claims
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_mut(&self.key)
+        {
+            attempt.driving = false;
+        }
+    }
+}
+
 pub struct KernelServices {
     origin: Instant,
     wall_ms: WallMs,
@@ -734,6 +899,8 @@ pub struct KernelServices {
     record_bootstrap: Mutex<Option<crate::host_record_bootstrap::Bootstrap>>,
     plane_cleanup: Mutex<Vec<std::sync::Weak<crate::plane_driver::PlaneDriver>>>,
     records: OnceLock<Records>,
+    persistence: OnceLock<Arc<crate::persistence::facade::CoreStore>>,
+    native_claims: NativeClaims,
     pool: OnceLock<Arc<dyn Offload>>,
     pending: Arc<PendingRecords>,
     units: Arc<crate::host_units::UnitRecords>,
@@ -783,6 +950,43 @@ pub const SESSION_EMIT_ACTION: &str = "session.emit";
 
 pub const SESSION_NOT_OPEN: &str = "no such carrier session is open for this instance";
 
+struct TrustDecision {
+    permit: crate::trust::book::DecisionPermit,
+    fact: crate::trust::book::RulingRow,
+    record: Option<Arc<DemotionRecord>>,
+    clear: Vec<String>,
+}
+impl TrustDecision {
+    async fn finish(self) -> Result<KeyRow, TrustRefused> {
+        if let Some(record) = &self.record {
+            record
+                .keep_decision_clearing(&self.fact, &self.clear)
+                .await
+                .map_err(TrustRefused::Store)?;
+        }
+        self.permit.apply(&self.fact).map_err(trust_refused)
+    }
+}
+fn trust_refused(why: Undecided) -> TrustRefused {
+    match why {
+        Undecided::NoSuchKey => TrustRefused::NoSuchKey,
+        Undecided::NothingSighted => TrustRefused::NothingSighted,
+        Undecided::Rootless => TrustRefused::Rootless,
+        Undecided::Stale => TrustRefused::Stale,
+        Undecided::Unverified => TrustRefused::Unverified,
+    }
+}
+fn trust_decision_answer(result: Result<KeyRow, TrustRefused>) -> Stored {
+    Stored::ready(match result {
+        Ok(row) => decided_code(row.state),
+        Err(TrustRefused::NoSuchKey) => svc::UNDECIDED_UNKNOWN,
+        Err(TrustRefused::NothingSighted | TrustRefused::Unverified) => svc::UNDECIDED_UNPINNED,
+        Err(TrustRefused::Stale) => svc::UNDECIDED_STALE,
+        Err(TrustRefused::Rootless) => svc::UNDECIDED_ROOTLESS,
+        Err(TrustRefused::Store(_)) => return failed(DECISION_UNKEPT),
+    })
+}
+
 struct Demotions {
     record: Arc<DemotionRecord>,
     default_instance: Arc<str>,
@@ -822,6 +1026,8 @@ impl KernelServices {
             record_bootstrap: Mutex::default(),
             plane_cleanup: Mutex::default(),
             records: OnceLock::new(),
+            persistence: OnceLock::new(),
+            native_claims: Arc::default(),
             pool: OnceLock::new(),
             pending: Arc::default(),
             units: Arc::default(),
@@ -852,31 +1058,53 @@ impl KernelServices {
     /// Install an operator-attested cold migration grant before ANY instance admission. The
     /// attached store is immutable for this KernelServices lifetime. Never call from reload.
     /// Blocking: the composition root invokes this on its blocking pool before serving planes.
-    pub fn arm_record_bootstrap(
+    pub async fn arm_record_bootstrap(
         &self,
         receipt: crate::host_record_bootstrap::ColdRecordReceipt,
         expected_store_fingerprint: &str,
+        resolve_witness: impl Fn(
+            &str,
+            &[u8],
+            &[u8],
+        ) -> Result<busbar_contract::persistence::Address, &'static str>,
     ) -> Result<(), &'static str> {
+        {
+            let instances = self.lock_instances();
+            let bootstrap = self
+                .record_bootstrap
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if !instances.is_empty()
+                || bootstrap.is_some()
+                || !self.batcher.idle()
+                || self.pending.queued() != 0
+            {
+                return Err("record bootstrap requires a cold, unadmitted host");
+            }
+        }
+        let store = self.persistence.get().ok_or(NO_STORE)?;
+        let grant = crate::host_record_bootstrap::Bootstrap::consume(
+            receipt,
+            expected_store_fingerprint,
+            store,
+            resolve_witness,
+        )
+        .await?;
+        // No admission lock crosses native I/O. Recheck atomically before
+        // publishing; a concurrent admission consumes no bootstrap authority.
         let instances = self.lock_instances();
         let mut bootstrap = self
             .record_bootstrap
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(|error| error.into_inner());
         if !instances.is_empty()
             || bootstrap.is_some()
             || !self.batcher.idle()
             || self.pending.queued() != 0
         {
-            return Err("record bootstrap requires a cold, unadmitted host");
+            return Err("record bootstrap ceased to be cold before publication");
         }
-        let records = self.records.get().ok_or(NO_STORE)?;
-        let grant = crate::host_record_bootstrap::Bootstrap::consume(
-            receipt,
-            expected_store_fingerprint,
-            &*records.reads,
-        )?;
-        tracing::info!(instance = %grant.instance, epoch = %grant.epoch,
-            "consumed operator-attested cold record bootstrap receipt");
+        tracing::info!(instance=%grant.instance,epoch=%grant.epoch,"consumed operator-attested cold record bootstrap receipt");
         *bootstrap = Some(grant);
         Ok(())
     }
@@ -1010,6 +1238,67 @@ impl KernelServices {
         self.records.set(Records { reads }).is_ok()
     }
 
+    /// Attach the canonical host persistence owner before admitting instances.
+    /// All native record operations use this attachment without a legacy bridge.
+    pub fn attach_persistence(&self, store: Arc<crate::persistence::facade::CoreStore>) -> bool {
+        self.persistence.set(store).is_ok()
+    }
+
+    fn native_work_writer(&self, caller: &Caller) -> Result<Option<NativeWorkWriter>, Stored> {
+        let Some(store) = self.persistence.get() else {
+            return Ok(None);
+        };
+        if self.facts(caller).is_none() {
+            return Err(Stored::refused(NOT_ADMITTED));
+        }
+        let pool = self
+            .pool
+            .get()
+            .cloned()
+            .ok_or_else(|| Stored::refused(NO_POOL))?;
+        Ok(Some(NativeWorkWriter {
+            instance: Arc::clone(&caller.instance),
+            store: Arc::clone(store),
+            batcher: Arc::clone(&self.batcher),
+            pending: Arc::clone(&self.pending),
+            chains: Arc::clone(&self.chains),
+            pool,
+        }))
+    }
+
+    fn native_records(
+        &self,
+        caller: &Caller,
+        kind: &str,
+    ) -> Result<Option<NativeRecordScope>, Stored> {
+        let Some(store) = self.persistence.get() else {
+            return Ok(None);
+        };
+        let facts = self
+            .facts(caller)
+            .ok_or_else(|| Stored::refused(NOT_ADMITTED))?;
+        if !facts
+            .record_kinds
+            .iter()
+            .any(|schema| schema.as_str() == kind)
+        {
+            return Err(Stored::refused(NOT_A_KIND));
+        }
+        let mut schemas: Vec<String> = facts
+            .record_kinds
+            .iter()
+            .map(|schema| schema.as_str().to_string())
+            .collect();
+        schemas.push(crate::host_chains::CHAIN_LIFE_SCHEMA.as_str().into());
+        crate::host_records_async::AsyncRecords::authorized(
+            Arc::clone(store),
+            &caller.instance,
+            schemas,
+        )
+        .map(|rows| Some(NativeRecordScope { rows, facts }))
+        .map_err(|_| failed(STORE_FAILED))
+    }
+
     #[must_use]
     pub fn with_pool(mut self, pool: Arc<dyn Offload>) -> Self {
         self.pool = OnceLock::from(pool);
@@ -1068,7 +1357,7 @@ impl KernelServices {
         self
     }
 
-    pub fn admit(&self, instance: &str, facts: InstanceFacts) -> Result<(), AdmitRefused> {
+    pub async fn admit(&self, instance: &str, facts: InstanceFacts) -> Result<(), AdmitRefused> {
         if instance.len() > usize::from(u16::MAX) || instance.chars().any(char::is_control) {
             return Err(AdmitRefused::LabelUnfit {
                 len: instance.len(),
@@ -1123,19 +1412,17 @@ impl KernelServices {
         }
         let key: Arc<str> = Arc::from(instance);
 
-        let (rows, default) = match self.demotions.get() {
+        let (snapshot, default) = match self.demotions.get() {
             Some(d) => (
-                d.record.read().map_err(trust_unread)?,
+                Some(d.record.snapshot().await.map_err(trust_unread)?),
                 *d.default_instance == *instance,
             ),
-            None => (Vec::new(), false),
+            None => (None, false),
         };
-
-        let first = !self.lock_instances().contains_key(instance);
-        let decided = match self.demotions.get() {
-            Some(d) if first => d.record.decisions().map_err(trust_unread)?,
-            _ => Vec::new(),
-        };
+        let (rows, decided) = snapshot.map_or_else(
+            || (Vec::new(), Vec::new()),
+            |snapshot| (snapshot.demotions, snapshot.decisions),
+        );
         let mut instances = self.lock_instances();
         if self
             .record_bootstrap
@@ -1190,6 +1477,15 @@ impl KernelServices {
             }
         }
         let prefix = demotion_key(instance, "");
+        if let Some(store) = self.persistence.get() {
+            for schema in &facts.record_kinds {
+                store
+                    .register_claim_scope(instance, schema.as_str())
+                    .map_err(|_| AdmitRefused::ClaimMaintenance {
+                        kind: schema.as_str().into(),
+                    })?;
+            }
+        }
         let replayed = rows.iter().filter_map(|r| {
             let counterparty = match r.upstream.strip_prefix(prefix.as_str()) {
                 Some(cp) => cp,
@@ -1213,14 +1509,14 @@ impl KernelServices {
         self.trust.rows()
     }
 
-    pub fn trust_rule(&self, key: &str, ruling: Ruling) -> Result<KeyRow, TrustRefused> {
-        self.trust_rule_if_seen(key, ruling, None)
+    pub async fn trust_rule(&self, key: &str, ruling: Ruling) -> Result<KeyRow, TrustRefused> {
+        self.trust_rule_if_seen(key, ruling, None).await
     }
 
     /// Decide only if the current sighting equals the digest the operator reviewed. The check
     /// runs inside the existing decision permit, before any durable write, for both rulings.
     /// Absence retains the key-only operation's behavior.
-    pub fn trust_rule_if_seen(
+    pub async fn trust_rule_if_seen(
         &self,
         key: &str,
         ruling: Ruling,
@@ -1239,9 +1535,10 @@ impl KernelServices {
             ruling,
             expected_digest,
         )
+        .await
     }
 
-    pub fn decide_key(
+    pub async fn decide_key(
         &self,
         instance: &str,
         counterparty: &str,
@@ -1249,43 +1546,44 @@ impl KernelServices {
         ruling: Ruling,
         expected: Option<&str>,
     ) -> Result<KeyRow, TrustRefused> {
-        let refused = |why: Undecided| match why {
-            Undecided::NoSuchKey => TrustRefused::NoSuchKey,
-            Undecided::NothingSighted => TrustRefused::NothingSighted,
-            Undecided::Rootless => TrustRefused::Rootless,
-            Undecided::Stale => TrustRefused::Stale,
-            Undecided::Unverified => TrustRefused::Unverified,
-        };
+        self.prepare_decision(instance, counterparty, item, ruling, expected)?
+            .finish()
+            .await
+    }
 
+    fn prepare_decision(
+        &self,
+        instance: &str,
+        counterparty: &str,
+        item: Option<&str>,
+        ruling: Ruling,
+        expected: Option<&str>,
+    ) -> Result<TrustDecision, TrustRefused> {
         let permit = self
             .trust
             .begin_decision(instance, counterparty, item)
-            .map_err(refused)?;
+            .map_err(trust_refused)?;
         let fact = self
             .trust
             .rule(instance, counterparty, item, ruling, expected)
-            .map_err(refused)?;
-        if let Some(d) = self.demotions.get() {
-            d.record
-                .keep_decision(&fact, (self.wall_ms)() / 1000)
-                .map_err(TrustRefused::Store)?;
-        }
-        let row = permit.apply(&fact).map_err(refused)?;
-        let clears = fact.item.is_none() && ruling == Ruling::Approve;
-        if let Some(d) = self.demotions.get().filter(|_| clears) {
-            let cleared = |server: &str| {
-                crate::trust::demotion::settle(
-                    &d.record,
-                    server,
-                    crate::trust::TrustState::Approved,
-                );
-            };
-            cleared(&demotion_key(&fact.instance, &fact.counterparty));
-            if *d.default_instance == *fact.instance {
-                cleared(&fact.counterparty);
+            .map_err(trust_refused)?;
+        let mut clear = Vec::new();
+        if fact.item.is_none() && ruling == Ruling::Approve {
+            clear.push(demotion_key(&fact.instance, &fact.counterparty));
+            if self
+                .demotions
+                .get()
+                .is_some_and(|d| *d.default_instance == *fact.instance)
+            {
+                clear.push(fact.counterparty.clone());
             }
         }
-        Ok(row)
+        Ok(TrustDecision {
+            permit,
+            fact,
+            clear,
+            record: self.demotions.get().map(|d| Arc::clone(&d.record)),
+        })
     }
 
     #[must_use]
@@ -1367,11 +1665,43 @@ impl KernelServices {
         value: RecordBytes,
         acked: Acked,
     ) -> Result<(), &'static str> {
-        let (schema, records, pool) = self.scope(caller, kind).map_err(|s| s.error)?;
-        if self.conditional_kind(&caller.instance, kind) {
+        let native = self.persistence.get();
+        let native_facts = if native.is_some() {
+            Some(self.facts(caller).ok_or(NOT_ADMITTED)?)
+        } else {
+            None
+        };
+        let (schema, records, pool) = if let Some(facts) = native_facts.as_ref() {
+            let schema = facts
+                .record_kinds
+                .iter()
+                .find(|schema| schema.as_str() == kind)
+                .copied()
+                .ok_or(NOT_A_KIND)?;
+            (schema, None, self.pool().ok_or(NO_POOL)?)
+        } else {
+            let (schema, records, pool) =
+                self.scope(caller, kind).map_err(|stored| stored.error)?;
+            (schema, Some(records), pool)
+        };
+        let conditional = if let Some(facts) = native_facts.as_ref() {
+            facts.conditional_record_kinds.iter().any(|index| {
+                facts
+                    .record_kinds
+                    .get(*index as usize)
+                    .is_some_and(|schema| schema.as_str() == kind)
+            })
+        } else {
+            self.conditional_kind(&caller.instance, kind)
+        };
+        if conditional {
             return Err("this record kind requires conditional publication");
         }
-        let chain = self.chain_of(caller, kind);
+        let chain = if let Some(facts) = native_facts.as_ref() {
+            Self::chain_of_facts(facts, kind)
+        } else {
+            self.chain_of(caller, kind)
+        };
         if chain.is_some() {
             if crate::host_chains::scope_of(key).is_none() {
                 return Err(crate::host_chains::CHAIN_SCOPE_UNFIT);
@@ -1383,7 +1713,7 @@ impl KernelServices {
             }
         }
         let pending = &self.pending;
-        let started = self.batcher.push_with(|| {
+        let make = || {
             let seq = match chain {
                 Some(_) => 0,
                 None => pending.enqueue(&caller.instance, kind, key, value.as_slice().to_vec()),
@@ -1397,9 +1727,20 @@ impl KernelServices {
                 owed: WriteOwed::new(acked),
                 chain,
             }
-        });
+        };
+        let started = if native.is_some() {
+            self.batcher.push_native_with(make)
+        } else {
+            self.batcher.push_with(make)
+        };
         match started {
-            Some(true) => self.start_flush(records, pool),
+            Some(true) => {
+                if let Some(store) = native {
+                    self.start_native_flush(store, pool)
+                } else if let Some(records) = records {
+                    self.start_flush(records, pool)
+                }
+            }
             Some(false) => {}
             None => return Err(QUEUE_FULL),
         }
@@ -1419,9 +1760,11 @@ impl KernelServices {
 
     #[must_use]
     pub fn supports_record_transactions(&self) -> bool {
-        self.records
-            .get()
-            .is_some_and(|r| r.reads.supports_record_transaction())
+        self.persistence.get().is_some()
+            || self
+                .records
+                .get()
+                .is_some_and(|r| r.reads.supports_record_transaction())
     }
 
     pub fn observe_chain_life(
@@ -1446,6 +1789,22 @@ impl KernelServices {
         let scope = crate::host_chains::scope_of(scope)
             .ok_or(crate::host_chains::CHAIN_SCOPE_UNFIT)?
             .to_string();
+        if self.persistence.get().is_some() {
+            let rows = self
+                .native_records(caller, schema.as_str())
+                .map_err(|stored| stored.error)?
+                .ok_or(NO_STORE)?;
+            let pool = self.pool().ok_or(NO_POOL)?;
+            let instance = Arc::clone(&caller.instance);
+            let owed = LifeObservationOwed(Some(done));
+            pool.run_async(Box::pin(async move {
+                owed.answer(
+                    crate::host_chains::observe_life_async(&rows.rows, &instance, schema, &scope)
+                        .await,
+                );
+            }));
+            return Ok(());
+        }
         let records = self.records.get().ok_or(NO_STORE)?;
         let pool = self.pool().ok_or(NO_POOL)?;
         if !records.reads.supports_record_transaction() {
@@ -1473,13 +1832,14 @@ impl KernelServices {
         use crate::host_records::{
             ChainMutation, ConditionalOwed, ConditionalWrite, RecordMutation,
         };
-        use busbar_contract::abi::sdk::store::conditional::{
-            Mutation, Predicate, Request, VERSION,
-        };
+        use busbar_contract::host_records::conditional::{Mutation, Predicate, Request, VERSION};
         let facts = self.facts(caller).ok_or(NOT_A_KIND)?;
-        let records = self.records.get().ok_or(NO_STORE)?;
+        let native = self.persistence.get();
+        let records = self.records.get();
         let pool = self.pool().ok_or(NO_POOL)?;
-        if !records.reads.supports_record_transaction() {
+        if native.is_none()
+            && !records.is_some_and(|records| records.reads.supports_record_transaction())
+        {
             return Err("record transactions are unsupported");
         }
         let unit = unit
@@ -1589,7 +1949,7 @@ impl KernelServices {
                 framing,
                 life: std::mem::replace(
                     &mut *life,
-                    busbar_contract::abi::sdk::store::conditional::Expected::Absent,
+                    busbar_contract::host_records::conditional::Expected::Absent,
                 ),
                 action: std::mem::replace(&mut *action, ConditionalChainAction::Check),
             });
@@ -1607,7 +1967,13 @@ impl KernelServices {
             unit,
         );
         match self.batcher.push_conditional(write) {
-            Some(true) => self.start_flush(records, pool),
+            Some(true) => {
+                if let Some(store) = native {
+                    self.start_native_flush(store, pool)
+                } else if let Some(records) = records {
+                    self.start_flush(records, pool)
+                }
+            }
             Some(false) => {}
             None => return Err(QUEUE_FULL),
         }
@@ -1616,6 +1982,13 @@ impl KernelServices {
 
     fn chain_of(&self, caller: &Caller, kind: &str) -> Option<crate::host_chains::ChainFraming> {
         let facts = self.facts(caller)?;
+        Self::chain_of_facts(facts.as_ref(), kind)
+    }
+
+    fn chain_of_facts(
+        facts: &InstanceFacts,
+        kind: &str,
+    ) -> Option<crate::host_chains::ChainFraming> {
         let index = facts.record_kinds.iter().position(|k| k.as_str() == kind)?;
         facts
             .record_chains
@@ -1646,26 +2019,33 @@ impl KernelServices {
             .unwrap_or_default()
     }
 
-    pub fn purge_records_before(
+    pub async fn purge_records_before(
         &self,
-        store: &dyn RecordStore,
         instance: &str,
         kind: &str,
         before: u64,
-    ) -> RecordStoreResult<u64> {
+    ) -> Result<
+        (crate::host_records_async::HistoryOutcome, u64),
+        crate::host_records_async::HistoryError,
+    > {
+        use crate::host_records_async::{AsyncHistory, HistoryError};
         if kind == crate::host_record_bootstrap::RECEIPT_SCHEMA.as_str()
             || kind == crate::governance::principal_transition::SCHEMA.as_str()
+            || self.conditional_kind(instance, kind)
         {
-            return Err(busbar_contract::records::RecordStoreError(
-                "cold bootstrap receipts must remain durable".into(),
-            ));
+            return Err(HistoryError::Unauthorized);
         }
-        if self.conditional_kind(instance, kind) {
-            return Err(busbar_contract::records::RecordStoreError(
-                "this record kind requires conditional retirement".into(),
-            ));
-        }
-        store.purge_plane_records(kind, before, self.record_retention(instance, kind))
+        let store = self.persistence.get().ok_or(HistoryError::Access(
+            crate::persistence::facade::AccessError::Closed,
+        ))?;
+        let facts = self
+            .lock_instances()
+            .get(instance)
+            .cloned()
+            .ok_or(HistoryError::Unauthorized)?;
+        AsyncHistory::admitted(Arc::clone(store), instance, &facts)?
+            .purge(kind, before)
+            .await
     }
 
     fn start_flush(&self, records: &Records, pool: &dyn Offload) {
@@ -1680,7 +2060,31 @@ impl KernelServices {
         }));
     }
 
+    fn start_native_flush(
+        &self,
+        store: &Arc<crate::persistence::facade::CoreStore>,
+        pool: &dyn Offload,
+    ) {
+        let unrun = Unrun(Some(Arc::clone(&self.batcher)));
+        let pending = Arc::clone(&self.pending);
+        let chains = Arc::clone(&self.chains);
+        let store = Arc::clone(store);
+        pool.run_async(Box::pin(async move {
+            if let Some(batcher) = unrun.run() {
+                batcher.flush_native(&pending, &store, &chains).await;
+            }
+        }));
+    }
+
     pub fn flush_tick(&self) {
+        if let Some(store) = self.persistence.get() {
+            if let Some(pool) = self.pool() {
+                if self.batcher.start() {
+                    self.start_native_flush(store, pool);
+                }
+            }
+            return;
+        }
         if let (Some(records), Some(pool)) = (self.records.get(), self.pool()) {
             if self.batcher.start() {
                 self.start_flush(records, pool);
@@ -1741,6 +2145,7 @@ impl KernelServices {
                 _ = at.tick() => {
                     std::future::poll_fn(|cx| std::task::Poll::Ready(self.cleanup_planes(cx))).await;
                     self.flush_tick();
+                    self.sweep_claims_tick();
                     self.verify_tick();
                     self.trust_resync_tick();
                     let wall = std::time::UNIX_EPOCH
@@ -1750,6 +2155,23 @@ impl KernelServices {
                 Some(()) = jobs.next(), if !jobs.is_empty() => {}
             }
         }
+    }
+
+    /// Advance one registered claim scope through the existing bounded async
+    /// host lane. The attachment retains its cursor if this task is cancelled.
+    pub fn sweep_claims_tick(&self) {
+        let (Some(store), Some(pool)) = (self.persistence.get(), self.pool()) else {
+            return;
+        };
+        let store = Arc::clone(store);
+        pool.run_async(Box::pin(async move {
+            if let Err(error) = store.sweep_claim_scope().await {
+                tracing::warn!(
+                    ?error,
+                    "native claim retention maintenance could not advance"
+                );
+            }
+        }));
     }
 
     pub fn trust_resync_tick(&self) {
@@ -1768,10 +2190,10 @@ impl KernelServices {
         let resync = TrustResync(Arc::clone(&self.trust_resync));
         last.store(now, Ordering::Relaxed);
         let (record, trust) = (Arc::clone(&d.record), Arc::clone(&self.trust));
-        pool.run(Box::new(move || {
+        pool.run_async(Box::pin(async move {
             let _resync = resync;
             let snapshot = trust.decision_snapshot();
-            match record.decisions() {
+            match record.decisions().await {
                 Ok(rows) => trust.resync_decided(&snapshot, &rows),
                 Err(why) => crate::diagnostics::diag_warn!(
                     crate::diagnostics::REVOCATION_RESYNC_FAILED,
@@ -2109,6 +2531,32 @@ impl HostServices for KernelServices {
     }
 
     fn records_get(&self, caller: &Caller, kind: &str, key: &[u8], later: Later) -> Ran {
+        match self.native_records(caller, kind) {
+            Err(refused) => return Ran::Now(refused),
+            Ok(Some(records)) => {
+                if Self::chain_of_facts(&records.facts, kind).is_some() {
+                    return Ran::Now(Stored::refused(crate::host_chains::CHAIN_READ_WHOLE));
+                }
+                if let Some(value) = self.pending.get(&caller.instance, kind, key) {
+                    return Ran::Now(native_record_found(value));
+                }
+                let Some(pool) = self.pool() else {
+                    return Ran::Now(Stored::refused(NO_POOL));
+                };
+                let schema = kind.to_string();
+                let key = record_key(&caller.instance, key);
+                return submit_async(pool, later, async move {
+                    match records.rows.get(&schema, &key).await {
+                        Ok(Some(value)) => {
+                            native_record_found(value.expose(&crate::seal::lend()).clone())
+                        }
+                        Ok(None) => Stored::ready(svc::ABSENT),
+                        Err(_) => failed(STORE_FAILED),
+                    }
+                });
+            }
+            Ok(None) => {}
+        }
         let (schema, records, pool) = match self.scope(caller, kind) {
             Ok(s) => s,
             Err(refused) => return Ran::Now(refused),
@@ -2144,6 +2592,68 @@ impl HostServices for KernelServices {
     }
 
     fn records_list(&self, caller: &Caller, list: RecordsList, later: Later) -> Ran {
+        match self.native_records(caller, &list.kind) {
+            Err(refused) => return Ran::Now(refused),
+            Ok(Some(records)) => {
+                let Some(pool) = self.pool() else {
+                    return Ran::Now(Stored::refused(NO_POOL));
+                };
+                let limit = if list.limit == 0 {
+                    MAX_SPANS as usize
+                } else {
+                    (list.limit as usize).min(MAX_SPANS as usize)
+                };
+                let framing = Self::chain_of_facts(&records.facts, &list.kind);
+                let queued = if framing.is_some() {
+                    Vec::new()
+                } else {
+                    self.pending
+                        .under(&caller.instance, &list.kind, &list.prefix)
+                };
+                let Some(schema) = records
+                    .facts
+                    .record_kinds
+                    .iter()
+                    .find(|schema| schema.as_str() == list.kind)
+                    .copied()
+                else {
+                    return Ran::Now(Stored::refused(NOT_ADMITTED));
+                };
+                let instance = Arc::clone(&caller.instance);
+                let scope = record_key(&instance, &[]).len();
+                let prefix = record_key(&instance, &list.prefix);
+                return submit_async(pool, later, async move {
+                    let mut rows = Vec::new();
+                    let mut cursor = None;
+                    loop {
+                        let page = match records
+                            .rows
+                            .page(&list.kind, &prefix, cursor.as_ref())
+                            .await
+                        {
+                            Ok(page) => page,
+                            Err(_) => return failed(STORE_FAILED),
+                        };
+                        for (key, value) in page.rows {
+                            let Some(key) = key.get(scope..) else {
+                                return failed(STORE_FAILED);
+                            };
+                            rows.push((key.to_vec(), value.expose(&crate::seal::lend()).clone()));
+                        }
+                        cursor = page.next;
+                        if cursor.is_none() {
+                            break;
+                        }
+                    }
+                    let rows = match framing {
+                        Some(f) => crate::host_chains::verified(&instance, schema, rows, f),
+                        None => rows,
+                    };
+                    spans_of(merge_list(rows, queued, list.after.as_deref(), limit))
+                });
+            }
+            Ok(None) => {}
+        }
         let (schema, records, pool) = match self.scope(caller, &list.kind) {
             Ok(s) => s,
             Err(refused) => return Ran::Now(refused),
@@ -2194,6 +2704,105 @@ impl HostServices for KernelServices {
         ttl_ms: u64,
         later: Later,
     ) -> Ran {
+        if let Some(store) = self.persistence.get() {
+            if let Err(refused) = self.native_records(caller, kind) {
+                return Ran::Now(refused);
+            }
+            if ttl_ms == 0 {
+                return Ran::Now(Stored::refused(NO_TTL));
+            }
+            let Some(pool) = self.pool() else {
+                return Ran::Now(Stored::refused(NO_POOL));
+            };
+            let Some(expires_ms) = (self.wall_ms)().checked_add(ttl_ms) else {
+                return Ran::Now(Stored::refused(EXPIRY_OVERFLOW));
+            };
+            let expires_at = expires_ms.div_ceil(1000);
+            if store.register_claim_scope(&caller.instance, kind).is_err() {
+                return Ran::Now(failed(STORE_FAILED));
+            }
+            let token = claim_token(&caller.instance, kind, key);
+            let claim_key = (
+                Arc::clone(&caller.instance),
+                kind.to_string(),
+                token.clone(),
+            );
+            let attempt = {
+                let mut claims = self
+                    .native_claims
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if !claims.contains_key(&claim_key)
+                    && claims.len() >= crate::host_records::QUEUE_CAP
+                {
+                    return Ran::Now(Stored::refused(QUEUE_FULL));
+                }
+                let attempt = claims
+                    .entry(claim_key.clone())
+                    .or_insert(NativeClaimAttempt {
+                        expires_at,
+                        pending: None,
+                        driving: false,
+                    });
+                if attempt.driving {
+                    return Ran::Now(failed(POOL_REFUSED));
+                }
+                attempt.driving = true;
+                *attempt
+            };
+            let guard = NativeClaimGuard {
+                claims: Arc::clone(&self.native_claims),
+                key: claim_key,
+            };
+            let store = Arc::clone(store);
+            let instance = Arc::clone(&caller.instance);
+            let kind = kind.to_string();
+            return submit_async(pool, later, async move {
+                use crate::persistence::scoped::{ClaimOutcome, ScopedStore};
+                let scoped = match ScopedStore::authorized(store, &instance, Vec::<String>::new()) {
+                    Ok(scoped) => scoped,
+                    Err(_) => return failed(STORE_FAILED),
+                };
+                let result = match attempt.pending {
+                    Some(pending) => scoped.retry_claim(&kind, pending).await,
+                    None => scoped.redeem(&kind, &token, attempt.expires_at).await,
+                };
+                match result {
+                    Ok(ClaimOutcome::Claimed) => {
+                        guard
+                            .claims
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .remove(&guard.key);
+                        Stored::ready(svc::CLAIM_WON)
+                    }
+                    Ok(ClaimOutcome::AlreadyClaimed | ClaimOutcome::Expired) => {
+                        guard
+                            .claims
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .remove(&guard.key);
+                        Stored::ready(svc::CLAIM_TAKEN)
+                    }
+                    Ok(
+                        ClaimOutcome::Pending(pending)
+                        | ClaimOutcome::Reconcile(pending)
+                        | ClaimOutcome::Busy(pending),
+                    ) => {
+                        if let Some(attempt) = guard
+                            .claims
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .get_mut(&guard.key)
+                        {
+                            attempt.pending = Some(pending);
+                        }
+                        failed(STORE_FAILED)
+                    }
+                    Err(_) => failed(STORE_FAILED),
+                }
+            });
+        }
         let (_, records, pool) = match self.scope(caller, kind) {
             Ok(s) => s,
             Err(refused) => return Ran::Now(refused),
@@ -2288,19 +2897,35 @@ impl HostServices for KernelServices {
             permit: Some(permit),
             later: Some(later),
         };
-        pool.run(Box::new(move || {
-            let settle = |server: &str, state| {
-                crate::trust::demotion::settle(&record, server, state);
-            };
-            if effect == Effect::Demote {
-                settle(&key, crate::trust::TrustState::Quarantined);
+        pool.run_async(Box::pin(async move {
+            let settled = if effect == Effect::Demote {
+                crate::trust::demotion::settle(&record, &key, crate::trust::TrustState::Quarantined)
+                    .await
             } else {
-                settle(&key, crate::trust::TrustState::Approved);
-                if let Some(cp) = unprefixed {
-                    settle(&cp, crate::trust::TrustState::Approved);
+                let result = crate::trust::demotion::settle(
+                    &record,
+                    &key,
+                    crate::trust::TrustState::Approved,
+                )
+                .await;
+                match (result, unprefixed) {
+                    (Ok(()), Some(cp)) => {
+                        crate::trust::demotion::settle(
+                            &record,
+                            &cp,
+                            crate::trust::TrustState::Approved,
+                        )
+                        .await
+                    }
+                    (result, _) => result,
                 }
+            };
+            if let Err(error) = settled {
+                tracing::error!(%error,"the durable trust demotion could not be settled");
+                owed.answer(failed(DECISION_UNKEPT));
+            } else {
+                owed.answer(answer);
             }
-            owed.answer(answer);
         }));
         Ran::Later
     }
@@ -2378,28 +3003,47 @@ impl HostServices for KernelServices {
         unit: Option<u64>,
         ttl_secs: u64,
         record: &[u8],
-    ) -> Stored {
+        later: Later,
+    ) -> Ran {
         let Some(unit) = unit else {
-            return Stored::refused(TICKET_NO_PRINCIPAL);
+            return Ran::Now(Stored::refused(TICKET_NO_PRINCIPAL));
         };
         let Some(key) = self.units.get(unit).and_then(|r| r.principal.clone()) else {
-            return Stored::refused(TICKET_NO_PRINCIPAL);
+            return Ran::Now(Stored::refused(TICKET_NO_PRINCIPAL));
         };
         let Some(prefix) = self.facts(caller).and_then(|f| f.ticket_prefix.clone()) else {
-            return Stored::refused(TICKET_NO_PREFIX);
+            return Ran::Now(Stored::refused(TICKET_NO_PREFIX));
         };
-        let Some(press) = self.tickets.get() else {
-            return Stored::refused(TICKET_NO_PRESS);
+        let Some(press) = self.tickets.get().cloned() else {
+            return Ran::Now(Stored::refused(TICKET_NO_PRESS));
         };
+        let Some(pool) = self.pool() else {
+            return Ran::Now(Stored::refused(NO_POOL));
+        };
+        let caller = caller.clone();
+        let record = busbar_contract::Secret::new(record.to_vec());
         let now = (self.wall_ms)() / 1000;
-        match press.mint_for_unit(unit, caller, &key, &prefix, ttl_secs, record, now) {
-            Ok((ticket, expires_at)) => Stored {
-                bytes: ticket.into_bytes(),
-                spans: Vec::new(),
-                ..Stored::ready(expires_at)
-            },
-            Err(why) => Stored::refused(why),
-        }
+        submit_async(pool, later, async move {
+            match press
+                .mint_for_unit(
+                    unit,
+                    &caller,
+                    &key,
+                    &prefix,
+                    ttl_secs,
+                    record.expose(&crate::seal::lend()),
+                    now,
+                )
+                .await
+            {
+                Ok((ticket, expires_at)) => Stored {
+                    bytes: ticket.into_bytes(),
+                    spans: Vec::new(),
+                    ..Stored::ready(expires_at)
+                },
+                Err(why) => Stored::refused(why),
+            }
+        })
     }
 
     fn ticket_take(&self, _caller: &Caller, unit: Option<u64>) -> Stored {
@@ -2443,35 +3087,37 @@ impl HostServices for KernelServices {
         key: busbar_contract::services::TrustKeyRef<'_>,
         expected: Option<&str>,
         approve: bool,
-    ) -> Stored {
+        later: Later,
+    ) -> Ran {
         if self.facts(caller).is_none() {
-            return Stored::refused(NOT_ADMITTED);
+            return Ran::Now(Stored::refused(NOT_ADMITTED));
         }
         let ruling = if approve {
             Ruling::Approve
         } else {
             Ruling::Revoke
         };
-        Stored::ready(
-            match self.decide_key(
-                &caller.instance,
-                key.counterparty,
-                key.item,
-                ruling,
-                // The existing plugin ABI applies `expected` to approval only. The admin
-                // digest guard is additive and uses `trust_rule_if_seen` for either ruling.
-                expected.filter(|_| approve),
-            ) {
-                Ok(row) => decided_code(row.state),
-                Err(TrustRefused::NoSuchKey) => svc::UNDECIDED_UNKNOWN,
-                Err(TrustRefused::NothingSighted) => svc::UNDECIDED_UNPINNED,
-                Err(TrustRefused::Stale) => svc::UNDECIDED_STALE,
-                Err(TrustRefused::Rootless) => svc::UNDECIDED_ROOTLESS,
-
-                Err(TrustRefused::Unverified) => svc::UNDECIDED_UNPINNED,
-                Err(TrustRefused::Store(_)) => return failed(DECISION_UNKEPT),
-            },
-        )
+        let work = match self.prepare_decision(
+            &caller.instance,
+            key.counterparty,
+            key.item,
+            ruling,
+            expected.filter(|_| approve),
+        ) {
+            Ok(work) => work,
+            Err(why) => return Ran::Now(trust_decision_answer(Err(why))),
+        };
+        if work.record.is_none() {
+            return Ran::Now(trust_decision_answer(
+                work.permit.apply(&work.fact).map_err(trust_refused),
+            ));
+        }
+        let Some(pool) = self.pool() else {
+            return Ran::Now(Stored::refused(NO_POOL));
+        };
+        submit_async(pool, later, async move {
+            trust_decision_answer(work.finish().await)
+        })
     }
 
     fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
@@ -2514,23 +3160,24 @@ impl HostServices for KernelServices {
         counterparty: &str,
         item: &str,
         digest: &str,
-    ) -> Stored {
+        later: Later,
+    ) -> Ran {
         let mut permit = match self
             .trust
             .begin_sighting(&caller.instance, counterparty, Some(item))
         {
             Ok(permit) => permit,
             Err(Undecided::NoSuchKey) => {
-                return Stored::refused(if self.facts(caller).is_some() {
+                return Ran::Now(Stored::refused(if self.facts(caller).is_some() {
                     NOT_A_COUNTERPARTY
                 } else {
                     NOT_ADMITTED
-                });
+                }))
             }
-            Err(_) => return Stored::refused(DECISION_UNKEPT),
+            Err(_) => return Ran::Now(Stored::refused(DECISION_UNKEPT)),
         };
         if !valid_trust_evidence(digest) {
-            return Stored::refused(INVALID_TRUST_EVIDENCE);
+            return Ran::Now(Stored::refused(INVALID_TRUST_EVIDENCE));
         }
         match self
             .trust
@@ -2540,21 +3187,28 @@ impl HostServices for KernelServices {
                 if demotion.is_some() {
                     permit.demoted();
                 }
-
-                if let (Some(fact), Some(d)) = (demotion, self.demotions.get()) {
-                    if let Err(why) = d.record.keep_decision(&fact, (self.wall_ms)() / 1000) {
-                        tracing::error!(
-                            counterparty,
-                            item,
-                            error = %why,
-                            "an item's drift demotion could not be kept; it holds in this process"
-                        );
+                let Some((fact, record)) =
+                    demotion.zip(self.demotions.get().map(|d| Arc::clone(&d.record)))
+                else {
+                    return Ran::Now(Stored::ready(sight_code(sight)));
+                };
+                let Some(pool) = self.pool() else {
+                    return Ran::Now(Stored::refused(NO_POOL));
+                };
+                let now = (self.wall_ms)() / 1000;
+                submit_async(pool, later, async move {
+                    let _permit = permit;
+                    match record.keep_decision(&fact, now).await {
+                        Ok(()) => Stored::ready(sight_code(sight)),
+                        Err(error) => {
+                            tracing::error!(%error,"an item's drift demotion could not be kept; it holds in this process");
+                            failed(DECISION_UNKEPT)
+                        }
                     }
-                }
-                Stored::ready(sight_code(sight))
+                })
             }
-            Err(Unjudged::UnknownInstance) => Stored::refused(NOT_ADMITTED),
-            Err(Unjudged::UnknownCounterparty) => Stored::refused(NOT_A_COUNTERPARTY),
+            Err(Unjudged::UnknownInstance) => Ran::Now(Stored::refused(NOT_ADMITTED)),
+            Err(Unjudged::UnknownCounterparty) => Ran::Now(Stored::refused(NOT_A_COUNTERPARTY)),
         }
     }
 
@@ -2661,6 +3315,91 @@ impl HostServices for KernelServices {
         record: &[u8],
         later: Later,
     ) -> Ran {
+        match self.native_work_writer(caller) {
+            Err(refused) => return Ran::Now(refused),
+            Ok(Some(writer)) => {
+                let Some(facts) = self.facts(caller) else {
+                    return Ran::Now(Stored::refused(NOT_ADMITTED));
+                };
+                if !facts
+                    .record_kinds
+                    .iter()
+                    .any(|schema| schema.as_str() == kind)
+                {
+                    return Ran::Now(Stored::refused(NOT_A_KIND));
+                }
+                if record.len() > svc::MAX_WORK_RECORD {
+                    return Ran::Now(Stored::refused(work_refusal::TOO_LONG));
+                }
+                let Some(owner) = self.owner_of_unit(unit) else {
+                    return Ran::Now(Stored::refused(work_refusal::NO_UNIT));
+                };
+                let book = Arc::clone(&self.work);
+                let bounds = self.work_bounds_of(&caller.instance);
+                let wall_ms = Arc::clone(&self.wall_ms);
+                let kind = kind.to_string();
+                let record = record.to_vec();
+                let owed = Owed(Some(later));
+                let pool = Arc::clone(&writer.pool);
+                pool.run_async(Box::pin(async move {
+                    let rows = match writer.rows() {
+                        Ok(rows) => rows,
+                        Err(_) => {
+                            owed.answer(failed(STORE_FAILED));
+                            return;
+                        }
+                    };
+                    if book.load_native(&rows, &writer.instance).await.is_err() {
+                        owed.answer(failed(STORE_FAILED));
+                        return;
+                    }
+                    let now_ms = wall_ms();
+                    for gone in book.sweep(&writer.instance, now_ms, bounds.retain_ms) {
+                        if let Ok(empty) = RecordBytes::new(Vec::new()) {
+                            writer.put(gone.to_vec(), empty, Box::new(|_| {}));
+                        }
+                    }
+                    let mut reference = [0; 16];
+                    if getrandom::fill(&mut reference).is_err() {
+                        owed.answer(failed(NO_RANDOMNESS));
+                        return;
+                    }
+                    let work = Work {
+                        instance: Arc::clone(&writer.instance),
+                        reference,
+                        kind,
+                        owner,
+                        live: true,
+                        opened_ms: now_ms,
+                        settled_ms: 0,
+                        record,
+                        bound: None,
+                        opened_by: unit,
+                    };
+                    let Some(row) = work.row() else {
+                        owed.answer(Stored::refused(work_refusal::TOO_LONG));
+                        return;
+                    };
+                    let Some(handle) = book.reserve(work, bounds.max_live) else {
+                        owed.answer(Stored::refused(work_refusal::AT_BOUND));
+                        return;
+                    };
+                    let opening = WorkOpening {
+                        book,
+                        handle,
+                        reference,
+                        owed: Some(owed),
+                    };
+                    writer.put(
+                        reference.to_vec(),
+                        row,
+                        Box::new(move |result| opening.answer(result)),
+                    );
+                }));
+                return Ran::Later;
+            }
+            Ok(None) => {}
+        }
         let (facts, records, pool) = match self.work_scope(caller) {
             Ok(s) => s,
             Err(refused) => return Ran::Now(refused),
@@ -2735,6 +3474,57 @@ impl HostServices for KernelServices {
     }
 
     fn work_find(&self, caller: &Caller, unit: Option<u64>, reference: &[u8], later: Later) -> Ran {
+        match self.native_work_writer(caller) {
+            Err(refused) => return Ran::Now(refused),
+            Ok(Some(writer)) => {
+                let (Some(unit), Some(owner)) = (unit, self.owner_of_unit(unit)) else {
+                    return Ran::Now(Stored::refused(work_refusal::NO_UNIT));
+                };
+                let Some(reference) = parse_reference(reference) else {
+                    return Ran::Now(Stored::ready(svc::ABSENT));
+                };
+                let book = Arc::clone(&self.work);
+                let units = Arc::clone(&self.units);
+                let retain_ms = self.work_bounds_of(&caller.instance).retain_ms;
+                let wall_ms = Arc::clone(&self.wall_ms);
+                let pool = Arc::clone(&writer.pool);
+                return submit_async(&*pool, later, async move {
+                    let held = match book.by_reference(&writer.instance, &reference) {
+                        Some(held) => Some(held),
+                        None => {
+                            let rows = match writer.rows() {
+                                Ok(rows) => rows,
+                                Err(_) => return failed(STORE_FAILED),
+                            };
+                            match rows.get(WORK_SCHEMA.as_str(), &reference).await {
+                                Err(_) => return failed(STORE_FAILED),
+                                Ok(row) => row
+                                    .and_then(|row| {
+                                        Work::read(
+                                            &writer.instance,
+                                            reference,
+                                            row.expose(&crate::seal::lend()),
+                                        )
+                                    })
+                                    .map(|work| (book.adopt(work.clone()), work)),
+                            }
+                        }
+                    };
+                    match held {
+                        Some((handle, work))
+                            if work.owner == owner
+                                && (work.live
+                                    || work.settled_ms.saturating_add(retain_ms) > wall_ms()) =>
+                        {
+                            book.found(handle, unit, &|unit| units.get(unit).is_some());
+                            work_found(handle, &work)
+                        }
+                        _ => Stored::ready(svc::ABSENT),
+                    }
+                });
+            }
+            Ok(None) => {}
+        }
         let (_, records, pool) = match self.work_scope(caller) {
             Ok(s) => s,
             Err(refused) => return Ran::Now(refused),
@@ -2778,6 +3568,32 @@ impl HostServices for KernelServices {
     }
 
     fn work_status(&self, caller: &Caller, reference: &[u8], later: Later) -> Ran {
+        match self.native_work_writer(caller) {
+            Err(refused) => return Ran::Now(refused),
+            Ok(Some(writer)) => {
+                let Some(reference) = parse_reference(reference) else {
+                    return Ran::Now(Stored::ready(svc::WORK_STATUS_ABSENT));
+                };
+                let book = Arc::clone(&self.work);
+                let retain_ms = self.work_bounds_of(&caller.instance).retain_ms;
+                let wall_ms = Arc::clone(&self.wall_ms);
+                let pool = Arc::clone(&writer.pool);
+                return submit_async(&*pool, later, async move {
+                    let rows = match writer.rows() {
+                        Ok(rows) => rows,
+                        Err(_) => return failed(STORE_FAILED),
+                    };
+                    match book
+                        .status_native(&rows, &writer.instance, &reference, wall_ms(), retain_ms)
+                        .await
+                    {
+                        Ok(status) => Stored::ready(status),
+                        Err(_) => failed(STORE_FAILED),
+                    }
+                });
+            }
+            Ok(None) => {}
+        }
         let (_, records, pool) = match self.work_scope(caller) {
             Ok(scope) => scope,
             Err(refused) => return Ran::Now(refused),
@@ -2806,6 +3622,45 @@ impl HostServices for KernelServices {
         record: &[u8],
         later: Later,
     ) -> Ran {
+        match self.native_work_writer(caller) {
+            Err(refused) => return Ran::Now(refused),
+            Ok(Some(writer)) => {
+                if record.len() > svc::MAX_WORK_RECORD {
+                    return Ran::Now(Stored::refused(work_refusal::TOO_LONG));
+                }
+                let owner = self.owner_of_unit(unit);
+                let in_flight = |unit| self.units.get(unit).is_some();
+                let settled = match self.work.settle(
+                    &caller.instance,
+                    handle,
+                    owner.as_ref(),
+                    &in_flight,
+                    record.to_vec(),
+                    (self.wall_ms)(),
+                ) {
+                    Ok(settled) => settled,
+                    Err(why) => return Ran::Now(Stored::refused(why)),
+                };
+                let Some(row) = settled.row() else {
+                    self.work.cancel_settle(handle);
+                    return Ran::Now(Stored::refused(work_refusal::TOO_LONG));
+                };
+                let key = settled.reference.to_vec();
+                let unwritten = Unwritten {
+                    book: Arc::clone(&self.work),
+                    handle,
+                    settled: Some(settled),
+                    later: Some(later),
+                };
+                writer.put(
+                    key,
+                    row,
+                    Box::new(move |result| unwritten.answer(result.is_ok())),
+                );
+                return Ran::Later;
+            }
+            Ok(None) => {}
+        }
         let (_, records, pool) = match self.work_scope(caller) {
             Ok(s) => s,
             Err(refused) => return Ran::Now(refused),
@@ -2936,8 +3791,13 @@ impl HostServices for KernelServices {
         Ran::Later
     }
 
-    fn snapshot_read(&self, _caller: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
-        crate::export::scrape::read(scope)
+    fn snapshot_read(&self, _caller: &Caller, scope: u32, later: Later) -> Ran {
+        // Capture the crossing's owned authorization before moving onto an async task.
+        let read = crate::export::scrape::read(scope);
+        let Some(pool) = self.pool() else {
+            return Ran::Now(Stored::refused(NO_POOL));
+        };
+        submit_async(pool, later, async move { read.await.stored() })
     }
 }
 

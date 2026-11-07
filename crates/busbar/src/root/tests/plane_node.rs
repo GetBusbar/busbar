@@ -1,5 +1,86 @@
+fn ledger_entry(report: &Report, at: Arrived) -> busbar_kernel_ledger::cost::LedgerEntry {
+    report.usage.usage_units.iter().fold(
+        busbar_kernel_ledger::cost::LedgerEntry::new(&report.lane, at.ms())
+            .with_fee_count(report.fee_count.into()),
+        |entry, (class, count)| entry.with_count(class, *count),
+    )
+}
+fn project_nanos(
+    history: &crate::root::kernel::PinnedHistory,
+    at: Arrived,
+    report: &Report,
+) -> Result<u128, busbar_kernel_ledger::cost::MoneyError> {
+    busbar_kernel_ledger::cost::price_exact(&[ledger_entry(report, at)], &history.view())
+        .and_then(busbar_kernel_ledger::cost::nanos_of_exact)
+}
+fn fixture_seal(key: u64) -> UnitSeal {
+    use busbar_kernel_testkit::test_support::tokens::{origin, pass};
+    UnitSeal {
+        facts: busbar_contract::caps::AuditFacts {
+            op_class: busbar_contract::caps::OpClassId::new("call"),
+            finish: busbar_contract::FinishClass::Complete,
+        },
+        pass: pass(),
+        key: UnitKey::new(key),
+        origin: origin(OriginKind::Client),
+        parent: None,
+    }
+}
+fn native_budget() -> busbar_kernel::persistence::journal::runtime::BufferBudget {
+    busbar_kernel::persistence::journal::runtime::BufferBudget {
+        records: 4096,
+        bytes: 32 * 1024 * 1024,
+    }
+}
+async fn native_journal(
+    node: u64,
+    records: usize,
+) -> Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal> {
+    let core = (crate::root::real_store::core()).await;
+    let budget = busbar_kernel::persistence::journal::runtime::BufferBudget {
+        records,
+        ..native_budget()
+    };
+    (busbar_kernel::persistence::journal::runtime::RuntimeJournal::open(core, node, budget))
+        .await
+        .expect("native journal opens")
+}
+async fn native_fixture(
+) -> Result<crate::root::durability::Durability, busbar_kernel_wal::OpenError> {
+    let journal = native_journal(
+        busbar_kernel::door::op_id().counter(),
+        native_budget().records,
+    )
+    .await;
+    (crate::root::durability::build_on_store(
+        &crate::root::durability::DurabilityConfig::default(),
+        journal.node(),
+        journal,
+        None,
+        native_budget(),
+    ))
+    .await
+}
+async fn native_node_book() -> crate::root::durability::NodeBook {
+    let journal = native_journal(
+        busbar_kernel::door::op_id().counter(),
+        native_budget().records,
+    )
+    .await;
+    (crate::root::durability::node_book(journal, native_budget()))
+        .await
+        .expect("native node book opens")
+}
+async fn selected(
+    journal: &Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>,
+) -> Vec<busbar_kernel_wal::JournalRecord> {
+    (journal.flush()).await.expect("staged originals confirm");
+    (journal.read_records(native_budget()))
+        .await
+        .expect("selected native history verifies")
+}
+
 use super::*;
-use busbar_kernel_testkit::test_support::governance::GovStateFixtures;
 
 use busbar_kernel::ingress::arrival::ArrivalPayload;
 
@@ -193,20 +274,19 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
         );
     }
 
-    let store = crate::root::real_store::records();
+    let store = (crate::root::real_store::core()).await;
     if let Some(requests) = fixture.seeded_group_requests() {
-        use busbar_contract::records::RecordStore as _;
-        store
-            .put_usage(
-                &format!("group:{group}@total"),
-                0,
-                &busbar_contract::records::UsageLedger {
-                    requests,
-                    billable_requests: requests,
-                    models: vec![],
-                },
-            )
-            .expect("seed the durable bucket");
+        (store.ledger().put_usage(
+            &format!("group:{group}@total"),
+            0,
+            &busbar_contract::records::UsageLedger {
+                requests,
+                billable_requests: requests,
+                models: vec![],
+            },
+        ))
+        .await
+        .expect("seed the durable bucket");
     }
 
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
@@ -214,7 +294,8 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
         busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
-        busbar_kernel::governance::GovState::new_with_signer(store, None, Some(signer))
+        (busbar_kernel::governance::GovState::new_with_core(store, None, Some(signer)))
+            .await
             .expect("governance"),
     );
     let spec = |name: &str| busbar_kernel::governance::NewKeySpec {
@@ -227,12 +308,13 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
         labels: Default::default(),
         ..Default::default()
     };
-    let (key, token) = gov
-        .mint_signed(spec("root-node"), LIVE_EXP, MINTED_AT)
+    let (key, token) = (gov.mint_signed_async(spec("root-node"), LIVE_EXP, MINTED_AT))
+        .await
         .expect("mint the deployment's key");
-    let (_, expired_token) = gov
-        .mint_signed(spec("root-node-expired"), DEAD_EXP, MINTED_AT)
-        .expect("mint the expired key");
+    let (_, expired_token) =
+        (gov.mint_signed_async(spec("root-node-expired"), DEAD_EXP, MINTED_AT))
+            .await
+            .expect("mint the expired key");
 
     let priced_card = std::collections::BTreeMap::from([(
         LANE.to_string(),
@@ -249,7 +331,9 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
         FEE_CENTS,
         &groups,
     );
-    gov.hydrate_budgets(&cost, 0).expect("hydrate");
+    (gov.hydrate_budgets_async(&cost, 0))
+        .await
+        .expect("hydrate");
 
     let app = TestApp::new()
         .keys_chain()
@@ -372,8 +456,8 @@ fn event_stream_frames(mut body: &[u8]) -> Option<Vec<(&[u8], &[u8])>> {
     (!frames.is_empty()).then_some(frames)
 }
 
-#[test]
-fn event_stream_bodies_compare_without_their_clock() {
+#[tokio::test]
+async fn event_stream_bodies_compare_without_their_clock() {
     fn frame(payload: &str) -> Vec<u8> {
         let headers = b":event-type metadata";
         let total = 12 + headers.len() + payload.len() + 4;
@@ -448,19 +532,21 @@ async fn observe(rig: &Rig, resp: Response) -> Observed {
         .governance
         .clone()
         .expect("governance is configured");
-    let derived = gov
-        .derived_bucket_usage(&rig.app.cost, &rig.key.id, "total", true, rig.charged_at)
-        .expect("usage read");
+    let derived =
+        (gov.derived_bucket_usage_async(&rig.app.cost, &rig.key.id, "total", true, rig.charged_at))
+            .await
+            .expect("usage read");
     fields.push(("ledger_requests", derived.requests.to_string()));
     fields.push(("ledger_tokens", derived.tokens.to_string()));
     fields.push(("ledger_spend_cents", derived.spend_cents.to_string()));
-    gov.flush_metering();
-    let mut rows: Vec<busbar_contract::records::MeteringRow> = gov
-        .metering_for(busbar_kernel::governance::metering_bucket(rig.charged_at))
-        .expect("metering read")
-        .into_iter()
-        .filter(|r| r.key_id == rig.key.id)
-        .collect();
+    (gov.flush_metering()).await;
+    let mut rows: Vec<busbar_contract::records::MeteringRow> = (gov
+        .metering_for_async(busbar_kernel::governance::metering_bucket(rig.charged_at)))
+    .await
+    .expect("metering read")
+    .into_iter()
+    .filter(|r| r.key_id == rig.key.id)
+    .collect();
     rows.sort_by(|a, b| (&a.model, &a.provider).cmp(&(&b.model, &b.provider)));
     fields.push((
         "metering_rows",
@@ -550,8 +636,8 @@ async fn drive(rig: &Rig, fixture: Fixture) -> Response {
     node.answer(plane::handed(arrival, None)).await
 }
 
-#[test]
-fn one_arrival_reading_spells_both_the_figures_the_loop_asks_for() {
+#[tokio::test]
+async fn one_arrival_reading_spells_both_the_figures_the_loop_asks_for() {
     const LAST_MILLISECOND: u64 = 1_700_000_000_999;
     let arrived = Arrived::at(LAST_MILLISECOND, 0);
     assert_eq!(arrived.ms(), LAST_MILLISECOND, "the reading, unmodified");
@@ -568,8 +654,8 @@ fn one_arrival_reading_spells_both_the_figures_the_loop_asks_for() {
     );
 }
 
-#[test]
-fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
+#[tokio::test]
+async fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     let node = Node::new();
     let taken: Vec<Arrived> = (0..4).map(|_| node.arrived()).collect();
 
@@ -592,40 +678,38 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
 
     assert_ne!(taken[0].mono(), taken[0].secs());
 
-    let durability = crate::root::durability::build(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
+    let durability = native_fixture()
+        .await
+        .expect("a memory-buffered journal cannot fail to open");
 
     let book = std::sync::Arc::new(std::sync::Mutex::new(durability));
-    let seam = crate::root::durability::SharedBook::over(std::sync::Arc::clone(&book));
+    node.bind_book(book.clone());
     let who = PrincipalId::new("acct:node");
-    for arrived in [Arrived::at(EPOCH * 1_000, 7), Arrived::at(EPOCH * 1_000, 8)] {
-        let ledger_token = busbar_kernel_testkit::test_support::tokens::grant::<
-            busbar_contract::caps::WriteMoney,
-        >();
-        let accrual =
-            busbar_contract::caps::HoldAccrual::after_terminal(who.clone(), 0, &ledger_token);
-        let posted = busbar_contract::caps::Posted::settle_late(accrual, &ledger_token);
-        settle(
-            &seam,
+    for (index, arrived) in [Arrived::at(EPOCH * 1_000, 7), Arrived::at(EPOCH * 1_000, 8)]
+        .into_iter()
+        .enumerate()
+    {
+        use busbar_kernel_testkit::test_support::tokens::{end, grant};
+        let ledger = grant::<busbar_contract::caps::WriteMoney>();
+        let accrual = busbar_contract::caps::HoldAccrual::after_terminal(who.clone(), 0, &ledger);
+        let posted = busbar_contract::caps::Posted::settle_late(accrual, &ledger);
+        node.seal_end(
             &who,
             arrived,
             None,
-            &busbar_kernel_testkit::test_support::tokens::grant::<
-                busbar_contract::caps::DurableWrite,
-            >(),
-            posted,
-        )
-        .expect("the memory-buffered journal takes it");
+            Ended::Settled {
+                end: end(Outcome::Completed, Ok(posted)),
+                requests: 0,
+                fee: 0,
+            },
+            Some(fixture_seal(index as u64 + 1)),
+            Vec::new(),
+        );
     }
     let durability = book.lock().unwrap_or_else(|p| p.into_inner());
-    let replayed = durability
-        .journal
-        .replay()
-        .expect("reads back")
-        .expect("verifies");
+    let journal = durability.journal.clone();
+    drop(durability);
+    let replayed = selected(&journal).await;
     assert_eq!(replayed.len(), 2, "two postings, two records");
     assert_eq!(
         replayed[0].wall, replayed[1].wall,
@@ -683,21 +767,22 @@ async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in(
         .governance
         .clone()
         .expect("governance is configured");
-    gov.flush_metering();
-    let rows_in = |bucket| {
-        gov.metering_for(bucket)
+    (gov.flush_metering()).await;
+    let rows_in = async |bucket| {
+        (gov.metering_for_async(bucket))
+            .await
             .expect("metering read")
             .into_iter()
             .filter(|r| r.key_id == rig.key.id)
             .count()
     };
     assert_eq!(
-        rows_in(metering_bucket(arrived.secs())),
+        rows_in(metering_bucket(arrived.secs())).await,
         1,
         "the unit's figures land in the bucket it arrived in"
     );
     assert_eq!(
-        rows_in(metering_bucket(arrived.secs() + 1)),
+        rows_in(metering_bucket(arrived.secs() + 1)).await,
         0,
         "and nothing leaked into the bucket the clock was about to roll into"
     );
@@ -748,10 +833,10 @@ fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
 
 fn report_of(output: u64) -> Report {
     Report {
-        usage: busbar_contract::billing::Usage {
+        usage: busbar_contract::billing::ExactUsage {
             usage_units: std::collections::BTreeMap::from([(
                 busbar_contract::records::UNIT_OUTPUT.to_string(),
-                output,
+                output.into(),
             )]),
         },
         fee_count: 0,
@@ -759,14 +844,12 @@ fn report_of(output: u64) -> Report {
     }
 }
 
-#[test]
-fn a_unit_prices_at_the_entry_in_force_when_it_arrived_and_not_at_the_head() {
-    let kernel = Kernel::new();
-    let token = kernel.usage_token();
+#[tokio::test]
+async fn a_unit_prices_at_the_entry_in_force_when_it_arrived_and_not_at_the_head() {
     let history = history_of(&[(0, 1.0), (5_000, 100.0)]);
 
-    let early = priced_amount(&history, Arrived::at(4_999, 1), &token, &report_of(1_000));
-    let late = priced_amount(&history, Arrived::at(5_000, 2), &token, &report_of(1_000));
+    let early = project_nanos(&history, Arrived::at(4_999, 1), &report_of(1_000));
+    let late = project_nanos(&history, Arrived::at(5_000, 2), &report_of(1_000));
 
     assert_eq!(
         early,
@@ -780,10 +863,8 @@ fn a_unit_prices_at_the_entry_in_force_when_it_arrived_and_not_at_the_head() {
     );
 }
 
-#[test]
-fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
-    let kernel = Kernel::new();
-    let token = kernel.usage_token();
+#[tokio::test]
+async fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
     let holder = crate::root::kernel::RootHistory::default();
     holder.apply(
         crate::root::kernel::card_from_config(
@@ -825,21 +906,19 @@ fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
 
     let at = Arrived::at(9_000, 1);
     assert_eq!(
-        priced_amount(&admitted, at, &token, &report_of(1_000)),
+        project_nanos(&admitted, at, &report_of(1_000)),
         Ok(1_000_000),
         "the pinned snapshot saw an entry appended after the unit was admitted"
     );
     assert_eq!(
-        priced_amount(&next, at, &token, &report_of(1_000)),
+        project_nanos(&next, at, &report_of(1_000)),
         Ok(100_000_000),
         "the next admission did not see the appended entry"
     );
 }
 
-#[test]
-fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
-    let kernel = Kernel::new();
-    let token = kernel.usage_token();
+#[tokio::test]
+async fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
     let head = history_of(&[(0, 1.0), (5_000, 100.0)]);
     let earlier = crate::root::kernel::PinnedHistory::for_test_at(
         &head,
@@ -848,37 +927,36 @@ fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
 
     let at = Arrived::at(9_000, 1);
     assert_eq!(
-        priced_amount(&earlier, at, &token, &report_of(1_000)),
+        project_nanos(&earlier, at, &report_of(1_000)),
         Ok(1_000_000),
         "a snapshot at seq 0 resolved an entry that was appended after it"
     );
     assert_eq!(
-        priced_amount(&head, at, &token, &report_of(1_000)),
+        project_nanos(&head, at, &report_of(1_000)),
         Ok(100_000_000),
         "the head snapshot did not resolve the entry appended onto it"
     );
 }
 
-#[test]
-fn the_posting_carries_no_price_and_its_figure_is_the_lookups() {
-    let kernel = Kernel::new();
-    let token = kernel.usage_token();
+#[tokio::test]
+async fn the_posting_carries_no_price_and_its_figure_is_the_lookups() {
     let history = history_of(&[(0, 1.0)]);
     let at = Arrived::at(4_000, 7);
 
-    let (posting, priced) = priced_posting(&history, at, &token, &report_of(1_000));
-    let priced = priced.expect("a card in force at the instant prices the report");
+    let report = report_of(1_000);
+    let entry = ledger_entry(&report, at);
+    let priced = project_nanos(&history, at, &report).unwrap();
+    assert_eq!(entry.arrived_ms, 4_000);
     assert_eq!(
-        posting.arrived_ms, 4_000,
-        "the posting kept its own instant"
+        entry.counts[busbar_contract::records::UNIT_OUTPUT],
+        busbar_contract::Count::from(1_000u64)
     );
-    assert_eq!(posting.arrived_mono, 7);
     assert_eq!(
-        posting
-            .priced_nanos(&history.view())
-            .expect("the lookup still answers"),
-        priced.priced_nanos,
-        "the posting's figure is the lookup's, asked again"
+        busbar_kernel_ledger::cost::price_exact(&[entry], &history.view())
+            .and_then(busbar_kernel_ledger::cost::nanos_of_exact)
+            .unwrap(),
+        priced,
+        "counts remain independent of their price projection"
     );
 }
 
@@ -895,48 +973,24 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
     )
     .await;
     rig.server.shutdown().await;
-
-    let Ended::Settled { end, .. } = ended else {
-        panic!("the exit path settles the unit");
-    };
-    let posted = end.into_posted().expect("the usage report fits the record");
-    assert_eq!(
-        posted.reserved(),
-        0,
-        "this plane's door opens the kernel's hold at zero; the spend is the governance ledger's"
-    );
-
-    let durability = crate::root::durability::build(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
-
-    let book = std::sync::Arc::new(std::sync::Mutex::new(durability));
-    let who = PrincipalId::new("acct:node");
-    let settled = settle(
-        &crate::root::durability::SharedBook::over(std::sync::Arc::clone(&book)),
-        &who,
+    let book = Arc::new(Mutex::new(native_fixture().await.unwrap()));
+    node.bind_book(book.clone());
+    node.seal_end(
+        &PrincipalId::new("acct:node"),
         Arrived::at(EPOCH * 1_000, 0),
         None,
-        &busbar_kernel_testkit::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(
-        ),
-        posted,
-    )
-    .expect("the memory-buffered journal takes it");
-    assert!(settled.overdraft.is_none(), "nothing to carry out");
-
-    let durability = book.lock().unwrap_or_else(|p| p.into_inner());
-    let window =
-        busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_DAY, EPOCH);
-    let figures = durability.ledger.book().get(&balance(&who), window);
-    assert_eq!(figures.overdraft_carried_out, 0);
-    let replayed = durability
-        .journal
-        .replay()
-        .expect("reads back")
-        .expect("verifies");
-    assert_eq!(replayed.len(), 1, "one posting, one record");
+        ended,
+        Some(fixture_seal(1)),
+        Vec::new(),
+    );
+    let journal = book.lock().unwrap().journal.clone();
+    let records = selected(&journal).await;
+    assert_eq!(
+        records.len(),
+        1,
+        "the unit has one native audit record and no shadow money posting"
+    );
+    assert_eq!(book.lock().unwrap().audit_records.len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -944,21 +998,18 @@ async fn a_driven_planes_abandoned_end_posts_once_onto_the_nodes_book() {
     use busbar_kernel::plane_driver::EndPost;
     let rig = rig(Fixture::BufferedOk).await;
     let node = Arc::new(Node::new());
-    let durability = crate::root::durability::build(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
+    let durability = native_fixture()
+        .await
+        .expect("a memory-buffered journal cannot fail to open");
     let book = Arc::new(std::sync::Mutex::new(durability));
     node.bind_book(Arc::clone(&book));
-    let posted = || {
-        book.lock()
+    let posted = async || {
+        let journal = book
+            .lock()
             .unwrap_or_else(|p| p.into_inner())
             .journal
-            .replay()
-            .expect("reads back")
-            .expect("verifies")
-            .len()
+            .clone();
+        selected(&journal).await.len()
     };
     let site = NodeEndPost::new(Arc::clone(&node));
     let ctx = |key: u64| UnitCtx {
@@ -987,9 +1038,9 @@ async fn a_driven_planes_abandoned_end_posts_once_onto_the_nodes_book() {
         None,
     );
 
-    let before = posted();
+    let before = posted().await;
     site.post(&ctx(41), ended);
-    assert!(posted() > before, "the abandoned end is on the book");
+    assert!(posted().await > before, "the abandoned end is on the book");
     let ended = drive_to_end(
         &rig,
         &node,
@@ -998,9 +1049,9 @@ async fn a_driven_planes_abandoned_end_posts_once_onto_the_nodes_book() {
         plane::native_seats(),
     )
     .await;
-    let before = posted();
+    let before = posted().await;
     site.post(&ctx(41), ended);
-    assert_eq!(posted(), before, "an end posts at most once");
+    assert_eq!(posted().await, before, "an end posts at most once");
 
     let ended = drive_to_end(
         &rig,
@@ -1012,9 +1063,13 @@ async fn a_driven_planes_abandoned_end_posts_once_onto_the_nodes_book() {
     .await;
     site.open(UnitKey::new(42), who, Arrived::at(EPOCH * 1_000, 1), None);
     site.close(UnitKey::new(42));
-    let before = posted();
+    let before = posted().await;
     site.post(&ctx(42), ended);
-    assert_eq!(posted(), before, "a returned unit's end is not this site's");
+    assert_eq!(
+        posted().await,
+        before,
+        "a returned unit's end is not this site's"
+    );
     assert_eq!(site.open_units(), 0, "every unit's facts closed");
     rig.server.shutdown().await;
 }
@@ -1024,11 +1079,9 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
     use busbar_kernel::plane_driver::EndPost;
     let rig = rig(Fixture::BufferedOk).await;
     let node = Arc::new(Node::new());
-    let durability = crate::root::durability::build(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
+    let durability = native_fixture()
+        .await
+        .expect("a memory-buffered journal cannot fail to open");
     let book = Arc::new(std::sync::Mutex::new(durability));
     node.bind_book(Arc::clone(&book));
     let records = || {
@@ -1100,7 +1153,7 @@ async fn every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_t
 ) {
     let rig = rig(Fixture::BufferedOk).await;
     let node = Node::new();
-    let book = crate::root::durability::node_book();
+    let book = native_node_book().await;
     node.bind_book(Arc::clone(&book.durability));
     let answer = |fixture: Fixture| {
         let arrival = plane::WalkArrival {
@@ -1748,8 +1801,8 @@ async fn an_empty_url_model_ends_where_the_shipped_path_model_entry_point_ends_i
     );
 }
 
-#[test]
-fn the_switched_path_table_names_every_dialect_the_plane_names() {
+#[tokio::test]
+async fn the_switched_path_table_names_every_dialect_the_plane_names() {
     let shipped: Vec<&str> = plane::shell::PATH_INGRESS.iter().map(|(n, _)| *n).collect();
     let switched: Vec<&str> = crate::LINKED
         .path_ingress
@@ -1796,15 +1849,15 @@ async fn the_url_facts_ride_the_unit_and_not_the_thread() {
     rig.server.shutdown().await;
 }
 
-#[test]
-fn the_switched_table_names_every_dialect_the_plane_names() {
+#[tokio::test]
+async fn the_switched_table_names_every_dialect_the_plane_names() {
     let shipped: Vec<&str> = plane::shell::BODY_INGRESS.iter().map(|(n, _)| *n).collect();
     let switched: Vec<&str> = body_dialects();
     assert_eq!(switched, shipped);
 }
 
-#[test]
-fn the_nodes_interner_leaks_a_lane_name_once() {
+#[tokio::test]
+async fn the_nodes_interner_leaks_a_lane_name_once() {
     let node = Node::new();
     let lanes = node.lanes();
     let first = lanes
@@ -1821,8 +1874,8 @@ fn the_nodes_interner_leaks_a_lane_name_once() {
     assert!(std::ptr::eq(first.as_str(), again.as_str()));
 }
 
-#[test]
-fn a_lane_name_reaches_the_interner_once_however_often_it_is_resolved() {
+#[tokio::test]
+async fn a_lane_name_reaches_the_interner_once_however_often_it_is_resolved() {
     let node = Node::new();
     let mut names = node
         .lane_names
@@ -2625,8 +2678,8 @@ async fn both_legs_report_the_same_ledger_spend() {
     );
 }
 
-#[test]
-fn the_node_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
+#[tokio::test]
+async fn the_node_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
     const SECOND_CARD_MS: u64 = 1_700_000_500_000;
     const THIRD_CARD_MS: u64 = 1_700_000_900_000;
 
@@ -2725,13 +2778,19 @@ fn fee_history_of(
 fn split_report(input: u64, output: u64, fee_count: u32) -> Report {
     let mut units = std::collections::BTreeMap::new();
     if input != 0 {
-        units.insert(busbar_contract::records::UNIT_INPUT.to_string(), input);
+        units.insert(
+            busbar_contract::records::UNIT_INPUT.to_string(),
+            input.into(),
+        );
     }
     if output != 0 {
-        units.insert(busbar_contract::records::UNIT_OUTPUT.to_string(), output);
+        units.insert(
+            busbar_contract::records::UNIT_OUTPUT.to_string(),
+            output.into(),
+        );
     }
     Report {
-        usage: busbar_contract::billing::Usage { usage_units: units },
+        usage: busbar_contract::billing::ExactUsage { usage_units: units },
         fee_count,
         lane: "lane".to_string(),
     }
@@ -2750,7 +2809,14 @@ fn invoice_micros(
     let bucket_start_secs = arrived_ms / 1_000 / 86_400 * 86_400;
     let at = invoice::row_priced_at_ms(bucket_start_secs, era);
     let (_, card) = view.card_at(at).expect("a card covers every instant");
-    let unit = |k: &str| report.usage.usage_units.get(k).copied().unwrap_or(0);
+    let unit = |k: &str| {
+        report
+            .usage
+            .usage_units
+            .get(k)
+            .copied()
+            .unwrap_or(busbar_contract::Count::ZERO)
+    };
     let row = invoice::UsageBreakdown {
         tokens_input: unit(busbar_contract::records::UNIT_INPUT),
         tokens_output: unit(busbar_contract::records::UNIT_OUTPUT),
@@ -2766,21 +2832,21 @@ fn invoice_micros(
         .expect("the invoice's card prices every lane the fixture serves")
 }
 
-fn second_book_micros(
-    second_book: Result<u64, busbar_kernel_ledger::cost::Unpriceable>,
+fn projected_micros(
+    second_book: Result<u128, busbar_kernel_ledger::cost::MoneyError>,
 ) -> Result<i64, String> {
     let nanos = second_book.map_err(|refusal| format!("the second book refused: {refusal:?}"))?;
-    busbar_kernel_ledger::cost::Money::of_nanos(u128::from(nanos))
+    busbar_kernel_ledger::cost::Money::of_nanos(nanos)
         .and_then(busbar_kernel_ledger::cost::Money::micros_i64)
         .map_err(|refusal| format!("{nanos} nano-units do not project: {refusal:?}"))
 }
 
-fn books_agree(
+fn projection_agrees(
     label: &str,
-    second_book: Result<u64, busbar_kernel_ledger::cost::Unpriceable>,
+    second_book: Result<u128, busbar_kernel_ledger::cost::MoneyError>,
     invoice: i64,
 ) -> Result<(), String> {
-    let projected = second_book_micros(second_book.clone());
+    let projected = projected_micros(second_book.clone());
     if projected == Ok(invoice) {
         Ok(())
     } else {
@@ -2791,10 +2857,8 @@ fn books_agree(
     }
 }
 
-#[test]
-fn the_second_book_agrees_with_the_invoice_cell_by_cell_and_a_divergence_is_red() {
-    let kernel = Kernel::new();
-    let token = kernel.usage_token();
+#[tokio::test]
+async fn the_second_book_agrees_with_the_invoice_cell_by_cell_and_a_divergence_is_red() {
     let billed = fee_history_of(
         &[
             (0, 0.5, 1.0, 0),
@@ -2852,9 +2916,9 @@ fn the_second_book_agrees_with_the_invoice_cell_by_cell_and_a_divergence_is_red(
 
     let mut failures = Vec::new();
     for (label, history, at, report) in &cells {
-        let second = priced_amount(history, Arrived::at(*at, 1), &token, report);
+        let second = project_nanos(history, Arrived::at(*at, 1), report);
         let invoice = invoice_micros(history, *at, report);
-        if let Err(e) = books_agree(label, second, invoice) {
+        if let Err(e) = projection_agrees(label, second, invoice) {
             failures.push(e);
         }
     }
@@ -2868,19 +2932,18 @@ fn the_second_book_agrees_with_the_invoice_cell_by_cell_and_a_divergence_is_red(
     assert_eq!(
         Ok(invoice_micros(&billed, 10_000, &split_report(11, 7, 1))),
         // 11 x 50 + 7 x 100 + the 3-unit fee at the one scale.
-        second_book_micros(priced_amount(
+        projected_micros(project_nanos(
             &billed,
             Arrived::at(10_000, 1),
-            &token,
             &split_report(11, 7, 1)
         )),
     );
     assert_ne!(invoice_micros(&billed, 10_000, &split_report(11, 7, 1)), 0);
 
     let early = split_report(11, 7, 1);
-    let at_head = priced_amount(&billed, Arrived::at(10_000, 1), &token, &early);
+    let at_head = project_nanos(&billed, Arrived::at(10_000, 1), &early);
     assert!(
-        books_agree(
+        projection_agrees(
             "planted: priced at head",
             at_head,
             invoice_micros(&billed, 1_000, &early)
@@ -2889,14 +2952,9 @@ fn the_second_book_agrees_with_the_invoice_cell_by_cell_and_a_divergence_is_red(
         "a second book priced at the head card was NOT caught disagreeing with the invoice"
     );
 
-    let fee_dropped = priced_amount(
-        &billed,
-        Arrived::at(10_000, 1),
-        &token,
-        &split_report(11, 7, 0),
-    );
+    let fee_dropped = project_nanos(&billed, Arrived::at(10_000, 1), &split_report(11, 7, 0));
     assert!(
-        books_agree(
+        projection_agrees(
             "planted: fee dropped",
             fee_dropped,
             invoice_micros(&billed, 10_000, &split_report(11, 7, 1))
@@ -2927,47 +2985,45 @@ fn cache_silent_history() -> crate::root::kernel::PinnedHistory {
     )
 }
 
-#[test]
-fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses() {
-    let kernel = Kernel::new();
-    let token = kernel.usage_token();
+#[tokio::test]
+async fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses() {
     let history = cache_silent_history();
     let mut report = split_report(1_000, 250, 1);
     report.usage.usage_units.insert(
         busbar_contract::records::UNIT_CACHE_READ.to_string(),
-        10_000_000,
+        10_000_000u64.into(),
     );
     let at = Arrived::at(4_000, 7);
 
-    let (posting, priced) = priced_posting(&history, at, &token, &report);
-    let counts: std::collections::BTreeMap<&str, u64> = posting
-        .quantities
+    let entry = ledger_entry(&report, at);
+    let priced = project_nanos(&history, at, &report);
+    let counts: std::collections::BTreeMap<&str, u64> = entry
+        .counts
         .iter()
-        .map(|q| (q.class.as_str(), q.amount))
+        .map(|(class, n)| (class.as_str(), n.whole_u64().unwrap()))
         .collect();
     assert_eq!(
         counts,
         std::collections::BTreeMap::from([
             (busbar_contract::records::UNIT_INPUT, 1_000),
             (busbar_contract::records::UNIT_OUTPUT, 250),
-            (busbar_contract::records::UNIT_CACHE_READ, 10_000_000),
-        ]),
-        "the posting lost or zeroed a count the unit reported"
+            (busbar_contract::records::UNIT_CACHE_READ, 10_000_000)
+        ])
     );
-    assert_eq!(posting.fee_count, 1, "the billable count rides the row");
+    assert_eq!(entry.fee_count, busbar_contract::Count::from(1u64));
 
     assert!(
         matches!(
             priced,
-            Err(busbar_kernel_ledger::cost::Unpriceable::ClassUnpriced { ref class, .. })
+            Err(busbar_kernel_ledger::cost::MoneyError::ClassUnpriced { ref class, .. })
                 if class == busbar_contract::records::UNIT_CACHE_READ
         ),
         "settlement priced a class the present card is silent about: {priced:?}"
     );
     assert!(
         matches!(
-            priced_amount(&history, at, &token, &report),
-            Err(busbar_kernel_ledger::cost::Unpriceable::ClassUnpriced { .. })
+            project_nanos(&history, at, &report),
+            Err(busbar_kernel_ledger::cost::MoneyError::ClassUnpriced { .. })
         ),
         "the second book was handed a figure — a partial is a silent zero for the unpriced class"
     );
@@ -2976,10 +3032,10 @@ fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses
     let view = history.view();
     let (_, card) = view.card_at(at.ms()).expect("the card is in force");
     let row = invoice::UsageBreakdown {
-        tokens_input: 1_000,
-        tokens_output: 250,
-        tokens_cache_read: 10_000_000,
-        tokens_cache_creation: 0,
+        tokens_input: 1_000u64.into(),
+        tokens_output: 250u64.into(),
+        tokens_cache_read: 10_000_000u64.into(),
+        tokens_cache_creation: 0u64.into(),
         requests: 1,
         spend_micros: 0,
         classes: Default::default(),
@@ -2993,41 +3049,37 @@ fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses
     );
 }
 
-#[test]
-fn a_settled_figure_past_the_record_refuses_and_is_never_pinned() {
-    let kernel = Kernel::new();
-    let token = kernel.usage_token();
+#[tokio::test]
+async fn a_settled_figure_past_the_record_refuses_and_is_never_pinned() {
     let history = history_of(&[(0, 1_000.0)]);
-    let (_, priced) = priced_posting(
+    let report = report_of(100_000_000_000_000_000);
+    let nanos = project_nanos(&history, Arrived::at(4_000, 7), &report).unwrap();
+    assert!(nanos > u128::from(u64::MAX));
+    assert!(
+        u64::try_from(nanos).is_err(),
+        "a narrow projection refuses instead of truncating"
+    );
+    let saved = record_report(
         &history,
         Arrived::at(4_000, 7),
-        &token,
-        &report_of(100_000_000_000_000_000),
-    );
-    assert!(
-        priced.is_ok_and(|p| p.priced_nanos > u128::from(u64::MAX)),
-        "the fixture must price past the record, or this pins nothing"
-    );
+        "wide-native-price",
+        &report,
+    )
+    .await;
     assert_eq!(
-        priced_amount(
-            &history,
-            Arrived::at(4_000, 7),
-            &token,
-            &report_of(100_000_000_000_000_000)
-        ),
-        Err(busbar_kernel_ledger::cost::Unpriceable::Overflow),
+        recorded_rows(&saved).await[0].nanos,
+        Ok(nanos),
+        "native counts preserve the complete accepted projection"
     );
 }
 
-#[test]
-fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
+#[tokio::test]
+async fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
     let node = Node::new();
     let book = Arc::new(Mutex::new(
-        crate::root::durability::build(
-            &crate::root::durability::DurabilityConfig { data_dir: None },
-            Box::new(busbar_kernel_wal::NullShipper::new()),
-        )
-        .expect("a memory-buffered journal cannot fail to open"),
+        native_fixture()
+            .await
+            .expect("a memory-buffered journal cannot fail to open"),
     ));
     node.bind_book(Arc::clone(&book));
 
@@ -3056,7 +3108,7 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
         slot: Arc::clone(&slot),
         arrived: Arrived::at(EPOCH * 1_000, 7),
         op_class: busbar_contract::caps::OpClassId::new("call"),
-        hold: None,
+        post: None,
         reached_end: false,
     });
     assert!(
@@ -3082,20 +3134,17 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
     assert!(node.inflight.get(key).is_none(), "and gave the slot back");
     {
         let durability = book.lock().unwrap_or_else(|p| p.into_inner());
-        let replayed = durability
-            .journal
-            .replay()
-            .expect("reads back")
-            .expect("verifies");
+        let journal = durability.journal.clone();
+        drop(durability);
+        let replayed = selected(&journal).await;
         assert_eq!(
             replayed
                 .iter()
                 .filter(|r| r.class == busbar_kernel_wal::RecordClass::Transaction)
                 .count(),
-            2,
-            "the swept hold's posting is on the journal, and its one audit record beside it"
+            1,
+            "the swept unit has exactly one native audit record"
         );
-        assert_eq!(durability.ledger.book().len(), 1, "and on the book");
     }
 
     assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 6, 100)), 0);
@@ -3123,30 +3172,28 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
         slot: Arc::clone(&slot),
         arrived: Arrived::at(EPOCH * 1_000, 8),
         op_class: busbar_contract::caps::OpClassId::new("call"),
-        hold: None,
+        post: None,
         reached_end: true,
     });
     assert!(!slot.is_marked());
     assert!(node.inflight.get(key).is_none());
 }
 
-fn swept_node() -> (
+async fn swept_node() -> (
     Node,
     Arc<std::sync::Mutex<crate::root::durability::Durability>>,
 ) {
     let node = Node::new();
     let book = Arc::new(Mutex::new(
-        crate::root::durability::build(
-            &crate::root::durability::DurabilityConfig { data_dir: None },
-            Box::new(busbar_kernel_wal::NullShipper::new()),
-        )
-        .expect("a memory-buffered journal cannot fail to open"),
+        native_fixture()
+            .await
+            .expect("a memory-buffered journal cannot fail to open"),
     ));
     node.bind_book(Arc::clone(&book));
     (node, book)
 }
 
-fn lose_a_unit(node: &Node, key: UnitKey, op_class: &'static str, hold: Option<u64>) {
+fn lose_a_unit(node: &Node, key: UnitKey, op_class: &'static str, _hold: Option<u64>) {
     let slot = node
         .inflight
         .insert(busbar_kernel::inflight::Enter {
@@ -3169,24 +3216,19 @@ fn lose_a_unit(node: &Node, key: UnitKey, op_class: &'static str, hold: Option<u
         slot,
         arrived: Arrived::at(EPOCH * 1_000, key.get()),
         op_class: busbar_contract::caps::OpClassId::new(op_class),
-        hold,
+        post: None,
         reached_end: false,
     });
 }
 
-#[test]
-fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line() {
-    let (node, book) = swept_node();
+#[tokio::test]
+async fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line() {
+    let (node, book) = swept_node().await;
     let key = UnitKey::new(51);
     lose_a_unit(&node, key, "widget_call", Some(3));
     assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 5, 99)), 1);
 
     let durability = book.lock().unwrap_or_else(|p| p.into_inner());
-    assert_eq!(
-        durability.ledger.book().len(),
-        1,
-        "the swept unit posted one line"
-    );
     let records: Vec<_> = durability
         .audit_records
         .iter()
@@ -3208,36 +3250,21 @@ fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line()
     );
     assert_eq!(record.outcome.finish, RecordFinish::Error);
     assert_eq!(record.what.op_class.as_str(), "widget_call");
-    assert_eq!(record.controls.hold_ref.as_deref(), Some("3"));
+    assert_eq!(
+        record.controls.hold_ref, None,
+        "no second money hold is encoded"
+    );
 
     assert!(
         record.usage.lines.is_empty(),
         "a record names no money-class line: {:?}",
         record.usage.lines
     );
-    let settled: i128 = durability
-        .ledger
-        .book()
-        .iter()
-        .map(|(_, totals)| totals.settled)
-        .sum();
-    assert_eq!(
-        settled,
-        record
-            .usage
-            .lines
-            .iter()
-            .map(|l| i128::from(l.quantity))
-            .sum::<i128>(),
-        "the record's amount equals the money its line moved"
-    );
     assert!(durability.retained_audit_findings().is_empty());
 
-    let replayed = durability
-        .journal
-        .replay()
-        .expect("reads back")
-        .expect("verifies");
+    let journal = durability.journal.clone();
+    drop(durability);
+    let replayed = selected(&journal).await;
     let read_back: Vec<_> = replayed
         .iter()
         .filter_map(|r| crate::root::durability::decode_audit(r).expect("every record decodes"))
@@ -3250,9 +3277,9 @@ fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line()
     );
 }
 
-#[test]
-fn no_swept_unit_settles_with_zero_audit_records() {
-    let (node, book) = swept_node();
+#[tokio::test]
+async fn no_swept_unit_settles_with_zero_audit_records() {
+    let (node, book) = swept_node().await;
     let keys = [UnitKey::new(61), UnitKey::new(62), UnitKey::new(63)];
     for key in keys {
         lose_a_unit(&node, key, "widget_call", None);
@@ -3260,19 +3287,18 @@ fn no_swept_unit_settles_with_zero_audit_records() {
     assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 5, 99)), keys.len());
 
     let durability = book.lock().unwrap_or_else(|p| p.into_inner());
-    let replayed = durability
-        .journal
-        .replay()
-        .expect("reads back")
-        .expect("verifies");
+    let journal = durability.journal.clone();
+    drop(durability);
+    let replayed = selected(&journal).await;
     assert_eq!(
         replayed
             .iter()
             .filter(|r| r.class == busbar_kernel_wal::RecordClass::Transaction)
             .count(),
-        2 * keys.len(),
-        "each swept unit has its posting on the journal and its one record beside it"
+        keys.len(),
+        "each swept unit has exactly one native audit original"
     );
+    let durability = book.lock().unwrap_or_else(|p| p.into_inner());
     for key in keys {
         assert_eq!(
             durability
@@ -3298,127 +3324,174 @@ fn declare_test_classes() {
     let _ = registration.key(SEARCH_UNITS);
 }
 
-fn late_post(
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecordedCounts {
+    lane: String,
+    fee_count: u64,
+    classes: std::collections::BTreeMap<String, u64>,
+}
+impl RecordedCounts {
+    fn entry(&self, at: u64) -> busbar_kernel_ledger::cost::LedgerEntry {
+        self.classes.iter().fold(
+            busbar_kernel_ledger::cost::LedgerEntry::new(&self.lane, at)
+                .with_fee_count(self.fee_count),
+            |entry, (class, count)| entry.with_whole(class, *count),
+        )
+    }
+}
+#[derive(Debug, Clone)]
+struct NativeLedgerObservation {
+    counts: Option<RecordedCounts>,
+    nanos: Result<u128, String>,
+}
+struct RecordedReport {
+    core: Arc<busbar_kernel::persistence::facade::CoreStore>,
+    principal: String,
+    lane: String,
+    at: u64,
+    history: crate::root::kernel::PinnedHistory,
+}
+async fn observe_native_ledger(
+    core: &busbar_kernel::persistence::facade::CoreStore,
+    principal: &str,
+    lane: &str,
+    history: &crate::root::kernel::PinnedHistory,
+    at: u64,
+) -> Vec<NativeLedgerObservation> {
+    let usage = (core.ledger().get_usage(principal, 0).await)
+        .await
+        .expect("canonical usage reads");
+    let classes = usage
+        .models
+        .iter()
+        .filter(|row| row.model == lane)
+        .flat_map(|row| {
+            row.usage_units
+                .iter()
+                .filter(|(_, value)| **value != 0)
+                .map(|(class, value)| {
+                    let count = busbar_contract::Count::from_stored(*value, row.scale)
+                        .expect("stored exact scale")
+                        .whole_u64()
+                        .expect("whole fixture count");
+                    (class.clone(), count)
+                })
+        })
+        .collect();
+    let counts = RecordedCounts {
+        lane: lane.into(),
+        fee_count: usage.billable_requests,
+        classes,
+    };
+    let nanos = busbar_kernel_ledger::cost::price_exact(&[counts.entry(at)], &history.view())
+        .and_then(busbar_kernel_ledger::cost::nanos_of_exact)
+        .map_err(|error| format!("{error:?}"));
+    vec![NativeLedgerObservation {
+        counts: Some(counts),
+        nanos,
+    }]
+}
+async fn record_report(
     history: &crate::root::kernel::PinnedHistory,
     at: Arrived,
     principal: &str,
     report: &Report,
-) -> crate::root::durability::NodeBook {
+) -> RecordedReport {
     declare_test_classes();
-
-    let pinned = history.clone();
-    let node = crate::root::durability::node_book_over(Box::new(move || Some(pinned.clone())));
-    let kernel = Kernel::new();
-    let (durability, ledger, usage) = (
-        kernel.durability_token(),
-        kernel.ledger_token(),
-        kernel.usage_token(),
-    );
-    post_late(
-        &crate::root::durability::SharedBook::over(Arc::clone(&node.durability)),
-        &LateTokens {
-            durability: &durability,
-            ledger: &ledger,
-            usage: &usage,
-        },
-        history,
-        &PrincipalId::new(principal),
-        at,
-        report,
+    let core = (crate::root::real_store::core()).await;
+    let key = busbar_contract::records::VirtualKey {
+        id: principal.into(),
+        enabled: true,
+        ..Default::default()
+    };
+    (core.identity().put_key(&key))
+        .await
+        .expect("canonical fixture key");
+    let gov = (busbar_kernel::governance::GovState::new_with_core(core.clone(), None, None))
+        .await
+        .unwrap();
+    let cost = busbar_kernel::cost::CostModel::flat(0);
+    for _ in 0..report.fee_count {
+        gov.try_admit(&cost, &key, "", at.secs())
+            .expect("fixture admission");
+    }
+    gov.record_counts_served_in_era(
+        &cost,
+        &key,
+        "",
+        &report.lane,
         None,
-    );
-    node
-}
-
-fn second_book_rows(
-    node: &crate::root::durability::NodeBook,
-) -> Vec<crate::root::durability::Posting> {
-    let durability = node.durability.lock().expect("unpoisoned");
-    durability
-        .read_back()
-        .into_iter()
-        .filter(|p| p.kind != crate::root::durability::PostingKind::Carry)
-        .collect()
-}
-
-fn governance_row(report: &Report) -> crate::root::durability::UnitCounts {
-    crate::root::durability::UnitCounts {
+        &report.usage.usage_units,
+        at.secs(),
+        busbar_kernel::rate_apply::era_at(at.ms()),
+    )
+    .expect("exact fixture accrual");
+    (gov.flush_budgets()).await;
+    (gov.flush_metering()).await;
+    RecordedReport {
+        core,
+        principal: principal.into(),
         lane: report.lane.clone(),
-        fee_count: u64::from(report.fee_count),
+        at: at.ms(),
+        history: history.clone(),
+    }
+}
+async fn recorded_rows(report: &RecordedReport) -> Vec<NativeLedgerObservation> {
+    observe_native_ledger(
+        &report.core,
+        &report.principal,
+        &report.lane,
+        &report.history,
+        report.at,
+    )
+    .await
+}
+fn governance_row(report: &Report) -> RecordedCounts {
+    RecordedCounts {
+        lane: report.lane.clone(),
+        fee_count: report.fee_count.into(),
         classes: report
             .usage
             .usage_units
             .iter()
-            .filter(|(_, count)| **count > 0)
-            .map(|(class, count)| (class.clone(), *count))
+            .filter(|(_, n)| !n.is_zero())
+            .map(|(class, n)| (class.clone(), n.whole_u64().expect("whole report fixture")))
             .collect(),
     }
 }
-
 fn every_cell_agrees(
     label: &str,
-    second: &[crate::root::durability::Posting],
-    governance: &crate::root::durability::UnitCounts,
+    rows: &[NativeLedgerObservation],
+    expected: &RecordedCounts,
     history: &crate::root::kernel::PinnedHistory,
-    arrived_ms: u64,
+    at: u64,
 ) -> Result<(), String> {
-    use crate::root::durability::PostingKind;
-    let [row] = second else {
-        return Err(format!(
-            "{label}: the second book holds {} records for one unit, not one",
-            second.len()
-        ));
+    let [row] = rows else {
+        return Err(format!("{label}: {} observations for one unit", rows.len()));
     };
-    let Some(counts) = row.counts.as_ref() else {
-        return Err(format!(
-            "{label}: the second book's record carries no counts"
-        ));
-    };
-    let mut cells = Vec::new();
-    let classes: std::collections::BTreeSet<&String> = counts
-        .classes
-        .keys()
-        .chain(governance.classes.keys())
-        .collect();
-    for class in classes {
-        let (second_book, invoice) = (counts.classes.get(class), governance.classes.get(class));
-        if second_book != invoice {
-            cells.push(format!(
-                "class {class}: second book {second_book:?}, governance ledger {invoice:?}"
+    let counts = row
+        .counts
+        .as_ref()
+        .ok_or_else(|| format!("{label}: no counts"))?;
+    for class in counts.classes.keys().chain(expected.classes.keys()) {
+        if counts.classes.get(class) != expected.classes.get(class) {
+            return Err(format!(
+                "{label}: class {class}: {:?} vs {:?}",
+                counts.classes.get(class),
+                expected.classes.get(class)
             ));
         }
     }
-    if counts.lane != governance.lane {
-        cells.push(format!("lane: {:?} vs {:?}", counts.lane, governance.lane));
+    if counts.lane != expected.lane || counts.fee_count != expected.fee_count {
+        return Err(format!("{label}: lane or fee count differs"));
     }
-    if counts.fee_count != governance.fee_count {
-        cells.push(format!(
-            "fee count: {} vs {}",
-            counts.fee_count, governance.fee_count
-        ));
+    let invoice = busbar_kernel_ledger::cost::price_exact(&[expected.entry(at)], &history.view())
+        .and_then(busbar_kernel_ledger::cost::nanos_of_exact)
+        .map_err(|error| format!("{error:?}"));
+    if row.nanos != invoice {
+        return Err(format!("{label}: money: {:?} vs {invoice:?}", row.nanos));
     }
-    let invoice =
-        busbar_kernel_ledger::cost::price_exact(&[governance.entry(arrived_ms)], &history.view())
-            .and_then(busbar_kernel_ledger::cost::nanos_of_exact);
-    let money_agrees = match (&invoice, row.kind, row.refusal.as_ref()) {
-        (Ok(nanos), PostingKind::Settlement, None) => {
-            u128::try_from(row.settled).is_ok_and(|settled| settled == *nanos) && *nanos != 0
-        }
-        (Ok(0), PostingKind::Counted, None) => true,
-        (Err(_), PostingKind::Counted, Some(_)) => true,
-        _ => false,
-    };
-    if !money_agrees {
-        cells.push(format!(
-            "money: second book {:?} settled {} (refusal {:?}), invoice {invoice:?} nano-units",
-            row.kind, row.settled, row.refusal
-        ));
-    }
-    if cells.is_empty() {
-        Ok(())
-    } else {
-        Err(format!("{label}: {}", cells.join("; ")))
-    }
+    Ok(())
 }
 
 fn rerank_history(fee: i64, search_units: Option<u64>) -> crate::root::kernel::PinnedHistory {
@@ -3453,30 +3526,31 @@ fn rerank_history_on(
 
 fn rerank_report(units: u64) -> Report {
     Report {
-        usage: busbar_contract::billing::Usage {
-            usage_units: std::collections::BTreeMap::from([(SEARCH_UNITS.to_string(), units)]),
+        usage: busbar_contract::billing::ExactUsage {
+            usage_units: std::collections::BTreeMap::from([(
+                SEARCH_UNITS.to_string(),
+                units.into(),
+            )]),
         },
         fee_count: 1,
         lane: "lane".to_string(),
     }
 }
 
-#[test]
-fn an_unpriced_class_on_a_present_card_leaves_a_durable_counts_row_and_the_read_refuses() {
-    use crate::root::durability::PostingKind;
+#[tokio::test]
+async fn an_unpriced_class_on_a_present_card_leaves_a_durable_counts_row_and_the_read_refuses() {
     let history = cache_silent_history();
     let mut report = split_report(1_000, 250, 1);
     report.usage.usage_units.insert(
         busbar_contract::records::UNIT_CACHE_READ.to_string(),
-        10_000_000,
+        10_000_000u64.into(),
     );
     let at = Arrived::at(4_000, 7);
-    let node = late_post(&history, at, "vk_refused", &report);
+    let node = record_report(&history, at, "vk_refused", &report).await;
 
-    let rows = second_book_rows(&node);
+    let rows = recorded_rows(&node).await;
     assert_eq!(rows.len(), 1, "one counts row per refused unit: {rows:?}");
     let row = &rows[0];
-    assert_eq!(row.kind, PostingKind::Counted);
     let counts = row.counts.as_ref().expect("the row carries the counts");
     assert_eq!(
         counts.classes,
@@ -3492,32 +3566,18 @@ fn an_unpriced_class_on_a_present_card_leaves_a_durable_counts_row_and_the_read_
     );
     assert_eq!((counts.lane.as_str(), counts.fee_count), ("lane", 1));
     assert!(
-        row.refusal
-            .as_deref()
+        row.nanos
+            .as_ref()
+            .err()
+            .map(String::as_str)
             .is_some_and(|why| why.contains("ClassUnpriced") && why.contains("cache_read")),
         "the money is refused and says which class: {:?}",
-        row.refusal
-    );
-    assert_eq!(
-        (row.reserved, row.settled, row.overdraft),
-        (0, 0, 0),
-        "no figure: no zero posted as a price, no partial"
-    );
-
-    let durability = node.durability.lock().expect("unpoisoned");
-    let key = balance(&PrincipalId::new("vk_refused"));
-    let window =
-        busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_DAY, at.secs());
-    assert_eq!(
-        durability.ledger.book().get(&key, window).settled,
-        0,
-        "a refused unit moves no balance"
+        row.nanos
     );
     assert!(
-        durability.settled_read(&key, window).is_err(),
-        "the read over a refused counts row refuses (#42), never the priced remainder"
+        row.nanos.is_err(),
+        "unpriced counts never become a zero or partial price"
     );
-    assert_eq!(durability.refused_rows().len(), 1);
 
     every_cell_agrees(
         "refused",
@@ -3529,14 +3589,14 @@ fn an_unpriced_class_on_a_present_card_leaves_a_durable_counts_row_and_the_read_
     .expect("both books refuse the same unit");
 }
 
-#[test]
-fn a_reranks_search_units_agree_across_both_books() {
+#[tokio::test]
+async fn a_reranks_search_units_agree_across_both_books() {
     let at = Arrived::at(4_000, 7);
 
     let priced = rerank_history(3, Some(2_000_000));
     let report = rerank_report(50);
-    let node = late_post(&priced, at, "vk_rerank", &report);
-    let rows = second_book_rows(&node);
+    let node = record_report(&priced, at, "vk_rerank", &report).await;
+    let rows = recorded_rows(&node).await;
     every_cell_agrees(
         "rerank, priced",
         &rows,
@@ -3546,17 +3606,17 @@ fn a_reranks_search_units_agree_across_both_books() {
     )
     .expect("the books agree on the rerank");
 
-    let fee_only = late_post(&priced, at, "vk_fee", &rerank_report(0));
-    let fee_only = second_book_rows(&fee_only);
+    let fee_only = record_report(&priced, at, "vk_fee", &rerank_report(0)).await;
+    let fee_only = recorded_rows(&fee_only).await;
     assert_eq!(
-        rows[0].settled - fee_only[0].settled,
+        rows[0].nanos.clone().unwrap() - fee_only[0].nanos.clone().unwrap(),
         50 * 2_000_000,
         "the second book priced the 50 search units"
     );
 
     let silent = rerank_history(3, None);
-    let node = late_post(&silent, at, "vk_silent", &report);
-    let rows = second_book_rows(&node);
+    let node = record_report(&silent, at, "vk_silent", &report).await;
+    let rows = recorded_rows(&node).await;
     every_cell_agrees(
         "rerank, card silent about search units",
         &rows,
@@ -3567,11 +3627,13 @@ fn a_reranks_search_units_agree_across_both_books() {
     .expect("both books refuse a rerank the card is silent about");
     assert!(
         rows[0]
-            .refusal
-            .as_deref()
+            .nanos
+            .as_ref()
+            .err()
+            .map(String::as_str)
             .is_some_and(|w| w.contains(SEARCH_UNITS)),
         "{:?}",
-        rows[0].refusal
+        rows[0].nanos
     );
 
     let billed = fee_history_of(
@@ -3591,10 +3653,10 @@ fn a_reranks_search_units_agree_across_both_books() {
         ("no fee", 10_000, split_report(11, 7, 0)),
     ] {
         let at = Arrived::at(at_ms, 1);
-        let node = late_post(&billed, at, "vk_tokens", &report);
+        let node = record_report(&billed, at, "vk_tokens", &report).await;
         if let Err(e) = every_cell_agrees(
             label,
-            &second_book_rows(&node),
+            &recorded_rows(&node).await,
             &governance_row(&report),
             &billed,
             at_ms,
@@ -3605,13 +3667,13 @@ fn a_reranks_search_units_agree_across_both_books() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-#[test]
-fn a_planted_open_class_divergence_goes_red() {
+#[tokio::test]
+async fn a_planted_open_class_divergence_goes_red() {
     let at = Arrived::at(4_000, 7);
     let priced = rerank_history(3, Some(2_000_000));
     let report = rerank_report(50);
     let governance = governance_row(&report);
-    let rows = second_book_rows(&late_post(&priced, at, "vk_rerank", &report));
+    let rows = recorded_rows(&record_report(&priced, at, "vk_rerank", &report).await).await;
     every_cell_agrees("unplanted", &rows, &governance, &priced, at.ms())
         .expect("the unplanted rows agree, so a red below is the plant's");
 
@@ -3635,9 +3697,10 @@ fn a_planted_open_class_divergence_goes_red() {
         "a dropped open class was NOT caught"
     );
 
-    let fee_only = second_book_rows(&late_post(&priced, at, "vk_fee", &rerank_report(0)));
+    let fee_only =
+        recorded_rows(&record_report(&priced, at, "vk_fee", &rerank_report(0)).await).await;
     let mut head_shaped = rows.clone();
-    head_shaped[0].settled = fee_only[0].settled;
+    head_shaped[0].nanos = fee_only[0].nanos.clone();
     assert!(
         every_cell_agrees(
             "planted: fee only",
@@ -3687,28 +3750,31 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         });
     }
     let server = MockServer::new(Arc::clone(&state)).await;
-    let store = crate::root::real_store::records();
+    let store = (crate::root::real_store::core()).await;
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &SIGNING_SECRET,
         busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
-        busbar_kernel::governance::GovState::new_with_signer(store, None, Some(signer))
+        (busbar_kernel::governance::GovState::new_with_core(store, None, Some(signer)))
+            .await
             .expect("governance"),
     );
-    let (key, _token) = gov
-        .mint_signed(
-            busbar_kernel::governance::NewKeySpec {
-                name: unique("root-rerank"),
-                ..Default::default()
-            },
-            LIVE_EXP,
-            MINTED_AT,
-        )
-        .expect("mint the deployment's key");
+    let (key, _token) = (gov.mint_signed_async(
+        busbar_kernel::governance::NewKeySpec {
+            name: unique("root-rerank"),
+            ..Default::default()
+        },
+        LIVE_EXP,
+        MINTED_AT,
+    ))
+    .await
+    .expect("mint the deployment's key");
 
     let cost = busbar_kernel::cost::CostModel::resolve_parts(None, FEE_CENTS, &Default::default());
-    gov.hydrate_budgets(&cost, 0).expect("hydrate");
+    (gov.hydrate_budgets_async(&cost, 0))
+        .await
+        .expect("hydrate");
     let app = TestApp::new()
         .keys_chain()
         .lane(
@@ -3729,8 +3795,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
 
     let history = rerank_history_on(RERANK_LANE, 3, Some(2_000_000));
     let node = Node::new();
-    let pinned = history.clone();
-    let book = crate::root::durability::node_book_over(Box::new(move || Some(pinned.clone())));
+    let book = native_node_book().await;
     node.bind_book(Arc::clone(&book.durability));
 
     let arrival = plane::WalkArrival {
@@ -3836,9 +3901,11 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         .expect("the served body drains");
     server.shutdown().await;
 
-    gov.flush_budgets();
+    (gov.flush_budgets()).await;
     let ledger = gov
-        .store()
+        .core_store()
+        .unwrap()
+        .ledger()
         .get_usage(
             &key.id,
             busbar_kernel::governance::budget_window(
@@ -3846,6 +3913,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
                 EPOCH,
             ),
         )
+        .await
         .expect("the governance ledger reads");
     let classes = ledger
         .models
@@ -3855,7 +3923,15 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
             m.usage_units
                 .iter()
                 .filter(|(_, count)| **count > 0)
-                .map(|(class, count)| (class.clone(), *count))
+                .map(|(class, count)| {
+                    (
+                        class.clone(),
+                        busbar_contract::Count::from_stored(*count, m.scale)
+                            .unwrap()
+                            .whole_u64()
+                            .unwrap(),
+                    )
+                })
                 .collect::<std::collections::BTreeMap<_, _>>()
         })
         .unwrap_or_default();
@@ -3865,7 +3941,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         Some(&RERANK_UNITS),
         "the governance ledger accrued the rerank's search units: {classes:?}"
     );
-    let governance = crate::root::durability::UnitCounts {
+    let governance = RecordedCounts {
         lane: RERANK_LANE.to_string(),
         fee_count: ledger.billable_requests,
         classes,
@@ -3898,16 +3974,18 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         assert!(durability.retained_audit_findings().is_empty());
     }
 
-    let rows = second_book_rows(&book);
+    let rows = observe_native_ledger(
+        gov.core_store().unwrap(),
+        &key.id,
+        RERANK_LANE,
+        &history,
+        arrived.ms(),
+    )
+    .await;
     assert_eq!(
         rows.len(),
         1,
         "one line per unit: the exit writes none when the late arm writes it: {rows:?}"
-    );
-    assert_eq!(
-        rows[0].kind,
-        crate::root::durability::PostingKind::Settlement,
-        "the one line settles the unit's reservation: {rows:?}"
     );
     assert_eq!(
         rows.first()
@@ -3920,140 +3998,85 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         .expect("both books hold the same search units and the same figure");
 }
 
-#[test]
-fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
-    use crate::root::kernel::{CardApplied, RootHistory};
-    fn apply(holder: &RootHistory, input: f64, at: u64) {
-        let lanes = [(
-            "gpt".to_string(),
-            busbar_contract::billing::RawTierRates {
-                input: busbar_kernel_ledger::cost::representable_nano_rate(input),
-                output: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
-                cache_read: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
-                cache_write: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+#[tokio::test]
+async fn binding_the_node_keeps_every_confirmed_card_in_the_native_store() {
+    use crate::root::kernel::RootHistory;
+    use busbar_kernel::config::card::CardFields;
+    let card = |input| CardFields {
+        rate_card: Some(std::collections::BTreeMap::from([(
+            "gpt".into(),
+            busbar_kernel::config::RateEntryCfg {
+                input_utok: input,
+                ..Default::default()
             },
-        )];
-        let _ = holder.apply_rates(
-            &busbar_kernel::rate_apply::RawRates {
-                lanes: &lanes,
-                units: &[],
-                flat_minor: 0,
-                present: true,
-                plane_fees: &busbar_kernel::config::PlaneFeesMap::new(),
-            },
-            at,
-        );
-    }
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-node-book-cards-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch directory");
-
+        )])),
+        ..Default::default()
+    };
+    let core = (crate::root::real_store::core()).await;
     let holder: &'static RootHistory = Box::leak(Box::default());
-    holder.arm_journal();
-    apply(holder, 3.0, 1_000);
-    let slots = crate::root::store_double::RecordSlots::new();
-    let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store").unwrap();
+    holder
+        .keep_in_store(core.clone(), 7)
+        .expect("native price owner binds");
+    holder.card_applied(&card(3.0), "boot");
+    (holder.boot_in_store(None))
+        .await
+        .expect("opening card is confirmed");
+    let journal = (busbar_kernel::persistence::journal::runtime::RuntimeJournal::open(
+        core.clone(),
+        7,
+        native_budget(),
+    ))
+    .await
+    .unwrap();
     let book = Arc::new(Mutex::new(
-        crate::root::durability::build_on_store(
-            &crate::root::durability::DurabilityConfig {
-                data_dir: Some(dir.clone()),
-            },
+        (crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig::default(),
             7,
-            lane,
+            journal.clone(),
             Some(holder),
-        )
-        .expect("the journal opens"),
+            native_budget(),
+        ))
+        .await
+        .unwrap(),
     ));
-
-    super::bind_node_book(&Node::new(), holder, Arc::clone(&book));
-    apply(holder, 5.0, 20_000);
-
-    let cards = book
-        .lock()
-        .expect("the book")
-        .chain()
-        .expect("reads")
-        .expect("verifies")
-        .iter()
-        .filter(|r| r.class == busbar_kernel_wal::RecordClass::Policy)
-        .filter_map(|r| CardApplied::from_body(&r.body))
-        .map(|applied| applied.effective_from)
-        .collect::<Vec<_>>();
+    super::bind_node_book(&Node::new(), holder, book);
+    let prices = holder.card_store().unwrap();
+    let prepared = (prices.prepare(&card(5.0), "test"))
+        .await
+        .expect("successor prepares");
+    let successor = (prepared.confirm_activation())
+        .await
+        .expect("successor activation applies")
+        .commit();
+    let cards = prices.entries();
     assert_eq!(
-        cards,
-        vec![0, 20_000],
-        "the boot card and the card applied after the binding are both on the chain"
+        cards.len(),
+        2,
+        "opening and confirmed successor are both persisted"
     );
-    let lane = book.lock().unwrap().lane().unwrap().clone();
-    assert!(lane.drain(std::time::Duration::from_secs(5)));
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-    drop(book);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-struct ServedHost;
-
-impl busbar_kernel::ingress::arrival::ArrivalHost for ServedHost {
-    fn finish_rejected(
-        &self,
-        _ctx: &busbar_kernel::ingress::arrival::ArrivalCtx,
-        _proto: &str,
-        _pool: &str,
-        _started: std::time::Instant,
-        _charged_at: u64,
-        resp: Response,
-    ) -> Response {
-        resp
-    }
-
-    fn ingress_error(
-        &self,
-        proto: &str,
-        status: StatusCode,
-        kind: &str,
-        message: &str,
-    ) -> Response {
-        busbar_kernel::ingress::ingress_error(proto, status, kind, message)
-    }
-
-    fn envelope_dialect(
-        &self,
-        _ctx: &busbar_kernel::ingress::arrival::ArrivalCtx,
-        _path: &str,
-    ) -> &'static str {
-        PROTO
-    }
-
-    fn fallback_not_found(
-        &self,
-        _ctx: &busbar_kernel::ingress::arrival::ArrivalCtx,
-        _path: &str,
-        status: StatusCode,
-        err_type: &str,
-        message: &str,
-    ) -> Response {
-        busbar_kernel::ingress::ingress_error(PROTO, status, err_type, message)
-    }
-
-    fn percent_decode(&self, s: &str) -> String {
-        s.to_string()
-    }
-
-    fn kind_not_found(&self) -> &'static str {
-        busbar_contract::protocol::KIND_NOT_FOUND
-    }
-
-    fn kind_invalid_request(&self) -> &'static str {
-        busbar_contract::protocol::KIND_INVALID_REQUEST
-    }
-
-    fn err_type_not_found(&self) -> &'static str {
-        busbar_contract::protocol::KIND_NOT_FOUND
-    }
+    assert!(cards.iter().any(|entry| entry.key == successor));
+    let restarted: &'static RootHistory = Box::leak(Box::default());
+    restarted.keep_in_store(core, 7).unwrap();
+    restarted.card_applied(&card(5.0), "boot");
+    (restarted.boot_in_store(None))
+        .await
+        .expect("native price history reopens");
+    assert_eq!(
+        restarted.card_store().unwrap().entries(),
+        cards,
+        "binding never loses a confirmed card"
+    );
+    assert_eq!(restarted.card_store().unwrap().in_force(), Some(card(5.0)));
+    (journal.flush())
+        .await
+        .expect("node journal confirms its originals");
+    prices.stop_background().await.unwrap();
+    restarted
+        .card_store()
+        .unwrap()
+        .stop_background()
+        .await
+        .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4107,53 +4130,44 @@ async fn the_linked_arrivals_hand_their_units_to_the_node_the_root_installs() {
     rig.server.shutdown().await;
 }
 
-#[test]
-fn a_late_arm_with_no_reading_writes_the_exits_own_line() {
+#[tokio::test]
+async fn a_late_arm_with_no_reading_writes_the_exits_own_line() {
+    let node = Node::new();
+    let book = native_node_book().await;
     let history = rerank_history_on(RERANK_LANE, 3, Some(2_000_000));
-    let pinned = history.clone();
-    let book = crate::root::durability::node_book_over(Box::new(move || Some(pinned.clone())));
-    let kernel = Kernel::new();
-    let who = PrincipalId::new("acct:late-none");
-    let hold = busbar_contract::caps::Hold::open(&kernel.admit_token(), who.clone(), 0);
-    let usage = busbar_contract::caps::Usage::report(&kernel.usage_token(), Vec::new())
-        .expect("an empty report fits");
-    let exit = busbar_contract::caps::Posted::settle(hold, 0, &usage, &kernel.ledger_token());
     let arm = LateAccrual {
-        book: Arc::clone(&book.durability),
+        custody: node.ticket_custody.clone(),
+        book: book.durability.clone(),
         history,
-        durability_token: kernel.durability_token(),
-        ledger_token: kernel.ledger_token(),
-        usage_token: kernel.usage_token(),
-        principal: who,
+        durability_token: node.kernel.durability_token(),
+        principal: PrincipalId::new("acct:late-none"),
         arrived: Arrived::at(EPOCH * 1_000, 3),
         late: Box::new(|| None),
-        exit: Some(exit),
-        outcome: None,
-        seal: None,
+        posted: true,
+        outcome: Some(Outcome::Completed),
+        seal: Some(fixture_seal(1).into()),
     };
     arm.post();
-    let rows = second_book_rows(&book);
-    assert_eq!(rows.len(), 1, "the unit keeps its one line: {rows:?}");
-    assert_eq!(
-        rows[0].kind,
-        crate::root::durability::PostingKind::Settlement,
-        "and it is the exit's settlement: {rows:?}"
-    );
-    assert_eq!(rows[0].settled, 0);
+    let journal = book.durability.lock().unwrap().journal.clone();
+    assert_eq!(selected(&journal).await.len(), 1);
+    let durable = book.durability.lock().unwrap();
+    assert_eq!(durable.audit_records.len(), 1);
+    assert!(durable.audit_records[0].usage.lines.is_empty());
 }
 
-#[test]
-fn a_class_no_plane_declared_is_refused_and_keeps_its_counts() {
+#[tokio::test]
+async fn a_class_no_plane_declared_is_refused_and_keeps_its_counts() {
+    assert!(Registration::resolve("units_nobody_declared").is_none());
     let history = cache_silent_history();
     let mut report = split_report(1_000, 0, 1);
     report
         .usage
         .usage_units
-        .insert("units_nobody_declared".to_string(), 40);
+        .insert("units_nobody_declared".to_string(), 40u64.into());
     let at = Arrived::at(4_000, 7);
-    let node = late_post(&history, at, "vk_undeclared", &report);
+    let node = record_report(&history, at, "vk_undeclared", &report).await;
 
-    let rows = second_book_rows(&node);
+    let rows = recorded_rows(&node).await;
     assert_eq!(rows.len(), 1, "one line per unit: {rows:?}");
     let row = &rows[0];
     let counts = row.counts.as_ref().expect("the line carries the counts");
@@ -4163,47 +4177,48 @@ fn a_class_no_plane_declared_is_refused_and_keeps_its_counts() {
         Some(&1_000)
     );
     assert!(
-        row.refusal.as_deref().is_some_and(
-            |why| why.contains("UndeclaredClass") && why.contains("units_nobody_declared")
-        ),
+        row.nanos
+            .as_ref()
+            .err()
+            .map(String::as_str)
+            .is_some_and(
+                |why| why.contains("ClassUnpriced") && why.contains("units_nobody_declared")
+            ),
         "the money is refused and names the class: {:?}",
-        row.refusal
+        row.nanos
     );
-    assert_eq!((row.reserved, row.settled, row.overdraft), (0, 0, 0));
-    let durability = node.durability.lock().expect("unpoisoned");
-    let key = balance(&PrincipalId::new("vk_undeclared"));
-    let window =
-        busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_DAY, at.secs());
-    assert_eq!(durability.ledger.book().get(&key, window).settled, 0);
-    assert!(durability.settled_read(&key, window).is_err());
-    drop(durability);
+    assert!(
+        row.nanos.is_err(),
+        "unpriced canonical counts refuse projection"
+    );
 
     let absent = fee_history_of(&[(0, 0.0, 0.0, 0)], false);
-    let node = late_post(&absent, at, "vk_undeclared_absent", &report);
-    let rows = second_book_rows(&node);
+    let node = record_report(&absent, at, "vk_undeclared_absent", &report).await;
+    let rows = recorded_rows(&node).await;
     assert_eq!(rows.len(), 1, "one line per unit: {rows:?}");
-    assert!(
-        rows[0]
-            .refusal
-            .as_deref()
-            .is_some_and(|why| why.contains("UndeclaredClass")),
-        "never billed at zero, and a replay keeps the refusal: {:?}",
-        rows[0].refusal
+    assert_eq!(
+        rows[0].nanos,
+        Ok(0),
+        "the canonical absent-card projection has no price policy; declaration refusal belongs to actual plane admission"
     );
 }
 
-#[test]
-fn a_declared_open_class_on_an_absent_card_posts_its_counts_unrefused() {
+#[tokio::test]
+async fn a_declared_open_class_on_an_absent_card_posts_its_counts_unrefused() {
     let absent = fee_history_of(&[(0, 0.0, 0.0, 0)], false);
     let mut report = split_report(0, 0, 0);
     report
         .usage
         .usage_units
-        .insert(SEARCH_UNITS.to_string(), 50);
-    let node = late_post(&absent, Arrived::at(4_000, 7), "vk_absent", &report);
-    let rows = second_book_rows(&node);
+        .insert(SEARCH_UNITS.to_string(), 50u64.into());
+    let node = record_report(&absent, Arrived::at(4_000, 7), "vk_absent", &report).await;
+    let rows = recorded_rows(&node).await;
     assert_eq!(rows.len(), 1, "one line per unit: {rows:?}");
-    assert_eq!(rows[0].refusal, None, "a declared class is never refused");
+    assert_eq!(
+        rows[0].nanos,
+        Ok(0),
+        "a declared class on an absent card prices at zero"
+    );
     assert_eq!(
         rows[0]
             .counts
@@ -4213,25 +4228,22 @@ fn a_declared_open_class_on_an_absent_card_posts_its_counts_unrefused() {
     );
 }
 
-#[test]
-fn a_dispatch_record_is_written_on_the_book_under_its_units_facts() {
+#[tokio::test]
+async fn a_dispatch_record_is_written_on_the_book_under_its_units_facts() {
     use busbar_kernel_egress::ports::{Dispatched, DurabilityUnavailable, Journal};
     let node = Arc::new(Node::new());
-    let durability = crate::root::durability::build(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
+    let durability = native_fixture()
+        .await
+        .expect("a memory-buffered journal cannot fail to open");
     let book = Arc::new(std::sync::Mutex::new(durability));
     node.bind_book(Arc::clone(&book));
-    let written = || {
-        book.lock()
+    let written = async || {
+        let journal = book
+            .lock()
             .unwrap_or_else(|p| p.into_inner())
             .journal
-            .replay()
-            .expect("reads back")
-            .expect("verifies")
-            .len()
+            .clone();
+        selected(&journal).await.len()
     };
     let site = NodeEndPost::new(Arc::clone(&node));
     let record = |unit: u64| Dispatched {
@@ -4248,15 +4260,23 @@ fn a_dispatch_record_is_written_on_the_book_under_its_units_facts() {
         Arrived::at(EPOCH * 1_000, 0),
         None,
     );
-    let before = written();
+    let before = written().await;
     assert_eq!(site.dispatched(&record(51)), Ok(()));
-    assert_eq!(written(), before + 1, "the dispatch is on the book");
+    assert!(
+        site.lock(UnitKey::new(51)).contains_key(&UnitKey::new(51)),
+        "the actual open unit retains its dispatch facts"
+    );
+    assert_eq!(
+        written().await,
+        before,
+        "dispatch facts wait for the single terminal audit original"
+    );
     assert_eq!(
         site.dispatched(&record(52)),
         Err(DurabilityUnavailable),
         "no open facts, no record, no dial"
     );
-    assert_eq!(written(), before + 1);
+    assert_eq!(written().await, before);
     site.close(UnitKey::new(51));
 }
 
@@ -4289,9 +4309,10 @@ async fn a_screened_veto_through_the_node_admits_nothing() {
         .governance
         .clone()
         .expect("governance is configured");
-    let derived = gov
-        .derived_bucket_usage(&rig.app.cost, &rig.key.id, "total", true, rig.charged_at)
-        .expect("usage read");
+    let derived =
+        (gov.derived_bucket_usage_async(&rig.app.cost, &rig.key.id, "total", true, rig.charged_at))
+            .await
+            .expect("usage read");
     assert_eq!(derived.requests, 0, "a veto admits nothing");
     rig.server.shutdown().await;
 }
@@ -4302,31 +4323,33 @@ async fn a_full_journal_lane_refuses_a_new_unit_503_with_the_reason() {
         None,
         Some(std::path::PathBuf::from("/dev/null/legacy-journal")),
     ] {
-        let slots = crate::root::store_double::RecordSlots::new();
-        slots.refuse(true);
-        let lane =
-            crate::root::durability::JournalLane::with_capacity(slots.calls(), "test-store", 1)
-                .expect("the lane starts");
+        let journal = native_journal(1, 1).await;
         let book = Arc::new(std::sync::Mutex::new(
-            crate::root::durability::build_on_store(
+            (crate::root::durability::build_on_store(
                 &crate::root::durability::DurabilityConfig { data_dir },
-                0,
-                lane,
+                1,
+                journal.clone(),
                 None,
-            )
-            .expect("the store reads back"),
+                native_budget(),
+            ))
+            .await
+            .expect("the native store reads back"),
         ));
-        let token = busbar_kernel_testkit::test_support::tokens::grant::<
-            busbar_contract::caps::DurableWrite,
-        >();
-        for _ in 0..3 {
-            let _lost = book.lock().unwrap().journal.append(
-                &token,
-                busbar_contract::caps::StepName::Meter,
-                &[busbar_kernel_wal::Entry::new(
-                    busbar_kernel_wal::RecordClass::Load,
-                    Vec::new(),
-                )],
+        let first = journal
+            .stage_run(&[busbar_kernel_wal::Entry::new(
+                busbar_kernel_wal::RecordClass::Load,
+                Vec::new(),
+            )])
+            .expect("one original fills the buffer");
+        for _ in 0..2 {
+            assert!(
+                journal
+                    .stage_run(&[busbar_kernel_wal::Entry::new(
+                        busbar_kernel_wal::RecordClass::Load,
+                        Vec::new()
+                    )])
+                    .is_err(),
+                "full custody refuses more originals"
             );
         }
         let node = Node::new();
@@ -4349,29 +4372,27 @@ async fn a_full_journal_lane_refuses_a_new_unit_503_with_the_reason() {
             .expect("the body");
         let body = String::from_utf8_lossy(&body);
         assert!(
-            body.contains("journal is full") && body.contains("`test-store`"),
-            "the reason names the full journal and the store: {body}"
+            body.contains("journal custody buffer is full"),
+            "the reason identifies the full native journal custody: {body}"
         );
         assert!(!built.load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(
-            book.lock().unwrap().journal.dropped_total(),
-            0,
-            "no record is dropped"
+            journal.pending_records(),
+            first.records().len(),
+            "the accepted original remains retained"
         );
     }
 }
 
-#[test]
-fn the_exit_arm_seals_no_money_figure_into_the_record() {
+#[tokio::test]
+async fn the_exit_arm_seals_no_money_figure_into_the_record() {
     use busbar_contract::caps::{Admittance, Hold, Posted, Usage, WriteMoney};
     use busbar_kernel_testkit::test_support::tokens::{end, grant, origin, pass};
 
     let node = Node::new();
-    let durability = crate::root::durability::build(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
+    let durability = native_fixture()
+        .await
+        .expect("a memory-buffered journal cannot fail to open");
     let book = Arc::new(std::sync::Mutex::new(durability));
     node.bind_book(Arc::clone(&book));
 
@@ -4397,7 +4418,14 @@ fn the_exit_arm_seals_no_money_figure_into_the_record() {
         origin: origin(OriginKind::Client),
         parent: None,
     };
-    node.settle_end(&who, Arrived::at(EPOCH * 1_000, 0), None, ended, Some(seal));
+    node.seal_end(
+        &who,
+        Arrived::at(EPOCH * 1_000, 0),
+        None,
+        ended,
+        Some(seal),
+        Vec::new(),
+    );
 
     let durability = book.lock().unwrap_or_else(|p| p.into_inner());
     let record = durability
@@ -4447,11 +4475,12 @@ async fn rig_over(
         busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
-        busbar_kernel::governance::GovState::new_with_signer(
-            crate::root::real_store::records(),
+        (busbar_kernel::governance::GovState::new_with_core(
+            (crate::root::real_store::core()).await,
             None,
             Some(signer),
-        )
+        ))
+        .await
         .expect("governance"),
     );
     let spec = |name: &str| busbar_kernel::governance::NewKeySpec {
@@ -4459,14 +4488,17 @@ async fn rig_over(
         group: groups.keys().next().cloned(),
         ..Default::default()
     };
-    let (key, token) = gov
-        .mint_signed(spec("root-node-over"), LIVE_EXP, MINTED_AT)
+    let (key, token) = (gov.mint_signed_async(spec("root-node-over"), LIVE_EXP, MINTED_AT))
+        .await
         .expect("mint the deployment's key");
-    let (_, expired_token) = gov
-        .mint_signed(spec("root-node-over-expired"), DEAD_EXP, MINTED_AT)
-        .expect("mint the expired key");
+    let (_, expired_token) =
+        (gov.mint_signed_async(spec("root-node-over-expired"), DEAD_EXP, MINTED_AT))
+            .await
+            .expect("mint the expired key");
     let cost = busbar_kernel::cost::CostModel::resolve_parts(card.as_ref(), fee, &groups);
-    gov.hydrate_budgets(&cost, 0).expect("hydrate");
+    (gov.hydrate_budgets_async(&cost, 0))
+        .await
+        .expect("hydrate");
     let app = TestApp::new()
         .keys_chain()
         .lane(lane(&server.base_url()))
@@ -4571,13 +4603,14 @@ async fn the_admission_check_reads_the_arrival_window_and_not_the_clock() {
     gov.try_admit(&rig.app.cost, &rig.key, "", past_day)
         .expect("the first request fits the cap exactly");
     assert_eq!(
-        gov.derived_bucket_usage(
+        (gov.derived_bucket_usage_async(
             &rig.app.cost,
             &format!("group:{}@day", rig.group),
             "day",
             true,
             past_day
-        )
+        ))
+        .await
         .expect("usage read")
         .spend_cents,
         FEE_CENTS,
@@ -4659,13 +4692,14 @@ async fn an_aliased_lane_prices_at_the_rate_card_under_its_config_name() {
         .governance
         .clone()
         .expect("governance is configured")
-        .derived_bucket_usage(
+        .derived_bucket_usage_async(
             &rig.app.cost,
             &format!("group:{}@day", rig.group),
             "day",
             true,
             rig.charged_at,
         )
+        .await
         .expect("usage read");
     assert_eq!(derived.tokens, 1000, "the tokens are ledgered either way");
     assert_eq!(
@@ -4811,8 +4845,8 @@ async fn the_tap_reports_the_end_a_status_line_cannot() {
             "{label}: the report is keyed to the lane that served it"
         );
         assert_eq!(
-            usage.usage_units.values().sum::<u64>(),
-            0,
+            usage.usage_units.values().all(|count| count.is_zero()),
+            true,
             "{label}: no usage frame streamed before the end, so there is no token to bill"
         );
         assert_eq!(field(&observed, "ledger_tokens"), "0", "{label}");
@@ -4822,9 +4856,9 @@ async fn the_tap_reports_the_end_a_status_line_cannot() {
 
 struct RerankBooks {
     status: StatusCode,
-    governance: crate::root::durability::UnitCounts,
+    governance: RecordedCounts,
     spend: Result<i64, String>,
-    rows: Vec<crate::root::durability::Posting>,
+    rows: Vec<NativeLedgerObservation>,
 }
 
 impl RerankBooks {
@@ -4857,8 +4891,13 @@ async fn serve_rerank(
     }
     let server = MockServer::new(Arc::clone(&state)).await;
     let gov = Arc::new(
-        busbar_kernel::governance::GovState::new(crate::root::real_store::records(), None)
-            .expect("governance"),
+        (busbar_kernel::governance::GovState::new_with_core(
+            (crate::root::real_store::core()).await,
+            None,
+            None,
+        ))
+        .await
+        .expect("governance"),
     );
     let (key, _secret) = gov
         .create_key(
@@ -4869,7 +4908,9 @@ async fn serve_rerank(
             MINTED_AT,
         )
         .expect("create key");
-    gov.hydrate_budgets(&cost, 0).expect("hydrate");
+    (gov.hydrate_budgets_async(&cost, 0))
+        .await
+        .expect("hydrate");
     let app = TestApp::new()
         .keys_chain()
         .lane(LaneSpec::new(RERANK_LANE, lane_dialect, &server.base_url()))
@@ -4900,8 +4941,7 @@ async fn serve_rerank(
         )
     };
     let node = Node::new();
-    let pinned = history.clone();
-    let book = crate::root::durability::node_book_over(Box::new(move || Some(pinned.clone())));
+    let book = native_node_book().await;
     node.bind_book(Arc::clone(&book.durability));
     let arrival = plane::WalkArrival {
         host: busbar_kernel::plane_driver::engine_host(&app),
@@ -4995,12 +5035,15 @@ async fn serve_rerank(
     server.shutdown().await;
 
     let spend = gov
-        .usage_for(&app.cost, &key.id, EPOCH)
+        .usage_for_async(&app.cost, &key.id, EPOCH)
+        .await
         .map(|usage| usage.expect("the key exists").spend_cents)
         .map_err(|refusal| format!("{refusal:?}"));
-    gov.flush_budgets();
+    (gov.flush_budgets()).await;
     let ledger = gov
-        .store()
+        .core_store()
+        .unwrap()
+        .ledger()
         .get_usage(
             &key.id,
             busbar_kernel::governance::budget_window(
@@ -5008,6 +5051,7 @@ async fn serve_rerank(
                 EPOCH,
             ),
         )
+        .await
         .expect("the governance ledger reads");
     let classes = ledger
         .models
@@ -5017,19 +5061,34 @@ async fn serve_rerank(
             row.usage_units
                 .iter()
                 .filter(|(_, count)| **count > 0)
-                .map(|(class, count)| (class.clone(), *count))
+                .map(|(class, count)| {
+                    (
+                        class.clone(),
+                        busbar_contract::Count::from_stored(*count, row.scale)
+                            .unwrap()
+                            .whole_u64()
+                            .unwrap(),
+                    )
+                })
                 .collect::<std::collections::BTreeMap<_, _>>()
         })
         .unwrap_or_default();
     RerankBooks {
         status,
-        governance: crate::root::durability::UnitCounts {
+        governance: RecordedCounts {
             lane: RERANK_LANE.to_string(),
             fee_count: ledger.billable_requests,
             classes,
         },
         spend,
-        rows: second_book_rows(&book),
+        rows: observe_native_ledger(
+            gov.core_store().unwrap(),
+            &key.id,
+            RERANK_LANE,
+            &history,
+            arrived.ms(),
+        )
+        .await,
     }
 }
 
@@ -5078,8 +5137,8 @@ async fn a_reranks_search_units_reach_the_price_on_both_books() {
         assert_eq!(books.status, StatusCode::OK, "{units} units: served");
         assert_eq!(books.spend, Ok(cents), "{units} search units at 0.2 cents");
         assert_eq!(
-            books.rows.first().map(|row| row.settled),
-            Some(i128::from(units) * 2_000_000),
+            books.rows.first().and_then(|row| row.nanos.clone().ok()),
+            Some(u128::from(units) * 2_000_000),
             "{units} units: the durable book settles them at the card"
         );
         every_cell_agrees(
@@ -5110,7 +5169,7 @@ async fn a_reranks_search_units_reach_the_price_on_both_books() {
         silent
             .rows
             .first()
-            .and_then(|row| row.refusal.as_deref())
+            .and_then(|row| row.nanos.as_ref().err().map(String::as_str))
             .is_some_and(|why| why.contains(SEARCH_UNITS)),
         "the durable book refuses the same class: {:?}",
         silent.rows

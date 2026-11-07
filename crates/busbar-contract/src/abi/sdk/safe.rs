@@ -182,6 +182,8 @@ impl Drop for Segment {
 #[repr(C)]
 struct Head {
     tag: TypeId,
+    /// Set only by the typed Store BOOTSTRAP mint; OPEN must adopt this box.
+    prepared_store: bool,
     /// The parked continuations, by ticket: slots claimed by compare-and-swap on the ticket, each
     parked: Segment,
     kept: Kept,
@@ -191,6 +193,7 @@ impl Head {
     fn new(tag: TypeId) -> Self {
         Self {
             tag,
+            prepared_store: false,
             parked: Segment::new(),
             kept: Kept::default(),
         }
@@ -356,6 +359,7 @@ unsafe fn head<'a>(instance: *mut c_void) -> Option<&'a Head> {
 pub struct Instance<'call, T> {
     ptr: *mut c_void,
     index: u32,
+    bootstrap: bool,
     ticket: Ticket,
     resuming: bool,
     opened: &'call Cell<Option<Box<Tagged<T>>>>,
@@ -420,6 +424,22 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
         self.opened.set(Some(tagged));
     }
 
+    /// Install one typed pre-open Store state, retaining it even if its first native call fails.
+    pub(crate) fn bootstrap_store<S: Send + Sync + 'static>(&self, state: T, parked: Option<S>) {
+        assert!(
+            self.bootstrap && self.ptr.is_null(),
+            "typed Store bootstrap mint only once"
+        );
+        let mut tagged = Box::new(Tagged {
+            head: Head::new(TypeId::of::<T>()),
+            state,
+        });
+        tagged.head.prepared_store = true;
+        if let Some(parked) = parked {
+            tagged.head.park(self.ticket, parked);
+        }
+        self.opened.set(Some(tagged));
+    }
     /// THE GENERATION BORROW this op is lent: a string or payload borrowed for
     /// `'call` (the instance state [`Instance::get`] answers, or the program's memory) lives at
     /// least until the instance's next refresh generation, so the runtime writers
@@ -484,6 +504,11 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
         self.resume_value().map(Box::new)
     }
 
+    /// Whether this exact native ticket already owns a retained continuation.
+    pub(crate) fn current_parked(&self) -> bool {
+        self.head()
+            .is_some_and(|head| head.find(self.ticket).is_some())
+    }
     /// How many tickets hold parked state on this instance.
     #[must_use]
     pub fn parked_count(&self) -> usize {
@@ -627,16 +652,22 @@ unsafe impl<S: SafeSlot> Entry for Safe<S> {
         // SAFETY: every `in` leads with its `InHead` (`AbiIn`'s contract); `input` is live.
         let call = unsafe { std::ptr::from_ref(input).cast::<InHead>().read() };
         let resuming = call.flags & FLAG_RESUME != 0;
+        let bootstrap = index == crate::abi::store::v4::slot::BOOTSTRAP
+            && TypeId::of::<S::In>() == TypeId::of::<crate::abi::store::v4::BootstrapIn>()
+            && TypeId::of::<S::Out>() == TypeId::of::<crate::abi::store::v4::BootstrapOut>();
         // SAFETY: a non-NULL instance is the SDK's box, alive for the call (the call contract).
         let parked = unsafe { head(instance) };
         let reply_key = ReplyKey::of(call.ticket);
         let prior_report = parked.and_then(|h| h.kept.begin(reply_key));
         if let (Some(h), false) = (parked, resuming) {
-            h.forget(call.ticket);
+            if !bootstrap {
+                h.forget(call.ticket);
+            }
         }
         let handle = Instance {
             ptr: instance,
             index,
+            bootstrap,
             ticket: call.ticket,
             resuming,
             opened: &opened,
@@ -663,7 +694,7 @@ unsafe impl<S: SafeSlot> Entry for Safe<S> {
             .as_ref()
             .is_some_and(|report| report.has_envelope());
         if let Some(h) = parked {
-            if answered != Outcome::Pending {
+            if answered != Outcome::Pending && !(bootstrap && answered == Outcome::Fault) {
                 h.forget(call.ticket);
             }
             if index == slot::CANCEL {
@@ -684,6 +715,18 @@ unsafe impl<S: SafeSlot> Entry for Safe<S> {
         if let (Some(h), Some(r)) = (parked, reported) {
             h.kept.keep(reply_key, r);
         }
+        if bootstrap {
+            let minted = match opened.take() {
+                Some(boxed) => Box::into_raw(boxed).cast::<c_void>(),
+                None => instance,
+            };
+            // SAFETY: exact BootstrapOut TypeId checked above, its full private output is live.
+            unsafe {
+                (*std::ptr::from_mut(out).cast::<crate::abi::store::v4::BootstrapOut>()).instance =
+                    minted;
+            }
+            return answered;
+        }
         match index {
             slot::OPEN => {
                 debug_assert!(size_of::<S::Out>() >= size_of::<OpenOut>());
@@ -694,6 +737,7 @@ unsafe impl<S: SafeSlot> Entry for Safe<S> {
                     (_, Some(_)) => std::ptr::null_mut(),
 
                     (Outcome::Ready | Outcome::Pending, None) => instance,
+                    (_, None) if parked.is_some_and(|head| head.prepared_store) => instance,
                     (_, None) if !instance.is_null() => {
                         // SAFETY: the SDK's `Tagged<S::State>` box this open minted on its earlier
                         // PENDING; the open failed, so the host holds no instance and will not pass

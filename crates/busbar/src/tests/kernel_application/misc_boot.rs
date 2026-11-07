@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use crate::root::test_plugins as plugins;
 
-#[test]
-fn boot_hydration_makes_the_trust_record_durable_on_the_configured_store() {
+#[tokio::test]
+async fn boot_hydration_makes_the_trust_record_durable_on_the_configured_store() {
     crate::dist_root_install::install();
     let library_path = std::path::PathBuf::from(
         std::env::var_os("BUSBAR_TEST_SQLITE_CDYLIB")
@@ -53,7 +53,7 @@ fn boot_hydration_makes_the_trust_record_durable_on_the_configured_store() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules =
         Arc::new(crate::root::door_steps::Rules::default()) as Arc<dyn kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config.clone(),
         None,
@@ -63,27 +63,33 @@ fn boot_hydration_makes_the_trust_record_durable_on_the_configured_store() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the host deployment");
     if !crate::root::kernel::ROOT_CARD.keeps_store() {
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the actual deployment configured governance")
-                .store_calls()
-                .expect("the configured Store exposes its rate-history slots"),
-            144,
-        );
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the actual deployment configured governance")
+                    .core_store_handle()
+                    .expect("the configured Store exposes canonical persistence"),
+                144,
+            )
+            .expect("the canonical rate history binds");
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the configured Store boots its initial rate history");
     }
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
-    kernel::boot::hydrate_all(&app).expect("boot hydrates");
+    kernel::boot::hydrate_all(&app)
+        .await
+        .expect("boot hydrates");
 
     let decision = RulingRow {
         instance: "inst".to_string(),
@@ -95,34 +101,19 @@ fn boot_hydration_makes_the_trust_record_durable_on_the_configured_store() {
     };
     app.demotion_record
         .keep_decision(&decision, 1)
+        .await
         .expect("the store keeps the decision");
-    let demotion = busbar_contract::records::PlaneRecord {
-        kind: kernel::store::plane_view::KIND_DEMOTION.into(),
-        id: "inst\u{1f}upstream".into(),
-        parent: None,
-        seq: 0,
-        ts: 1,
-        disposition: busbar_contract::records::PlaneDisposition::Active,
-        body: serde_json::to_vec(&serde_json::json!({
-            "server": "inst\u{1f}upstream", "reason": "quarantined", "recorded_at": 1,
-        }))
-        .expect("the persisted demotion data is JSON"),
-    };
-    kernel::store::plane_view::PlaneStoreView::narrow(
-        app.governance
-            .as_ref()
-            .expect("the actual Store owns governance")
-            .store(),
-    )
-    .upsert_plane_record(demotion.view())
-    .expect("the actual Store keeps the demotion data");
+    app.demotion_record
+        .record("inst\u{1f}upstream", "quarantined", 1)
+        .await
+        .expect("the native trust owner keeps the demotion data");
 
     drop(app);
     assert!(
         database.is_file(),
         "the actual Store created the configured database"
     );
-    let (restarted_app, rotate, limits) = kernel::build_app_from_config(
+    let (restarted_app, rotate, limits) = crate::root::real_store::build_app(
         kernel::config::resolve(&deploy, &Default::default())
             .expect("the same deployment resolves after restart"),
         plugin_config,
@@ -133,20 +124,26 @@ fn boot_hydration_makes_the_trust_record_durable_on_the_configured_store() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product reopens its durable Store");
-    limits.keep().expect("the restarted product limits commit");
+    limits
+        .keep()
+        .await
+        .expect("the restarted product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let restarted_app = Arc::new(restarted_app);
-    kernel::boot::hydrate_all(&restarted_app).expect("restart hydrates from the actual Store");
+    kernel::boot::hydrate_all(&restarted_app)
+        .await
+        .expect("restart hydrates from the actual Store");
     let restarted = &restarted_app.demotion_record;
     assert_eq!(
-        restarted.decisions().expect("the store reads"),
+        restarted.decisions().await.expect("the store reads"),
         vec![decision],
         "an operator's trust decision outlives the process"
     );
-    let demoted = restarted.read().expect("the store reads");
+    let demoted = restarted.read().await.expect("the store reads");
     assert_eq!(demoted.len(), 1, "a demotion outlives the process");
     assert_eq!(demoted[0].upstream, "inst\u{1f}upstream");
 }

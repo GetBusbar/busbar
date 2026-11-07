@@ -49,28 +49,37 @@ impl PluginHttpDispatch for Granted {
     }
 }
 
-pub(crate) fn read(scope: u32) -> Snapshot {
-    let Some(lent) = LENT.with(|l| l.borrow_mut().take()) else {
-        return Snapshot::Refused(NOT_GRANTED);
-    };
-    let answer = match scope {
-        SNAPSHOT_SCOPE_WHOLE => whole(lent.app.as_deref()),
-        SNAPSHOT_SCOPE_HOOKS => Snapshot::Families(
-            lent.app
-                .as_deref()
-                .map(crate::snapshot::hooks::families)
-                .unwrap_or_default(),
-        ),
-        _ => Snapshot::Refused(UNKNOWN_SCOPE),
-    };
-    LENT.with(|l| *l.borrow_mut() = Some(lent));
-    answer
+#[cfg(test)]
+pub(crate) fn crossing_is_granted() -> bool {
+    LENT.with(|held| held.borrow().is_some())
 }
 
-fn whole(app: Option<&App>) -> Snapshot {
+/// Capture the crossing's lend synchronously, before the host schedules native work.
+/// No thread-local grant survives an await or migrates to an unrelated request.
+pub(crate) fn read(scope: u32) -> impl std::future::Future<Output = Snapshot> + Send + 'static {
+    let lent = LENT.with(|held| held.borrow().as_ref().map(|lent| lent.app.clone()));
+    async move {
+        let Some(app) = lent else {
+            return Snapshot::Refused(NOT_GRANTED);
+        };
+        match scope {
+            SNAPSHOT_SCOPE_WHOLE => whole(app.as_deref()).await,
+            SNAPSHOT_SCOPE_HOOKS => Snapshot::Families(
+                app.as_deref()
+                    .map(crate::snapshot::hooks::families)
+                    .unwrap_or_default(),
+            ),
+            _ => Snapshot::Refused(UNKNOWN_SCOPE),
+        }
+    }
+}
+
+async fn whole(app: Option<&App>) -> Snapshot {
     let installed = crate::snapshot::recorder_installed();
     if let Some(app) = app.filter(|_| installed) {
-        crate::snapshot::refresh_scrape_gauges(app);
+        if let Err(error) = crate::snapshot::refresh_scrape_gauges(app).await {
+            return Snapshot::Refused(error);
+        }
         super::plugin::status();
     }
     crate::snapshot::snapshot().map_or(Snapshot::NotReady, Snapshot::Families)

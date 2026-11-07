@@ -1,8 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::persistence::{
+    facade::CoreStore,
+    host_records::tests::{attach as native_attach, Backend as NativeBackend},
+    scoped::{Outcome as RecordOutcome, ScopedStore},
+};
+use futures::FutureExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
+fn ready<T>(future: impl std::future::Future<Output = T>) -> T {
+    future
+        .now_or_never()
+        .expect("the native in-memory fixture finishes in one poll")
+}
+trait TestAdmission {
+    fn admit_sync(&self, instance: &str, facts: InstanceFacts) -> Result<(), AdmitRefused>;
+}
+impl TestAdmission for KernelServices {
+    fn admit_sync(&self, instance: &str, facts: InstanceFacts) -> Result<(), AdmitRefused> {
+        ready(self.admit(instance, facts))
+    }
+}
 
 use super::*;
 
@@ -55,9 +75,9 @@ fn random_fill_draws_fresh_bytes_every_call_and_refuses_outside_its_cap() {
 use std::sync::atomic::AtomicU64;
 
 use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::kinds::{RecordBytes, StoreError};
+use busbar_contract::kinds::RecordBytes;
 
-use crate::host_records::{StoreRows, WRITE_DROPPED, WRITE_FAILED};
+use crate::host_records::{WRITE_DROPPED, WRITE_FAILED};
 use crate::trust::reverify::Policy;
 use crate::trust::section::{DeclaredPin, TrustEntry};
 
@@ -66,6 +86,9 @@ struct Inline;
 impl Offload for Inline {
     fn run(&self, job: Box<dyn FnOnce() + Send>) {
         job();
+    }
+    fn run_async(&self, job: AsyncJob) {
+        ready(job);
     }
 }
 
@@ -91,24 +114,29 @@ pub(crate) fn caller(instance: &str) -> Caller {
 
 struct Rig {
     s: KernelServices,
-    store: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+    store: Arc<CoreStore>,
+    backend: Arc<NativeBackend>,
     clock: Arc<AtomicU64>,
 }
 
 fn rig() -> Rig {
-    let store = crate::real_store::store();
-    let clock = Arc::new(AtomicU64::new(crate::store::now() * 1_000));
+    let backend = Arc::new(NativeBackend::default());
+    let now = crate::store::now();
+    backend.now.store(now, Ordering::SeqCst);
+    let store = Arc::new(ready(native_attach(Arc::clone(&backend))));
+    let clock = Arc::new(AtomicU64::new(now * 1000));
     let c = Arc::clone(&clock);
     let s = KernelServices::new()
-        .with_records(Arc::new(StoreRows(store.clone())))
         .with_pool(Arc::new(Inline))
         .with_signer(Arc::new(FixedKey))
         .with_demotions(demotions(&store), SECTION_KEY)
         .with_wall_clock(Arc::new(move || c.load(Ordering::SeqCst)));
-    s.admit(
+    assert!(s.attach_persistence(Arc::clone(&store)));
+    s.admit_sync(
         "inst",
         InstanceFacts {
             record_kinds: vec![KIND],
+            record_collections: Vec::new(),
             conditional_record_kinds: Vec::new(),
             signing: Some(Signing {
                 domain: "dom".into(),
@@ -138,15 +166,18 @@ fn rig() -> Rig {
         },
     )
     .unwrap();
-    Rig { s, store, clock }
+    Rig {
+        s,
+        store,
+        backend,
+        clock,
+    }
 }
 
-fn demotions(store: &Arc<busbar_plugin_loader::store_v3::LoadedStore>) -> Arc<DemotionRecord> {
-    let d = DemotionRecord::default();
-    d.set_sink(crate::store::plane_view::PlaneStoreView::narrow(
-        store.clone(),
-    ));
-    Arc::new(d)
+fn demotions(store: &Arc<CoreStore>) -> Arc<DemotionRecord> {
+    let demotions = DemotionRecord::default();
+    demotions.set_store(Arc::clone(store)).unwrap();
+    Arc::new(demotions)
 }
 
 fn run(f: impl FnOnce(Later) -> Ran) -> Stored {
@@ -157,14 +188,50 @@ fn run(f: impl FnOnce(Later) -> Ran) -> Stored {
     }
 }
 
-fn put(into: &Arc<busbar_plugin_loader::store_v3::LoadedStore>, key: &str, value: &str) {
-    StoreRows(into.clone())
-        .record_put(
-            KIND,
-            &record_key("inst", key.as_bytes()),
-            &RecordBytes::new(value.as_bytes().to_vec()).unwrap(),
-        )
-        .unwrap();
+fn attach_backend(
+    backend: Arc<dyn busbar_contract::persistence::PersistenceBackend>,
+) -> Arc<CoreStore> {
+    Arc::new(
+        ready(CoreStore::attach(
+            backend,
+            crate::persistence::facade::WriterAuthority {
+                writer_epoch: 2,
+                writer: [4; 16],
+                execution_epoch: 3,
+            },
+            crate::persistence::facade::Limits {
+                pending_operations: 4096,
+                conflict_retries: 2,
+                scan_items: 16,
+                scan_bytes: 8192,
+            },
+        ))
+        .unwrap(),
+    )
+}
+fn native_store() -> Arc<CoreStore> {
+    Arc::new(ready(native_attach(Arc::new(NativeBackend::default()))))
+}
+fn native_rows(store: &Arc<CoreStore>, instance: &str) -> ScopedStore {
+    ScopedStore::authorized(Arc::clone(store), instance, [KIND.as_str().to_string()]).unwrap()
+}
+fn put(into: &Arc<CoreStore>, key: &str, value: &str) {
+    let rows = native_rows(into, "inst");
+    let outcome = if value.is_empty() {
+        ready(rows.delete(KIND.as_str(), key.as_bytes()))
+    } else {
+        ready(rows.put(
+            KIND.as_str(),
+            key.as_bytes(),
+            busbar_contract::Secret::new(value.as_bytes().to_vec()),
+        ))
+    };
+    assert_eq!(outcome.unwrap(), RecordOutcome::Applied);
+}
+fn stored(store: &Arc<CoreStore>, instance: &str, key: &[u8]) -> Option<Vec<u8>> {
+    ready(native_rows(store, instance).get(KIND.as_str(), key))
+        .unwrap()
+        .map(|value| value.expose(&crate::seal::lend()).clone())
 }
 
 #[test]
@@ -285,7 +352,7 @@ fn a_claim_is_won_once_and_taken_after_until_it_lapses() {
     assert_eq!(claim(&me).value, svc::CLAIM_WON);
     assert_eq!(claim(&me).value, svc::CLAIM_TAKEN);
 
-    r.s.admit(
+    r.s.admit_sync(
         "other",
         InstanceFacts {
             record_kinds: vec![KIND],
@@ -296,14 +363,7 @@ fn a_claim_is_won_once_and_taken_after_until_it_lapses() {
     assert_eq!(claim(&caller("other")).value, svc::CLAIM_WON);
     r.clock.fetch_add(3_000, Ordering::SeqCst);
     let until = r.clock.load(Ordering::SeqCst) / 1_000;
-    let deadline = std::time::Instant::now() + Duration::from_secs(8);
-    while crate::store::now() < until {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the backend claim expiry arrives"
-        );
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    r.backend.now.store(until + 1, Ordering::SeqCst);
     assert_eq!(claim(&me).value, svc::CLAIM_WON);
 }
 
@@ -329,7 +389,7 @@ fn a_claim_with_no_time_to_live_or_an_expiry_past_the_clock_is_refused() {
 #[test]
 fn records_are_refused_on_a_host_with_no_store() {
     let s = KernelServices::new();
-    s.admit(
+    s.admit_sync(
         "inst",
         InstanceFacts {
             record_kinds: vec![KIND],
@@ -354,12 +414,12 @@ fn sign_signs_under_the_declared_domain_with_the_prefixed_key_id() {
 #[test]
 fn sign_is_refused_without_a_declared_domain_or_a_key() {
     let r = rig();
-    r.s.admit("plain", InstanceFacts::default()).unwrap();
+    r.s.admit_sync("plain", InstanceFacts::default()).unwrap();
     let s = r.s.sign(&caller("plain"), b"x");
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NO_DOMAIN));
     let keyless = KernelServices::new();
     keyless
-        .admit(
+        .admit_sync(
             "inst",
             InstanceFacts {
                 signing: Some(Signing {
@@ -381,18 +441,17 @@ fn trust_sight_judges_from_the_admitted_entries_and_writes_the_demotion() {
     let sight = |h: &str| run(|l| r.s.trust_sight(&me, "cp", h, l));
 
     assert_eq!(sight("moved").value, svc::TRUST_NEW);
-    assert!(r.s.demotions.get().unwrap().record.list().is_empty());
+    assert!(ready(r.s.demotions.get().unwrap().record.list()).is_empty());
     assert_eq!(sight("fp").value, svc::TRUST_NEW);
-    r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
-        .unwrap();
+    ready(r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
     assert_eq!(sight("fp").value, svc::TRUST_SAME, "approved");
     assert_eq!(sight("moved").value, svc::TRUST_DRIFTED);
-    let demoted = r.s.demotions.get().unwrap().record.list();
+    let demoted = ready(r.s.demotions.get().unwrap().record.list());
     assert_eq!(demoted.len(), 1);
     assert_eq!(demoted[0].upstream, demotion_key("inst", "cp"));
     assert_eq!(sight("moved").value, svc::TRUST_QUARANTINED);
     assert_eq!(sight("fp").value, svc::TRUST_SAME);
-    assert!(r.s.demotions.get().unwrap().record.list().is_empty());
+    assert!(ready(r.s.demotions.get().unwrap().record.list()).is_empty());
     let s = run(|l| r.s.trust_sight(&me, "nobody", "fp", l));
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_A_COUNTERPARTY));
 }
@@ -404,29 +463,28 @@ fn the_operators_trust_decisions_are_kept_and_replayed_at_a_restart() {
     let me = caller("inst");
 
     assert_eq!(r.s.trust_unreached(&me, "cp").value, svc::TRUST_NEW);
-
-    r.s.trust_rule("inst/cp", Ruling::Approve).unwrap();
+    ready(r.s.trust_rule("inst/cp", Ruling::Approve)).unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value,
         svc::TRUST_DRIFTED
     );
     assert_eq!(r.s.trust_unreached(&me, "cp").value, svc::TRUST_QUARANTINED);
-    let row = r.s.trust_rule("inst/cp", Ruling::Approve).unwrap();
+    let row = ready(r.s.trust_rule("inst/cp", Ruling::Approve)).unwrap();
     assert_eq!(row.approved.as_deref(), Some("moved"));
     assert!(
-        r.s.demotions.get().unwrap().record.list().is_empty(),
+        ready(r.s.demotions.get().unwrap().record.list()).is_empty(),
         "the approval clears the demotion"
     );
     assert_eq!(r.s.trust_unreached(&me, "cp").value, svc::TRUST_SAME);
     let fresh = restarted(&r);
-    fresh.admit("inst", trusting(Some("fp"))).unwrap();
+    fresh.admit_sync("inst", trusting(Some("fp"))).unwrap();
     assert_eq!(
         run(|l| fresh.trust_sight(&me, "cp", "moved", l)).value,
         svc::TRUST_SAME,
         "the kept approval, over the declared pin"
     );
     assert_eq!(
-        fresh.trust_rule("inst/nobody", Ruling::Revoke),
+        ready(fresh.trust_rule("inst/nobody", Ruling::Revoke)),
         Err(TrustRefused::NoSuchKey)
     );
     let s = fresh.trust_unreached(&caller("nowhere"), "cp");
@@ -443,10 +501,10 @@ fn an_approval_outlives_a_restart_and_a_moved_counterparty_is_drift_not_a_first_
         svc::TRUST_NEW,
         "a first sighting"
     );
-    let row = r.s.trust_rule("inst/cp", Ruling::Approve).unwrap();
+    let row = ready(r.s.trust_rule("inst/cp", Ruling::Approve)).unwrap();
     assert_eq!(row.approved.as_deref(), Some("c1"));
     let fresh = restarted(&r);
-    fresh.admit("inst", trusting(Some("fp"))).unwrap();
+    fresh.admit_sync("inst", trusting(Some("fp"))).unwrap();
     assert_eq!(
         run(|l| fresh.trust_sight(&me, "cp", "c2", l)).value,
         svc::TRUST_DRIFTED,
@@ -470,23 +528,23 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
     };
     let serves = |item| r.s.trust_serves(&me, "cp", Some(item), None).value;
     assert_eq!(
-        r.s.trust_decide(&me, tool, Some("d1"), true).value,
+        run(|later| r.s.trust_decide(&me, tool, Some("d1"), true, later)).value,
         svc::UNDECIDED_UNPINNED,
         "nothing sighted yet"
     );
     assert_eq!(
-        r.s.trust_sight_item(&me, "cp", "t", "d1").value,
+        run(|later| r.s.trust_sight_item(&me, "cp", "t", "d1", later)).value,
         svc::TRUST_NEW
     );
     assert_eq!(serves("t"), svc::DISTRUST_NOT_APPROVED);
     assert_eq!(
-        r.s.trust_decide(&me, tool, Some("d0"), true).value,
+        run(|later| r.s.trust_decide(&me, tool, Some("d0"), true, later)).value,
         svc::UNDECIDED_STALE,
         "approve what you saw"
     );
 
     assert_eq!(
-        r.s.trust_decide(&me, tool, Some("d1"), true).value,
+        run(|later| r.s.trust_decide(&me, tool, Some("d1"), true, later)).value,
         svc::TRUST_DECIDED_PENDING
     );
     assert_eq!(
@@ -500,12 +558,12 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
     };
     run(|l| r.s.trust_sight(&me, "cp", "fp", l));
     assert_eq!(
-        r.s.trust_decide(&me, whole, Some("fp"), true).value,
+        run(|later| r.s.trust_decide(&me, whole, Some("fp"), true, later)).value,
         svc::TRUST_DECIDED_SERVING
     );
     assert_eq!(serves("t"), svc::DISTRUST_NONE, "approved, it serves");
     assert_eq!(
-        r.s.trust_sight_item(&me, "cp", "t", "d2").value,
+        run(|later| r.s.trust_sight_item(&me, "cp", "t", "d2", later)).value,
         svc::TRUST_DRIFTED
     );
     assert_eq!(
@@ -514,12 +572,12 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
         "a changed sighting refuses"
     );
     assert_eq!(
-        r.s.trust_decide(&me, tool, None, true).value,
+        run(|later| r.s.trust_decide(&me, tool, None, true, later)).value,
         svc::TRUST_DECIDED_SERVING,
         "re-approved at its current sighting"
     );
     assert_eq!(
-        r.s.trust_decide(&me, tool, None, false).value,
+        run(|later| r.s.trust_decide(&me, tool, None, false, later)).value,
         svc::TRUST_DECIDED_PENDING
     );
     assert_eq!(
@@ -530,11 +588,11 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
 
     run(|l| r.s.trust_sight(&me, "cp", "moved", l));
     assert_eq!(
-        r.s.trust_decide(&me, tool, None, false).value,
+        run(|later| r.s.trust_decide(&me, tool, None, false, later)).value,
         svc::TRUST_DECIDED_QUARANTINED
     );
     assert_eq!(
-        r.s.trust_decide(&me, whole, Some("moved"), true).value,
+        run(|later| r.s.trust_decide(&me, whole, Some("moved"), true, later)).value,
         svc::TRUST_DECIDED_SERVING
     );
     let stranger = TrustKeyRef {
@@ -542,10 +600,12 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
         item: None,
     };
     assert_eq!(
-        r.s.trust_decide(&me, stranger, None, true).value,
+        run(|later| r.s.trust_decide(&me, stranger, None, true, later)).value,
         svc::UNDECIDED_UNKNOWN
     );
-    let s = r.s.trust_decide(&caller("nowhere"), whole, None, true);
+    let s = run(|later| {
+        r.s.trust_decide(&caller("nowhere"), whole, None, true, later)
+    });
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
 }
 
@@ -562,14 +622,14 @@ fn trust_state_answers_the_counterparty_and_its_items_as_the_admin_list_does() {
     );
     run(|l| r.s.trust_sight(&me, "cp", "fp", l));
     assert_eq!(r.s.trust_state(&me, "cp").value, svc::KEY_NEW, "sighted");
-    r.s.trust_rule("inst/cp", Ruling::Approve).unwrap();
+    ready(r.s.trust_rule("inst/cp", Ruling::Approve)).unwrap();
     assert_eq!(
-        r.s.trust_sight_item(&me, "cp", "t", "d1").value,
+        run(|later| r.s.trust_sight_item(&me, "cp", "t", "d1", later)).value,
         svc::TRUST_NEW
     );
-    r.s.trust_rule("inst/cp/t", Ruling::Approve).unwrap();
+    ready(r.s.trust_rule("inst/cp/t", Ruling::Approve)).unwrap();
     assert_eq!(
-        r.s.trust_sight_item(&me, "cp", "u", "e1").value,
+        run(|later| r.s.trust_sight_item(&me, "cp", "u", "e1", later)).value,
         svc::TRUST_NEW
     );
     let state = r.s.trust_state(&me, "cp");
@@ -604,9 +664,7 @@ fn trust_state_answers_the_counterparty_and_its_items_as_the_admin_list_does() {
 fn a_durable_demotion_is_replayed_at_admit() {
     let r = rig();
     let me = caller("inst");
-
-    r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
-        .unwrap();
+    ready(r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value,
         svc::TRUST_DRIFTED
@@ -614,7 +672,7 @@ fn a_durable_demotion_is_replayed_at_admit() {
 
     let fresh = restarted(&r);
     fresh
-        .admit(
+        .admit_sync(
             "inst",
             InstanceFacts {
                 trust: vec![(
@@ -653,7 +711,7 @@ fn trust_due_answers_no_counterparty_as_the_clock_moves() {
 fn two_instances_of_one_plugin_have_distinct_registries() {
     let r = rig();
 
-    r.s.admit(
+    r.s.admit_sync(
         "second",
         InstanceFacts {
             record_kinds: vec![RecordSchemaId::new("other")],
@@ -665,6 +723,7 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
             trust: Vec::new(),
             scope_kinds: Vec::new(),
             record_chains: Vec::new(),
+            record_collections: Vec::new(),
             record_retentions: Vec::new(),
             ticket_prefix: None,
         },
@@ -682,7 +741,7 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
     let s = run(|l| r.s.trust_sight(&second, "cp", "fp", l));
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_A_COUNTERPARTY));
 
-    r.s.admit(
+    r.s.admit_sync(
         "third",
         InstanceFacts {
             record_kinds: vec![KIND],
@@ -702,31 +761,33 @@ fn an_items_drift_demotion_outlives_a_restart() {
     let r = rig();
     let me = caller("inst");
     run(|l| r.s.trust_sight(&me, "cp", "fp", l));
-    r.s.trust_rule("inst/cp", Ruling::Approve).unwrap();
-    r.s.trust_sight_item(&me, "cp", "t", "d1");
-    r.s.trust_rule("inst/cp/t", Ruling::Approve).unwrap();
+    ready(r.s.trust_rule("inst/cp", Ruling::Approve)).unwrap();
+    run(|later| r.s.trust_sight_item(&me, "cp", "t", "d1", later));
+    ready(r.s.trust_rule("inst/cp/t", Ruling::Approve)).unwrap();
     let serves = |s: &KernelServices| s.trust_serves(&me, "cp", Some("t"), None).value;
     assert_eq!(serves(&r.s), svc::DISTRUST_NONE);
-    r.s.trust_sight_item(&me, "cp", "t", "d2");
+    run(|later| r.s.trust_sight_item(&me, "cp", "t", "d2", later));
     assert_eq!(serves(&r.s), svc::DISTRUST_CHANGED);
     let fresh = restarted(&r);
-    fresh.admit("inst", trusting(Some("fp"))).unwrap();
+    fresh.admit_sync("inst", trusting(Some("fp"))).unwrap();
     run(|l| fresh.trust_sight(&me, "cp", "fp", l));
-    fresh.trust_sight_item(&me, "cp", "t", "d1");
+    run(|later| fresh.trust_sight_item(&me, "cp", "t", "d1", later));
     assert_ne!(
         serves(&fresh),
         svc::DISTRUST_NONE,
         "reverted after a restart, it stays refused"
     );
-    fresh.trust_rule("inst/cp/t", Ruling::Approve).unwrap();
+    ready(fresh.trust_rule("inst/cp/t", Ruling::Approve)).unwrap();
     assert_eq!(serves(&fresh), svc::DISTRUST_NONE, "re-approved");
 }
 
 fn restarted(r: &Rig) -> KernelServices {
-    let d = r.s.demotions.get().unwrap();
-    KernelServices::new()
-        .with_demotions(Arc::clone(&d.record), &d.default_instance)
-        .with_pool(Arc::new(Inline))
+    let demotions = r.s.demotions.get().unwrap();
+    let host = KernelServices::new()
+        .with_demotions(Arc::clone(&demotions.record), &demotions.default_instance)
+        .with_pool(Arc::new(Inline));
+    assert!(host.attach_persistence(Arc::clone(&r.store)));
+    host
 }
 
 fn trusting(pin: Option<&str>) -> InstanceFacts {
@@ -755,16 +816,14 @@ fn trusting(pin: Option<&str>) -> InstanceFacts {
 #[test]
 fn a_demotion_in_one_instance_is_never_replayed_into_another_with_the_same_counterparty() {
     let r = rig();
-
-    r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
-        .unwrap();
+    ready(r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&caller("inst"), "cp", "moved", l)).value,
         svc::TRUST_DRIFTED
     );
     let fresh = restarted(&r);
-    fresh.admit("inst", trusting(None)).unwrap();
-    fresh.admit("second", trusting(None)).unwrap();
+    fresh.admit_sync("inst", trusting(None)).unwrap();
+    fresh.admit_sync("second", trusting(None)).unwrap();
     assert_eq!(
         run(|l| fresh.trust_sight(&caller("inst"), "cp", "x", l)).value,
         svc::TRUST_QUARANTINED
@@ -778,15 +837,17 @@ fn a_demotion_in_one_instance_is_never_replayed_into_another_with_the_same_count
 #[test]
 fn an_unprefixed_row_replays_into_the_default_instance_only_and_it_clears_it() {
     let r = rig();
-
-    r.s.demotions
-        .get()
-        .unwrap()
-        .record
-        .record("cp", "quarantined", 1);
+    ready(
+        r.s.demotions
+            .get()
+            .unwrap()
+            .record
+            .record("cp", "quarantined", 1),
+    )
+    .unwrap();
     let fresh = restarted(&r);
-    fresh.admit(SECTION_KEY, trusting(None)).unwrap();
-    fresh.admit("inst", trusting(None)).unwrap();
+    fresh.admit_sync(SECTION_KEY, trusting(None)).unwrap();
+    fresh.admit_sync("inst", trusting(None)).unwrap();
     assert_eq!(
         run(|l| fresh.trust_sight(&caller(SECTION_KEY), "cp", "x", l)).value,
         svc::TRUST_QUARANTINED
@@ -797,13 +858,15 @@ fn an_unprefixed_row_replays_into_the_default_instance_only_and_it_clears_it() {
     );
 
     let pinned = restarted(&r);
-    pinned.admit(SECTION_KEY, trusting(Some("fp"))).unwrap();
+    pinned
+        .admit_sync(SECTION_KEY, trusting(Some("fp")))
+        .unwrap();
 
     assert_eq!(
         run(|l| pinned.trust_sight(&caller(SECTION_KEY), "cp", "fp", l)).value,
         svc::TRUST_NEW
     );
-    assert!(r.s.demotions.get().unwrap().record.list().is_empty());
+    assert!(ready(r.s.demotions.get().unwrap().record.list()).is_empty());
 }
 
 #[test]
@@ -814,8 +877,8 @@ fn another_instance_declaring_the_same_kind_never_reaches_the_records_of_this_on
         record_kinds: vec![KIND],
         ..InstanceFacts::default()
     };
-    r.s.admit("other", declares()).unwrap();
-    r.s.admit("elsewhere", declares()).unwrap();
+    r.s.admit_sync("other", declares()).unwrap();
+    r.s.admit_sync("elsewhere", declares()).unwrap();
 
     let elsewhere = Caller {
         plugin: Arc::from("another-plugin"),
@@ -855,46 +918,48 @@ fn another_instance_declaring_the_same_kind_never_reaches_the_records_of_this_on
 struct Gauge {
     now: AtomicUsize,
     most: AtomicUsize,
+    backend: NativeBackend,
 }
 
-impl RecordRows for Gauge {
-    fn claim(
-        &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> Result<bool, StoreError> {
-        Ok(true)
+impl busbar_contract::persistence::PersistenceBackend for Gauge {
+    fn info(&self) -> busbar_contract::persistence::BackendInfo {
+        self.backend.info()
     }
-    fn record_put(
+    fn read(
         &self,
-        _schema: RecordSchemaId,
-        _key: &[u8],
-        _value: &RecordBytes,
-    ) -> Result<(), StoreError> {
-        Ok(())
+        request: Arc<busbar_contract::persistence::Read>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ReadResult> {
+        Box::pin(async move {
+            let data = request.addresses.iter().any(|address| {
+                address.namespace != busbar_contract::persistence::control::NAMESPACE.0
+            });
+            if data {
+                let running = self.now.fetch_add(1, Ordering::SeqCst) + 1;
+                self.most.fetch_max(running, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(5));
+                self.now.fetch_sub(1, Ordering::SeqCst);
+            }
+            self.backend.read(request).await
+        })
     }
-
-    fn record_get(
+    fn scan(
         &self,
-        _schema: RecordSchemaId,
-        _key: &[u8],
-    ) -> Result<Option<RecordBytes>, StoreError> {
-        let n = self.now.fetch_add(1, Ordering::SeqCst) + 1;
-        self.most.fetch_max(n, Ordering::SeqCst);
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        self.now.fetch_sub(1, Ordering::SeqCst);
-        Ok(None)
+        request: Arc<busbar_contract::persistence::Scan>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Page> {
+        self.backend.scan(request)
     }
-
-    fn record_scan(
+    fn commit(
         &self,
-        _schema: RecordSchemaId,
-        _prefix: &[u8],
-        _limit: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
-        Ok(Vec::new())
+        candidate: busbar_contract::persistence::PreparedCandidate,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
+        self.backend.commit(candidate)
+    }
+    fn clock(
+        &self,
+        dataset: busbar_contract::persistence::DatasetId,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ClockObservation>
+    {
+        self.backend.clock(dataset)
     }
 }
 
@@ -902,11 +967,14 @@ fn noop() -> Acked {
     Box::new(|_| {})
 }
 
-fn pooled(rt: &tokio::runtime::Runtime, reads: Arc<dyn RecordRows>) -> KernelServices {
-    let s = KernelServices::new()
-        .with_records(reads)
-        .with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 64)));
-    s.admit(
+fn pooled(
+    rt: &tokio::runtime::Runtime,
+    backend: Arc<dyn busbar_contract::persistence::PersistenceBackend>,
+) -> KernelServices {
+    let host =
+        KernelServices::new().with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 64)));
+    assert!(host.attach_persistence(attach_backend(backend)));
+    host.admit_sync(
         "inst",
         InstanceFacts {
             record_kinds: vec![KIND],
@@ -914,7 +982,7 @@ fn pooled(rt: &tokio::runtime::Runtime, reads: Arc<dyn RecordRows>) -> KernelSer
         },
     )
     .unwrap();
-    s
+    host
 }
 
 #[test]
@@ -953,8 +1021,19 @@ fn a_store_call_the_pool_refuses_answers_failed_and_never_runs_inline() {
     let gauge = Arc::new(Gauge::default());
     let s = pooled(&rt, gauge.clone());
     rt.shutdown_background();
-    let s = run(|l| s.records_get(&caller("inst"), "approval", b"k", l));
-    assert_eq!((s.outcome, s.error), (Outcome::Failed, POOL_REFUSED));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let ran = s.records_get(
+        &caller("inst"),
+        "approval",
+        b"k",
+        Box::new(move |answer| tx.send(answer).unwrap()),
+    );
+    assert!(matches!(ran, Ran::Later));
+    let answered = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert_eq!(
+        (answered.outcome, answered.error),
+        (Outcome::Failed, POOL_REFUSED)
+    );
     assert_eq!(gauge.most.load(Ordering::SeqCst), 0);
 }
 
@@ -975,6 +1054,9 @@ impl Offload for Arc<Held> {
     fn run(&self, job: Box<dyn FnOnce() + Send>) {
         self.0.lock().unwrap().push(job);
     }
+    fn run_async(&self, job: AsyncJob) {
+        self.run(Box::new(move || ready(job)));
+    }
 }
 
 #[test]
@@ -982,22 +1064,20 @@ fn a_demotion_is_written_on_the_pool_and_the_sighting_answers_after_it() {
     let r = rig();
     let held = Arc::new(Held::default());
     let s = restarted(&r).with_pool(Arc::new(Arc::clone(&held)));
-    s.admit("inst", trusting(Some("fp"))).unwrap();
-
-    s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
-        .unwrap();
+    s.admit_sync("inst", trusting(Some("fp"))).unwrap();
+    ready(s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
     let (slot, later) = recorder();
     let ran = s.trust_sight(&caller("inst"), "cp", "moved", later);
 
     assert!(matches!(ran, Ran::Later));
     assert!(slot.lock().unwrap().is_none());
-    assert!(r.s.demotions.get().unwrap().record.list().is_empty());
+    assert!(ready(r.s.demotions.get().unwrap().record.list()).is_empty());
     assert_eq!(held.drain(), 1);
     assert_eq!(
         slot.lock().unwrap().take().unwrap().value,
         svc::TRUST_DRIFTED
     );
-    assert_eq!(r.s.demotions.get().unwrap().record.list().len(), 1);
+    assert_eq!(ready(r.s.demotions.get().unwrap().record.list()).len(), 1);
 
     let s2 = run(|l| s.trust_sight(&caller("inst"), "cp", "moved", l));
     assert_eq!(s2.value, svc::TRUST_QUARANTINED);
@@ -1009,7 +1089,7 @@ fn a_durable_record_with_no_pool_judges_nothing() {
     let r = rig();
     let d = r.s.demotions.get().unwrap();
     let s = KernelServices::new().with_demotions(Arc::clone(&d.record), SECTION_KEY);
-    s.admit("inst", trusting(Some("fp"))).unwrap();
+    s.admit_sync("inst", trusting(Some("fp"))).unwrap();
     let a = run(|l| s.trust_sight(&caller("inst"), "cp", "moved", l));
     assert_eq!((a.outcome, a.error), (Outcome::Refused, NO_POOL));
 }
@@ -1024,7 +1104,7 @@ fn an_instance_declaring_a_signing_domain_another_holds_is_refused() {
         }),
         ..InstanceFacts::default()
     };
-    let refused = r.s.admit("taker", taker.clone()).unwrap_err();
+    let refused = r.s.admit_sync("taker", taker.clone()).unwrap_err();
     assert_eq!(
         refused,
         AdmitRefused::DomainHeld {
@@ -1039,7 +1119,7 @@ fn an_instance_declaring_a_signing_domain_another_holds_is_refused() {
     let s = r.s.sign(&caller("taker"), b"x");
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
 
-    r.s.admit(
+    r.s.admit_sync(
         "inst",
         InstanceFacts {
             signing: taker.signing,
@@ -1053,15 +1133,13 @@ fn an_instance_declaring_a_signing_domain_another_holds_is_refused() {
 fn a_burst_of_writes_is_one_batch_and_the_writer_reads_it_at_once() {
     let r = rig();
     let held = Arc::new(Held::default());
-    let s = KernelServices::new()
-        .with_records(Arc::new(StoreRows(r.store.clone())))
-        .with_pool(Arc::new(Arc::clone(&held)));
+    let s = writer(&r.store, Arc::new(Arc::clone(&held)));
     let declares = || InstanceFacts {
         record_kinds: vec![KIND],
         ..InstanceFacts::default()
     };
-    s.admit("inst", declares()).unwrap();
-    s.admit("other", declares()).unwrap();
+    s.admit_sync("inst", declares()).unwrap();
+    s.admit_sync("other", declares()).unwrap();
     let me = caller("inst");
     let bytes = |v: String| RecordBytes::new(v.into_bytes()).unwrap();
     for i in 0..50 {
@@ -1080,12 +1158,7 @@ fn a_burst_of_writes_is_one_batch_and_the_writer_reads_it_at_once() {
         run(|l| s.records_get(&me, "approval", b"k07", l)).bytes,
         b"v7"
     );
-    let stored = |who: &str, key: &[u8]| {
-        StoreRows(r.store.clone())
-            .record_get(KIND, &record_key(who, key))
-            .unwrap()
-            .map(|v| v.as_slice().to_vec())
-    };
+    let stored = |who: &str, key: &[u8]| stored(&r.store, who, key);
     assert_eq!(stored("inst", b"k07"), None);
 
     s.record_write(
@@ -1115,11 +1188,10 @@ fn a_flush_the_pool_refuses_leaves_the_writes_readable_and_queued_for_the_next()
         .worker_threads(1)
         .build()
         .unwrap();
-    let store = crate::real_store::store();
-    let s = KernelServices::new()
-        .with_records(Arc::new(StoreRows(store.clone())))
-        .with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 64)));
-    s.admit(
+    let store = native_store();
+    let s = KernelServices::new().with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 64)));
+    assert!(s.attach_persistence(store));
+    s.admit_sync(
         "inst",
         InstanceFacts {
             record_kinds: vec![KIND],
@@ -1143,10 +1215,10 @@ fn a_row_without_a_label_is_read_back_under_the_section_key_instance_and_no_othe
     let r = rig();
 
     let d = r.s.demotions.get().unwrap();
-    d.record.record("cp", "quarantined", 1);
+    ready(d.record.record("cp", "quarantined", 1)).unwrap();
     let fresh = restarted(&r);
     for label in [SECTION_KEY, "inst", "tools-2"] {
-        fresh.admit(label, trusting(None)).unwrap();
+        fresh.admit_sync(label, trusting(None)).unwrap();
     }
     let sight = |label: &str| run(|l| fresh.trust_sight(&caller(label), "cp", "x", l)).value;
     assert_eq!(sight(SECTION_KEY), svc::TRUST_QUARANTINED);
@@ -1162,65 +1234,84 @@ fn a_label_too_long_or_holding_a_control_character_is_refused_at_admit() {
         "x\ny".to_string(),
         "l".repeat(65_536),
     ] {
-        let refused = r.s.admit(&label, InstanceFacts::default()).unwrap_err();
+        let refused =
+            r.s.admit_sync(&label, InstanceFacts::default())
+                .unwrap_err();
         assert_eq!(refused, AdmitRefused::LabelUnfit { len: label.len() });
         let s = r.s.sign(&caller(&label), b"x");
         assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
     }
-    r.s.admit(&"l".repeat(65_535), InstanceFacts::default())
+    r.s.admit_sync(&"l".repeat(65_535), InstanceFacts::default())
         .unwrap();
 }
 
 /// Record reads that hold every call until the test opens the gate.
 #[derive(Default)]
-struct Gate {
-    open: Mutex<bool>,
-    opened: std::sync::Condvar,
+struct GateState {
+    open: bool,
+    wakers: Vec<std::task::Waker>,
 }
-
+#[derive(Default)]
+struct Gate {
+    state: Mutex<GateState>,
+    backend: NativeBackend,
+}
 impl Gate {
     fn open(&self) {
-        *self.open.lock().unwrap() = true;
-        self.opened.notify_all();
+        let wakers = {
+            let mut state = self.state.lock().unwrap();
+            state.open = true;
+            std::mem::take(&mut state.wakers)
+        };
+        for waker in wakers {
+            waker.wake();
+        }
     }
 }
-
-impl RecordRows for Gate {
-    fn claim(
-        &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> Result<bool, StoreError> {
-        Ok(true)
+impl busbar_contract::persistence::PersistenceBackend for Gate {
+    fn info(&self) -> busbar_contract::persistence::BackendInfo {
+        self.backend.info()
     }
-    fn record_put(
+    fn read(
         &self,
-        _schema: RecordSchemaId,
-        _key: &[u8],
-        _value: &RecordBytes,
-    ) -> Result<(), StoreError> {
-        Ok(())
+        request: Arc<busbar_contract::persistence::Read>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ReadResult> {
+        Box::pin(async move {
+            if request.addresses.iter().any(|address| {
+                address.namespace != busbar_contract::persistence::control::NAMESPACE.0
+            }) {
+                std::future::poll_fn(|context| {
+                    let mut state = self.state.lock().unwrap();
+                    if state.open {
+                        std::task::Poll::Ready(())
+                    } else {
+                        state.wakers.push(context.waker().clone());
+                        std::task::Poll::Pending
+                    }
+                })
+                .await;
+            }
+            self.backend.read(request).await
+        })
     }
-
-    fn record_get(
+    fn scan(
         &self,
-        _schema: RecordSchemaId,
-        _key: &[u8],
-    ) -> Result<Option<RecordBytes>, StoreError> {
-        let open = self.open.lock().unwrap();
-        drop(self.opened.wait_while(open, |o| !*o).unwrap());
-        Ok(None)
+        request: Arc<busbar_contract::persistence::Scan>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Page> {
+        self.backend.scan(request)
     }
-
-    fn record_scan(
+    fn commit(
         &self,
-        _schema: RecordSchemaId,
-        _prefix: &[u8],
-        _limit: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
-        Ok(Vec::new())
+        candidate: busbar_contract::persistence::PreparedCandidate,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
+        self.backend.commit(candidate)
+    }
+    fn clock(
+        &self,
+        dataset: busbar_contract::persistence::DatasetId,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ClockObservation>
+    {
+        self.backend.clock(dataset)
     }
 }
 
@@ -1231,10 +1322,9 @@ fn a_call_past_the_pools_bound_answers_failed_at_once() {
         .build()
         .unwrap();
     let gate = Arc::new(Gate::default());
-    let s = KernelServices::new()
-        .with_records(gate.clone())
-        .with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 2)));
-    s.admit(
+    let s = KernelServices::new().with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 2)));
+    assert!(s.attach_persistence(attach_backend(gate.clone())));
+    s.admit_sync(
         "inst",
         InstanceFacts {
             record_kinds: vec![KIND],
@@ -1265,42 +1355,37 @@ fn a_call_past_the_pools_bound_answers_failed_at_once() {
     }
 }
 
-struct Refusing(StoreRows);
-
-impl RecordRows for Refusing {
-    fn claim(
-        &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> Result<bool, StoreError> {
-        Ok(true)
+struct Refusing {
+    backend: NativeBackend,
+}
+impl busbar_contract::persistence::PersistenceBackend for Refusing {
+    fn info(&self) -> busbar_contract::persistence::BackendInfo {
+        self.backend.info()
     }
-    fn record_put(
+    fn read(
         &self,
-        _schema: RecordSchemaId,
-        _key: &[u8],
-        _value: &RecordBytes,
-    ) -> Result<(), StoreError> {
-        Err(StoreError::Unavailable)
+        request: Arc<busbar_contract::persistence::Read>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ReadResult> {
+        self.backend.read(request)
     }
-
-    fn record_get(
+    fn scan(
         &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-    ) -> Result<Option<RecordBytes>, StoreError> {
-        self.0.record_get(schema, key)
+        request: Arc<busbar_contract::persistence::Scan>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Page> {
+        self.backend.scan(request)
     }
-
-    fn record_scan(
+    fn commit(
         &self,
-        schema: RecordSchemaId,
-        prefix: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
-        self.0.record_scan(schema, prefix, limit)
+        _candidate: busbar_contract::persistence::PreparedCandidate,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
+        Box::pin(async { Err(busbar_contract::persistence::Failure::Refused) })
+    }
+    fn clock(
+        &self,
+        dataset: busbar_contract::persistence::DatasetId,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ClockObservation>
+    {
+        self.backend.clock(dataset)
     }
 }
 
@@ -1319,10 +1404,8 @@ fn answers() -> (Answers, impl Fn() -> Acked) {
 fn a_write_is_answered_only_once_the_store_took_it() {
     let r = rig();
     let held = Arc::new(Held::default());
-    let s = KernelServices::new()
-        .with_records(Arc::new(StoreRows(r.store.clone())))
-        .with_pool(Arc::new(Arc::clone(&held)));
-    s.admit(
+    let s = writer(&r.store, Arc::new(Arc::clone(&held)));
+    s.admit_sync(
         "inst",
         InstanceFacts {
             record_kinds: vec![KIND],
@@ -1338,20 +1421,19 @@ fn a_write_is_answered_only_once_the_store_took_it() {
     assert!(got.lock().unwrap().is_empty());
     assert_eq!(held.drain(), 1);
     assert_eq!(*got.lock().unwrap(), vec![Ok(())]);
-    let stored = StoreRows(r.store.clone())
-        .record_get(KIND, &record_key("inst", b"k"))
-        .unwrap();
+    let stored = stored(&r.store, "inst", b"k");
     assert!(stored.is_some());
 }
 
 #[test]
 fn a_write_the_store_refuses_answers_failed_and_leaves_the_overlay() {
-    let store = crate::real_store::store();
+    let store = attach_backend(Arc::new(Refusing {
+        backend: NativeBackend::default(),
+    }));
     let held = Arc::new(Held::default());
-    let s = KernelServices::new()
-        .with_records(Arc::new(Refusing(StoreRows(store.clone()))))
-        .with_pool(Arc::new(Arc::clone(&held)));
-    s.admit(
+    let s = KernelServices::new().with_pool(Arc::new(Arc::clone(&held)));
+    assert!(s.attach_persistence(store));
+    s.admit_sync(
         "inst",
         InstanceFacts {
             record_kinds: vec![KIND],
@@ -1375,14 +1457,10 @@ fn a_write_dropped_before_any_flush_answers_dropped() {
     assert_eq!(*got.lock().unwrap(), vec![Err(WRITE_DROPPED)]);
 }
 
-fn writer(
-    store: &Arc<busbar_plugin_loader::store_v3::LoadedStore>,
-    pool: Arc<dyn Offload>,
-) -> KernelServices {
-    let s = KernelServices::new()
-        .with_records(Arc::new(StoreRows(store.clone())))
-        .with_pool(pool);
-    s.admit(
+fn writer(store: &Arc<CoreStore>, pool: Arc<dyn Offload>) -> KernelServices {
+    let s = KernelServices::new().with_pool(pool);
+    assert!(s.attach_persistence(Arc::clone(store)));
+    s.admit_sync(
         "inst",
         InstanceFacts {
             record_kinds: vec![KIND],
@@ -1405,7 +1483,7 @@ fn every_answered_write_is_durable_once_across_a_graceful_restart() {
         .build()
         .unwrap();
     let pool = || -> Arc<dyn Offload> { Arc::new(BlockingPool::new(rt.handle().clone(), 64)) };
-    let backing = crate::real_store::store();
+    let backing = native_store();
     let s = writer(&backing, pool());
     let me = caller("inst");
     let (got, acked) = answers();
@@ -1445,7 +1523,7 @@ fn every_answered_write_is_durable_once_across_a_graceful_restart() {
 
 #[test]
 fn a_write_past_the_queue_bound_is_refused_and_leaves_the_queued_value() {
-    let backing = crate::real_store::store();
+    let backing = native_store();
     let held = Arc::new(Held::default());
     let s = writer(&backing, Arc::new(Arc::clone(&held)));
     let me = caller("inst");
@@ -1471,15 +1549,12 @@ fn a_write_past_the_queue_bound_is_refused_and_leaves_the_queued_value() {
 
     assert_eq!(held.drain(), 1);
     assert_eq!(s.pending().queued(), 0);
-    let stored = StoreRows(backing.clone())
-        .record_get(KIND, &record_key("inst", b"k"))
-        .unwrap();
-    assert_eq!(stored.map(|v| v.as_slice().to_vec()), Some(b"v1".to_vec()));
+    assert_eq!(stored(&backing, "inst", b"k"), Some(b"v1".to_vec()));
 }
 
 #[test]
 fn the_tick_restarts_a_flush_the_pool_did_not_run() {
-    let backing = crate::real_store::store();
+    let backing = native_store();
     let held = Arc::new(Held::default());
     let s = writer(&backing, Arc::new(Arc::clone(&held)));
     let (got, acked) = answers();
@@ -1887,7 +1962,7 @@ fn a_declared_chain_the_host_cannot_keep_refuses_the_admit() {
         (7, busbar_contract::abi::plane::CHAIN_LENGTH_PREFIXED),
     ] {
         let refused =
-            r.s.admit(
+            r.s.admit_sync(
                 "chained",
                 InstanceFacts {
                     record_kinds: vec![KIND],
@@ -1916,14 +1991,14 @@ fn an_instance_declaring_a_kernel_record_kind_is_refused_at_admit() {
         crate::host_chains::CHAIN_LIFE_SCHEMA.as_str(),
     ] {
         let refused =
-            r.s.admit(
+            r.s.admit_sync(
                 "squatter",
                 InstanceFacts {
                     record_kinds: vec![KIND, RecordSchemaId::new(kind)],
                     conditional_record_kinds: vec![1],
                     record_retentions: vec![busbar_contract::abi::plane::RecordRetention {
                         kind: 1,
-                        rule: busbar_contract::abi::store::plane::RETENTION_TERMINAL_ONLY,
+                        rule: busbar_contract::host_records::RETENTION_TERMINAL_ONLY,
                     }],
                     ..InstanceFacts::default()
                 },
@@ -1957,152 +2032,49 @@ fn an_instance_declaring_a_kernel_record_kind_is_refused_at_admit() {
     }
 }
 
-struct ParkingStore {
-    armed: std::sync::atomic::AtomicBool,
-    entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
-    release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
-}
-
-impl crate::store::plane_view::PlaneStore for ParkingStore {
-    fn upsert_plane_record(
-        &self,
-        _: busbar_contract::records::PlaneRecordRef<'_>,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        Ok(())
-    }
-    fn get_plane_record(
-        &self,
-        _: &str,
-        _: &str,
-    ) -> busbar_contract::records::RecordStoreResult<Option<Vec<u8>>> {
-        Ok(None)
-    }
-    fn append_plane_record(
-        &self,
-        _: busbar_contract::records::PlaneRecordRef<'_>,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        Ok(())
-    }
-    fn list_plane_records(
-        &self,
-        kind: &str,
-        _: &busbar_contract::records::PlaneSelector,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
-        if kind != crate::store::plane_view::KIND_DEMOTION && self.armed.load(Ordering::SeqCst) {
-            if let Some(entered) = self.entered.lock().unwrap().take() {
-                entered.send(()).unwrap();
-            }
-            if let Some(release) = self.release.lock().unwrap().take() {
-                let _ = release.recv();
-            }
-        }
-        Ok(Vec::new())
-    }
-    fn list_plane_record_parents(
-        &self,
-        _: &str,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
-        Ok(Vec::new())
-    }
-    fn purge_plane_records(
-        &self,
-        _: &str,
-        _: u64,
-        _: Retention,
-    ) -> busbar_contract::records::RecordStoreResult<u64> {
-        Ok(0)
-    }
-    fn delete_plane_record(
-        &self,
-        _: &str,
-        _: &str,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        Ok(())
-    }
-    fn redeem_plane_token(
-        &self,
-        _: &str,
-        _: &str,
-        _: u64,
-        _: u64,
-    ) -> busbar_contract::records::RecordStoreResult<bool> {
-        Ok(false)
-    }
-    fn plane_token_live(
-        &self,
-        _: &str,
-        _: &str,
-        _: u64,
-        _: u64,
-    ) -> busbar_contract::records::RecordStoreResult<bool> {
-        Ok(false)
-    }
-}
-
-#[test]
-fn an_admit_parked_in_the_store_never_stalls_another_instances_host_service() {
-    use std::sync::mpsc::channel;
-    use std::time::Duration;
-    let (entered_tx, entered_rx) = channel();
-    let (release_tx, release_rx) = channel();
-    let store = Arc::new(ParkingStore {
-        armed: std::sync::atomic::AtomicBool::new(false),
-        entered: Mutex::new(Some(entered_tx)),
-        release: Mutex::new(Some(release_rx)),
-    });
-    let record = DemotionRecord::default();
-    record.set_sink(store.clone());
-    let s = Arc::new(
-        KernelServices::new()
-            .with_signer(Arc::new(FixedKey))
-            .with_demotions(Arc::new(record), SECTION_KEY),
-    );
-    s.admit(
-        "inst",
-        InstanceFacts {
-            signing: Some(Signing {
-                domain: "dom".into(),
-                kid_prefix: "p-".into(),
-            }),
-            ..InstanceFacts::default()
-        },
-    )
-    .unwrap();
-    store.armed.store(true, Ordering::SeqCst);
-    let admitting = {
-        let s = Arc::clone(&s);
-        std::thread::spawn(move || s.admit("other", InstanceFacts::default()))
-    };
-    entered_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("the second admit reached the store's read of the kept trust rulings");
-    let (answer_tx, answer_rx) = channel();
-    {
-        let s = Arc::clone(&s);
-        std::thread::spawn(move || {
-            let _ = answer_tx.send(s.sign(&caller("inst"), b"data").outcome);
-        });
-    }
-    let answered = answer_rx.recv_timeout(Duration::from_secs(5));
-    release_tx.send(()).unwrap();
-    admitting.join().unwrap().unwrap();
+#[tokio::test]
+async fn an_admit_parked_in_the_store_never_stalls_another_instances_host_service() {
+    use trust_ordering_tests::native::*;
+    let r = Rig::new().await;
+    r.backend.park_scan.store(true, Ordering::SeqCst);
+    let node = r.node.clone();
+    let admission = tokio::spawn(async move { node.admit("other", facts()).await });
+    entered(&r.backend).await;
     assert_eq!(
-        answered,
-        Ok(Outcome::Ready),
-        "a host service of another instance answers while an admit is parked in the store plugin"
+        r.node.trust_unreached(&caller(), PEER).value,
+        svc::TRUST_NEW
     );
+    assert!(r.node.instances.try_lock().is_ok());
+    r.backend.release.notify_one();
+    admission.await.unwrap().unwrap();
 }
 
 #[test]
 fn a_purge_runs_under_the_rule_the_instance_declared_for_the_kind() {
+    use crate::host_records_async::{AsyncHistory, HistoryOutcome};
     use busbar_contract::abi::plane::RecordRetention;
+    use busbar_contract::abi::plane::{CollectionMode, RecordCollection};
     use busbar_contract::ids::RecordSchemaId;
-    use busbar_contract::records::{PlaneDisposition, PlaneRecord, RecordStore, Retention};
+    use busbar_contract::records::{PlaneDisposition, PlaneRecord, Retention};
+    let store = native_store();
     let s = KernelServices::new();
-    s.admit(
+    assert!(s.attach_persistence(Arc::clone(&store)));
+    s.admit_sync(
         "inst",
         InstanceFacts {
             record_kinds: vec![RecordSchemaId::new("kept"), RecordSchemaId::new("aged")],
+            record_collections: vec![
+                RecordCollection {
+                    kind: 0,
+                    mode: CollectionMode::Upsert,
+                    parent: None,
+                },
+                RecordCollection {
+                    kind: 1,
+                    mode: CollectionMode::Upsert,
+                    parent: None,
+                },
+            ],
             record_retentions: vec![RecordRetention {
                 kind: 0,
                 rule: Retention::TerminalOnly.code(),
@@ -2115,7 +2087,8 @@ fn a_purge_runs_under_the_rule_the_instance_declared_for_the_kind() {
     assert_eq!(s.record_retention("inst", "aged"), Retention::Age);
     assert_eq!(s.record_retention("other", "kept"), Retention::Age);
 
-    let store = crate::real_store::store();
+    let facts = s.lock_instances().get("inst").cloned().unwrap();
+    let history = AsyncHistory::admitted(Arc::clone(&store), "inst", &facts).unwrap();
     let rows = [
         ("old-active", 10, PlaneDisposition::Active),
         ("old-terminal", 10, PlaneDisposition::Terminal),
@@ -2132,15 +2105,17 @@ fn a_purge_runs_under_the_rule_the_instance_declared_for_the_kind() {
                 disposition,
                 body: b"{}".to_vec(),
             };
-            store.upsert_plane_record(row.view()).unwrap();
+            assert_eq!(
+                ready(history.upsert(row.view())).unwrap(),
+                HistoryOutcome::Applied
+            );
         }
     }
-    let held = |kind: &str, id: &str| store.get_plane_record(kind, id).unwrap().is_some();
+    let held = |kind: &str, id: &str| ready(history.get(kind, id)).unwrap().is_some();
 
     assert_eq!(
-        s.purge_records_before(&*store, "inst", "kept", 100)
-            .unwrap(),
-        1
+        ready(s.purge_records_before("inst", "kept", 100)).unwrap(),
+        (HistoryOutcome::Applied, 1)
     );
     assert!(
         held("kept", "old-active"),
@@ -2150,9 +2125,8 @@ fn a_purge_runs_under_the_rule_the_instance_declared_for_the_kind() {
     assert!(held("kept", "new-terminal"), "a row after the cutoff stays");
 
     assert_eq!(
-        s.purge_records_before(&*store, "inst", "aged", 100)
-            .unwrap(),
-        2
+        ready(s.purge_records_before("inst", "aged", 100)).unwrap(),
+        (HistoryOutcome::Applied, 2)
     );
     assert!(
         !held("aged", "old-active"),
@@ -2183,185 +2157,42 @@ fn a_replayed_approval_is_refused_through_records_claim() {
     );
 }
 
-/// A durable record's store that can refuse to keep a trust decision, and that notes, at every
-/// read of the kept decisions, whether the host lock every caller-scoped service takes was free.
-#[derive(Default)]
-struct Probe {
-    refuse_decisions: std::sync::atomic::AtomicBool,
-    kernel: OnceLock<std::sync::Weak<KernelServices>>,
-    lock_free_at_read: Mutex<Vec<bool>>,
-    decision_read: OnceLock<Arc<DecisionRead>>,
-    decision_write: OnceLock<Arc<DecisionWrite>>,
-    demotion_write: OnceLock<Arc<DecisionWrite>>,
-    record_store: OnceLock<Arc<busbar_plugin_loader::store_v3::LoadedStore>>,
-}
-
-type DecisionRead =
-    dyn Fn() -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> + Send + Sync;
-type DecisionWrite = dyn Fn(
-        busbar_contract::records::PlaneRecordRef<'_>,
-    ) -> busbar_contract::records::RecordStoreResult<()>
-    + Send
-    + Sync;
-
-impl crate::store::plane_view::PlaneStore for Probe {
-    fn upsert_plane_record(
-        &self,
-        record: busbar_contract::records::PlaneRecordRef<'_>,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        let kind = record.to_record().kind;
-        if kind == crate::store::plane_view::KIND_TRUST_DECISION
-            && self.refuse_decisions.load(Ordering::SeqCst)
-        {
-            return Err("the store is down".into());
-        }
-        if kind == crate::store::plane_view::KIND_TRUST_DECISION {
-            if let Some(write) = self.decision_write.get() {
-                return write(record);
-            }
-        }
-        if kind == crate::store::plane_view::KIND_DEMOTION {
-            if let Some(write) = self.demotion_write.get() {
-                return write(record);
-            }
-        }
-        if let Some(store) = self.record_store.get() {
-            return RecordStore::upsert_plane_record(&**store, record);
-        }
-        Ok(())
-    }
-    fn get_plane_record(
-        &self,
-        _kind: &str,
-        _id: &str,
-    ) -> busbar_contract::records::RecordStoreResult<Option<Vec<u8>>> {
-        Ok(None)
-    }
-    fn append_plane_record(
-        &self,
-        _record: busbar_contract::records::PlaneRecordRef<'_>,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        Ok(())
-    }
-    fn list_plane_records(
-        &self,
-        kind: &str,
-        selector: &busbar_contract::records::PlaneSelector,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
-        if kind == crate::store::plane_view::KIND_TRUST_DECISION {
-            if let Some(k) = self.kernel.get().and_then(std::sync::Weak::upgrade) {
-                let free = k.instances.try_lock().is_ok();
-                self.lock_free_at_read.lock().unwrap().push(free);
-            }
-            if let Some(read) = self.decision_read.get() {
-                return read();
-            }
-        }
-        if let Some(store) = self.record_store.get() {
-            return RecordStore::list_plane_records(&**store, kind, selector);
-        }
-        Ok(Vec::new())
-    }
-    fn list_plane_record_parents(
-        &self,
-        _kind: &str,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
-        Ok(Vec::new())
-    }
-    fn purge_plane_records(
-        &self,
-        _kind: &str,
-        _before: u64,
-        _retention: Retention,
-    ) -> busbar_contract::records::RecordStoreResult<u64> {
-        Ok(0)
-    }
-    fn delete_plane_record(
-        &self,
-        kind: &str,
-        id: &str,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        if let Some(store) = self.record_store.get() {
-            return RecordStore::delete_plane_record(&**store, kind, id);
-        }
-        Ok(())
-    }
-    fn redeem_plane_token(
-        &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> busbar_contract::records::RecordStoreResult<bool> {
-        Ok(false)
-    }
-    fn plane_token_live(
-        &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> busbar_contract::records::RecordStoreResult<bool> {
-        Ok(false)
-    }
-}
-
-fn probed(probe: &Arc<Probe>) -> Arc<KernelServices> {
-    let d = DemotionRecord::default();
-    d.set_sink(Arc::clone(probe) as Arc<dyn crate::store::plane_view::PlaneStore>);
-    let k = Arc::new(
-        KernelServices::new()
-            .with_pool(Arc::new(Inline))
-            .with_demotions(Arc::new(d), SECTION_KEY),
-    );
-    let _ = probe.kernel.set(Arc::downgrade(&k));
-    k
-}
-
-#[test]
-fn a_trust_decision_the_store_refused_never_takes_effect() {
-    use crate::trust::book::{Ruling, TrustFacts};
-    let probe = Arc::new(Probe::default());
-    let k = probed(&probe);
-    k.admit("inst", trusting(None)).unwrap();
-    let me = caller("inst");
-    assert_eq!(
-        run(|l| k.trust_sight(&me, "cp", "h1", l)).value,
-        svc::TRUST_NEW
-    );
-    let whole = TrustFacts {
-        counterparty: "cp",
-        item: None,
-        digest: None,
-    };
-    probe.refuse_decisions.store(true, Ordering::SeqCst);
+#[tokio::test]
+async fn a_trust_decision_the_store_refused_never_takes_effect() {
+    use trust_ordering_tests::native::*;
+    let r = Rig::new().await;
+    r.observe(ORIGINAL).await;
+    r.backend.refuse_commit.store(true, Ordering::SeqCst);
     assert!(matches!(
-        k.trust_rule("inst/cp", Ruling::Approve),
+        r.node.trust_rule(KEY, Ruling::Approve).await,
         Err(TrustRefused::Store(_))
     ));
-    assert_eq!(
-        k.trust_judge("inst", &whole),
-        Err(Distrust::NotApproved),
-        "an approval nothing kept was not made"
-    );
-    let s = k.trust_decide(
-        &me,
-        busbar_contract::services::TrustKeyRef {
-            counterparty: "cp",
-            item: None,
-        },
-        Some("h1"),
-        true,
-    );
-    assert_eq!(s.error, DECISION_UNKEPT);
-    assert_eq!(k.trust_judge("inst", &whole), Err(Distrust::NotApproved));
-    probe.refuse_decisions.store(false, Ordering::SeqCst);
-    k.trust_rule("inst/cp", Ruling::Approve).unwrap();
-    assert_eq!(
-        k.trust_judge("inst", &whole),
-        Ok(()),
-        "kept, it is in force"
-    );
+    assert_eq!(judged(&r.node, None), Err(Distrust::NotApproved));
+    r.backend.refuse_commit.store(false, Ordering::SeqCst);
+    r.node.trust_rule(KEY, Ruling::Approve).await.unwrap();
+    assert_eq!(judged(&r.node, None), Ok(()));
+}
+
+async fn ticket_result(
+    services: &KernelServices,
+    caller: Caller,
+    unit: Option<u64>,
+    ttl: u64,
+    record: &[u8],
+) -> Stored {
+    let (send, receive) = tokio::sync::oneshot::channel();
+    match services.ticket_mint(
+        &caller,
+        unit,
+        ttl,
+        record,
+        Box::new(move |answer| {
+            let _ = send.send(answer);
+        }),
+    ) {
+        Ran::Now(answer) => answer,
+        Ran::Later => receive.await.expect("native ticket mint answers"),
+    }
 }
 
 type Minted = (String, String, u64, Vec<u8>);
@@ -2370,8 +2201,9 @@ type Minted = (String, String, u64, Vec<u8>);
 #[derive(Default)]
 struct Press(Mutex<Vec<Minted>>);
 
+#[async_trait::async_trait]
 impl TicketPress for Press {
-    fn mint(
+    async fn mint(
         &self,
         key_id: &str,
         prefix: &str,
@@ -2396,11 +2228,12 @@ fn a_credential_consumer_prefix_has_one_instance_owner() {
         ticket_prefix: Some("delegated_".into()),
         ..InstanceFacts::default()
     };
-    r.s.admit("first-consumer", facts()).expect("first owner");
-    r.s.admit("first-consumer", facts())
+    r.s.admit_sync("first-consumer", facts())
+        .expect("first owner");
+    r.s.admit_sync("first-consumer", facts())
         .expect("same owner re-admission");
     assert!(
-        r.s.admit("other-consumer", facts()).is_err(),
+        r.s.admit_sync("other-consumer", facts()).is_err(),
         "two instances cannot redeem credentials from the same consumer namespace"
     );
     assert_eq!(
@@ -2409,7 +2242,7 @@ fn a_credential_consumer_prefix_has_one_instance_owner() {
     );
     assert_eq!(r.s.ticket_prefix_of("other-consumer"), None);
     assert!(
-        r.s.admit("first-consumer", InstanceFacts::default())
+        r.s.admit_sync("first-consumer", InstanceFacts::default())
             .is_err(),
         "re-admission cannot release a namespace while its signed credentials may still exist"
     );
@@ -2417,7 +2250,7 @@ fn a_credential_consumer_prefix_has_one_instance_owner() {
         r.s.ticket_prefix_of("first-consumer").as_deref(),
         Some("delegated_")
     );
-    r.s.admit(
+    r.s.admit_sync(
         "separate-consumer",
         InstanceFacts {
             ticket_prefix: Some("separate_".into()),
@@ -2427,8 +2260,8 @@ fn a_credential_consumer_prefix_has_one_instance_owner() {
     .expect("an independent namespace is admitted");
 }
 
-#[test]
-fn a_ticket_is_minted_for_the_units_principal_under_the_declared_prefix() {
+#[tokio::test]
+async fn a_ticket_is_minted_for_the_units_principal_under_the_declared_prefix() {
     let r = rig();
     r.s.admit(
         "minter",
@@ -2437,6 +2270,7 @@ fn a_ticket_is_minted_for_the_units_principal_under_the_declared_prefix() {
             ..InstanceFacts::default()
         },
     )
+    .await
     .unwrap();
     let principal = Arc::new(VirtualKey {
         id: "vk_caller".into(),
@@ -2450,7 +2284,7 @@ fn a_ticket_is_minted_for_the_units_principal_under_the_declared_prefix() {
         },
     );
 
-    let no_press = r.s.ticket_mint(&caller("minter"), Some(7), 600, b"{}");
+    let no_press = ticket_result(&r.s, caller("minter"), Some(7), 600, b"{}").await;
     assert_eq!(
         (no_press.outcome, no_press.error),
         (Outcome::Refused, TICKET_NO_PRESS)
@@ -2459,8 +2293,7 @@ fn a_ticket_is_minted_for_the_units_principal_under_the_declared_prefix() {
     assert!(r
         .s
         .attach_tickets(Arc::clone(&press) as Arc<dyn TicketPress>));
-    let minted =
-        r.s.ticket_mint(&caller("minter"), Some(7), 600, b"{\"m\":1}");
+    let minted = ticket_result(&r.s, caller("minter"), Some(7), 600, b"{\"m\":1}").await;
     assert_eq!(minted.outcome, Outcome::Ready);
     assert_eq!(minted.bytes, b"tk_vk_caller:600");
     assert_eq!(
@@ -2478,7 +2311,7 @@ fn a_ticket_is_minted_for_the_units_principal_under_the_declared_prefix() {
         )]
     );
 
-    let none = r.s.ticket_mint(&caller("minter"), None, 600, b"{}");
+    let none = ticket_result(&r.s, caller("minter"), None, 600, b"{}").await;
     assert_eq!(none.error, TICKET_NO_PRINCIPAL);
     r.s.units().admitted(
         8,
@@ -2487,9 +2320,9 @@ fn a_ticket_is_minted_for_the_units_principal_under_the_declared_prefix() {
             depth: 0,
         },
     );
-    let anonymous = r.s.ticket_mint(&caller("minter"), Some(8), 600, b"{}");
+    let anonymous = ticket_result(&r.s, caller("minter"), Some(8), 600, b"{}").await;
     assert_eq!(anonymous.error, TICKET_NO_PRINCIPAL);
-    let unprefixed = r.s.ticket_mint(&caller("inst"), Some(7), 600, b"{}");
+    let unprefixed = ticket_result(&r.s, caller("inst"), Some(7), 600, b"{}").await;
     assert_eq!(unprefixed.error, TICKET_NO_PREFIX);
     assert_eq!(
         press.0.lock().unwrap().len(),
@@ -2552,13 +2385,13 @@ fn a_trust_decision_made_through_another_node_takes_effect_within_one_window() {
     let r = rig();
     let me = caller("inst");
     let b = restarted(&r);
-    b.admit("inst", trusting(Some("fp"))).unwrap();
+    b.admit_sync("inst", trusting(Some("fp"))).unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&me, "cp", "c1", l)).value,
         svc::TRUST_NEW,
         "a first sighting on node a"
     );
-    r.s.trust_rule("inst/cp", Ruling::Approve).unwrap();
+    ready(r.s.trust_rule("inst/cp", Ruling::Approve)).unwrap();
     assert_eq!(
         b.trust_unreached(&me, "cp").value,
         svc::TRUST_NEW,
@@ -2578,93 +2411,22 @@ mod trust_resync_tests;
 #[path = "trust_ordering_tests.rs"]
 mod trust_ordering_tests;
 
-struct DownStore;
-
-impl crate::store::plane_view::PlaneStore for DownStore {
-    fn upsert_plane_record(
-        &self,
-        _record: busbar_contract::records::PlaneRecordRef<'_>,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        Err(down())
-    }
-    fn get_plane_record(
-        &self,
-        _kind: &str,
-        _id: &str,
-    ) -> busbar_contract::records::RecordStoreResult<Option<Vec<u8>>> {
-        Err(down())
-    }
-    fn append_plane_record(
-        &self,
-        _record: busbar_contract::records::PlaneRecordRef<'_>,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        Err(down())
-    }
-    fn list_plane_records(
-        &self,
-        _kind: &str,
-        _selector: &busbar_contract::records::PlaneSelector,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
-        Err(down())
-    }
-    fn list_plane_record_parents(
-        &self,
-        _kind: &str,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
-        Err(down())
-    }
-    fn purge_plane_records(
-        &self,
-        _kind: &str,
-        _before: u64,
-        _retention: Retention,
-    ) -> busbar_contract::records::RecordStoreResult<u64> {
-        Err(down())
-    }
-    fn delete_plane_record(
-        &self,
-        _kind: &str,
-        _id: &str,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        Err(down())
-    }
-    fn redeem_plane_token(
-        &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> busbar_contract::records::RecordStoreResult<bool> {
-        Err(down())
-    }
-    fn plane_token_live(
-        &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> busbar_contract::records::RecordStoreResult<bool> {
-        Err(down())
-    }
-}
-
-fn down() -> busbar_contract::records::RecordStoreError {
-    busbar_contract::records::RecordStoreError("store down (test)".to_string())
-}
-
-#[test]
-fn an_instance_whose_trust_records_cannot_be_read_is_not_admitted() {
-    let record = DemotionRecord::default();
-    record.set_sink(Arc::new(DownStore));
-    let restarted = KernelServices::new()
-        .with_demotions(Arc::new(record), SECTION_KEY)
-        .with_pool(Arc::new(Inline));
-    match restarted.admit("inst", trusting(Some("fp"))) {
-        Err(AdmitRefused::TrustUnread(why)) => {
-            assert!(why.contains("store down"), "{why}")
-        }
-        other => panic!("an unreadable trust record must refuse the admit, got {other:?}"),
-    }
+#[tokio::test]
+async fn an_instance_whose_trust_records_cannot_be_read_is_not_admitted() {
+    use trust_ordering_tests::native::*;
+    let r = Rig::new().await;
+    r.backend.refuse_scan.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        r.node.admit("unread", facts()).await,
+        Err(AdmitRefused::TrustUnread(_))
+    ));
+    assert!(r
+        .node
+        .facts(&Caller {
+            instance: "unread".into(),
+            ..caller()
+        })
+        .is_none());
 }
 
 #[test]
@@ -2684,24 +2446,18 @@ fn record_claim_replay_uses_store_time_when_the_host_clock_runs_ahead() {
     assert_eq!(claim().value, svc::CLAIM_TAKEN);
 
     let until = r.clock.load(Ordering::SeqCst) / 1_000;
-    let deadline = std::time::Instant::now() + Duration::from_secs(8);
-    while crate::store::now() < until {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the backend claim expiry arrives"
-        );
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    r.backend.now.store(until + 1, Ordering::SeqCst);
     assert_eq!(claim().value, svc::CLAIM_WON);
 }
 
-#[test]
-fn ticket_press_receives_the_exact_host_unit_caller_and_principal() {
+#[tokio::test]
+async fn ticket_press_receives_the_exact_host_unit_caller_and_principal() {
     struct BoundPress {
         principal: Arc<VirtualKey>,
     }
+    #[async_trait::async_trait]
     impl TicketPress for BoundPress {
-        fn mint(
+        async fn mint(
             &self,
             _: &str,
             _: &str,
@@ -2711,7 +2467,7 @@ fn ticket_press_receives_the_exact_host_unit_caller_and_principal() {
         ) -> Result<(String, u64), &'static str> {
             panic!("the host must use unit-aware minting")
         }
-        fn mint_for_unit(
+        async fn mint_for_unit(
             &self,
             unit: u64,
             caller: &Caller,
@@ -2738,6 +2494,7 @@ fn ticket_press_receives_the_exact_host_unit_caller_and_principal() {
             ..InstanceFacts::default()
         },
     )
+    .await
     .unwrap();
     let principal = Arc::new(VirtualKey {
         id: "vk_caller".into(),
@@ -2752,7 +2509,7 @@ fn ticket_press_receives_the_exact_host_unit_caller_and_principal() {
         },
     );
     assert!(r.s.attach_tickets(Arc::new(BoundPress { principal })));
-    let result = r.s.ticket_mint(&caller("minter"), Some(71), 600, b"opaque");
+    let result = ticket_result(&r.s, caller("minter"), Some(71), 600, b"opaque").await;
     assert_eq!(result.outcome, Outcome::Ready);
     assert_eq!(result.bytes, b"published");
 }

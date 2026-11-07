@@ -124,7 +124,7 @@ async fn slow_secret_plugin_does_not_stall_the_executor() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -134,23 +134,28 @@ async fn slow_secret_plugin_does_not_stall_the_executor() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let boot_calls = app
         .governance
         .as_ref()
         .expect("actual governance")
-        .store_calls()
+        .core_store_handle()
         .expect("actual boot Store calls");
-    crate::root::kernel::ROOT_CARD.keep_in_store(boot_calls, 101);
+    crate::root::kernel::ROOT_CARD
+        .keep_in_store(boot_calls, 101)
+        .expect("actual rate history binds once");
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the actual rate history boots before rates are committed");
     limits
         .keep()
+        .await
         .expect("the booted actual rates and limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let delay = Duration::from_millis(400);
     assert!(
@@ -175,10 +180,11 @@ async fn slow_secret_plugin_does_not_stall_the_executor() {
         .governance
         .as_ref()
         .unwrap()
-        .store_calls()
+        .core_store_handle()
         .expect("actual Store calls");
     app.overlay_path = Some(
-        busbar_kernel::config::overlay::OverlayStore::new(calls).expect("actual Store overlay"),
+        busbar_kernel::config::overlay::OverlayStore::from_core(calls)
+            .expect("actual Store overlay"),
     );
     let (_data, admin, _handle) =
         busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);

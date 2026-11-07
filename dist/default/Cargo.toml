@@ -21,6 +21,8 @@ name = "busbar"
 path = "../../crates/busbar/src/main.rs"
 
 [dependencies]
+async-trait = { workspace = true }
+sha2 = { workspace = true }
 # The engine (busbar-core absorbed INTO busbar-kernel, W4.a #19/#37) is the merged `busbar-kernel`
 # dep declared below with the loop crate; `default-features = false` there so the binary's OWN
 # feature list stays the single decision point (each busbar feature forwards to the kernel feature
@@ -34,6 +36,7 @@ path = "../../crates/busbar/src/main.rs"
 # depends on nothing here), so the registration is the one place the binary's own manifest and
 # `main.rs` have to know this plane exists.
 busbar-core-oauth2 = { path = "../../crates/busbar-core-oauth2" }
+busbar-migrations = { path = "../../crates/busbar-migrations" }
 # The admin API service (`/api/v1/admin/*`), a MANDATORY sibling crate (not a plugin). Always linked;
 # `main` registers its mount seam unconditionally. Feature-neutral defaults off — the binary's own
 # feature forwards below turn on `busbar-admin`'s features in lock-step with busbar-core's.
@@ -78,7 +81,6 @@ busbar-plugin-loader = { path = "../../crates/plugin-loader" }
 # provisioning have somewhere to live that is not a unit and not a plane.
 busbar-kernel = { path = "../../crates/busbar-kernel", default-features = false }
 busbar-contract = { path = "../../crates/busbar-contract" }
-busbar-kernel-seams = { path = "../../crates/busbar-kernel-seams" }
 # The seven kernel workflow crates (#36).
 busbar-kernel-identity = { path = "../../crates/busbar-kernel-identity" }
 busbar-kernel-ledger = { path = "../../crates/busbar-kernel-ledger" }
@@ -789,6 +791,11 @@ required-features = ["auth-admin-tokens", "export-prometheus"]
 name = "default_config_no_outbound"
 path = "tests/default_config_no_outbound.rs"
 required-features = ["auth-admin-tokens"]
+
+[[test]]
+name = "startup_upgrade_sqlite"
+path = "tests/startup_upgrade_sqlite.rs"
+required-features = ["auth-admin-tokens", "plane-llm"]
 
 [package.metadata.busbar.migration]
 # THE ROOT MIGRATION TABLE (BUSBAR-1.6.0.md §2), @generated from plugins.yaml (`migration:` and each

@@ -7,12 +7,9 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::abi::store::OpId;
 use busbar_contract::count::Count;
-use busbar_contract::records::{
-    MeteringDelta, MeteringRow, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta,
-    UsageLedger, VirtualKey,
-};
+use busbar_contract::persistence::*;
+use busbar_contract::records::VirtualKey;
 use busbar_kernel::governance::recovery::RecoveryState;
 use serde_json::{json, Value};
 
@@ -20,60 +17,49 @@ const MODEL: &str = "oracle-recovery-observed-model";
 const INPUT: u64 = 7;
 
 struct LoseOneCommittedReply {
-    inner: Arc<crate::root::loader::store_v3::LoadedStore>,
+    inner: Arc<dyn PersistenceBackend>,
     lose: AtomicBool,
     in_flight: AtomicUsize,
-    committed: Mutex<Vec<OpId>>,
+    usage_calls: AtomicUsize,
+    committed: Mutex<Vec<[u8; 32]>>,
 }
 
-impl RecordStore for LoseOneCommittedReply {
-    fn supports_usage_batch_deduped(&self) -> bool {
-        self.inner.supports_usage_batch_deduped()
+impl PersistenceBackend for LoseOneCommittedReply {
+    fn info(&self) -> BackendInfo {
+        self.inner.info()
     }
-    fn add_usage_batch_deduped(
-        &self,
-        op: OpId,
-        cells: &[(&str, u64, UsageDelta)],
-    ) -> RecordStoreResult<()> {
-        self.in_flight.fetch_add(1, Ordering::SeqCst);
-        let result = self.inner.add_usage_batch_deduped(op, cells);
-        self.in_flight.fetch_sub(1, Ordering::SeqCst);
-        result?;
-        self.committed.lock().unwrap().push(op);
-        if self.lose.swap(false, Ordering::SeqCst) {
-            Err(RecordStoreError(
-                "fixture transport lost a completed usage reply".into(),
-            ))
-        } else {
-            Ok(())
-        }
+    fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
+        self.inner.clock(dataset)
     }
-    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
-        self.inner.put_key(key)
+    fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
+        self.inner.read(request)
     }
-    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-        self.inner.get_key(id)
+    fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
+        self.inner.scan(request)
     }
-    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.inner.list_keys()
-    }
-    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-        self.inner.delete_key(id)
-    }
-    fn get_usage(&self, id: &str, window: u64) -> RecordStoreResult<UsageLedger> {
-        self.inner.get_usage(id, window)
-    }
-    fn put_usage(&self, id: &str, window: u64, row: &UsageLedger) -> RecordStoreResult<()> {
-        self.inner.put_usage(id, window, row)
-    }
-    fn add_usage(&self, id: &str, window: u64, delta: &UsageDelta) -> RecordStoreResult<()> {
-        self.inner.add_usage(id, window, delta)
-    }
-    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
-        self.inner.add_metering(delta)
-    }
-    fn list_metering(&self, day: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-        self.inner.list_metering(day)
+    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+        Box::pin(async move {
+            let usage = candidate.candidate().mutations.iter().any(|mutation| {
+                matches!(mutation, Mutation::Put { address, .. } if address.key.first() == Some(&b'U'))
+            });
+            if usage {
+                self.usage_calls.fetch_add(1, Ordering::SeqCst);
+            }
+            self.in_flight.fetch_add(1, Ordering::SeqCst);
+            let fingerprint = candidate.fingerprint();
+            let result = self.inner.commit(candidate).await;
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            if usage && matches!(result, Ok(Decision::Applied(_))) {
+                let mut commits = self.committed.lock().unwrap();
+                if !commits.contains(&fingerprint) {
+                    commits.push(fingerprint);
+                }
+                if self.lose.load(Ordering::SeqCst) {
+                    return Err(Failure::Unknown);
+                }
+            }
+            result
+        })
     }
 }
 
@@ -130,28 +116,37 @@ async fn actual_store_compatibility_replay_preserves_the_resolved_verdict() {
 async fn actual_retained_usage_resolution(compatibility_history: bool) {
     crate::dist_root_install::install();
     busbar_core_admin::install();
-    let inner = crate::root::real_store::store();
-    let module = inner.name().to_owned();
+    let backend = crate::root::real_store::native_backend().await;
+    let module = crate::LINKED
+        .stores
+        .iter()
+        .find(|row| row.1)
+        .unwrap()
+        .0
+        .to_owned();
     let boundary = Arc::new(LoseOneCommittedReply {
-        inner: inner.clone(),
-        lose: AtomicBool::new(true),
+        inner: backend,
+        lose: AtomicBool::new(false),
         in_flight: AtomicUsize::new(0),
+        usage_calls: AtomicUsize::new(0),
         committed: Mutex::new(Vec::new()),
     });
+    let inner = crate::root::real_store::core_over(boundary.clone()).await;
     let config = busbar_kernel::config::deploy_from_deserializer(json!({
         "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": [busbar_kernel::config::operator_provider()]},
         "store": {"module": module, "settings": {}}
     }))
     .unwrap();
     let mut config = busbar_kernel::config::resolve(&config, &Default::default()).unwrap();
-    let token_file = std::env::temp_dir().join(format!(
-        "ledger-recovery-operator-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let token_file = std::path::Path::new("/Users/matthew/Developer/tmp/corefix-implementation")
+        .join(format!(
+            "ledger-recovery-operator-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
     std::fs::write(&token_file, ADMIN_TOKEN).unwrap();
     config.auth.as_mut().unwrap().admin_auth[0].token = Some(
         busbar_kernel::config::secret::SecretRef::file(token_file.to_string_lossy()),
@@ -167,20 +162,19 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
         (None, None),
         None,
         &rules,
-        Some(busbar_contract::store_calls::OpenedStore {
-            records: boundary.clone(),
-            calls: Some(inner.clone()),
-        }),
+        Some(inner.clone()),
         false,
     )
+    .await
     .expect("the normal product builder owns the supplied actual Store");
     std::fs::remove_file(token_file).unwrap();
     limits.stage_boot();
     let book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store owns the durable recovery journal");
-    limits.keep().unwrap();
+    limits.keep().await.unwrap();
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let first = app.governance.as_ref().unwrap().clone();
     let key = VirtualKey {
@@ -191,7 +185,8 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
         created_at: busbar_kernel::store::now(),
         ..Default::default()
     };
-    boundary.put_key(&key).unwrap();
+    inner.identity().put_key(&key).await.unwrap();
+    boundary.lose.store(true, Ordering::SeqCst);
     let now = busbar_kernel::store::now();
     first.try_admit(&app.cost, &key, "", now).unwrap();
     first.record_usage(
@@ -202,16 +197,23 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
         &BTreeMap::from([("input".into(), INPUT)]),
         now,
     );
-    first.flush_budgets();
+    first.flush_budgets().await;
     let observed_backend_operations = boundary.committed.lock().unwrap().clone();
+    let original_usage_calls = boundary.usage_calls.load(Ordering::SeqCst);
+    assert!(original_usage_calls > 0);
     assert_eq!(
         observed_backend_operations.len(),
         1,
         "the real backend committed once before the reply was lost"
     );
-    let operation_id = observed_backend_operations[0].0;
+
     assert_eq!(
-        inner.get_usage(&key.id, 0).unwrap().tokens_for(MODEL),
+        inner
+            .ledger()
+            .get_usage(&key.id, 0)
+            .await
+            .unwrap()
+            .tokens_for(MODEL),
         Some(
             Count::from_integer(i128::from(INPUT))
                 .expect("fixture input fits Count")
@@ -221,10 +223,12 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
     let initial = first
         .recovery()
         .list(None, 100)
+        .await
         .unwrap()
         .into_iter()
-        .find(|i| i.operation_id == operation_id)
+        .find(|i| i.state == RecoveryState::Intent)
         .unwrap();
+    let operation_id = initial.operation_id;
     assert_eq!(initial.state, RecoveryState::Intent);
     assert_eq!(boundary.in_flight.load(Ordering::SeqCst), 0);
     app.governance = None;
@@ -236,17 +240,26 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
     }
 
     let restarted = Arc::new(
-        busbar_kernel::governance::GovState::new_with_signer(boundary.clone(), None, None).unwrap(),
+        busbar_kernel::governance::GovState::new_with_core(inner.clone(), None, None)
+            .await
+            .unwrap(),
     );
-    assert!(restarted.attach_store_calls(inner.clone()));
-    let sink = crate::root::durability::usage_recovery_sink(&book.durability);
-    restarted.attach_recovery_sink(sink.clone()).unwrap();
-    restarted.hydrate_budgets(&app.cost, now).unwrap();
-    restarted.flush_budgets();
+    let sink = crate::root::durability::usage_recovery_sink(book.runtime_journal.clone()).unwrap();
+    restarted.attach_recovery_sink(sink.clone()).await.unwrap();
+    restarted
+        .hydrate_budgets_async(&app.cost, now)
+        .await
+        .unwrap();
+    restarted.flush_budgets().await;
     assert_eq!(
         boundary.committed.lock().unwrap().len(),
         1,
         "unknown-age replay must not resend the original operation"
+    );
+    assert_eq!(
+        boundary.usage_calls.load(Ordering::SeqCst),
+        original_usage_calls,
+        "unknown-age replay does not submit the original candidate again"
     );
     app.amendments = Arc::clone(restarted.amendments());
     app.governance = Some(restarted.clone());
@@ -376,7 +389,16 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
     );
     assert_eq!(boundary.committed.lock().unwrap().len(), 1);
     assert_eq!(
-        inner.get_usage(&key.id, 0).unwrap().tokens_for(MODEL),
+        boundary.usage_calls.load(Ordering::SeqCst),
+        original_usage_calls
+    );
+    assert_eq!(
+        inner
+            .ledger()
+            .get_usage(&key.id, 0)
+            .await
+            .unwrap()
+            .tokens_for(MODEL),
         Some(
             Count::from_integer(i128::from(INPUT))
                 .expect("fixture input fits Count")
@@ -386,6 +408,7 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
 
     let durable = if compatibility_history {
         sink.replay()
+            .await
             .expect("actual Store compatibility replay must read the retained journal")
             .into_iter()
             .find(|event| {
@@ -393,7 +416,7 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
             })
             .expect("the actual selected history retains its durable verdict")
     } else {
-        let selections = sink.replay_selections().unwrap();
+        let selections = sink.replay_selections().await.unwrap();
         let selected = selections
             .into_iter()
             .find(|selection| selection.selected.operation_id == operation_id)
@@ -430,7 +453,7 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
             "outstanding_original_usage_calls": boundary.in_flight.load(Ordering::SeqCst),
             "repeat_status": repeat_status, "repeat_response": repeat,
             "actual_backend_commits": boundary.committed.lock().unwrap().len(),
-            "actual_backend_input": inner.get_usage(&key.id, 0).unwrap().tokens_for(MODEL),
+            "actual_backend_input": inner.ledger().get_usage(&key.id, 0).await.unwrap().tokens_for(MODEL),
             "verdict_actor": custody["verdict"]["actor"],
         });
         std::fs::write(path, serde_json::to_vec_pretty(&proof).unwrap()).unwrap();

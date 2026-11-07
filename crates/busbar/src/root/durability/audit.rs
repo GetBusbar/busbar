@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_kernel_audit::Audit as _;
 
 impl Durability {
     pub(super) fn resume_audit(&mut self, records: &[JournalRecord]) {
@@ -31,35 +30,57 @@ impl Durability {
         self.audit_records = sealed.split_off(keep);
     }
 
-    pub fn seal_unit(
+    /// Bound memory-only hot sealing. Returning this pair is not persistence;
+    /// its shared native owner must confirm the exact run before publication.
+    pub fn stage_unit(
         &mut self,
         mut inputs: AuditInputs,
         pass: busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
         token: &Grant<DurableWrite>,
-    ) -> Result<AuditRecord, DurabilityLost> {
+    ) -> Result<(AuditRecord, Arc<StagedRun>), DurabilityLost> {
         inputs.what.incarnation = self.incarnation;
-        let record = self.record.seal(inputs, &pass);
+        let journal = self.journal.clone();
+        let (record, run) = self.record.seal_for_journal(inputs, &pass, |record| {
+            let entry = audit_entry(record)
+                .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
+            journal
+                .stage_run(&[entry])
+                .map_err(|_| DurabilityLost::observed(token, StepName::Audit))
+        })?;
         if record.key_id.is_some() && self.audit_signed_from.is_none() {
             self.audit_signed_from = Some(record.seq);
         }
-
-        let appended = match audit_entry(&record) {
-            Ok(entry) => self.journal.append(token, StepName::Audit, &[entry]),
-            Err(_) => Err(DurabilityLost::observed(token, StepName::Audit)),
-        };
         self.audit_records.push(record.clone());
         if self.audit_records.len() > AUDIT_RING {
             let over = self.audit_records.len() - AUDIT_RING;
             self.audit_records.drain(..over);
         }
-        appended.map(|_| record)
+        Ok((record, run))
+    }
+
+    pub async fn seal_unit(
+        book: &Arc<std::sync::Mutex<Self>>,
+        inputs: AuditInputs,
+        pass: busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
+        token: &Grant<DurableWrite>,
+    ) -> Result<AuditRecord, DurabilityLost> {
+        let (journal, record, run) = {
+            let mut book = book.lock().unwrap_or_else(|poison| poison.into_inner());
+            let (record, run) = book.stage_unit(inputs, pass, token)?;
+            (book.journal.clone(), record, run)
+        };
+        journal
+            .confirm(&run)
+            .await
+            .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
+        Ok(record)
     }
 
     #[must_use]
-    pub fn audit_window(&self, from: u64, to: u64) -> Option<Vec<AuditRecord>> {
+    pub async fn audit_window(&self, from: u64, to: u64) -> Option<Vec<AuditRecord>> {
         match self.audit_window_at(from, to) {
             AuditWindowAt::Cached(records) => Some(records),
-            AuditWindowAt::OnChain { chain, .. } => chain.audit_window(from, to),
+            AuditWindowAt::OnChain { chain, .. } => chain.audit_window(from, to).await,
         }
     }
 
@@ -143,9 +164,9 @@ pub enum AuditWindowAt {
 
 impl ChainAt {
     #[must_use]
-    pub fn audit_window(self, from: u64, to: u64) -> Option<Vec<AuditRecord>> {
+    pub async fn audit_window(self, from: u64, to: u64) -> Option<Vec<AuditRecord>> {
         let store = self.store().map(str::to_string);
-        let records = match self.read() {
+        let records = match self.read().await {
             Ok(Ok(records)) => records,
             Ok(Err(broken)) => {
                 tracing::error!(?broken, "the chain an audit window reads does not verify");

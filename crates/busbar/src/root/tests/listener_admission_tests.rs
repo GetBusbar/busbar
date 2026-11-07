@@ -27,7 +27,11 @@ impl PluginHttpDispatch for Counter {
     }
 }
 
-fn app(auth: RouteAuth, calls: &Arc<AtomicUsize>) -> Arc<busbar_kernel::state::App> {
+async fn app(auth: RouteAuth, calls: &Arc<AtomicUsize>) -> Arc<busbar_kernel::state::App> {
+    static BUILDING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    static STORE: tokio::sync::OnceCell<Arc<busbar_kernel::persistence::facade::CoreStore>> =
+        tokio::sync::OnceCell::const_new();
+    let _building = BUILDING.lock().await;
     crate::dist_root_install::install();
     crate::root::test_plane_registry::register();
     let (auth_config, providers) = if matches!(&auth, RouteAuth::Admin) {
@@ -57,7 +61,10 @@ fn app(auth: RouteAuth, calls: &Arc<AtomicUsize>) -> Arc<busbar_kernel::state::A
     .expect("the admission deployment parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the admission deployment resolves");
-    let store = crate::root::real_store::store();
+    let store = STORE
+        .get_or_init(crate::root::real_store::core)
+        .await
+        .clone();
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
         Arc::new(crate::root::door_steps::Rules::default());
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -69,28 +76,27 @@ fn app(auth: RouteAuth, calls: &Arc<AtomicUsize>) -> Arc<busbar_kernel::state::A
         (None, None),
         None,
         &rules,
-        Some(busbar_contract::store_calls::OpenedStore {
-            records: store.clone(),
-            calls: Some(store),
-        }),
+        Some(store),
         false,
     )
+    .await
     .expect("the product builds the admission application");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
+    let _ = crate::root::kernel::ROOT_CARD.keep_in_store(
         app.governance
             .as_ref()
             .expect("the listener application has its configured governance Store")
-            .store_calls()
+            .core_store_handle()
             .expect("the configured product Store exposes its actual calls"),
         busbar_kernel::door::op_id().counter(),
     );
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the listener's actual Store boots its rate-card history");
-    limits.keep().expect("the admission limits commit");
+    limits.keep().await.expect("the admission limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     app.plugin_routes = Arc::new(
         build_route_table(vec![RouteDecl {
@@ -112,8 +118,8 @@ fn app(auth: RouteAuth, calls: &Arc<AtomicUsize>) -> Arc<busbar_kernel::state::A
     Arc::new(app)
 }
 
-fn data_router(calls: &Arc<AtomicUsize>) -> axum::Router {
-    let app = app(RouteAuth::None, calls);
+async fn data_router(calls: &Arc<AtomicUsize>) -> axum::Router {
+    let app = app(RouteAuth::None, calls).await;
     let prepared = Arc::new(
         busbar_kernel::router::PreparedListener::new(
             &app,
@@ -251,10 +257,9 @@ async fn send_past_one_receive_window(
 #[tokio::test]
 async fn an_unauthorized_admin_h2_get_is_refused_without_reading_its_open_body() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app(
-        RouteAuth::Admin,
-        &calls,
-    )));
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(
+        app(RouteAuth::Admin, &calls).await,
+    ));
     let router = busbar_kernel::router::build_admin_router_on_with_dispatch_layer(
         &handle,
         32 * 1024 * 1024,
@@ -278,7 +283,7 @@ async fn an_unauthorized_admin_h2_get_is_refused_without_reading_its_open_body()
 #[tokio::test]
 async fn a_deferred_h2_get_holds_the_existing_data_permit_until_its_body_finishes() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let (client, server, driver) = client(data_router(&calls)).await;
+    let (client, server, driver) = client(data_router(&calls).await).await;
     let (body, first_body) = open_body();
     let (polled, moved) = (body.polled.clone(), body.moved.clone());
     let first_response = send(client.clone(), body);
@@ -329,7 +334,7 @@ async fn a_deferred_h2_get_holds_the_existing_data_permit_until_its_body_finishe
 #[tokio::test]
 async fn cancelling_a_deferred_h2_body_releases_the_data_permit_without_dispatch() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let (client, server, driver) = client(data_router(&calls)).await;
+    let (client, server, driver) = client(data_router(&calls).await).await;
     let (body, _first_body) = open_body();
     let (polled, moved) = (body.polled.clone(), body.moved.clone());
     let first_response = send(client.clone(), body);

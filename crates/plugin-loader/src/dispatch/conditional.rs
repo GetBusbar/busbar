@@ -567,7 +567,7 @@ pub(crate) unsafe fn answer(
         let store = Arc::clone(served.store);
         let completion = observation.clone();
         let completed = move |result: Result<
-            busbar_contract::abi::sdk::store::conditional::Expected,
+            busbar_contract::host_records::conditional::Expected,
             &'static str,
         >| {
             let result = wire::ObservationResult {

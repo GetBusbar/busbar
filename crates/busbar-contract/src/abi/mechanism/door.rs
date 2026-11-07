@@ -547,7 +547,6 @@ impl Statement {
 mod sealed {
     /// The private supertrait that closes [`super::KindTail`].
     pub trait Sealed {}
-    impl Sealed for crate::abi::store::StoreTail {}
     impl Sealed for crate::abi::auth::AuthTail {}
     impl Sealed for crate::abi::hook::Tail {}
     impl Sealed for crate::abi::export::Tail {}
@@ -557,7 +556,6 @@ mod sealed {
 
 /// A KIND'S STATEMENT TAIL: a `#[repr(C)]` struct leading with a [`KindTailHead`], one per kind
 pub trait KindTail: sealed::Sealed + 'static {}
-impl KindTail for crate::abi::store::StoreTail {}
 impl KindTail for crate::abi::auth::AuthTail {}
 impl KindTail for crate::abi::hook::Tail {}
 impl KindTail for crate::abi::export::Tail {}

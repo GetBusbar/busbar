@@ -1,504 +1,441 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::caps::StepName;
-use busbar_contract::count::Count;
-use busbar_contract::records::{
-    MeteringDelta, MeteringRow, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta,
-    UsageLedger, VirtualKey, UNIT_INPUT,
-};
-use busbar_kernel::cost::CostModel;
-use busbar_kernel::governance::metering_bucket;
-use busbar_kernel_wal::{Entry, Record, RecordClass};
-
 use super::*;
-use crate::root::durability::{build_on_store, read_chain, DurabilityConfig, JournalLane};
-use crate::root::store_double::RecordSlots;
-
-const NODE: u64 = 31;
-
-const OUTAGE: std::time::Duration = std::time::Duration::from_millis(300);
+use busbar_contract::persistence::{
+    BackendInfo, Call, ClockObservation, DatasetId, Decision, Failure, Mutation, Page,
+    PersistenceBackend, PreparedCandidate, Read, ReadResult, Scan,
+};
+use busbar_contract::records::{VirtualKey, UNIT_INPUT};
+use busbar_kernel::cost::CostModel;
+use busbar_kernel::persistence::{
+    boot_identity::BootIdentity,
+    facade::{CoreStore, Limits},
+    journal::runtime::{BufferBudget, RuntimeError},
+    startup::{Progress, Startup},
+};
+use busbar_kernel_wal::{Entry, RecordClass};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::{Notify, Semaphore};
 
 const WAIT: std::time::Duration = std::time::Duration::from_secs(5);
-
-fn store_book(slots: &RecordSlots) -> (Arc<Mutex<Durability>>, JournalLane) {
-    store_book_bounded(slots, busbar_kernel_wal::MEMORY_BUFFER_RECORDS)
-}
-
-fn store_book_bounded(
-    slots: &RecordSlots,
-    capacity: usize,
-) -> (Arc<Mutex<Durability>>, JournalLane) {
-    let lane =
-        JournalLane::with_capacity(slots.calls(), "test-store", capacity).expect("the lane starts");
-    let durability = build_on_store(
-        &DurabilityConfig { data_dir: None },
-        NODE,
-        lane.clone(),
-        None,
-    )
-    .expect("the store reads back");
-    (Arc::new(Mutex::new(durability)), lane)
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn the_shutdown_tail_drains_the_journal_lane_before_it_returns() {
-    let slots = RecordSlots::new();
-    let (book, lane) = store_book(&slots);
-    slots.refuse(true);
-    let before = slots.puts();
-    let queued: Vec<Record> = (1..=4)
-        .map(|seq| Record::new(NODE + 1, seq, vec![7u8; 24]))
-        .collect();
-    lane.shipper()
-        .ship(&queued)
-        .expect("a refusing store does not refuse the hand-off: the lane has room");
-    assert!(lane.pending() > 0, "the records wait for the store");
-
-    let recovers = {
-        let slots = slots.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(OUTAGE);
-            slots.refuse(false);
-        })
-    };
-    let late = LateServices::new();
-    tail(None, &late, Some(&book)).await;
-
-    assert_eq!(
-        lane.pending(),
-        0,
-        "the tail returned with journal records still queued for the store"
-    );
-    assert!(
-        slots.puts() >= before + queued.len(),
-        "every queued record reached the store before the tail returned"
-    );
-    recovers.join().expect("the recovery thread");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn the_shutdown_tail_hands_the_store_what_the_journal_held_back() {
-    let slots = RecordSlots::new();
-    let (book, lane) = store_book_bounded(&slots, 4);
-    assert!(lane.drain(WAIT), "the boot's records reach the store");
-    slots.refuse(true);
-    let token = crate::root::kernel::new_kernel().durability_token();
-    let written = {
-        let mut durability = book.lock().expect("the book");
-
-        for _ in 0..6 {
-            let _ = durability.journal.append(
-                &token,
-                StepName::Meter,
-                &[Entry::new(RecordClass::Load, Vec::new())],
-            );
-        }
-        assert!(
-            durability.journal.buffered() > 0,
-            "the journal holds back what the full lane turned away"
-        );
-        durability.journal.next_seq() - 1
-    };
-
-    let recovers = {
-        let slots = slots.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(OUTAGE);
-            slots.refuse(false);
-        })
-    };
-    let late = LateServices::new();
-    tail(None, &late, Some(&book)).await;
-
-    assert_eq!(
-        book.lock().expect("the book").journal.buffered(),
-        0,
-        "the tail returned with records the journal still held back from the store"
-    );
-    assert_eq!(lane.pending(), 0, "the tail returned with records queued");
-    assert_eq!(
-        read_chain(slots.calls().as_ref(), NODE)
-            .expect("the store reads back")
-            .len() as u64,
-        written,
-        "every record the journal sealed reached the store before the tail returned"
-    );
-    recovers.join().expect("the recovery thread");
-}
-
-const SHUTDOWN_KEY: &str = "vk_shutdown_tail";
-const SHUTDOWN_MODEL: &str = "shutdown-model";
-const SHUTDOWN_PROVIDER: &str = "shutdown-provider";
 const INPUT_USED: u64 = 17;
-const STORE_DOWN: &str = "the shutdown test store is unavailable";
 
-#[derive(Clone, Default)]
-struct ShutdownMessages(Arc<Mutex<Vec<u8>>>);
-
-impl ShutdownMessages {
-    fn messages(&self) -> Vec<String> {
-        String::from_utf8(self.0.lock().expect("shutdown log bytes").clone())
-            .expect("shutdown logs are UTF-8")
-            .lines()
-            .map(str::to_owned)
-            .collect()
-    }
-
-    fn contains(&self, text: &str) -> bool {
-        self.messages().iter().any(|line| line.contains(text))
-    }
-}
-
-impl std::io::Write for ShutdownMessages {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0
-            .lock()
-            .expect("shutdown log bytes")
-            .extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for ShutdownMessages {
-    type Writer = Self;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        self.clone()
-    }
-}
-
-/// A store write requires the single-threaded runtime to release it. The fixture watchdog only
-/// unhangs a broken inline tail; assertions inspect the write results after all gates are released.
-#[derive(Default)]
 struct FlushGate {
-    entered: tokio::sync::Notify,
-    released: Mutex<bool>,
-    changed: std::sync::Condvar,
-    timed_out: std::sync::atomic::AtomicBool,
+    entered: Notify,
+    released: Semaphore,
 }
-
-impl FlushGate {
-    fn wait(&self) -> RecordStoreResult<()> {
-        self.entered.notify_one();
-        let (released, _) = self
-            .changed
-            .wait_timeout_while(self.released.lock().expect("gate lock"), WAIT, |open| {
-                !*open
-            })
-            .expect("gate wait");
-        if !*released {
-            self.timed_out
-                .store(true, std::sync::atomic::Ordering::Release);
-            return Err(RecordStoreError(
-                "runtime did not release the store write".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn release(&self) {
-        *self.released.lock().expect("gate lock") = true;
-        self.changed.notify_all();
-    }
-}
-
-#[derive(Clone, Copy)]
-enum FlushOutcome {
-    Commit,
-    Fail,
-    PanicBudget,
-}
-
-struct FlushStore {
-    inner: Arc<dyn RecordStore>,
-    budget: Option<Arc<FlushGate>>,
-    metering: Option<Arc<FlushGate>>,
-    outcome: FlushOutcome,
-}
-
-impl FlushStore {
-    fn new(outcome: FlushOutcome) -> Self {
+impl Default for FlushGate {
+    fn default() -> Self {
         Self {
-            inner: crate::root::real_store::records(),
-            budget: None,
-            metering: None,
-            outcome,
+            entered: Notify::new(),
+            released: Semaphore::new(0),
         }
     }
 }
-
-impl RecordStore for FlushStore {
-    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
-        self.inner.put_key(key)
+impl FlushGate {
+    async fn wait(&self) {
+        self.entered.notify_one();
+        self.released.acquire().await.unwrap().forget();
     }
-    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-        self.inner.get_key(id)
+    fn release(&self) {
+        self.released.add_permits(1);
     }
-    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.inner.list_keys()
-    }
-    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-        self.inner.delete_key(id)
-    }
-    fn get_usage(&self, bucket: &str, window: u64) -> RecordStoreResult<UsageLedger> {
-        self.inner.get_usage(bucket, window)
-    }
-    fn put_usage(&self, bucket: &str, window: u64, ledger: &UsageLedger) -> RecordStoreResult<()> {
-        self.inner.put_usage(bucket, window, ledger)
-    }
-    fn add_usage(&self, bucket: &str, window: u64, delta: &UsageDelta) -> RecordStoreResult<()> {
-        if let Some(gate) = &self.budget {
-            gate.wait()?;
-        }
-        match self.outcome {
-            FlushOutcome::Fail => Err(RecordStoreError(STORE_DOWN.into())),
-            FlushOutcome::PanicBudget => panic!("planted budget store panic"),
-            FlushOutcome::Commit => self.inner.add_usage(bucket, window, delta),
-        }
-    }
-    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
-        if let Some(gate) = &self.metering {
-            gate.wait()?;
-        }
-        match self.outcome {
-            FlushOutcome::Fail => Err(RecordStoreError(STORE_DOWN.into())),
-            FlushOutcome::Commit | FlushOutcome::PanicBudget => self.inner.add_metering(delta),
-        }
-    }
-    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-        self.inner.list_metering(bucket)
+    async fn entered(&self) {
+        tokio::time::timeout(WAIT, self.entered.notified())
+            .await
+            .expect("actual native commit reached the gate");
     }
 }
 
-fn accrued_governance(store: Arc<FlushStore>) -> (Arc<GovState>, u64) {
-    let key = VirtualKey {
-        id: SHUTDOWN_KEY.into(),
-        name: SHUTDOWN_KEY.into(),
-        enabled: true,
-        ..Default::default()
-    };
-    store.put_key(&key).expect("key persists before the outage");
-    let gov = Arc::new(GovState::new(store, None).expect("governance boots"));
-    let cost = CostModel::resolve_parts(None, 0, &std::collections::BTreeMap::new());
-    let now = busbar_kernel::store::now();
-    let units = [(UNIT_INPUT.to_owned(), INPUT_USED)].into_iter().collect();
-    gov.try_admit(&cost, &key, "", now).expect("request admits");
-    gov.record_usage(&cost, &key, "", SHUTDOWN_MODEL, &units, now);
-    gov.record_lane_metering(
-        SHUTDOWN_KEY,
-        SHUTDOWN_MODEL,
-        Some(SHUTDOWN_PROVIDER),
-        &units,
-        now,
+/// Faults intercept the real product's primitive commit. Key/ledger/journal
+/// encoding, guarded mutation planning, and retained attempts stay in CoreStore.
+struct FlushBackend {
+    inner: Arc<dyn PersistenceBackend>,
+    budget: Mutex<Option<Arc<FlushGate>>>,
+    metering: Mutex<Option<Arc<FlushGate>>>,
+    journal: Mutex<Option<Arc<FlushGate>>>,
+    fail_accounting: AtomicBool,
+    panic_budget: AtomicBool,
+}
+impl PersistenceBackend for FlushBackend {
+    fn info(&self) -> BackendInfo {
+        self.inner.info()
+    }
+    fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
+        self.inner.read(request)
+    }
+    fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
+        self.inner.scan(request)
+    }
+    fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
+        self.inner.clock(dataset)
+    }
+    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+        Box::pin(async move {
+            let is = |prefix: &[u8]| {
+                candidate.candidate().mutations.iter().any(|mutation| {
+                matches!(mutation, Mutation::Put {address,..} if address.key.starts_with(prefix))
+            })
+            };
+            let budget = is(b"U");
+            let metering = is(b"M");
+            let journal = is(b"busbar.journal4\0");
+            let gate = if budget {
+                self.budget.lock().unwrap().take()
+            } else if metering {
+                self.metering.lock().unwrap().take()
+            } else if journal {
+                self.journal.lock().unwrap().take()
+            } else {
+                None
+            };
+            if let Some(gate) = gate {
+                gate.wait().await;
+            }
+            if budget && self.panic_budget.swap(false, Ordering::AcqRel) {
+                panic!("planted panic while the native budget attempt is owned");
+            }
+            if (budget || metering) && self.fail_accounting.load(Ordering::Acquire) {
+                return Err(Failure::Unknown);
+            }
+            self.inner.commit(candidate).await
+        })
+    }
+}
+
+struct Fixture {
+    backend: Arc<FlushBackend>,
+    startup: Startup,
+    core: Arc<CoreStore>,
+    book: crate::root::durability::NodeBook,
+    gov: Arc<GovState>,
+    key: VirtualKey,
+    day: u64,
+    budget: BufferBudget,
+}
+impl Fixture {
+    async fn new(capacity: usize) -> Self {
+        let backend = Arc::new(FlushBackend {
+            inner: crate::root::real_store::native_backend().await,
+            budget: Mutex::new(None),
+            metering: Mutex::new(None),
+            journal: Mutex::new(None),
+            fail_accounting: AtomicBool::new(false),
+            panic_budget: AtomicBool::new(false),
+        });
+        let mut startup = Startup::new(
+            backend.clone(),
+            Limits {
+                pending_operations: 1024,
+                conflict_retries: 8,
+                scan_items: 128,
+                scan_bytes: 1024 * 1024,
+            },
+            true,
+        )
+        .unwrap();
+        loop {
+            match startup.advance().await.expect("native Store startup") {
+                Progress::Advanced => {}
+                Progress::Admitted => break,
+                other => panic!("native startup did not admit: {other:?}"),
+            }
+        }
+        let core = startup.store().unwrap();
+        let identity = Arc::new(BootIdentity::new(core.clone()).unwrap());
+        let taken = identity
+            .take_node(&format!(
+                "shutdown-{}",
+                busbar_kernel::door::op_id().counter()
+            ))
+            .await
+            .unwrap();
+        let budget = BufferBudget {
+            records: capacity,
+            bytes: 16 * 1024 * 1024,
+        };
+        let runtime = RuntimeJournal::open(core.clone(), taken.id, budget)
+            .await
+            .unwrap();
+        let mut book = crate::root::durability::node_book(runtime, budget)
+            .await
+            .unwrap();
+        book.node_lease = taken.lease.map(Arc::new);
+        let key = VirtualKey {
+            id: format!("vk_shutdown_{}", busbar_kernel::door::op_id().counter()),
+            enabled: true,
+            ..Default::default()
+        };
+        core.identity().put_key(&key).await.unwrap();
+        let gov = Arc::new(
+            GovState::new_with_core(core.clone(), None, None)
+                .await
+                .unwrap(),
+        );
+        let day = busbar_kernel::governance::metering_bucket(busbar_kernel::store::now());
+        Self {
+            backend,
+            startup,
+            core,
+            book,
+            gov,
+            key,
+            day,
+            budget,
+        }
+    }
+    fn accrue(&self) {
+        let cost = CostModel::resolve_parts(None, 0, &std::collections::BTreeMap::new());
+        let now = busbar_kernel::store::now();
+        let units = [(UNIT_INPUT.to_owned(), INPUT_USED)].into_iter().collect();
+        self.gov.try_admit(&cost, &self.key, "", now).unwrap();
+        self.gov
+            .record_usage(&cost, &self.key, "", "shutdown-model", &units, now);
+        self.gov.record_lane_metering(
+            &self.key.id,
+            "shutdown-model",
+            Some("shutdown-provider"),
+            &units,
+            now,
+        );
+    }
+    fn stage(&self, count: usize) {
+        let entries: Vec<_> = (0..count)
+            .map(|_| Entry::new(RecordClass::Load, vec![7; 24]))
+            .collect();
+        self.book.runtime_journal.stage_run(&entries).unwrap();
+    }
+    async fn requests(&self) -> u64 {
+        self.core
+            .ledger()
+            .get_usage(&self.key.id, 0)
+            .await
+            .unwrap()
+            .requests
+    }
+    async fn metered(&self) -> Vec<busbar_contract::records::MeteringRow> {
+        self.core.ledger().list_metering(self.day).await.unwrap()
+    }
+    async fn retire(&mut self, drained: Drained) {
+        retire_storage(&mut self.startup, Some(&self.book), drained)
+            .await
+            .expect("drained native writer retires");
+        assert!(self.startup.store().is_none());
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_shutdown_tail_drains_the_journal_lane_before_it_returns() {
+    let mut fixture = Fixture::new(16).await;
+    fixture.stage(4);
+    let gate = Arc::new(FlushGate::default());
+    *fixture.backend.journal.lock().unwrap() = Some(gate.clone());
+    let book = fixture.book.durability.clone();
+    let task = tokio::spawn(async move { tail(None, &LateServices::new(), Some(&book)).await });
+    gate.entered().await;
+    assert!(!task.is_finished());
+    assert_eq!(fixture.book.runtime_journal.pending_records(), 4);
+    assert!(fixture
+        .book
+        .runtime_journal
+        .read_records(fixture.budget)
+        .await
+        .unwrap()
+        .is_empty());
+    gate.release();
+    let drained = tokio::time::timeout(WAIT, task)
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("journal queue drained");
+    assert_eq!(fixture.book.runtime_journal.pending_records(), 0);
+    assert_eq!(
+        fixture
+            .book
+            .runtime_journal
+            .read_records(fixture.budget)
+            .await
+            .unwrap()
+            .len(),
+        4
     );
-    (gov, metering_bucket(now))
+    fixture.retire(drained).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_shutdown_tail_hands_the_store_every_accepted_original_at_capacity() {
+    let mut fixture = Fixture::new(4).await;
+    fixture.stage(4);
+    assert!(matches!(
+        fixture
+            .book
+            .runtime_journal
+            .stage_run(&[Entry::new(RecordClass::Load, Vec::new())]),
+        Err(RuntimeError::Budget)
+    ));
+    // A rejected reservation is not an acknowledged hidden buffer. All four
+    // originals accepted by the native owner must reach their selected head.
+    let drained = tail(None, &LateServices::new(), Some(&fixture.book.durability))
+        .await
+        .expect("all accepted originals drain");
+    assert_eq!(
+        fixture
+            .book
+            .runtime_journal
+            .read_records(fixture.budget)
+            .await
+            .unwrap()
+            .len(),
+        4
+    );
+    assert_eq!(fixture.book.runtime_journal.pending_records(), 0);
+    fixture.retire(drained).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn shutdown_flushes_allow_runtime_progress_and_wait_for_each_store_write() {
+    let mut fixture = Fixture::new(16).await;
+    fixture.accrue();
     let budget = Arc::new(FlushGate::default());
     let metering = Arc::new(FlushGate::default());
-    let store = Arc::new(FlushStore {
-        budget: Some(budget.clone()),
-        metering: Some(metering.clone()),
-        ..FlushStore::new(FlushOutcome::Commit)
-    });
-    let (gov, bucket) = accrued_governance(store.clone());
-    let task = tokio::spawn(async move { tail(Some(gov), &LateServices::new(), None).await });
-
-    let budget_entered = tokio::time::timeout(WAIT, budget.entered.notified())
-        .await
-        .is_ok();
-    let waiting_for_budget = !task.is_finished();
-    let before_budget = store.get_usage(SHUTDOWN_KEY, 0).expect("usage reads");
-    let before_metering = store.list_metering(bucket).expect("metering reads");
+    *fixture.backend.budget.lock().unwrap() = Some(budget.clone());
+    *fixture.backend.metering.lock().unwrap() = Some(metering.clone());
+    let gov = fixture.gov.clone();
+    let book = fixture.book.durability.clone();
+    let task =
+        tokio::spawn(async move { tail(Some(gov), &LateServices::new(), Some(&book)).await });
+    budget.entered().await;
+    assert!(!task.is_finished());
+    assert_eq!(fixture.requests().await, 0);
+    assert!(fixture.metered().await.is_empty());
     budget.release();
-    let metering_entered = tokio::time::timeout(WAIT, metering.entered.notified())
-        .await
-        .is_ok();
-    let waiting_for_metering = !task.is_finished();
-    let budget_at_metering = store.get_usage(SHUTDOWN_KEY, 0).expect("usage reads");
-    let metering_before_return = store.list_metering(bucket).expect("metering reads");
+    metering.entered().await;
+    assert!(!task.is_finished());
+    assert_eq!(fixture.requests().await, 1);
+    assert!(fixture.metered().await.is_empty());
     metering.release();
-    tokio::time::timeout(WAIT, task)
+    let drained = tokio::time::timeout(WAIT, task)
         .await
-        .expect("tail completes")
-        .expect("tail joins");
-
-    assert!(
-        budget_entered && metering_entered,
-        "both real store writes ran"
-    );
-    assert!(
-        waiting_for_budget && waiting_for_metering,
-        "tail waits for each store write"
-    );
+        .unwrap()
+        .unwrap()
+        .expect("actual accounting drivers drain");
+    assert!(!fixture.gov.has_unsettled_persistence());
     assert_eq!(
-        before_budget.requests, 0,
-        "the gated budget write has not landed"
-    );
-    assert!(
-        before_metering.is_empty(),
-        "metering follows the completed budget flush"
-    );
-    assert_eq!(
-        budget_at_metering.requests, 1,
-        "budget completes before metering starts"
-    );
-    assert!(
-        metering_before_return.is_empty(),
-        "the gated metering write has not landed"
-    );
-    assert_eq!(
-        store
-            .get_usage(SHUTDOWN_KEY, 0)
-            .expect("usage reads")
+        fixture
+            .core
+            .ledger()
+            .get_usage(&fixture.key.id, 0)
+            .await
+            .unwrap()
             .total_input(),
-        Count::from_integer(i128::from(INPUT_USED))
-            .expect("fixture input fits Count")
-            .micros()
-    );
-    let rows = store.list_metering(bucket).expect("metering reads");
-    assert_eq!(
-        rows.iter().map(|row| row.tokens_input).sum::<i128>(),
-        Count::from_integer(i128::from(INPUT_USED))
-            .expect("fixture input fits Count")
-            .micros()
-    );
-    assert!(!budget.timed_out.load(std::sync::atomic::Ordering::Acquire));
-    assert!(!metering
-        .timed_out
-        .load(std::sync::atomic::Ordering::Acquire));
-}
-
-#[test]
-fn shutdown_tail_reports_terminal_budget_and_metering_store_failures() {
-    let store = Arc::new(FlushStore::new(FlushOutcome::Fail));
-    let (gov, bucket) = accrued_governance(store.clone());
-    let captured = ShutdownMessages::default();
-    tracing::subscriber::with_default(
-        tracing_subscriber::fmt()
-            .without_time()
-            .with_ansi(false)
-            .with_writer(captured.clone())
-            .finish(),
-        || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("runtime")
-                .block_on(tail(Some(gov), &LateServices::new(), None));
-        },
-    );
-    let lines = captured.messages();
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("shutdown budget flush:") && line.contains(SHUTDOWN_KEY)),
-        "{lines:?}"
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("shutdown metering flush:") && line.contains(SHUTDOWN_KEY)),
-        "{lines:?}"
-    );
-    assert!(
-        !lines
-            .iter()
-            .any(|line| line.contains("will retry next tick")),
-        "{lines:?}"
+        i128::from(INPUT_USED) * 1_000_000
     );
     assert_eq!(
-        store
-            .get_usage(SHUTDOWN_KEY, 0)
-            .expect("usage reads")
-            .requests,
-        0
-    );
-    assert!(store
-        .list_metering(bucket)
-        .expect("metering reads")
-        .is_empty());
-}
-
-#[test]
-fn a_panicking_budget_flush_is_logged_and_metering_and_journal_still_drain() {
-    let store = Arc::new(FlushStore::new(FlushOutcome::PanicBudget));
-    let (gov, bucket) = accrued_governance(store.clone());
-    let slots = RecordSlots::new();
-    let (book, lane) = store_book(&slots);
-    let queued = Record::new(NODE + 1, 1, vec![7u8; 24]);
-    lane.shipper()
-        .ship(&[queued])
-        .expect("journal record queues");
-    let captured = ShutdownMessages::default();
-    tracing::subscriber::with_default(
-        tracing_subscriber::fmt()
-            .without_time()
-            .with_ansi(false)
-            .with_writer(captured.clone())
-            .finish(),
-        || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("runtime")
-                .block_on(async { tail(Some(gov), &LateServices::new(), Some(&book)).await });
-        },
-    );
-    assert!(
-        captured.contains("budget shutdown flush task failed"),
-        "{:?}",
-        captured.messages()
-    );
-    assert_eq!(
-        store
-            .list_metering(bucket)
-            .expect("metering reads")
+        fixture
+            .metered()
+            .await
             .iter()
             .map(|row| row.tokens_input)
             .sum::<i128>(),
-        Count::from_integer(i128::from(INPUT_USED))
-            .expect("fixture input fits Count")
-            .micros()
+        i128::from(INPUT_USED) * 1_000_000
     );
-    assert_eq!(
-        lane.pending(),
-        0,
-        "journal retirement follows the failed budget task"
+    fixture.retire(drained).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn shutdown_tail_reports_terminal_budget_and_metering_store_failures() {
+    let fixture = Fixture::new(16).await;
+    fixture.accrue();
+    fixture
+        .backend
+        .fail_accounting
+        .store(true, Ordering::Release);
+    let result = tail(
+        Some(fixture.gov.clone()),
+        &LateServices::new(),
+        Some(&fixture.book.durability),
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "no clean-drain proof exists after uncertain native writes"
     );
+    assert!(fixture.gov.has_unsettled_persistence());
+    assert_eq!(fixture.requests().await, 0);
+    assert!(fixture.metered().await.is_empty());
+    assert!(
+        fixture.startup.store().is_some(),
+        "failure does not enter writer retirement"
+    );
+    fixture
+        .core
+        .identity()
+        .put_key(&VirtualKey {
+            id: "writer-remains-admitted".into(),
+            enabled: true,
+            ..Default::default()
+        })
+        .await
+        .expect("native authority remains admitted for exact reconciliation");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_panicking_budget_flush_is_reported_and_metering_and_journal_still_drain() {
+    let fixture = Fixture::new(16).await;
+    fixture.accrue();
+    fixture.stage(1);
+    fixture.backend.panic_budget.store(true, Ordering::Release);
+    let result = tail(
+        Some(fixture.gov.clone()),
+        &LateServices::new(),
+        Some(&fixture.book.durability),
+    )
+    .await;
+    let error = match result {
+        Ok(_) => panic!("a failed driver cannot yield retirement proof"),
+        Err(error) => error,
+    };
+    assert!(error.contains("budget final driver failed"));
     assert_eq!(
-        read_chain(slots.calls().as_ref(), NODE + 1)
-            .expect("journal reads")
+        fixture
+            .metered()
+            .await
+            .iter()
+            .map(|row| row.tokens_input)
+            .sum::<i128>(),
+        i128::from(INPUT_USED) * 1_000_000
+    );
+    assert_eq!(fixture.book.runtime_journal.pending_records(), 0);
+    assert_eq!(
+        fixture
+            .book
+            .runtime_journal
+            .read_records(fixture.budget)
+            .await
+            .unwrap()
             .len(),
         1
     );
+    assert!(fixture.gov.has_unsettled_persistence());
+    assert!(fixture.startup.store().is_some());
 }
 
 async fn background_flusher_finishes_before_journal_retirement(signal_first: bool) {
-    let budget = Arc::new(FlushGate::default());
-    let store = Arc::new(FlushStore {
-        budget: Some(budget.clone()),
-        ..FlushStore::new(FlushOutcome::Commit)
-    });
-    let (gov, bucket) = accrued_governance(store.clone());
-    let slots = RecordSlots::new();
-    let (book, lane) = store_book(&slots);
+    let mut fixture = Fixture::new(16).await;
+    fixture.accrue();
+    let gate = Arc::new(FlushGate::default());
+    *fixture.backend.budget.lock().unwrap() = Some(gate.clone());
     let (shutdown, receiver) = tokio::sync::broadcast::channel(1);
-    let flusher = busbar_kernel::governance::spawn_budget_flusher(gov.clone(), receiver, None);
+    let flusher =
+        busbar_kernel::governance::spawn_budget_flusher(fixture.gov.clone(), receiver, None);
     if signal_first {
-        shutdown.send(()).expect("flusher receives shutdown");
-        tokio::time::timeout(WAIT, budget.entered.notified())
-            .await
-            .expect("background writer owns the dirty budget cell");
+        shutdown.send(()).unwrap();
+        gate.entered().await;
     }
-    let mut task = tokio::spawn(async move {
+    let gov = fixture.gov.clone();
+    let book = fixture.book.durability.clone();
+    let task = tokio::spawn(async move {
         tail_after_flusher(
             Some(gov),
             &LateServices::new(),
@@ -506,64 +443,43 @@ async fn background_flusher_finishes_before_journal_retirement(signal_first: boo
             &shutdown,
             Some(flusher),
         )
-        .await;
+        .await
     });
     if !signal_first {
-        tokio::time::timeout(WAIT, budget.entered.notified())
-            .await
-            .expect("EOF shutdown wakes the background writer");
+        gate.entered().await;
     }
-    let pending = tokio::time::timeout(std::time::Duration::from_millis(30), &mut task)
+    assert!(
+        !task.is_finished(),
+        "shutdown joins the owner of the dirty cell"
+    );
+    assert_eq!(fixture.requests().await, 0);
+    assert!(
+        fixture.book.runtime_journal.refuses_money().is_none(),
+        "staging stays open while accounting is active"
+    );
+    gate.release();
+    let drained = tokio::time::timeout(WAIT, task)
         .await
-        .is_err();
-    let journal_alive = lane.healthy().is_ok();
-    let requests_before = store
-        .get_usage(SHUTDOWN_KEY, 0)
-        .expect("usage reads")
-        .requests;
-    budget.release();
-    if pending {
-        tokio::time::timeout(WAIT, task)
-            .await
-            .expect("shutdown finishes after the writer")
-            .expect("shutdown joins");
-    }
+        .unwrap()
+        .unwrap()
+        .expect("periodic owner joined and final queues drained");
+    assert_eq!(fixture.requests().await, 1);
+    assert!(!fixture.metered().await.is_empty());
     assert!(
-        pending,
-        "shutdown must join the writer holding the dirty cell"
+        fixture.book.runtime_journal.refuses_money().is_some(),
+        "final drain closes staging"
     );
     assert!(
-        journal_alive,
-        "the journal must stay writable until accounting finishes"
+        fixture.startup.store().is_some(),
+        "native retirement requires the drain proof explicitly"
     );
-    assert_eq!(requests_before, 0);
-    let usage = store.get_usage(SHUTDOWN_KEY, 0).expect("usage reads");
-    assert_eq!(
-        usage.requests, 1,
-        "the completed request persists exactly once"
-    );
-    assert_eq!(
-        usage.total_input(),
-        Count::from_integer(i128::from(INPUT_USED))
-            .unwrap()
-            .micros()
-    );
-    assert!(!store
-        .list_metering(bucket)
-        .expect("metering reads")
-        .is_empty());
-    assert!(
-        lane.healthy().is_err(),
-        "only the completed tail retires the journal"
-    );
-    assert!(!budget.timed_out.load(std::sync::atomic::Ordering::Acquire));
+    fixture.retire(drained).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn shutdown_joins_inflight_background_accounting_before_retiring_journal() {
     background_flusher_finishes_before_journal_retirement(true).await;
 }
-
 #[tokio::test(flavor = "current_thread")]
 async fn line_eof_stops_and_joins_background_accounting_before_retiring_journal() {
     background_flusher_finishes_before_journal_retirement(false).await;

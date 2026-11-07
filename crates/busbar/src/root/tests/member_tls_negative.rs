@@ -22,8 +22,8 @@ fn member(server: &TlsToolServer) -> Value {
     tools
 }
 
-fn root_rig(instance: &'static str, port: u16, tools: Value) -> Result<Rig, String> {
-    let rig = try_rig_tools(instance, port, tools)?;
+async fn root_rig(instance: &'static str, port: u16, tools: Value) -> Result<Rig, String> {
+    let rig = try_rig_tools(instance, port, tools).await?;
     assert!(
         rig.live.served_facts.need_trust.contains(&"settings.*.tls"),
         "the actual MCP descriptor must select member TLS settings"
@@ -91,17 +91,23 @@ async fn member_ca_does_not_allow_missing_wrong_roots_or_a_wrong_spki() {
 
     let mut missing = server.section();
     missing["fs"]["allow_private"] = Value::Bool(true);
-    let rig = root_rig("member-ca-missing-root", server.port, missing).unwrap();
+    let rig = root_rig("member-ca-missing-root", server.port, missing)
+        .await
+        .unwrap();
     refused_before_http(&rig, &mut server, "fs_read_file").await;
 
     let mut wrong_root = member(&server);
     wrong_root["fs"]["tls"]["ca_cert_pem"] = Value::String(other.ca_pem.clone());
-    let rig = root_rig("member-ca-wrong-root", server.port, wrong_root).unwrap();
+    let rig = root_rig("member-ca-wrong-root", server.port, wrong_root)
+        .await
+        .unwrap();
     refused_before_http(&rig, &mut server, "fs_read_file").await;
 
     let mut wrong_pin = member(&server);
     wrong_pin["fs"]["pin"]["key"] = Value::String(other.pin.clone());
-    let rig = root_rig("member-ca-wrong-spki", server.port, wrong_pin).unwrap();
+    let rig = root_rig("member-ca-wrong-spki", server.port, wrong_pin)
+        .await
+        .unwrap();
     refused_before_http(&rig, &mut server, "fs_read_file").await;
     server.close().await;
     other.close().await;
@@ -111,12 +117,16 @@ async fn member_ca_does_not_allow_missing_wrong_roots_or_a_wrong_spki() {
 async fn member_ca_keeps_certificate_name_and_time_validation() {
     let _one = crate::root::PUBLISHING.lock().await;
     let mut wrong_name = TlsToolServer::member_ca_fixture("wrong.invalid", false, false).await;
-    let rig = root_rig("member-ca-wrong-name", wrong_name.port, member(&wrong_name)).unwrap();
+    let rig = root_rig("member-ca-wrong-name", wrong_name.port, member(&wrong_name))
+        .await
+        .unwrap();
     refused_before_http(&rig, &mut wrong_name, "fs_read_file").await;
     wrong_name.close().await;
 
     let mut expired = TlsToolServer::member_ca_fixture("127.0.0.1", true, false).await;
-    let rig = root_rig("member-ca-expired-cert", expired.port, member(&expired)).unwrap();
+    let rig = root_rig("member-ca-expired-cert", expired.port, member(&expired))
+        .await
+        .unwrap();
     refused_before_http(&rig, &mut expired, "fs_read_file").await;
     expired.close().await;
 }
@@ -170,6 +180,7 @@ async fn member_ca_preserves_mutual_tls_and_rejects_missing_or_untrusted_identit
         server.port,
         member(&server),
     )
+    .await
     .unwrap();
     refused_before_http(&rig, &mut server, "fs_read_file").await;
     assert!(!server.client_presented.load(Ordering::SeqCst));
@@ -178,14 +189,18 @@ async fn member_ca_preserves_mutual_tls_and_rejects_missing_or_untrusted_identit
     let wrong = IdentityEnv::new(&other);
     let mut tools = member(&server);
     wrong.configure(&mut tools);
-    let rig = root_rig("member-ca-mtls-wrong-identity", server.port, tools).unwrap();
+    let rig = root_rig("member-ca-mtls-wrong-identity", server.port, tools)
+        .await
+        .unwrap();
     refused_before_http(&rig, &mut server, "fs_read_file").await;
     assert!(!server.client_presented.load(Ordering::SeqCst));
 
     let right = IdentityEnv::new(&server);
     let mut tools = member(&server);
     right.configure(&mut tools);
-    let rig = root_rig("member-ca-mtls-valid-companion", server.port, tools).unwrap();
+    let rig = root_rig("member-ca-mtls-valid-companion", server.port, tools)
+        .await
+        .unwrap();
     served(&rig).await;
     assert!(server.client_presented.load(Ordering::SeqCst));
     assert!(
@@ -203,7 +218,9 @@ async fn member_ca_is_scoped_to_members_and_separately_built_root_owners() {
     let mut tools = member(&server);
     tools["other"] = server.section()["fs"].clone();
     tools["other"]["allow_private"] = Value::Bool(true);
-    let first = root_rig("member-ca-isolation-first", server.port, tools).unwrap();
+    let first = root_rig("member-ca-isolation-first", server.port, tools)
+        .await
+        .unwrap();
     served(&first).await;
     assert!(server.heard.try_recv().is_ok());
     while server.heard.try_recv().is_ok() {}
@@ -213,7 +230,9 @@ async fn member_ca_is_scoped_to_members_and_separately_built_root_owners() {
     let mut untrusted = server.section();
     untrusted["fs"]["allow_private"] = Value::Bool(true);
 
-    let other = root_rig("member-ca-isolation-other-owner", server.port, untrusted).unwrap();
+    let other = root_rig("member-ca-isolation-other-owner", server.port, untrusted)
+        .await
+        .unwrap();
     refused_before_http(&other, &mut server, "fs_read_file").await;
     served(&first).await;
     assert!(
@@ -269,7 +288,9 @@ async fn member_ca_is_not_inherited_by_another_declared_need_on_the_same_connect
     let mut server = TlsToolServer::member_ca_fixture("127.0.0.1", false, false).await;
     let tools = member(&server);
     let target = tools["fs"]["url"].as_str().unwrap().to_string();
-    let rig = root_rig("member-ca-need-boundary", server.port, tools).unwrap();
+    let rig = root_rig("member-ca-need-boundary", server.port, tools)
+        .await
+        .unwrap();
     served(&rig).await;
 
     let row = crate::root::loader::dispatch::LinkedRow::of(

@@ -40,8 +40,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnMessages {
 #[tokio::test]
 async fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
     const CHILD: &str = "BUSBAR_ADMIN_WARN_329652D07E39";
-    const WITNESS: &str =
-        "actual root case test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet completed";
+    const WITNESS: &str = "actual root case test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet completed";
     if std::env::var_os(CHILD).is_none() {
         struct Child(std::process::Child);
         impl Drop for Child {
@@ -162,15 +161,11 @@ async fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -183,13 +178,15 @@ async fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let cap = WarnMessages::default();
     tracing::subscriber::set_global_default(tracing_subscriber::registry().with(cap.clone()))
@@ -349,20 +346,17 @@ async fn test_get_config_settings_warns_when_overlay_is_unreadable() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let calls = anchor
-        .calls
-        .as_ref()
-        .cloned()
-        .expect("actual Store typed calls");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let calls = busbar_kernel::persistence::scoped::ScopedStore::host_private(
+        anchor.clone(),
+        "busbar.config.overlay",
+        ["busbar.config.overlay.v1".to_string()],
     )
-    .expect("the actual Store supports conditional configuration records");
+    .expect("actual overlay scope");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -375,13 +369,15 @@ async fn test_get_config_settings_warns_when_overlay_is_unreadable() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let cap = WarnMessages::default();
     tracing::subscriber::set_global_default(tracing_subscriber::registry().with(cap.clone()))
@@ -391,19 +387,18 @@ async fn test_get_config_settings_warns_when_overlay_is_unreadable() {
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     const OVERLAY_SCHEMA: &str = "busbar.config.overlay.v1";
-    let corrupted = busbar_contract::kinds::RecordBytes::new(b"{ not json".to_vec()).unwrap();
-    calls
-        .record_put(OVERLAY_SCHEMA, b"head", &corrupted)
-        .await
-        .expect("the actual Store persists the malformed head after normal boot");
-    let actual = calls
-        .record_get(OVERLAY_SCHEMA, b"head")
-        .await
-        .unwrap()
-        .unwrap();
+    let corrupted = busbar_contract::Secret::new(b"{ not json".to_vec());
     assert_eq!(
-        actual.as_slice(),
-        corrupted.as_slice(),
+        calls
+            .put(OVERLAY_SCHEMA, b"head", corrupted.clone())
+            .await
+            .expect("the actual Store persists the malformed head after normal boot"),
+        busbar_kernel::persistence::scoped::Outcome::Applied,
+    );
+    let actual = calls.get(OVERLAY_SCHEMA, b"head").await.unwrap().unwrap();
+    assert_eq!(
+        actual.expose(&busbar_kernel::seal::lend()).as_slice(),
+        corrupted.expose(&busbar_kernel::seal::lend()).as_slice(),
         "the GET will read actual corrupt Store bytes"
     );
     let resp = reqwest::Client::new()

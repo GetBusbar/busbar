@@ -19,8 +19,8 @@ fn accepted(entry: &audit_ring::AuditEntry) {
     }
 }
 
-#[test]
-fn completed_refresh_answers_project_truthful_status_body_and_audit() {
+#[tokio::test]
+async fn completed_refresh_answers_project_truthful_status_body_and_audit() {
     const CHILD: &str = "BUSBAR_ACTUAL_FLUSH_RESPONSE_CHILD";
     const WITNESS: &str = "actual SQLite flush-response controls completed";
     if std::env::var_os(CHILD).is_none() {
@@ -120,15 +120,11 @@ fn completed_refresh_answers_project_truthful_status_body_and_audit() {
             public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
         });
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("actual Store config authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("actual typed Store calls"),
-    )
-    .expect("actual conditional config records");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("actual conditional config records");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -143,98 +139,96 @@ fn completed_refresh_answers_project_truthful_status_body_and_audit() {
         Some(anchor),
         true,
     )
+    .await
     .expect("normal actual SQLite root builds");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("same SQLite Store books the root before activation");
-    limits.keep().expect("actual root limits activate");
+    limits.keep().await.expect("actual root limits activate");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
-    busbar_kernel::boot::hydrate_all(&app).expect("actual root audit hydration");
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("response body runtime");
-    runtime.block_on(async {
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        *ACCEPTED.lock().unwrap() = Some(sender);
-        busbar_kernel::audit::auditlog::install_accepted_entry_test_hook(accepted);
-        for (actor, result, module, status, outcome) in [
-            (
-                "flush-projection:admin-refused",
-                Err("private-refresh-error-token".into()),
-                None,
-                500,
-                audit_ring::OUTCOME_REJECTED,
-            ),
-            (
-                "flush-projection:data-refused",
-                Err("private-refresh-error-token".into()),
-                None,
-                500,
-                audit_ring::OUTCOME_REJECTED,
-            ),
-            (
-                "flush-projection:filtered",
-                Ok(8),
-                Some("target"),
-                200,
-                audit_ring::OUTCOME_APPLIED,
-            ),
-            (
-                "flush-projection:absent",
-                Ok(0),
-                Some("not-configured"),
-                200,
-                audit_ring::OUTCOME_APPLIED,
-            ),
-        ] {
-            let response = credential_flush_response(result, module, actor);
-            assert_eq!(response.status().as_u16(), status);
-            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .unwrap();
-            assert!(!String::from_utf8_lossy(&bytes).contains("private-refresh-error-token"));
-            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            if status == 500 {
-                assert_eq!(body["error"]["code"], "internal");
-                assert!(
-                    body.get("flushed").is_none(),
-                    "partial progress is not a successful flush"
-                );
-            } else {
-                assert_eq!(
-                    body["flushed"],
-                    if module == Some("target") { 8 } else { 0 }
-                );
-            }
-            let row = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(row.principal, actor);
-            assert_eq!(row.resource, module.unwrap_or("*"));
-            assert_eq!(row.outcome, outcome);
-            let outcomes: Vec<_> = busbar_kernel::audit::auditlog::AUDIT_LOG
-                .list_filtered(
-                    0,
-                    audit_ring::MAX_AUDIT_ENTRIES,
-                    Some("auth.cache_flush"),
-                    None,
-                )
-                .into_iter()
-                .filter(|entry| entry.principal == actor)
-                .map(|entry| entry.outcome)
-                .collect();
+    busbar_kernel::boot::hydrate_all(&app)
+        .await
+        .expect("actual root audit hydration");
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    *ACCEPTED.lock().unwrap() = Some(sender);
+    busbar_kernel::audit::auditlog::install_accepted_entry_test_hook(accepted);
+    for (actor, result, module, status, outcome) in [
+        (
+            "flush-projection:admin-refused",
+            Err("private-refresh-error-token".into()),
+            None,
+            500,
+            audit_ring::OUTCOME_REJECTED,
+        ),
+        (
+            "flush-projection:data-refused",
+            Err("private-refresh-error-token".into()),
+            None,
+            500,
+            audit_ring::OUTCOME_REJECTED,
+        ),
+        (
+            "flush-projection:filtered",
+            Ok(8),
+            Some("target"),
+            200,
+            audit_ring::OUTCOME_APPLIED,
+        ),
+        (
+            "flush-projection:absent",
+            Ok(0),
+            Some("not-configured"),
+            200,
+            audit_ring::OUTCOME_APPLIED,
+        ),
+    ] {
+        let response = credential_flush_response(result, module, actor);
+        assert_eq!(response.status().as_u16(), status);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("private-refresh-error-token"));
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        if status == 500 {
+            assert_eq!(body["error"]["code"], "internal");
+            assert!(
+                body.get("flushed").is_none(),
+                "partial progress is not a successful flush"
+            );
+        } else {
             assert_eq!(
-                outcomes,
-                vec![outcome],
-                "each flush records exactly one outcome"
+                body["flushed"],
+                if module == Some("target") { 8 } else { 0 }
             );
         }
-        *ACCEPTED.lock().unwrap() = None;
-    });
+        let row = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.principal, actor);
+        assert_eq!(row.resource, module.unwrap_or("*"));
+        assert_eq!(row.outcome, outcome);
+        let outcomes: Vec<_> = busbar_kernel::audit::auditlog::AUDIT_LOG
+            .list_filtered(
+                0,
+                audit_ring::MAX_AUDIT_ENTRIES,
+                Some("auth.cache_flush"),
+                None,
+            )
+            .into_iter()
+            .filter(|entry| entry.principal == actor)
+            .map(|entry| entry.outcome)
+            .collect();
+        assert_eq!(
+            outcomes,
+            vec![outcome],
+            "each flush records exactly one outcome"
+        );
+    }
+    *ACCEPTED.lock().unwrap() = None;
     println!("{WITNESS}");
 }

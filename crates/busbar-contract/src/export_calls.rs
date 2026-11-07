@@ -19,7 +19,7 @@ pub const DEFAULT_INFLIGHT: u32 = 64;
 
 /// One metric family of a host recorder's snapshot, in the recorder's render order. The loader
 /// lowers it to [`crate::abi::export::ScrapeFamily`] for the `scrape` op.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Family {
     /// The family name, as its `# TYPE` line spells it.
     pub name: String,
@@ -35,7 +35,7 @@ pub struct Family {
 }
 
 /// One sample line of a [`Family`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Sample {
     /// The series name: the family name, or it with `_bucket` / `_sum` / `_count`.
     pub name: String,

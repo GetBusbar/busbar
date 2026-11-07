@@ -8,7 +8,7 @@ use busbar_kernel::plane_driver::registry::PlaneDeclaration;
 use busbar_kernel::plane_driver::EngineHost;
 use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
 
-pub type Compose = Box<dyn FnOnce(&dyn busbar_contract::secret::SecretResolve)>;
+pub type Compose = Box<dyn FnOnce(&dyn busbar_contract::secret::SecretResolve) + Send>;
 
 pub type CliHelpRow = (&'static str, &'static str);
 
@@ -239,7 +239,6 @@ pub fn linked_exports(
         .map(|d| {
             manifest(d.name, d.alias, d.declares)
                 .map(|m| crate::root::loader::LinkedPlugin::door(m, d.door))
-                .map(crate::root::boot::answering_former_names)
         })
         .collect::<Result<Vec<_>, String>>()?;
 
@@ -318,14 +317,22 @@ pub fn register_stores(linked: &Linked) {
     }
 }
 
-fn store_axis() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis> {
+fn store_axis() -> std::sync::Arc<dyn busbar_contract::persistence::axis::PersistenceAxis> {
     let conns: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns> =
         crate::root::connector::the().clone();
-    std::sync::Arc::new(crate::root::loader::store_v3::DoorStoreAxis {
+    std::sync::Arc::new(crate::root::loader::store_v4::DoorPersistenceAxis {
         dispatcher: crate::root::dispatch::dispatcher(),
         logs: crate::root::boot::plugin_logs().clone(),
         conns: crate::root::loader::dispatch::ConnTable::Host(conns),
-        mint: busbar_kernel::door::op_id,
+        // Resource admission for one crossing, not a persisted-record or transaction limit.
+        // Includes descriptor overhead above the existing raw conditional carrier.
+        limits: crate::root::loader::store_v4::Limits {
+            descriptor_bytes: 512 * 1024 * 1024,
+            output_items: (512 * 1024 * 1024)
+                / std::mem::size_of::<busbar_contract::abi::store::v4::ReadValue>(),
+            output_bytes: 512 * 1024 * 1024,
+            decode_bytes: 512 * 1024 * 1024,
+        },
     })
 }
 
@@ -352,7 +359,6 @@ pub fn link_secrets(
     for (door, json) in declares {
         rows.declare_linked(*door, json)?;
     }
-    rows.with_former_names(busbar_kernel::config::migration_table::former_names)?;
     Ok(SECRETS.get_or_init(|| rows))
 }
 

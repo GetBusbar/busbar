@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use busbar_kernel::config::migrated_store_module;
+use busbar_migrations::config::migrated_store_module;
 
 use crate::root::test_plugins as plugins;
 
@@ -124,7 +124,9 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
+    let anchor = crate::root::real_store::core_over(anchor).await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -137,13 +139,15 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(
         app.overlay_path.is_none(),
@@ -316,7 +320,9 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
+    let anchor = crate::root::real_store::core_over(anchor).await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -329,13 +335,15 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(
         app.overlay_path.is_none(),
@@ -501,7 +509,9 @@ async fn test_admin_v1_config_settings_put_on_locked_config_is_refused() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
+    let anchor = crate::root::real_store::core_over(anchor).await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -514,13 +524,15 @@ async fn test_admin_v1_config_settings_put_on_locked_config_is_refused() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(
         app.overlay_path.is_none(),
@@ -672,7 +684,9 @@ async fn test_admin_v1_config_settings_put_refuses_locked_store_mutation() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
+    let anchor = crate::root::real_store::core_over(anchor).await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -685,13 +699,15 @@ async fn test_admin_v1_config_settings_put_refuses_locked_store_mutation() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(
         app.overlay_path.is_none(),
@@ -848,7 +864,9 @@ async fn test_admin_v1_config_settings_put_rejects_retired_persist() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
+    let anchor = crate::root::real_store::core_over(anchor).await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -861,13 +879,15 @@ async fn test_admin_v1_config_settings_put_rejects_retired_persist() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(
         app.overlay_path.is_none(),
@@ -972,8 +992,9 @@ async fn test_admin_v1_config_settings_put_still_rejects_an_unknown_field_includ
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
-    let directory =
-        plugins::scratch("test_admin_v1_config_settings_put_still_rejects_an_unknown_field_including_persist_typo-actual-store");
+    let directory = plugins::scratch(
+        "test_admin_v1_config_settings_put_still_rejects_an_unknown_field_including_persist_typo-actual-store",
+    );
     let archive = plugins::signed(
         &crate::dist_root_install::release_key(),
         manifest,
@@ -1017,7 +1038,9 @@ async fn test_admin_v1_config_settings_put_still_rejects_an_unknown_field_includ
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
+    let anchor = crate::root::real_store::core_over(anchor).await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -1030,13 +1053,15 @@ async fn test_admin_v1_config_settings_put_still_rejects_an_unknown_field_includ
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(
         app.overlay_path.is_none(),

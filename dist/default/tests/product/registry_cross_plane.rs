@@ -712,8 +712,8 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
     assert!(dispatch.mounted_keys().is_empty(), "and it mounts nothing");
 }
 
-#[test]
-fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
+#[tokio::test]
+async fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
     static REFUSES_START: PlaneDecl = PlaneDecl {
         declaration: PlaneDeclaration {
             key: "refuser",
@@ -779,7 +779,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         .expect("the actual app deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         Default::default(),
         None,
@@ -789,13 +789,15 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         None,
         &rules,
     )
+    .await
     .expect("the production root builds the app and opens its real store through the ABI");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, store.0)
+        .await
         .expect("the configured Store binds the boot rate authority before activation");
-    limits.keep().expect("the actual app's limits commit");
+    limits.keep().await.expect("the actual app's limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(
         app.governance.is_some(),
@@ -864,8 +866,8 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         .expect("an Ok start and a None-start plane do not refuse boot");
 }
 
-#[test]
-fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
+#[tokio::test]
+async fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
     static REFUSES_HYDRATE: PlaneDecl = PlaneDecl {
         declaration: PlaneDeclaration {
             key: "refuser",
@@ -931,7 +933,7 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         .expect("the actual app deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         Default::default(),
         None,
@@ -941,26 +943,22 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         None,
         &rules,
     )
+    .await
     .expect("the production root builds the app and opens its real store through the ABI");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, store.0)
+        .await
         .expect("the configured Store binds the boot rate authority before activation");
-    limits.keep().expect("the actual app's limits commit");
+    limits.keep().await.expect("the actual app's limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(
         app.governance.is_some(),
         "the actual store supplies governance"
     );
     let app = Arc::new(app);
-    let store = busbar_kernel::store::plane_view::PlaneStoreView::narrow(
-        app.governance
-            .as_ref()
-            .expect("the real app has governance")
-            .store(),
-    );
-    let ctx = busbar_kernel::plane_driver::registry::BootCtx::for_hydrate(Some(store), &app);
+    let ctx = busbar_kernel::plane_driver::registry::BootCtx::for_hydrate(&app);
 
     let err = busbar_kernel::boot::run_hydrate_hooks(&[&REFUSES_HYDRATE], &ctx)
         .expect_err("a plane whose hydrate returns Err must refuse boot");

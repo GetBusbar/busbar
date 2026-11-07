@@ -44,6 +44,7 @@ pub mod hook_calls;
 pub mod hook_wire;
 #[allow(missing_docs)]
 pub mod hooks;
+pub mod host_records;
 pub mod ids;
 
 pub mod io_host;
@@ -59,6 +60,7 @@ pub mod media;
 pub mod net;
 #[allow(missing_docs)]
 pub mod operation;
+pub mod persistence;
 pub mod plane;
 pub mod plane_calls;
 pub mod plugin;
@@ -85,7 +87,6 @@ pub mod services;
 pub mod signal;
 
 pub mod spans;
-pub mod store_calls;
 pub mod surface;
 pub mod transport;
 pub mod unit;

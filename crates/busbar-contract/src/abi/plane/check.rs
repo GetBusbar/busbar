@@ -37,8 +37,8 @@ use crate::abi::mechanism::check::{
 use crate::abi::mechanism::door::{
     Section, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED, SECTION_SELECTS,
 };
-use crate::abi::store::plane::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
 use crate::grammar::{PathSeg, Selector};
+use crate::host_records::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
 
 /// The most unit counts one answer may carry.
 pub const MAX_UNITS: u64 = 64;
@@ -1618,3 +1618,53 @@ pub fn check_pin_mechanisms(mechanisms: &[PinMechanism]) -> Result<(), Fault> {
 #[cfg(test)]
 #[path = "../tests/plane_check_tests.rs"]
 mod tests;
+
+/// Validate every instance-local collection relationship before admission.
+pub fn check_record_collections(
+    collections: &[super::RecordCollection],
+    kinds: u64,
+) -> Result<(), Fault> {
+    use super::CollectionMode;
+    let mut indices = std::collections::BTreeMap::new();
+    for (i, c) in collections.iter().enumerate() {
+        index(c.kind, kinds, "collection.kind")?;
+        if indices.insert(c.kind, i).is_some() {
+            return Err(fault(Rule::Contradiction, "collection.kind_twice"));
+        }
+    }
+    for c in collections {
+        if let Some(parent) = c.parent {
+            index(parent, kinds, "collection.parent")?;
+            let parent = indices
+                .get(&parent)
+                .map(|&i| &collections[i])
+                .ok_or_else(|| fault(Rule::Missing, "collection.parent"))?;
+            if parent.mode != CollectionMode::Upsert {
+                return Err(fault(Rule::Contradiction, "collection.parent_mode"));
+            }
+        }
+    }
+    // Each vertex is visited once: 0 unvisited, 1 on this path, 2 completed.
+    let mut colors = vec![0u8; collections.len()];
+    for start in 0..collections.len() {
+        if colors[start] != 0 {
+            continue;
+        }
+        let mut path = Vec::new();
+        let mut next = Some(start);
+        while let Some(i) = next {
+            match colors[i] {
+                1 => return Err(fault(Rule::Contradiction, "collection.cycle")),
+                2 => break,
+                _ => {}
+            }
+            colors[i] = 1;
+            path.push(i);
+            next = collections[i].parent.and_then(|p| indices.get(&p).copied());
+        }
+        for i in path {
+            colors[i] = 2;
+        }
+    }
+    Ok(())
+}

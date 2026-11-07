@@ -87,6 +87,7 @@ fn sweep_removes_dead_pid_dirs_only() {
     drop(held);
 }
 
+#[cfg(unix)]
 fn private_root(tag: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!("busbar-sweep-{tag}-{}", random_hex(8)));
     std::fs::create_dir_all(&root).unwrap();
@@ -480,9 +481,7 @@ mod on_windows {
         match (tampered, loaded) {
             (Ok(()), loaded) => assert_refused(what, loaded),
             (Err(_), Ok(l)) => {
-                let Staged::TempFile { path, .. } = &l.1 else {
-                    panic!("{what}: Windows stages into a file");
-                };
+                let Staged::TempFile { path, .. } = &l.1;
                 let now = std::fs::read(path).expect("read the staged file");
                 assert!(
                     now == verified,

@@ -16,65 +16,86 @@ pub struct RawRates<'r> {
     pub plane_fees: &'r crate::config::PlaneFeesMap,
 }
 
+pub type RateFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
 pub trait RateApply: Send + Sync {
-    fn prepare(
-        &self,
-        _card: &CardFields,
-        _rates: &RawRates<'_>,
-        _origin: &str,
-    ) -> Result<Box<dyn PreparedRates>, String> {
-        Err("the installed rate holder does not support confirmed preparation".into())
+    fn prepare<'a>(
+        &'a self,
+        _card: &'a CardFields,
+        _rates: &'a RawRates<'_>,
+        _origin: &'a str,
+    ) -> RateFuture<'a, Result<Box<dyn PreparedRates>, String>> {
+        Box::pin(async {
+            Err("the installed rate holder does not support confirmed preparation".into())
+        })
     }
 
-    fn prepare_recovery(
-        &self,
-        card: &CardFields,
-        rates: &RawRates<'_>,
-        origin: &str,
-    ) -> Result<Box<dyn PreparedRates>, String> {
+    fn prepare_recovery<'a>(
+        &'a self,
+        card: &'a CardFields,
+        rates: &'a RawRates<'_>,
+        origin: &'a str,
+    ) -> RateFuture<'a, Result<Box<dyn PreparedRates>, String>> {
         self.prepare(card, rates, origin)
     }
 
     fn rates_applied(&self, rates: &RawRates<'_>);
-
     fn card_applied(&self, _card: &CardFields, _origin: &str) {}
 }
 
 pub trait RateCommit: Send {
     fn commit(self: Box<Self>);
 }
-
 pub trait PreparedRates: Send {
-    fn confirm_activation(self: Box<Self>) -> Result<Box<dyn RateCommit>, String>;
+    fn confirm_activation(
+        self: Box<Self>,
+    ) -> RateFuture<'static, Result<Box<dyn RateCommit>, String>>;
 }
-
 struct NoRates;
-
 impl RateCommit for NoRates {
     fn commit(self: Box<Self>) {}
 }
-
 impl PreparedRates for NoRates {
-    fn confirm_activation(self: Box<Self>) -> Result<Box<dyn RateCommit>, String> {
-        Ok(self)
+    fn confirm_activation(
+        self: Box<Self>,
+    ) -> RateFuture<'static, Result<Box<dyn RateCommit>, String>> {
+        Box::pin(async move { Ok(self as Box<dyn RateCommit>) })
     }
 }
 
-pub fn prepare(card: &CardFields, rates: &RawRates<'_>) -> Result<Box<dyn PreparedRates>, String> {
+/// Capture ambient provenance synchronously, before returning a future. Async
+/// callers with an explicit origin should call prepare_with_origin directly.
+pub fn prepare<'a>(
+    card: &'a CardFields,
+    rates: &'a RawRates<'_>,
+) -> RateFuture<'a, Result<Box<dyn PreparedRates>, String>> {
     let origin = crate::config::card::origin::current();
+    Box::pin(async move { prepare_with_origin(card, rates, &origin).await })
+}
+pub fn prepare_recovery<'a>(
+    card: &'a CardFields,
+    rates: &'a RawRates<'_>,
+) -> RateFuture<'a, Result<Box<dyn PreparedRates>, String>> {
+    let origin = crate::config::card::origin::current();
+    Box::pin(async move { prepare_recovery_with_origin(card, rates, &origin).await })
+}
+pub async fn prepare_with_origin(
+    card: &CardFields,
+    rates: &RawRates<'_>,
+    origin: &str,
+) -> Result<Box<dyn PreparedRates>, String> {
     match holder() {
-        Some(holder) => holder.prepare(card, rates, &origin),
+        Some(holder) => holder.prepare(card, rates, origin).await,
         None => Ok(Box::new(NoRates)),
     }
 }
-
-pub fn prepare_recovery(
+pub async fn prepare_recovery_with_origin(
     card: &CardFields,
     rates: &RawRates<'_>,
+    origin: &str,
 ) -> Result<Box<dyn PreparedRates>, String> {
-    let origin = crate::config::card::origin::current();
     match holder() {
-        Some(holder) => holder.prepare_recovery(card, rates, &origin),
+        Some(holder) => holder.prepare_recovery(card, rates, origin).await,
         None => Ok(Box::new(NoRates)),
     }
 }

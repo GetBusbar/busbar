@@ -543,12 +543,15 @@ enum Anchor {
 
 impl sealed::Sealed for AuditChain {}
 
-impl Audit for AuditChain {
-    fn seal(
+impl AuditChain {
+    /// Prepare the unchanged signed preimage, retain its original journal
+    /// custody, then advance the audit chain. A refused stage leaves no hole.
+    pub fn seal_for_journal<T, E>(
         &mut self,
         inputs: AuditInputs,
         _token: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
-    ) -> AuditRecord {
+        stage: impl FnOnce(&AuditRecord) -> Result<T, E>,
+    ) -> Result<(AuditRecord, T), E> {
         let recipe = if inputs
             .usage
             .lines
@@ -587,12 +590,24 @@ impl Audit for AuditChain {
             record.key_id = Some(signer.key_id().to_string());
             record.signature = Some(signer.sign_digest(&record.hash));
         }
+        let custody = stage(&record)?;
         self.tail_hash = record.hash.clone();
         self.next_seq = self.next_seq.saturating_add(1);
         self.sealed += 1;
-
         self.heads.observe(&record);
-        record
+        Ok((record, custody))
+    }
+}
+impl Audit for AuditChain {
+    fn seal(
+        &mut self,
+        inputs: AuditInputs,
+        token: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
+    ) -> AuditRecord {
+        match self.seal_for_journal(inputs, token, |_| Ok::<_, std::convert::Infallible>(())) {
+            Ok((record, ())) => record,
+            Err(never) => match never {},
+        }
     }
 }
 

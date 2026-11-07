@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::audit::{digest, frame_prelude, Framing};
+use crate::store::plane_view::decode;
 
 fn assert_roundtrip(seq: u64, prev_hash: &str, ts: u64, act: &str, res: &str, out: &str, pr: &str) {
     let mut input = frame_prelude(Framing::PipeSeparated, prev_hash, None, seq);
@@ -50,9 +51,139 @@ fn suffix_plus_scopeless_prelude_equals_legacy_audit_digest() {
     );
 }
 
-#[test]
-fn a_converted_sites_seam_record_matches_the_legacy_ring_hash() {
-    let h = AuditTestHarness::over(crate::real_store::store());
+async fn native_harness() -> (Arc<NativeAudit>, PlaneAuditLog) {
+    let kind = fresh_test_kind_id();
+    stream_registry::register(
+        kind,
+        KIND_AUDIT.into(),
+        AUDIT_FRAMING,
+        AUDIT_DIGESTS_SCOPE,
+        Decode::Native(reframe_audit),
+        MAX_AUDIT_ENTRIES,
+    );
+    let native = install_native(kind, crate::real_store::core().await).unwrap();
+    let log = PlaneAuditLog::with_kind_id(kind);
+    restore_native(&log, &native).await.unwrap();
+    native.ready.store(true, Ordering::Release);
+    (native, log)
+}
+async fn native_emit(
+    native: &Arc<NativeAudit>,
+    log: &PlaneAuditLog,
+    operation: u8,
+    suffix: Vec<u8>,
+) -> (u64, String, String) {
+    let queue = PendingAuditQueue::new(1);
+    queue.enqueue(PendingAudit {
+        scope: ADMIN_LOG.into(),
+        suffix,
+        origin: EventOrigin::ExportFailure,
+        operation: [operation; 16],
+        prepared: None,
+    });
+    drain_native(&queue, log, native.clone()).await.unwrap();
+    let entry = log.list_filtered(0, 1, None, None).remove(0);
+    (entry.seq, entry.prev_hash, entry.hash)
+}
+
+struct NativeHarness {
+    native: Arc<NativeAudit>,
+    log: PlaneAuditLog,
+}
+async fn native_over(store: Arc<CoreStore>) -> NativeHarness {
+    let kind = fresh_test_kind_id();
+    stream_registry::register(
+        kind,
+        KIND_AUDIT.into(),
+        AUDIT_FRAMING,
+        AUDIT_DIGESTS_SCOPE,
+        Decode::Native(reframe_audit),
+        MAX_AUDIT_ENTRIES,
+    );
+    let native = install_native(kind, store).unwrap();
+    NativeHarness {
+        native,
+        log: PlaneAuditLog::with_kind_id(kind),
+    }
+}
+impl NativeHarness {
+    async fn restore(&self) -> RecordStoreResult<AuditRestored> {
+        let result = restore_native(&self.log, &self.native).await;
+        self.native.ready.store(result.is_ok(), Ordering::Release);
+        result
+    }
+    async fn emit(&self, scope: &str, suffix: Vec<u8>) -> (u64, String, String) {
+        if !self.native.ready.load(Ordering::Acquire) {
+            self.restore().await.expect("native restore before append");
+        }
+        let mut operation = [0; 16];
+        getrandom::fill(&mut operation).unwrap();
+        let queue = PendingAuditQueue::new(1);
+        queue.enqueue(PendingAudit {
+            scope: scope.into(),
+            suffix,
+            origin: EventOrigin::ExportFailure,
+            operation,
+            prepared: None,
+        });
+        drain_native(&queue, &self.log, self.native.clone())
+            .await
+            .unwrap();
+        let entry = self.log.list_filtered(0, 1, None, None).remove(0);
+        (entry.seq, entry.prev_hash, entry.hash)
+    }
+}
+fn audit_history(store: Arc<CoreStore>) -> AsyncHistory {
+    AsyncHistory::authorized(
+        store,
+        PERSISTENCE_OWNER,
+        [HistoryCollection {
+            kind: KIND_AUDIT,
+            mode: HistoryMode::Append,
+            retention: Retention::Age,
+            parent: None,
+        }],
+    )
+    .unwrap()
+}
+async fn seed_legacy(store: &CoreStore, record: &busbar_contract::records::AuditRecord) {
+    use busbar_contract::persistence::{Candidate, Mutation, PreparedCandidate, CANDIDATE_VERSION};
+    let rows = crate::host_records_async::migration_audit_rows(PERSISTENCE_OWNER, record).unwrap();
+    let prepared = PreparedCandidate::new(Candidate {
+        id: store.next_id().unwrap(),
+        codec: CANDIDATE_VERSION,
+        predicates: vec![],
+        mutations: rows
+            .into_iter()
+            .map(|(address, value)| Mutation::Put { address, value })
+            .collect(),
+        time: None,
+        result: busbar_contract::Secret::default(),
+    })
+    .unwrap();
+    let result = store.submit(prepared).await.unwrap().result;
+    assert!(matches!(result, crate::persistence::commit::SubmitResult::Decided(decision)
+        if matches!(&*decision, busbar_contract::persistence::Decision::Applied(_))));
+}
+async fn seed_envelope(store: Arc<CoreStore>, record: PlaneRecord) {
+    assert_eq!(
+        audit_history(store).append(record.view()).await.unwrap(),
+        HistoryOutcome::Applied
+    );
+}
+async fn bodies(store: Arc<CoreStore>, scope: &str) -> Vec<Vec<u8>> {
+    audit_history(store)
+        .list(KIND_AUDIT, &PlaneSelector::Parent(scope.into()))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.body)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_converted_sites_seam_record_matches_the_legacy_ring_hash() {
+    let (native, log) = native_harness().await;
     let (ts, act, res, out, pr) = (
         1_700_000_123u64,
         "hook.register",
@@ -61,11 +192,15 @@ fn a_converted_sites_seam_record_matches_the_legacy_ring_hash() {
         "admin",
     );
 
-    let (seq1, prev1, hash1) = h.emit_full(ADMIN_LOG, audit_suffix(ts, act, res, out, pr));
-    let (seq2, prev2, hash2) = h.emit_full(
-        ADMIN_LOG,
+    let (seq1, prev1, hash1) =
+        native_emit(&native, &log, 1, audit_suffix(ts, act, res, out, pr)).await;
+    let (seq2, prev2, hash2) = native_emit(
+        &native,
+        &log,
+        2,
         audit_suffix(ts + 60, "hook.delete", res, out, pr),
-    );
+    )
+    .await;
 
     let mk = |seq, ts, action: &str, prev: String| AuditEntry {
         seq,
@@ -85,173 +220,21 @@ fn a_converted_sites_seam_record_matches_the_legacy_ring_hash() {
     assert_eq!(hash2, digest(&mk(2, ts + 60, "hook.delete", hash1)));
 }
 
-type PlaneRows = std::collections::HashMap<(String, Option<String>), Vec<Vec<u8>>>;
-
-struct DualDurableStore {
-    inner: std::sync::Arc<busbar_plugin_loader::store_v3::LoadedStore>,
-    audit: std::sync::Mutex<std::collections::BTreeMap<u64, busbar_contract::records::AuditRecord>>,
-    plane: std::sync::Mutex<PlaneRows>,
-}
-
-impl DualDurableStore {
-    fn new() -> Self {
-        Self {
-            inner: crate::real_store::store(),
-            audit: std::sync::Mutex::new(std::collections::BTreeMap::new()),
-            plane: std::sync::Mutex::new(std::collections::HashMap::new()),
-        }
-    }
-}
-
-impl busbar_contract::records::RecordStore for DualDurableStore {
-    fn put_key(
-        &self,
-        key: &busbar_contract::records::VirtualKey,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.put_key(key)
-    }
-    fn get_key(
-        &self,
-        id: &str,
-    ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
-    {
-        self.inner.get_key(id)
-    }
-    fn list_keys(
-        &self,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
-    {
-        self.inner.list_keys()
-    }
-    fn delete_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.delete_key(id)
-    }
-    fn get_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-    ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger> {
-        self.inner.get_usage(bucket_id, window_start)
-    }
-    fn put_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        ledger: &busbar_contract::records::UsageLedger,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.put_usage(bucket_id, window_start, ledger)
-    }
-    fn add_metering(
-        &self,
-        delta: &busbar_contract::records::MeteringDelta,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.add_metering(delta)
-    }
-    fn list_metering(
-        &self,
-        bucket: u64,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
-    {
-        self.inner.list_metering(bucket)
-    }
-
-    fn append_audit(
-        &self,
-        entry: &busbar_contract::records::AuditRecord,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        self.audit
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(entry.seq, entry.clone());
-        Ok(())
-    }
-    fn list_audit(
-        &self,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
-    {
-        Ok(self
-            .audit
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .values()
-            .cloned()
-            .collect())
-    }
-    fn list_audit_tail(
-        &self,
-        limit: u64,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
-    {
-        let limit = limit as usize;
-        let audit = self.audit.lock().unwrap_or_else(|e| e.into_inner());
-        let len = audit.len();
-        Ok(audit
-            .values()
-            .skip(len.saturating_sub(limit))
-            .cloned()
-            .collect())
-    }
-
-    fn append_plane_record(
-        &self,
-        record: busbar_contract::records::PlaneRecordRef<'_>,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        let record = &record.to_record();
-        self.plane
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry((record.kind.clone(), record.parent.clone()))
-            .or_default()
-            .push(record.body.clone());
-        Ok(())
-    }
-    fn list_plane_records(
-        &self,
-        kind: &str,
-        selector: &busbar_contract::records::PlaneSelector,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
-        let parent = match selector {
-            busbar_contract::records::PlaneSelector::All => None,
-            busbar_contract::records::PlaneSelector::Parent(p) => Some(p.to_string()),
-        };
-        Ok(self
-            .plane
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&(kind.to_string(), parent))
-            .cloned()
-            .unwrap_or_default())
-    }
-    fn list_plane_record_parents(
-        &self,
-        kind: &str,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
-        let mut parents: Vec<String> = self
-            .plane
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .keys()
-            .filter(|(k, _)| k == kind)
-            .filter_map(|(_, p)| p.clone())
-            .collect();
-        parents.sort();
-        parents.dedup();
-        Ok(parents)
-    }
-}
-
-#[test]
-fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
-    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
-        std::sync::Arc::new(DualDurableStore::new());
+#[tokio::test]
+async fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
+    let store = crate::real_store::core().await;
     let (ts, res, out, pr) = (1_700_000_500u64, "hook:rt", "applied", "admin");
 
-    let h1 = AuditTestHarness::over(store.clone());
-    let (s1, p1, hash1) = h1.emit_full(ADMIN_LOG, audit_suffix(ts, "hook.register", res, out, pr));
-    let (s2, p2, hash2) = h1.emit_full(
-        ADMIN_LOG,
-        audit_suffix(ts + 60, "hook.delete", res, out, pr),
-    );
+    let h1 = native_over(store.clone()).await;
+    let (s1, p1, hash1) = h1
+        .emit(ADMIN_LOG, audit_suffix(ts, "hook.register", res, out, pr))
+        .await;
+    let (s2, p2, hash2) = h1
+        .emit(
+            ADMIN_LOG,
+            audit_suffix(ts + 60, "hook.delete", res, out, pr),
+        )
+        .await;
     assert_eq!((s1, p1.as_str()), (1, ""), "genesis position");
     assert_eq!(
         (s2, p2.clone()),
@@ -259,24 +242,15 @@ fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
         "record 2 links record 1"
     );
 
-    let bodies = store
-        .list_plane_records(
-            KIND_AUDIT,
-            &busbar_contract::records::PlaneSelector::Parent(ADMIN_LOG.into()),
-        )
-        .unwrap();
+    let bodies = bodies(store.clone(), ADMIN_LOG).await;
     assert_eq!(
         bodies.len(),
         2,
         "both seam records persisted to plane_records"
     );
 
-    let h2 = AuditTestHarness::over(store.clone());
-    let plane = PlaneStoreView::narrow(store.clone());
-    let restored = h2
-        .log
-        .restore_from_store(plane.as_ref())
-        .expect("plane_records read");
+    let h2 = native_over(store.clone()).await;
+    let restored = h2.restore().await.expect("plane_records read");
     assert!(
         restored.chain_breaks.is_empty(),
         "a restored seam chain reported TAMPERED: {:?}",
@@ -355,79 +329,54 @@ fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
     );
 }
 
-#[test]
-fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
+#[tokio::test]
+async fn frozen_legacy_audit_rows_restore_natively_without_resealing() {
     use crate::audit::boot_verify_golden::{AD_1, AD_2};
-    const AD_HEAD_HASH: &str = "52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa";
-    const AD_TAIL_HASH: &str = "33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264";
-
-    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
-        std::sync::Arc::new(DualDurableStore::new());
-
-    let ad1: busbar_contract::records::AuditRecord =
-        crate::store::plane_view::decode(AD_1).unwrap();
-    let ad2: busbar_contract::records::AuditRecord =
-        crate::store::plane_view::decode(AD_2).unwrap();
-    store.append_audit(&ad1).unwrap();
-    store.append_audit(&ad2).unwrap();
+    const HEAD: &str = "52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa";
+    const TAIL: &str = "33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264";
+    let store = crate::real_store::core().await;
+    for frozen in [AD_1, AD_2] {
+        seed_legacy(&store, &decode(frozen).unwrap()).await;
+    }
     assert!(
-        store
-            .list_plane_records(
-                KIND_AUDIT,
-                &busbar_contract::records::PlaneSelector::Parent(ADMIN_LOG.into())
-            )
-            .unwrap()
-            .is_empty(),
-        "an OLD store has NO audit plane_records before migration"
+        bodies(store.clone(), ADMIN_LOG).await.is_empty(),
+        "historical evidence is not rewritten to modern bodies"
     );
-
-    let migrated = migrate_legacy_table_to_plane_records(store.as_ref()).unwrap();
-    assert_eq!(migrated, 2, "both legacy rows migrated");
-
-    assert_eq!(
-        migrate_legacy_table_to_plane_records(store.as_ref()).unwrap(),
-        0,
-        "a second migration is a no-op"
-    );
-
-    let h = AuditTestHarness::over(store.clone());
-    let plane = PlaneStoreView::narrow(store.clone());
-    let restored = h
-        .log
-        .restore_from_store(plane.as_ref())
-        .expect("plane_records read");
+    let h = native_over(store.clone()).await;
+    for _ in 0..2 {
+        let restored = h.restore().await.unwrap();
+        assert_eq!(restored.records, 2);
+        assert!(restored.chain_breaks.is_empty());
+        let ring = h.log.list_filtered(0, MAX_AUDIT_ENTRIES, None, None);
+        assert_eq!(
+            ring.len(),
+            2,
+            "repeated native restore does not duplicate evidence"
+        );
+        assert_eq!(
+            (
+                ring[0].seq,
+                ring[0].hash.as_str(),
+                ring[0].prev_hash.as_str()
+            ),
+            (2, TAIL, HEAD)
+        );
+        assert_eq!(
+            (
+                ring[1].seq,
+                ring[1].hash.as_str(),
+                ring[1].prev_hash.as_str()
+            ),
+            (1, HEAD, "")
+        );
+        assert_eq!(ring[0].action, "hook.delete");
+        assert_eq!(ring[1].action, "hook.register");
+        assert!(ring.iter().all(|r| !r.recorded_here));
+    }
     assert!(
-        restored.chain_breaks.is_empty(),
-        "the migrated OLD-store chain reported TAMPERED: {:?}",
-        restored.chain_breaks
+        bodies(store, ADMIN_LOG).await.is_empty(),
+        "restore performs no migration writes"
     );
-    assert_eq!(restored.records, 2, "both migrated records restored");
-
-    let ring = h
-        .log
-        .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None);
-    assert_eq!(ring.len(), 2);
-    assert_eq!(
-        (
-            ring[0].seq,
-            ring[0].hash.as_str(),
-            ring[0].prev_hash.as_str()
-        ),
-        (2, AD_TAIL_HASH, AD_HEAD_HASH),
-        "newest-first: the frozen tail leads, linking the frozen head"
-    );
-    assert_eq!(
-        (
-            ring[1].seq,
-            ring[1].hash.as_str(),
-            ring[1].prev_hash.as_str()
-        ),
-        (1, AD_HEAD_HASH, ""),
-        "the frozen genesis follows"
-    );
-    assert_eq!(ring[0].action, "hook.delete");
-    assert_eq!(ring[1].action, "hook.register");
-    assert!(ring.iter().all(|e| !e.recorded_here));
 }
 
 #[derive(Clone, Default)]
@@ -469,104 +418,112 @@ fn capture_into(cap: &AuditDiagnosticCodes) -> IsolatedCapture {
     }
 }
 
-#[test]
-fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row() {
-    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
-        std::sync::Arc::new(DualDurableStore::new());
-    let (ts, res, out, pr) = (1_700_000_900u64, "hook:tamper", "applied", "admin");
-
-    let h1 = AuditTestHarness::over(store.clone());
-    let (s1, _p1, _hash1) =
-        h1.emit_full(ADMIN_LOG, audit_suffix(ts, "hook.register", res, out, pr));
-    assert_eq!(s1, 1, "the good record is genesis");
-
-    store
-        .append_plane_record(
-            busbar_contract::records::PlaneRecord {
-                kind: KIND_AUDIT.to_string(),
-                id: ADMIN_LOG.to_string(),
-                parent: Some(ADMIN_LOG.to_string()),
-                seq: 2,
-                ts: 0,
-                disposition: busbar_contract::records::PlaneDisposition::Active,
-                body: b"{ not an audit body".to_vec(),
-            }
-            .view(),
-        )
-        .unwrap();
-
-    let h2 = AuditTestHarness::over(store.clone());
-    let plane = PlaneStoreView::narrow(store.clone());
+#[tokio::test]
+async fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row() {
+    let store = crate::real_store::core().await;
+    let h1 = native_over(store.clone()).await;
+    h1.emit(
+        ADMIN_LOG,
+        audit_suffix(
+            1_700_000_900,
+            "hook.register",
+            "hook:tamper",
+            "applied",
+            "admin",
+        ),
+    )
+    .await;
+    seed_envelope(
+        store.clone(),
+        PlaneRecord {
+            kind: KIND_AUDIT.into(),
+            id: ADMIN_LOG.into(),
+            parent: Some(ADMIN_LOG.into()),
+            seq: 2,
+            ts: 0,
+            disposition: PlaneDisposition::Active,
+            body: b"{ not an audit body".to_vec(),
+        },
+    )
+    .await;
+    let h = native_over(store.clone()).await;
     let cap = AuditDiagnosticCodes::default();
     {
-        let _g = capture_into(&cap);
-
-        let _ = h2.log.restore_from_store(plane.as_ref());
+        let _capture = capture_into(&cap);
+        assert!(h.restore().await.is_err());
     }
-
-    let ring = h2
-        .log
-        .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None);
+    let ring = h.log.list_filtered(0, MAX_AUDIT_ENTRIES, None, None);
     assert_eq!(
         ring.len(),
         1,
-        "the decodable row still seeds the ring despite an unreadable sibling"
+        "good evidence remains visible beside unreadable evidence"
     );
     assert_eq!(ring[0].seq, 1);
     assert_eq!(ring[0].action, "hook.register");
-
-    let diags = cap.0.lock().unwrap();
     assert!(
-        diags.iter().any(|d| d.contains("BUSBAR-2047")),
-        "the undecodable admin audit row must emit PLANE_AUDIT_ROW_UNREADABLE (BUSBAR-2047) at ERROR \
-         at its ring-seeding skip site — a silent skip on a tamper-evidence surface is the gap being \
-         closed; captured: {diags:?}"
+        cap.0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|d| d.contains("BUSBAR-2047")),
+        "unreadable evidence is diagnosed"
+    );
+    assert_eq!(
+        bodies(store, ADMIN_LOG).await.len(),
+        2,
+        "restore preserves the unreadable original"
     );
 }
 
-#[test]
-fn restore_does_not_fork_the_chain_when_one_row_is_undecodable() {
-    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
-        std::sync::Arc::new(DualDurableStore::new());
-    let (ts, res, out, pr) = (1_700_001_100u64, "hook:fork", "applied", "admin");
-
-    let h1 = AuditTestHarness::over(store.clone());
-    let (s1, _p1, _h1) = h1.emit_full(ADMIN_LOG, audit_suffix(ts, "hook.register", res, out, pr));
-    assert_eq!(s1, 1, "the good record is genesis");
-
-    store
-        .append_plane_record(
-            busbar_contract::records::PlaneRecord {
-                kind: KIND_AUDIT.to_string(),
-                id: ADMIN_LOG.to_string(),
-                parent: Some(ADMIN_LOG.to_string()),
-                seq: 2,
-                ts: 0,
-                disposition: busbar_contract::records::PlaneDisposition::Active,
-                body: b"{ not an audit body".to_vec(),
-            }
-            .view(),
-        )
-        .unwrap();
-
-    let h2 = AuditTestHarness::over(store.clone());
-    let plane = PlaneStoreView::narrow(store.clone());
-    let restored = {
-        let _serial = DIAG_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        h2.log.restore_from_store(plane.as_ref())
-    }
-    .expect("one undecodable row must NOT abort the whole restore and fork the governance chain");
-    assert_eq!(restored.unreadable, 1, "the bad row is counted, not fatal");
-    assert_eq!(
-        restored.records, 1,
-        "only the decodable row is a restored record"
+#[tokio::test]
+async fn restore_does_not_fork_the_chain_when_one_row_is_undecodable() {
+    let store = crate::real_store::core().await;
+    let h1 = native_over(store.clone()).await;
+    h1.emit(
+        ADMIN_LOG,
+        audit_suffix(
+            1_700_000_900,
+            "hook.register",
+            "hook:tamper",
+            "applied",
+            "admin",
+        ),
+    )
+    .await;
+    seed_envelope(
+        store.clone(),
+        PlaneRecord {
+            kind: KIND_AUDIT.into(),
+            id: ADMIN_LOG.into(),
+            parent: Some(ADMIN_LOG.into()),
+            seq: 2,
+            ts: 0,
+            disposition: PlaneDisposition::Active,
+            body: b"{ not an audit body".to_vec(),
+        },
+    )
+    .await;
+    let h = native_over(store.clone()).await;
+    assert!(
+        h.restore().await.is_err(),
+        "unreadable evidence prevents continuation"
     );
-
-    let (s2, _p2, _h2) = h2.emit_full(ADMIN_LOG, audit_suffix(ts + 1, "hook.next", res, out, pr));
+    let queue = PendingAuditQueue::new(1);
+    queue.enqueue(pending(ADMIN_LOG, 5));
+    assert!(drain_native(&queue, &h.log, h.native.clone())
+        .await
+        .is_err());
     assert_eq!(
-        s2, 2,
-        "the chain resumes after the good genesis; an undecodable sibling must not fork it to seq 1"
+        queue.len(),
+        1,
+        "the original append remains retained, not resealed at genesis"
     );
+    assert_eq!(
+        bodies(store, ADMIN_LOG).await.len(),
+        2,
+        "no new seq-one chain is invented"
+    );
+    assert_eq!(h.log.list_filtered(0, 10, None, None)[0].seq, 1);
 }
 
 #[test]
@@ -641,24 +598,28 @@ fn parse_audit_suffix_still_reads_legacy_bodies() {
     assert_eq!(principal, "admin");
 }
 
-#[test]
-fn a_safe_suffix_record_restores_with_exact_fields_despite_embedded_pipes() {
-    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
-        crate::real_store::store();
-    let h = AuditTestHarness::over(store.clone());
+#[tokio::test]
+async fn a_safe_suffix_record_restores_with_exact_fields_despite_embedded_pipes() {
+    let (native, log) = native_harness().await;
     let ts = 1_700_000_555u64;
     let forged_resource = "x|applied|nobody";
-    let (seq, _prev, hash) = h.emit_full(
-        ADMIN_LOG,
+    let (seq, _prev, hash) = native_emit(
+        &native,
+        &log,
+        3,
         audit_suffix_safe(ts, "hook.register", forged_resource, "rejected", "attacker"),
-    );
+    )
+    .await;
     assert_eq!(seq, 1);
 
-    let rows = store
-        .list_plane_records(KIND_AUDIT, &PlaneSelector::Parent(ADMIN_LOG.into()))
-        .expect("list the just-appended plane record");
+    let rows = native
+        .history
+        .list(KIND_AUDIT, &PlaneSelector::Parent(ADMIN_LOG.into()))
+        .await
+        .expect("native persisted record");
     assert_eq!(rows.len(), 1);
-    let entry = audit_entry_from_body(ADMIN_LOG, &rows[0]).expect("decode the safe-suffix body");
+    let entry =
+        audit_entry_from_body(ADMIN_LOG, &rows[0].body).expect("decode the safe-suffix body");
     assert_eq!(entry.seq, seq);
     assert_eq!(entry.hash, hash);
     assert_eq!(entry.ts, ts);
@@ -713,6 +674,8 @@ fn pending(scope: &str, tag: u8) -> PendingAudit {
         origin: EventOrigin::Mutation,
         scope: scope.to_string(),
         suffix: vec![tag],
+        operation: [tag.wrapping_add(1); 16],
+        prepared: None,
     }
 }
 
@@ -768,6 +731,8 @@ fn a_panicking_store_behind_its_door_is_a_queued_fault_not_an_unwind() {
         origin: EventOrigin::Mutation,
         scope: ADMIN_LOG.to_string(),
         suffix,
+        operation: [7; 16],
+        prepared: None,
     });
     let mut recovered = 0;
     q.drain_with(
@@ -858,7 +823,7 @@ fn pending_audit_queue_reports_a_gap_when_it_overflows() {
     assert_eq!(
         q.dropped(),
         1,
-        "the third failure, over the cap, evicted the oldest — a detected, counted gap"
+        "the new event was rejected at the cap; original pending owners remain retained"
     );
 
     let mut seen: Vec<u8> = Vec::new();
@@ -868,8 +833,8 @@ fn pending_audit_queue_reports_a_gap_when_it_overflows() {
     );
     assert_eq!(
         seen,
-        vec![1, 2],
-        "tag 0 was evicted by overflow; tags 1 and 2 survived"
+        vec![0, 1],
+        "original tags 0 and 1 survive; the new event is rejected"
     );
 
     let diags = cap.0.lock().unwrap();
@@ -881,16 +846,14 @@ fn pending_audit_queue_reports_a_gap_when_it_overflows() {
     );
 }
 
-#[test]
-fn a_clean_restore_captures_no_unreadable_row_diagnostic() {
-    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
-        std::sync::Arc::new(DualDurableStore::new());
-    let h = AuditTestHarness::over(store.clone());
-    let plane = PlaneStoreView::narrow(store.clone());
+#[tokio::test]
+async fn a_clean_restore_captures_no_unreadable_row_diagnostic() {
+    let store = crate::real_store::core().await;
+    let h = native_over(store.clone()).await;
     let cap = AuditDiagnosticCodes::default();
     {
         let _g = capture_into(&cap);
-        let _ = h.log.restore_from_store(plane.as_ref());
+        let _ = h.restore().await;
     }
     assert!(
         cap.0
@@ -915,9 +878,9 @@ fn served(resource: &str) -> AuditEntry {
         .expect("emit_admin_hostless pushed the record into the served read model")
 }
 
-#[test]
-fn a_live_admin_record_serves_the_1_5_5_hash_under_the_scheme_it_declares() {
-    ensure_global_audit_stream_registered();
+#[tokio::test]
+async fn a_live_admin_record_serves_the_1_5_5_hash_under_the_scheme_it_declares() {
+    ensure_global_audit_stream_registered().await;
     let resource = "q128-p12-1:plain";
 
     emit_admin_hostless(
@@ -927,6 +890,9 @@ fn a_live_admin_record_serves_the_1_5_5_hash_under_the_scheme_it_declares() {
         "applied",
         "issuer|subject",
     );
+    flush_pending()
+        .await
+        .expect("native audit original confirmed");
     let e = served(resource);
     assert_eq!(e.scheme, crate::audit_ring::AUDIT_SCHEME_PIPE);
     let v155 = format!(
@@ -961,11 +927,14 @@ fn a_live_admin_record_serves_the_1_5_5_hash_under_the_scheme_it_declares() {
     assert_eq!(read_scheme, crate::audit_ring::AUDIT_SCHEME_PIPE);
 }
 
-#[test]
-fn a_live_admin_record_with_a_bar_in_a_field_recomputes_under_its_declared_scheme() {
-    ensure_global_audit_stream_registered();
+#[tokio::test]
+async fn a_live_admin_record_with_a_bar_in_a_field_recomputes_under_its_declared_scheme() {
+    ensure_global_audit_stream_registered().await;
     let resource = "q128-p12-1:with|bar";
     emit_admin_hostless(1_700_000_778, "test.write", resource, "applied", "admin");
+    flush_pending()
+        .await
+        .expect("native audit original confirmed");
     let e = served(resource);
     assert_eq!(e.scheme, crate::audit_ring::AUDIT_SCHEME_LENGTH_PREFIXED);
     assert_eq!(
@@ -1019,9 +988,9 @@ fn hash_by_the_published_recipe(served: &serde_json::Value) -> String {
     hex::encode(Sha256::digest(&preimage))
 }
 
-#[test]
-fn every_served_audit_record_recomputes_by_the_published_recipe() {
-    ensure_global_audit_stream_registered();
+#[tokio::test]
+async fn every_served_audit_record_recomputes_by_the_published_recipe() {
+    ensure_global_audit_stream_registered().await;
     let tag = "q128b-u26-2:";
     let cases: [(&str, String, &str, &str); 6] = [
         ("test.write", format!("{tag}plain"), "applied", "admin"),
@@ -1056,6 +1025,9 @@ fn every_served_audit_record_recomputes_by_the_published_recipe() {
         );
     }
 
+    flush_pending()
+        .await
+        .expect("all native audit originals confirmed");
     let served = serde_json::to_value(AUDIT_LOG.list_filtered(
         0,
         crate::audit_ring::MAX_AUDIT_ENTRIES,
@@ -1102,147 +1074,132 @@ fn every_served_audit_record_recomputes_by_the_published_recipe() {
     }
 }
 
-struct UnreadableStore;
-
-impl PlaneStore for UnreadableStore {
-    fn upsert_plane_record(
-        &self,
-        _record: busbar_contract::records::PlaneRecordRef<'_>,
-    ) -> RecordStoreResult<()> {
-        Err(RecordStoreError("store down (test)".to_string()))
+#[tokio::test]
+async fn a_failed_boot_restore_does_not_fork_the_chain_at_seq_one() {
+    use busbar_contract::persistence::*;
+    struct Unavailable {
+        inner: Arc<dyn PersistenceBackend>,
+        fail: Arc<AtomicBool>,
     }
-    fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
-        Err(RecordStoreError("store down (test)".to_string()))
+    impl PersistenceBackend for Unavailable {
+        fn info(&self) -> BackendInfo {
+            self.inner.info()
+        }
+        fn read(&self, r: Arc<Read>) -> Call<'_, ReadResult> {
+            Box::pin(async move {
+                if self.fail.load(Ordering::SeqCst) {
+                    Err(Failure::Unavailable)
+                } else {
+                    self.inner.read(r).await
+                }
+            })
+        }
+        fn scan(&self, r: Arc<Scan>) -> Call<'_, Page> {
+            Box::pin(async move {
+                if self.fail.load(Ordering::SeqCst) {
+                    Err(Failure::Unavailable)
+                } else {
+                    self.inner.scan(r).await
+                }
+            })
+        }
+        fn clock(&self, d: DatasetId) -> Call<'_, ClockObservation> {
+            self.inner.clock(d)
+        }
+        fn commit(&self, c: PreparedCandidate) -> Call<'_, Decision> {
+            self.inner.commit(c)
+        }
     }
-    fn append_plane_record(
-        &self,
-        _record: busbar_contract::records::PlaneRecordRef<'_>,
-    ) -> RecordStoreResult<()> {
-        Err(RecordStoreError("store down (test)".to_string()))
-    }
-    fn list_plane_records(
-        &self,
-        _kind: &str,
-        _selector: &PlaneSelector,
-    ) -> RecordStoreResult<Vec<Vec<u8>>> {
-        Err(RecordStoreError("store down (test)".to_string()))
-    }
-    fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
-        Err(RecordStoreError("store down (test)".to_string()))
-    }
-    fn purge_plane_records(
-        &self,
-        _kind: &str,
-        _before: u64,
-        _retention: busbar_contract::records::Retention,
-    ) -> RecordStoreResult<u64> {
-        Err(RecordStoreError("store down (test)".to_string()))
-    }
-    fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
-        Err(RecordStoreError("store down (test)".to_string()))
-    }
-    fn redeem_plane_token(
-        &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> RecordStoreResult<bool> {
-        Err(RecordStoreError("store down (test)".to_string()))
-    }
-    fn plane_token_live(
-        &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> RecordStoreResult<bool> {
-        Err(RecordStoreError("store down (test)".to_string()))
-    }
-}
-
-#[test]
-fn a_failed_boot_restore_does_not_fork_the_chain_at_seq_one() {
-    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
-        std::sync::Arc::new(DualDurableStore::new());
-    let (ts, res) = (1_700_001_000u64, "hook:restore-failed");
-
-    let h1 = AuditTestHarness::over(store.clone());
-    h1.emit_full(
+    let fail = Arc::new(AtomicBool::new(false));
+    let store = crate::real_store::core_over(Arc::new(Unavailable {
+        inner: crate::real_store::native_backend().await,
+        fail: fail.clone(),
+    }))
+    .await;
+    let h1 = native_over(store.clone()).await;
+    h1.emit(
         ADMIN_LOG,
-        audit_suffix(ts, "hook.register", res, "applied", "admin"),
-    );
-    let (_s2, _p2, tail) = h1.emit_full(
-        ADMIN_LOG,
-        audit_suffix(ts + 1, "hook.delete", res, "applied", "admin"),
-    );
-
-    let h2 = AuditTestHarness::over(store.clone());
-    assert!(
-        h2.log.restore_from_store(&UnreadableStore).is_err(),
-        "the restore read failed"
-    );
-
-    let (seq, prev_hash, _hash) = h2.emit_full(
-        ADMIN_LOG,
-        audit_suffix(ts + 2, "hook.register", res, "applied", "admin"),
-    );
+        audit_suffix(
+            100,
+            "hook.register",
+            "hook:restore-failed",
+            "applied",
+            "admin",
+        ),
+    )
+    .await;
+    let (_, _, tail) = h1
+        .emit(
+            ADMIN_LOG,
+            audit_suffix(
+                101,
+                "hook.delete",
+                "hook:restore-failed",
+                "applied",
+                "admin",
+            ),
+        )
+        .await;
+    let h2 = native_over(store).await;
+    fail.store(true, Ordering::SeqCst);
+    assert!(h2.restore().await.is_err());
+    let queue = PendingAuditQueue::new(1);
+    queue.enqueue(pending(ADMIN_LOG, 8));
+    assert!(drain_native(&queue, &h2.log, h2.native.clone())
+        .await
+        .is_err());
     assert_eq!(
-        (seq, prev_hash.as_str()),
+        queue.len(),
+        1,
+        "failed restore retains the append and never invents genesis"
+    );
+    fail.store(false, Ordering::SeqCst);
+    h2.restore().await.unwrap();
+    drain_native(&queue, &h2.log, h2.native.clone())
+        .await
+        .unwrap();
+    let entry = h2.log.list_filtered(0, 1, None, None).remove(0);
+    assert_eq!(
+        (entry.seq, entry.prev_hash.as_str()),
         (3, tail.as_str()),
-        "the append continued the persisted tail instead of forking a second seq 1"
+        "recovery continues the original durable tail"
     );
 }
 
 use crate::audit::boot_verify_golden::{AD_1 as LEGACY_1, AD_2 as LEGACY_2};
 
-#[test]
-fn a_part_way_legacy_migration_resumes_instead_of_skipping() {
-    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
-        std::sync::Arc::new(DualDurableStore::new());
-    let ad1: busbar_contract::records::AuditRecord =
-        crate::store::plane_view::decode(LEGACY_1).unwrap();
-    let ad2: busbar_contract::records::AuditRecord =
-        crate::store::plane_view::decode(LEGACY_2).unwrap();
-
-    store.append_audit(&ad1).unwrap();
-    assert_eq!(
-        migrate_legacy_table_to_plane_records(store.as_ref()).unwrap(),
-        1
-    );
-    store.append_audit(&ad2).unwrap();
-
-    assert_eq!(
-        migrate_legacy_table_to_plane_records(store.as_ref()).unwrap(),
-        1,
-        "the legacy record past the part-way copy is copied"
-    );
-    assert_eq!(
-        migrate_legacy_table_to_plane_records(store.as_ref()).unwrap(),
-        0,
-        "a finished copy is a no-op"
-    );
-
-    let h = AuditTestHarness::over(store.clone());
-    let plane = PlaneStoreView::narrow(store.clone());
-    let restored = h
-        .log
-        .restore_from_store(plane.as_ref())
-        .expect("plane_records read");
+#[tokio::test]
+async fn a_part_way_legacy_import_restores_the_complete_native_history() {
+    let store = crate::real_store::core().await;
+    let ad1: busbar_contract::records::AuditRecord = decode(LEGACY_1).unwrap();
+    let ad2: busbar_contract::records::AuditRecord = decode(LEGACY_2).unwrap();
+    seed_legacy(&store, &ad1).await;
+    let h = native_over(store.clone()).await;
+    assert_eq!(h.restore().await.unwrap().records, 1);
+    seed_legacy(&store, &ad2).await;
+    for _ in 0..2 {
+        let restored = h.restore().await.unwrap();
+        assert_eq!(
+            restored.records, 2,
+            "rows after the durable import checkpoint are not skipped"
+        );
+        assert!(restored.chain_breaks.is_empty());
+    }
+    let served = h.log.list_filtered(0, 10, None, None);
+    assert_eq!(served.len(), 2);
+    assert_eq!(served[0].hash, ad2.hash);
+    assert_eq!(served[1].hash, ad1.hash);
     assert!(
-        restored.chain_breaks.is_empty(),
-        "{:?}",
-        restored.chain_breaks
+        bodies(store, ADMIN_LOG).await.is_empty(),
+        "restore never copies or reseals source evidence"
     );
-    assert_eq!(restored.records, 2, "the whole legacy history is restored");
 }
 
-#[test]
-fn a_legacy_migration_refuses_to_splice_onto_a_chain_that_disagrees() {
-    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
-        std::sync::Arc::new(DualDurableStore::new());
-    let h = AuditTestHarness::over(store.clone());
-    h.emit_full(
+#[tokio::test]
+async fn native_restore_refuses_to_splice_legacy_and_modern_chains_that_disagree() {
+    let store = crate::real_store::core().await;
+    let h = native_over(store.clone()).await;
+    h.emit(
         ADMIN_LOG,
         audit_suffix(
             1_700_002_000,
@@ -1251,24 +1208,36 @@ fn a_legacy_migration_refuses_to_splice_onto_a_chain_that_disagrees() {
             "applied",
             "admin",
         ),
-    );
-    store
-        .append_audit(&crate::store::plane_view::decode(LEGACY_1).unwrap())
-        .unwrap();
-    store
-        .append_audit(&crate::store::plane_view::decode(LEGACY_2).unwrap())
-        .unwrap();
+    )
+    .await;
+    let before = bodies(store.clone(), ADMIN_LOG).await;
+    for bytes in [LEGACY_1, LEGACY_2] {
+        seed_legacy(&store, &decode(bytes).unwrap()).await;
+    }
+    let restarted = native_over(store.clone()).await;
     assert!(
-        migrate_legacy_table_to_plane_records(store.as_ref()).is_err(),
-        "a disagreeing chain is reported, not silently skipped or spliced"
+        restarted.restore().await.is_err(),
+        "two different originals at one position cannot be spliced"
     );
-    let rows = store
-        .list_plane_records(
-            KIND_AUDIT,
-            &busbar_contract::records::PlaneSelector::Parent(ADMIN_LOG.into()),
-        )
-        .unwrap();
-    assert_eq!(rows.len(), 1, "nothing was copied");
+    assert_eq!(
+        bodies(store.clone(), ADMIN_LOG).await,
+        before,
+        "no evidence is rewritten"
+    );
+    let retained = restarted.log.list_filtered(0, 10, None, None);
+    assert_eq!(
+        retained.len(),
+        3,
+        "both disagreeing seq-one preimages remain evidence"
+    );
+    let queue = PendingAuditQueue::new(1);
+    queue.enqueue(pending(ADMIN_LOG, 9));
+    assert!(
+        drain_native(&queue, &restarted.log, restarted.native.clone())
+            .await
+            .is_err()
+    );
+    assert_eq!(bodies(store, ADMIN_LOG).await.len(), 1);
 }
 
 fn v1_5_5_hash(prev: &str, seq: u64, ts: u64, act: &str, res: &str, out: &str, pr: &str) -> String {
@@ -1280,8 +1249,8 @@ fn v1_5_5_hash(prev: &str, seq: u64, ts: u64, act: &str, res: &str, out: &str, p
         .collect()
 }
 
-#[test]
-fn a_1_5_5_audit_table_reads_back_whole_and_the_next_record_continues_its_chain() {
+#[tokio::test]
+async fn a_1_5_5_audit_table_reads_back_whole_and_the_next_record_continues_its_chain() {
     let rows = [
         (
             1_699_000_001u64,
@@ -1313,8 +1282,7 @@ fn a_1_5_5_audit_table_reads_back_whole_and_the_next_record_continues_its_chain(
             "anonymous",
         ),
     ];
-    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
-        std::sync::Arc::new(DualDurableStore::new());
+    let store = crate::real_store::core().await;
     let mut prev = String::new();
     let mut legacy = Vec::new();
     for (i, (ts, act, res, out, pr)) in rows.iter().enumerate() {
@@ -1326,21 +1294,13 @@ fn a_1_5_5_audit_table_reads_back_whole_and_the_next_record_continues_its_chain(
         );
         let row: busbar_contract::records::AuditRecord =
             serde_json::from_str(&json).expect("a 1.5.5 row decodes as this build's record");
-        store
-            .append_audit(&row)
-            .expect("legacy table takes the row");
+        seed_legacy(&store, &row).await;
         legacy.push(row);
         prev = hash;
     }
 
-    assert_eq!(
-        migrate_legacy_table_to_plane_records(store.as_ref()).expect("migrates"),
-        rows.len(),
-        "every 1.5.5 row is carried over"
-    );
-    let h = AuditTestHarness::over(store.clone());
-    let plane = PlaneStoreView::narrow(store.clone());
-    let restored = h.restore_from_store(plane.as_ref()).expect("restores");
+    let h = native_over(store.clone()).await;
+    let restored = h.restore().await.expect("restores");
     assert!(
         restored.chain_breaks.is_empty(),
         "the 1.5.5 chain verifies after the read-back: {:?}",
@@ -1389,7 +1349,7 @@ fn a_1_5_5_audit_table_reads_back_whole_and_the_next_record_continues_its_chain(
         "admin",
     );
     let (suffix, _scheme) = admin_suffix(ts, act, res, out, pr);
-    let (seq, prev_hash, hash) = h.emit_full(ADMIN_LOG, suffix);
+    let (seq, prev_hash, hash) = h.emit(ADMIN_LOG, suffix).await;
     let tail = legacy.last().expect("a tail");
     assert_eq!(
         seq,
@@ -1672,81 +1632,72 @@ fn accepted_event_origin_cannot_be_forged_by_mutation_resource_text() {
     );
 }
 
-#[test]
-fn repeated_restore_keeps_exact_rows_once_and_preserves_raw_tamper_evidence() {
-    fn snapshot(
-        scope: &str,
-        body: Vec<u8>,
-    ) -> std::sync::Arc<dyn busbar_contract::records::RecordStore> {
-        let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
-            std::sync::Arc::new(DualDurableStore::new());
-        store
-            .append_plane_record(
-                PlaneRecord {
-                    kind: KIND_AUDIT.to_owned(),
-                    id: scope.to_owned(),
-                    parent: Some(scope.to_owned()),
-                    seq: 1,
-                    ts: 0,
-                    disposition: PlaneDisposition::Active,
-                    body,
-                }
-                .view(),
-            )
-            .unwrap();
-        store
+#[tokio::test]
+async fn repeated_restore_keeps_exact_rows_once_and_preserves_raw_tamper_evidence() {
+    async fn restore(log: &PlaneAuditLog, scope: &str, body: Vec<u8>) -> AuditRestored {
+        let store = crate::real_store::core().await;
+        seed_envelope(
+            store.clone(),
+            PlaneRecord {
+                kind: KIND_AUDIT.into(),
+                id: scope.into(),
+                parent: Some(scope.into()),
+                seq: 1,
+                ts: 0,
+                disposition: PlaneDisposition::Active,
+                body,
+            },
+        )
+        .await;
+        let h = native_over(store).await;
+        restore_native(log, &h.native).await.unwrap()
     }
-    let source: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
-        std::sync::Arc::new(DualDurableStore::new());
-    let h = AuditTestHarness::over(source.clone());
-    h.emit_full(
+    let store = crate::real_store::core().await;
+    let h = native_over(store.clone()).await;
+    h.emit(
         ADMIN_LOG,
         audit_suffix_safe(42, "hook.register", "hook:a", "applied", "admin"),
-    );
-    let body = source
-        .list_plane_records(KIND_AUDIT, &PlaneSelector::Parent(ADMIN_LOG.into()))
-        .unwrap()
-        .remove(0);
+    )
+    .await;
+    let body = bodies(store, ADMIN_LOG).await.remove(0);
     let log = h.log;
-    let restore = |scope: &str, body: Vec<u8>| {
-        let plane = PlaneStoreView::narrow(snapshot(scope, body));
-        log.restore_from_store(plane.as_ref()).unwrap()
-    };
-    assert_eq!(restore(ADMIN_LOG, body.clone()).records, 1);
-    assert_eq!(restore(ADMIN_LOG, body.clone()).records, 1);
+    assert_eq!(restore(&log, ADMIN_LOG, body.clone()).await.records, 1);
+    assert_eq!(restore(&log, ADMIN_LOG, body.clone()).await.records, 1);
     assert_eq!(log.list_filtered(0, 10, None, None).len(), 1);
-
     let mut raw: NeutralBody = decode(&body).unwrap();
     let displayed = parse_audit_suffix(&raw.content);
     raw.content.extend_from_slice(b"\xff");
     assert_eq!(
         parse_audit_suffix(&raw.content),
         displayed,
-        "the distinct raw suffix has identical parsed display fields"
+        "distinct raw bytes can have identical display fields"
     );
     let tampered = encode(&raw).unwrap();
-    assert!(!restore(ADMIN_LOG, tampered.clone()).chain_breaks.is_empty());
+    assert!(!restore(&log, ADMIN_LOG, tampered.clone())
+        .await
+        .chain_breaks
+        .is_empty());
     assert_eq!(
         log.list_filtered(0, 10, None, None).len(),
         2,
-        "same sequence and claimed hash cannot hide distinct raw content"
+        "same position/hash never hides a distinct preimage"
     );
-    assert!(
-        !restore(ADMIN_LOG, tampered).chain_breaks.is_empty(),
-        "deduplication must not bypass repeated chain verification"
-    );
+    assert!(!restore(&log, ADMIN_LOG, tampered)
+        .await
+        .chain_breaks
+        .is_empty());
     assert_eq!(log.list_filtered(0, 10, None, None).len(), 2);
-
-    raw.hash = "different-claimed-hash".to_owned();
-    assert!(!restore(ADMIN_LOG, encode(&raw).unwrap())
+    raw.hash = "different-claimed-hash".into();
+    assert!(!restore(&log, ADMIN_LOG, encode(&raw).unwrap())
+        .await
         .chain_breaks
         .is_empty());
     assert_eq!(log.list_filtered(0, 10, None, None).len(), 3);
-    restore("other-scope", body);
+    restore(&log, "other-scope", body).await;
     assert_eq!(
         log.list_filtered(0, 10, None, None).len(),
         4,
-        "scope is part of persisted identity even for a scopeless digest"
+        "scope remains part of persisted evidence identity"
     );
 }
 
@@ -1797,4 +1748,49 @@ fn live_audit_page_metadata_tracks_append_and_eviction_without_claiming_complete
         "a filtered empty result proves no complete audit coverage"
     );
     assert_eq!(empty.retained_from.as_deref(), Some("2"));
+}
+
+#[tokio::test]
+async fn admin_audit_chain_boot_verifies_from_frozen_bytes() {
+    use crate::audit::boot_verify_golden::{AD_1, AD_2, AD_TAIL_HASH};
+    use busbar_contract::records::AuditRecord;
+    let store = crate::real_store::core().await;
+    for frozen in [AD_1, AD_2] {
+        seed_legacy(&store, &decode(frozen).unwrap()).await;
+    }
+    let h = native_over(store).await;
+    let restored = h.restore().await.expect("native read of frozen audit rows");
+    assert!(
+        restored.chain_breaks.is_empty(),
+        "a persisted admin chain reported TAMPERED means the digest drifted: {:?}",
+        restored.chain_breaks
+    );
+    assert_eq!(restored.records, 2, "both frozen records restored");
+
+    let tail: AuditRecord = decode(AD_2).unwrap();
+    assert_eq!(tail.hash, AD_TAIL_HASH);
+
+    let head: AuditRecord = decode(AD_1).unwrap();
+    let ring = h
+        .log
+        .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None);
+    assert_eq!(
+        ring.len(),
+        2,
+        "the ring is seeded with both restored records"
+    );
+    assert_eq!(
+        (ring[0].seq, ring[0].hash.as_str()),
+        (tail.seq, tail.hash.as_str()),
+        "newest-first: the tail record leads"
+    );
+    assert_eq!(
+        (ring[1].seq, ring[1].hash.as_str()),
+        (head.seq, head.hash.as_str()),
+        "the older record follows, seq-ordered"
+    );
+    assert!(
+        ring.iter().all(|e| !e.recorded_here),
+        "restored ring entries are seeded (recorded_here = false), never live appends"
+    );
 }

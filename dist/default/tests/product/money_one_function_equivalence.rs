@@ -531,34 +531,39 @@ fn d1_a_rate_card_edit_is_one_function_over_two_different_inputs() {
     assert_eq!(at_current.micros(), 24_000);
 }
 
-#[test]
-fn d8_the_gauge_figure_is_the_one_functions_integer_up_to_the_egress_boundary() {
+#[tokio::test]
+async fn d8_the_gauge_figure_is_the_one_functions_integer_up_to_the_egress_boundary() {
     rule("D8  `busbar_*_spend_cents` — integer up to MONEY_EGRESS");
     let requests: u64 = (1u64 << 53) + 1;
     let kernel = kernel_cost_model(None, 1);
-    let store = crate::root::real_store::records();
+    let store = crate::root::real_store::core().await;
     const BUCKET: &str = "fee-only-gauge";
     const NOW: u64 = 1_700_000_000;
-    busbar_contract::records::RecordStore::put_usage(
-        store.as_ref(),
-        BUCKET,
-        busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_TOTAL, NOW),
-        &busbar_contract::records::UsageLedger {
-            requests,
-            billable_requests: requests,
-            models: Vec::new(),
-        },
-    )
-    .expect("the raw fee count persists");
-    let gov = busbar_kernel::governance::GovState::new(store, None).expect("governance builds");
+    store
+        .ledger()
+        .put_usage(
+            BUCKET,
+            busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_TOTAL, NOW),
+            &busbar_contract::records::UsageLedger {
+                requests,
+                billable_requests: requests,
+                models: Vec::new(),
+            },
+        )
+        .await
+        .expect("the raw fee count persists");
+    let gov = busbar_kernel::governance::GovState::new_with_core(store, None, None)
+        .await
+        .expect("governance builds");
     let gauge_input = gov
-        .viewed_bucket_usage(
+        .viewed_bucket_usage_async(
             &kernel,
             BUCKET,
             busbar_kernel::governance::WINDOW_TOTAL,
             true,
             NOW,
         )
+        .await
         .expect("the actual metrics reader prices the fee-only bucket")
         .spend_cents;
     let mut tally = ledger_cost::Tally::at_card(kernel.card());
@@ -580,26 +585,28 @@ fn d8_the_gauge_figure_is_the_one_functions_integer_up_to_the_egress_boundary() 
     let over_range = kernel_cost_model(None, i64::MAX);
     assert!(
         matches!(
-            gov.derived_bucket_usage_priced(
+            gov.derived_bucket_usage_priced_async(
                 &over_range,
                 BUCKET,
                 busbar_kernel::governance::WINDOW_TOTAL,
                 true,
                 NOW,
             )
+            .await
             .expect("the raw bucket reads"),
             Err(MoneyError::Overflow)
         ),
         "the actual reader refuses an overflowing fee"
     );
     assert_eq!(
-        gov.viewed_bucket_usage(
+        gov.viewed_bucket_usage_async(
             &over_range,
             BUCKET,
             busbar_kernel::governance::WINDOW_TOTAL,
             false,
             NOW,
         )
+        .await
         .expect("excluding the fee leaves a representable empty amount")
         .spend_cents,
         0,
@@ -641,8 +648,8 @@ fn d9_a_sub_day_back_dated_correction_is_a_no_op_for_the_admin_read() {
     assert_eq!(one.micros(), 70_000);
 }
 
-#[test]
-fn d2_an_open_meter_class_is_handed_to_the_one_function_by_the_enforcement_side() {
+#[tokio::test]
+async fn d2_an_open_meter_class_is_handed_to_the_one_function_by_the_enforcement_side() {
     rule("D2  an open meter class — item 123 converged");
     let card = RateCard::from_micro_rates(
         [
@@ -676,7 +683,7 @@ fn d2_an_open_meter_class_is_handed_to_the_one_function_by_the_enforcement_side(
     let kernel_micros = kernel_nanos
         .map(|nanos| i128::try_from(nanos / ledger_cost::NANOS_PER_MICRO).expect("fixture fits"));
     let open_card = format!("{OPEN_LANE}: {{ output_utok: 2, units: {{ hops: 5 }} }}\n");
-    let (door_cents, _) = accrued_on_the_book(Some(&open_card), &counts);
+    let (door_cents, _) = accrued_on_the_book(Some(&open_card), &counts).await;
     row("ONE function                 [micro]", one.micros());
     row("ledger derive (every class)  [micro]", &ledger_micros);
     row("kernel derive (every class)  [micro]", kernel_micros);
@@ -710,7 +717,10 @@ fn d2_an_open_meter_class_is_handed_to_the_one_function_by_the_enforcement_side(
     );
     let silent_card = format!("{OPEN_LANE}: {{ output_utok: 2 }}\n");
     assert!(
-        accrued_on_the_book(Some(&silent_card), &counts).0.is_err(),
+        accrued_on_the_book(Some(&silent_card), &counts)
+            .await
+            .0
+            .is_err(),
         "the actual enforcement read refuses the unpriced open class too"
     );
 }
@@ -767,12 +777,17 @@ fn d7_a_rate_converts_from_its_decimal_exactly_and_is_never_rounded() {
 const OPEN_LANE: &str = "m";
 const OPEN_AT: u64 = 1_700_000_000;
 
-fn accrued_on_the_book(
+async fn accrued_on_the_book(
     card_yaml: Option<&str>,
     units: &[(&str, u64)],
 ) -> (Result<i64, String>, BTreeMap<String, u64>) {
-    let gov = busbar_kernel::governance::GovState::new(crate::root::real_store::records(), None)
-        .expect("a governance book over the actual product store");
+    let gov = busbar_kernel::governance::GovState::new_with_core(
+        crate::root::real_store::core().await,
+        None,
+        None,
+    )
+    .await
+    .expect("a governance book over the actual product store");
     let card: Option<BTreeMap<String, busbar_kernel::config::RateEntryCfg>> =
         card_yaml.map(|yaml| serde_yaml::from_str(yaml).expect("the card parses"));
     let cost = busbar_kernel::cost::CostModel::resolve_parts(card.as_ref(), 0, &BTreeMap::new());
@@ -783,7 +798,7 @@ fn accrued_on_the_book(
         .expect("the product signing key is generated"),
     ));
     let (key, _secret) = gov
-        .mint_signed(
+        .mint_signed_async(
             busbar_kernel::governance::NewKeySpec {
                 name: "open-class".to_string(),
                 ..Default::default()
@@ -791,6 +806,7 @@ fn accrued_on_the_book(
             u64::MAX,
             OPEN_AT,
         )
+        .await
         .expect("create key");
     let counts: BTreeMap<String, u64> = units
         .iter()
@@ -798,12 +814,15 @@ fn accrued_on_the_book(
         .collect();
     gov.record_usage(&cost, &key, "", OPEN_LANE, &counts, OPEN_AT);
     let spend = gov
-        .usage_for(&cost, &key.id, OPEN_AT)
+        .usage_for_async(&cost, &key.id, OPEN_AT)
+        .await
         .map(|usage| usage.expect("the key exists").spend_cents)
         .map_err(|refusal| format!("{refusal:?}"));
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     let lines = gov
-        .store()
+        .core_store_handle()
+        .unwrap()
+        .ledger()
         .get_usage(
             &key.id,
             busbar_kernel::governance::budget_window(
@@ -811,6 +830,7 @@ fn accrued_on_the_book(
                 OPEN_AT,
             ),
         )
+        .await
         .expect("the governance ledger reads")
         .models
         .iter()
@@ -855,8 +875,8 @@ mod declared {
 }
 
 #[cfg(linked_axis_plane_door)]
-#[test]
-fn every_open_class_ledgers_one_line_priced_by_the_card() {
+#[tokio::test]
+async fn every_open_class_ledgers_one_line_priced_by_the_card() {
     let classes = declared::open_classes();
     assert!(
         !classes.is_empty(),
@@ -865,30 +885,30 @@ fn every_open_class_ledgers_one_line_priced_by_the_card() {
     for class in classes {
         let one_line = BTreeMap::from([(class.to_string(), 3)]);
         let priced = format!("{OPEN_LANE}: {{ units: {{ {class}: 10000 }} }}\n");
-        let (spend, lines) = accrued_on_the_book(Some(&priced), &[(class, 3)]);
+        let (spend, lines) = accrued_on_the_book(Some(&priced), &[(class, 3)]).await;
         assert_eq!(spend, Ok(3), "{class}: 3 units at 1 cent each");
         assert_eq!(lines, one_line, "{class}: exactly one ledger line");
 
         let silent = format!("{OPEN_LANE}: {{ input_utok: 1 }}\n");
-        let (spend, _) = accrued_on_the_book(Some(&silent), &[(class, 3)]);
+        let (spend, _) = accrued_on_the_book(Some(&silent), &[(class, 3)]).await;
         assert!(
             spend.is_err(),
             "{class}: a present card silent about the class REFUSES (#42), never a silent 0: \
              {spend:?}"
         );
 
-        let (spend, lines) = accrued_on_the_book(None, &[(class, 3)]);
+        let (spend, lines) = accrued_on_the_book(None, &[(class, 3)]).await;
         assert_eq!(spend, Ok(0), "{class}: no card, billing off reads 0");
         assert_eq!(lines, one_line, "{class}: the line is still the record");
     }
 }
 
-#[test]
-fn an_open_class_beside_the_tokens_moves_no_token_line() {
+#[tokio::test]
+async fn an_open_class_beside_the_tokens_moves_no_token_line() {
     let card = format!(
         "{OPEN_LANE}: {{ input_utok: 10000, output_utok: 20000, units: {{ classifications: 10000 }} }}\n"
     );
-    let (spend, lines) = accrued_on_the_book(Some(&card), &[(INPUT, 2), (OUTPUT, 1)]);
+    let (spend, lines) = accrued_on_the_book(Some(&card), &[(INPUT, 2), (OUTPUT, 1)]).await;
     assert_eq!(spend, Ok(4), "2 in at 1 cent + 1 out at 2 cents");
     assert_eq!(
         lines,
@@ -897,7 +917,8 @@ fn an_open_class_beside_the_tokens_moves_no_token_line() {
     let (spend, lines) = accrued_on_the_book(
         Some(&card),
         &[(INPUT, 2), (OUTPUT, 1), ("classifications", 5)],
-    );
+    )
+    .await;
     assert_eq!(
         spend,
         Ok(9),

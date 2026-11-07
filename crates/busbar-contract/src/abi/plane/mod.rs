@@ -220,6 +220,8 @@
 //! ```
 
 pub mod check;
+pub mod collections;
+pub use collections::{CollectionMode, RecordCollection};
 
 use super::hook::{MessageView, PromptView, RequestView, SignalEntry};
 use super::mechanism::call::{AbiStr, Blob, Field, InHead, Op, OutHead, Span};
@@ -232,9 +234,9 @@ use super::mechanism::lifecycle::{
 };
 use crate::caps::ReasonCode;
 
-/// The plane kind's ABI version: `2` requires semantic rate-limit fault and namespace provenance.
-/// v1.5.5 had no plane ABI; incompatible development generation `1` is refused.
-pub const ABI_VERSION: u32 = 2;
+/// The plane kind's initial released ABI; v1.5.5 had no plane kind ABI.
+/// Admission also requires the current layout fingerprint.
+pub const ABI_VERSION: u32 = 1;
 
 /// The plane kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
 pub const LAYOUT_FINGERPRINT: u64 = 0xded167218e200fce;
@@ -1186,14 +1188,14 @@ impl RecordChain {
 /// One record kind's RETENTION RULE, as the plane declares it: which of the kind's rows older than
 /// a purge's cutoff the host's purge drops. The host passes the rule with every purge of the kind
 /// (the store ABI's `KindBeforeIn::retention`), so no store infers it from the kind's name. A kind
-/// the plane lists no rule for is purged by age ([`RETENTION_AGE`](crate::abi::store::plane::RETENTION_AGE)).
+/// the plane lists no rule for is purged by age ([`RETENTION_AGE`](crate::host_records::RETENTION_AGE)).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordRetention {
     /// Index into [`PlaneTail::record_kinds`].
     pub kind: u32,
-    /// [`RETENTION_AGE`](crate::abi::store::plane::RETENTION_AGE) |
-    /// [`RETENTION_TERMINAL_ONLY`](crate::abi::store::plane::RETENTION_TERMINAL_ONLY).
+    /// [`RETENTION_AGE`](crate::host_records::RETENTION_AGE) |
+    /// [`RETENTION_TERMINAL_ONLY`](crate::host_records::RETENTION_TERMINAL_ONLY).
     pub rule: u32,
 }
 

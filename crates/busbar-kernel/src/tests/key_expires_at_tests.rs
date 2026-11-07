@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::governance::signing::{TokenSigner, DEFAULT_KID};
-use crate::governance::{GovState, NewKeySpec, RecordStore};
+use crate::governance::signing::{DEFAULT_KID, TokenSigner};
+use crate::governance::{GovState, NewKeySpec};
 use std::sync::Arc;
 
 const NOW: u64 = 1_700_000_000;
@@ -11,22 +11,20 @@ const TOKEN_EXP: u64 = NOW + 3_600;
 
 const ROW_EXPIRED_AT: u64 = NOW - 30 * 86_400;
 
-fn gov_and_store() -> (
-    Arc<GovState>,
-    Arc<busbar_plugin_loader::store_v3::LoadedStore>,
-) {
-    let store = crate::real_store::store();
+async fn gov_and_store() -> (Arc<GovState>, Arc<crate::persistence::facade::CoreStore>) {
+    let store = crate::real_store::core().await;
     let signer = TokenSigner::from_secret_bytes(&[5u8; 32], DEFAULT_KID);
     let gov = Arc::new(
-        GovState::new_with_signer(store.clone(), Some("admintok".into()), Some(signer))
+        GovState::new_with_core(store.clone(), Some("admintok".into()), Some(signer))
+            .await
             .expect("gov"),
     );
     (gov, store)
 }
 
-fn mint_then_expire_the_row(
+async fn mint_then_expire_the_row(
     gov: &GovState,
-    store: &busbar_plugin_loader::store_v3::LoadedStore,
+    store: &crate::persistence::facade::CoreStore,
     pools: Option<Vec<&str>>,
     mint_now: u64,
     token_exp: u64,
@@ -39,9 +37,14 @@ fn mint_then_expire_the_row(
         labels: Default::default(),
         ..Default::default()
     };
-    let (binding, token) = gov.mint_signed(spec, token_exp, mint_now).expect("mint");
+    let (binding, token) = gov
+        .mint_signed_async(spec, token_exp, mint_now)
+        .await
+        .expect("mint");
     let mut row = store
+        .identity()
         .get_key(&binding.id)
+        .await
         .expect("store read")
         .expect("the minted row");
     assert_eq!(
@@ -49,15 +52,19 @@ fn mint_then_expire_the_row(
         "mint never stamps expires_at; it is a stored field nothing in the engine writes"
     );
     row.expires_at = Some(row_expired_at);
-    store.put_key(&row).expect("rewrite the row");
-    gov.refresh().expect("reload caches");
+    store
+        .identity()
+        .put_key(&row)
+        .await
+        .expect("rewrite the row");
+    gov.refresh_async().await.expect("reload caches");
     token.expose(&crate::seal::lend()).clone()
 }
 
-#[test]
-fn a_key_row_whose_expires_at_is_in_the_past_is_refused() {
-    let (gov, store) = gov_and_store();
-    let token = mint_then_expire_the_row(&gov, &store, None, NOW, TOKEN_EXP, ROW_EXPIRED_AT);
+#[tokio::test]
+async fn a_key_row_whose_expires_at_is_in_the_past_is_refused() {
+    let (gov, store) = gov_and_store().await;
+    let token = mint_then_expire_the_row(&gov, &store, None, NOW, TOKEN_EXP, ROW_EXPIRED_AT).await;
 
     let (verdict, log) = capture(|| gov.verify_token(&token, NOW, None));
     assert!(
@@ -72,7 +79,7 @@ fn a_key_row_whose_expires_at_is_in_the_past_is_refused() {
     );
 
     let row = gov
-        .lookup_by_sub(&key_id_of(&gov, &store))
+        .lookup_by_sub(&key_id_of(&gov, &store).await)
         .expect("the binding stays resolvable for the admin views");
     assert_eq!(
         row.expires_at,
@@ -90,10 +97,10 @@ fn a_key_row_whose_expires_at_is_in_the_past_is_refused() {
     );
 }
 
-#[test]
-fn a_key_row_expires_at_its_own_second() {
-    let (gov, store) = gov_and_store();
-    let token = mint_then_expire_the_row(&gov, &store, None, NOW - 10, TOKEN_EXP, NOW);
+#[tokio::test]
+async fn a_key_row_expires_at_its_own_second() {
+    let (gov, store) = gov_and_store().await;
+    let token = mint_then_expire_the_row(&gov, &store, None, NOW - 10, TOKEN_EXP, NOW).await;
 
     assert!(
         gov.verify_token(&token, NOW - 1, None).is_some(),
@@ -105,8 +112,8 @@ fn a_key_row_expires_at_its_own_second() {
     );
 }
 
-fn key_id_of(_gov: &GovState, store: &busbar_plugin_loader::store_v3::LoadedStore) -> String {
-    let keys = store.list_keys().expect("store read");
+async fn key_id_of(_gov: &GovState, store: &crate::persistence::facade::CoreStore) -> String {
+    let keys = store.identity().list_keys().await.expect("store read");
     assert_eq!(keys.len(), 1, "exactly the one minted key");
     keys[0].id.clone()
 }

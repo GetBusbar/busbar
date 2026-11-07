@@ -299,7 +299,7 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         });
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         cfg,
         plugins,
         None,
@@ -309,11 +309,16 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         None,
         &rules,
     )
+    .await
     .expect("the production root builds the decisions application");
     limits.stage_boot();
     let book = crate::root::boot::book(&app, &store)
+        .await
         .expect("the actual Store binds root card history before activation");
-    limits.keep().expect("commit actual application limits");
+    limits
+        .keep()
+        .await
+        .expect("commit actual application limits");
     let ctx = crate::root::linked::BookCtx {
         book: &book,
         app: &app,
@@ -322,7 +327,7 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         step(&ctx);
     }
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let gov = app
@@ -331,7 +336,7 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         .expect("actual signed Store governance")
         .clone();
     let (_, token) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "decider".into(),
                 ..Default::default()
@@ -339,6 +344,7 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
             4_000_000_000,
             1_700_000_000,
         )
+        .await
         .expect("mint actual signed caller");
     let declarations: Vec<_> = busbar_kernel::plane_driver::registry::plane_decls()
         .iter()
@@ -417,6 +423,7 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         Some(&stage),
         &app.serve_tables,
     )
+    .await
     .expect("the actual root composes decisions egress and hooks");
     composed.post = Some(post);
     let doors = crate::root::serve::door_routes(

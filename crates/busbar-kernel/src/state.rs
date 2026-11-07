@@ -997,6 +997,9 @@ pub fn seed_request_id_counter() -> u64 {
 
 pub struct AppHandle {
     current: arc_swap::ArcSwap<App>,
+    publication: std::sync::Mutex<()>,
+    application: tokio::sync::Mutex<()>,
+    async_appliers: std::sync::Mutex<Vec<Arc<AsyncApplier>>>,
 
     #[cfg(debug_assertions)]
     swapping: std::sync::atomic::AtomicBool,
@@ -1010,6 +1013,8 @@ pub struct AppHandle {
     door_refuser: std::sync::OnceLock<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
 }
 
+pub type ApplyFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
+pub type AsyncApplier = dyn Fn(Arc<App>) -> ApplyFuture + Send + Sync;
 pub type Applier = Box<dyn Fn(&Arc<App>) + Send + Sync>;
 type SharedApplier = Arc<dyn Fn(&Arc<App>) + Send + Sync>;
 
@@ -1017,6 +1022,9 @@ impl AppHandle {
     pub fn new(app: Arc<App>) -> Self {
         Self {
             current: arc_swap::ArcSwap::new(app),
+            publication: std::sync::Mutex::new(()),
+            application: tokio::sync::Mutex::new(()),
+            async_appliers: std::sync::Mutex::new(Vec::new()),
             #[cfg(debug_assertions)]
             swapping: std::sync::atomic::AtomicBool::new(false),
             snapshot_host: std::sync::Mutex::new(None),
@@ -1044,6 +1052,25 @@ impl AppHandle {
             .push(Arc::from(applier));
     }
 
+    pub fn on_apply_async(&self, applier: Box<AsyncApplier>) {
+        self.async_appliers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(Arc::from(applier));
+    }
+
+    async fn finish_apply(&self, next: &Arc<App>) {
+        let appliers = self
+            .async_appliers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        for applier in appliers {
+            applier(next.clone()).await;
+        }
+        next.plane_refresh.finish();
+    }
+
     pub fn attach_on_swap(&self, attach: fn(&Arc<dyn busbar_kernel::plane_driver::EngineHost>)) {
         let _ = self.attach.set(attach);
     }
@@ -1065,17 +1092,30 @@ impl AppHandle {
         self.current.load()
     }
 
-    pub fn swap(&self, next: Arc<App>) {
-        self.swap_with_commit(next, || Ok(None), &mut false)
+    pub async fn swap(&self, next: Arc<App>) {
+        let _application = self.application.lock().await;
+        self.swap_with_commit(next.clone(), None, || Ok(None), &mut false)
             .expect("a swap with no price preparation cannot refuse publication");
+        self.finish_apply(&next).await;
     }
 
     fn swap_with_commit(
         &self,
         next: Arc<App>,
+        expected: Option<&Arc<App>>,
         confirm: impl FnOnce() -> Result<Option<crate::appbuild::ConfirmedLimits>, String>,
         published: &mut bool,
     ) -> Result<(), String> {
+        let _publication = self
+            .publication
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if expected.is_some_and(|prior| !Arc::ptr_eq(prior, &self.load())) {
+            return Err(
+                "App generation changed before confirmed publication; reload before retrying"
+                    .into(),
+            );
+        }
         #[cfg(debug_assertions)]
         let _swap_guard = {
             struct Guard<'a>(&'a std::sync::atomic::AtomicBool);
@@ -1134,21 +1174,23 @@ impl AppHandle {
         for applier in appliers {
             applier(&next);
         }
-        next.plane_refresh.finish();
         Ok(())
     }
 
-    pub fn commit_and_swap(
+    pub async fn commit_and_swap(
         &self,
         next: Arc<App>,
         persist: impl FnOnce() -> Result<(), String>,
     ) -> Result<(), String> {
+        let _application = self.application.lock().await;
         persist()?;
         let mut publication = UnpublishedOverlay::new(self.load().overlay_path.clone());
-        self.swap_with_commit(next, || Ok(None), &mut publication.published)
+        self.swap_with_commit(next.clone(), None, || Ok(None), &mut publication.published)?;
+        self.finish_apply(&next).await;
+        Ok(())
     }
 
-    pub fn commit_rates_and_swap(
+    pub async fn commit_rates_and_swap(
         &self,
         next: Arc<App>,
         persist: impl FnOnce() -> Result<(), String>,
@@ -1156,9 +1198,10 @@ impl AppHandle {
         origin: &str,
     ) -> Result<(), String> {
         self.publish_rates_and_swap(next, persist, limits, origin, RatePreparation::Mutation)
+            .await
     }
 
-    pub fn reload_rates_and_swap(
+    pub async fn reload_rates_and_swap(
         &self,
         next: Arc<App>,
         persist: impl FnOnce() -> Result<(), String>,
@@ -1166,9 +1209,10 @@ impl AppHandle {
         origin: &str,
     ) -> Result<(), String> {
         self.publish_rates_and_swap(next, persist, limits, origin, RatePreparation::Reload)
+            .await
     }
 
-    fn publish_rates_and_swap(
+    async fn publish_rates_and_swap(
         &self,
         next: Arc<App>,
         persist: impl FnOnce() -> Result<(), String>,
@@ -1176,21 +1220,28 @@ impl AppHandle {
         origin: &str,
         preparation: RatePreparation,
     ) -> Result<(), String> {
+        let _application = self.application.lock().await;
+        let expected = self.load();
         persist()?;
-        let mut publication = UnpublishedOverlay::new(self.load().overlay_path.clone());
+        let mut publication = UnpublishedOverlay::new(expected.overlay_path.clone());
+        let prepared = match preparation {
+            RatePreparation::Mutation => limits.prepare_rates_with_origin(origin).await,
+            RatePreparation::Reload => limits.prepare_rates_for_reload_with_origin(origin).await,
+        }?;
+        if !Arc::ptr_eq(&expected, &self.load()) {
+            return Err(
+                "App generation changed during rate preparation; reload before retrying".into(),
+            );
+        }
+        let confirmed = prepared.confirm_activation().await?;
         self.swap_with_commit(
-            next,
-            || {
-                crate::rate_apply::with_origin(origin, || {
-                    let prepared = match preparation {
-                        RatePreparation::Mutation => limits.prepare_rates(),
-                        RatePreparation::Reload => limits.prepare_rates_for_reload(),
-                    }?;
-                    prepared.confirm_activation().map(Some)
-                })
-            },
+            next.clone(),
+            Some(&expected),
+            || Ok(Some(confirmed)),
             &mut publication.published,
-        )
+        )?;
+        self.finish_apply(&next).await;
+        Ok(())
     }
 }
 

@@ -8,24 +8,21 @@ use busbar_kernel_audit::{
     from_journal_body, journal_body, AuditChain, AuditInputs, AuditKeySet, AuditRecord,
     AuditVerifyingKey, KeyError,
 };
-use busbar_kernel_wal::{
-    BodyReader, BodyWriter, Entry, Journal, JournalAck, JournalRecord, Mode, OpenError,
-    RecordClass, Shipper,
-};
+use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, JournalRecord, OpenError, RecordClass};
 
-mod store_chain;
-pub use store_chain::{read_chain, JournalLane, RECORD_SLOTS};
-
-#[cfg(feature = "root-admin")]
-pub use store_chain::ACK_DEADLINE;
-
-#[cfg(feature = "root-admin")]
-pub(crate) use store_chain::{off_runtime, wait_for};
+use busbar_kernel::persistence::journal::runtime::{BufferBudget, RuntimeJournal, StagedRun};
+use std::sync::Arc;
 
 #[cfg(test)]
-pub use store_chain::{part_key, JOURNAL_SCHEMA};
+#[path = "../tests/store_scan_prefetch.rs"]
+mod native_scan_tests;
 
-mod conditional;
+#[cfg(test)]
+#[path = "../tests/audit_group_atomic.rs"]
+mod native_audit_group_atomic;
+#[cfg(test)]
+#[path = "../tests/audit_group_lane.rs"]
+mod native_audit_group_lane;
 
 mod unit_checkpoint;
 mod unit_checkpoint_audit;
@@ -35,15 +32,12 @@ pub(crate) use unit_checkpoint_audit::RunningAudit;
 pub(crate) use usage_recovery::usage_recovery_sink;
 
 mod store_identity;
-pub use store_identity::{host_identity, keep_keyset, stored_keyset, take_node};
-
+pub use store_identity::{host_identity, take_node};
 #[cfg(test)]
-pub use store_identity::node_id;
+pub use store_identity::{stored_keyset, BootIdentity};
 
 #[cfg(any(test, feature = "root-admin"))]
 pub use store_identity::walk_stored_chains;
-
-pub use store_identity::stored_chains;
 
 mod amend;
 
@@ -53,7 +47,6 @@ pub use amend::bind_amendments;
 pub(crate) use amend::verify_held;
 
 mod audit;
-mod audit_heads;
 
 #[cfg(feature = "root-admin")]
 pub use audit::AuditWindowAt;
@@ -66,8 +59,8 @@ pub use recovery::{node_verb_store, report_operator_breaks};
 
 mod plugin_floor;
 pub use plugin_floor::{
-    check as check_plugin_floor, check_candidate as check_plugin_floor_candidate,
-    hold as hold_plugin_floor, release_keys_floor,
+    check_prepared_candidate as check_prepared_plugin_floor_candidate, hold as hold_plugin_floor,
+    prepare_candidate as prepare_plugin_floor_candidate,
 };
 
 pub const AUDIT_RING: usize = 1_024;
@@ -80,7 +73,7 @@ pub struct DurabilityConfig {
 }
 
 pub struct Durability {
-    pub journal: Journal,
+    pub journal: Arc<RuntimeJournal>,
 
     pub record: AuditChain,
 
@@ -98,48 +91,34 @@ pub struct Durability {
 
     pub quarantined: Vec<busbar_kernel_wal::Quarantine>,
 
-    pub(crate) cards_from: Option<&'static crate::root::kernel::RootHistory>,
-
     amendments_through: Option<u64>,
 
-    lane: Option<JournalLane>,
+    history_budget: BufferBudget,
 
     resumed: bool,
 }
 
-fn chain_of(
-    journal: &Journal,
-    store_kept: Option<&JournalLane>,
-) -> std::io::Result<Result<Vec<JournalRecord>, busbar_kernel_wal::JournalBreak>> {
-    match store_kept {
-        Some(lane) => store_chain::whole_chain(journal, lane),
-        None => journal.replay(),
-    }
-}
-
 pub type ChainRead = std::io::Result<Result<Vec<JournalRecord>, busbar_kernel_wal::JournalBreak>>;
 
-pub struct ChainAt(ChainSource);
-
-enum ChainSource {
-    Read(ChainRead),
-
-    Stored(store_chain::HeldChain),
+pub struct ChainAt {
+    journal: Arc<RuntimeJournal>,
+    budget: BufferBudget,
+    through: u64,
 }
-
 impl ChainAt {
-    pub fn read(self) -> ChainRead {
-        match self.0 {
-            ChainSource::Read(read) => read,
-            ChainSource::Stored(held) => held.read(),
-        }
+    pub async fn read(self) -> ChainRead {
+        let mut records = self
+            .journal
+            .read_records(self.budget)
+            .await
+            .map_err(|error| {
+                std::io::Error::other(format!("native journal read failed: {error:?}"))
+            })?;
+        records.retain(|record| record.node_seq < self.through);
+        Ok(busbar_kernel_wal::verify_journal(&records).map(|()| records))
     }
-
     fn store(&self) -> Option<&str> {
-        match &self.0 {
-            ChainSource::Read(_) => None,
-            ChainSource::Stored(held) => Some(held.store()),
-        }
+        None
     }
 }
 
@@ -153,8 +132,8 @@ fn unreadable_in(store: Option<&str>, e: &std::io::Error) -> String {
 impl std::fmt::Debug for Durability {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Durability")
-            .field("mode", &self.journal.mode())
-            .field("head", &self.journal.head_hex())
+            .field("node", &self.journal.node())
+            .field("pending", &self.journal.pending_records())
             .finish_non_exhaustive()
     }
 }
@@ -162,106 +141,94 @@ impl std::fmt::Debug for Durability {
 impl Durability {
     #[must_use]
     pub fn on_disk(&self) -> bool {
-        matches!(self.journal.mode(), Mode::OnDisk)
+        false
     }
-
     #[must_use]
     pub fn keeps_chain(&self) -> bool {
         self.resumed
     }
-
-    pub fn chain(&self) -> ChainRead {
-        self.chain_at().read()
+    pub async fn chain(&self) -> ChainRead {
+        self.chain_at().read().await
     }
-
     #[must_use]
     pub fn chain_at(&self) -> ChainAt {
-        ChainAt(match self.store_kept() {
-            Some(lane) => match store_chain::HeldChain::of(&self.journal, lane) {
-                Ok(held) => ChainSource::Stored(held),
-                Err(e) => ChainSource::Read(Err(e)),
-            },
-            None => ChainSource::Read(self.journal.replay()),
-        })
+        ChainAt {
+            journal: self.journal.clone(),
+            budget: self.history_budget,
+            through: self.journal.next_seq(),
+        }
     }
-
-    fn store_kept(&self) -> Option<&JournalLane> {
-        self.lane.as_ref().filter(|_| self.resumed)
-    }
-
     pub(crate) fn unreadable(&self, e: &std::io::Error) -> String {
-        unreadable_in(self.store_kept().map(JournalLane::store), e)
+        unreadable_in(None, e)
     }
-
     #[must_use]
-    pub fn lane(&self) -> Option<&JournalLane> {
-        self.lane.as_ref()
+    pub fn runtime_journal(&self) -> Arc<RuntimeJournal> {
+        self.journal.clone()
     }
-
     #[must_use]
-    pub fn stored_walk_inputs(
-        &self,
-    ) -> Option<(JournalLane, u64, busbar_kernel_audit::AuditKeySet)> {
-        let lane = self.lane.as_ref()?;
-        Some((lane.clone(), self.journal.node(), keyset_of(&self.record)))
+    pub fn stored_walk_inputs(&self) -> (Arc<RuntimeJournal>, u64, AuditKeySet, BufferBudget) {
+        (
+            self.journal.clone(),
+            self.journal.node(),
+            keyset_of(&self.record),
+            self.history_budget,
+        )
     }
-
     #[must_use]
     pub fn durable_in_store(&self) -> bool {
-        self.store_kept().is_some()
+        true
     }
-
     #[must_use]
     pub fn refuses_money(&self) -> Option<String> {
-        self.lane.as_ref().and_then(JournalLane::refuses_money)
+        self.journal.refuses_money()
     }
-
-    pub fn offer_held_back(&mut self) -> usize {
-        if !self.durable_in_store() || self.journal.buffered() == 0 {
-            return 0;
-        }
-        let token = busbar_kernel::teller::Kernel::new().durability_token();
-
-        let _ = self.journal.append(&token, StepName::Meter, &[]);
-        self.journal.buffered()
+    /// Capture this owner under the book lock, then await outside the lock.
+    pub async fn offer_held_back(journal: &Arc<RuntimeJournal>) -> Result<(), String> {
+        journal
+            .flush()
+            .await
+            .map_err(|error| format!("native journal flush failed: {error:?}"))
     }
-
-    pub fn journal_quarantines(
-        &mut self,
-        token: &Grant<DurableWrite>,
-        at: StepName,
-        wall: u64,
-    ) -> Result<Option<JournalAck>, DurabilityLost> {
-        self.journal.record_quarantines(token, at, wall)
+    pub fn stage_entries(&self, entries: &[Entry]) -> Result<Arc<StagedRun>, String> {
+        self.journal
+            .stage_run(entries)
+            .map_err(|error| format!("native journal stage failed: {error:?}"))
     }
-
-    pub fn journal_claim(
-        &mut self,
+    pub async fn journal_claim(
+        book: &Arc<std::sync::Mutex<Self>>,
         claim: ClaimBalance,
         stamp: ClaimStamp,
         token: &Grant<DurableWrite>,
         at: StepName,
-    ) -> Result<JournalAck, DurabilityLost> {
-        let record = ClaimRecord {
-            taken: ClaimTaken {
-                claim: claim.claim,
-                key: claim.key,
-                window: claim.window,
-                incarnation: self.incarnation,
-                wall: stamp.wall,
-                mono: stamp.mono,
-            },
-            voided: false,
+    ) -> Result<Arc<StagedRun>, DurabilityLost> {
+        let (journal, run) = {
+            let book = book.lock().unwrap_or_else(|poison| poison.into_inner());
+            let record = ClaimRecord {
+                taken: ClaimTaken {
+                    claim: claim.claim,
+                    key: claim.key,
+                    window: claim.window,
+                    incarnation: book.incarnation,
+                    wall: stamp.wall,
+                    mono: stamp.mono,
+                },
+                voided: false,
+            };
+            let entry =
+                Entry::new(RecordClass::Transaction, record.body()).at(stamp.wall, stamp.mono);
+            let run = book
+                .journal
+                .stage_run(&[entry])
+                .map_err(|_| DurabilityLost::observed(token, at))?;
+            (book.journal.clone(), run)
         };
-        let entry = Entry::new(RecordClass::Transaction, record.body()).at(stamp.wall, stamp.mono);
-        self.journal.append(token, at, &[entry])
+        journal
+            .confirm(&run)
+            .await
+            .map_err(|_| DurabilityLost::observed(token, at))?;
+        Ok(run)
     }
-
-    fn void_claims(&mut self, unheld: Vec<ClaimTaken>) {
-        if unheld.is_empty() {
-            return;
-        }
-        let token = busbar_kernel::teller::Kernel::new().durability_token();
+    async fn void_claims(&mut self, unheld: Vec<ClaimTaken>) -> Result<(), OpenError> {
         for taken in unheld {
             let record = ClaimRecord {
                 taken,
@@ -269,10 +236,28 @@ impl Durability {
             };
             let entry = Entry::new(RecordClass::Transaction, record.body())
                 .at(record.taken.wall, record.taken.mono);
-
-            let _ = self.journal.append(&token, StepName::Admit, &[entry]);
+            let run = self
+                .journal
+                .stage_run(&[entry])
+                .map_err(native_open_error)?;
+            loop {
+                use busbar_contract::persistence::Failure;
+                use busbar_kernel::persistence::journal::RuntimeError;
+                match self.journal.confirm(&run).await {
+                    Ok(()) => break,
+                    Err(RuntimeError::Pending)
+                    | Err(RuntimeError::Backend(Failure::Unavailable | Failure::Overloaded)) => {
+                        // The native owner retains this exact candidate. Keep
+                        // the local run and Durability alive; never stage a
+                        // replacement void after an uncertain confirmation.
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                    Err(error) => return Err(native_open_error(error)),
+                }
+            }
             self.voided_claims.push(record.taken.claim);
         }
+        Ok(())
     }
 }
 
@@ -434,195 +419,99 @@ pub fn decode_audit(record: &JournalRecord) -> Result<Option<AuditRecord>, Strin
 }
 
 pub struct NodeBook {
-    pub durability: std::sync::Arc<std::sync::Mutex<Durability>>,
-
+    pub durability: Arc<std::sync::Mutex<Durability>>,
+    pub runtime_journal: Arc<RuntimeJournal>,
+    pub node_lease: Option<Arc<busbar_kernel::persistence::boot_identity::NodeLease>>,
     pub verb_store: crate::root::kernel::VerbStoreHandle,
 }
-
-#[must_use]
-pub fn node_book() -> NodeBook {
-    let durability = build(
-        &DurabilityConfig { data_dir: None },
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
-    NodeBook {
-        durability: std::sync::Arc::new(std::sync::Mutex::new(durability)),
-        verb_store: None,
+impl NodeBook {
+    pub fn runtime_journal(&self) -> Arc<RuntimeJournal> {
+        self.runtime_journal.clone()
     }
 }
 
-pub fn build(
-    cfg: &DurabilityConfig,
-    shipper: Box<dyn Shipper<busbar_kernel_wal::Record>>,
-) -> Result<Durability, OpenError> {
-    build_for_node(cfg, 0, shipper)
+fn native_open_error(error: impl std::fmt::Debug) -> OpenError {
+    OpenError::Io(std::io::Error::other(format!("native journal: {error:?}")))
 }
 
-pub fn build_for_node(
-    cfg: &DurabilityConfig,
-    node: u64,
-    shipper: Box<dyn Shipper<busbar_kernel_wal::Record>>,
-) -> Result<Durability, OpenError> {
-    build_with_cards(cfg, node, shipper, Some(&crate::root::kernel::ROOT_CARD))
+/// The root opens one native owner and shares this exact Arc with every
+/// journal-writing service. There is no legacy shipper or second live sealer.
+pub async fn node_book(
+    journal: Arc<RuntimeJournal>,
+    history_budget: BufferBudget,
+) -> Result<NodeBook, OpenError> {
+    let durability = build_on_store(
+        &DurabilityConfig::default(),
+        journal.node(),
+        journal.clone(),
+        None,
+        history_budget,
+    )
+    .await?;
+    Ok(NodeBook {
+        durability: Arc::new(std::sync::Mutex::new(durability)),
+        runtime_journal: journal,
+        node_lease: None,
+        verb_store: None,
+    })
 }
 
-pub fn build_with_cards(
-    cfg: &DurabilityConfig,
-    node: u64,
-    shipper: Box<dyn Shipper<busbar_kernel_wal::Record>>,
-    cards: Option<&'static crate::root::kernel::RootHistory>,
-) -> Result<Durability, OpenError> {
-    build_inner(cfg, node, shipper, None, cards)
-}
-
-pub fn build_on_store(
-    cfg: &DurabilityConfig,
-    node: u64,
-    lane: JournalLane,
-    cards: Option<&'static crate::root::kernel::RootHistory>,
-) -> Result<Durability, OpenError> {
-    let resume = read_chain(lane.calls().as_ref(), node).map_err(|why| {
-        OpenError::Io(std::io::Error::other(format!(
-            "the journal could not be read back from the store `{}`: {why}",
-            lane.store()
-        )))
-    })?;
-
-    let decoded = busbar_kernel_wal::decode_run(&resume)
-        .and_then(|records| busbar_kernel_wal::verify_journal(&records).map(|()| records))
-        .map_err(|broken| {
-            OpenError::Io(std::io::Error::other(format!(
-                "the journal does not verify: {broken}"
-            )))
-        })?;
-    let heads = lane
-        .initialize_heads(node, &decoded)
-        .map_err(|why| OpenError::Io(std::io::Error::other(why)))?;
-    let shipper = lane.shipper();
-    build_inner(cfg, node, shipper, Some((lane, resume, heads)), cards)
-}
-
-fn build_inner(
+pub async fn build_on_store(
     _cfg: &DurabilityConfig,
     node: u64,
-    shipper: Box<dyn Shipper<busbar_kernel_wal::Record>>,
-    over_store: Option<(
-        JournalLane,
-        Vec<busbar_kernel_wal::Record>,
-        busbar_kernel_audit::HeadHistory,
-    )>,
+    journal: Arc<RuntimeJournal>,
     cards: Option<&'static crate::root::kernel::RootHistory>,
+    history_budget: BufferBudget,
 ) -> Result<Durability, OpenError> {
-    let clock = busbar_kernel::store::now_ms;
-    let (lane, resume, retained_heads) = over_store
-        .map_or((None, None, None), |(lane, records, heads)| {
-            (Some(lane), Some(records), Some(heads))
-        });
-    let resumed = resume.is_some();
-    let journal = match &resume {
-        Some(records) => {
-            Journal::memory_resumed(node, records, shipper, clock)?.retaining_at_bound()
-        }
-        None => Journal::memory_buffered_to(node, shipper, clock),
-    };
-
+    if journal.node() != node {
+        return Err(native_open_error("journal node identity differs"));
+    }
+    let records = journal
+        .read_records(history_budget)
+        .await
+        .map_err(native_open_error)?;
     let mut durability = Durability {
         journal,
-
-        record: AuditChain::new().sealing_as(if resumed {
-            node
-        } else {
-            busbar_kernel::door::node()
-        }),
+        record: AuditChain::new().sealing_as(node),
         audit_records: Vec::new(),
         audit_findings: Vec::new(),
         audit_signed_from: None,
-
         incarnation: 0,
         restart_findings: Vec::new(),
         voided_claims: Vec::new(),
         quarantined: Vec::new(),
-        cards_from: None,
         amendments_through: None,
-        lane,
-        resumed,
+        history_budget,
+        resumed: true,
     };
-
-    durability.quarantined = durability.journal.log().quarantined().to_vec();
-    for q in &durability.quarantined {
-        tracing::error!(
-            segment = ?q.segment_file,
-            offset = q.offset,
-            damage_at = q.damage_at,
-            bytes = q.bytes,
-            quarantine = ?q.kept,
-            "{q}"
-        );
-        metrics::counter!(busbar_kernel::snapshot::JOURNAL_QUARANTINED_TOTAL).increment(1);
-    }
-
-    let chain = match resume.filter(|_| resumed) {
-        Some(records) => Ok(busbar_kernel_wal::decode_run(&records)
-            .and_then(|decoded| busbar_kernel_wal::verify_journal(&decoded).map(|()| decoded))),
-        None => durability.journal.replay(),
-    };
-
-    let records = match chain {
-        Ok(Ok(records)) => records,
-        Ok(Err(broken)) => {
-            return Err(OpenError::Io(std::io::Error::other(format!(
-                "the journal does not verify: {broken}"
-            ))))
-        }
-        Err(e) => {
-            return Err(OpenError::Io(std::io::Error::other(
-                durability.unreadable(&e),
-            )))
-        }
-    };
-    let mut findings: Vec<String> = durability
-        .quarantined
-        .iter()
-        .map(|q| format!("journal quarantine: {q}"))
-        .collect();
+    let mut findings = Vec::new();
     if let Some(cards) = cards {
-        let records = durability.keeps_chain().then_some(records.as_slice());
-
         let refused = cards
-            .rebuild_from_chain(&mut durability, records)
-            .map_err(|refused| OpenError::Io(std::io::Error::other(refused.to_string())))?;
-
+            .rebuild_from_chain(&mut durability, Some(&records))
+            .await
+            .map_err(|error| native_open_error(error.to_string()))?;
         findings.extend(refused.into_iter().map(|refused| refused.to_string()));
     }
     durability.resume_audit(&records);
-    if let Some(heads) = retained_heads {
-        durability.record = durability
-            .record
-            .retaining_heads(heads)
-            .map_err(|why| OpenError::Io(std::io::Error::other(why)))?;
-    }
     findings.extend(
         durability
             .audit_findings
             .iter()
             .map(|why| format!("audit chain: {why}")),
     );
-
     let (open, claimed) = open_claims(&records);
     let audited = durability
         .audit_records
         .iter()
-        .map(|r| r.what.incarnation)
+        .map(|record| record.what.incarnation)
         .max()
         .unwrap_or(0);
-    durability.incarnation = claimed.max(audited).saturating_add(1);
-
-    durability.void_claims(open);
+    durability.incarnation = claimed
+        .max(audited)
+        .checked_add(1)
+        .ok_or_else(|| native_open_error("journal incarnation exhausted"))?;
+    durability.void_claims(open).await?;
     findings.dedup();
-    for finding in &findings {
-        tracing::error!(finding = %finding, "the boot could not read back part of the journal");
-    }
     durability.restart_findings = findings;
     Ok(durability)
 }
@@ -632,7 +521,7 @@ pub(crate) use audit::tests::Scratch;
 
 #[cfg(test)]
 #[path = "../tests/durability.rs"]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 #[path = "../tests/durability_boot_reads.rs"]

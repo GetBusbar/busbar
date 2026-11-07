@@ -407,7 +407,11 @@ fn a_flag_value_is_the_last_one_passed_under_its_exact_name() {
         Some("thin")
     );
     assert_eq!(
-        flag_value(&["-Ctarget-feature=+sse2", "-C", "target-feature=+avx,-sse2"], "target-feature").as_deref(),
+        flag_value(
+            &["-Ctarget-feature=+sse2", "-C", "target-feature=+avx,-sse2"],
+            "target-feature"
+        )
+        .as_deref(),
         Some("+sse2,+avx,-sse2"),
         "rustc combines target-feature options in order, with later entries overriding earlier ones"
     );
@@ -459,8 +463,8 @@ impl Drop for BookDir {
 }
 
 #[cfg(distribution_root)]
-#[test]
-fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
+#[tokio::test]
+async fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
     const CHILD: &str = "BUSBAR_JOURNAL_DIRECTORY_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let name = concat!(
@@ -512,7 +516,7 @@ fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
         .expect("the product deployment resolves");
     let rules =
         Arc::new(root::door_steps::Rules::default()) as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         Default::default(),
         None,
@@ -522,26 +526,28 @@ fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
         None,
         &rules,
     )
+    .await
     .expect("the production root builds the app and opens its real store through the ABI");
     limits.stage_boot();
-    let book = root::boot::book(&app, "test-store").expect("the boot book opens");
-    limits.keep().expect("the product limits commit");
+    let book = root::boot::book(&app, "test-store")
+        .await
+        .expect("the boot book opens");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
 
-    let (on_disk, first_record) = {
+    let (on_disk, journal) = {
         let durability = book
             .durability
             .lock()
             .expect("the book's lock is unpoisoned");
-        let replayed = durability
-            .journal
-            .replay()
-            .expect("the journal on the configured directory reads back")
-            .expect("and verifies");
-        (durability.on_disk(), replayed)
+        (durability.on_disk(), durability.journal.clone())
     };
+    let first_record = journal
+        .read_records(root::durability::tests::BUDGET)
+        .await
+        .expect("the configured Store reads its verified journal");
 
     assert!(!on_disk, "the configured Store owns journal persistence");
     assert!(dir.entries().is_empty(), "boot created local state");
@@ -554,193 +560,161 @@ fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
     );
 }
 
-#[cfg(distribution_root)]
-#[test]
-fn a_store_without_the_record_slots_refuses_the_boot_by_name() {
-    crate::dist_root_install::install();
-    let store_module = crate::LINKED
-        .stores
-        .iter()
-        .find(|store| store.1)
-        .expect("the distribution links its real ephemeral product store")
-        .0;
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "store": { "module": store_module },
-        "auth": { "chain": [], "admin_auth": [] },
-    }))
-    .expect("the product deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
-        .expect("the product deployment resolves");
-    let rules =
-        Arc::new(root::door_steps::Rules::default()) as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
-        config,
-        Default::default(),
-        None,
-        Default::default(),
-        Default::default(),
-        (None, None),
-        None,
-        &rules,
-    )
-    .expect("the production root builds the app and opens its real store through the ABI");
-    limits.stage_boot();
-    let _book = root::boot::book(&app, store_module)
-        .expect("the configured Store binds rates before its record slots are withheld");
-    limits.keep().expect("the product limits commit");
-    if let Some(rotate) = rotate {
-        rotate();
-    }
-    let mut slotless = app.clone();
-    let governance = app
-        .governance
-        .as_ref()
-        .expect("the product app opens its configured store");
-    assert!(
-        governance.store_calls().is_some(),
-        "the configured product store supplies record slots before they are withheld"
-    );
-    let store = governance.store();
-    slotless.governance = Some(std::sync::Arc::new(
-        busbar_kernel::governance::GovState::new(store, None).expect("the state opens"),
-    ));
-    let refused = match root::boot::book(&slotless, "no-slots-store") {
-        Ok(_) => panic!("a store with no record slots must refuse the boot"),
-        Err(refused) => refused,
-    };
-    assert_eq!(refused, root::boot::no_record_slots("no-slots-store"));
-    assert!(
-        refused.contains("`no-slots-store`")
-            && refused.contains("record_put, record_get and record_scan"),
-        "the refusal names the store and the slots: {refused}"
-    );
-}
+// Native Store admission requires every primitive before a CoreStore can exist.
+// The retired optional-slot case is covered at that boundary by plugin-loader's
+// dispatch_tests and store_v4_tests retired-table refusal witnesses.
 
-#[test]
-fn the_boot_book_ships_its_records_to_the_configured_store() {
+#[tokio::test]
+async fn the_boot_book_ships_its_records_to_the_configured_store() {
     use busbar_kernel_wal::RecordClass;
-
     let dir = BookDir::new("ships");
-    let slots = crate::root::store_double::RecordSlots::new();
+    let fixture = root::durability::tests::NativeFixture::new(0).await;
     let token = root::kernel::new_kernel().durability_token();
-
     let durability = root::boot::compose_book(
-        journal_lane(&slots),
-        Some(dir.0.clone()),
+        fixture.journal.clone(),
+        &fixture.identity().await,
         0,
         1_700_000_000,
         &token,
     )
-    .expect("the boot journal composes over the configured directory and an empty store");
-
-    let replayed = durability
+    .await
+    .expect("the boot journal composes over its native Store");
+    durability
         .journal
-        .replay()
-        .expect("the journal reads back")
-        .expect("and verifies");
-
+        .flush()
+        .await
+        .expect("the Store confirms Bootstrap");
+    let replayed = fixture
+        .journal
+        .read_records(root::durability::tests::BUDGET)
+        .await
+        .expect("the actual native Store reads its confirmed records");
     assert_eq!(
         replayed.iter().map(|r| r.class).collect::<Vec<_>>(),
         vec![RecordClass::Bootstrap],
         "exactly the keyset's Bootstrap is on the chain"
     );
-
-    let lane = durability
-        .lane()
-        .expect("a book over the store holds its lane")
-        .clone();
+    assert_eq!(replayed[0].node, 0, "the Store keeps this node's Bootstrap");
     assert!(
-        lane.drain(std::time::Duration::from_secs(5)),
-        "the store takes the Bootstrap"
-    );
-    let seq = replayed[0].node_seq;
-    let kept = futures::executor::block_on(slots.calls().record_get(
-        root::durability::JOURNAL_SCHEMA,
-        &root::durability::part_key(0, seq, 0),
-    ))
-    .expect("the store answers");
-    assert!(
-        kept.is_some(),
-        "the store keeps the Bootstrap under THIS node's identity and the record's sequence"
+        dir.entries().is_empty(),
+        "Store persistence creates no local journal"
     );
 }
 
-fn journal_lane(slots: &crate::root::store_double::RecordSlots) -> root::durability::JournalLane {
-    root::durability::JournalLane::start(slots.calls(), "test-store").expect("the lane starts")
-}
-
-#[test]
-fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
+#[tokio::test]
+async fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
     let unnamed = BookDir::new("unnamed");
-    let slots = crate::root::store_double::RecordSlots::new();
+    let fixture = root::durability::tests::NativeFixture::new(0).await;
     let token = root::kernel::new_kernel().durability_token();
-
-    let durability = root::boot::compose_book(journal_lane(&slots), None, 0, 1_700_000_000, &token)
-        .expect("a memory-buffered journal composes");
-
+    let durability = root::boot::compose_book(
+        fixture.journal.clone(),
+        &fixture.identity().await,
+        0,
+        1_700_000_000,
+        &token,
+    )
+    .await
+    .expect("a Store-backed journal composes without a directory");
     assert!(
         !durability.on_disk(),
-        "a configuration that named no data directory must not put a journal on a disk"
+        "no data directory means no journal on disk"
     );
     assert_eq!(
         unnamed.entries(),
         Vec::<String>::new(),
-        "a file appeared beside a configuration that asked for none"
+        "no unrequested local state"
     );
+    durability
+        .journal
+        .flush()
+        .await
+        .expect("the Store confirms the boot's records");
     assert!(
-        durability
-            .lane()
-            .expect("a book over the store holds its lane")
-            .drain(std::time::Duration::from_secs(5)),
-        "the store takes the boot's records"
-    );
-    assert!(
-        slots.rows_under(root::durability::JOURNAL_SCHEMA) >= 1,
-        "without a directory the book's durability IS the store's, so the records must be kept \
-         there"
+        !fixture
+            .journal
+            .read_records(root::durability::tests::BUDGET)
+            .await
+            .expect("read the Store's originals")
+            .is_empty(),
+        "without a directory the records remain durable in the configured Store"
     );
 }
 
-#[test]
-fn the_boot_book_binds_the_store_keyset_and_refuses_a_mismatched_store_key() {
+#[tokio::test]
+async fn the_boot_book_binds_the_store_keyset_and_refuses_a_mismatched_store_key() {
+    const CHILD: &str = "BUSBAR_NATIVE_KEYSET_FIXTURE_CHILD";
+    const TEST: &str =
+        "tests::the_boot_book_binds_the_store_keyset_and_refuses_a_mismatched_store_key";
+    const WITNESS: &str = "native keyset fixture entered";
+    if std::env::var_os(CHILD).is_none() {
+        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env(CHILD, "1")
+            .kill_on_drop(true)
+            .output()
+            .await
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success() && stdout.contains(WITNESS),
+            "{stdout}\n{stderr}"
+        );
+        return;
+    }
+    println!("{WITNESS}");
+
+    use busbar_kernel::persistence::{
+        boot_identity::{BootIdentity, INSTANCE, KEYSET_SCHEMA},
+        journal::{BufferBudget, RuntimeJournal},
+        scoped::{Expected, Mutation, Outcome, Predicate, Request, ScopedStore},
+    };
     let token = root::kernel::new_kernel().durability_token();
     let dir = BookDir::new("keyset");
-    let slots = crate::root::store_double::RecordSlots::new();
+    let core = crate::root::real_store::core().await;
+    let identity = BootIdentity::new(core.clone()).unwrap();
+    root::kernel::ROOT_CARD
+        .keep_in_store(core.clone(), 7)
+        .expect("native card owner");
+    root::kernel::ROOT_CARD.card_applied(&Default::default(), "keyset fixture");
+    let budget = BufferBudget {
+        records: 65536,
+        bytes: 64 * 1024 * 1024,
+    };
     let first = root::boot::compose_book(
-        journal_lane(&slots),
-        Some(dir.0.clone()),
+        RuntimeJournal::open(core.clone(), 7, budget).await.unwrap(),
+        &identity,
         7,
         1_700_000_000,
         &token,
     )
+    .await
     .unwrap();
     let key_id = first.record.signing_key_id().unwrap().to_string();
     assert!(root::durability::keyset_of(&first.record)
         .get(&key_id)
         .is_some());
-    let seed = root::durability::stored_keyset(slots.calls().as_ref())
+    let seed = root::durability::stored_keyset(&identity)
+        .await
         .unwrap()
         .unwrap();
-    assert!(first
-        .lane()
-        .unwrap()
-        .drain(std::time::Duration::from_secs(5)));
+    first.journal.flush().await.unwrap();
     drop(first);
     let restarted = root::boot::compose_book(
-        journal_lane(&slots),
-        Some(dir.0.clone()),
+        RuntimeJournal::open(core.clone(), 7, budget).await.unwrap(),
+        &identity,
         7,
         1_700_000_001,
         &token,
     )
+    .await
     .unwrap();
     assert_eq!(restarted.record.signing_key_id(), Some(key_id.as_str()));
     assert!(restarted.keeps_chain());
     assert_eq!(
         restarted
             .chain()
+            .await
             .unwrap()
             .unwrap()
             .iter()
@@ -749,21 +723,37 @@ fn the_boot_book_binds_the_store_keyset_and_refuses_a_mismatched_store_key() {
         1
     );
     assert!(dir.entries().is_empty());
+    restarted.journal.flush().await.unwrap();
     drop(restarted);
     let legacy = dir.0.join("deployment-keyset");
     std::fs::write(&legacy, seed.as_bytes()).unwrap();
-    slots.put_row(
-        "busbar.keyset.v1",
-        b"deployment",
-        "11".repeat(32).as_bytes(),
-    );
+    let records =
+        ScopedStore::host_private(core.clone(), INSTANCE, [KEYSET_SCHEMA.into()]).unwrap();
+    let corrupt = Request {
+        op_id: busbar_kernel::door::op_id().0,
+        predicates: vec![Predicate {
+            schema: KEYSET_SCHEMA.into(),
+            key: b"deployment".to_vec(),
+            expected: Expected::Exact(busbar_contract::Secret::new(seed.as_bytes().to_vec())),
+        }],
+        mutations: vec![Mutation::Put {
+            schema: KEYSET_SCHEMA.into(),
+            key: b"deployment".to_vec(),
+            value: busbar_contract::Secret::new("11".repeat(32).into_bytes()),
+        }],
+    };
+    assert!(matches!(
+        records.conditional_native(&corrupt).await.unwrap(),
+        Outcome::Applied
+    ));
     let refused = root::boot::compose_book(
-        journal_lane(&slots),
-        Some(dir.0.clone()),
+        RuntimeJournal::open(core, 7, budget).await.unwrap(),
+        &identity,
         7,
         1_700_000_002,
         &token,
     )
+    .await
     .unwrap_err();
     assert!(
         refused.starts_with("KeysetMissing: the journal the configured store keeps"),
@@ -773,8 +763,8 @@ fn the_boot_book_binds_the_store_keyset_and_refuses_a_mismatched_store_key() {
 }
 
 #[cfg(distribution_root)]
-#[test]
-fn one_seal_after_two_reloads() {
+#[tokio::test]
+async fn one_seal_after_two_reloads() {
     const CHILD: &str = "BUSBAR_JOURNAL_RELOAD_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let name = concat!(module_path!(), "::one_seal_after_two_reloads");
@@ -817,7 +807,7 @@ fn one_seal_after_two_reloads() {
         .expect("the product deployment resolves");
     let rules =
         Arc::new(root::door_steps::Rules::default()) as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (boot, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (boot, rotate, limits) = crate::root::real_store::build_app(
         config,
         Default::default(),
         None,
@@ -827,12 +817,15 @@ fn one_seal_after_two_reloads() {
         None,
         &rules,
     )
+    .await
     .expect("the production root builds the app and opens its real store through the ABI");
     limits.stage_boot();
-    let book = root::boot::book(&boot, "test-store").expect("the boot book opens");
-    limits.keep().expect("the product limits commit");
+    let book = root::boot::book(&boot, "test-store")
+        .await
+        .expect("the boot book opens");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let store = boot
         .governance
@@ -840,7 +833,7 @@ fn one_seal_after_two_reloads() {
         .expect("a boot resolves the store its book opens over");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the unchanged product deployment resolves for the first reload");
-    let (first, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (first, rotate, limits) = crate::root::real_store::build_app(
         config,
         Default::default(),
         None,
@@ -850,14 +843,15 @@ fn one_seal_after_two_reloads() {
         Some(&boot),
         &rules,
     )
+    .await
     .expect("the first product reload builds over the prior generation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the unchanged product deployment resolves for the second reload");
-    let (second, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (second, rotate, limits) = crate::root::real_store::build_app(
         config,
         Default::default(),
         None,
@@ -867,10 +861,11 @@ fn one_seal_after_two_reloads() {
         Some(&first),
         &rules,
     )
+    .await
     .expect("the second product reload builds over the prior generation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
 
     assert!(
@@ -882,20 +877,25 @@ fn one_seal_after_two_reloads() {
          the boot opened"
     );
 
-    let durability = book
-        .durability
-        .lock()
-        .expect("the book's lock is unpoisoned");
-    let keyset = root::durability::keyset_of(&durability.record);
-    let key_id = durability.record.signing_key_id().expect("the book signs");
-    let signing_key = keyset
-        .get(key_id)
-        .expect("the keyset holds the signing key");
-    let records = durability
-        .journal
-        .replay()
-        .expect("the journal reads back")
-        .expect("and verifies");
+    let (signing_fingerprint, journal) = {
+        let durability = book
+            .durability
+            .lock()
+            .expect("the book's lock is unpoisoned");
+        let keyset = root::durability::keyset_of(&durability.record);
+        let key_id = durability.record.signing_key_id().expect("the book signs");
+        let key = keyset
+            .get(key_id)
+            .expect("the keyset holds the signing key");
+        (
+            root::keyset::fingerprint_of(key),
+            durability.journal.clone(),
+        )
+    };
+    let records = journal
+        .read_records(root::durability::tests::BUDGET)
+        .await
+        .expect("the configured Store reads its verified journal");
     let mut openings = records.iter().filter(|r| r.class == RecordClass::Bootstrap);
     let opening = openings.next().expect("the boot sealed its keyset");
     assert!(
@@ -904,7 +904,7 @@ fn one_seal_after_two_reloads() {
     );
     assert_eq!(
         root::keyset::bootstrap_fingerprint(&opening.body),
-        Some(root::keyset::fingerprint_of(signing_key)),
+        Some(signing_fingerprint),
         "the surviving Bootstrap seals the bound signing key"
     );
 }

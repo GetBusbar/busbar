@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::root::test_plugins as actual_plugins;
 
-fn actual_rewrite(
+async fn actual_rewrite(
     on_error: &str,
 ) -> Vec<(Duration, Arc<dyn busbar_contract::hooks::RoutingPolicy>)> {
     crate::dist_root_install::install();
@@ -98,7 +98,7 @@ fn actual_rewrite(
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -108,24 +108,30 @@ fn actual_rewrite(
         None,
         &rules,
     )
+    .await
     .expect("actual Store and Webrequest compose");
     if !crate::root::kernel::ROOT_CARD.keeps_store() {
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the actual deployment configured governance")
-                .store_calls()
-                .expect("the configured Store exposes its rate-history slots"),
-            142,
-        );
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the actual deployment configured governance")
+                        .core_store_handle()
+                        .expect("the configured Store exposes its rate-history slots"),
+                    142,
+                )
+                .expect("the native rate-card Store binds");
+        };
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the configured Store boots its initial rate history");
     }
-    limits.keep().expect("component limits commit");
+    limits.keep().await.expect("component limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let chain = busbar_kernel::hooks::resolve_rewrite_hooks(
         &app.hook_registry,
@@ -144,7 +150,7 @@ fn actual_rewrite(
 #[tokio::test]
 async fn actual_webrequest_supplies_a_rewrite_to_the_host_policy() {
     use busbar_contract::hooks::{RoutingRequest, TransformOutcome};
-    let policies = actual_rewrite("weighted");
+    let policies = actual_rewrite("weighted").await;
     assert_eq!(policies.len(), 1);
 
     let request = RoutingRequest {

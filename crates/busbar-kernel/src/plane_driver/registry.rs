@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 pub struct BootCtx {
-    pub store: Option<std::sync::Arc<dyn crate::store::plane_view::PlaneStore>>,
+    has_store: bool,
 
     pub app: Option<std::sync::Arc<crate::state::App>>,
 
@@ -12,12 +12,12 @@ pub struct BootCtx {
 }
 
 impl BootCtx {
-    pub fn for_hydrate(
-        store: Option<std::sync::Arc<dyn crate::store::plane_view::PlaneStore>>,
-        app: &std::sync::Arc<crate::state::App>,
-    ) -> Self {
+    pub fn for_hydrate(app: &std::sync::Arc<crate::state::App>) -> Self {
         BootCtx {
-            store,
+            has_store: app
+                .governance
+                .as_ref()
+                .is_some_and(|gov| gov.core_store_handle().is_ok()),
             app: Some(app.clone()),
             handle: None,
             card_issuer: None,
@@ -28,8 +28,13 @@ impl BootCtx {
         handle: &std::sync::Arc<crate::state::AppHandle>,
         card_issuer: Option<CardIssuer>,
     ) -> Self {
+        let has_store = handle
+            .load()
+            .governance
+            .as_ref()
+            .is_some_and(|gov| gov.core_store_handle().is_ok());
         BootCtx {
-            store: None,
+            has_store,
             app: None,
             handle: Some(handle.clone()),
             card_issuer,
@@ -39,7 +44,7 @@ impl BootCtx {
 
 impl PlaneBootCtx for BootCtx {
     fn has_store(&self) -> bool {
-        self.store.is_some()
+        self.has_store
     }
 
     fn engine_host(&self) -> std::sync::Arc<dyn busbar_kernel::plane_driver::EngineHost> {
@@ -57,12 +62,6 @@ impl PlaneBootCtx for BootCtx {
         self.card_issuer.clone()
     }
 
-    fn plane_store(
-        &self,
-    ) -> Option<std::sync::Arc<dyn busbar_kernel::store::plane_view::PlaneStore>> {
-        self.store.clone()
-    }
-
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -72,7 +71,7 @@ impl PlaneBootCtx for BootCtx {
 impl BootCtx {
     pub fn stub() -> BootCtx {
         BootCtx {
-            store: None,
+            has_store: false,
             app: None,
             handle: None,
             card_issuer: None,
@@ -322,8 +321,6 @@ pub struct CardIssuer {
 pub trait PlaneBootCtx {
     fn has_store(&self) -> bool;
 
-    fn plane_store(&self) -> Option<std::sync::Arc<dyn crate::store::plane_view::PlaneStore>>;
-
     fn card_issuer(&self) -> Option<CardIssuer>;
 
     fn engine_host(&self) -> std::sync::Arc<dyn crate::plane_driver::EngineHost>;
@@ -507,9 +504,9 @@ plane_behaviour! {
     openapi: Option<fn(&PlaneDecl) -> serde_json::Value>,
 
     /// RESTORE THIS PLANE'S DURABLE STATE, in order, BEFORE a listener is bound — the plane half of
-    /// `busbar_kernel::boot::hydrate_all`. Handed a [`PlaneBootCtx`] whose store surface is `PlaneStore`
-    /// and nothing that carries the audit chain, so a hydrate hook can attach the plane's write-through
-    /// sinks and read them back but can never touch the append-only chain (invariant (a)). `None` for
+    /// `busbar_kernel::boot::hydrate_all`. The [`PlaneBootCtx`] reports admitted Store availability
+    /// without exposing a backend or the core persistence facade. Durable work runs through host
+    /// services, so a hook cannot access the append-only audit chain. `None` for
     /// a plane with no durable state to restore (the LLM plane). A hook returning `Err` REFUSES BOOT:
     /// `busbar_kernel::boot::hydrate_all` propagates it with `?`, so a plane cannot half-restore and serve.
     hydrate: Option<BootHook>,

@@ -5,8 +5,9 @@ use super::*;
 
 struct Answers;
 
+#[async_trait::async_trait]
 impl AdminDispatch for Answers {
-    fn execute(&self, _verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
+    async fn execute(&self, _verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
         AdminAnswer {
             status: 200,
             headers: vec![("content-type".to_string(), "application/json".to_string())],
@@ -32,10 +33,12 @@ fn request(method: &str, path: &str) -> AdminRequest {
     }
 }
 
-fn walk(door: AdminDoorFn, request: AdminRequest) -> (AdminAnswer, Vec<AuditRecord>) {
-    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(Answers), door);
+async fn walk(door: AdminDoorFn, request: AdminRequest) -> (AdminAnswer, Vec<AuditRecord>) {
+    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(Answers), door).await;
     let book = Arc::clone(&units.durability);
-    let answer = AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request);
+    let answer = AdminNode::new(crate::root::kernel::new_kernel(), units)
+        .answer(request)
+        .await;
     let mut held = Vec::new();
     NodeAudit::new(book).read(&mut |_, records| {
         held = records.map(<[_]>::to_vec).unwrap_or_default();
@@ -43,11 +46,11 @@ fn walk(door: AdminDoorFn, request: AdminRequest) -> (AdminAnswer, Vec<AuditReco
     (answer, held)
 }
 
-#[test]
-fn an_admitted_admin_unit_seals_one_record() {
+#[tokio::test]
+async fn an_admitted_admin_unit_seals_one_record() {
     let walked = request("POST", "/api/v1/admin/keys");
     let unit = UnitKey::new(walked.unit);
-    let (answer, records) = walk(open_door(), walked);
+    let (answer, records) = walk(open_door(), walked).await;
     assert_eq!(answer.status, 200, "the open door admits the mint");
     assert_eq!(
         records.len(),
@@ -61,14 +64,14 @@ fn an_admitted_admin_unit_seals_one_record() {
     assert_eq!(record.wall, 1_700_000_000);
 }
 
-#[test]
-fn a_refused_admin_unit_seals_a_refused_record() {
+#[tokio::test]
+async fn a_refused_admin_unit_seals_a_refused_record() {
     let walked = request("POST", "/api/v1/admin/keys");
     let unit = UnitKey::new(walked.unit);
     let refusing: AdminDoorFn = Arc::new(|_: &AdminRequest| {
         busbar_kernel::auth::AdminVerdict::from(busbar_kernel::auth::AdminDoor::Denied)
     });
-    let (answer, records) = walk(refusing, walked);
+    let (answer, records) = walk(refusing, walked).await;
     assert_eq!(answer.status, 401, "the door refuses the caller");
     assert_eq!(
         records.len(),
@@ -90,196 +93,70 @@ fn a_refused_admin_unit_seals_a_refused_record() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_live_record_sink_writes_through_the_store_calls() {
-    crate::dist_root_install::install();
+#[tokio::test]
+async fn the_live_record_sink_writes_through_the_canonical_core_store() {
     use busbar_contract::records::{PlaneDisposition, PlaneRecord};
-    let store = crate::root::real_store::store();
-    let calls: std::sync::Arc<dyn busbar_contract::store_calls::StoreCalls> = store.clone();
-    let gov = std::sync::Arc::new(
-        busbar_kernel::governance::GovState::new(store, None).expect("governance"),
-    );
-    assert!(gov.attach_store_calls(std::sync::Arc::clone(&calls)));
-    crate::dist_root_install::install();
-    let library_path = crate::root::test_plugins::application_store_library();
-    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual Store statement is valid")
-        .name;
-    let mut manifest = crate::root::test_plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    manifest.statement = Some(hex::encode(statement));
-    let library = std::fs::read(library_path).expect("the actual Store library reads");
-    let directory = crate::root::test_plugins::scratch(&format!(
-        "admin-unit-{}",
-        busbar_kernel::door::op_id().counter(),
-    ));
-    let archive = crate::root::test_plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &library,
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings = crate::root::test_plugins::application_store_settings(&directory);
-    assert!(
-        settings.is_object(),
-        "the actual Store settings are an object"
-    );
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {}, "models": {},
-        "auth": {"chain": [], "admin_auth": []},
-        "store": {"module": module, "settings": settings},
-        "advanced": {"allow_destinations": ["127.0.0.1"]},
-    }))
-    .expect("the real admin deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
-        .expect("the real admin deployment resolves");
-    let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
-        as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut built, rotate, limits) = busbar_kernel::build_app_from_config(
-        config,
-        crate::root::test_plugins::trusted_config(&directory),
-        None,
-        Default::default(),
-        Default::default(),
-        (None, None),
-        None,
-        &rules,
-    )
-    .expect("the product builds the actual admin application");
-    if !crate::root::kernel::ROOT_CARD.keeps_store() {
-        limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            built
-                .governance
-                .as_ref()
-                .expect("the application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes its actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .expect("the actual configured Store boots its initial rate history");
-    }
-    limits.keep().expect("the real application limits commit");
-    if let Some(rotate) = rotate {
-        rotate();
-    }
-    built.governance = Some(gov);
-    let app = std::sync::Arc::new(built);
-    let sink = live_records(std::sync::Arc::new(busbar_kernel::state::AppHandle::new(
-        app,
-    )));
-    let record = |id: &str| PlaneRecord {
-        kind: "sink-probe".to_string(),
-        id: id.to_string(),
-        parent: None,
+    use busbar_kernel::host_records_async::AsyncHistory;
+    let core = crate::root::real_store::core().await;
+    let sink = live_records(Arc::clone(&core));
+    let decl = busbar_contract::plane::PlaneDeclaration {
+        key: "sink-probe",
+        fallback: false,
+        config_section: "sink-probe",
+        scope_kinds: &[],
+        subject_noun: "probe",
+        admin_noun: "probe",
+        audit_kind: "probe",
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        owned_config_sections: &[],
+        billable_classes: &[],
+        fee_units: &[],
+        metric_families: &[],
+        record_kinds: &["note"],
+        required_config_sections: &[],
+        trust_keys: &[],
+        served_op_classes: &[],
+        caller_credential_refusal: None,
+    };
+    let kind = busbar_kernel::store::plane_view::plane_owned_kind(decl.key, "note").unwrap();
+    let written = PlaneRecord {
+        kind: kind.clone(),
+        id: "r1".into(),
+        parent: Some("opaque-metadata".into()),
         seq: 0,
         ts: 1_700_000_000,
         disposition: PlaneDisposition::Active,
-        body: b"{\"v\":1}".to_vec(),
+        body: vec![0, 255, 1],
     };
-    let written = record("r1");
-    tokio::task::spawn_blocking(move || sink(&written))
-        .await
-        .expect("the sink ran")
-        .expect("the record is written");
-    let back = crate::root::durability::wait_for(calls.get_plane_record("sink-probe", "r1"))
-        .expect("the record reads back");
-    assert_eq!(back, Some(b"{\"v\":1}".to_vec()));
-
-    let bare = std::sync::Arc::new(
-        busbar_kernel::governance::GovState::new(crate::root::real_store::records(), None)
-            .expect("governance"),
-    );
-    crate::dist_root_install::install();
-    let library_path = crate::root::test_plugins::application_store_library();
-    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual Store statement is valid")
-        .name;
-    let mut manifest = crate::root::test_plugins::manifest(
-        "store",
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    manifest.statement = Some(hex::encode(statement));
-    let library = std::fs::read(library_path).expect("the actual Store library reads");
-    let directory = crate::root::test_plugins::scratch(&format!(
-        "admin-unit-{}",
-        busbar_kernel::door::op_id().counter(),
-    ));
-    let archive = crate::root::test_plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &library,
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings = crate::root::test_plugins::application_store_settings(&directory);
-    assert!(
-        settings.is_object(),
-        "the actual Store settings are an object"
-    );
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {}, "models": {},
-        "auth": {"chain": [], "admin_auth": []},
-        "store": {"module": module, "settings": settings},
-        "advanced": {"allow_destinations": ["127.0.0.1"]},
-    }))
-    .expect("the real admin deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
-        .expect("the real admin deployment resolves");
-    let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
-        as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut built, rotate, limits) = busbar_kernel::build_app_from_config(
-        config,
-        crate::root::test_plugins::trusted_config(&directory),
-        None,
-        Default::default(),
-        Default::default(),
-        (None, None),
-        None,
-        &rules,
+    sink(&decl, &written).await.expect("canonical record write");
+    let history = AsyncHistory::authorized_upserts(
+        Arc::clone(&core),
+        "busbar.admin.envelopes/sink-probe",
+        [kind.clone()],
     )
-    .expect("the product builds the actual admin application");
-    if !crate::root::kernel::ROOT_CARD.keeps_store() {
-        limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            built
-                .governance
-                .as_ref()
-                .expect("the application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes its actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .expect("the actual configured Store boots its initial rate history");
-    }
-    limits.keep().expect("the real application limits commit");
-    if let Some(rotate) = rotate {
-        rotate();
-    }
-    built.governance = Some(bare);
-    let app = std::sync::Arc::new(built);
-    let sink = live_records(std::sync::Arc::new(busbar_kernel::state::AppHandle::new(
-        app,
-    )));
-    let unkept = record("r2");
+    .expect("authorized envelope reader");
+    assert_eq!(
+        history.get(&kind, "r1").await.unwrap(),
+        Some(written.clone())
+    );
+
+    // A cloned sink retains the same canonical owner; no legacy business Store
+    // attachment or blocking worker is needed to publish its next envelope.
+    let next_sink = Arc::clone(&sink);
+    let mut next = written.clone();
+    next.id = "r2".into();
+    next_sink(&decl, &next).await.expect("same canonical owner");
+    assert_eq!(history.get(&kind, "r2").await.unwrap(), Some(next));
+
+    let mut foreign = written;
+    foreign.kind = "undeclared".into();
     assert!(
-        tokio::task::spawn_blocking(move || sink(&unkept))
-            .await
-            .expect("the sink ran")
-            .is_err(),
-        "a store with no v3 calls keeps nothing and says so"
+        sink(&decl, &foreign).await.is_err(),
+        "undeclared schema is refused"
+    );
+    assert_eq!(
+        history.get(&kind, "r1").await.unwrap().unwrap().body,
+        vec![0, 255, 1]
     );
 }

@@ -8,9 +8,9 @@ use crate::audit::auditlog::{
 };
 use busbar_contract::plugin_rows::{NeedLevel, Row, Skipped, Trust};
 
-#[test]
-fn a_trust_policy_skip_seals_one_plugin_trust_record() {
-    ensure_global_audit_stream_registered();
+#[tokio::test]
+async fn a_trust_policy_skip_seals_one_plugin_trust_record() {
+    ensure_global_audit_stream_registered().await;
 
     let row = Skipped {
         file: "bind-audit-trust-probe.tar.gz".into(),
@@ -28,6 +28,9 @@ fn a_trust_policy_skip_seals_one_plugin_trust_record() {
         resource,
         "plugin:file/bind-audit-trust-probe.tar.gz#unknown_publisher"
     );
+    crate::audit::auditlog::flush_pending()
+        .await
+        .expect("native refusal audit confirmed");
     let sealed = AUDIT_LOG.list_filtered(
         0,
         usize::MAX,
@@ -39,9 +42,9 @@ fn a_trust_policy_skip_seals_one_plugin_trust_record() {
     assert_eq!(sealed[0].principal, PLUGIN_REFUSAL_PRINCIPAL);
 }
 
-#[test]
-fn an_unverified_load_seals_one_degraded_plugin_trust_record() {
-    ensure_global_audit_stream_registered();
+#[tokio::test]
+async fn an_unverified_load_seals_one_degraded_plugin_trust_record() {
+    ensure_global_audit_stream_registered().await;
     let row = Row {
         file: "item1-unsigned-probe.tar.gz".into(),
         key: "item1-unsigned-probe".into(),
@@ -64,6 +67,9 @@ fn an_unverified_load_seals_one_degraded_plugin_trust_record() {
     log_scanned_rows(&[row], &[], &[], "/plugins");
 
     let resource = plugin_refusal_resource("file", "item1-unsigned-probe.tar.gz", "unverified");
+    crate::audit::auditlog::flush_pending()
+        .await
+        .expect("native refusal audit confirmed");
     let sealed = AUDIT_LOG.list_filtered(
         0,
         usize::MAX,
@@ -79,9 +85,9 @@ fn an_unverified_load_seals_one_degraded_plugin_trust_record() {
     assert_eq!(sealed[0].principal, PLUGIN_REFUSAL_PRINCIPAL);
 }
 
-#[test]
-fn a_retired_key_skip_seals_one_rejected_plugin_trust_record() {
-    ensure_global_audit_stream_registered();
+#[tokio::test]
+async fn a_retired_key_skip_seals_one_rejected_plugin_trust_record() {
+    ensure_global_audit_stream_registered().await;
     let row = Skipped {
         file: "sec-allowuns-retired-probe.tar.gz".into(),
         name: "sec-allowuns-retired-probe".into(),
@@ -97,6 +103,9 @@ fn a_retired_key_skip_seals_one_rejected_plugin_trust_record() {
 
     let resource =
         plugin_refusal_resource("file", "sec-allowuns-retired-probe.tar.gz", "retired_key");
+    crate::audit::auditlog::flush_pending()
+        .await
+        .expect("native refusal audit confirmed");
     let sealed = AUDIT_LOG.list_filtered(
         0,
         usize::MAX,

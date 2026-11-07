@@ -240,7 +240,7 @@ impl ServiceStore {
             Exchange::Commit(zeroize::Zeroizing::new(request.clone())),
             receipt,
             match &result.decision {
-                Ok(busbar_contract::abi::sdk::store::conditional::Decision::Applied) => {
+                Ok(busbar_contract::host_records::conditional::Decision::Applied) => {
                     super::super::conditional::ReceiptKind::Applied
                 }
                 Err(

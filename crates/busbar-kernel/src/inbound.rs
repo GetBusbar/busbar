@@ -1486,7 +1486,10 @@ fn signed_then_keys(
                 let key = gov.and_then(|g| {
                     s.kinds.iter().find_map(|kind| {
                         let (key, cred) = g.lookup_credential(kind, &id.subject)?;
-                        (key.enabled && cred.meta.is_live(now) && !g.is_revoked(&key.id))
+                        (key.enabled
+                            && !crate::governance::key_row_expired(&key, now)
+                            && cred.meta.is_live(now)
+                            && !g.is_revoked(&key.id))
                             .then_some(key)
                     })
                 });

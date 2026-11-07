@@ -9,12 +9,11 @@ use indexmap::IndexMap;
 use busbar_contract::abi::plane::{
     RecordChain, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED,
 };
-use busbar_contract::abi::sdk::store::conditional::{Expected, Mutation, Predicate, Request};
+use busbar_contract::host_records::conditional::{Expected, Mutation, Predicate, Request};
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::services::{chain_key, chain_key_parts};
 
-use crate::audit::journal::NeutralRecord;
 use crate::audit::stream_registry::{StreamInput, StreamRecord};
 use crate::audit::{verify_chain, Chain, ChainBreak, ChainedRecord, Framing};
 use crate::host_records::{record_key, RecordRows, CLAIM_KIND, WRITE_FAILED};
@@ -37,7 +36,7 @@ const CLAIM_SECS: u64 = 60;
 
 pub const CHAIN_LIFE_SCHEMA: RecordSchemaId = RecordSchemaId::new("kernel-chain-life");
 
-const CLAIM_ATTEMPTS: usize = 8;
+pub(crate) const CLAIM_ATTEMPTS: usize = 8;
 
 /// A chained record kind's declaration, as the host frames it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,14 +71,14 @@ pub fn scope_of(key: &[u8]) -> Option<&str> {
 
 pub(crate) fn encode(r: &StreamRecord) -> Option<Vec<u8>> {
     let (prev, hash) = (r.prev_hash().as_bytes(), r.hash().as_bytes());
-    let mut body = Vec::with_capacity(CHAIN_OVERHEAD + r.content().len());
+    let mut body = Vec::with_capacity(CHAIN_OVERHEAD + r.content.as_slice().len());
     body.push(BODY_VERSION);
     body.extend_from_slice(&r.seq().to_be_bytes());
     body.push(u8::try_from(prev.len()).ok()?);
     body.extend_from_slice(prev);
     body.push(u8::try_from(hash.len()).ok()?);
     body.extend_from_slice(hash);
-    body.extend_from_slice(r.content());
+    body.extend_from_slice(r.content.as_slice());
     Some(body)
 }
 
@@ -151,6 +150,16 @@ impl std::fmt::Debug for ChainBook {
     }
 }
 
+/// Immutable append inputs separated from the queue's one-shot callback. Only
+/// these shareable borrows may cross native awaits; Write itself is Send-only.
+pub(crate) struct OrdinaryChain<'a> {
+    pub instance: &'a str,
+    pub schema: RecordSchemaId,
+    pub scope: &'a str,
+    pub content: &'a [u8],
+    pub framing: ChainFraming,
+}
+
 impl ChainBook {
     fn lock(&self) -> MutexGuard<'_, Positions> {
         self.positions.lock().unwrap_or_else(|e| e.into_inner())
@@ -190,6 +199,72 @@ impl ChainBook {
         while positions.len() > POSITIONS_CAP {
             positions.shift_remove_index(0);
         }
+    }
+
+    pub(crate) async fn prepare_ordinary_async(
+        &self,
+        rows: &crate::host_records_async::AsyncRecords,
+        input: OrdinaryChain<'_>,
+        operation: [u8; 16],
+    ) -> Result<(zeroize::Zeroizing<Request>, ConditionalPosition), &'static str> {
+        let OrdinaryChain {
+            instance,
+            schema,
+            scope,
+            content,
+            framing,
+        } = input;
+        let life = observe_life_async(rows, instance, schema, scope).await?;
+        let serial = parse_life(match &life {
+            Expected::Absent => None,
+            Expected::Bytes(bytes) => Some(bytes),
+        })?;
+        let action = if content.is_empty() {
+            ConditionalChainAction::Drop
+        } else {
+            ConditionalChainAction::Append(vec![content.to_vec()])
+        };
+        let observed = if content.is_empty() {
+            None
+        } else {
+            let at = (
+                Arc::from(instance),
+                schema.as_str().to_string(),
+                scope.to_string(),
+            );
+            let cached = {
+                self.lock()
+                    .get(&at)
+                    .filter(|held| !held.conditional && held.life == serial)
+                    .cloned()
+            };
+            match cached {
+                Some(held) => Some(held),
+                None => Some(resume_ordinary_rows(
+                    instance,
+                    schema,
+                    scope,
+                    framing,
+                    serial,
+                    held_async(rows, instance, schema, scope).await?,
+                )?),
+            }
+        };
+        let chain = ConditionalChain {
+            schema,
+            scope: scope.to_string(),
+            framing,
+            life,
+            action,
+        };
+        let mut request = zeroize::Zeroizing::new(Request {
+            version: busbar_contract::host_records::conditional::VERSION,
+            op_id: busbar_contract::records::OpId(operation),
+            predicates: vec![],
+            mutations: vec![],
+        });
+        let position = chain.prepare_observed(instance, &mut request, observed)?;
+        Ok((request, position))
     }
 
     pub(crate) fn append(
@@ -434,9 +509,9 @@ impl ChainBook {
     pub(crate) fn conditional_settled(
         &self,
         position: &ConditionalPosition,
-        decision: busbar_contract::abi::sdk::store::conditional::Decision,
+        decision: busbar_contract::host_records::conditional::Decision,
     ) {
-        use busbar_contract::abi::sdk::store::conditional::Decision;
+        use busbar_contract::host_records::conditional::Decision;
         match position {
             ConditionalPosition::Append { at, before, after } => {
                 let mut positions = self.lock();
@@ -465,6 +540,87 @@ impl ConditionalChain {
         instance: &str,
         request: &mut Request,
         book: &ChainBook,
+    ) -> Result<ConditionalPosition, &'static str> {
+        let life = parse_life(match &self.life {
+            Expected::Absent => None,
+            Expected::Bytes(bytes) => Some(bytes),
+        })?;
+        let at = (
+            Arc::from(instance),
+            self.schema.as_str().to_string(),
+            self.scope.clone(),
+        );
+        let observed = if matches!(self.action, ConditionalChainAction::Append(_)) {
+            match book
+                .lock()
+                .get(&at)
+                .filter(|held| held.conditional && held.life == life)
+                .cloned()
+            {
+                Some(held) => Some(held),
+                None => Some(resume_conditional(
+                    rows,
+                    instance,
+                    self.schema,
+                    &self.scope,
+                    self.framing,
+                    life,
+                )?),
+            }
+        } else {
+            None
+        };
+        self.prepare_observed(instance, request, observed)
+    }
+
+    pub(crate) async fn prepare_async(
+        &self,
+        rows: &crate::host_records_async::AsyncRecords,
+        instance: &str,
+        request: &mut Request,
+        book: &ChainBook,
+    ) -> Result<ConditionalPosition, &'static str> {
+        let life = parse_life(match &self.life {
+            Expected::Absent => None,
+            Expected::Bytes(bytes) => Some(bytes),
+        })?;
+        let at = (
+            Arc::from(instance),
+            self.schema.as_str().to_string(),
+            self.scope.clone(),
+        );
+        let cached = {
+            book.lock()
+                .get(&at)
+                .filter(|held| held.conditional && held.life == life)
+                .cloned()
+        };
+        let observed = if matches!(self.action, ConditionalChainAction::Append(_)) {
+            match cached {
+                Some(held) => Some(held),
+                None => Some(
+                    resume_conditional_async(
+                        rows,
+                        instance,
+                        self.schema,
+                        &self.scope,
+                        self.framing,
+                        life,
+                    )
+                    .await?,
+                ),
+            }
+        } else {
+            None
+        };
+        self.prepare_observed(instance, request, observed)
+    }
+
+    fn prepare_observed(
+        &self,
+        instance: &str,
+        request: &mut Request,
+        observed: Option<Held>,
     ) -> Result<ConditionalPosition, &'static str> {
         let life_key = life_key(instance, self.schema, &self.scope);
         let life = parse_life(match &self.life {
@@ -508,17 +664,7 @@ impl ConditionalChain {
             }
             ConditionalChainAction::Append(contents) => contents,
         };
-        let cached = book
-            .lock()
-            .get(&at)
-            .filter(|held| held.conditional && held.life == life)
-            .cloned();
-        let before = match cached {
-            Some(held) => held,
-            None => {
-                resume_conditional(rows, instance, self.schema, &self.scope, self.framing, life)?
-            }
-        };
+        let before = observed.ok_or(WRITE_FAILED)?;
         let mut chain = before.chain.clone();
         let mut next = match &before.tail {
             Some((key, body)) => {
@@ -576,8 +722,32 @@ fn resume_conditional(
     framing: ChainFraming,
     life: u64,
 ) -> Result<Held, &'static str> {
+    let stored = held(rows, instance, schema, scope)?;
+    resume_conditional_rows(instance, schema, scope, framing, life, stored)
+}
+
+async fn resume_conditional_async(
+    rows: &crate::host_records_async::AsyncRecords,
+    instance: &str,
+    schema: RecordSchemaId,
+    scope: &str,
+    framing: ChainFraming,
+    life: u64,
+) -> Result<Held, &'static str> {
+    let stored = held_async(rows, instance, schema, scope).await?;
+    resume_conditional_rows(instance, schema, scope, framing, life, stored)
+}
+
+fn resume_conditional_rows(
+    instance: &str,
+    schema: RecordSchemaId,
+    scope: &str,
+    framing: ChainFraming,
+    life: u64,
+    stored: Vec<(Vec<u8>, RecordBytes)>,
+) -> Result<Held, &'static str> {
     let unscoped = record_key(instance, &[]).len();
-    let mut stored: Vec<_> = held(rows, instance, schema, scope)?
+    let mut stored: Vec<_> = stored
         .into_iter()
         .filter(|(key, _)| {
             key.get(unscoped..)
@@ -634,6 +804,56 @@ fn held(
         .map_err(|_| WRITE_FAILED)
 }
 
+async fn held_async(
+    rows: &crate::host_records_async::AsyncRecords,
+    instance: &str,
+    schema: RecordSchemaId,
+    scope: &str,
+) -> Result<Vec<(Vec<u8>, RecordBytes)>, &'static str> {
+    let mut prefix = scope.as_bytes().to_vec();
+    prefix.push(b'/');
+    let prefix = record_key(instance, &prefix);
+    let mut cursor = None;
+    let mut stored = Vec::new();
+    loop {
+        let page = rows
+            .page(schema.as_str(), &prefix, cursor.as_ref())
+            .await
+            .map_err(|_| WRITE_FAILED)?;
+        for (key, value) in page.rows {
+            stored.push((
+                key,
+                RecordBytes::new(value.expose(&crate::seal::lend()).clone())
+                    .map_err(|_| CHAIN_RECORD_TOO_LARGE)?,
+            ));
+        }
+        cursor = page.next;
+        if cursor.is_none() {
+            return Ok(stored);
+        }
+    }
+}
+
+pub(crate) async fn observe_life_async(
+    rows: &crate::host_records_async::AsyncRecords,
+    instance: &str,
+    schema: RecordSchemaId,
+    scope: &str,
+) -> Result<Expected, &'static str> {
+    let bytes = rows
+        .get(
+            CHAIN_LIFE_SCHEMA.as_str(),
+            &life_key(instance, schema, scope),
+        )
+        .await
+        .map_err(|_| WRITE_FAILED)?;
+    let seal = crate::seal::lend();
+    parse_life(bytes.as_ref().map(|value| value.expose(&seal).as_slice()))?;
+    Ok(bytes.map_or(Expected::Absent, |value| {
+        Expected::Bytes(value.expose(&seal).clone())
+    }))
+}
+
 pub(crate) fn position_token(
     instance: &str,
     schema: RecordSchemaId,
@@ -659,16 +879,28 @@ fn resume(
     f: ChainFraming,
 ) -> Result<Held, &'static str> {
     let life = life_of(rows, instance, schema, scope)?;
+    let found = held(rows, instance, schema, scope)?;
+    if life_of(rows, instance, schema, scope)? != life {
+        return Err(WRITE_FAILED);
+    }
+    resume_ordinary_rows(instance, schema, scope, f, life, found)
+}
+
+fn resume_ordinary_rows(
+    instance: &str,
+    schema: RecordSchemaId,
+    scope: &str,
+    f: ChainFraming,
+    life: u64,
+    found: Vec<(Vec<u8>, RecordBytes)>,
+) -> Result<Held, &'static str> {
     let unscoped = record_key(instance, &[]).len();
-    let mut stored: Vec<Row> = held(rows, instance, schema, scope)?
+    let mut stored: Vec<Row> = found
         .into_iter()
         .filter_map(|(k, v)| Some((k.get(unscoped..)?.to_vec(), v.as_slice().to_vec())))
         .filter(|(k, _)| chain_key_parts(k).is_some_and(|(s, _)| s == scope.as_bytes()))
         .collect();
     stored.sort();
-    if life_of(rows, instance, schema, scope)? != life {
-        return Err(WRITE_FAILED);
-    }
     let decoded = decoded(instance, schema, scope, &stored, f);
     let key_mismatch = decoded
         .iter()
@@ -724,7 +956,11 @@ fn resume(
     Ok(Held {
         chain,
         life,
-        tail: None,
+        tail: stored
+            .iter()
+            .rev()
+            .find(|(_, body)| !body.is_empty())
+            .map(|(key, body)| (record_key(instance, key), Arc::from(body.as_slice()))),
         conditional: false,
     })
 }
@@ -789,7 +1025,7 @@ pub fn verified(
         out.extend(
             records
                 .iter()
-                .map(|(key, r)| (key.to_vec(), r.content().to_vec())),
+                .map(|(key, r)| (key.to_vec(), r.content.as_slice().to_vec())),
         );
     }
     out

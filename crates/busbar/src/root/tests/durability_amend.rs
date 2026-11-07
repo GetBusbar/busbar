@@ -3,6 +3,10 @@
 
 use super::*;
 use busbar_kernel::audit::amend::{NodeAmendments, Reader};
+use busbar_kernel::persistence::{
+    facade::CoreStore,
+    journal::runtime::{BufferBudget, RuntimeJournal},
+};
 
 const PHASE: &str = "BUSBAR_TEST_AMEND_RESTART_PHASE";
 const DIR: &str = "BUSBAR_TEST_AMEND_RESTART_DIR";
@@ -10,18 +14,10 @@ const DIR: &str = "BUSBAR_TEST_AMEND_RESTART_DIR";
 const HOOK: &str = "compressor";
 const LATE_HOOK: &str = "summarizer";
 
-#[test]
-fn malformed_amendments_are_counted_without_changing_the_accepted_run() {
-    let scratch = crate::root::durability::audit::tests::Scratch::new("amend-decode");
-    let mut book = build_for_node(
-        &DurabilityConfig {
-            data_dir: Some(scratch.0.clone()),
-        },
-        7,
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-    )
-    .unwrap();
-    let token = crate::root::kernel::new_kernel().durability_token();
+#[tokio::test]
+async fn malformed_amendments_are_counted_without_changing_the_accepted_run() {
+    let core = crate::root::real_store::core().await;
+    let book = native_book(core, 7).await;
     let mut chain = amend::AmendChain::default();
     let valid = chain.append(
         amend::content_access(
@@ -39,14 +35,18 @@ fn malformed_amendments_are_counted_without_changing_the_accepted_run() {
     let unrelated = Entry::new(RecordClass::Load, Vec::new());
     let malformed = Entry::new(RecordClass::Access, truncated.finish());
     let wrong_class = Entry::new(RecordClass::Load, body(&valid));
+    let staged = book
+        .stage_entries(&[unrelated, entry(&valid), malformed, wrong_class])
+        .expect("records staged");
     book.journal
-        .append(
-            &token,
-            StepName::Audit,
-            &[unrelated, entry(&valid), malformed, wrong_class],
-        )
+        .confirm(&staged)
+        .await
         .expect("records journalled");
-    let records = book.chain().expect("read chain").expect("verified journal");
+    let records = book
+        .chain()
+        .await
+        .expect("read chain")
+        .expect("verified journal");
     let (run, set_aside) = linked_run(&records);
     assert_eq!(run, vec![valid]);
     assert_eq!(
@@ -55,13 +55,11 @@ fn malformed_amendments_are_counted_without_changing_the_accepted_run() {
     );
 }
 
-fn access(app: &Arc<busbar_kernel::state::App>, hook: &str) {
-    busbar_kernel::plane_driver::engine_host(app).hook_read(
-        hook,
-        Some("pseudonym-1"),
-        "chat",
-        false,
-    );
+async fn access(app: &Arc<busbar_kernel::state::App>, hook: &str) {
+    busbar_kernel::plane_driver::engine_host(app)
+        .hook_read(hook, Some("pseudonym-1"), "chat", false)
+        .await
+        .expect("content access is durably recorded");
 }
 
 fn accessed(journal: &NodeAmendments) -> Vec<String> {
@@ -75,7 +73,7 @@ fn accessed(journal: &NodeAmendments) -> Vec<String> {
         .collect()
 }
 
-fn application(slots: &crate::root::store_double::RecordSlots) -> Arc<busbar_kernel::state::App> {
+async fn application(core: Arc<CoreStore>) -> Arc<busbar_kernel::state::App> {
     crate::dist_root_install::install();
     let path = crate::root::test_plugins::application_store_library();
     let statement = crate::root::loader::dispatch::rendering_of_library(&path)
@@ -122,27 +120,50 @@ fn application(slots: &crate::root::store_double::RecordSlots) -> Arc<busbar_ker
         (None, None),
         None,
         &rules,
-        Some(busbar_contract::store_calls::OpenedStore {
-            records: slots.records(),
-            calls: Some(slots.calls()),
-        }),
+        Some(core.clone()),
         false,
     )
+    .await
     .expect("the product builds the amendment deployment over its actual store");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(slots.calls(), STORE_NODE);
+    crate::root::kernel::ROOT_CARD
+        .keep_in_store(core, STORE_NODE)
+        .expect("native price authority");
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the amendment Store boots its rate-card history");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     Arc::new(app)
 }
 
-fn boot(
-    slots: &crate::root::store_double::RecordSlots,
+fn budget() -> BufferBudget {
+    BufferBudget {
+        records: 65_536,
+        bytes: 256 * 1024 * 1024,
+    }
+}
+
+async fn native_book(core: Arc<CoreStore>, node: u64) -> Durability {
+    let journal = RuntimeJournal::open(core, node, budget())
+        .await
+        .expect("native journal opens");
+    build_on_store(
+        &DurabilityConfig { data_dir: None },
+        node,
+        journal,
+        None,
+        budget(),
+    )
+    .await
+    .expect("the native journal reads back")
+}
+
+async fn boot(
+    core: Arc<CoreStore>,
     dir: &std::path::Path,
 ) -> (Arc<Mutex<Durability>>, Arc<busbar_kernel::state::App>) {
     assert_eq!(
@@ -150,44 +171,39 @@ fn boot(
         Some(dir),
         "the child process boots over the directory its phase names"
     );
-    let app = application(slots);
-    let book = crate::root::boot::book(&app, "test-store").expect("the boot book opens");
-    (book.durability, app)
+    let app = application(core.clone()).await;
+    let book = store_boot(core, &app.amendments).await;
+    (book, app)
 }
 
-fn child_phase() -> bool {
+async fn child_phase() -> bool {
     let (Ok(phase), Ok(dir)) = (std::env::var(PHASE), std::env::var(DIR)) else {
         return false;
     };
-    restart_phase(&phase, &dir);
+    restart_phase(&phase, &dir).await;
     true
 }
 
-fn restart_phase(phase: &str, dir: &str) {
+async fn restart_phase(phase: &str, dir: &str) {
     if phase == "store" {
-        store_phase();
+        store_phase().await;
         return;
     }
-    let slots = crate::root::store_double::RecordSlots::new();
-    let (book, app) = boot(&slots, std::path::Path::new(dir));
+    let core = crate::root::real_store::core().await;
+    let (book, app) = boot(core.clone(), std::path::Path::new(dir)).await;
 
     let journal = Arc::clone(&app.amendments);
     match phase {
         "restart" => {
-            access(&app, HOOK);
-            store_drained(&book);
-            let lane = book
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .lane()
-                .unwrap()
-                .clone();
-            lane.release_held_lease();
-            drop(lane);
+            access(&app, HOOK).await;
+            store_drained(&book).await;
+            let mut next_app = (*app).clone();
+            next_app.amendments = Arc::new(NodeAmendments::new());
             drop(journal);
             drop(app);
             drop(book);
-            let (restarted, app) = boot(&slots, std::path::Path::new(dir));
+            let app = Arc::new(next_app);
+            let restarted = store_boot(core, &app.amendments).await;
             let durability = restarted.lock().unwrap_or_else(|p| p.into_inner());
             assert!(
                 durability.restart_findings.is_empty(),
@@ -209,7 +225,7 @@ fn restart_phase(phase: &str, dir: &str) {
 
         #[cfg(feature = "root-admin")]
         "tamper" => {
-            access(&app, HOOK);
+            access(&app, HOOK).await;
             let findings = |answer: crate::root::units_admin::AdminAnswer| -> String {
                 String::from_utf8(answer.body).expect("utf-8")
             };
@@ -218,6 +234,7 @@ fn restart_phase(phase: &str, dir: &str) {
                 None,
                 Some(&journal),
             )
+            .await
             .expect("verify answers");
             let clean = findings(clean);
             assert!(!clean.contains("amendment chain"), "{clean}");
@@ -228,6 +245,7 @@ fn restart_phase(phase: &str, dir: &str) {
                     None,
                     Some(&journal),
                 )
+                .await
                 .expect("verify answers"),
             );
             assert!(
@@ -244,70 +262,66 @@ const STORE_NODE: u64 = 31;
 
 const PAD_BODY: usize = 100_000;
 
-fn store_boot(
-    slots: &crate::root::store_double::RecordSlots,
-    journal: &NodeAmendments,
-) -> Arc<Mutex<Durability>> {
-    let lane = JournalLane::start(slots.calls(), "test-store").expect("the lane starts");
-    let mut durability =
-        build_on_store(&DurabilityConfig { data_dir: None }, STORE_NODE, lane, None)
-            .expect("the store reads back");
+async fn store_boot(core: Arc<CoreStore>, journal: &NodeAmendments) -> Arc<Mutex<Durability>> {
+    let mut durability = native_book(core, STORE_NODE).await;
     let token = crate::root::kernel::new_kernel().durability_token();
     durability
         .restore_amendments(journal, &token)
+        .await
         .expect("the chain reads back");
     let book = Arc::new(Mutex::new(durability));
-    bind_amendments(&book, journal);
+    bind_amendments(&book, journal)
+        .await
+        .expect("native amendment sink binds");
     book
 }
 
-fn store_drained(book: &Arc<Mutex<Durability>>) {
-    let lane = book
+async fn store_drained(book: &Arc<Mutex<Durability>>) {
+    let journal = book
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .lane()
-        .expect("Store lane")
-        .clone();
-    assert!(
-        lane.drain(std::time::Duration::from_secs(120)),
-        "the store takes the journal's records"
-    );
+        .runtime_journal();
+    journal
+        .flush()
+        .await
+        .expect("the store takes the journal's records");
+    assert_eq!(journal.pending_records(), 0);
 }
 
-fn store_phase() {
-    let slots = crate::root::store_double::RecordSlots::new();
-    let token = crate::root::kernel::new_kernel().durability_token();
+async fn store_phase() {
+    let core = crate::root::real_store::core().await;
     {
-        let app = application(&slots);
-        let book = store_boot(&slots, &app.amendments);
-        access(&app, HOOK);
+        let app = application(core.clone()).await;
+        let book = store_boot(core.clone(), &app.amendments).await;
+        access(&app, HOOK).await;
         let pads = usize::try_from(busbar_kernel_wal::SEGMENT_BYTES).expect("fits") / PAD_BODY + 1;
+        let runtime = book
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .runtime_journal();
         for _ in 0..pads {
-            book.lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .journal
-                .append(
-                    &token,
-                    StepName::Meter,
-                    &[Entry::new(RecordClass::Load, vec![0x5a; PAD_BODY]).at(1_700_000_000, 0)],
-                )
-                .expect("the padding goes on the chain");
+            let staged = runtime
+                .stage_run(&[
+                    Entry::new(RecordClass::Load, vec![0x5a; PAD_BODY]).at(1_700_000_000, 0)
+                ])
+                .expect("padding staged");
+            runtime.confirm(&staged).await.expect("padding persisted");
         }
-        access(&app, LATE_HOOK);
-        store_drained(&book);
+        access(&app, LATE_HOOK).await;
+        store_drained(&book).await;
+        let records = runtime
+            .read_records(budget())
+            .await
+            .expect("complete native history");
+        let bytes: usize = records.iter().map(|record| record.body.len()).sum();
         assert!(
-            book.lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .journal
-                .log()
-                .segments_used()
-                >= 2,
-            "the memory journal rolled past one segment"
+            bytes > busbar_kernel_wal::SEGMENT_BYTES as usize,
+            "native history exceeds the old memory-segment boundary"
         );
     }
 
     let journal = NodeAmendments::new();
-    let restarted = store_boot(&slots, &journal);
+    let restarted = store_boot(core, &journal).await;
     let durability = restarted.lock().unwrap_or_else(|p| p.into_inner());
     assert_eq!(
         accessed(&journal),
@@ -321,9 +335,9 @@ fn store_phase() {
     );
 }
 
-#[test]
-fn a_chain_past_one_memory_segment_keeps_its_amendments_over_the_store() {
-    if child_phase() {
+#[tokio::test]
+async fn a_chain_past_one_memory_segment_keeps_its_amendments_over_the_store() {
+    if child_phase().await {
         return;
     }
     let dir = crate::root::durability::Scratch::new("amend-store");
@@ -356,9 +370,9 @@ fn run_phase(test: &str, phase: &str, dir: &std::path::Path) {
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn verify_reports_an_edit_to_the_held_amendment_run() {
-    if child_phase() {
+#[tokio::test]
+async fn verify_reports_an_edit_to_the_held_amendment_run() {
+    if child_phase().await {
         return;
     }
     let dir = crate::root::durability::Scratch::new("amend-verify");
@@ -369,9 +383,9 @@ fn verify_reports_an_edit_to_the_held_amendment_run() {
     );
 }
 
-#[test]
-fn a_content_access_survives_a_restart() {
-    if child_phase() {
+#[tokio::test]
+async fn a_content_access_survives_a_restart() {
+    if child_phase().await {
         return;
     }
     let dir = crate::root::durability::Scratch::new("amend-restart");
@@ -379,20 +393,19 @@ fn a_content_access_survives_a_restart() {
     run_phase(test, "restart", &dir.0);
 }
 
-#[test]
-fn without_a_store_the_amendment_journal_is_neither_rebuilt_nor_bound() {
-    let mut durability = build_with_cards(
-        &DurabilityConfig { data_dir: None },
-        0,
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-        None,
-    )
-    .expect("a memory-buffered journal cannot fail to open");
+#[tokio::test]
+async fn without_a_store_the_amendment_journal_is_neither_rebuilt_nor_bound() {
     let journal = NodeAmendments::new();
     let token = crate::root::kernel::new_kernel().durability_token();
-    durability
-        .restore_amendments(&journal, &token)
-        .expect("nothing is read back");
-    assert_eq!(durability.amendments_through, None);
-    assert!(durability.restart_findings.is_empty());
+    journal
+        .bind(None, 0, &token)
+        .await
+        .expect("no sink is bound");
+    assert!(
+        journal.recent().is_empty(),
+        "no history is invented without a Store"
+    );
+    journal
+        .verify()
+        .expect("the untouched empty amendment chain verifies");
 }

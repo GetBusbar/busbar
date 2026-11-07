@@ -3,13 +3,13 @@
 
 use super::*;
 use crate::governance::recovery::{
-    tests::Journal, RecoveryKind, RecoveryResolution, RecoveryState, RecoveryVerdict,
+    RecoveryKind, RecoveryResolution, RecoveryState, RecoveryVerdict, tests::Journal,
 };
 
 #[tokio::test]
 async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reactor() {
     crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let store = Arc::new(ChunkStore::default());
+    let store = Arc::new(ChunkStore::new().await);
     let journal = Arc::new(Journal::default());
     let old_cost = model(&[(
         "g",
@@ -36,13 +36,15 @@ async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reac
         ),
     )]);
     let key = key("vk_live_cost_verdict", Some("g"));
-    store.put_key(&key).unwrap();
+    store.identity().put_key(&key).await.unwrap();
     let now = crate::store::now();
-    let first = GovState::new(store.clone(), None).unwrap();
-    first.attach_recovery_sink(journal.clone()).unwrap();
+    let first = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    first.attach_recovery_sink(journal.clone()).await.unwrap();
     first.try_admit(&old_cost, &key, "", now).unwrap();
     first.record_usage(&old_cost, &key, "", MODEL, &toks(100, 0), now);
-    metered(&first, &key.id, MODEL, 100, now);
+    metered(&first, &key.id, MODEL, 100, now).await;
     journal
         .fail_after_write
         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -57,7 +59,12 @@ async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reac
         delta: &correction_delta,
         now,
     };
-    assert!(first.adjust_usage(&old_cost, &adjustment).is_err());
+    assert!(
+        first
+            .adjust_usage_async(&old_cost, &adjustment)
+            .await
+            .is_err()
+    );
     let original = journal
         .selected
         .lock()
@@ -66,7 +73,7 @@ async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reac
         .find(|event| event.kind == RecoveryKind::Correction)
         .unwrap()
         .clone();
-    assert_eq!(input(store.as_ref(), &key.id, 0), 0);
+    assert_eq!(input(store.core().as_ref(), &key.id, 0).await, 0);
     drop(first);
     journal
         .fail_after_write
@@ -84,41 +91,51 @@ async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reac
     };
     store
         .inner
+        .ledger()
         .add_usage(day_bucket, day_window, &foreign)
+        .await
         .unwrap();
     if era_now() != 0 {
         store
             .inner
+            .ledger()
             .add_usage(
                 &crate::governance::era_bucket(day_bucket),
                 day_window,
                 &crate::governance::dated_delta(&foreign, RawRateEra::legacy(era_now())),
             )
+            .await
             .unwrap();
     }
-    let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
-    gov.attach_recovery_sink(journal.clone()).unwrap();
-    gov.hydrate_budgets(&old_cost, now).unwrap();
-    gov.flush_budgets();
+    let gov = Arc::new(
+        GovState::new_with_core(store.core(), None, None)
+            .await
+            .unwrap(),
+    );
+    gov.attach_recovery_sink(journal.clone()).await.unwrap();
+    gov.hydrate_budgets_async(&old_cost, now).await.unwrap();
+    gov.flush_budgets().await;
     let unknown = gov.recovery_event(original.operation_id).unwrap();
     assert_eq!(unknown.state, RecoveryState::LandedUnknown);
     store.replies.lock().unwrap().push_back(Reply::FailBefore);
-    assert!(gov
-        .recovery()
-        .resolve(
-            &old_cost,
-            RecoveryResolution {
-                operation_id: unknown.operation_id,
-                body_fingerprint: unknown.body_fingerprint,
-                expected_revision: unknown.revision,
-                verdict: RecoveryVerdict::NotLanded,
-                sender_quiesced: true,
-                backend_quiesced: true,
-                actor: "operator".into(),
-                reason: "old sender retired; backend confirms no original mutation".into(),
-            }
-        )
-        .is_err());
+    assert!(
+        gov.recovery()
+            .resolve(
+                &old_cost,
+                RecoveryResolution {
+                    operation_id: unknown.operation_id,
+                    body_fingerprint: unknown.body_fingerprint,
+                    expected_revision: unknown.revision,
+                    verdict: RecoveryVerdict::NotLanded,
+                    sender_quiesced: true,
+                    backend_quiesced: true,
+                    actor: "operator".into(),
+                    reason: "old sender retired; backend confirms no original mutation".into(),
+                }
+            )
+            .await
+            .is_err()
+    );
     assert_eq!(
         gov.recovery_event(original.operation_id).unwrap().state,
         RecoveryState::VerdictNotLanded
@@ -208,14 +225,16 @@ async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reac
     }));
     let handle = Arc::new(crate::state::AppHandle::new(app.clone()));
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     let blocked = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let in_worker = blocked.clone();
     *store.before_batch.lock().unwrap() = Some(Box::new(move || {
-        in_worker.store(true, std::sync::atomic::Ordering::SeqCst);
-        let _ = entered_tx.send(());
-        let _ = release_rx.recv();
-        in_worker.store(false, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move {
+            in_worker.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = entered_tx.send(());
+            let _ = release_rx.await;
+            in_worker.store(false, std::sync::atomic::Ordering::SeqCst);
+        })
     }));
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
     let flusher =
@@ -224,7 +243,7 @@ async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reac
     let mut next = (*app).clone();
     next.cost = Arc::new(current_cost);
     next.config_version += 1;
-    handle.swap(Arc::new(next));
+    handle.swap(Arc::new(next)).await;
 
     tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx)
         .await
@@ -249,15 +268,15 @@ async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reac
         .unwrap()
         .unwrap();
 
-    assert_eq!(input(store.as_ref(), &key.id, 0), 40);
+    assert_eq!(input(store.core().as_ref(), &key.id, 0).await, 40);
     assert_eq!(
-        input(store.as_ref(), day_bucket, day_window),
+        input(store.core().as_ref(), day_bucket, day_window).await,
         40,
         "fresh conditional revalidation uses the swapped current day-window cost model"
     );
     let month_window = crate::governance::budget_window(crate::governance::WINDOW_MONTH, now);
     assert_eq!(
-        input(store.as_ref(), "group:g@month", month_window),
+        input(store.core().as_ref(), "group:g@month", month_window).await,
         100,
         "the previous model's raw month-window debt is recorded, not corrected under stale configuration"
     );

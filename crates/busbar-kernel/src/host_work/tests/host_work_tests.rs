@@ -1,6 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+trait ReadyAdmission {
+    fn admit_ready(
+        &self,
+        instance: &str,
+        facts: crate::host_services::InstanceFacts,
+    ) -> Result<(), crate::host_services::AdmitRefused>;
+}
+impl ReadyAdmission for crate::host_services::KernelServices {
+    fn admit_ready(
+        &self,
+        instance: &str,
+        facts: crate::host_services::InstanceFacts,
+    ) -> Result<(), crate::host_services::AdmitRefused> {
+        futures::FutureExt::now_or_never(self.admit(instance, facts))
+            .expect("in-memory fixture admission finishes in one poll")
+    }
+}
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -11,14 +28,53 @@ use busbar_contract::records::VirtualKey;
 use busbar_contract::services::{HostServices, Later, Ran, Stored};
 
 use super::*;
-use crate::host_records::StoreRows;
+use crate::persistence::{facade::CoreStore, scoped::ScopedStore};
+use busbar_contract::persistence::{self as native, PersistenceBackend};
+
+fn ready<T>(future: impl std::future::Future<Output = T>) -> T {
+    futures::executor::block_on(future)
+}
+
+// Native work jobs can schedule a write job while they are running. Each inline rendezvous
+// gets its own executor so that nested scheduling preserves the old fixture's callback order.
+fn finish(job: crate::host_services::AsyncJob) {
+    if let Err(panic) = std::thread::spawn(move || ready(job)).join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+fn core() -> Arc<CoreStore> {
+    ready(crate::real_store::core())
+}
+fn scoped(store: &Arc<CoreStore>) -> ScopedStore {
+    ScopedStore::host_private(store.clone(), "inst", [WORK_SCHEMA.as_str().into()]).unwrap()
+}
+fn read_row(store: &Arc<CoreStore>, reference: &[u8]) -> Option<Vec<u8>> {
+    ready(scoped(store).get(WORK_SCHEMA.as_str(), reference))
+        .unwrap()
+        .map(|value| value.expose(&crate::seal::lend()).clone())
+}
+fn write_row(store: &Arc<CoreStore>, reference: &[u8], value: Vec<u8>) {
+    assert!(matches!(
+        ready(scoped(store).put(
+            WORK_SCHEMA.as_str(),
+            reference,
+            busbar_contract::Secret::new(value)
+        ))
+        .unwrap(),
+        crate::persistence::scoped::Outcome::Applied
+    ));
+}
+
 use crate::host_services::tests::caller;
-use crate::host_services::{InstanceFacts, KernelServices, Offload, NOT_A_KIND, POOL_REFUSED};
+use crate::host_services::{InstanceFacts, KernelServices, NOT_A_KIND, Offload, POOL_REFUSED};
 use crate::host_units::UnitRecord;
 
 struct Inline;
 
 impl Offload for Inline {
+    fn run_async(&self, job: crate::host_services::AsyncJob) {
+        self.run(Box::new(move || finish(job)));
+    }
     fn run(&self, job: Box<dyn FnOnce() + Send>) {
         job();
     }
@@ -30,6 +86,9 @@ impl Offload for Inline {
 struct Gate(AtomicBool);
 
 impl Offload for Gate {
+    fn run_async(&self, job: crate::host_services::AsyncJob) {
+        self.run(Box::new(move || finish(job)));
+    }
     fn run(&self, job: Box<dyn FnOnce() + Send>) {
         if !self.0.load(Ordering::SeqCst) {
             job();
@@ -50,29 +109,33 @@ fn key(id: &str) -> Arc<VirtualKey> {
 
 struct Rig {
     s: KernelServices,
-    store: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+    store: Arc<CoreStore>,
     clock: Arc<AtomicU64>,
 }
 
-fn rig_over(store: Arc<busbar_plugin_loader::store_v3::LoadedStore>, bounds: WorkBounds) -> Rig {
-    let rows = Arc::new(StoreRows(store.clone()));
-    rig_with_rows(store, bounds, rows)
+fn rig_over(store: Arc<CoreStore>, bounds: WorkBounds) -> Rig {
+    rig_with_core(store, bounds)
 }
-
-fn rig_with_rows(
-    store: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+fn rig_with_backend(
+    store: Arc<CoreStore>,
     bounds: WorkBounds,
-    rows: Arc<dyn RecordRows>,
+    backend: Arc<dyn PersistenceBackend>,
 ) -> Rig {
+    let attached = ready(crate::real_store::core_over(backend));
+    let mut rig = rig_with_core(attached, bounds);
+    rig.store = store;
+    rig
+}
+fn rig_with_core(store: Arc<CoreStore>, bounds: WorkBounds) -> Rig {
     let clock = Arc::new(AtomicU64::new(1_000_000));
     let c = Arc::clone(&clock);
     let s = KernelServices::new()
-        .with_records(rows)
         .with_pool(Arc::new(Inline))
         .with_work_bounds(bounds)
         .with_wall_clock(Arc::new(move || c.load(Ordering::SeqCst)));
+    assert!(s.attach_persistence(store.clone()));
     for label in ["inst", "other"] {
-        s.admit(
+        s.admit_ready(
             label,
             InstanceFacts {
                 record_kinds: vec![KIND],
@@ -94,7 +157,7 @@ fn rig_with_rows(
 }
 
 fn rig() -> Rig {
-    rig_over(crate::real_store::store(), WorkBounds::default())
+    rig_over(core(), WorkBounds::default())
 }
 
 fn run(f: impl FnOnce(Later) -> Ran) -> Stored {
@@ -138,9 +201,11 @@ fn an_opened_handle_is_found_by_its_reference_under_its_principal() {
     let r = rig();
     let (handle, reference) = open(&r, 1, b"rec-1");
     assert_eq!(reference.len(), svc::WORK_REFERENCE_LEN);
-    assert!(reference
-        .iter()
-        .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
+    assert!(
+        reference
+            .iter()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    );
 
     let found = find(&r, "inst", 2, &reference);
     assert_eq!((found.outcome, found.value), (Outcome::Ready, handle));
@@ -192,7 +257,7 @@ fn a_settled_handle_answers_its_final_record_and_settles_once() {
 #[test]
 fn the_bound_refuses_an_open_and_never_evicts_a_live_handle() {
     let r = rig_over(
-        crate::real_store::store(),
+        core(),
         WorkBounds {
             max_live: 2,
             retain_ms: 1_000,
@@ -219,7 +284,7 @@ fn the_bound_refuses_an_open_and_never_evicts_a_live_handle() {
 #[test]
 fn retention_bounds_only_settled_handles_and_the_sweep_runs_on_submit() {
     let r = rig_over(
-        crate::real_store::store(),
+        core(),
         WorkBounds {
             max_live: 16,
             retain_ms: 1_000,
@@ -235,11 +300,7 @@ fn retention_bounds_only_settled_handles_and_the_sweep_runs_on_submit() {
 
     let row = |reference: &[u8]| {
         let reference = parse_reference(reference).unwrap();
-        StoreRows(r.store.clone())
-            .record_get(WORK_SCHEMA, &work_key("inst", &reference))
-            .unwrap()
-            .map(|v| v.as_slice().to_vec())
-            .unwrap_or_default()
+        read_row(&r.store, &reference).unwrap_or_default()
     };
     assert!(!row(&sref).is_empty());
 
@@ -253,17 +314,28 @@ fn retention_bounds_only_settled_handles_and_the_sweep_runs_on_submit() {
 #[test]
 fn a_sweep_removes_the_swept_rows_from_the_store() {
     let r = rig_over(
-        crate::real_store::store(),
+        core(),
         WorkBounds {
             max_live: 16,
             retain_ms: 1_000,
         },
     );
     let rows = || {
-        StoreRows(r.store.clone())
-            .record_scan(WORK_SCHEMA, b"", u32::MAX)
-            .unwrap()
-            .len()
+        let mut cursor = None;
+        let mut count = 0;
+        loop {
+            let page =
+                ready(scoped(&r.store).page(WORK_SCHEMA.as_str(), &[], cursor.as_ref())).unwrap();
+            count += page
+                .rows
+                .iter()
+                .filter(|(_, value)| !value.expose(&crate::seal::lend()).is_empty())
+                .count();
+            cursor = page.next;
+            if cursor.is_none() {
+                return count;
+            }
+        }
     };
     let (a, _) = open(&r, 1, b"a");
     let (b, _) = open(&r, 1, b"b");
@@ -279,7 +351,7 @@ fn a_sweep_removes_the_swept_rows_from_the_store() {
 
 #[test]
 fn a_handle_is_found_and_resumed_after_a_restart() {
-    let store = crate::real_store::store();
+    let store = core();
     let bounds = WorkBounds {
         max_live: 2,
         retain_ms: 1_000,
@@ -415,7 +487,7 @@ fn a_sweep_settles_a_handle_whose_units_have_ended() {
 
 #[test]
 fn the_owners_find_scopes_the_settle_of_a_handle_read_from_the_store() {
-    let store = crate::real_store::store();
+    let store = core();
     let before = rig_over(Arc::clone(&store), WorkBounds::default());
     let (_, reference) = open(&before, 1, b"park");
     drop(before);
@@ -474,13 +546,7 @@ fn a_plane_claiming_lapsed_cannot_settle_a_live_handle() {
         (WORK_LIVE, b"asked".to_vec())
     );
 
-    let row = StoreRows(r.store.clone())
-        .record_get(
-            WORK_SCHEMA,
-            &work_key("inst", &parse_reference(&reference).unwrap()),
-        )
-        .unwrap()
-        .unwrap();
+    let row = read_row(&r.store, &parse_reference(&reference).unwrap()).unwrap();
     let held = Work::read(
         &Arc::from("inst"),
         parse_reference(&reference).unwrap(),
@@ -507,13 +573,7 @@ fn a_settle_the_pool_refuses_leaves_the_handle_live_in_the_book_and_the_store() 
         booked.live && booked.record == b"working",
         "the book holds it live"
     );
-    let row = StoreRows(r.store.clone())
-        .record_get(
-            WORK_SCHEMA,
-            &work_key("inst", &parse_reference(&reference).unwrap()),
-        )
-        .unwrap()
-        .unwrap();
+    let row = read_row(&r.store, &parse_reference(&reference).unwrap()).unwrap();
     let stored = Work::read(&Arc::from("inst"), booked.reference, row.as_slice()).unwrap();
     assert!(
         stored.live && stored.record == b"working",
@@ -718,10 +778,12 @@ fn inspection_work_denials_collapse_and_only_an_actual_find_imports_durable_work
         Err(InspectionError::NotFound)
     );
     assert_ne!(find(&restarted, "inst", 1, &reference).value, svc::ABSENT);
-    assert!(restarted
-        .s
-        .inspect(&caller("inst"), Some(1), &query)
-        .is_ok());
+    assert!(
+        restarted
+            .s
+            .inspect(&caller("inst"), Some(1), &query)
+            .is_ok()
+    );
     assert_eq!(
         settle(&r, "inst", Some(1), handle, b"done").outcome,
         Outcome::Ready
@@ -800,6 +862,9 @@ struct HoldNext {
 }
 
 impl Offload for HoldNext {
+    fn run_async(&self, job: crate::host_services::AsyncJob) {
+        self.run(Box::new(move || finish(job)));
+    }
     fn run(&self, job: Box<dyn FnOnce() + Send>) {
         if self.armed.swap(false, Ordering::SeqCst) {
             assert!(self.job.lock().unwrap().replace(job).is_none());
@@ -809,72 +874,66 @@ impl Offload for HoldNext {
     }
 }
 
-struct SettlementRows {
-    rows: StoreRows,
+type AttemptWitness = Arc<Mutex<Vec<(native::AttemptId, [u8; 32])>>>;
+struct SettlementBackend {
+    attempts: AttemptWitness,
+    store: Arc<CoreStore>,
     mode: Arc<AtomicU64>,
 }
-
-impl RecordRows for SettlementRows {
-    fn record_put(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-        value: &RecordBytes,
-    ) -> Result<(), StoreError> {
-        match self.mode.load(Ordering::SeqCst) {
-            1 => Err(StoreError::Unavailable),
-            2 => {
-                self.rows.record_put(schema, key, value)?;
-                Err(StoreError::Timeout)
+impl PersistenceBackend for SettlementBackend {
+    fn info(&self) -> native::BackendInfo {
+        self.store.backend().info()
+    }
+    fn read(&self, request: Arc<native::Read>) -> native::Call<'_, native::ReadResult> {
+        Box::pin(async move {
+            match self.mode.load(Ordering::SeqCst) {
+                5 => Err(native::Failure::Unavailable),
+                6 => Err(native::Failure::Unknown),
+                _ => self.store.backend().read(request).await,
             }
-            3 => panic!("settlement Store unwound"),
-            _ => self.rows.record_put(schema, key, value),
-        }
+        })
     }
-    fn record_get(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-    ) -> Result<Option<RecordBytes>, StoreError> {
-        match self.mode.load(Ordering::SeqCst) {
-            5 => Err(StoreError::Unavailable),
-            6 => Err(StoreError::Timeout),
-            _ => self.rows.record_get(schema, key),
-        }
+    fn scan(&self, request: Arc<native::Scan>) -> native::Call<'_, native::Page> {
+        self.store.backend().scan(request)
     }
-    fn record_scan(
-        &self,
-        schema: RecordSchemaId,
-        prefix: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
-        self.rows.record_scan(schema, prefix, limit)
+    fn commit(&self, candidate: native::PreparedCandidate) -> native::Call<'_, native::Decision> {
+        Box::pin(async move {
+            self.attempts
+                .lock()
+                .unwrap()
+                .push((candidate.candidate().id, candidate.fingerprint()));
+            match self.mode.load(Ordering::SeqCst) {
+                1 => Err(native::Failure::Refused),
+                2 => {
+                    self.store.backend().commit(candidate).await?;
+                    Err(native::Failure::Unknown)
+                }
+                3 => panic!("settlement Store unwound"),
+                _ => self.store.backend().commit(candidate).await,
+            }
+        })
     }
-    fn claim(
-        &self,
-        kind: &str,
-        token: &str,
-        expires_at: u64,
-        now: u64,
-    ) -> Result<bool, StoreError> {
-        self.rows.claim(kind, token, expires_at, now)
+    fn clock(&self, dataset: native::DatasetId) -> native::Call<'_, native::ClockObservation> {
+        self.store.backend().clock(dataset)
     }
 }
 
 #[test]
 fn pending_settlement_keeps_capacity_and_survives_sweep_until_store_confirmation() {
     for mode in 0..=4 {
-        let store = crate::real_store::store();
+        let store = core();
         let store_mode = Arc::new(AtomicU64::new(0));
 
-        let r = rig_with_rows(
+        let attempts: AttemptWitness = Arc::default();
+        let r = rig_with_backend(
             store.clone(),
             WorkBounds {
                 max_live: 1,
                 retain_ms: 0,
             },
-            Arc::new(SettlementRows {
-                rows: StoreRows(store),
+            Arc::new(SettlementBackend {
+                attempts: attempts.clone(),
+                store,
                 mode: store_mode.clone(),
             }),
         );
@@ -926,12 +985,63 @@ fn pending_settlement_keeps_capacity_and_survives_sweep_until_store_confirmation
         assert_eq!(booked.bound, Some(2));
 
         let job = held.job.lock().unwrap().take().unwrap();
+        attempts.lock().unwrap().clear();
         store_mode.store(mode, Ordering::SeqCst);
         if mode == 4 {
             drop(job);
         } else {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
             assert_eq!(result.is_err(), mode == 3);
+        }
+        if matches!(mode, 2 | 3) {
+            assert!(
+                answer.lock().unwrap().is_none(),
+                "an uncertain settlement retains its callback"
+            );
+            let booked = s.work().get("inst", handle).unwrap();
+            assert!(booked.live && booked.record == b"working");
+            assert_eq!(booked.bound, Some(2));
+            assert_eq!(
+                run(|later| s.work_open(&caller("inst"), Some(1), "job", b"second", later)).error,
+                refusal::AT_BOUND
+            );
+            assert_eq!(s.work().held(), 1, "unknown work cannot be swept");
+            store_mode.store(0, Ordering::SeqCst);
+            s.flush_tick();
+            assert_eq!(
+                answer
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("matching receipt confirms settlement")
+                    .outcome,
+                Outcome::Ready
+            );
+            let observed = attempts.lock().unwrap();
+            assert_eq!(observed.len(), 2);
+            assert_eq!(
+                observed[0], observed[1],
+                "retry preserves the attempt identity and fingerprint"
+            );
+            drop(observed);
+            let booked = s.work().get("inst", handle).unwrap();
+            assert!(
+                !booked.live && booked.record == b"done",
+                "only the original payload is published"
+            );
+            assert_eq!(booked.bound, Some(2));
+            let stored = read_row(&r.store, &booked.reference).unwrap();
+            assert_eq!(
+                Work::read(&Arc::from("inst"), booked.reference, &stored)
+                    .unwrap()
+                    .record,
+                b"done"
+            );
+            assert_eq!(
+                run(|later| s.work_open(&caller("inst"), Some(1), "job", b"second", later)).outcome,
+                Outcome::Ready
+            );
+            continue;
         }
         let answered = answer
             .lock()
@@ -1089,13 +1199,14 @@ fn work_status_is_instance_scoped_read_only_and_survives_restart() {
 #[test]
 fn work_status_requires_confirmed_settlement_and_preserves_failed_work() {
     for fails in [false, true] {
-        let store = crate::real_store::store();
+        let store = core();
         let mode = Arc::new(AtomicU64::new(0));
-        let r = rig_with_rows(
+        let r = rig_with_backend(
             store.clone(),
             WorkBounds::default(),
-            Arc::new(SettlementRows {
-                rows: StoreRows(store),
+            Arc::new(SettlementBackend {
+                attempts: Arc::default(),
+                store,
                 mode: mode.clone(),
             }),
         );
@@ -1157,23 +1268,12 @@ fn work_status_restart_rejects_corrupt_rows_and_handles_live_and_tombstoned_rows
     );
     assert_eq!(restarted.s.work().held(), 0);
     let work = r.s.work().get("inst", handle).unwrap();
-    let rows = StoreRows(r.store.clone());
-    rows.record_put(
-        WORK_SCHEMA,
-        &work_key("inst", &work.reference),
-        &RecordBytes::new(vec![255]).unwrap(),
-    )
-    .unwrap();
+    write_row(&r.store, &work.reference, vec![255]);
     assert_eq!(
         status(&restarted.s, "inst", &reference).outcome,
         Outcome::Failed
     );
-    rows.record_put(
-        WORK_SCHEMA,
-        &work_key("inst", &work.reference),
-        &RecordBytes::new(vec![]).unwrap(),
-    )
-    .unwrap();
+    write_row(&r.store, &work.reference, vec![]);
     assert_eq!(
         status(&restarted.s, "inst", &reference).value,
         svc::WORK_STATUS_ABSENT
@@ -1199,15 +1299,14 @@ fn work_status_cold_store_read_failure_never_proves_or_mutates_settlement() {
             );
         }
         let work = original.s.work().get("inst", handle).unwrap();
-        let rows = StoreRows(original.store.clone());
-        let key = work_key("inst", &work.reference);
-        let before = rows.record_get(WORK_SCHEMA, &key).unwrap().unwrap();
-        let mode = Arc::new(AtomicU64::new(5));
-        let restarted = rig_with_rows(
+        let before = read_row(&original.store, &work.reference).unwrap();
+        let mode = Arc::new(AtomicU64::new(0));
+        let restarted = rig_with_backend(
             original.store.clone(),
             WorkBounds::default(),
-            Arc::new(SettlementRows {
-                rows: StoreRows(original.store.clone()),
+            Arc::new(SettlementBackend {
+                attempts: Arc::default(),
+                store: original.store.clone(),
                 mode: mode.clone(),
             }),
         );
@@ -1222,8 +1321,7 @@ fn work_status_cold_store_read_failure_never_proves_or_mutates_settlement() {
                 "a failed observation never adopts or settles work"
             );
             assert_eq!(
-                rows.record_get(WORK_SCHEMA, &key)
-                    .unwrap()
+                read_row(&original.store, &work.reference)
                     .unwrap()
                     .as_slice(),
                 before.as_slice(),

@@ -23,8 +23,6 @@ pub(super) fn linked_axis() -> &'static crate::root::loader::secret_calls::Secre
             rows.declare_linked(*door, json)
                 .expect("the linked secret declaration reads");
         }
-        rows.with_former_names(busbar_kernel::config::migration_table::former_names)
-            .expect("the linked secret names migrate");
         rows
     })
 }

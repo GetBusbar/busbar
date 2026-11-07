@@ -2203,7 +2203,7 @@ fn retention(kind: u32, rule: u32) -> RecordRetention {
 
 #[test]
 fn green_a_record_retention_list_of_known_rules_passes() {
-    use crate::abi::store::plane::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
+    use crate::host_records::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
     assert_eq!(
         check_record_retentions(
             &[
@@ -2224,7 +2224,7 @@ fn green_no_record_retention_passes() {
 
 #[test]
 fn red_a_record_retention_names_a_record_kind() {
-    use crate::abi::store::plane::RETENTION_TERMINAL_ONLY;
+    use crate::host_records::RETENTION_TERMINAL_ONLY;
     assert_eq!(
         check_record_retentions(&[retention(2, RETENTION_TERMINAL_ONLY)], 2),
         f(Rule::IndexOutOfRange, "record_retention.kind")
@@ -2233,7 +2233,7 @@ fn red_a_record_retention_names_a_record_kind() {
 
 #[test]
 fn red_a_record_retention_rule_is_known() {
-    use crate::abi::store::plane::RETENTION_TERMINAL_ONLY;
+    use crate::host_records::RETENTION_TERMINAL_ONLY;
     assert_eq!(
         check_record_retentions(&[retention(0, RETENTION_TERMINAL_ONLY + 1)], 1),
         f(Rule::UnknownCode, "record_retention.rule")
@@ -2242,7 +2242,7 @@ fn red_a_record_retention_rule_is_known() {
 
 #[test]
 fn red_a_record_kind_has_at_most_one_retention() {
-    use crate::abi::store::plane::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
+    use crate::host_records::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
     assert_eq!(
         check_record_retentions(
             &[

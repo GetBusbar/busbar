@@ -6,10 +6,11 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use busbar_contract::store_calls::OpenedStore;
 use busbar_kernel::config::{self, overlay::OverlayDoc};
 use busbar_kernel::governance::principal_transition as transition;
+use busbar_kernel::persistence::facade::CoreStore;
 use serde::de::DeserializeOwned;
+use std::sync::Arc;
 
 pub const INPUT_FLAG: &str = "--principal-transition";
 pub const ACTION_FLAG: &str = "--transition-action";
@@ -68,7 +69,9 @@ impl Command {
                         | Action::Reauthorize
                 ))
         {
-            return Err("principal transition requires normal boot to recover its exact Store overlay; reconcile locked configuration before preparing a plan");
+            return Err(
+                "principal transition requires normal boot to recover its exact Store overlay; reconcile locked configuration before preparing a plan",
+            );
         }
         Ok(())
     }
@@ -145,7 +148,7 @@ pub fn command(args: impl Iterator<Item = String>) -> Result<Option<Command>, &'
         _ => {
             return Err(
                 "--transition-action must be inspect, prepare, check, apply, verify, initialize-fresh, initialize-fresh-and-serve or reauthorize",
-            )
+            );
         }
     };
     if action == Action::Inspect && input != "-" {
@@ -340,11 +343,11 @@ impl From<serde_json::Value> for Execution {
     }
 }
 
-pub fn execute(
+pub async fn execute(
     command: &Command,
     cfg: &config::RootCfg,
     plugins: &config::PluginsCfg,
-    anchor: &OpenedStore,
+    anchor: &Arc<CoreStore>,
     anchor_settings: &serde_json::Value,
     source_sha256: &str,
     overlay: Option<&OverlayDoc>,
@@ -370,25 +373,17 @@ pub fn execute(
     .map_err(|_| "principal transition plugin admission failed")?;
     let required = transition::requirements(cfg, registry.as_ref())
         .map_err(|_| "cannot bind admitted principal formats")?;
-    let calls = anchor
-        .calls
-        .clone()
-        .ok_or("principal transition requires typed Store calls")?;
-    // Per-open metadata takes precedence over the admitted Statement fallback. A plugin's
-    // configured spelling never determines whether its state is ephemeral.
-    let effective_ephemeral = calls.ephemeral().or_else(|| {
-        cfg.store.as_ref().and_then(|store| {
-            registry
-                .resolve(&store.module)
-                .filter(|row| row.kind == "store")
-                .map(|row| row.ephemeral)
-        })
-    });
+    let core = anchor.clone();
+    let effective_ephemeral = Some(matches!(
+        core.info().durability,
+        busbar_contract::persistence::Durability::Ephemeral
+    ));
     if command.action == Action::Inspect {
-        let binding = transition::receipt_binding(calls.clone())?;
-        let mut keys = anchor
-            .records
+        let binding = transition::receipt_binding(core.clone()).await?;
+        let mut keys = core
+            .identity()
             .list_keys()
+            .await
             .map_err(|_| "cannot inspect retained key preimages")?;
         keys.sort_by(|left, right| left.id.cmp(&right.id));
         let group_preimages = cfg
@@ -432,11 +427,11 @@ pub fn execute(
             "role_bindings_before": cfg.auth.as_ref().map(|auth| &auth.role_bindings).cloned().unwrap_or_default(),
             "retained_group_preimages": group_preimages,
             "absent_group_sha256": transition::digest(&Option::<config::GroupCfg>::None)?,
-            "principal_receipt_head_sha256": transition::receipt_head_digest(calls.clone())?,
+            "principal_receipt_head_sha256": transition::receipt_head_digest(core.clone()).await?,
             "principal_receipt_baseline_sha256": binding.as_ref().map(|(baseline,_)| baseline),
             "principal_receipt_requirements_sha256": binding.as_ref().map(|(_,requirements)| requirements),
             "principal_format_required": required.iter().any(|requirement| !requirement.format.is_empty()),
-            "principal_format_ready": transition::guard(calls.clone(), &store_sha256, &required).is_ok(),
+            "principal_format_ready": transition::guard_native(core.clone(), &store_sha256, &required).await.is_ok(),
             "store_config_sha256": store_sha256,
             "store_ephemeral": effective_ephemeral,
             "effective_config_sha256": effective_sha256,
@@ -456,13 +451,14 @@ pub fn execute(
             if let Some(instance) = &command.record_bootstrap {
                 let record_bootstrap = transition::initialize_ephemeral_with_record_bootstrap(
                     &receipt,
-                    calls,
+                    core.clone(),
                     &store_sha256,
                     &required,
                     ephemeral,
                     instance,
                     &busbar_kernel::host_record_bootstrap::store_fingerprint(&effective_store),
-                )?;
+                )
+                .await?;
                 return Ok(Execution {
                     report: serde_json::json!({"ok": true, "action": "initialize-fresh-and-serve"}),
                     record_bootstrap: Some(record_bootstrap),
@@ -470,19 +466,20 @@ pub fn execute(
             }
             transition::initialize_ephemeral_fresh(
                 &receipt,
-                calls,
+                core.clone(),
                 &store_sha256,
                 &required,
                 ephemeral,
-            )?;
+            )
+            .await?;
             "initialize-fresh-and-serve"
         } else {
-            transition::initialize_fresh(&receipt, calls, &store_sha256, &required)?;
+            transition::initialize_fresh(&receipt, core.clone(), &store_sha256, &required).await?;
             "initialize-fresh"
         };
         return Ok(serde_json::json!({"ok": true, "action": action}).into());
     }
-    let overlay_store = config::overlay::OverlayStore::new(calls.clone())
+    let overlay_store = config::overlay::OverlayStore::from_core(core.clone())
         .map_err(|_| "principal transition requires a durable Store overlay")?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -491,7 +488,7 @@ pub fn execute(
 
     if command.action == Action::Reauthorize {
         let receipt: transition::Reauthorization = input(&command.input)?;
-        transition::reauthorize(&receipt, calls, &store_sha256, &required)?;
+        transition::reauthorize(&receipt, core.clone(), &store_sha256, &required).await?;
         return Ok(serde_json::json!({"ok": true, "action": "reauthorize"}).into());
     }
     let check_binding = |spec: &transition::Specification, effective: &str| -> Result<(), String> {
@@ -510,13 +507,8 @@ pub fn execute(
         check_binding(&spec, &effective_sha256)?;
         check_roles(&spec, cfg, false)?;
         check_references(&spec.bindings, cfg)?;
-        let plan = transition::prepare(
-            spec,
-            anchor.records.as_ref(),
-            calls,
-            cfg.groups.clone(),
-            overlay.cloned(),
-        )?;
+        let plan =
+            transition::prepare(spec, core.clone(), cfg.groups.clone(), overlay.cloned()).await?;
         return serde_json::to_value(plan)
             .map(Execution::from)
             .map_err(|_| "cannot encode principal transition plan".into());
@@ -529,14 +521,7 @@ pub fn execute(
     check_groups(&plan, cfg)?;
     let action = match command.action {
         Action::Check => {
-            transition::check(
-                &plan,
-                anchor.records.as_ref(),
-                calls,
-                &overlay_store,
-                now,
-                &effective_sha256,
-            )?;
+            transition::check(&plan, core.clone(), &overlay_store, now, &effective_sha256).await?;
             "check"
         }
         Action::Apply => {
@@ -549,16 +534,16 @@ pub fn execute(
             transition::apply(
                 &plan,
                 &attestation,
-                anchor.records.as_ref(),
-                calls,
+                core.clone(),
                 &overlay_store,
                 now,
                 &effective_sha256,
-            )?;
+            )
+            .await?;
             "apply"
         }
         Action::Verify => {
-            transition::verify(&plan, anchor.records.as_ref(), calls, &overlay_store, now)?;
+            transition::verify(&plan, core.clone(), &overlay_store, now).await?;
             "verify"
         }
         Action::Inspect

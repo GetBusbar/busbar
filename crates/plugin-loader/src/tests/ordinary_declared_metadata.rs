@@ -3,7 +3,7 @@
 
 //! Immutable declaration metadata through the actual SQLite operation table.
 use crate::actual_store;
-use crate::dispatch::kinds::store::Store;
+use crate::dispatch::kinds::store_v4::StoreV4 as Store;
 use crate::dispatch::{
     load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow, NoSink,
 };
@@ -99,7 +99,7 @@ extern "C" fn observe_open(
     *OPENED.lock().unwrap() = Some((bytes, secrets));
     let actual = actual_store::door();
     // SAFETY: the actual Store's operation table is validated and permanently retained.
-    let ops = unsafe { &*actual.ops().cast::<busbar_contract::abi::store::Ops>() };
+    let ops = unsafe { &*actual.ops().cast::<busbar_contract::abi::store::v4::Ops>() };
     // SAFETY: delegate the unchanged OPEN instance and live host input/output frames to
     // the retained Store operation; observation above neither mutates nor retains them.
     unsafe { ops.head.open.expect("actual SQLite OPEN")(instance, input, out) }
@@ -112,7 +112,7 @@ extern "C" fn observed_store() -> &'static Door {
         let mut ops = unsafe {
             actual
                 .ops()
-                .cast::<busbar_contract::abi::store::Ops>()
+                .cast::<busbar_contract::abi::store::v4::Ops>()
                 .read_unaligned()
         };
         ops.head.open = Some(observe_open);
@@ -129,8 +129,8 @@ extern "C" fn observed_store() -> &'static Door {
     // SAFETY: immutable descriptor remains live permanently.
     unsafe { &*(ptr as *const Door) }
 }
-#[test]
-fn the_store_host_lends_nothing_and_hands_the_settings_as_resolved() {
+#[tokio::test]
+async fn the_store_host_lends_nothing_and_hands_the_settings_as_resolved() {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let plugin = load_linked::<Store>(
         &LinkedRow::of(observed_store).expect("observed actual Store descriptor"),
@@ -144,9 +144,19 @@ fn the_store_host_lends_nothing_and_hands_the_settings_as_resolved() {
     )
     .expect("actual Store operation table loads");
     let settings = actual_store::settings();
-    let opened =
-        crate::store_v3::LoadedStore::open(plugin, dispatcher, &settings, actual_store::mint)
-            .expect("the production Store host opens its actual SQLite database");
+    let opened = crate::store_v4::LoadedPersistence::open(
+        plugin,
+        dispatcher,
+        &settings,
+        crate::store_v4::Limits {
+            descriptor_bytes: 64 * 1024 * 1024,
+            output_items: 4096,
+            output_bytes: 64 * 1024 * 1024,
+            decode_bytes: 64 * 1024 * 1024,
+        },
+    )
+    .await
+    .expect("the production Store host opens its actual SQLite database");
 
     assert_eq!(*OPENED.lock().unwrap(), Some((settings, Vec::new())));
     drop(opened);

@@ -60,7 +60,7 @@ use crate::abi::mechanism::call::{AbiStr, Blob};
 use crate::abi::mechanism::check::{self, Rule, HARD_MAX_BYTES};
 use crate::abi::mechanism::door::KindTailHead;
 use crate::abi::mechanism::KindCode;
-use crate::abi::{auth, export, hook, plane, store, transport};
+use crate::abi::{auth, export, hook, plane, transport};
 
 /// `p`'s tail as this host's `T`, by THE KIND TAIL GROWTH RULE: the plugin's first
 /// `min(size, host)` bytes, the rest zero.
@@ -163,7 +163,7 @@ pub(super) unsafe fn render(
         // of plain data, all-zero valid.
         unsafe {
             match KindCode::from_raw(kind) {
-                Some(KindCode::Store) => store_tail(f, &grown(p)),
+                Some(KindCode::Store) => {}
                 Some(KindCode::Auth) => auth_tail(f, &grown(p))?,
                 Some(KindCode::Hook) => hook_tail(f, &grown(p))?,
                 Some(KindCode::Export) => export_tail(f, &grown(p))?,
@@ -176,17 +176,6 @@ pub(super) unsafe fn render(
     o.len(facts.0.len(), "kind_tail_facts")?;
     o.0.extend_from_slice(&facts.0);
     Ok(())
-}
-
-fn store_tail(o: &mut Out, t: &store::StoreTail) {
-    let store::StoreTail {
-        head: _,
-        durable_plane,
-        fork_refusal,
-        _reserved: _,
-    } = *t;
-    o.u8(durable_plane);
-    o.u8(fork_refusal);
 }
 
 /// # Safety
@@ -724,6 +713,147 @@ pub fn read_auth_tail(facts: &[u8]) -> Result<ReadAuthTail, Unreadable> {
         styles,
         operator_principal,
         credential_kinds,
+    })
+}
+
+/// Record authorities carried by a plane's signed Statement rendering. Reading these
+/// facts neither loads its library nor opens an instance.
+#[derive(Debug, Clone, Default)]
+pub struct ReadPlaneRecords {
+    /// The exact declared schema words, in instance-local index order.
+    pub kinds: Vec<String>,
+    /// Chain framing for declared schemas; validated against `kinds`.
+    pub chains: Vec<plane::RecordChain>,
+    /// Explicit retention overrides; unlisted schemas retain the default age rule.
+    pub retentions: Vec<plane::RecordRetention>,
+}
+
+/// Read the complete rendered tail, retaining only record authorities. All fields
+/// are consumed with the rendering codec; truncation and trailing fields refuse.
+/// `tail_size` is the size authenticated by the enclosing Statement rendering.
+pub fn read_plane_records(facts: &[u8], tail_size: u32) -> Result<ReadPlaneRecords, Unreadable> {
+    let mut i = In { b: facts, at: 0 };
+    for field in [
+        "plane.flags",
+        "plane.ingress",
+        "plane.dispatch_shape",
+        "plane.answer_layout",
+    ] {
+        i.u32(field)?;
+    }
+    for field in [
+        "plane.scope",
+        "plane.label",
+        "plane.subject_noun",
+        "plane.admin_noun",
+        "plane.audit_kind",
+        "plane.signing_domain",
+        "plane.signing_kid_prefix",
+        "plane.cli_help",
+    ] {
+        i.str(field)?;
+    }
+    i.strs("plane.dialects")?;
+    for _ in 0..i.count("plane.dialect_auth")? {
+        i.u32("plane.dialect_auth.dialect")?;
+        i.u32("plane.dialect_auth.flags")?;
+        i.str("plane.dialect_auth.style")?;
+        i.blob("plane.dialect_auth.params")?;
+    }
+    i.strs("plane.scope_kinds")?;
+    for _ in 0..i.count("plane.op_classes")? {
+        i.str("plane.op_class.op")?;
+        i.str("plane.op_class.name")?;
+    }
+    for _ in 0..i.count("plane.billable_classes")? {
+        i.str("plane.billable_class.class")?;
+        i.str("plane.billable_class.family")?;
+    }
+    for _ in 0..i.count("plane.route_cost")? {
+        i.u32("plane.route_cost.class")?;
+        i.u64("plane.route_cost.weight")?;
+    }
+    i.strs("plane.fee_units")?;
+    let kinds = i.strs("plane.record_kinds")?;
+    if kinds
+        .iter()
+        .enumerate()
+        .any(|(at, kind)| kind.is_empty() || kinds[..at].contains(kind))
+    {
+        return Err(Unreadable {
+            at: i.at,
+            what: "distinct nonempty plane.record_kinds",
+        });
+    }
+    i.strs("plane.egress_targets")?;
+    let n = i.count("plane.record_chains")?;
+    let mut chains = Vec::with_capacity(n);
+    for _ in 0..n {
+        chains.push(plane::RecordChain {
+            kind: i.u32("plane.record_chain.kind")?,
+            framing: i.u32("plane.record_chain.framing")?,
+            flags: i.u32("plane.record_chain.flags")?,
+            _reserved: 0,
+        });
+    }
+    for _ in 0..i.count("plane.trust_keys")? {
+        i.str("plane.trust_key.key")?;
+        i.u32("plane.trust_key.role")?;
+        i.u32("plane.trust_key.flags")?;
+        i.str("plane.trust_key.default")?;
+        for _ in 0..i.count("plane.trust_key.mechanisms")? {
+            i.str("plane.trust_key.mechanism.token")?;
+            i.u32("plane.trust_key.mechanism.flags")?;
+        }
+    }
+    for _ in 0..i.count("plane.refusal_statuses")? {
+        i.u32("plane.refusal_status.dialect")?;
+        i.u32("plane.refusal_status.reason")?;
+        i.u32("plane.refusal_status.status")?;
+    }
+    i.str("plane.caller_credential_refusal")?;
+    for _ in 0..i.count("plane.admin_routes")? {
+        i.str("plane.admin_route.verb")?;
+        i.str("plane.admin_route.target")?;
+        i.u32("plane.admin_route.flags")?;
+        i.str("plane.admin_route.audit_verb")?;
+    }
+    i.blob("plane.admin_openapi")?;
+    i.u64("plane.stream_ceiling_secs")?;
+    i.strs("plane.metric_lanes")?;
+    let n = i.count("plane.record_retentions")?;
+    let mut retentions = Vec::with_capacity(n);
+    for _ in 0..n {
+        retentions.push(plane::RecordRetention {
+            kind: i.u32("plane.record_retention.kind")?,
+            rule: i.u32("plane.record_retention.rule")?,
+        });
+    }
+    if tail_size as usize
+        >= core::mem::offset_of!(plane::PlaneTail, streaming_content_types_len) + size_of::<usize>()
+    {
+        i.strs("plane.streaming_content_types")?;
+    }
+    if i.at != facts.len() {
+        return Err(Unreadable {
+            at: i.at,
+            what: "the end",
+        });
+    }
+    plane::check::check_record_chains(&chains, kinds.len() as u64).map_err(|_| Unreadable {
+        at: i.at,
+        what: "valid plane.record_chains",
+    })?;
+    plane::check::check_record_retentions(&retentions, kinds.len() as u64).map_err(|_| {
+        Unreadable {
+            at: i.at,
+            what: "valid plane.record_retentions",
+        }
+    })?;
+    Ok(ReadPlaneRecords {
+        kinds,
+        chains,
+        retentions,
     })
 }
 

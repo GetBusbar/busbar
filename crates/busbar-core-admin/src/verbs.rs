@@ -33,7 +33,7 @@
 //!    [`crate::idempotency::IdempotencyCache`]; [`Verbs::execute`] refuses both verbs.
 //!
 //! Only once all of that has admitted the call does anything reach [`crate::governance::Governance`]
-//! or [`busbar_kernel_seams::verb_store::Store`]. That holds for the two disaster-recovery verbs too: their effect
+//! or [`busbar_kernel::persistence::recovery_api::Store`]. That holds for the two disaster-recovery verbs too: their effect
 //! lands on the store rather than on governance, but they are new verbs like any other, so they
 //! reach the store only through [`Verbs::chain_break`] and [`Verbs::store_restore`], each of which
 //! runs the same admission first. The bound store is
@@ -45,7 +45,7 @@ use crate::rate::{ConfigClassRule, MutationClass, MutationLimiter, RateCheck};
 use crate::refusal::{store_error_into_refusal, ReasonCode, Refusal, RefusalStep};
 use crate::verb::{KernelVerb, VerbScope, AUDIT_VERBS, LEDGER_VERBS, NEW_VERBS};
 use busbar_contract::caps::{AdminVerb, Grant};
-use busbar_kernel_seams::verb_store::Store;
+use busbar_kernel::persistence::recovery_api::Store;
 use std::sync::Arc;
 
 pub fn required_scope(verb: KernelVerb) -> VerbScope {
@@ -99,7 +99,7 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn execute(
+    pub async fn execute(
         &self,
         verb: KernelVerb,
         admin: &Grant<AdminVerb>,
@@ -117,6 +117,7 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
             return self
                 .governance
                 .execute_ledger_read(verb, admin, request)
+                .await
                 .map_err(GovernanceError::into_refusal);
         }
 
@@ -124,16 +125,19 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
             return self
                 .governance
                 .execute_audit_read(verb, admin, request)
+                .await
                 .map_err(GovernanceError::into_refusal);
         }
         if NEW_VERBS.contains(&verb) {
             return self
                 .governance
                 .execute_new_verb(verb, admin, request)
+                .await
                 .map_err(GovernanceError::into_refusal);
         }
         self.governance
             .execute_legacy(verb, admin, request)
+            .await
             .map_err(GovernanceError::into_refusal)
     }
 
@@ -142,13 +146,13 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
         self.store.as_deref().expect("these tests bind a store")
     }
 
-    fn bound_store(&self) -> Result<&S, busbar_kernel_seams::verb_store::StoreError> {
+    fn bound_store(&self) -> Result<&S, busbar_kernel::persistence::recovery_api::StoreError> {
         self.store
             .as_deref()
-            .ok_or(busbar_kernel_seams::verb_store::StoreError::Failed)
+            .ok_or(busbar_kernel::persistence::recovery_api::StoreError::Failed)
     }
 
-    pub fn chain_break(
+    pub async fn chain_break(
         &self,
         admin: &Grant<AdminVerb>,
         actor: &str,
@@ -157,11 +161,13 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
     ) -> Result<(), Refusal> {
         self.admit(KernelVerb::ChainBreak, actor, granted, now)?;
         self.bound_store()
-            .and_then(|store| store.chain_break(admin))
+            .map_err(store_error_into_refusal)?
+            .chain_break(admin)
+            .await
             .map_err(store_error_into_refusal)
     }
 
-    pub fn store_restore(
+    pub async fn store_restore(
         &self,
         admin: &Grant<AdminVerb>,
         actor: &str,
@@ -171,7 +177,9 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
     ) -> Result<(), Refusal> {
         self.admit(KernelVerb::StoreRestore, actor, granted, now)?;
         self.bound_store()
-            .and_then(|store| store.store_restore(admin, backup_ref))
+            .map_err(store_error_into_refusal)?
+            .store_restore(admin, backup_ref)
+            .await
             .map_err(store_error_into_refusal)
     }
 }

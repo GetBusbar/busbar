@@ -6,200 +6,49 @@ use std::sync::Arc;
 
 use crate::root::test_plugins as plugins;
 
-use busbar_contract::{
-    abi::store::OpId,
-    kinds::RecordBytes,
-    records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta},
-    store_calls::{StoreCall, StoreCalls, StoreFailure},
-};
+use busbar_contract::persistence::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 struct OverlayWriteOutage {
-    actual: Arc<dyn StoreCalls>,
+    actual: Arc<dyn PersistenceBackend>,
     armed: AtomicBool,
     failures: std::sync::atomic::AtomicUsize,
 }
-impl StoreCalls for OverlayWriteOutage {
-    fn supports_usage_correction(&self) -> bool {
-        self.actual.supports_usage_correction()
+impl PersistenceBackend for OverlayWriteOutage {
+    fn info(&self) -> BackendInfo {
+        self.actual.info()
     }
-    fn apply_usage_correction<'a>(
-        &'a self,
-        request: &'a busbar_contract::records::correction::Request,
-    ) -> StoreCall<'a, busbar_contract::records::correction::Decision> {
-        self.actual.apply_usage_correction(request)
+    fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
+        self.actual.clock(dataset)
     }
-    fn supports_record_transaction(&self) -> bool {
-        self.actual.supports_record_transaction()
+    fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
+        self.actual.read(request)
     }
-    fn record_transaction<'a>(
-        &'a self,
-        request: &'a busbar_contract::abi::sdk::store::conditional::Request,
-    ) -> StoreCall<'a, busbar_contract::abi::sdk::store::conditional::Decision> {
-        self.actual.record_transaction(request)
+    fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
+        self.actual.scan(request)
     }
-    fn add_usage_batch<'a>(
-        &'a self,
-        op: OpId,
-        cells: &'a [(&'a str, u64, UsageDelta)],
-    ) -> StoreCall<'a, ()> {
-        self.actual.add_usage_batch(op, cells)
-    }
-    fn add_metering_batch<'a>(
-        &'a self,
-        op: OpId,
-        deltas: &'a [MeteringDelta],
-    ) -> StoreCall<'a, ()> {
-        self.actual.add_metering_batch(op, deltas)
-    }
-    fn record_put<'a>(
-        &'a self,
-        schema: &'a str,
-        key: &'a [u8],
-        value: &'a RecordBytes,
-    ) -> StoreCall<'a, ()> {
-        if schema == "busbar.config.overlay.v1" && self.armed.load(Ordering::SeqCst) {
-            self.failures.fetch_add(1, Ordering::SeqCst);
-            Box::pin(std::future::ready(Err(StoreFailure::Failed(
-                "the planted overlay-write outage".into(),
-            ))))
-        } else {
-            self.actual.record_put(schema, key, value)
-        }
-    }
-    fn record_get<'a>(
-        &'a self,
-        schema: &'a str,
-        key: &'a [u8],
-    ) -> StoreCall<'a, Option<RecordBytes>> {
-        self.actual.record_get(schema, key)
-    }
-    fn record_scan<'a>(
-        &'a self,
-        schema: &'a str,
-        prefix: &'a [u8],
-        limit: u32,
-    ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
-        self.actual.record_scan(schema, prefix, limit)
-    }
-    fn put_key<'a>(&'a self, key: &'a busbar_contract::records::VirtualKey) -> StoreCall<'a, ()> {
-        self.actual.put_key(key)
-    }
-    fn get_key<'a>(
-        &'a self,
-        id: &'a str,
-    ) -> StoreCall<'a, Option<busbar_contract::records::VirtualKey>> {
-        self.actual.get_key(id)
-    }
-    fn list_keys(&self) -> StoreCall<'_, Vec<busbar_contract::records::VirtualKey>> {
-        self.actual.list_keys()
-    }
-    fn delete_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, ()> {
-        self.actual.delete_key(id)
-    }
-    fn put_key_with_credential<'a>(
-        &'a self,
-        key: &'a busbar_contract::records::VirtualKey,
-        secret: &'a busbar_contract::records::CredentialSecret,
-    ) -> StoreCall<'a, ()> {
-        self.actual.put_key_with_credential(key, secret)
-    }
-    fn list_credentials<'a>(
-        &'a self,
-        key_id: &'a str,
-    ) -> StoreCall<'a, Vec<busbar_contract::records::CredentialMeta>> {
-        self.actual.list_credentials(key_id)
-    }
-    fn revoke_credential<'a>(&'a self, id: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
-        self.actual.revoke_credential(id, reason)
-    }
-    fn list_credentials_since(
-        &self,
-        since: u64,
-    ) -> StoreCall<'_, Vec<busbar_contract::records::CredentialSecret>> {
-        self.actual.list_credentials_since(since)
-    }
-    fn add_denylist<'a>(&'a self, sub: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
-        self.actual.add_denylist(sub, reason)
-    }
-    fn list_denylist(&self) -> StoreCall<'_, Vec<String>> {
-        self.actual.list_denylist()
-    }
-    fn list_metering(
-        &self,
-        bucket: u64,
-    ) -> StoreCall<'_, Vec<busbar_contract::records::MeteringRow>> {
-        self.actual.list_metering(bucket)
-    }
-    fn list_audit(&self) -> StoreCall<'_, Vec<busbar_contract::records::AuditRecord>> {
-        self.actual.list_audit()
-    }
-    fn list_audit_tail(
-        &self,
-        limit: u64,
-    ) -> StoreCall<'_, Vec<busbar_contract::records::AuditRecord>> {
-        self.actual.list_audit_tail(limit)
-    }
-    fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
-        self.actual.upsert_plane_record(record)
-    }
-    fn get_plane_record<'a>(
-        &'a self,
-        kind: &'a str,
-        id: &'a str,
-    ) -> StoreCall<'a, Option<Vec<u8>>> {
-        self.actual.get_plane_record(kind, id)
-    }
-    fn append_plane_record<'a>(
-        &'a self,
-        op: OpId,
-        record: PlaneRecordRef<'a>,
-    ) -> StoreCall<'a, ()> {
-        self.actual.append_plane_record(op, record)
-    }
-    fn list_plane_records<'a>(
-        &'a self,
-        kind: &'a str,
-        selector: &'a PlaneSelector<'a>,
-    ) -> StoreCall<'a, Vec<Vec<u8>>> {
-        self.actual.list_plane_records(kind, selector)
-    }
-    fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
-        self.actual.delete_plane_record(kind, id)
-    }
-    fn redeem_plane_token<'a>(
-        &'a self,
-        kind: &'a str,
-        token: &'a str,
-        expires_at: u64,
-        now: u64,
-    ) -> StoreCall<'a, bool> {
-        self.actual.redeem_plane_token(kind, token, expires_at, now)
-    }
-    fn plane_token_live<'a>(
-        &'a self,
-        kind: &'a str,
-        token: &'a str,
-        expires_at: u64,
-        now: u64,
-    ) -> StoreCall<'a, bool> {
-        self.actual.plane_token_live(kind, token, expires_at, now)
-    }
-    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> StoreCall<'a, Vec<String>> {
-        self.actual.list_plane_record_parents(kind)
-    }
-    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
-        self.actual.purge_plane_records_before(kind, before)
-    }
-    fn purge_usage_before(&self, before: u64) -> StoreCall<'_, u64> {
-        self.actual.purge_usage_before(before)
+    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+        Box::pin(async move {
+            let overlay = candidate.candidate().mutations.iter().any(|mutation| {
+                let key = match mutation {
+                    Mutation::Put { address, .. } | Mutation::Delete(address) => &address.key,
+                    Mutation::DeleteRange { prefix, .. } => prefix,
+                };
+                key.windows(b"busbar.config.overlay.v1".len())
+                    .any(|part| part == b"busbar.config.overlay.v1")
+            });
+            if overlay && self.armed.load(Ordering::SeqCst) {
+                self.failures.fetch_add(1, Ordering::SeqCst);
+                return Err(Failure::Refused);
+            }
+            self.actual.commit(candidate).await
+        })
     }
 }
 
 #[tokio::test]
 async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits() {
     const CHILD: &str = "BUSBAR_ADMIN_PERSIST_8E706DEE46E0";
-    const WITNESS: &str =
-        "actual root case test_admin_v1_config_settings_persist_failure_does_not_install_limits completed";
+    const WITNESS: &str = "actual root case test_admin_v1_config_settings_persist_failure_does_not_install_limits completed";
     if std::env::var_os(CHILD).is_none() {
         struct Child(std::process::Child);
         impl Drop for Child {
@@ -332,28 +181,16 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits()
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
     let outage = Arc::new(OverlayWriteOutage {
-        actual: anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the real Store exposes typed calls"),
+        actual: anchor,
         armed: AtomicBool::new(false),
         failures: std::sync::atomic::AtomicUsize::new(0),
     });
-    let anchor = busbar_contract::store_calls::OpenedStore {
-        records: anchor.records,
-        calls: Some(outage.clone()),
-    };
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(outage.clone()).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -366,13 +203,15 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits()
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(
         app.store.record_hard_down_all_cells(
@@ -434,8 +273,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits()
 #[tokio::test]
 async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_credentials() {
     const CHILD: &str = "BUSBAR_ADMIN_PERSIST_5FD5D7D51822";
-    const WITNESS: &str =
-        "actual root case test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_credentials completed";
+    const WITNESS: &str = "actual root case test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_credentials completed";
     if std::env::var_os(CHILD).is_none() {
         struct Child(std::process::Child);
         impl Drop for Child {
@@ -500,8 +338,9 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
-    let directory =
-        plugins::scratch("test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_credentials-actual-store");
+    let directory = plugins::scratch(
+        "test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_credentials-actual-store",
+    );
     let archive = plugins::signed(
         &crate::dist_root_install::release_key(),
         manifest,
@@ -567,28 +406,16 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
     let outage = Arc::new(OverlayWriteOutage {
-        actual: anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the real Store exposes typed calls"),
+        actual: anchor,
         armed: AtomicBool::new(false),
         failures: std::sync::atomic::AtomicUsize::new(0),
     });
-    let anchor = busbar_contract::store_calls::OpenedStore {
-        records: anchor.records,
-        calls: Some(outage.clone()),
-    };
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(outage.clone()).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -601,13 +428,15 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(
         app.store.record_hard_down_all_cells(

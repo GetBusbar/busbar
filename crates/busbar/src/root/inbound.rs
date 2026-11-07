@@ -193,7 +193,7 @@ impl AuthHandleHost for LoaderSide {
                         .load_full()
                         .is_some_and(|now| now.generation != policy.policy.generation) =>
                 {
-                    continue
+                    continue;
                 }
                 Err(error) => return Err(error),
             }

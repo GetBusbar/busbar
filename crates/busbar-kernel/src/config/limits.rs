@@ -112,11 +112,24 @@ pub fn default_probe_timeout_secs() -> u64 {
     DEFAULT_PROBE_TIMEOUT_SECS
 }
 
+pub fn default_migration_index_bytes() -> usize {
+    256 * 1024 * 1024
+}
+pub fn default_migration_value_bytes() -> usize {
+    64 * 1024 * 1024
+}
+
 /// The `limits:` block — global operational caps. Each field defaults to its historical behavior,
 /// so an absent field (or an absent block) changes nothing. Optional opt-in caps default to unset.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct LimitsCfg {
+    /// Allocation ceiling for each startup migration index, not a dataset-size or RSS cap.
+    #[serde(default = "default_migration_index_bytes")]
+    pub migration_index_bytes: usize,
+    /// Allocation ceiling for each migration frame/page/semantic working buffer.
+    #[serde(default = "default_migration_value_bytes")]
+    pub migration_value_bytes: usize,
     #[serde(default = "default_upstream_request_timeout_secs")]
     pub upstream_request_timeout_secs: u64,
     /// Max accepted inbound body (bytes). COUPLED: also drives the egress translate-body cap
@@ -231,6 +244,8 @@ pub fn default_reasoning_high() -> u32 {
 impl Default for LimitsCfg {
     fn default() -> Self {
         Self {
+            migration_index_bytes: default_migration_index_bytes(),
+            migration_value_bytes: default_migration_value_bytes(),
             upstream_request_timeout_secs: default_upstream_request_timeout_secs(),
             request_body_max_bytes: default_request_body_max_bytes(),
             datagram_line_memory_bytes: None,
@@ -314,6 +329,8 @@ impl Default for ExportLimits {
 /// struct rather than re-walking optional config sections.
 #[derive(Debug, Clone)]
 pub struct LimitsResolved {
+    pub migration_index_bytes: usize,
+    pub migration_value_bytes: usize,
     pub upstream_request_timeout_secs: u64,
     pub request_body_max_bytes: usize,
     /// Per-pairing datagram LINE retained-capacity limit. None leaves the mechanism disabled;
@@ -375,6 +392,8 @@ impl LimitsResolved {
     ) -> Self {
         let ExportLimits { key_gauge_limit } = export.into();
         Self {
+            migration_index_bytes: limits.migration_index_bytes,
+            migration_value_bytes: limits.migration_value_bytes,
             upstream_request_timeout_secs: limits.upstream_request_timeout_secs,
             request_body_max_bytes: limits.request_body_max_bytes,
             datagram_line_memory_bytes: limits.datagram_line_memory_bytes,

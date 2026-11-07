@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::{append_full, handle, register, seed, Decode, StreamRecord};
+use super::{handle, register, seed, Decode, StreamInput, StreamRecord};
 use crate::audit::journal::NeutralBody;
 use crate::audit::Framing;
+use crate::audit::{Chain, ChainedRecord};
 use crate::store::plane_view::{decode, encode};
 use busbar_contract::records::{RecordStoreError, RecordStoreResult};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -38,7 +39,6 @@ fn register_ram(kind_id: u32, decode: Decode) {
         true,
         decode,
         usize::MAX,
-        None,
     );
 }
 
@@ -56,8 +56,25 @@ fn body(seq: u64, prev_hash: &str, hash: &str, content: &[u8]) -> Vec<u8> {
 fn a_native_stream_seeds_from_its_bodies_and_continues_without_a_host() {
     let kind_id = fresh_kind_id();
     register_ram(kind_id, Decode::Native(neutral_decode));
-    let (s1, p1, hash1) = append_full(kind_id, "tenant", b"|one").expect("append 1");
-    let (s2, p2, hash2) = append_full(kind_id, "tenant", b"|two").expect("append 2");
+    let mut chain = Chain::<StreamRecord>::new();
+    let one = chain.append(
+        "tenant",
+        StreamInput::new(b"|one".to_vec(), Framing::LengthPrefixed, true),
+    );
+    let two = chain.append(
+        "tenant",
+        StreamInput::new(b"|two".to_vec(), Framing::LengthPrefixed, true),
+    );
+    let (s1, p1, hash1) = (
+        one.seq(),
+        one.prev_hash().to_string(),
+        one.hash().to_string(),
+    );
+    let (s2, p2, hash2) = (
+        two.seq(),
+        two.prev_hash().to_string(),
+        two.hash().to_string(),
+    );
     assert_eq!((s1, p1.as_str()), (1, ""), "genesis");
     assert_eq!(
         (s2, p2.as_str()),
@@ -75,7 +92,12 @@ fn a_native_stream_seeds_from_its_bodies_and_continues_without_a_host() {
         Ok(false),
         "an intact stored chain seeds without a break"
     );
-    let (s3, p3, _) = append_full(kind_id, "tenant", b"|three").expect("append 3");
+    assert_eq!(handle(kind_id).unwrap().journal.next_seq("tenant"), 3);
+    let third = chain.append(
+        "tenant",
+        StreamInput::new(b"|three".to_vec(), Framing::LengthPrefixed, true),
+    );
+    let (s3, p3) = (third.seq(), third.prev_hash().to_string());
     assert_eq!(
         (s3, p3.as_str()),
         (3, hash2.as_str()),
@@ -87,8 +109,21 @@ fn a_native_stream_seeds_from_its_bodies_and_continues_without_a_host() {
 fn seed_reports_a_break_and_refuses_what_it_cannot_address() {
     let kind_id = fresh_kind_id();
     register_ram(kind_id, Decode::Native(neutral_decode));
-    let (_, _, hash1) = append_full(kind_id, "tenant", b"|one").expect("append 1");
-    let (_, _, hash2) = append_full(kind_id, "tenant", b"|two").expect("append 2");
+    let mut chain = Chain::<StreamRecord>::new();
+    let hash1 = chain
+        .append(
+            "tenant",
+            StreamInput::new(b"|one".to_vec(), Framing::LengthPrefixed, true),
+        )
+        .hash()
+        .to_string();
+    let hash2 = chain
+        .append(
+            "tenant",
+            StreamInput::new(b"|two".to_vec(), Framing::LengthPrefixed, true),
+        )
+        .hash()
+        .to_string();
 
     register_ram(kind_id, Decode::Native(neutral_decode));
     let forged = [
@@ -115,10 +150,6 @@ fn seed_reports_a_break_and_refuses_what_it_cannot_address() {
         Err(()),
         "an unregistered stream is refused"
     );
-    let unregistered = append_full(fresh_kind_id(), "tenant", b"|x").expect_err("unregistered");
-    assert_eq!(unregistered.0, "journal stream is not registered");
-    let empty = append_full(kind_id, "", b"|x").expect_err("empty scope");
-    assert_eq!(empty.0, "journal scope must be a non-empty key");
 }
 
 #[test]
@@ -131,7 +162,6 @@ fn decode_native_rescopes_and_reports_a_fault_as_the_bridge_did() {
         false,
         Decode::Native(neutral_decode),
         usize::MAX,
-        None,
     );
     let h = handle(ok_id).expect("registered");
     let r = h

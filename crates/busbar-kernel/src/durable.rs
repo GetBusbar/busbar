@@ -15,12 +15,54 @@ pub struct DurableOpts {
     pub exclusive: bool,
 }
 
+/// Observation of an authored document without following filesystem links.
+/// Opaque platform metadata is protected checkpoint material, never a public manifest.
+pub enum DocumentInspection {
+    Original {
+        metadata: zeroize::Zeroizing<Vec<u8>>,
+        read_only: bool,
+    },
+    Converted,
+    Missing,
+    Changed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentReplace {
+    Published,
+    AlreadyConverted,
+    ReadOnly,
+    Missing,
+    Changed,
+}
+
 pub trait DurableFs: Send + Sync {
     fn write_with(&self, path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Result<()>;
 
     fn remove(&self, path: &Path) -> io::Result<()>;
 
     fn create_dir_all(&self, path: &Path) -> io::Result<()>;
+
+    fn inspect_document(
+        &self,
+        path: &Path,
+        original: &[u8],
+        converted: &[u8],
+    ) -> io::Result<DocumentInspection>;
+    fn replace_document(
+        &self,
+        path: &Path,
+        original: &[u8],
+        converted: &[u8],
+        metadata: &[u8],
+    ) -> io::Result<DocumentReplace>;
+    /// Only the startup owner with a confirmed PendingReplace checkpoint may call this.
+    fn recover_document(
+        &self,
+        path: &Path,
+        converted: &[u8],
+        metadata: &[u8],
+    ) -> io::Result<DocumentReplace>;
 }
 
 fn installed() -> io::Result<&'static dyn DurableFs> {

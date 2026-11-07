@@ -457,13 +457,13 @@ pub const CATALOG_KEYS: &[&str] = &[
     "allow_metadata_hosts",
 ];
 
-pub(super) fn catalog_grammar_keys() -> &'static [&'static str] {
-    super::migrate_catalog::struct_keys(ProviderDefCore::deserialize)
+pub fn catalog_grammar_keys() -> &'static [&'static str] {
+    super::grammar_fields::struct_keys(ProviderDefCore::deserialize)
 }
 
 #[cfg(test)]
 pub(super) fn deploy_grammar_keys() -> &'static [&'static str] {
-    super::migrate_catalog::struct_keys(ProviderDeployCore::deserialize)
+    super::grammar_fields::struct_keys(ProviderDeployCore::deserialize)
 }
 
 pub fn catalog<'de, D: serde::Deserializer<'de>>(

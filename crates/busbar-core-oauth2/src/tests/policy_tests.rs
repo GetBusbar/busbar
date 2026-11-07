@@ -7,7 +7,7 @@ use crate::config::{AsIdentity, OauthAsCfg};
 
 use crate::plane::AsPlane;
 
-fn plane(grant: &[&str]) -> AsPlane {
+async fn plane(grant: &[&str]) -> AsPlane {
     let cfg = OauthAsCfg {
         issuer: "https://gw.example.com".to_string(),
         signing_key: None,
@@ -25,6 +25,7 @@ fn plane(grant: &[&str]) -> AsPlane {
         vec!["https://gw.example.com/rpc".to_string()],
         crate::cimd::unconnected(),
     )
+    .await
     .expect("the plane builds")
 }
 
@@ -42,7 +43,7 @@ fn attempt(scope: Option<&str>, grant_types: Option<Vec<&str>>) -> ClientMetadat
 
 #[tokio::test]
 async fn a_self_registered_client_cannot_ask_for_more_than_the_default_grant() {
-    let plane = plane(&["tools:read"]);
+    let plane = plane(&["tools:read"]).await;
     let refusal = plane
         .server()
         .register_dynamic_client(&attempt(Some("tools:read tools:write admin"), None), None)
@@ -60,7 +61,7 @@ async fn a_self_registered_client_cannot_ask_for_more_than_the_default_grant() {
 
 #[tokio::test]
 async fn with_no_default_grant_configured_every_requested_scope_is_refused() {
-    let plane = plane(&[]);
+    let plane = plane(&[]).await;
     let refusal = plane
         .server()
         .register_dynamic_client(&attempt(Some("tools:read"), None), None)
@@ -71,7 +72,7 @@ async fn with_no_default_grant_configured_every_requested_scope_is_refused() {
 
 #[tokio::test]
 async fn a_registration_within_the_default_grant_is_accepted() {
-    let plane = plane(&["tools:read"]);
+    let plane = plane(&["tools:read"]).await;
     let info = plane
         .server()
         .register_dynamic_client(&attempt(Some("tools:read"), None), None)
@@ -82,7 +83,7 @@ async fn a_registration_within_the_default_grant_is_accepted() {
 
 #[tokio::test]
 async fn a_self_registered_client_cannot_ask_for_the_client_credentials_grant() {
-    let plane = plane(&["tools:read"]);
+    let plane = plane(&["tools:read"]).await;
 
     let mut metadata = attempt(Some("tools:read"), Some(vec!["client_credentials"]));
     metadata.token_endpoint_auth_method = Some("client_secret_basic".to_string());
@@ -99,7 +100,7 @@ async fn a_self_registered_client_cannot_ask_for_the_client_credentials_grant() 
 
 #[tokio::test]
 async fn a_client_that_names_itself_after_the_deployment_is_refused() {
-    let plane = plane(&["tools:read"]);
+    let plane = plane(&["tools:read"]).await;
     let mut metadata = attempt(Some("tools:read"), None);
     metadata.client_name = Some("Busbar Gateway".to_string());
     let refusal = plane
@@ -134,6 +135,7 @@ async fn registration_is_on_whenever_the_plane_is() {
         vec!["https://gw.example.com/rpc".into()],
         crate::cimd::unconnected(),
     )
+    .await
     .expect("builds");
     assert_eq!(
         plane.server().metadata().registration_endpoint.as_deref(),
@@ -149,7 +151,7 @@ async fn registration_is_on_whenever_the_plane_is() {
 
 #[tokio::test]
 async fn open_registration_is_throttled() {
-    let plane = plane(&[]);
+    let plane = plane(&[]).await;
     for n in 0..oauth_as::rate_limit::DEFAULT_CLIENT_REGISTRATION_CAPACITY {
         plane
             .server()
@@ -182,7 +184,7 @@ async fn an_idle_self_registered_client_is_reclaimed_and_a_busy_one_kept() {
                 .client_id,
         )
     }
-    let plane = plane(&[]);
+    let plane = plane(&[]).await;
     let store = plane.server().store();
     let idle = register(&plane).await;
     let busy = register(&plane).await;

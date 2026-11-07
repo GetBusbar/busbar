@@ -1,15 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::Arc;
+use busbar_contract::persistence::{
+    BackendInfo, Call, ClockObservation, DatasetId, Decision, Failure, Mutation, Page,
+    PersistenceBackend, PreparedCandidate, Read, ReadResult, Scan,
+};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use super::TicketRefusal;
-use crate::governance::signing::{TokenSigner, DEFAULT_KID};
+use crate::governance::signing::{DEFAULT_KID, TokenSigner};
 use crate::governance::{GovState, NewKeySpec};
 
 const PREFIX: &str = "tk_";
 
-fn at_store_second(second: u64) {
+async fn at_store_second(second: u64) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(35);
     loop {
         let now = crate::store::now();
@@ -21,23 +28,27 @@ fn at_store_second(second: u64) {
             std::time::Instant::now() < deadline,
             "the backend deadline arrives within the bounded wait"
         );
-        std::thread::sleep(std::time::Duration::from_millis(1));
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
     }
 }
 
-fn gov_with(seed: u8) -> Arc<GovState> {
-    let store = crate::real_store::store();
+async fn gov_with(seed: u8) -> Arc<GovState> {
+    let core = crate::real_store::core().await;
     let signer = TokenSigner::from_secret_bytes(&[seed; 32], DEFAULT_KID);
-    Arc::new(GovState::new_with_signer(store, None, Some(signer)).expect("gov"))
+    Arc::new(
+        GovState::new_with_core(core, None, Some(signer))
+            .await
+            .expect("gov"),
+    )
 }
 
-fn gov() -> Arc<GovState> {
-    gov_with(9)
+async fn gov() -> Arc<GovState> {
+    gov_with(9).await
 }
 
-fn key(g: &GovState, exp: u64) -> (String, String) {
+async fn key(g: &GovState, exp: u64) -> (String, String) {
     let (binding, token) = g
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "caller".into(),
                 ..Default::default()
@@ -45,17 +56,19 @@ fn key(g: &GovState, exp: u64) -> (String, String) {
             exp,
             crate::store::now(),
         )
+        .await
         .expect("mint key");
     (binding.id, token.expose(&crate::seal::lend()).to_string())
 }
 
-#[test]
-fn a_ticket_admits_its_key_once_with_its_record() {
+#[tokio::test]
+async fn a_ticket_admits_its_key_once_with_its_record() {
     let now = crate::store::now();
-    let g = gov();
-    let (id, _) = key(&g, now + 86_400);
+    let g = gov().await;
+    let (id, _) = key(&g, now + 86_400).await;
     let (ticket, exp) = g
         .mint_ticket(&id, PREFIX, 600, None, b"{\"locked\":1}", now)
+        .await
         .expect("mint");
     assert!(
         ticket.starts_with(PREFIX),
@@ -63,320 +76,292 @@ fn a_ticket_admits_its_key_once_with_its_record() {
     );
     assert!(!ticket.contains("bbk_"), "a ticket carries no key prefix");
     assert_eq!(exp, now + 600);
-    let (admitted, record) = g.admit_ticket(PREFIX, &ticket, now + 1).expect("admit");
+    let (admitted, record) = g
+        .admit_ticket_async(PREFIX, &ticket, now + 1)
+        .await
+        .expect("admit");
     assert_eq!(admitted.id, id);
     assert_eq!(record, b"{\"locked\":1}");
 
     assert!(
-        g.admit_ticket(PREFIX, &ticket, now + 2).is_none(),
+        g.admit_ticket_async(PREFIX, &ticket, now + 2)
+            .await
+            .is_none(),
         "a spent ticket is refused"
     );
 }
 
-#[test]
-fn a_foreign_or_expired_or_misprefixed_ticket_is_refused() {
+#[tokio::test]
+async fn a_foreign_or_expired_or_misprefixed_ticket_is_refused() {
     let now = crate::store::now();
-    let memory = crate::real_store::store();
+    let memory = crate::real_store::core().await;
     let signer = TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID);
-    let g = GovState::new_with_signer(memory.clone(), None, Some(signer)).unwrap();
-    let (id, _) = key(&g, now + 86_400);
+    let g = Arc::new(
+        GovState::new_with_core(memory.clone(), None, Some(signer))
+            .await
+            .unwrap(),
+    );
+    let (id, _) = key(&g, now + 86_400).await;
 
-    let other = gov_with(7);
-    let (other_id, _) = key(&other, now + 86_400);
+    let other = gov_with(7).await;
+    let (other_id, _) = key(&other, now + 86_400).await;
     let (foreign, _) = other
         .mint_ticket(&other_id, PREFIX, 600, None, b"{}", now)
+        .await
         .expect("mint");
-    assert!(g.admit_ticket(PREFIX, &foreign, now + 1).is_none());
+    assert!(
+        g.admit_ticket_async(PREFIX, &foreign, now + 1)
+            .await
+            .is_none()
+    );
 
     let (expired, exp) = g
-        .mint_ticket(&id, PREFIX, 10, None, b"{}", now - 11)
+        .mint_ticket(&id, PREFIX, 1, None, b"{}", crate::store::now())
+        .await
         .expect("mint");
-    assert!(g.admit_ticket(PREFIX, &expired, exp).is_none());
+    at_store_second(exp + 1).await;
+    assert!(g.admit_ticket_async(PREFIX, &expired, exp).await.is_none());
 
     let (ticket, _) = g
         .mint_ticket(&id, PREFIX, 600, None, b"{}", now)
+        .await
         .expect("mint");
-    assert!(g.admit_ticket("other_", &ticket, now + 1).is_none());
-    assert!(g.admit_ticket("", &ticket, now + 1).is_none());
+    assert!(
+        g.admit_ticket_async("other_", &ticket, now + 1)
+            .await
+            .is_none()
+    );
+    assert!(g.admit_ticket_async("", &ticket, now + 1).await.is_none());
 
-    assert!(g.admit_ticket(PREFIX, &ticket, now + 1).is_some());
+    assert!(
+        g.admit_ticket_async(PREFIX, &ticket, now + 1)
+            .await
+            .is_some()
+    );
 }
 
-#[test]
-fn replacing_a_tickets_consumer_prefix_cannot_redelegate_or_spend_it() {
+#[tokio::test]
+async fn replacing_a_tickets_consumer_prefix_cannot_redelegate_or_spend_it() {
     let now = crate::store::now();
-    let g = gov();
-    let (id, _) = key(&g, now + 86_400);
+    let g = gov().await;
+    let (id, _) = key(&g, now + 86_400).await;
     let (ticket, _) = g
         .mint_ticket(&id, PREFIX, 600, None, b"original-consumer-record", now)
+        .await
         .expect("mint for its declared consumer");
     let body = ticket.strip_prefix(PREFIX).expect("the declared prefix");
     let relabeled = format!("other_{body}");
     assert!(
-        g.admit_ticket("other_", &relabeled, now + 1).is_none(),
+        g.admit_ticket_async("other_", &relabeled, now + 1)
+            .await
+            .is_none(),
         "changing an unsigned prefix cannot delegate the credential to another consumer"
     );
     let (admitted, record) = g
-        .admit_ticket(PREFIX, &ticket, now + 1)
+        .admit_ticket_async(PREFIX, &ticket, now + 1)
+        .await
         .expect("a foreign-consumer attempt cannot spend the original credential");
     assert_eq!(admitted.id, id);
     assert_eq!(record, b"original-consumer-record");
 }
 
-#[test]
-fn a_ticket_is_never_a_key_and_a_key_is_never_a_ticket() {
+#[tokio::test]
+async fn a_ticket_is_never_a_key_and_a_key_is_never_a_ticket() {
     let now = crate::store::now();
-    let g = gov();
-    let (id, key_token) = key(&g, now + 86_400);
+    let g = gov().await;
+    let (id, key_token) = key(&g, now + 86_400).await;
     let (ticket, _) = g
         .mint_ticket(&id, PREFIX, 600, None, b"{}", now)
+        .await
         .expect("mint");
 
     assert!(g.verify_token(&ticket, now + 1, None).is_none());
     let body = ticket.strip_prefix(PREFIX).expect("prefixed");
-    assert!(g
-        .verify_token(&format!("bbk_{body}"), now + 1, None)
-        .is_none());
+    assert!(
+        g.verify_token(&format!("bbk_{body}"), now + 1, None)
+            .is_none()
+    );
 
     let key_body = key_token.strip_prefix("bbk_").expect("a key");
-    assert!(g
-        .admit_ticket(PREFIX, &format!("{PREFIX}{key_body}"), now + 1)
-        .is_none());
+    assert!(
+        g.admit_ticket_async(PREFIX, &format!("{PREFIX}{key_body}"), now + 1)
+            .await
+            .is_none()
+    );
 
     assert!(g.verify_token(&key_token, now + 1, None).is_some());
 }
 
-#[test]
-fn a_ticket_stands_only_while_its_key_does() {
+#[tokio::test]
+async fn a_ticket_stands_only_while_its_key_does() {
     let now = crate::store::now();
-    let g = gov();
-    let (id, _) = key(&g, now + 86_400);
+    let g = gov().await;
+    let (id, _) = key(&g, now + 86_400).await;
     let (ticket, _) = g
         .mint_ticket(&id, PREFIX, 600, None, b"{}", now)
+        .await
         .expect("mint");
-    g.revoke(&id, "test").expect("revoke");
+    g.revoke_async(&id, "test").await.expect("revoke");
 
-    assert!(g.admit_ticket(PREFIX, &ticket, now + 1).is_none());
+    assert!(
+        g.admit_ticket_async(PREFIX, &ticket, now + 1)
+            .await
+            .is_none()
+    );
 
     assert_eq!(
-        g.mint_ticket(&id, PREFIX, 600, None, b"{}", now),
+        g.mint_ticket(&id, PREFIX, 600, None, b"{}", now).await,
         Err(TicketRefusal::NoStanding)
     );
     assert_eq!(
-        g.mint_ticket("vk_unknown", PREFIX, 600, None, b"{}", now),
+        g.mint_ticket("vk_unknown", PREFIX, 600, None, b"{}", now)
+            .await,
         Err(TicketRefusal::NoStanding)
     );
 }
 
-#[test]
-fn a_tickets_lifetime_is_held_under_the_ceiling_and_its_keys_expiry() {
+#[tokio::test]
+async fn a_tickets_lifetime_is_held_under_the_ceiling_and_its_keys_expiry() {
     let now = crate::store::now();
-    let g = gov();
-    let (id, _) = key(&g, now + 86_400);
+    let g = gov().await;
+    let (id, _) = key(&g, now + 86_400).await;
 
     let (_, exp) = g
         .mint_ticket(&id, PREFIX, 7_200, Some(120), b"{}", now)
+        .await
         .expect("mint");
     assert_eq!(exp, now + 120);
 
     let mut binding = (*g.lookup_by_sub(&id).expect("bound")).clone();
     binding.expires_at = Some(now + 300);
-    g.store().put_key(&binding).expect("put");
-    g.refresh().expect("refresh");
+    g.core_store()
+        .unwrap()
+        .identity()
+        .put_key(&binding)
+        .await
+        .expect("put");
+    g.refresh_async().await.expect("refresh");
     let (_, exp) = g
         .mint_ticket(&id, PREFIX, 7_200, None, b"{}", now)
+        .await
         .expect("mint");
     assert_eq!(exp, now + 300);
 }
 
-struct RuleCarryingOnly(
-    Arc<busbar_plugin_loader::store_v3::LoadedStore>,
-    Option<Arc<offload_tests::PausedStore>>,
-    Option<&'static str>,
-);
-
-mod rule_carrying_only {
-    use super::RuleCarryingOnly;
-    use busbar_contract::records::{
-        AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
-        PlaneSelector, RecordStore, RecordStoreResult, Retention, UsageDelta, UsageLedger,
-        VirtualKey,
-    };
-
-    impl RecordStore for RuleCarryingOnly {
-        fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
-            self.0.put_key(key)
-        }
-        fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-            self.0.get_key(id)
-        }
-        fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-            self.0.list_keys()
-        }
-        fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-            self.0.delete_key(id)
-        }
-        fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
-            self.0.list_keys_since(since)
-        }
-        fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
-            self.0.get_usage(bucket_id, window_start)
-        }
-        fn put_usage(
-            &self,
-            bucket_id: &str,
-            window_start: u64,
-            ledger: &UsageLedger,
-        ) -> RecordStoreResult<()> {
-            self.0.put_usage(bucket_id, window_start, ledger)
-        }
-        fn add_usage(
-            &self,
-            bucket_id: &str,
-            window_start: u64,
-            delta: &UsageDelta,
-        ) -> RecordStoreResult<()> {
-            self.0.add_usage(bucket_id, window_start, delta)
-        }
-        fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
-            self.0.add_metering(delta)
-        }
-        fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-            self.0.list_metering(bucket)
-        }
-        fn put_credential(&self, secret: &CredentialSecret) -> RecordStoreResult<()> {
-            self.0.put_credential(secret)
-        }
-        fn put_key_with_credential(
-            &self,
-            key: &VirtualKey,
-            secret: &CredentialSecret,
-        ) -> RecordStoreResult<()> {
-            self.0.put_key_with_credential(key, secret)
-        }
-        fn list_credentials(&self, key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
-            self.0.list_credentials(key_id)
-        }
-        fn revoke_credential(&self, id: &str, reason: &str) -> RecordStoreResult<()> {
-            self.0.revoke_credential(id, reason)
-        }
-        fn list_credentials_since(&self, since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
-            self.0.list_credentials_since(since)
-        }
-        fn append_audit(&self, entry: &AuditRecord) -> RecordStoreResult<()> {
-            self.0.append_audit(entry)
-        }
-        fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
-            self.0.list_audit()
-        }
-        fn add_denylist(&self, sub: &str, reason: &str) -> RecordStoreResult<()> {
-            self.0.add_denylist(sub, reason)
-        }
-        fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
-            self.0.list_denylist()
-        }
-        fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
-            self.0.list_audit_tail(limit)
-        }
-        fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-            if self.2 == Some("upsert") {
-                return Err(busbar_contract::records::RecordStoreError(
-                    "injected upsert failure".into(),
-                ));
+struct TicketBackend {
+    inner: Arc<dyn PersistenceBackend>,
+    pause: Option<Arc<offload_tests::PausedStore>>,
+    fault: Option<&'static str>,
+    published: AtomicBool,
+}
+fn ticket_namespace(schema: &str) -> [u8; 16] {
+    crate::persistence::scoped::migration_address(true, super::OWNER, schema, b"")
+        .unwrap()
+        .namespace
+}
+impl PersistenceBackend for TicketBackend {
+    fn info(&self) -> BackendInfo {
+        self.inner.info()
+    }
+    fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
+        Box::pin(async move {
+            if request
+                .addresses
+                .iter()
+                .any(|at| at.namespace == ticket_namespace(super::TICKET_RECORD_KIND))
+            {
+                if let Some(pause) = &self.pause {
+                    pause.wait("live").await;
+                }
             }
-            self.0.upsert_plane_record(record)
-        }
-        fn get_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
-            if let Some(pause) = &self.1 {
-                pause.wait("get");
+            self.inner.read(request).await
+        })
+    }
+    fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
+        self.inner.scan(request)
+    }
+    fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
+        self.inner.clock(dataset)
+    }
+    fn commit(&self, prepared: PreparedCandidate) -> Call<'_, Decision> {
+        Box::pin(async move {
+            let writes = |schema: &str| {
+                prepared
+                    .candidate()
+                    .mutations
+                    .iter()
+                    .any(|mutation| match mutation {
+                        Mutation::Put { address, .. } => {
+                            address.namespace == ticket_namespace(schema)
+                        }
+                        _ => false,
+                    })
+            };
+            let spend = writes(super::TICKET_SPENT_KIND);
+            let publish = writes(super::TICKET_RECORD_KIND);
+            if (self.fault == Some("upsert") && publish) || (self.fault == Some("redeem") && spend)
+            {
+                return Err(Failure::Refused);
             }
-            self.0.get_plane_record(kind, id)
-        }
-        fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-            self.0.append_plane_record(record)
-        }
-        fn list_plane_records(
-            &self,
-            kind: &str,
-            selector: &PlaneSelector<'_>,
-        ) -> RecordStoreResult<Vec<Vec<u8>>> {
-            self.0.list_plane_records(kind, selector)
-        }
-        fn list_plane_record_parents(&self, kind: &str) -> RecordStoreResult<Vec<String>> {
-            self.0.list_plane_record_parents(kind)
-        }
-        fn purge_plane_records(
-            &self,
-            kind: &str,
-            before: u64,
-            retention: Retention,
-        ) -> RecordStoreResult<u64> {
-            self.0.purge_plane_records(kind, before, retention)
-        }
-        fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()> {
-            self.0.delete_plane_record(kind, id)
-        }
-        fn redeem_plane_token(
-            &self,
-            kind: &str,
-            token: &str,
-            expires_at: u64,
-            now: u64,
-        ) -> RecordStoreResult<bool> {
-            if self.2 == Some("redeem") {
-                return Err(busbar_contract::records::RecordStoreError(
-                    "injected redeem failure".into(),
-                ));
+            if spend {
+                if let Some(pause) = &self.pause {
+                    pause.attempts.lock().unwrap().push(prepared.fingerprint());
+                }
             }
-            self.0.redeem_plane_token(kind, token, expires_at, now)
-        }
-        fn plane_token_live(
-            &self,
-            kind: &str,
-            token: &str,
-            expires_at: u64,
-            now: u64,
-        ) -> RecordStoreResult<bool> {
-            if let Some(pause) = &self.1 {
-                pause.wait("live");
+            let result = self.inner.commit(prepared).await;
+            if publish && matches!(&result, Ok(Decision::Applied(_))) {
+                self.published.store(true, Ordering::SeqCst);
             }
-            self.0.plane_token_live(kind, token, expires_at, now)
+            if spend && matches!(&result, Ok(Decision::Applied(_))) {
+                if let Some(pause) = &self.pause {
+                    pause.wait("get").await;
+                }
+            }
+            result
+        })
+    }
+}
+async fn ticket_records(core: &Arc<crate::persistence::facade::CoreStore>) -> usize {
+    let rows = super::scope(core.clone()).unwrap();
+    let mut after = None;
+    let mut count = 0;
+    loop {
+        let page = rows
+            .page(super::TICKET_RECORD_KIND, b"", after.as_ref())
+            .await
+            .unwrap();
+        count += page.rows.len();
+        if page.next.is_none() {
+            return count;
         }
+        after = page.next;
     }
 }
 
-fn ticket_records(store: &busbar_plugin_loader::store_v3::LoadedStore) -> usize {
-    use busbar_contract::records::{PlaneSelector, RecordStore};
-    store
-        .list_plane_records(super::TICKET_RECORD_KIND, &PlaneSelector::All)
-        .expect("list")
-        .len()
-}
-
-#[test]
-fn a_lapsed_tickets_record_goes_through_the_rule_carrying_purge_on_the_next_mint() {
+#[tokio::test]
+async fn a_lapsed_tickets_record_goes_through_the_rule_carrying_purge_on_the_next_mint() {
     let now = crate::store::now();
-    let memory = crate::real_store::store();
+    let memory = crate::real_store::core().await;
     let signer = TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID);
-    let g = GovState::new_with_signer(
-        Arc::new(RuleCarryingOnly(Arc::clone(&memory), None, None)),
-        None,
-        Some(signer),
-    )
-    .expect("gov");
-    let (id, _) = key(&g, now + 86_400);
+    let g = GovState::new_with_core(memory.clone(), None, Some(signer))
+        .await
+        .expect("gov");
+    let (id, _) = key(&g, now + 86_400).await;
 
     g.mint_ticket(&id, PREFIX, 10, None, b"{}", now)
+        .await
         .expect("mint");
     g.mint_ticket(&id, PREFIX, 20, None, b"{}", now)
+        .await
         .expect("mint");
-    assert_eq!(ticket_records(&memory), 2);
+    assert_eq!(ticket_records(&memory).await, 2);
 
-    at_store_second(now + 20);
+    at_store_second(now + 20).await;
     g.mint_ticket(&id, PREFIX, 600, None, b"{}", now + 20)
+        .await
         .expect("mint");
     assert_eq!(
-        ticket_records(&memory),
+        ticket_records(&memory).await,
         2,
         "the record of the ticket lapsed before the mint goes; the one lapsing at it stays"
     );
@@ -386,11 +371,12 @@ fn a_lapsed_tickets_record_goes_through_the_rule_carrying_purge_on_the_next_mint
         now + 20,
         "the purge checked the exact deadline second"
     );
-    at_store_second(now + 21);
+    at_store_second(now + 21).await;
     g.mint_ticket(&id, PREFIX, 600, None, b"{}", now + 21)
+        .await
         .expect("mint");
     assert_eq!(
-        ticket_records(&memory),
+        ticket_records(&memory).await,
         2,
         "only the two live tickets' records stay"
     );
@@ -401,8 +387,8 @@ fn a_lapsed_tickets_record_goes_through_the_rule_carrying_purge_on_the_next_mint
     );
 }
 
-#[test]
-fn ticket_deadline_and_record_follow_store_clock_despite_node_skew() {
+#[tokio::test]
+async fn ticket_deadline_and_record_follow_store_clock_despite_node_skew() {
     const TICKET_TTL_SECS: u64 = 600;
     const NODE_SKEW_SECS: u64 = TICKET_TTL_SECS * 2;
     const KEY_TTL_SECS: u64 = 86_400;
@@ -410,59 +396,109 @@ fn ticket_deadline_and_record_follow_store_clock_despite_node_skew() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let memory = crate::real_store::store();
+    let memory = crate::real_store::core().await;
     let signer = TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID);
-    let g = GovState::new_with_signer(memory, None, Some(signer)).unwrap();
-    let (id, _) = key(&g, store_now + KEY_TTL_SECS);
+    let g = Arc::new(
+        GovState::new_with_core(memory, None, Some(signer))
+            .await
+            .unwrap(),
+    );
+    let (id, _) = key(&g, store_now + KEY_TTL_SECS).await;
     let (ticket, _) = g
         .mint_ticket(&id, PREFIX, TICKET_TTL_SECS, None, b"original", store_now)
+        .await
         .unwrap();
     let fast_node = store_now + NODE_SKEW_SECS;
     assert!(
-        g.peek_ticket(PREFIX, &ticket, fast_node).is_some(),
+        g.peek_ticket_async(PREFIX, &ticket, fast_node)
+            .await
+            .is_some(),
         "fast node must not refuse a store-valid ticket"
     );
     g.mint_ticket(&id, PREFIX, TICKET_TTL_SECS, None, b"later", fast_node)
+        .await
         .unwrap();
     assert!(
-        g.peek_ticket(PREFIX, &ticket, fast_node).is_some(),
+        g.peek_ticket_async(PREFIX, &ticket, fast_node)
+            .await
+            .is_some(),
         "fast mint must not purge its live record"
     );
     assert_eq!(
-        g.admit_ticket(PREFIX, &ticket, fast_node).unwrap().1,
+        g.admit_ticket_async(PREFIX, &ticket, fast_node)
+            .await
+            .unwrap()
+            .1,
         b"original"
     );
     assert!(
-        g.admit_ticket(PREFIX, &ticket, store_now).is_none(),
+        g.admit_ticket_async(PREFIX, &ticket, store_now)
+            .await
+            .is_none(),
         "preflight never spent, admission spends once"
     );
     let slow_node = store_now - NODE_SKEW_SECS;
-    let (expired, _) = g
-        .mint_ticket(&id, PREFIX, TICKET_TTL_SECS, None, b"expired", slow_node)
+    assert_eq!(
+        g.mint_ticket(&id, PREFIX, TICKET_TTL_SECS, None, b"expired", slow_node)
+            .await,
+        Err(TicketRefusal::NotKept),
+        "store time refuses publication of an already expired authorization"
+    );
+    let (expired, exp) = g
+        .mint_ticket(&id, PREFIX, 1, None, b"expired", crate::store::now())
+        .await
         .unwrap();
-    assert!(g.peek_ticket(PREFIX, &expired, slow_node).is_none());
+    at_store_second(exp + 1).await;
     assert!(
-        g.admit_ticket(PREFIX, &expired, slow_node).is_none(),
+        g.peek_ticket_async(PREFIX, &expired, slow_node)
+            .await
+            .is_none()
+    );
+    assert!(
+        g.admit_ticket_async(PREFIX, &expired, slow_node)
+            .await
+            .is_none(),
         "slow caller cannot reopen expired authority"
     );
 }
 
-#[test]
-fn ticket_preflight_and_first_admission_include_the_store_deadline_second() {
+#[tokio::test]
+async fn ticket_preflight_and_first_admission_include_the_store_deadline_second() {
     let now = crate::store::now();
     const TICKET_TTL_SECS: u64 = 10;
-    let store = crate::real_store::store();
+    let store = crate::real_store::core().await;
     let signer = TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID);
-    let g = GovState::new_with_signer(store.clone(), None, Some(signer)).unwrap();
-    let (id, key_token) = key(&g, now + 86_400);
+    let g = Arc::new(
+        GovState::new_with_core(store.clone(), None, Some(signer))
+            .await
+            .unwrap(),
+    );
+    let (id, key_token) = key(&g, now + 86_400).await;
     let (ticket, exp) = g
         .mint_ticket(&id, PREFIX, TICKET_TTL_SECS, None, b"record", now)
+        .await
         .unwrap();
-    at_store_second(exp);
-    assert!(g.peek_ticket(PREFIX, &ticket, exp + 1).is_some());
-    assert!(g.peek_ticket(PREFIX, &ticket, exp - 1).is_some());
-    assert!(g.admit_ticket(PREFIX, &ticket, exp + 1).is_some());
-    assert!(g.admit_ticket(PREFIX, &ticket, exp - 1).is_none());
+    at_store_second(exp).await;
+    assert!(
+        g.peek_ticket_async(PREFIX, &ticket, exp + 1)
+            .await
+            .is_some()
+    );
+    assert!(
+        g.peek_ticket_async(PREFIX, &ticket, exp - 1)
+            .await
+            .is_some()
+    );
+    assert!(
+        g.admit_ticket_async(PREFIX, &ticket, exp + 1)
+            .await
+            .is_some()
+    );
+    assert!(
+        g.admit_ticket_async(PREFIX, &ticket, exp - 1)
+            .await
+            .is_none()
+    );
     assert_eq!(
         crate::store::now(),
         exp,
@@ -477,124 +513,193 @@ fn ticket_preflight_and_first_admission_include_the_store_deadline_second() {
 #[path = "ticket_offload_tests.rs"]
 mod offload_tests;
 
-#[test]
-fn host_binding_precedes_publication_and_failed_binding_removes_the_record() {
+#[tokio::test]
+async fn host_binding_precedes_publication_and_failed_binding_removes_the_record() {
     let now = crate::store::now();
-    let g = gov();
-    let (id, _) = key(&g, now + 86_400);
-    let mut bound_id = String::new();
-    let result = g.mint_ticket_bound(&id, PREFIX, 600, None, b"opaque", now, |identity| {
-        assert_eq!(identity.principal().id, id);
-        assert_eq!(identity.expires_at(), now + 600);
-        assert!(Arc::ptr_eq(identity.store(), &g.store()));
-        assert_eq!(
-            g.store()
-                .get_plane_record(super::TICKET_RECORD_KIND, identity.id())
-                .unwrap(),
-            Some(b"opaque".to_vec())
-        );
-        bound_id = identity.id().to_owned();
-        Err(TicketRefusal::NotKept)
+    let backend = Arc::new(TicketBackend {
+        inner: crate::real_store::native_backend().await,
+        pause: None,
+        fault: None,
+        published: AtomicBool::new(false),
     });
+    let g = Arc::new(
+        GovState::new_with_core(
+            crate::real_store::core_over(backend.clone()).await,
+            None,
+            Some(TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID)),
+        )
+        .await
+        .unwrap(),
+    );
+    let (id, _) = key(&g, now + 86_400).await;
+    let mut bound_id = String::new();
+    let result = g
+        .mint_ticket_bound(&id, PREFIX, 600, None, b"opaque", now, |identity| {
+            assert_eq!(identity.principal().id, id);
+            assert_eq!(identity.expires_at(), now + 600);
+            assert!(
+                backend.published.load(Ordering::SeqCst),
+                "native Applied record publication precedes host binding"
+            );
+            assert!(Arc::ptr_eq(
+                identity.store(),
+                &g.core_store_handle().unwrap()
+            ));
+            bound_id = identity.id().to_owned();
+            Err(TicketRefusal::NotKept)
+        })
+        .await;
     assert_eq!(result, Err(TicketRefusal::NotKept));
     assert!(!bound_id.is_empty());
-    assert!(g
-        .store()
-        .get_plane_record(super::TICKET_RECORD_KIND, &bound_id)
-        .unwrap()
-        .is_none());
+    assert!(
+        super::scope(g.core_store_handle().unwrap())
+            .unwrap()
+            .get(super::TICKET_RECORD_KIND, bound_id.as_bytes())
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
-#[test]
-fn store_failure_never_calls_host_binding_and_failed_spend_returns_no_record() {
+#[tokio::test]
+async fn store_failure_never_calls_host_binding_and_failed_spend_returns_no_record() {
     let now = crate::store::now();
     for fault in ["upsert", "redeem"] {
-        let memory = crate::real_store::store();
         let signer = TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID);
-        let g = GovState::new_with_signer(
-            Arc::new(RuleCarryingOnly(memory, None, Some(fault))),
-            None,
-            Some(signer),
-        )
-        .unwrap();
-        let (id, _) = key(&g, now + 86_400);
+        let g = Arc::new(
+            GovState::new_with_core(
+                crate::real_store::core_over(Arc::new(TicketBackend {
+                    inner: crate::real_store::native_backend().await,
+                    pause: None,
+                    fault: Some(fault),
+                    published: AtomicBool::new(false),
+                }))
+                .await,
+                None,
+                Some(signer),
+            )
+            .await
+            .unwrap(),
+        );
+        let (id, _) = key(&g, now + 86_400).await;
         let mut bound = false;
-        let minted = g.mint_ticket_bound(&id, PREFIX, 600, None, b"opaque", now, |_| {
-            bound = true;
-            Ok(())
-        });
+        let minted = g
+            .mint_ticket_bound(&id, PREFIX, 600, None, b"opaque", now, |_| {
+                bound = true;
+                Ok(())
+            })
+            .await;
         if fault == "upsert" {
             assert_eq!(minted, Err(TicketRefusal::NotKept));
             assert!(!bound);
         } else {
             let (ticket, _) = minted.unwrap();
             assert!(bound);
-            let identity = g.prepare_ticket_redemption(PREFIX, &ticket, now).unwrap();
-            assert!(g.redeem_verified_ticket(identity, now).is_none());
+            let identity = g
+                .prepare_ticket_redemption_async(PREFIX, &ticket, now)
+                .await
+                .unwrap();
+            assert!(
+                g.redeem_verified_ticket_async(identity, now)
+                    .await
+                    .is_none()
+            );
         }
     }
 }
 
-#[test]
-fn prepared_identity_is_store_bound_revalidated_and_spent_once() {
+#[tokio::test]
+async fn prepared_identity_is_store_bound_revalidated_and_spent_once() {
     let now = crate::store::now();
-    let g = gov();
-    let (id, _) = key(&g, now + 86_400);
+    let g = gov().await;
+    let (id, _) = key(&g, now + 86_400).await;
     let (ticket, _) = g
         .mint_ticket(&id, PREFIX, 600, None, b"opaque", now)
+        .await
         .unwrap();
-    let identity = g.prepare_ticket_redemption(PREFIX, &ticket, now).unwrap();
-    let other = gov();
-    assert!(other.redeem_verified_ticket(identity, now).is_none());
-    let identity = g.prepare_ticket_redemption(PREFIX, &ticket, now).unwrap();
-    let simultaneous = g.prepare_ticket_redemption(PREFIX, &ticket, now).unwrap();
-    let barrier = std::sync::Barrier::new(2);
-    std::thread::scope(|scope| {
-        let left = scope.spawn(|| {
-            barrier.wait();
-            g.redeem_verified_ticket(identity, now)
-        });
-        let right = scope.spawn(|| {
-            barrier.wait();
-            g.redeem_verified_ticket(simultaneous, now)
-        });
-        let winners: Vec<_> = [left.join().unwrap(), right.join().unwrap()]
-            .into_iter()
-            .flatten()
-            .collect();
-        assert_eq!(winners.len(), 1);
-        assert_eq!(winners[0].1, b"opaque");
-    });
+    let identity = g
+        .prepare_ticket_redemption_async(PREFIX, &ticket, now)
+        .await
+        .unwrap();
+    let other = gov().await;
+    assert!(
+        other
+            .redeem_verified_ticket_async(identity, now)
+            .await
+            .is_none()
+    );
+    let identity = g
+        .prepare_ticket_redemption_async(PREFIX, &ticket, now)
+        .await
+        .unwrap();
+    let simultaneous = g
+        .prepare_ticket_redemption_async(PREFIX, &ticket, now)
+        .await
+        .unwrap();
+    let (left, right) = tokio::join!(
+        g.redeem_verified_ticket_async(identity, now),
+        g.redeem_verified_ticket_async(simultaneous, now),
+    );
+    let winners: Vec<_> = [left, right].into_iter().flatten().collect();
+    assert_eq!(winners.len(), 1);
+    assert_eq!(winners[0].1, b"opaque");
 
     let (ticket, _) = g
         .mint_ticket(&id, PREFIX, 600, None, b"rotated", now)
+        .await
         .unwrap();
-    let identity = g.prepare_ticket_redemption(PREFIX, &ticket, now).unwrap();
-    g.rotate_key(&id, now + 86_400).unwrap().unwrap();
-    assert!(g.redeem_verified_ticket(identity, now).is_none());
-    assert!(g.prepare_ticket_redemption(PREFIX, &ticket, now).is_none());
+    let identity = g
+        .prepare_ticket_redemption_async(PREFIX, &ticket, now)
+        .await
+        .unwrap();
+    g.rotate_key_outcome_async(&id, now + 86_400)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        g.redeem_verified_ticket_async(identity, now)
+            .await
+            .is_none()
+    );
+    assert!(
+        g.prepare_ticket_redemption_async(PREFIX, &ticket, now)
+            .await
+            .is_none()
+    );
 }
 
-#[test]
-fn prepared_identity_rejects_expired_or_tampered_credentials_and_redacts_debug() {
+#[tokio::test]
+async fn prepared_identity_rejects_expired_or_tampered_credentials_and_redacts_debug() {
     let now = crate::store::now();
-    let g = gov();
-    let (id, _) = key(&g, now + 86_400);
-    let (expired, _) = g
-        .mint_ticket(&id, PREFIX, 10, None, b"expired", now - 11)
+    let g = gov().await;
+    let (id, _) = key(&g, now + 86_400).await;
+    let (expired, exp) = g
+        .mint_ticket(&id, PREFIX, 1, None, b"expired", crate::store::now())
+        .await
         .unwrap();
-    assert!(g.prepare_ticket_redemption(PREFIX, &expired, now).is_none());
+    at_store_second(exp + 1).await;
+    assert!(
+        g.prepare_ticket_redemption_async(PREFIX, &expired, now)
+            .await
+            .is_none()
+    );
     let (ticket, _) = g
         .mint_ticket(&id, PREFIX, 600, None, b"opaque", now)
+        .await
         .unwrap();
-    let identity = g.prepare_ticket_redemption(PREFIX, &ticket, now).unwrap();
+    let identity = g
+        .prepare_ticket_redemption_async(PREFIX, &ticket, now)
+        .await
+        .unwrap();
     let debug = format!("{identity:?}");
     assert!(!debug.contains(&ticket));
     assert!(!debug.contains(identity.id()));
     assert!(!debug.contains(&identity.principal().generation_hash));
     let mut tampered = ticket;
     tampered.push('x');
-    assert!(g
-        .prepare_ticket_redemption(PREFIX, &tampered, now)
-        .is_none());
+    assert!(
+        g.prepare_ticket_redemption_async(PREFIX, &tampered, now)
+            .await
+            .is_none()
+    );
 }

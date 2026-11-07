@@ -1,361 +1,154 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::*;
-use crate::root::durability::store_chain::{
-    fold_stored_records, part_key, verify_stored_chain, JOURNAL_SCHEMA, PART_BYTES,
+//! Native journal replay replaces the retired recursive part-prefix scanner.
+//! Exercise complete bounded reads and fail-closed transport/record faults through
+//! the actual product Store, without retaining the deleted chunk layout.
+use busbar_contract::persistence::*;
+use busbar_contract::Secret;
+use busbar_kernel::persistence::journal::{BufferBudget, RuntimeJournal};
+use busbar_kernel_wal::{Entry, RecordClass};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+
+const BUDGET: BufferBudget = BufferBudget {
+    records: 512,
+    bytes: 8 * 1024 * 1024,
 };
-use busbar_contract::abi::store::OpId;
-use busbar_contract::kinds::RecordBytes;
-use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
-use busbar_contract::store_calls::StoreCall;
 
 #[derive(Clone, Copy)]
-enum ScanMode {
+enum ReadFault {
     Healthy,
-    BudgetOne,
-    FaultAndBudget,
-    MalformedAndBudget,
-    TransientCountAndBudget,
+    Overloaded,
+    Unavailable,
     Refused,
-    Failed,
+    Malformed,
+    Missing,
 }
 
-struct ScanView {
-    inner: Arc<dyn StoreCalls>,
-    mode: ScanMode,
-    active: AtomicUsize,
-    peak: AtomicUsize,
-    overloaded: AtomicUsize,
-    starts: Mutex<Vec<Vec<u8>>>,
-    count_injected: AtomicBool,
-    budget_injected: AtomicBool,
+struct ReadView {
+    actual: Arc<dyn PersistenceBackend>,
+    fault: ReadFault,
+    enabled: AtomicBool,
+    records: AtomicUsize,
 }
-struct ActiveScan<'a>(&'a AtomicUsize);
-impl Drop for ActiveScan<'_> {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
+impl PersistenceBackend for ReadView {
+    fn info(&self) -> BackendInfo {
+        self.actual.info()
     }
-}
-impl ScanView {
-    fn new(slots: &RecordSlots, mode: ScanMode) -> Self {
-        Self {
-            inner: slots.calls(),
-            mode,
-            active: AtomicUsize::new(0),
-            peak: AtomicUsize::new(0),
-            overloaded: AtomicUsize::new(0),
-            starts: Mutex::new(Vec::new()),
-            count_injected: AtomicBool::new(false),
-            budget_injected: AtomicBool::new(false),
-        }
+    fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
+        self.actual.clock(dataset)
     }
-    fn starts_for(&self, prefix: &[u8]) -> usize {
-        self.starts
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|p| p.as_slice() == prefix)
-            .count()
+    fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
+        self.actual.scan(request)
     }
-}
-impl StoreCalls for ScanView {
-    fn add_usage_batch<'a>(
-        &'a self,
-        op: OpId,
-        cells: &'a [(&'a str, u64, UsageDelta)],
-    ) -> StoreCall<'a, ()> {
-        self.inner.add_usage_batch(op, cells)
+    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+        self.actual.commit(candidate)
     }
-    fn add_metering_batch<'a>(
-        &'a self,
-        op: OpId,
-        deltas: &'a [MeteringDelta],
-    ) -> StoreCall<'a, ()> {
-        self.inner.add_metering_batch(op, deltas)
-    }
-    fn record_put<'a>(
-        &'a self,
-        schema: &'a str,
-        key: &'a [u8],
-        value: &'a RecordBytes,
-    ) -> StoreCall<'a, ()> {
-        self.inner.record_put(schema, key, value)
-    }
-    fn record_get<'a>(
-        &'a self,
-        schema: &'a str,
-        key: &'a [u8],
-    ) -> StoreCall<'a, Option<RecordBytes>> {
-        self.inner.record_get(schema, key)
-    }
-    fn record_scan<'a>(
-        &'a self,
-        schema: &'a str,
-        prefix: &'a [u8],
-        limit: u32,
-    ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
+    fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
         Box::pin(async move {
-            self.starts.lock().unwrap().push(prefix.to_vec());
-            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
-            self.peak.fetch_max(active, Ordering::SeqCst);
-            let _active = ActiveScan(&self.active);
-            if matches!(self.mode, ScanMode::BudgetOne) && active > 1 {
-                self.overloaded.fetch_add(1, Ordering::SeqCst);
-                return Err(StoreFailure::Overloaded);
-            }
-
-            let mut yielded = false;
-            std::future::poll_fn(|cx| {
-                if yielded {
-                    std::task::Poll::Ready(())
-                } else {
-                    yielded = true;
-                    cx.waker().wake_by_ref();
-                    std::task::Poll::Pending
-                }
-            })
-            .await;
-            let window = prefix.len() == 9;
-            let selector = prefix.get(8).copied();
-            if window
-                && selector == Some(2)
-                && matches!(
-                    self.mode,
-                    ScanMode::FaultAndBudget | ScanMode::MalformedAndBudget
-                )
-            {
-                self.overloaded.fetch_add(1, Ordering::SeqCst);
-                return Err(StoreFailure::Overloaded);
-            }
-            if window && selector == Some(1) {
-                match self.mode {
-                    ScanMode::FaultAndBudget => {
-                        return Err(StoreFailure::Fault("explicit page fault".into()));
-                    }
-                    ScanMode::Refused => {
-                        return Err(StoreFailure::Refused("explicit non-budget refusal".into()));
-                    }
-                    ScanMode::Failed => {
-                        return Err(StoreFailure::Failed("explicit page failure".into()));
-                    }
+            let record = self.enabled.load(Ordering::SeqCst)
+                && request
+                    .addresses
+                    .iter()
+                    .any(|at| at.key.get(24) == Some(&b'R'));
+            let inject = record && self.records.fetch_add(1, Ordering::SeqCst) == 299;
+            if inject {
+                match self.fault {
+                    ReadFault::Overloaded => return Err(Failure::Overloaded),
+                    ReadFault::Unavailable => return Err(Failure::Unavailable),
+                    ReadFault::Refused => return Err(Failure::Refused),
                     _ => {}
                 }
             }
-            let leaf_sequence =
-                (prefix.len() == 16).then(|| u64::from_be_bytes(prefix[8..16].try_into().unwrap()));
-            if matches!(self.mode, ScanMode::TransientCountAndBudget)
-                && leaf_sequence == Some(2)
-                && !self.budget_injected.swap(true, Ordering::SeqCst)
-            {
-                self.overloaded.fetch_add(1, Ordering::SeqCst);
-                return Err(StoreFailure::Overloaded);
+            let mut answer = self.actual.read(request).await?;
+            if inject {
+                if let ReadResult::Values { values, .. } = &mut answer {
+                    match self.fault {
+                        ReadFault::Malformed => values[0] = Some(Secret::new(vec![0])),
+                        ReadFault::Missing => values[0] = None,
+                        _ => {}
+                    }
+                }
             }
-            let mut rows = self.inner.record_scan(schema, prefix, limit).await?;
-            if matches!(self.mode, ScanMode::TransientCountAndBudget)
-                && leaf_sequence == Some(1)
-                && !self.count_injected.swap(true, Ordering::SeqCst)
-            {
-                let mut bytes = rows[0].1.as_slice().to_vec();
-                bytes[..2].copy_from_slice(&0u16.to_be_bytes());
-                rows[0].1 = RecordBytes::new(bytes).unwrap();
-            }
-            if window && selector == Some(1) && matches!(self.mode, ScanMode::MalformedAndBudget) {
-                rows.push((vec![0], RecordBytes::new(vec![0]).unwrap()));
-            }
-            Ok(rows)
+            Ok(answer)
         })
     }
-    fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
-        self.inner.upsert_plane_record(record)
-    }
-    fn get_plane_record<'a>(
-        &'a self,
-        kind: &'a str,
-        id: &'a str,
-    ) -> StoreCall<'a, Option<Vec<u8>>> {
-        self.inner.get_plane_record(kind, id)
-    }
-    fn append_plane_record<'a>(
-        &'a self,
-        op: OpId,
-        record: PlaneRecordRef<'a>,
-    ) -> StoreCall<'a, ()> {
-        self.inner.append_plane_record(op, record)
-    }
-    fn list_plane_records<'a>(
-        &'a self,
-        kind: &'a str,
-        selector: &'a PlaneSelector<'a>,
-    ) -> StoreCall<'a, Vec<Vec<u8>>> {
-        self.inner.list_plane_records(kind, selector)
-    }
-    fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
-        self.inner.delete_plane_record(kind, id)
-    }
-    fn redeem_plane_token<'a>(
-        &'a self,
-        kind: &'a str,
-        token: &'a str,
-        expires_at: u64,
-        now: u64,
-    ) -> StoreCall<'a, bool> {
-        self.inner.redeem_plane_token(kind, token, expires_at, now)
-    }
-    fn plane_token_live<'a>(
-        &'a self,
-        kind: &'a str,
-        token: &'a str,
-        expires_at: u64,
-        now: u64,
-    ) -> StoreCall<'a, bool> {
-        self.inner.plane_token_live(kind, token, expires_at, now)
-    }
 }
 
-fn populated() -> (RecordSlots, Vec<JournalRecord>) {
-    let slots = RecordSlots::new();
-    let mut sealed = Sealed::new();
-    for index in 0..300 {
-        let mut inputs = crate::root::durability::audit::tests::inputs(sealed.audit.next_seq());
-        inputs.wall = START + index;
-        inputs.what.destination = Some("x".repeat(8_192));
-        let audit = sealed.audit.seal(
-            inputs,
-            &busbar_kernel::teller::verb_audit_pass(&crate::root::kernel::new_kernel()),
-        );
-        sealed.append(crate::root::durability::audit_entry(&audit).unwrap());
+async fn populated(fault: ReadFault) -> (Arc<ReadView>, Arc<RuntimeJournal>) {
+    let view = Arc::new(ReadView {
+        actual: crate::root::real_store::native_backend().await,
+        fault,
+        enabled: AtomicBool::new(false),
+        records: AtomicUsize::new(0),
+    });
+    let core = crate::root::real_store::core_over(view.clone()).await;
+    let journal = RuntimeJournal::open(core, busbar_kernel::door::op_id().counter(), BUDGET)
+        .await
+        .unwrap();
+    for ordinal in 0u64..300 {
+        let mut body = ordinal.to_be_bytes().to_vec();
+        body.extend_from_slice(&vec![b'x'; 8192]);
+        let run = journal
+            .stage_run(&[Entry::new(RecordClass::Load, body)])
+            .unwrap();
+        journal.confirm(&run).await.unwrap();
     }
-    for record in &sealed.records {
-        let bytes = record.encode();
-        let chunks: Vec<_> = bytes.chunks(PART_BYTES).collect();
-        for (index, chunk) in chunks.iter().enumerate() {
-            let mut value = (chunks.len() as u16).to_be_bytes().to_vec();
-            value.extend_from_slice(chunk);
-            slots.put_row(
-                JOURNAL_SCHEMA,
-                &part_key(record.node, record.node_seq, index as u16),
-                &value,
-            );
-        }
-    }
-    let lower_prefix = part_key(NODE, 1, 0)[..15].to_vec();
-    for prefix in [NODE.to_be_bytes().to_vec(), lower_prefix] {
-        assert_eq!(
-            wait_for(slots.record_scan(JOURNAL_SCHEMA, &prefix, 4096))
-                .unwrap()
-                .len(),
-            4096,
-            "the opened Store behind RecordSlots must saturate the probe above the targeted window"
-        );
-    }
-    (slots, sealed.records)
+    view.enabled.store(true, Ordering::SeqCst);
+    (view, journal)
 }
 
-#[test]
-fn prefetched_pages_overlap_within_the_bound_and_preserve_nested_prefix_lexical_records() {
-    let (slots, expected) = populated();
-    let view = ScanView::new(&slots, ScanMode::Healthy);
-    let mut observed = Vec::new();
-    fold_stored_records(&view, NODE, NODE.to_be_bytes().to_vec(), |record| {
-        observed.push(record);
-        Ok(())
-    })
-    .unwrap();
-    assert!(
-        view.peak.load(Ordering::SeqCst) > 4,
-        "the one-poll boundary exercises overlap beyond the prior four-page window"
-    );
-    assert!(view.peak.load(Ordering::SeqCst) <= 16);
-    assert_eq!(view.active.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        observed,
-        expected.iter().map(raw).collect::<Vec<_>>(),
-        "nested saturated prefixes must yield each sealed record once, in key order"
-    );
-}
-
-#[test]
-fn typed_low_read_budget_retries_fresh_serial_before_visiting_window_records() {
-    let (slots, expected) = populated();
-    let view = ScanView::new(&slots, ScanMode::BudgetOne);
-    let mut observed = Vec::new();
-    fold_stored_records(&view, NODE, NODE.to_be_bytes().to_vec(), |record| {
-        assert_eq!(
-            view.active.load(Ordering::SeqCst),
-            0,
-            "the prefetch window is drained before its serial retry reaches a visitor"
-        );
-        observed.push(record);
-        Ok(())
-    })
-    .unwrap();
-    assert!(view.overloaded.load(Ordering::SeqCst) > 0);
-    let first_child = [NODE.to_be_bytes().as_slice(), &[0]].concat();
-    let refused_child = [NODE.to_be_bytes().as_slice(), &[1]].concat();
-    assert_eq!(
-        view.starts_for(&first_child),
-        1,
-        "the successful answer is retained rather than replaced during budget fallback"
-    );
-    assert!(
-        view.starts_for(&refused_child) >= 2,
-        "only the typed-overloaded prefix is retried fresh and serially"
-    );
-    assert_eq!(observed, expected.iter().map(raw).collect::<Vec<_>>());
-}
-
-#[test]
-fn faults_malformed_pages_and_nonbudget_refusals_cannot_hide_behind_budget_fallback() {
-    let (slots, _) = populated();
-    for mode in [
-        ScanMode::FaultAndBudget,
-        ScanMode::MalformedAndBudget,
-        ScanMode::Refused,
-        ScanMode::Failed,
+#[tokio::test]
+async fn native_bounded_replay_preserves_every_original_in_order() {
+    let (view, journal) = populated(ReadFault::Healthy).await;
+    let records = journal.read_records(BUDGET).await.unwrap();
+    assert_eq!(records.len(), 300);
+    assert_eq!(view.records.load(Ordering::SeqCst), 300);
+    for (ordinal, record) in records.iter().enumerate() {
+        assert_eq!(record.node_seq, ordinal as u64 + 1);
+        assert_eq!(&record.body[..8], &(ordinal as u64).to_be_bytes());
+        assert_eq!(record.body.len(), 8200);
+    }
+    busbar_kernel_wal::verify_journal(&records).unwrap();
+    for budget in [
+        BufferBudget {
+            records: 299,
+            ..BUDGET
+        },
+        BufferBudget {
+            bytes: 8199,
+            ..BUDGET
+        },
     ] {
-        let view = ScanView::new(&slots, mode);
-        let result = fold_stored_records(&view, NODE, NODE.to_be_bytes().to_vec(), |_| Ok(()));
-        assert!(result.is_err());
-        let first_child = [NODE.to_be_bytes().as_slice(), &[0]].concat();
-        assert_eq!(
-            view.starts_for(&first_child),
-            1,
-            "a faulty window cannot be relabeled as budget-only and restarted"
+        assert!(
+            journal.read_records(budget).await.is_err(),
+            "bounded replay cannot publish a partial history as complete"
         );
-        if matches!(
-            mode,
-            ScanMode::FaultAndBudget | ScanMode::MalformedAndBudget
-        ) {
-            assert!(
-                view.overloaded.load(Ordering::SeqCst) > 0,
-                "the same window also reports the typed concurrency refusal"
-            );
-        }
-        assert_eq!(view.active.load(Ordering::SeqCst), 0);
     }
-
-    let view = ScanView::new(&slots, ScanMode::TransientCountAndBudget);
-    let prefix = part_key(NODE, 1, 0)[..15].to_vec();
-    assert!(
-        fold_stored_records(&view, NODE, prefix, |_| Ok(())).is_err(),
-        "retrying an overloaded peer must not replace and hide the successful page's invalid part count"
-    );
-    assert!(view.overloaded.load(Ordering::SeqCst) > 0);
-    assert_eq!(view.starts_for(&part_key(NODE, 1, 0)[..16]), 1);
 }
 
-#[test]
-fn prefetched_full_chain_verification_still_checks_the_last_sealed_record() {
-    let (slots, expected) = populated();
-    let view = ScanView::new(&slots, ScanMode::Healthy);
-    verify_stored_chain(&view, NODE).unwrap();
-    let tail = expected.last().unwrap();
-    slots.corrupt(JOURNAL_SCHEMA, &part_key(NODE, tail.node_seq, 0));
-    assert!(
-        verify_stored_chain(&view, NODE).is_err(),
-        "a previously valid scan cannot hide later tail corruption"
-    );
+#[tokio::test]
+async fn native_tail_faults_and_missing_or_malformed_originals_never_publish_a_partial_history() {
+    for fault in [
+        ReadFault::Overloaded,
+        ReadFault::Unavailable,
+        ReadFault::Refused,
+        ReadFault::Malformed,
+        ReadFault::Missing,
+    ] {
+        let (view, journal) = populated(fault).await;
+        assert!(journal.read_records(BUDGET).await.is_err());
+        assert_eq!(
+            view.records.load(Ordering::SeqCst),
+            300,
+            "the last selected original is verified"
+        );
+        // A fresh complete read may recover; it does not reuse a failed prefix.
+        let fresh = journal.read_records(BUDGET).await.unwrap();
+        assert_eq!(fresh.len(), 300);
+        busbar_kernel_wal::verify_journal(&fresh).unwrap();
+    }
 }
 
 #[path = "store_scan_race.rs"]

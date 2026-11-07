@@ -90,7 +90,7 @@ async fn build_without_group_removes_leaf() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -100,23 +100,31 @@ async fn build_without_group_removes_leaf() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds the node book and rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
-    let calls = app.governance.as_ref().unwrap().store_calls().unwrap();
-    let backend = busbar_kernel::config::overlay::OverlayStore::new(calls.clone()).unwrap();
-    busbar_kernel::config::overlay::persist_groups(
+    let calls = app
+        .governance
+        .as_ref()
+        .unwrap()
+        .core_store_handle()
+        .unwrap();
+    let backend = busbar_kernel::config::overlay::OverlayStore::from_core(calls.clone()).unwrap();
+    busbar_kernel::config::overlay::persist_groups_async(
         Some(&backend),
         &app.groups_registry,
         None,
         None,
         &app.base_group_names,
     )
+    .await
     .unwrap();
     app.overlay_path = Some(backend);
     let (router, handle) =
@@ -209,7 +217,7 @@ async fn build_without_group_conflict_when_still_a_parent() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -219,23 +227,31 @@ async fn build_without_group_conflict_when_still_a_parent() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds the node book and rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
-    let calls = app.governance.as_ref().unwrap().store_calls().unwrap();
-    let backend = busbar_kernel::config::overlay::OverlayStore::new(calls.clone()).unwrap();
-    busbar_kernel::config::overlay::persist_groups(
+    let calls = app
+        .governance
+        .as_ref()
+        .unwrap()
+        .core_store_handle()
+        .unwrap();
+    let backend = busbar_kernel::config::overlay::OverlayStore::from_core(calls.clone()).unwrap();
+    busbar_kernel::config::overlay::persist_groups_async(
         Some(&backend),
         &app.groups_registry,
         None,
         None,
         &app.base_group_names,
     )
+    .await
     .unwrap();
     app.overlay_path = Some(backend);
     let (router, handle) =
@@ -325,7 +341,7 @@ async fn build_without_group_not_found() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -335,23 +351,31 @@ async fn build_without_group_not_found() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds the node book and rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
-    let calls = app.governance.as_ref().unwrap().store_calls().unwrap();
-    let backend = busbar_kernel::config::overlay::OverlayStore::new(calls.clone()).unwrap();
-    busbar_kernel::config::overlay::persist_groups(
+    let calls = app
+        .governance
+        .as_ref()
+        .unwrap()
+        .core_store_handle()
+        .unwrap();
+    let backend = busbar_kernel::config::overlay::OverlayStore::from_core(calls.clone()).unwrap();
+    busbar_kernel::config::overlay::persist_groups_async(
         Some(&backend),
         &app.groups_registry,
         None,
         None,
         &app.base_group_names,
     )
+    .await
     .unwrap();
     app.overlay_path = Some(backend);
     let (router, handle) =
@@ -444,7 +468,7 @@ async fn build_without_group_conflict_when_keys_still_bound() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -454,26 +478,35 @@ async fn build_without_group_conflict_when_keys_still_bound() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds the node book and rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
-    let calls = app.governance.as_ref().unwrap().store_calls().unwrap();
-    let backend = busbar_kernel::config::overlay::OverlayStore::new(calls.clone()).unwrap();
-    busbar_kernel::config::overlay::persist_groups(
+    let calls = app
+        .governance
+        .as_ref()
+        .unwrap()
+        .core_store_handle()
+        .unwrap();
+    let backend = busbar_kernel::config::overlay::OverlayStore::from_core(calls.clone()).unwrap();
+    busbar_kernel::config::overlay::persist_groups_async(
         Some(&backend),
         &app.groups_registry,
         None,
         None,
         &app.base_group_names,
     )
+    .await
     .unwrap();
     app.overlay_path = Some(backend);
     calls
+        .identity()
         .put_key(&busbar_contract::records::VirtualKey {
             id: "vk_bound".into(),
             generation_hash: "h:vk_bound".into(),
@@ -489,7 +522,8 @@ async fn build_without_group_conflict_when_keys_still_bound() {
         .governance
         .as_ref()
         .unwrap()
-        .all_keys()
+        .all_keys_async()
+        .await
         .unwrap()
         .into_iter()
         .filter(|key| key.group.as_deref() == Some("team"))

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 use axum::http::StatusCode;
-use busbar_contract::abi::store::OpId;
-use busbar_contract::kinds::RecordBytes;
-use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
-use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
+use busbar_contract::persistence::{
+    Address, BackendInfo, Call, ClockObservation, DatasetId, Decision, Failure, Mutation, Page,
+    PersistenceBackend, PreparedCandidate, Read, ReadResult, Scan,
+};
 use busbar_kernel::config::overlay::OverlayStore;
-use busbar_kernel::config::overlay::{persist_root, RootSettings};
+use busbar_kernel::config::overlay::{persist_root_async, RootSettings};
+use busbar_kernel::persistence::facade::CoreStore;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,9 +26,10 @@ async fn reload(addr: std::net::SocketAddr) -> reqwest::Response {
         .await
         .unwrap()
 }
-fn stored_fee(backend: &OverlayStore) -> Option<i64> {
+async fn stored_fee(backend: &OverlayStore) -> Option<i64> {
     backend
-        .read_required()
+        .read_required_async()
+        .await
         .unwrap()
         .and_then(|doc| doc.root)
         .and_then(|root| root.per_request_fee)
@@ -125,7 +127,7 @@ async fn an_absent_card_and_unchanged_prices_allow_a_successful_settings_handler
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -135,10 +137,11 @@ async fn an_absent_card_and_unchanged_prices_allow_a_successful_settings_handler
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let dir = directory.clone();
     let config_path = dir.join("config.yaml");
@@ -151,17 +154,21 @@ async fn an_absent_card_and_unchanged_prices_allow_a_successful_settings_handler
         .governance
         .as_ref()
         .unwrap()
-        .store_calls()
+        .core_store_handle()
         .expect("actual Store calls");
-    crate::root::kernel::ROOT_CARD.keep_in_store(calls.clone(), 103);
+    crate::root::kernel::ROOT_CARD
+        .keep_in_store(calls.clone(), 103)
+        .expect("actual rate history binds once");
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("actual rate history boots");
     limits
         .keep()
+        .await
         .expect("the booted actual rates and limits commit");
-    let overlay =
-        busbar_kernel::config::overlay::OverlayStore::new(calls).expect("actual Store overlay");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(calls)
+        .expect("actual Store overlay");
     app.overlay_path = Some(overlay.clone());
     let (_data, admin, handle) =
         busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
@@ -171,7 +178,7 @@ async fn an_absent_card_and_unchanged_prices_allow_a_successful_settings_handler
     let before = handle.load();
     assert_eq!(put(addr, BASE_FEE).await.status(), StatusCode::OK);
     assert!(!Arc::ptr_eq(&handle.load(), &before));
-    assert_eq!(stored_fee(&overlay), Some(BASE_FEE));
+    assert_eq!(stored_fee(&overlay).await, Some(BASE_FEE));
     assert_eq!(
         busbar_kernel::config::limits::installed().map(|limits| limits.request_body_max_bytes),
         Some(CANDIDATE_BODY_CAP)
@@ -309,7 +316,7 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (mut app, rotate, limits) = crate::root::real_store::build_app(
             config,
             plugin_config,
             None,
@@ -319,10 +326,11 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
             None,
             &rules,
         )
+        .await
         .expect("the actual product builds the swap deployment");
         limits.stage_boot();
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         let dir = directory.clone();
         let config_path = dir.join("config.yaml");
@@ -331,39 +339,35 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
         std::fs::write(&providers_path, "{}\n").unwrap();
         app.config_path = Some(config_path.clone());
         app.providers_path = Some(providers_path);
-        let calls = app
-            .governance
-            .as_ref()
-            .unwrap()
-            .store_calls()
-            .expect("actual Store calls");
-        let price_faults = PriceStoreFaults::new(calls.clone(), false);
-        crate::root::kernel::ROOT_CARD.keep_in_store(price_faults.clone(), 103);
+
+        let price_faults = PriceStoreFaults::new(false).await;
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(price_faults.core(), 103)
+            .expect("actual rate history binds once");
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("actual rate history boots");
         limits
             .keep()
+            .await
             .expect("the booted actual rates and limits commit");
         let book = crate::root::kernel::ROOT_CARD
             .card_store()
             .expect("actual loaded card history")
             .clone();
-        let opening = book
+        let _opening = book
             .entries()
             .into_iter()
             .find(|entry| entry.card.per_request_fee == BASE_FEE)
             .expect("actual opening card");
-        let candidate_tag =
-            opening.records().unwrap()[0].0[busbar_kernel_ledger::cost::ENTRY_KEY_LEN];
-        let activation_tag = crate::root::card_store::Activation { effective_from: 0 }
-            .records(&opening)
-            .unwrap()[0]
-            .0[busbar_kernel_ledger::cost::ENTRY_KEY_LEN];
+        let candidate_tag = b'E';
+        let activation_tag = b'S';
         price_faults.writes.lock().unwrap().clear();
-        let overlay_faults = PriceStoreFaults::new(calls, true);
-        let overlay = busbar_kernel::config::overlay::OverlayStore::new(overlay_faults.clone())
-            .expect("actual Store overlay");
+        let overlay_faults = PriceStoreFaults::new(true).await;
+        let overlay =
+            busbar_kernel::config::overlay::OverlayStore::from_core(overlay_faults.core())
+                .expect("actual Store overlay");
         app.overlay_path = Some(overlay.clone());
         let (_data, admin, handle) =
             busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
@@ -395,7 +399,7 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
                 .map(|limits| limits.request_body_max_bytes)
         );
         assert_eq!(
-            stored_fee(&overlay),
+            stored_fee(&overlay).await,
             Some(fee),
             "config and prices can use different Stores"
         );
@@ -412,7 +416,9 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
             "retries retain the immutable actual key/body"
         );
 
-        assert!(persist_root(Some(&overlay), &RootSettings::default()).is_err());
+        assert!(persist_root_async(Some(&overlay), &RootSettings::default())
+            .await
+            .is_err());
         assert_eq!(put(addr, fee).await.status(), StatusCode::BAD_REQUEST);
         let applied = reqwest::Client::new()
             .post(format!("http://{addr}/api/v1/admin/config/apply"))
@@ -464,11 +470,7 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
         assert_eq!(confirmed[0].0, submitted[0].0);
         assert_eq!(confirmed[0].1, submitted[0].1);
         assert_eq!(
-            price_faults
-                .inner
-                .record_get(crate::root::card_store::CARD_SCHEMA, &submitted[0].0)
-                .await
-                .unwrap(),
+            price_faults.read_value(&submitted[0].0).await,
             Some(submitted[0].1.clone())
         );
         let entries = book.entries();
@@ -494,7 +496,9 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
                 busbar_kernel::auth::AuthPrincipal(None).actor_id()
             )
         );
-        assert!(persist_root(Some(&overlay), &RootSettings::default()).is_err());
+        assert!(persist_root_async(Some(&overlay), &RootSettings::default())
+            .await
+            .is_err());
 
         price_faults
             .refuse_all_card_writes
@@ -623,7 +627,7 @@ async fn config_refusal_or_unknown_reply_never_attempts_price_activation() {
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (mut app, rotate, limits) = crate::root::real_store::build_app(
             config,
             plugin_config,
             None,
@@ -633,10 +637,11 @@ async fn config_refusal_or_unknown_reply_never_attempts_price_activation() {
             None,
             &rules,
         )
+        .await
         .expect("the actual product builds the swap deployment");
         limits.stage_boot();
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         let dir = directory.clone();
         let config_path = dir.join("config.yaml");
@@ -645,39 +650,35 @@ async fn config_refusal_or_unknown_reply_never_attempts_price_activation() {
         std::fs::write(&providers_path, "{}\n").unwrap();
         app.config_path = Some(config_path.clone());
         app.providers_path = Some(providers_path);
-        let calls = app
-            .governance
-            .as_ref()
-            .unwrap()
-            .store_calls()
-            .expect("actual Store calls");
-        let price_faults = PriceStoreFaults::new(calls.clone(), false);
-        crate::root::kernel::ROOT_CARD.keep_in_store(price_faults.clone(), 103);
+
+        let price_faults = PriceStoreFaults::new(false).await;
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(price_faults.core(), 103)
+            .expect("actual rate history binds once");
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("actual rate history boots");
         limits
             .keep()
+            .await
             .expect("the booted actual rates and limits commit");
         let book = crate::root::kernel::ROOT_CARD
             .card_store()
             .expect("actual loaded card history")
             .clone();
-        let opening = book
+        let _opening = book
             .entries()
             .into_iter()
             .find(|entry| entry.card.per_request_fee == BASE_FEE)
             .expect("actual opening card");
-        let candidate_tag =
-            opening.records().unwrap()[0].0[busbar_kernel_ledger::cost::ENTRY_KEY_LEN];
-        let activation_tag = crate::root::card_store::Activation { effective_from: 0 }
-            .records(&opening)
-            .unwrap()[0]
-            .0[busbar_kernel_ledger::cost::ENTRY_KEY_LEN];
+        let candidate_tag = b'E';
+        let activation_tag = b'S';
         price_faults.writes.lock().unwrap().clear();
-        let overlay_faults = PriceStoreFaults::new(calls, true);
-        let overlay = busbar_kernel::config::overlay::OverlayStore::new(overlay_faults.clone())
-            .expect("actual Store overlay");
+        let overlay_faults = PriceStoreFaults::new(true).await;
+        let overlay =
+            busbar_kernel::config::overlay::OverlayStore::from_core(overlay_faults.core())
+                .expect("actual Store overlay");
         app.overlay_path = Some(overlay.clone());
         let (_data, admin, handle) =
             busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
@@ -804,7 +805,7 @@ async fn pending_activation_and_canceled_handler_keep_the_old_generation_until_c
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -814,10 +815,11 @@ async fn pending_activation_and_canceled_handler_keep_the_old_generation_until_c
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let dir = directory.clone();
     let config_path = dir.join("config.yaml");
@@ -826,37 +828,33 @@ async fn pending_activation_and_canceled_handler_keep_the_old_generation_until_c
     std::fs::write(&providers_path, "{}\n").unwrap();
     app.config_path = Some(config_path.clone());
     app.providers_path = Some(providers_path);
-    let calls = app
-        .governance
-        .as_ref()
-        .unwrap()
-        .store_calls()
-        .expect("actual Store calls");
-    let price_faults = PriceStoreFaults::new(calls.clone(), false);
-    crate::root::kernel::ROOT_CARD.keep_in_store(price_faults.clone(), 103);
+
+    let price_faults = PriceStoreFaults::new(false).await;
+    crate::root::kernel::ROOT_CARD
+        .keep_in_store(price_faults.core(), 103)
+        .expect("actual rate history binds once");
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("actual rate history boots");
     limits
         .keep()
+        .await
         .expect("the booted actual rates and limits commit");
     let book = crate::root::kernel::ROOT_CARD
         .card_store()
         .expect("actual loaded card history")
         .clone();
-    let opening = book
+    let _opening = book
         .entries()
         .into_iter()
         .find(|entry| entry.card.per_request_fee == BASE_FEE)
         .expect("actual opening card");
-    let _candidate_tag = opening.records().unwrap()[0].0[busbar_kernel_ledger::cost::ENTRY_KEY_LEN];
-    let activation_tag = crate::root::card_store::Activation { effective_from: 0 }
-        .records(&opening)
-        .unwrap()[0]
-        .0[busbar_kernel_ledger::cost::ENTRY_KEY_LEN];
+    let _candidate_tag = b'E';
+    let activation_tag = b'S';
     price_faults.writes.lock().unwrap().clear();
-    let overlay_faults = PriceStoreFaults::new(calls, true);
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(overlay_faults.clone())
+    let overlay_faults = PriceStoreFaults::new(true).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(overlay_faults.core())
         .expect("actual Store overlay");
     app.overlay_path = Some(overlay.clone());
     let (_data, admin, handle) =
@@ -1044,7 +1042,7 @@ async fn callback_panics_preserve_one_coherent_published_price_generation() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -1054,10 +1052,11 @@ async fn callback_panics_preserve_one_coherent_published_price_generation() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let dir = directory.clone();
     let config_path = dir.join("config.yaml");
@@ -1066,37 +1065,33 @@ async fn callback_panics_preserve_one_coherent_published_price_generation() {
     std::fs::write(&providers_path, "{}\n").unwrap();
     app.config_path = Some(config_path.clone());
     app.providers_path = Some(providers_path);
-    let calls = app
-        .governance
-        .as_ref()
-        .unwrap()
-        .store_calls()
-        .expect("actual Store calls");
-    let price_faults = PriceStoreFaults::new(calls.clone(), false);
-    crate::root::kernel::ROOT_CARD.keep_in_store(price_faults.clone(), 103);
+
+    let price_faults = PriceStoreFaults::new(false).await;
+    crate::root::kernel::ROOT_CARD
+        .keep_in_store(price_faults.core(), 103)
+        .expect("actual rate history binds once");
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("actual rate history boots");
     limits
         .keep()
+        .await
         .expect("the booted actual rates and limits commit");
     let book = crate::root::kernel::ROOT_CARD
         .card_store()
         .expect("actual loaded card history")
         .clone();
-    let opening = book
+    let _opening = book
         .entries()
         .into_iter()
         .find(|entry| entry.card.per_request_fee == BASE_FEE)
         .expect("actual opening card");
-    let candidate_tag = opening.records().unwrap()[0].0[busbar_kernel_ledger::cost::ENTRY_KEY_LEN];
-    let _activation_tag = crate::root::card_store::Activation { effective_from: 0 }
-        .records(&opening)
-        .unwrap()[0]
-        .0[busbar_kernel_ledger::cost::ENTRY_KEY_LEN];
+    let candidate_tag = b'E';
+    let _activation_tag = b'S';
     price_faults.writes.lock().unwrap().clear();
-    let overlay_faults = PriceStoreFaults::new(calls, true);
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(overlay_faults.clone())
+    let overlay_faults = PriceStoreFaults::new(true).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(overlay_faults.core())
         .expect("actual Store overlay");
     app.overlay_path = Some(overlay.clone());
     let (_data, admin, handle) =
@@ -1128,7 +1123,9 @@ async fn callback_panics_preserve_one_coherent_published_price_generation() {
                 .map(|limits| limits.request_body_max_bytes)
         );
         assert!(price_faults.attempts(candidate_tag).is_empty());
-        assert!(persist_root(Some(&overlay), &RootSettings::default()).is_err());
+        assert!(persist_root_async(Some(&overlay), &RootSettings::default())
+            .await
+            .is_err());
         overlay_faults.mode.store(0, Ordering::SeqCst);
         assert_eq!(reload(addr).await.status(), StatusCode::OK);
         assert_eq!(
@@ -1166,7 +1163,7 @@ async fn callback_panics_preserve_one_coherent_published_price_generation() {
                 epoch: 1
             }
         );
-        assert_eq!(stored_fee(&overlay), Some(POST_PUBLICATION_PANIC_FEE));
+        assert_eq!(stored_fee(&overlay).await, Some(POST_PUBLICATION_PANIC_FEE));
         assert_eq!(
             put(addr, POST_PUBLICATION_PANIC_FEE).await.status(),
             StatusCode::OK
@@ -1224,20 +1221,22 @@ impl Pause {
 }
 
 struct PriceStoreFaults {
-    inner: Arc<dyn StoreCalls>,
+    inner: Arc<dyn PersistenceBackend>,
+    core: std::sync::Mutex<Option<Arc<CoreStore>>>,
     overlay: bool,
     tag: AtomicU8,
     mode: AtomicU8,
     lost: AtomicBool,
     paused: AtomicBool,
     refuse_all_card_writes: AtomicBool,
-    writes: std::sync::Mutex<Vec<(Vec<u8>, RecordBytes)>>,
+    writes: std::sync::Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
     pause: Arc<Pause>,
 }
 impl PriceStoreFaults {
-    fn new(inner: Arc<dyn StoreCalls>, overlay: bool) -> Arc<Self> {
-        Arc::new(Self {
-            inner,
+    async fn new(overlay: bool) -> Arc<Self> {
+        let backend = Arc::new(Self {
+            inner: crate::root::real_store::native_backend().await,
+            core: Default::default(),
             overlay,
             tag: AtomicU8::new(0),
             mode: AtomicU8::new(0),
@@ -1246,256 +1245,115 @@ impl PriceStoreFaults {
             refuse_all_card_writes: AtomicBool::new(false),
             writes: Default::default(),
             pause: Arc::new(Pause::default()),
-        })
+        });
+        let core = crate::root::real_store::core_over(backend.clone()).await;
+        *backend.core.lock().unwrap() = Some(core);
+        backend
     }
-    fn card_target(&self, schema: &str, key: &[u8]) -> bool {
+    fn core(&self) -> Arc<CoreStore> {
+        self.core
+            .lock()
+            .unwrap()
+            .take()
+            .expect("fixture core handed to its semantic owner once")
+    }
+    fn card_target(&self, address: &Address) -> bool {
         !self.overlay
-            && schema == crate::root::card_store::CARD_SCHEMA
-            && key.get(busbar_kernel_ledger::cost::ENTRY_KEY_LEN)
-                == Some(&self.tag.load(Ordering::SeqCst))
+            && address.namespace == busbar_kernel::governance::persistence::prices::PRICES.0
+            && address.key.first() == Some(&self.tag.load(Ordering::SeqCst))
     }
-    fn attempts(&self, tag: u8) -> Vec<(Vec<u8>, RecordBytes)> {
+    fn attempts(&self, tag: u8) -> Vec<(Vec<u8>, Vec<u8>)> {
         self.writes
             .lock()
             .unwrap()
             .iter()
-            .filter(|(key, _)| key.get(busbar_kernel_ledger::cost::ENTRY_KEY_LEN) == Some(&tag))
+            .filter(|(key, _)| key.first() == Some(&tag))
             .cloned()
             .collect()
     }
+    async fn read_value(&self, key: &[u8]) -> Option<Vec<u8>> {
+        let request = Arc::new(Read {
+            dataset: self.inner.info().dataset,
+            addresses: vec![Address {
+                namespace: busbar_kernel::governance::persistence::prices::PRICES.0,
+                key: key.to_vec(),
+            }],
+            time: None,
+        });
+        let ReadResult::Values { mut values, .. } = self.inner.read(request).await.unwrap() else {
+            panic!("unconditioned native read")
+        };
+        values
+            .remove(0)
+            .map(|value| value.expose(&busbar_kernel::seal::lend()).clone())
+    }
 }
-impl StoreCalls for PriceStoreFaults {
-    fn supports_usage_correction(&self) -> bool {
-        self.inner.supports_usage_correction()
+impl PersistenceBackend for PriceStoreFaults {
+    fn info(&self) -> BackendInfo {
+        self.inner.info()
     }
-    fn apply_usage_correction<'a>(
-        &'a self,
-        request: &'a busbar_contract::records::correction::Request,
-    ) -> StoreCall<'a, busbar_contract::records::correction::Decision> {
-        self.inner.apply_usage_correction(request)
+    fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
+        self.inner.clock(dataset)
     }
-    fn supports_record_transaction(&self) -> bool {
-        self.inner.supports_record_transaction()
+    fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
+        self.inner.scan(request)
     }
-    fn record_transaction<'a>(
-        &'a self,
-        request: &'a busbar_contract::abi::sdk::store::conditional::Request,
-    ) -> StoreCall<'a, busbar_contract::abi::sdk::store::conditional::Decision> {
-        let mode = self.mode.load(Ordering::SeqCst);
-        if self.overlay && mode == 1 {
-            return Box::pin(async {
-                Err(StoreFailure::Refused(
-                    "precise actual overlay transaction refusal".into(),
-                ))
-            });
-        }
-        let lose = self.overlay && mode == 2 && !self.lost.swap(true, Ordering::SeqCst);
-        let panic_after = self.overlay && mode == 4 && !self.lost.swap(true, Ordering::SeqCst);
+    fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
         Box::pin(async move {
-            let result = self.inner.record_transaction(request).await;
-            assert!(
-                !(panic_after && result.is_ok()),
-                "injected pre-publication actual Store completion callback panic"
-            );
-            if lose && result.is_ok() {
-                Err(StoreFailure::Failed(
-                    "lost actual overlay commit reply".into(),
-                ))
-            } else {
-                result
+            if !self.overlay
+                && self.mode.load(Ordering::SeqCst) == 2
+                && self.lost.load(Ordering::SeqCst)
+                && request
+                    .addresses
+                    .iter()
+                    .any(|address| self.card_target(address))
+            {
+                return Err(Failure::Unavailable);
             }
+            self.inner.read(request).await
         })
     }
-    fn add_usage_batch<'a>(
-        &'a self,
-        op: OpId,
-        cells: &'a [(&'a str, u64, UsageDelta)],
-    ) -> StoreCall<'a, ()> {
-        self.inner.add_usage_batch(op, cells)
-    }
-    fn add_metering_batch<'a>(
-        &'a self,
-        op: OpId,
-        deltas: &'a [MeteringDelta],
-    ) -> StoreCall<'a, ()> {
-        self.inner.add_metering_batch(op, deltas)
-    }
-    fn record_put<'a>(
-        &'a self,
-        schema: &'a str,
-        key: &'a [u8],
-        value: &'a RecordBytes,
-    ) -> StoreCall<'a, ()> {
-        let card = schema == crate::root::card_store::CARD_SCHEMA;
-        if card {
-            self.writes
-                .lock()
-                .unwrap()
-                .push((key.to_vec(), value.clone()));
-        }
-        let selected = self.card_target(schema, key);
-        let overlay = self.overlay && schema == "busbar.config.overlay.v1";
-        let mode = self.mode.load(Ordering::SeqCst);
-        if (card && self.refuse_all_card_writes.load(Ordering::SeqCst))
-            || ((selected || overlay) && mode == 1)
-        {
-            return Box::pin(async {
-                Err(StoreFailure::Refused(
-                    "precise actual Store write refusal".into(),
-                ))
-            });
-        }
-        let lose = selected && mode == 2 && !self.lost.swap(true, Ordering::SeqCst);
-        let pause = selected && mode == 3 && !self.paused.swap(true, Ordering::SeqCst);
+    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
         Box::pin(async move {
-            let result = self.inner.record_put(schema, key, value).await;
+            let price = candidate.candidate().mutations.iter().any(|m| matches!(m, Mutation::Put {address,..} if address.namespace == busbar_kernel::governance::persistence::prices::PRICES.0));
+            let preparation = candidate.candidate().mutations.iter().any(|m| matches!(m, Mutation::Put {address,..} if address.namespace == busbar_kernel::governance::persistence::prices::PRICES.0 && address.key.first() == Some(&b'E')));
+            let selected = candidate.candidate().mutations.iter().any(|m| matches!(m, Mutation::Put {address,..} if self.card_target(address) && (self.tag.load(Ordering::SeqCst) != b'S' || !preparation)));
+            for mutation in &candidate.candidate().mutations {
+                if let Mutation::Put { address, value } = mutation {
+                    if address.namespace == busbar_kernel::governance::persistence::prices::PRICES.0
+                        && ((preparation && address.key.first() == Some(&b'E'))
+                            || (!preparation && address.key.first() == Some(&b'S')))
+                    {
+                        self.writes.lock().unwrap().push((
+                            address.key.clone(),
+                            value.expose(&busbar_kernel::seal::lend()).clone(),
+                        ));
+                    }
+                }
+            }
+            let mode = self.mode.load(Ordering::SeqCst);
+            if (price && self.refuse_all_card_writes.load(Ordering::SeqCst))
+                || ((selected || self.overlay) && mode == 1)
+            {
+                return Err(Failure::Refused);
+            }
+            let lose =
+                (selected || self.overlay) && mode == 2 && !self.lost.swap(true, Ordering::SeqCst);
+            let pause = selected && mode == 3 && !self.paused.swap(true, Ordering::SeqCst);
+            let panic_after = self.overlay && mode == 4 && !self.lost.swap(true, Ordering::SeqCst);
+            let result = self.inner.commit(candidate).await;
             if pause {
                 self.pause.wait().await;
             }
+            assert!(
+                !(panic_after && result.is_ok()),
+                "injected pre-publication actual native completion callback panic"
+            );
             if lose && result.is_ok() {
-                Err(StoreFailure::Failed(
-                    "lost actual immutable card commit reply".into(),
-                ))
+                Err(Failure::Unknown)
             } else {
                 result
             }
         })
-    }
-    fn record_get<'a>(
-        &'a self,
-        schema: &'a str,
-        key: &'a [u8],
-    ) -> StoreCall<'a, Option<RecordBytes>> {
-        if self.card_target(schema, key)
-            && self.mode.load(Ordering::SeqCst) == 2
-            && self.lost.load(Ordering::SeqCst)
-        {
-            return Box::pin(async {
-                Err(StoreFailure::Failed(
-                    "actual card commit reply remains unavailable".into(),
-                ))
-            });
-        }
-        self.inner.record_get(schema, key)
-    }
-    fn record_scan<'a>(
-        &'a self,
-        schema: &'a str,
-        prefix: &'a [u8],
-        limit: u32,
-    ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
-        self.inner.record_scan(schema, prefix, limit)
-    }
-    fn put_key<'a>(&'a self, key: &'a busbar_contract::records::VirtualKey) -> StoreCall<'a, ()> {
-        self.inner.put_key(key)
-    }
-    fn get_key<'a>(
-        &'a self,
-        id: &'a str,
-    ) -> StoreCall<'a, Option<busbar_contract::records::VirtualKey>> {
-        self.inner.get_key(id)
-    }
-    fn list_keys(&self) -> StoreCall<'_, Vec<busbar_contract::records::VirtualKey>> {
-        self.inner.list_keys()
-    }
-    fn delete_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, ()> {
-        self.inner.delete_key(id)
-    }
-    fn put_key_with_credential<'a>(
-        &'a self,
-        key: &'a busbar_contract::records::VirtualKey,
-        secret: &'a busbar_contract::records::CredentialSecret,
-    ) -> StoreCall<'a, ()> {
-        self.inner.put_key_with_credential(key, secret)
-    }
-    fn list_credentials<'a>(
-        &'a self,
-        key_id: &'a str,
-    ) -> StoreCall<'a, Vec<busbar_contract::records::CredentialMeta>> {
-        self.inner.list_credentials(key_id)
-    }
-    fn revoke_credential<'a>(&'a self, id: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
-        self.inner.revoke_credential(id, reason)
-    }
-    fn list_credentials_since(
-        &self,
-        since: u64,
-    ) -> StoreCall<'_, Vec<busbar_contract::records::CredentialSecret>> {
-        self.inner.list_credentials_since(since)
-    }
-    fn add_denylist<'a>(&'a self, sub: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
-        self.inner.add_denylist(sub, reason)
-    }
-    fn list_denylist(&self) -> StoreCall<'_, Vec<String>> {
-        self.inner.list_denylist()
-    }
-    fn list_metering(
-        &self,
-        bucket: u64,
-    ) -> StoreCall<'_, Vec<busbar_contract::records::MeteringRow>> {
-        self.inner.list_metering(bucket)
-    }
-    fn list_audit(&self) -> StoreCall<'_, Vec<busbar_contract::records::AuditRecord>> {
-        self.inner.list_audit()
-    }
-    fn list_audit_tail(
-        &self,
-        limit: u64,
-    ) -> StoreCall<'_, Vec<busbar_contract::records::AuditRecord>> {
-        self.inner.list_audit_tail(limit)
-    }
-    fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
-        self.inner.upsert_plane_record(record)
-    }
-    fn get_plane_record<'a>(
-        &'a self,
-        kind: &'a str,
-        id: &'a str,
-    ) -> StoreCall<'a, Option<Vec<u8>>> {
-        self.inner.get_plane_record(kind, id)
-    }
-    fn append_plane_record<'a>(
-        &'a self,
-        op: OpId,
-        record: PlaneRecordRef<'a>,
-    ) -> StoreCall<'a, ()> {
-        self.inner.append_plane_record(op, record)
-    }
-    fn list_plane_records<'a>(
-        &'a self,
-        kind: &'a str,
-        selector: &'a PlaneSelector<'a>,
-    ) -> StoreCall<'a, Vec<Vec<u8>>> {
-        self.inner.list_plane_records(kind, selector)
-    }
-    fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
-        self.inner.delete_plane_record(kind, id)
-    }
-    fn redeem_plane_token<'a>(
-        &'a self,
-        kind: &'a str,
-        token: &'a str,
-        expires_at: u64,
-        now: u64,
-    ) -> StoreCall<'a, bool> {
-        self.inner.redeem_plane_token(kind, token, expires_at, now)
-    }
-    fn plane_token_live<'a>(
-        &'a self,
-        kind: &'a str,
-        token: &'a str,
-        expires_at: u64,
-        now: u64,
-    ) -> StoreCall<'a, bool> {
-        self.inner.plane_token_live(kind, token, expires_at, now)
-    }
-    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> StoreCall<'a, Vec<String>> {
-        self.inner.list_plane_record_parents(kind)
-    }
-    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
-        self.inner.purge_plane_records_before(kind, before)
-    }
-    fn purge_usage_before(&self, before: u64) -> StoreCall<'_, u64> {
-        self.inner.purge_usage_before(before)
     }
 }

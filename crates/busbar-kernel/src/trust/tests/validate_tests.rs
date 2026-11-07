@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::trust::validate::{
-    next_generation, reason, validate_visibility, Grant, Lapsed, Refusal, Snapshot, Standing,
+    Grant, Lapsed, Refusal, Snapshot, Standing, next_generation, reason, validate_visibility,
 };
 use busbar_contract::records::{ScopeRef, VirtualKey};
 use std::collections::BTreeMap;
@@ -179,14 +179,15 @@ fn an_ungoverned_standing_permission_needs_no_reresolution() {
     assert_eq!(standing.still_permitted(None, 3, 0), Ok(None));
 }
 
-fn a_registry() -> std::sync::Arc<crate::governance::GovState> {
+async fn a_registry() -> std::sync::Arc<crate::governance::GovState> {
     std::sync::Arc::new(
-        crate::governance::GovState::new(crate::real_store::store(), None)
+        crate::governance::GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
             .expect("a memory-backed registry constructs"),
     )
 }
 
-fn a_live_key(gov: &crate::governance::GovState) -> VirtualKey {
+async fn a_live_key(gov: &crate::governance::GovState) -> VirtualKey {
     gov.set_signing_key(Some(
         crate::governance::signing::TokenSigner::from_secret_bytes(
             &[31; 32],
@@ -194,7 +195,7 @@ fn a_live_key(gov: &crate::governance::GovState) -> VirtualKey {
         ),
     ));
     let (key, _secret) = gov
-        .mint_signed(
+        .mint_signed_async(
             crate::governance::NewKeySpec {
                 name: "streamer".to_string(),
                 allowed_pools: None,
@@ -205,14 +206,15 @@ fn a_live_key(gov: &crate::governance::GovState) -> VirtualKey {
             4_000_000_000,
             1_700_000_000,
         )
+        .await
         .expect("mint");
     key
 }
 
-#[test]
-fn a_standing_permission_reresolves_a_live_principal() {
-    let gov = a_registry();
-    let key = a_live_key(&gov);
+#[tokio::test]
+async fn a_standing_permission_reresolves_a_live_principal() {
+    let gov = a_registry().await;
+    let key = a_live_key(&gov).await;
     let standing = Standing::opened(Some(&key), Snapshot::Watching, Duration::from_secs(300));
     let resolved = standing
         .still_permitted(Some(&*gov), 1, 1_700_000_000)
@@ -221,16 +223,19 @@ fn a_standing_permission_reresolves_a_live_principal() {
     assert_eq!(resolved.id, key.id);
 }
 
-#[test]
-fn a_key_disabled_under_an_open_response_lapses_it_on_the_next_ask() {
-    let gov = a_registry();
-    let key = a_live_key(&gov);
+#[tokio::test]
+async fn a_key_disabled_under_an_open_response_lapses_it_on_the_next_ask() {
+    let gov = a_registry().await;
+    let key = a_live_key(&gov).await;
     let standing = Standing::opened(Some(&key), Snapshot::Watching, Duration::from_secs(300));
-    assert!(standing
-        .still_permitted(Some(&*gov), 1, 1_700_000_000)
-        .is_ok());
+    assert!(
+        standing
+            .still_permitted(Some(&*gov), 1, 1_700_000_000)
+            .is_ok()
+    );
 
-    gov.update_key(&key.id, Some(false), None)
+    gov.update_key_outcome_async(&key.id, Some(false), None)
+        .await
         .expect("the admin PATCH an operator makes")
         .expect("the key exists");
 
@@ -245,16 +250,18 @@ fn a_key_disabled_under_an_open_response_lapses_it_on_the_next_ask() {
     assert!(key.enabled);
 }
 
-#[test]
-fn a_key_deleted_under_an_open_response_lapses_it_on_the_next_ask() {
-    let gov = a_registry();
-    let key = a_live_key(&gov);
+#[tokio::test]
+async fn a_key_deleted_under_an_open_response_lapses_it_on_the_next_ask() {
+    let gov = a_registry().await;
+    let key = a_live_key(&gov).await;
     let standing = Standing::opened(Some(&key), Snapshot::Watching, Duration::from_secs(300));
-    assert!(standing
-        .still_permitted(Some(&*gov), 1, 1_700_000_000)
-        .is_ok());
+    assert!(
+        standing
+            .still_permitted(Some(&*gov), 1, 1_700_000_000)
+            .is_ok()
+    );
 
-    gov.delete_key(&key.id).expect("the admin DELETE");
+    gov.delete_key(&key.id).await.expect("the admin DELETE");
 
     assert_eq!(
         standing.still_permitted(Some(&*gov), 1, 1_700_000_000),
@@ -264,10 +271,10 @@ fn a_key_deleted_under_an_open_response_lapses_it_on_the_next_ask() {
     );
 }
 
-#[test]
-fn a_rescoped_key_is_handed_back_narrowed_rather_than_as_it_was_at_open() {
-    let gov = a_registry();
-    let key = a_live_key(&gov);
+#[tokio::test]
+async fn a_rescoped_key_is_handed_back_narrowed_rather_than_as_it_was_at_open() {
+    let gov = a_registry().await;
+    let key = a_live_key(&gov).await;
     assert!(
         key.allowed_scopes.is_none(),
         "the fixture starts as the store's wildcard"
@@ -280,8 +287,13 @@ fn a_rescoped_key_is_handed_back_narrowed_rather_than_as_it_was_at_open() {
         value: "one".to_string(),
     }]);
 
-    gov.store().put_key(&narrowed).expect("store write");
-    gov.refresh().expect("reconcile");
+    gov.core_store_handle()
+        .unwrap()
+        .identity()
+        .compare_key(Some(&key), &narrowed)
+        .await
+        .expect("store write");
+    gov.refresh_async().await.expect("reconcile");
 
     let resolved = standing
         .still_permitted(Some(&*gov), 1, 1_700_000_000)

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::records::*;
+use busbar_contract::persistence::*;
 use busbar_kernel::governance::NewKeySpec;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -9,645 +9,134 @@ use std::sync::Arc;
 use crate::root::test_plugins as plugins;
 
 struct GatedKeyStore {
-    inner: Arc<dyn busbar_kernel::governance::RecordStore>,
+    inner: Arc<dyn PersistenceBackend>,
     entered: tokio::sync::mpsc::Sender<()>,
     release: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     landed: tokio::sync::mpsc::Sender<String>,
     fired: std::sync::atomic::AtomicBool,
 }
-impl busbar_kernel::governance::RecordStore for GatedKeyStore {
-    fn redeem_plane_token(
-        &self,
-        kind: &str,
-        token: &str,
-        expires_at: u64,
-        now: u64,
-    ) -> busbar_kernel::governance::RecordStoreResult<bool> {
-        self.inner.redeem_plane_token(kind, token, expires_at, now)
+impl PersistenceBackend for GatedKeyStore {
+    fn info(&self) -> BackendInfo {
+        self.inner.info()
     }
-    fn get_plane_record(
-        &self,
-        kind: &str,
-        id: &str,
-    ) -> busbar_kernel::governance::RecordStoreResult<Option<Vec<u8>>> {
-        self.inner.get_plane_record(kind, id)
+    fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
+        self.inner.clock(dataset)
     }
-    fn upsert_plane_record(
-        &self,
-        record: busbar_contract::records::PlaneRecordRef<'_>,
-    ) -> busbar_kernel::governance::RecordStoreResult<()> {
-        self.inner.upsert_plane_record(record)
+    fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
+        Box::pin(async move { self.inner.read(request).await })
     }
-    fn purge_plane_records_before(
-        &self,
-        kind: &str,
-        before: u64,
-    ) -> busbar_kernel::governance::RecordStoreResult<u64> {
-        self.inner.purge_plane_records_before(kind, before)
+    fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
+        Box::pin(async move { self.inner.scan(request).await })
     }
-    fn put_key(
-        &self,
-        key: &busbar_contract::records::VirtualKey,
-    ) -> busbar_kernel::governance::RecordStoreResult<()> {
-        if self.fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            return self.inner.put_key(key);
-        }
-
-        let _ = self.entered.try_send(());
-        if let Some(rx) = self
-            .release
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-        {
-            let _ = rx.recv_timeout(std::time::Duration::from_secs(30));
-        }
-        let out = self.inner.put_key(key);
-        if out.is_ok() {
-            let _ = self.landed.try_send(key.id.clone());
-        }
-        out
-    }
-    fn get_key(
-        &self,
-        id: &str,
-    ) -> busbar_kernel::governance::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
-    {
-        self.inner.get_key(id)
-    }
-    fn list_keys(
-        &self,
-    ) -> busbar_kernel::governance::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
-    {
-        self.inner.list_keys()
-    }
-    fn delete_key(&self, id: &str) -> busbar_kernel::governance::RecordStoreResult<()> {
-        self.inner.delete_key(id)
-    }
-    fn get_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-    ) -> busbar_kernel::governance::RecordStoreResult<busbar_contract::records::UsageLedger> {
-        self.inner.get_usage(bucket_id, window_start)
-    }
-    fn put_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        ledger: &busbar_contract::records::UsageLedger,
-    ) -> busbar_kernel::governance::RecordStoreResult<()> {
-        self.inner.put_usage(bucket_id, window_start, ledger)
-    }
-    fn add_metering(
-        &self,
-        delta: &busbar_kernel::governance::MeteringDelta,
-    ) -> busbar_kernel::governance::RecordStoreResult<()> {
-        self.inner.add_metering(delta)
-    }
-    fn list_metering(
-        &self,
-        bucket: u64,
-    ) -> busbar_kernel::governance::RecordStoreResult<Vec<busbar_kernel::governance::MeteringRow>>
-    {
-        self.inner.list_metering(bucket)
-    }
-    fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.inner.list_keys_since(since)
-    }
-    fn apply_usage_correction(
-        &self,
-        request: &correction::Request,
-    ) -> RecordStoreResult<correction::Decision> {
-        self.inner.apply_usage_correction(request)
-    }
-    fn supports_usage_correction(&self) -> bool {
-        self.inner.supports_usage_correction()
-    }
-    fn add_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        delta: &UsageDelta,
-    ) -> RecordStoreResult<()> {
-        self.inner.add_usage(bucket_id, window_start, delta)
-    }
-    fn add_usage_batch_deduped(
-        &self,
-        op: busbar_contract::abi::store::OpId,
-        cells: &[(&str, u64, UsageDelta)],
-    ) -> RecordStoreResult<()> {
-        self.inner.add_usage_batch_deduped(op, cells)
-    }
-    fn supports_usage_batch_deduped(&self) -> bool {
-        self.inner.supports_usage_batch_deduped()
-    }
-    fn supports_metering_batch_deduped(&self) -> bool {
-        self.inner.supports_metering_batch_deduped()
-    }
-    fn add_metering_batch_deduped(
-        &self,
-        op: busbar_contract::abi::store::OpId,
-        deltas: &[MeteringDelta],
-    ) -> RecordStoreResult<()> {
-        self.inner.add_metering_batch_deduped(op, deltas)
-    }
-    fn put_credential(&self, secret: &CredentialSecret) -> RecordStoreResult<()> {
-        self.inner.put_credential(secret)
-    }
-    fn rewrap_credential(
-        &self,
-        expected: &CredentialSecret,
-        replacement: &str,
-    ) -> RecordStoreResult<bool> {
-        self.inner.rewrap_credential(expected, replacement)
-    }
-    fn put_key_with_credential(
-        &self,
-        key: &VirtualKey,
-        secret: &CredentialSecret,
-    ) -> RecordStoreResult<()> {
-        self.inner.put_key_with_credential(key, secret)
-    }
-    fn list_credentials(&self, key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
-        self.inner.list_credentials(key_id)
-    }
-    fn revoke_credential(&self, id: &str, reason: &str) -> RecordStoreResult<()> {
-        self.inner.revoke_credential(id, reason)
-    }
-    fn list_credentials_since(&self, since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
-        self.inner.list_credentials_since(since)
-    }
-    fn append_audit(&self, entry: &AuditRecord) -> RecordStoreResult<()> {
-        self.inner.append_audit(entry)
-    }
-    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
-        self.inner.list_audit()
-    }
-    fn add_denylist(&self, sub: &str, reason: &str) -> RecordStoreResult<()> {
-        self.inner.add_denylist(sub, reason)
-    }
-    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
-        self.inner.list_denylist()
-    }
-    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
-        self.inner.list_audit_tail(limit)
-    }
-    fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        self.inner.append_plane_record(record)
-    }
-    fn list_plane_records(
-        &self,
-        kind: &str,
-        selector: &PlaneSelector<'_>,
-    ) -> RecordStoreResult<Vec<Vec<u8>>> {
-        self.inner.list_plane_records(kind, selector)
-    }
-    fn list_plane_record_parents(&self, kind: &str) -> RecordStoreResult<Vec<String>> {
-        self.inner.list_plane_record_parents(kind)
-    }
-    fn purge_plane_records(
-        &self,
-        kind: &str,
-        before: u64,
-        retention: Retention,
-    ) -> RecordStoreResult<u64> {
-        self.inner.purge_plane_records(kind, before, retention)
-    }
-    fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()> {
-        self.inner.delete_plane_record(kind, id)
-    }
-    fn plane_token_live(
-        &self,
-        kind: &str,
-        token: &str,
-        expires_at: u64,
-        now: u64,
-    ) -> RecordStoreResult<bool> {
-        self.inner.plane_token_live(kind, token, expires_at, now)
+    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+        Box::pin(async move {
+            let gated = key_mutation(&candidate)
+                && !self.fired.swap(true, std::sync::atomic::Ordering::SeqCst);
+            let id = candidate.candidate().mutations.iter().find_map(|mutation| {
+                let Mutation::Put { address, value } = mutation else {
+                    return None;
+                };
+                if !identity_key(address) {
+                    return None;
+                }
+                let row: serde_json::Value =
+                    serde_json::from_slice(value.expose(&busbar_kernel::seal::lend())).ok()?;
+                row["record"]["id"].as_str().map(str::to_string)
+            });
+            if gated {
+                let _ = self.entered.try_send(());
+                let receiver = self.release.lock().unwrap().take();
+                if let Some(receiver) = receiver {
+                    while matches!(
+                        receiver.try_recv(),
+                        Err(std::sync::mpsc::TryRecvError::Empty)
+                    ) {
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    }
+                }
+            }
+            let answer = self.inner.commit(candidate).await;
+            if gated && matches!(answer, Ok(Decision::Applied(_))) {
+                if let Some(id) = id {
+                    let _ = self.landed.try_send(id);
+                }
+            }
+            answer
+        })
     }
 }
 
 struct SlowNthPutKeyStore {
-    inner: Arc<dyn busbar_kernel::governance::RecordStore>,
+    inner: Arc<dyn PersistenceBackend>,
     delay: std::time::Duration,
     calls: std::sync::atomic::AtomicUsize,
     slow_on_call: usize,
 }
-impl busbar_kernel::governance::RecordStore for SlowNthPutKeyStore {
-    fn redeem_plane_token(
-        &self,
-        kind: &str,
-        token: &str,
-        expires_at: u64,
-        now: u64,
-    ) -> busbar_kernel::governance::RecordStoreResult<bool> {
-        self.inner.redeem_plane_token(kind, token, expires_at, now)
+impl PersistenceBackend for SlowNthPutKeyStore {
+    fn info(&self) -> BackendInfo {
+        self.inner.info()
     }
-    fn get_plane_record(
-        &self,
-        kind: &str,
-        id: &str,
-    ) -> busbar_kernel::governance::RecordStoreResult<Option<Vec<u8>>> {
-        self.inner.get_plane_record(kind, id)
+    fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
+        self.inner.clock(dataset)
     }
-    fn upsert_plane_record(
-        &self,
-        record: busbar_contract::records::PlaneRecordRef<'_>,
-    ) -> busbar_kernel::governance::RecordStoreResult<()> {
-        self.inner.upsert_plane_record(record)
+    fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
+        Box::pin(async move { self.inner.read(request).await })
     }
-    fn purge_plane_records_before(
-        &self,
-        kind: &str,
-        before: u64,
-    ) -> busbar_kernel::governance::RecordStoreResult<u64> {
-        self.inner.purge_plane_records_before(kind, before)
+    fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
+        Box::pin(async move { self.inner.scan(request).await })
     }
-    fn put_key(
-        &self,
-        key: &busbar_contract::records::VirtualKey,
-    ) -> busbar_kernel::governance::RecordStoreResult<()> {
-        let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if n == self.slow_on_call {
-            std::thread::sleep(self.delay);
-        }
-        self.inner.put_key(key)
-    }
-    fn get_key(
-        &self,
-        id: &str,
-    ) -> busbar_kernel::governance::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
-    {
-        self.inner.get_key(id)
-    }
-    fn list_keys(
-        &self,
-    ) -> busbar_kernel::governance::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
-    {
-        self.inner.list_keys()
-    }
-    fn delete_key(&self, id: &str) -> busbar_kernel::governance::RecordStoreResult<()> {
-        self.inner.delete_key(id)
-    }
-    fn get_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-    ) -> busbar_kernel::governance::RecordStoreResult<busbar_contract::records::UsageLedger> {
-        self.inner.get_usage(bucket_id, window_start)
-    }
-    fn put_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        ledger: &busbar_contract::records::UsageLedger,
-    ) -> busbar_kernel::governance::RecordStoreResult<()> {
-        self.inner.put_usage(bucket_id, window_start, ledger)
-    }
-    fn add_metering(
-        &self,
-        delta: &busbar_kernel::governance::MeteringDelta,
-    ) -> busbar_kernel::governance::RecordStoreResult<()> {
-        self.inner.add_metering(delta)
-    }
-    fn list_metering(
-        &self,
-        bucket: u64,
-    ) -> busbar_kernel::governance::RecordStoreResult<Vec<busbar_kernel::governance::MeteringRow>>
-    {
-        self.inner.list_metering(bucket)
-    }
-    fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.inner.list_keys_since(since)
-    }
-    fn apply_usage_correction(
-        &self,
-        request: &correction::Request,
-    ) -> RecordStoreResult<correction::Decision> {
-        self.inner.apply_usage_correction(request)
-    }
-    fn supports_usage_correction(&self) -> bool {
-        self.inner.supports_usage_correction()
-    }
-    fn add_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        delta: &UsageDelta,
-    ) -> RecordStoreResult<()> {
-        self.inner.add_usage(bucket_id, window_start, delta)
-    }
-    fn add_usage_batch_deduped(
-        &self,
-        op: busbar_contract::abi::store::OpId,
-        cells: &[(&str, u64, UsageDelta)],
-    ) -> RecordStoreResult<()> {
-        self.inner.add_usage_batch_deduped(op, cells)
-    }
-    fn supports_usage_batch_deduped(&self) -> bool {
-        self.inner.supports_usage_batch_deduped()
-    }
-    fn supports_metering_batch_deduped(&self) -> bool {
-        self.inner.supports_metering_batch_deduped()
-    }
-    fn add_metering_batch_deduped(
-        &self,
-        op: busbar_contract::abi::store::OpId,
-        deltas: &[MeteringDelta],
-    ) -> RecordStoreResult<()> {
-        self.inner.add_metering_batch_deduped(op, deltas)
-    }
-    fn put_credential(&self, secret: &CredentialSecret) -> RecordStoreResult<()> {
-        self.inner.put_credential(secret)
-    }
-    fn rewrap_credential(
-        &self,
-        expected: &CredentialSecret,
-        replacement: &str,
-    ) -> RecordStoreResult<bool> {
-        self.inner.rewrap_credential(expected, replacement)
-    }
-    fn put_key_with_credential(
-        &self,
-        key: &VirtualKey,
-        secret: &CredentialSecret,
-    ) -> RecordStoreResult<()> {
-        self.inner.put_key_with_credential(key, secret)
-    }
-    fn list_credentials(&self, key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
-        self.inner.list_credentials(key_id)
-    }
-    fn revoke_credential(&self, id: &str, reason: &str) -> RecordStoreResult<()> {
-        self.inner.revoke_credential(id, reason)
-    }
-    fn list_credentials_since(&self, since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
-        self.inner.list_credentials_since(since)
-    }
-    fn append_audit(&self, entry: &AuditRecord) -> RecordStoreResult<()> {
-        self.inner.append_audit(entry)
-    }
-    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
-        self.inner.list_audit()
-    }
-    fn add_denylist(&self, sub: &str, reason: &str) -> RecordStoreResult<()> {
-        self.inner.add_denylist(sub, reason)
-    }
-    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
-        self.inner.list_denylist()
-    }
-    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
-        self.inner.list_audit_tail(limit)
-    }
-    fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        self.inner.append_plane_record(record)
-    }
-    fn list_plane_records(
-        &self,
-        kind: &str,
-        selector: &PlaneSelector<'_>,
-    ) -> RecordStoreResult<Vec<Vec<u8>>> {
-        self.inner.list_plane_records(kind, selector)
-    }
-    fn list_plane_record_parents(&self, kind: &str) -> RecordStoreResult<Vec<String>> {
-        self.inner.list_plane_record_parents(kind)
-    }
-    fn purge_plane_records(
-        &self,
-        kind: &str,
-        before: u64,
-        retention: Retention,
-    ) -> RecordStoreResult<u64> {
-        self.inner.purge_plane_records(kind, before, retention)
-    }
-    fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()> {
-        self.inner.delete_plane_record(kind, id)
-    }
-    fn plane_token_live(
-        &self,
-        kind: &str,
-        token: &str,
-        expires_at: u64,
-        now: u64,
-    ) -> RecordStoreResult<bool> {
-        self.inner.plane_token_live(kind, token, expires_at, now)
+    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+        Box::pin(async move {
+            if key_mutation(&candidate) {
+                let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n == self.slow_on_call {
+                    tokio::time::sleep(self.delay).await;
+                }
+            }
+            self.inner.commit(candidate).await
+        })
     }
 }
 
 struct BarrierStore {
-    inner: Arc<dyn RecordStore>,
+    inner: Arc<dyn PersistenceBackend>,
     armed: std::sync::atomic::AtomicBool,
     entered: std::sync::mpsc::SyncSender<()>,
     release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
-impl busbar_kernel::governance::RecordStore for BarrierStore {
-    fn redeem_plane_token(
-        &self,
-        kind: &str,
-        token: &str,
-        expires_at: u64,
-        now: u64,
-    ) -> busbar_kernel::governance::RecordStoreResult<bool> {
-        self.inner.redeem_plane_token(kind, token, expires_at, now)
+impl PersistenceBackend for BarrierStore {
+    fn info(&self) -> BackendInfo {
+        self.inner.info()
     }
-    fn get_plane_record(
-        &self,
-        kind: &str,
-        id: &str,
-    ) -> busbar_kernel::governance::RecordStoreResult<Option<Vec<u8>>> {
-        self.inner.get_plane_record(kind, id)
+    fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
+        self.inner.clock(dataset)
     }
-    fn upsert_plane_record(
-        &self,
-        record: busbar_contract::records::PlaneRecordRef<'_>,
-    ) -> busbar_kernel::governance::RecordStoreResult<()> {
-        self.inner.upsert_plane_record(record)
+    fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
+        Box::pin(async move { self.inner.read(request).await })
     }
-    fn purge_plane_records_before(
-        &self,
-        kind: &str,
-        before: u64,
-    ) -> busbar_kernel::governance::RecordStoreResult<u64> {
-        self.inner.purge_plane_records_before(kind, before)
+    fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
+        Box::pin(async move { self.inner.scan(request).await })
     }
-    fn put_key(
-        &self,
-        key: &busbar_kernel::governance::VirtualKey,
-    ) -> busbar_kernel::governance::RecordStoreResult<()> {
-        if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
-            let _ = self.entered.send(());
-
-            self.release
-                .lock()
-                .unwrap()
-                .recv_timeout(std::time::Duration::from_secs(30))
-                .expect("the exact parked Store mutation must receive its explicit release");
-        }
-        self.inner.put_key(key)
-    }
-    fn get_key(
-        &self,
-        id: &str,
-    ) -> busbar_kernel::governance::RecordStoreResult<Option<busbar_kernel::governance::VirtualKey>>
-    {
-        self.inner.get_key(id)
-    }
-    fn list_keys(
-        &self,
-    ) -> busbar_kernel::governance::RecordStoreResult<Vec<busbar_kernel::governance::VirtualKey>>
-    {
-        self.inner.list_keys()
-    }
-    fn delete_key(&self, id: &str) -> busbar_kernel::governance::RecordStoreResult<()> {
-        self.inner.delete_key(id)
-    }
-    fn get_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-    ) -> busbar_kernel::governance::RecordStoreResult<busbar_contract::records::UsageLedger> {
-        self.inner.get_usage(bucket_id, window_start)
-    }
-    fn put_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        ledger: &busbar_contract::records::UsageLedger,
-    ) -> busbar_kernel::governance::RecordStoreResult<()> {
-        self.inner.put_usage(bucket_id, window_start, ledger)
-    }
-    fn add_metering(
-        &self,
-        delta: &busbar_kernel::governance::MeteringDelta,
-    ) -> busbar_kernel::governance::RecordStoreResult<()> {
-        self.inner.add_metering(delta)
-    }
-    fn list_metering(
-        &self,
-        bucket: u64,
-    ) -> busbar_kernel::governance::RecordStoreResult<Vec<busbar_kernel::governance::MeteringRow>>
-    {
-        self.inner.list_metering(bucket)
-    }
-
-    fn add_denylist(
-        &self,
-        sub: &str,
-        reason: &str,
-    ) -> busbar_kernel::governance::RecordStoreResult<()> {
-        self.inner.add_denylist(sub, reason)
-    }
-    fn list_denylist(&self) -> busbar_kernel::governance::RecordStoreResult<Vec<String>> {
-        self.inner.list_denylist()
-    }
-    fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.inner.list_keys_since(since)
-    }
-    fn apply_usage_correction(
-        &self,
-        request: &correction::Request,
-    ) -> RecordStoreResult<correction::Decision> {
-        self.inner.apply_usage_correction(request)
-    }
-    fn supports_usage_correction(&self) -> bool {
-        self.inner.supports_usage_correction()
-    }
-    fn add_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        delta: &UsageDelta,
-    ) -> RecordStoreResult<()> {
-        self.inner.add_usage(bucket_id, window_start, delta)
-    }
-    fn add_usage_batch_deduped(
-        &self,
-        op: busbar_contract::abi::store::OpId,
-        cells: &[(&str, u64, UsageDelta)],
-    ) -> RecordStoreResult<()> {
-        self.inner.add_usage_batch_deduped(op, cells)
-    }
-    fn supports_usage_batch_deduped(&self) -> bool {
-        self.inner.supports_usage_batch_deduped()
-    }
-    fn supports_metering_batch_deduped(&self) -> bool {
-        self.inner.supports_metering_batch_deduped()
-    }
-    fn add_metering_batch_deduped(
-        &self,
-        op: busbar_contract::abi::store::OpId,
-        deltas: &[MeteringDelta],
-    ) -> RecordStoreResult<()> {
-        self.inner.add_metering_batch_deduped(op, deltas)
-    }
-    fn put_credential(&self, secret: &CredentialSecret) -> RecordStoreResult<()> {
-        self.inner.put_credential(secret)
-    }
-    fn rewrap_credential(
-        &self,
-        expected: &CredentialSecret,
-        replacement: &str,
-    ) -> RecordStoreResult<bool> {
-        self.inner.rewrap_credential(expected, replacement)
-    }
-    fn put_key_with_credential(
-        &self,
-        key: &VirtualKey,
-        secret: &CredentialSecret,
-    ) -> RecordStoreResult<()> {
-        self.inner.put_key_with_credential(key, secret)
-    }
-    fn list_credentials(&self, key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
-        self.inner.list_credentials(key_id)
-    }
-    fn revoke_credential(&self, id: &str, reason: &str) -> RecordStoreResult<()> {
-        self.inner.revoke_credential(id, reason)
-    }
-    fn list_credentials_since(&self, since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
-        self.inner.list_credentials_since(since)
-    }
-    fn append_audit(&self, entry: &AuditRecord) -> RecordStoreResult<()> {
-        self.inner.append_audit(entry)
-    }
-    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
-        self.inner.list_audit()
-    }
-    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
-        self.inner.list_audit_tail(limit)
-    }
-    fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        self.inner.append_plane_record(record)
-    }
-    fn list_plane_records(
-        &self,
-        kind: &str,
-        selector: &PlaneSelector<'_>,
-    ) -> RecordStoreResult<Vec<Vec<u8>>> {
-        self.inner.list_plane_records(kind, selector)
-    }
-    fn list_plane_record_parents(&self, kind: &str) -> RecordStoreResult<Vec<String>> {
-        self.inner.list_plane_record_parents(kind)
-    }
-    fn purge_plane_records(
-        &self,
-        kind: &str,
-        before: u64,
-        retention: Retention,
-    ) -> RecordStoreResult<u64> {
-        self.inner.purge_plane_records(kind, before, retention)
-    }
-    fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()> {
-        self.inner.delete_plane_record(kind, id)
-    }
-    fn plane_token_live(
-        &self,
-        kind: &str,
-        token: &str,
-        expires_at: u64,
-        now: u64,
-    ) -> RecordStoreResult<bool> {
-        self.inner.plane_token_live(kind, token, expires_at, now)
+    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+        Box::pin(async move {
+            if key_mutation(&candidate)
+                && self.armed.swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                let _ = self.entered.send(());
+                loop {
+                    let result = self.release.lock().unwrap().try_recv();
+                    match result {
+                        Ok(()) => break,
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            tokio::time::sleep(std::time::Duration::from_millis(1)).await
+                        }
+                        Err(_) => panic!("parked native mutation release lost"),
+                    }
+                }
+            }
+            self.inner.commit(candidate).await
+        })
     }
 }
 
@@ -761,30 +250,22 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let inner = anchor.records.clone();
+    let inner = anchor.clone();
     let (entered_tx, mut entered_rx) = tokio::sync::mpsc::channel::<()>(1);
     let (landed_tx, mut landed_rx) = tokio::sync::mpsc::channel::<String>(1);
     let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
-    let gated_store: Arc<dyn busbar_kernel::governance::RecordStore> = Arc::new(GatedKeyStore {
+    let gated_store: Arc<dyn PersistenceBackend> = Arc::new(GatedKeyStore {
         inner,
         entered: entered_tx,
         release: std::sync::Mutex::new(Some(release_rx)),
         landed: landed_tx,
         fired: std::sync::atomic::AtomicBool::new(false),
     });
-    let anchor = busbar_contract::store_calls::OpenedStore {
-        records: gated_store.clone(),
-        calls: anchor.calls,
-    };
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(gated_store.clone()).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -797,13 +278,15 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let router = busbar_kernel::build_router(Arc::new(app));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -936,8 +419,7 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
 #[tokio::test]
 async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete() {
     const CHILD: &str = "BUSBAR_ADMIN_GATED_4D8BB99A6A3E";
-    const WITNESS: &str =
-        "actual root case test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete completed";
+    const WITNESS: &str = "actual root case test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete completed";
     if std::env::var_os(CHILD).is_none() {
         struct Child(std::process::Child);
         impl Drop for Child {
@@ -1044,28 +526,19 @@ async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete(
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let inner = anchor.records.clone();
+    let inner = anchor.clone();
 
-    let slow_store: Arc<dyn busbar_kernel::governance::RecordStore> =
-        Arc::new(SlowNthPutKeyStore {
-            inner,
-            delay: std::time::Duration::from_millis(500),
-            calls: std::sync::atomic::AtomicUsize::new(0),
-            slow_on_call: 1,
-        });
-    let anchor = busbar_contract::store_calls::OpenedStore {
-        records: slow_store.clone(),
-        calls: anchor.calls,
-    };
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let slow_store: Arc<dyn PersistenceBackend> = Arc::new(SlowNthPutKeyStore {
+        inner,
+        delay: std::time::Duration::from_millis(500),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        slow_on_call: 1,
+    });
+    let anchor = crate::root::real_store::core_over(slow_store.clone()).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -1078,13 +551,15 @@ async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete(
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let router = busbar_kernel::build_router(Arc::new(app));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1260,27 +735,19 @@ async fn test_patch_interleaved_with_delete_never_resurrects_key() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(BarrierStore {
-        inner: anchor.records.clone(),
+        inner: anchor.clone(),
         armed: std::sync::atomic::AtomicBool::new(false),
         entered: entered_tx,
         release: std::sync::Mutex::new(release_rx),
     });
-    let anchor = busbar_contract::store_calls::OpenedStore {
-        records: store.clone(),
-        calls: anchor.calls,
-    };
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(store.clone()).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -1293,13 +760,15 @@ async fn test_patch_interleaved_with_delete_never_resurrects_key() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let gov = app
         .governance
@@ -1307,7 +776,7 @@ async fn test_patch_interleaved_with_delete_never_resurrects_key() {
         .expect("the actual root opened governance")
         .clone();
     let (key, _secret) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "k".to_string(),
                 allowed_pools: None,
@@ -1318,6 +787,7 @@ async fn test_patch_interleaved_with_delete_never_resurrects_key() {
             2_000_000_000,
             0,
         )
+        .await
         .unwrap();
     let router = busbar_kernel::build_router(Arc::new(app));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1495,27 +965,19 @@ async fn test_rotate_interleaved_with_delete_never_resurrects_key() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(BarrierStore {
-        inner: anchor.records.clone(),
+        inner: anchor.clone(),
         armed: std::sync::atomic::AtomicBool::new(false),
         entered: entered_tx,
         release: std::sync::Mutex::new(release_rx),
     });
-    let anchor = busbar_contract::store_calls::OpenedStore {
-        records: store.clone(),
-        calls: anchor.calls,
-    };
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(store.clone()).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -1528,13 +990,15 @@ async fn test_rotate_interleaved_with_delete_never_resurrects_key() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let gov = app
         .governance
@@ -1542,7 +1006,7 @@ async fn test_rotate_interleaved_with_delete_never_resurrects_key() {
         .expect("the actual root opened governance")
         .clone();
     let (key, _secret) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "k".to_string(),
                 allowed_pools: None,
@@ -1553,6 +1017,7 @@ async fn test_rotate_interleaved_with_delete_never_resurrects_key() {
             2_000_000_000,
             0,
         )
+        .await
         .unwrap();
     let router = busbar_kernel::build_router(Arc::new(app));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1728,27 +1193,19 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(BarrierStore {
-        inner: anchor.records.clone(),
+        inner: anchor.clone(),
         armed: std::sync::atomic::AtomicBool::new(false),
         entered: entered_tx,
         release: std::sync::Mutex::new(release_rx),
     });
-    let anchor = busbar_contract::store_calls::OpenedStore {
-        records: store.clone(),
-        calls: anchor.calls,
-    };
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(store.clone()).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -1761,13 +1218,15 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let gov = app
         .governance
@@ -1775,7 +1234,7 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
         .expect("the actual root opened governance")
         .clone();
     let (key, _secret) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "k".to_string(),
                 allowed_pools: None,
@@ -1786,6 +1245,7 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
             2_000_000_000,
             0,
         )
+        .await
         .unwrap();
     let router = busbar_kernel::build_router(Arc::new(app));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1855,8 +1315,7 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_delete_of_another_key_is_not_held_behind_a_patch_parked_in_the_store() {
     const CHILD: &str = "BUSBAR_ADMIN_GATED_950ADA274970";
-    const WITNESS: &str =
-        "actual root case a_delete_of_another_key_is_not_held_behind_a_patch_parked_in_the_store completed";
+    const WITNESS: &str = "actual root case a_delete_of_another_key_is_not_held_behind_a_patch_parked_in_the_store completed";
     if std::env::var_os(CHILD).is_none() {
         struct Child(std::process::Child);
         impl Drop for Child {
@@ -1963,27 +1422,19 @@ async fn a_delete_of_another_key_is_not_held_behind_a_patch_parked_in_the_store(
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(BarrierStore {
-        inner: anchor.records.clone(),
+        inner: anchor.clone(),
         armed: std::sync::atomic::AtomicBool::new(false),
         entered: entered_tx,
         release: std::sync::Mutex::new(release_rx),
     });
-    let anchor = busbar_contract::store_calls::OpenedStore {
-        records: store.clone(),
-        calls: anchor.calls,
-    };
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(store.clone()).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -1996,21 +1447,23 @@ async fn a_delete_of_another_key_is_not_held_behind_a_patch_parked_in_the_store(
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let gov = app
         .governance
         .as_ref()
         .expect("the actual root opened governance")
         .clone();
-    let mint = |name: &str| {
-        gov.mint_signed(
+    let mint = async |name: &str| {
+        gov.mint_signed_async(
             NewKeySpec {
                 name: name.to_string(),
                 ..Default::default()
@@ -2018,10 +1471,11 @@ async fn a_delete_of_another_key_is_not_held_behind_a_patch_parked_in_the_store(
             2_000_000_000,
             0,
         )
+        .await
         .unwrap()
         .0
     };
-    let (parked_key, other_key) = (mint("parked"), mint("other"));
+    let (parked_key, other_key) = (mint("parked").await, mint("other").await);
     let router = busbar_kernel::build_router(Arc::new(app));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -2070,4 +1524,14 @@ async fn a_delete_of_another_key_is_not_held_behind_a_patch_parked_in_the_store(
     handle.abort();
     let _ = handle.await;
     println!("{WITNESS}");
+}
+
+fn identity_key(address: &Address) -> bool {
+    address.namespace == *b"busbar.identity1" && address.key.first() == Some(&b'K')
+}
+fn key_mutation(candidate: &PreparedCandidate) -> bool {
+    candidate.candidate().mutations.iter().any(|m| match m {
+        Mutation::Put { address, .. } | Mutation::Delete(address) => identity_key(address),
+        _ => false,
+    })
 }

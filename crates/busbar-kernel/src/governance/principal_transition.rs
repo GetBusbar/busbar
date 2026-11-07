@@ -10,13 +10,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use busbar_contract::abi::sdk::store::conditional::{
-    Decision, Expected, Mutation, Predicate, Request, VERSION,
-};
-use busbar_contract::abi::store::OpId;
+use crate::persistence::facade::CoreStore;
+use busbar_contract::host_records::conditional::{Expected, Mutation, Predicate, Request, VERSION};
 use busbar_contract::ids::RecordSchemaId;
-use busbar_contract::records::{RecordStore, UsageLedger, VirtualKey};
-use busbar_contract::store_calls::StoreCalls;
+use busbar_contract::records::OpId;
+use busbar_contract::records::{UsageLedger, VirtualKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -25,7 +23,7 @@ use crate::config::{
     GroupCfg,
 };
 use crate::host_record_bootstrap::StoreWitness;
-use crate::host_records::{RecordRows, StoreRows};
+use crate::host_records::RecordRows;
 
 pub const SCHEMA: RecordSchemaId = RecordSchemaId::new("busbar.principal-transition.v1");
 const HEAD: &[u8] = b"head";
@@ -33,6 +31,24 @@ const MAX_PLAN_BYTES: usize = 256 * 1024;
 /// Opaque, plugin-authored metadata on its existing settings-schema document.
 pub const FORMAT_ANNOTATION: &str = "x-busbar-principal-format";
 pub const DOMAIN_ANNOTATION: &str = "x-busbar-principal-domain-fields";
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WitnessBinding {
+    pub instance: String,
+    pub private: bool,
+    pub source_scope: WitnessScope,
+}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WitnessScope {
+    Unscoped,
+    Instance,
+}
+
+fn receipt_version(version: u32, binding: Option<&WitnessBinding>) -> bool {
+    matches!((version, binding), (1, None) | (2, Some(_)))
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(deny_unknown_fields)]
@@ -123,6 +139,8 @@ pub struct Specification {
     pub requirements: Vec<Requirement>,
     pub store_config_sha256: String,
     pub effective_config_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub witness_binding: Option<WitnessBinding>,
     pub witness: StoreWitness,
     pub cutover: u64,
 }
@@ -222,6 +240,8 @@ pub struct Reauthorization {
     pub requirements: Vec<Requirement>,
     pub identity_outputs_unchanged: bool,
     pub continuity_evidence_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub witness_binding: Option<WitnessBinding>,
     pub witness: StoreWitness,
     /// The attestation's plan_sha256 names baseline_sha256; epoch is consumed exactly once.
     pub attestation: ColdAttestation,
@@ -356,7 +376,7 @@ fn group(principal: &str) -> String {
 }
 
 fn validate_spec(spec: &Specification) -> Result<(), String> {
-    if spec.version != 1
+    if !receipt_version(spec.version, spec.witness_binding.as_ref())
         || spec.id.is_empty()
         || spec.id.len() > 128
         || spec.id.chars().any(char::is_control)
@@ -481,15 +501,51 @@ pub fn role_bindings_after(spec: &Specification) -> Result<crate::config::RoleBi
     Ok(after)
 }
 
-fn compare_witness(calls: &dyn StoreCalls, spec: &Specification) -> Result<(), String> {
+async fn compare_witness(core: &CoreStore, spec: &Specification) -> Result<(), String> {
     let key = hex::decode(&spec.witness.key_hex).map_err(|_| "invalid witness key")?;
     let expected = hex::decode(&spec.witness.value_hex).map_err(|_| "invalid witness value")?;
-    let actual = futures::executor::block_on(calls.record_get(&spec.witness.schema, &key))
-        .map_err(|e| e.to_string())?;
-    if actual.as_ref().map(|v| v.as_slice()) != Some(expected.as_slice()) {
+    let address = witness_address(
+        &spec.witness.schema,
+        &key,
+        &expected,
+        spec.witness_binding.as_ref(),
+    )?;
+    let predicate = busbar_contract::persistence::Predicate {
+        address,
+        expected: busbar_contract::persistence::ExpectedValue::Exact(busbar_contract::Secret::new(
+            expected,
+        )),
+    };
+    if !core
+        .guards_hold(&[predicate])
+        .await
+        .map_err(|e| format!("principal witness read: {e:?}"))?
+    {
         return Err("Store namespace witness changed".into());
     }
     Ok(())
+}
+
+fn witness_address(
+    schema: &str,
+    key: &[u8],
+    expected: &[u8],
+    binding: Option<&WitnessBinding>,
+) -> Result<busbar_contract::persistence::Address, String> {
+    use crate::persistence::import_target::records::{self, RecordBinding, RecordScope};
+    records::witness_address(
+        schema,
+        key,
+        expected,
+        binding.map(|binding| RecordBinding {
+            instance: &binding.instance,
+            private: binding.private,
+            scope: match binding.source_scope {
+                WitnessScope::Unscoped => RecordScope::Unscoped,
+                WitnessScope::Instance => RecordScope::Instance,
+            },
+        }),
+    )
 }
 
 /// Enumerate only actual enforcement cells from the resolved cost model; shared ancestors stay put.
@@ -678,39 +734,50 @@ pub fn after_overlay(plan: &Plan) -> Result<OverlayDoc, String> {
     Ok(after)
 }
 
-pub fn prepare(
+pub async fn prepare(
     specification: Specification,
-    store: &dyn RecordStore,
-    calls: Arc<dyn StoreCalls>,
+    core: Arc<CoreStore>,
     groups: BTreeMap<String, GroupCfg>,
     overlay: Option<OverlayDoc>,
 ) -> Result<Plan, String> {
     validate_spec(&specification)?;
-    compare_witness(calls.as_ref(), &specification)?;
-    let previous = read_head(&StoreRows(calls.clone()))?
+    compare_witness(&core, &specification).await?;
+    let previous = read_head(&native_receipt_snapshot(&core).await?)?
         .map(|(head, bytes)| {
             if !head.complete || head.depth >= 64 || head.store_config_sha256 != specification.store_config_sha256 {
                 return Err("predecessor must be complete, within the 64-generation bound and on the same Store".to_string());
             }
             Ok(previous_receipt(&head, &bytes))
         }).transpose()?;
-    let mut keys_before = store.list_keys().map_err(|e| e.to_string())?;
+    let mut keys_before = core
+        .identity()
+        .list_keys()
+        .await
+        .map_err(|e| e.to_string())?;
     keys_before.sort_by(|a, b| a.id.cmp(&b.id));
-    let mut denylist_before = store.list_denylist().map_err(|e| e.to_string())?;
+    let mut denylist_before = core
+        .identity()
+        .list_denylist()
+        .await
+        .map_err(|e| e.to_string())?;
     denylist_before.sort();
     let mut carry = Vec::new();
     for (source, destination, window, period) in
         addresses(&specification, &groups, specification.cutover)?
     {
-        if store
+        if core
+            .ledger()
             .get_usage(&destination, window)
+            .await
             .map_err(|e| e.to_string())?
             != UsageLedger::default()
         {
             return Err("destination usage is occupied; merging is forbidden".into());
         }
-        let raw = store
+        let raw = core
+            .ledger()
             .get_usage(&source, window)
+            .await
             .map_err(|e| e.to_string())?;
         carry.push(Carry {
             source,
@@ -1099,7 +1166,8 @@ fn read_generation(rows: &dyn RecordRows, bytes: &[u8], depth: usize) -> Result<
     if head.fresh {
         let receipt: FreshNamespace = serde_json::from_slice(&body)
             .map_err(|_| "invalid durable namespace creation evidence")?;
-        if !head.complete
+        if !receipt_version(receipt.version, receipt.witness_binding.as_ref())
+            || !head.complete
             || head.rollover.is_some()
             || previous.is_some()
             || digest(&receipt)? != head.plan_sha256
@@ -1111,7 +1179,12 @@ fn read_generation(rows: &dyn RecordRows, bytes: &[u8], depth: usize) -> Result<
     } else {
         let plan: Plan = serde_json::from_slice(&body)
             .map_err(|_| "invalid durable principal transition plan")?;
-        if digest(&plan)? != head.plan_sha256 || plan.previous != previous {
+        if !receipt_version(
+            plan.specification.version,
+            plan.specification.witness_binding.as_ref(),
+        ) || digest(&plan)? != head.plan_sha256
+            || plan.previous != previous
+        {
             return Err(
                 "principal transition receipt differs from immutable plan/predecessor".into(),
             );
@@ -1183,7 +1256,10 @@ fn read_generation(rows: &dyn RecordRows, bytes: &[u8], depth: usize) -> Result<
         )?;
         let authorization: Reauthorization =
             serde_json::from_slice(&body).map_err(|_| "invalid principal reauthorization")?;
-        if digest(&authorization)? != reference.digest
+        if !receipt_version(
+            authorization.version,
+            authorization.witness_binding.as_ref(),
+        ) || digest(&authorization)? != reference.digest
             || authorization.baseline_sha256 != head.plan_sha256
             || !authorization.identity_outputs_unchanged
             || !same_formats(&head.requirements, &authorization.requirements)
@@ -1196,22 +1272,12 @@ fn read_generation(rows: &dyn RecordRows, bytes: &[u8], depth: usize) -> Result<
 }
 
 /// Early anchor-store fence, including safe mode, before effective config is recovered.
-pub fn pending_guard(calls: Arc<dyn StoreCalls>) -> Result<(), String> {
-    if read_head(&StoreRows(calls))?.is_some_and(|(head, _)| !head.complete) {
-        return Err("principal transition is pending; normal serving is fenced".into());
-    }
-    Ok(())
-}
-
-/// Called on every boot and replacement App before governance or any request writer is started.
-/// Absence is safe only when no active auth artifact declares a changed principal format.
-pub fn guard(
-    calls: Arc<dyn StoreCalls>,
+fn guard_rows(
+    rows: &dyn RecordRows,
     store_sha256: &str,
     required: &[Requirement],
 ) -> Result<BTreeSet<String>, String> {
-    let rows = StoreRows(calls);
-    let Some((head, _)) = read_head(&rows)? else {
+    let Some((head, _)) = read_head(rows)? else {
         return if required.iter().all(|r| r.format.is_empty()) {
             Ok(BTreeSet::new())
         } else {
@@ -1234,16 +1300,188 @@ pub fn guard(
     Ok(head.holds)
 }
 
+/// Native boot guard over the exact retained principal receipt and ancestry.
+/// Validation reuses the offline receipt decoder; this snapshot adapter performs
+/// no storage calls and cannot write or claim authority.
+pub async fn guard_native(
+    core: Arc<crate::persistence::facade::CoreStore>,
+    store_sha256: &str,
+    required: &[Requirement],
+) -> Result<BTreeSet<String>, String> {
+    let rows = native_receipt_snapshot(&core).await?;
+    guard_rows(&rows, store_sha256, required)
+}
+
+pub async fn pending_guard_native(
+    core: Arc<crate::persistence::facade::CoreStore>,
+) -> Result<(), String> {
+    let rows = native_receipt_snapshot(&core).await?;
+    if read_head(&rows)?.is_some_and(|(head, _)| !head.complete) {
+        return Err("principal transition is pending; normal serving is fenced".into());
+    }
+    Ok(())
+}
+
+pub const NATIVE_INSTANCE: &str = "busbar.principal-transition";
+
+struct ReceiptSnapshot(BTreeMap<Vec<u8>, busbar_contract::kinds::RecordBytes>);
+impl RecordRows for ReceiptSnapshot {
+    fn record_get(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+    ) -> Result<Option<busbar_contract::kinds::RecordBytes>, busbar_contract::kinds::StoreError>
+    {
+        if schema != SCHEMA {
+            return Err(busbar_contract::kinds::StoreError::Rejected(
+                "principal snapshot schema mismatch".into(),
+            ));
+        }
+        Ok(self.0.get(key).cloned())
+    }
+    fn record_put(
+        &self,
+        _: RecordSchemaId,
+        _: &[u8],
+        _: &busbar_contract::kinds::RecordBytes,
+    ) -> Result<(), busbar_contract::kinds::StoreError> {
+        Err(busbar_contract::kinds::StoreError::Rejected(
+            "principal snapshot is read only".into(),
+        ))
+    }
+    fn record_scan(
+        &self,
+        _: RecordSchemaId,
+        _: &[u8],
+        _: u32,
+    ) -> Result<
+        Vec<(Vec<u8>, busbar_contract::kinds::RecordBytes)>,
+        busbar_contract::kinds::StoreError,
+    > {
+        Err(busbar_contract::kinds::StoreError::Rejected(
+            "principal snapshot does not scan".into(),
+        ))
+    }
+    fn claim(
+        &self,
+        _: &str,
+        _: &str,
+        _: u64,
+        _: u64,
+    ) -> Result<bool, busbar_contract::kinds::StoreError> {
+        Err(busbar_contract::kinds::StoreError::Rejected(
+            "principal snapshot cannot claim".into(),
+        ))
+    }
+}
+
+async fn native_receipt_snapshot(
+    core: &crate::persistence::facade::CoreStore,
+) -> Result<ReceiptSnapshot, String> {
+    use crate::persistence::fences::scan_guard;
+    use busbar_contract::persistence::NamespaceId;
+    let address =
+        crate::persistence::scoped::migration_address(true, NATIVE_INSTANCE, SCHEMA.as_str(), &[])
+            .map_err(|e| format!("principal receipt address: {e:?}"))?;
+    let namespace = NamespaceId(address.namespace);
+    let unsettled = || {
+        core.has_pending_namespace(namespace)
+            .map_err(|e| format!("principal receipt custody: {e:?}"))
+    };
+    if unsettled()? {
+        return Err("principal receipt has unresolved native writes; serving is fenced".into());
+    }
+    let prefix = address.key;
+    let collection = core
+        .scan(namespace, prefix.clone(), None)
+        .await
+        .map_err(|e| format!("principal receipt read: {e:?}"))?;
+    let mut snapshot = BTreeMap::new();
+    for (address, bytes) in collection.rows {
+        let bytes =
+            busbar_contract::kinds::RecordBytes::new(bytes.expose(&crate::seal::lend()).clone())
+                .map_err(|_| "principal receipt exceeds original record bound")?;
+        snapshot.insert(address.key[prefix.len()..].to_vec(), bytes);
+    }
+    if !core
+        .guards_hold(&[scan_guard(namespace, collection.generation)])
+        .await
+        .map_err(|e| format!("principal receipt generation: {e:?}"))?
+        || unsettled()?
+    {
+        return Err("principal receipt changed during native read; serving is fenced".into());
+    }
+    Ok(ReceiptSnapshot(snapshot))
+}
+
 fn operation(plan_sha256: &str, phase: &str) -> OpId {
     let digest = Sha256::digest(format!("principal-transition:{plan_sha256}:{phase}"));
     OpId(digest[..16].try_into().expect("SHA256 has sixteen bytes"))
 }
 
-fn transaction(rows: &dyn RecordRows, request: Request) -> Result<(), String> {
+async fn transaction(
+    core: &CoreStore,
+    request: Request,
+    binding: Option<&WitnessBinding>,
+) -> Result<(), String> {
+    use crate::persistence::host_records::{HostRecords, Outcome};
+    use busbar_contract::persistence::{
+        ExpectedValue, Mutation as NativeMutation, Predicate as NativePredicate,
+    };
     request.encode_held().map_err(|e| e.to_string())?;
-    match rows.record_transaction(&request).map_err(|_| "transition transaction outcome uncertain; keep senders stopped and settle backend commands before a new attested resume")? {
-        Decision::Applied => Ok(()),
-        Decision::ConditionConflict => Err("principal transition conditional state changed".into()),
+    let owner = HostRecords::host_private(core, NATIVE_INSTANCE, [SCHEMA.as_str()])
+        .map_err(|e| format!("principal transaction owner: {e:?}"))?;
+    let predicates = request
+        .predicates
+        .into_iter()
+        .map(|predicate| {
+            let bytes = match &predicate.expected {
+                Expected::Absent => &[][..],
+                Expected::Bytes(bytes) => bytes.as_slice(),
+            };
+            Ok(NativePredicate {
+                address: witness_address(
+                    &predicate.schema,
+                    &predicate.key,
+                    bytes,
+                    if predicate.schema == SCHEMA.as_str() {
+                        None
+                    } else {
+                        binding
+                    },
+                )?,
+                expected: match predicate.expected {
+                    Expected::Absent => ExpectedValue::Absent,
+                    Expected::Bytes(bytes) => {
+                        ExpectedValue::Exact(busbar_contract::Secret::new(bytes))
+                    }
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let mutations = request
+        .mutations
+        .into_iter()
+        .map(|mutation| match mutation {
+            Mutation::Put { schema, key, value } if schema == SCHEMA.as_str() => {
+                Ok(NativeMutation::Put {
+                    address: witness_address(&schema, &key, &value, None)?,
+                    value: busbar_contract::Secret::new(value),
+                })
+            }
+            _ => Err("principal transaction attempted an unauthorized mutation".into()),
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    match owner
+        .conditional_native(request.op_id.0, predicates, mutations)
+        .await
+        .map_err(|e| format!("principal transition transaction: {e:?}"))?
+    {
+        Outcome::Applied => Ok(()),
+        Outcome::ConditionConflict => Err("principal transition conditional state changed".into()),
+        other => Err(format!(
+            "principal transition transaction unresolved or refused ({other:?}); keep senders stopped and retain the exact transition evidence"
+        )),
     }
 }
 
@@ -1257,9 +1495,9 @@ fn same_key(actual: &VirtualKey, expected: &VirtualKey) -> bool {
     actual == *expected
 }
 
-fn inspect(
+async fn inspect(
     plan: &Plan,
-    store: &dyn RecordStore,
+    core: Arc<CoreStore>,
     overlay: &OverlayStore,
     now: u64,
     allow_after: bool,
@@ -1268,7 +1506,11 @@ fn inspect(
     if now < plan.specification.cutover {
         return Err("cutover clock moved backwards".into());
     }
-    let keys = store.list_keys().map_err(|e| e.to_string())?;
+    let keys = core
+        .identity()
+        .list_keys()
+        .await
+        .map_err(|e| e.to_string())?;
     if keys.len() != plan.keys_before.len() {
         return Err("key inventory changed".into());
     }
@@ -1281,7 +1523,11 @@ fn inspect(
             return Err("key preimage changed".into());
         }
     }
-    let mut denied = store.list_denylist().map_err(|e| e.to_string())?;
+    let mut denied = core
+        .identity()
+        .list_denylist()
+        .await
+        .map_err(|e| e.to_string())?;
     denied.sort();
     let mut allowed_denials: BTreeSet<_> = plan.denylist_before.iter().cloned().collect();
     if allow_after {
@@ -1293,21 +1539,25 @@ fn inspect(
         return Err("revocation inventory changed".into());
     }
     for c in &plan.carry {
-        if store
+        if core
+            .ledger()
             .get_usage(&c.source, c.window)
+            .await
             .map_err(|e| e.to_string())?
             != c.raw
         {
             return Err("source usage preimage changed".into());
         }
-        let actual = store
+        let actual = core
+            .ledger()
             .get_usage(&c.destination, c.window)
+            .await
             .map_err(|e| e.to_string())?;
         if actual != UsageLedger::default() && !(allow_after && actual == c.raw) {
             return Err("destination usage preimage changed".into());
         }
     }
-    let actual = overlay.read_required()?;
+    let actual = overlay.read_required_async().await?;
     if digest(&actual)? != digest(&plan.overlay_before)?
         && !(allow_after && digest(&actual)? == digest(&Some(after_overlay(plan)?))?)
     {
@@ -1316,10 +1566,9 @@ fn inspect(
     Ok(())
 }
 
-pub fn check(
+pub async fn check(
     plan: &Plan,
-    store: &dyn RecordStore,
-    calls: Arc<dyn StoreCalls>,
+    core: Arc<CoreStore>,
     overlay: &OverlayStore,
     now: u64,
     effective_config_sha256: &str,
@@ -1327,8 +1576,8 @@ pub fn check(
     if effective_config_sha256 != plan.specification.effective_config_sha256 {
         return Err("effective configuration changed".into());
     }
-    compare_witness(calls.as_ref(), &plan.specification)?;
-    let rows = StoreRows(calls);
+    compare_witness(&core, &plan.specification).await?;
+    let rows = native_receipt_snapshot(&core).await?;
     let existing = read_head(&rows)?;
     let plan_digest = digest(plan)?;
     let resuming = existing
@@ -1359,23 +1608,31 @@ pub fn check(
     }
     if let Some((head, _)) = &existing {
         if resuming {
-            inspect_extra(store, &head.extra_carry, false)?;
+            inspect_extra(core.clone(), &head.extra_carry, false).await?;
         }
     }
-    inspect(plan, store, overlay, now, resuming)
+    inspect(plan, core.clone(), overlay, now, resuming).await
 }
 
-fn inspect_extra(store: &dyn RecordStore, carry: &[Carry], complete: bool) -> Result<(), String> {
+async fn inspect_extra(
+    core: Arc<CoreStore>,
+    carry: &[Carry],
+    complete: bool,
+) -> Result<(), String> {
     for cell in carry {
-        if store
+        if core
+            .ledger()
             .get_usage(&cell.source, cell.window)
+            .await
             .map_err(|e| e.to_string())?
             != cell.raw
         {
             return Err("rollover source usage preimage changed".into());
         }
-        let actual = store
+        let actual = core
+            .ledger()
             .get_usage(&cell.destination, cell.window)
+            .await
             .map_err(|e| e.to_string())?;
         if actual != cell.raw && (complete || actual != UsageLedger::default()) {
             return Err("rollover destination usage preimage changed".into());
@@ -1385,24 +1642,16 @@ fn inspect_extra(store: &dyn RecordStore, carry: &[Carry], complete: bool) -> Re
 }
 
 /// Apply only in a cold process. No callers, recovery tasks, corrections or flushers may exist.
-pub fn apply(
+pub async fn apply(
     plan: &Plan,
     attestation: &ColdAttestation,
-    store: &dyn RecordStore,
-    calls: Arc<dyn StoreCalls>,
+    core: Arc<CoreStore>,
     overlay: &OverlayStore,
     now: u64,
     effective_config_sha256: &str,
 ) -> Result<(), String> {
     let started = std::time::Instant::now();
-    check(
-        plan,
-        store,
-        calls.clone(),
-        overlay,
-        now,
-        effective_config_sha256,
-    )?;
+    check(plan, core.clone(), overlay, now, effective_config_sha256).await?;
     let plan_sha256 = digest(plan)?;
     let epoch = hex::decode(&attestation.epoch).map_err(|_| "invalid quiescence epoch")?;
     if attestation.version != 1
@@ -1417,16 +1666,13 @@ pub fn apply(
     {
         return Err("explicit fresh sender/backend quiescence attestation required".into());
     }
-    let rows = StoreRows(calls.clone());
-    if !rows.supports_record_transaction() {
-        return Err("principal transition requires conditional records".into());
-    }
+    let rows = native_receipt_snapshot(&core).await?;
     let previous = read_head(&rows)?;
     let resuming = previous
         .as_ref()
         .is_some_and(|(h, _)| h.plan_sha256 == plan_sha256);
     if resuming && previous.as_ref().is_some_and(|(h, _)| h.complete) {
-        return verify(plan, store, calls, overlay, now);
+        return verify(plan, core.clone(), overlay, now).await;
     }
     let mut extra = if resuming {
         previous
@@ -1446,15 +1692,19 @@ pub fn apply(
         {
             continue;
         }
-        if store
+        if core
+            .ledger()
             .get_usage(&destination, window)
+            .await
             .map_err(|e| e.to_string())?
             != UsageLedger::default()
         {
             return Err("rollover destination is occupied; implicit merging is forbidden".into());
         }
-        let raw = store
+        let raw = core
+            .ledger()
             .get_usage(&source, window)
+            .await
             .map_err(|e| e.to_string())?;
         extra.push(Carry {
             source,
@@ -1545,7 +1795,7 @@ pub fn apply(
         ),
     });
     transaction(
-        &rows,
+        &core,
         Request {
             version: VERSION,
             op_id: operation(&plan_sha256, &format!("begin:{}", attestation.epoch)),
@@ -1570,17 +1820,22 @@ pub fn apply(
                 mutations
             },
         },
-    )?;
+        plan.specification.witness_binding.as_ref(),
+    )
+    .await?;
     // Existing vk revocations retain their IDs; an explicitly mapped direct-principal denial is
     // also carried forward. No denial is removed and no credential is recreated.
     for principal in carried_denials(plan) {
-        if !store
+        if !core
+            .identity()
             .list_denylist()
+            .await
             .map_err(|e| e.to_string())?
             .contains(&principal)
         {
-            store
+            core.identity()
                 .add_denylist(&principal, "explicit cold principal transition denial")
+                .await
                 .map_err(|_| {
                     "denylist write uncertain; fence retained; settle backend before resume"
                 })?;
@@ -1588,11 +1843,13 @@ pub fn apply(
     }
     // All mutations are absolute. Unknown replies leave the durable pending fence in place.
     for c in plan.carry.iter().chain(extra.iter()) {
-        let current = store
+        let current = core
+            .ledger()
             .get_usage(&c.destination, c.window)
+            .await
             .map_err(|e| e.to_string())?;
         if current != c.raw {
-            store.put_usage(&c.destination,c.window,&c.raw).map_err(|_|"usage write uncertain; fence retained; settle backend and obtain a new quiescence attestation")?;
+            core.ledger().put_usage(&c.destination,c.window,&c.raw).await.map_err(|_|"usage write uncertain; fence retained; settle backend and obtain a new quiescence attestation")?;
         }
     }
     for before in &plan.keys_before {
@@ -1600,30 +1857,32 @@ pub fn apply(
         if after == *before {
             continue;
         }
-        let current = store
+        let current = core
+            .identity()
             .get_key(&before.id)
+            .await
             .map_err(|e| e.to_string())?
             .ok_or("key disappeared")?;
         if !same_key(&current, &after) {
-            store.put_key(&after).map_err(|_|"key write uncertain; fence retained; settle backend and obtain a new quiescence attestation")?;
+            core.identity().put_key(&after).await.map_err(|_|"key write uncertain; fence retained; settle backend and obtain a new quiescence attestation")?;
         }
     }
     let after = after_overlay(plan)?;
-    if digest(&overlay.read_required()?)? != digest(&Some(&after))? {
-        crate::config::overlay::write(overlay,&after).map_err(|_|"overlay write uncertain; fence retained; settle backend and obtain a new quiescence attestation")?;
+    if digest(&overlay.read_required_async().await?)? != digest(&Some(&after))? {
+        crate::config::overlay::write_async(overlay,&after).await.map_err(|_|"overlay write uncertain; fence retained; settle backend and obtain a new quiescence attestation")?;
     }
     let elapsed = started.elapsed();
     let completion_clock = now
         .checked_add(elapsed.as_secs())
         .and_then(|clock| clock.checked_add(u64::from(elapsed.subsec_nanos() != 0)))
         .ok_or("cutover clock overflow; transition remains fenced")?;
-    verify_poststate(plan, store, overlay, completion_clock, &extra)?;
+    verify_poststate(plan, core.clone(), overlay, completion_clock, &extra).await?;
     let complete = Head {
         complete: true,
         ..head
     };
     transaction(
-        &rows,
+        &core,
         Request {
             version: VERSION,
             op_id: operation(&plan_sha256, &format!("complete:{}", digest(&complete)?)),
@@ -1638,18 +1897,20 @@ pub fn apply(
                 value: serde_json::to_vec(&complete).map_err(|e| e.to_string())?,
             }],
         },
+        plan.specification.witness_binding.as_ref(),
     )
+    .await
 }
 
-fn verify_poststate(
+async fn verify_poststate(
     plan: &Plan,
-    store: &dyn RecordStore,
+    core: Arc<CoreStore>,
     overlay: &OverlayStore,
     now: u64,
     extra: &[Carry],
 ) -> Result<(), String> {
-    inspect(plan, store, overlay, now, true)?;
-    inspect_extra(store, extra, true)?;
+    inspect(plan, core.clone(), overlay, now, true).await?;
+    inspect_extra(core.clone(), extra, true).await?;
     for (source, _, window, _) in addresses(&plan.specification, &plan.groups_before, now)? {
         if !plan
             .carry
@@ -1660,13 +1921,19 @@ fn verify_poststate(
             return Err("completion crossed an enforcement window; resume SAME plan with a new settled attestation to reconcile current windows".into());
         }
     }
-    let denied = store.list_denylist().map_err(|e| e.to_string())?;
+    let denied = core
+        .identity()
+        .list_denylist()
+        .await
+        .map_err(|e| e.to_string())?;
     if carried_denials(plan).iter().any(|id| !denied.contains(id)) {
         return Err("incomplete principal denial transition".into());
     }
     for c in &plan.carry {
-        if store
+        if core
+            .ledger()
             .get_usage(&c.destination, c.window)
+            .await
             .map_err(|e| e.to_string())?
             != c.raw
         {
@@ -1674,34 +1941,35 @@ fn verify_poststate(
         }
     }
     for before in &plan.keys_before {
-        let current = store
+        let current = core
+            .identity()
             .get_key(&before.id)
+            .await
             .map_err(|e| e.to_string())?
             .ok_or("missing migrated key")?;
         if !same_key(&current, &target_key(plan, before)?) {
             return Err("incomplete key transition".into());
         }
     }
-    if digest(&overlay.read_required()?)? != digest(&Some(after_overlay(plan)?))? {
+    if digest(&overlay.read_required_async().await?)? != digest(&Some(after_overlay(plan)?))? {
         return Err("incomplete group transition".into());
     }
     Ok(())
 }
 
-pub fn verify(
+pub async fn verify(
     plan: &Plan,
-    store: &dyn RecordStore,
-    calls: Arc<dyn StoreCalls>,
+    core: Arc<CoreStore>,
     overlay: &OverlayStore,
     now: u64,
 ) -> Result<(), String> {
-    compare_witness(calls.as_ref(), &plan.specification)?;
-    let rows = StoreRows(calls);
+    compare_witness(&core, &plan.specification).await?;
+    let rows = native_receipt_snapshot(&core).await?;
     let (head, _) = read_head(&rows)?.ok_or("missing transition receipt")?;
     if !head.complete || head.plan_sha256 != digest(plan)? {
         return Err("transition has no matching completed receipt".into());
     }
-    verify_poststate(plan, store, overlay, now, &head.extra_carry)
+    verify_poststate(plan, core.clone(), overlay, now, &head.extra_carry).await
 }
 
 /// Read a generic annotation from the admitted auth schema, never provider protocol fields.
@@ -1756,7 +2024,7 @@ pub fn requirements(
                 Some(hash) => hash,
                 None if row.linked => executable_sha256()?,
                 None => {
-                    return Err("auth principal provenance has no admitted artifact digest".into())
+                    return Err("auth principal provenance has no admitted artifact digest".into());
                 }
             }
         };
@@ -1813,29 +2081,30 @@ fn same_identity_domains(before: &[Requirement], after: &[Requirement]) -> bool 
 }
 
 /// Safe operator diagnostics; never exposes key inventories, denial holds or provider settings.
-pub fn receipt_head_digest(calls: Arc<dyn StoreCalls>) -> Result<Option<String>, String> {
-    Ok(read_head(&StoreRows(calls))?.map(|(_, bytes)| hex::encode(Sha256::digest(bytes))))
+pub async fn receipt_head_digest(core: Arc<CoreStore>) -> Result<Option<String>, String> {
+    Ok(read_head(&native_receipt_snapshot(&core).await?)?
+        .map(|(_, bytes)| hex::encode(Sha256::digest(bytes))))
 }
 
-pub fn receipt_binding(calls: Arc<dyn StoreCalls>) -> Result<Option<(String, String)>, String> {
-    read_head(&StoreRows(calls))?
+pub async fn receipt_binding(core: Arc<CoreStore>) -> Result<Option<(String, String)>, String> {
+    read_head(&native_receipt_snapshot(&core).await?)?
         .map(|(head, _)| Ok((head.plan_sha256, digest(&head.requirements)?)))
         .transpose()
 }
 
-pub fn reauthorize(
+pub async fn reauthorize(
     receipt: &Reauthorization,
-    calls: Arc<dyn StoreCalls>,
+    core: Arc<CoreStore>,
     store_sha256: &str,
     required: &[Requirement],
 ) -> Result<(), String> {
-    let rows = StoreRows(calls);
+    let rows = native_receipt_snapshot(&core).await?;
     let (mut head, before) =
         read_head(&rows)?.ok_or("reauthorization requires an existing baseline")?;
     let attestation = &receipt.attestation;
     let epoch = hex::decode(&attestation.epoch).map_err(|_| "invalid cold attestation epoch")?;
     if !head.complete
-        || receipt.version != 1
+        || !receipt_version(receipt.version, receipt.witness_binding.as_ref())
         || receipt.baseline_sha256 != head.plan_sha256
         || head.store_config_sha256 != store_sha256
         || !receipt.identity_outputs_unchanged
@@ -1899,7 +2168,7 @@ pub fn reauthorize(
         value: receipt_digest.as_bytes().to_vec(),
     });
     transaction(
-        &rows,
+        &core,
         Request {
             version: VERSION,
             op_id: operation(&receipt_digest, "reauthorize"),
@@ -1922,7 +2191,9 @@ pub fn reauthorize(
             ],
             mutations,
         },
+        receipt.witness_binding.as_ref(),
     )
+    .await
 }
 
 /// Explicit creation proof is supplied by the namespace owner. An empty key scan is never proof.
@@ -1932,6 +2203,8 @@ pub struct FreshNamespace {
     pub version: u32,
     pub store_config_sha256: String,
     pub requirements: Vec<Requirement>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub witness_binding: Option<WitnessBinding>,
     pub witness: Option<StoreWitness>,
     #[serde(default)]
     pub ephemeral_instance: bool,
@@ -1945,20 +2218,20 @@ pub struct FreshNamespace {
     pub reason: String,
 }
 
-pub fn initialize_fresh(
+pub async fn initialize_fresh(
     receipt: &FreshNamespace,
-    calls: Arc<dyn StoreCalls>,
+    core: Arc<CoreStore>,
     store_sha256: &str,
     required: &[Requirement],
 ) -> Result<(), String> {
-    initialize_namespace(receipt, calls, store_sha256, required, false)
+    initialize_namespace(receipt, core, store_sha256, required, false).await
 }
 
 /// Explicit startup-only creation attestation; the caller continues serving on these SAME calls.
 /// Ephemerality is necessary but never establishes namespace freshness by itself.
-pub fn initialize_ephemeral_fresh(
+pub async fn initialize_ephemeral_fresh(
     receipt: &FreshNamespace,
-    calls: Arc<dyn StoreCalls>,
+    core: Arc<CoreStore>,
     store_sha256: &str,
     required: &[Requirement],
     effective_ephemeral: bool,
@@ -1966,15 +2239,15 @@ pub fn initialize_ephemeral_fresh(
     if !effective_ephemeral || !receipt.ephemeral_instance || !receipt.exclusive_instance {
         return Err("explicit new exclusive ephemeral-instance attestation and actual ephemeral Store required".into());
     }
-    initialize_namespace(receipt, calls, store_sha256, required, true)
+    initialize_namespace(receipt, core, store_sha256, required, true).await
 }
 
 /// Explicit operator-selected record initialization on the SAME newly created ephemeral Store.
 /// No receipt is returned for retained state or a durable Store. The newly committed principal
 /// baseline is the exact public witness consumed by the existing cold record bootstrap path.
-pub fn initialize_ephemeral_with_record_bootstrap(
+pub async fn initialize_ephemeral_with_record_bootstrap(
     receipt: &FreshNamespace,
-    calls: Arc<dyn StoreCalls>,
+    core: Arc<CoreStore>,
     store_sha256: &str,
     required: &[Requirement],
     effective_ephemeral: bool,
@@ -1992,12 +2265,13 @@ pub fn initialize_ephemeral_with_record_bootstrap(
     }
     initialize_ephemeral_fresh(
         receipt,
-        calls.clone(),
+        core.clone(),
         store_sha256,
         required,
         effective_ephemeral,
-    )?;
-    let (head, bytes) = read_head(&StoreRows(calls))?
+    )
+    .await?;
+    let (head, bytes) = read_head(&native_receipt_snapshot(&core).await?)?
         .ok_or("fresh principal baseline disappeared before record bootstrap")?;
     if !head.fresh || !head.complete || head.plan_sha256 != digest(receipt)? {
         return Err("fresh principal baseline changed before record bootstrap".into());
@@ -2022,14 +2296,14 @@ pub fn initialize_ephemeral_with_record_bootstrap(
     })
 }
 
-fn initialize_namespace(
+async fn initialize_namespace(
     receipt: &FreshNamespace,
-    calls: Arc<dyn StoreCalls>,
+    core: Arc<CoreStore>,
     store_sha256: &str,
     required: &[Requirement],
     ephemeral: bool,
 ) -> Result<(), String> {
-    if receipt.version != 1
+    if !receipt_version(receipt.version, receipt.witness_binding.as_ref())
         || !receipt.newly_created_namespace
         || !receipt.sender_quiesced
         || !receipt.backend_quiesced
@@ -2078,15 +2352,12 @@ fn initialize_namespace(
         rollover: None,
         extra_carry: Vec::new(),
     };
-    let rows = StoreRows(calls);
-    if !rows.supports_record_transaction() {
-        return Err("fresh namespace baseline requires conditional records".into());
-    }
+    let rows = native_receipt_snapshot(&core).await?;
     if read_head(&rows)?.is_some() {
         return Err("namespace already has a principal baseline or pending transition".into());
     }
     transaction(
-        &rows,
+        &core,
         Request {
             version: VERSION,
             op_id: operation(&receipt_sha256, "fresh"),
@@ -2107,7 +2378,9 @@ fn initialize_namespace(
                 mutations
             },
         },
+        receipt.witness_binding.as_ref(),
     )
+    .await
 }
 
 #[cfg(test)]

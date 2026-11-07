@@ -366,23 +366,14 @@ impl AdminService {
                     .iter()
                     .map(|b| (b.bucket_id.to_string(), b.window.to_string()))
                     .collect();
-                tokio::task::spawn_blocking(move || {
-                    wanted
-                        .iter()
-                        .map(|(id, window)| {
-                            gov.derived_bucket_usage_priced(&cost, id, window, true, now)
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .await
-                .map_err(|e| {
-                    busbar_kernel::diagnostics::diag_error!(
-                        busbar_kernel::diagnostics::GROUP_USAGE_READ_FAILED,
-                        group = name, err = %e,
-                        "group usage read failed"
+                let mut reads = Vec::with_capacity(wanted.len());
+                for (id, window) in &wanted {
+                    reads.push(
+                        gov.derived_bucket_usage_priced_async(&cost, id, window, true, now)
+                            .await,
                     );
-                    AdminError::Internal
-                })?
+                }
+                reads
             }
             None => Vec::new(),
         };
@@ -1212,43 +1203,30 @@ impl AdminService {
             return Ok(empty());
         };
         type UsageFetchError = (&'static str, busbar_kernel::governance::RecordStoreError);
-        let joined =
-            tokio::task::spawn_blocking(move || -> Result<FetchedUsage<Count>, UsageFetchError> {
-                let rows = gov
-                    .metering_for(bucket)
-                    .map_err(|e| ("usage.metering", e))?;
-
-                let names = gov
-                    .all_keys()
-                    .map_err(|e| ("usage.keys", e))?
-                    .into_iter()
-                    .map(|k| (k.id, k.name))
-                    .collect();
-
-                let adjustments = gov
-                    .usage_adjustments_exact(bucket)
-                    .map_err(|e| ("usage.adjustments", e))?;
-                Ok((rows, names, adjustments))
-            })
-            .await;
+        let fetched: Result<FetchedUsage<Count>, UsageFetchError> = async {
+            let rows = gov
+                .metering_for_async(bucket)
+                .await
+                .map_err(|e| ("usage.metering", e))?;
+            let names = gov
+                .all_keys_async()
+                .await
+                .map_err(|e| ("usage.keys", e))?
+                .into_iter()
+                .map(|k| (k.id, k.name))
+                .collect();
+            let adjustments = gov
+                .usage_adjustments_exact_async(bucket)
+                .await
+                .map_err(|e| ("usage.adjustments", e))?;
+            Ok((rows, names, adjustments))
+        }
+        .await;
         let cost = self.app.cost.clone();
-        let (rows, names, adjustments) = match joined {
-            Ok(Ok(f)) => f,
-
-            Ok(Err((operation, e))) => {
-                diag_error!(ADMIN_STORE_OPERATION_FAILED, operation, error = %e, "admin store operation failed");
-                return Err(AdminError::Internal);
-            }
-            Err(join_err) => {
-                diag_error!(
-                    USAGE_BLOCKING_TASK_JOIN_FAILED,
-                    operation = "usage",
-                    error = %join_err,
-                    "admin blocking task failed"
-                );
-                return Err(AdminError::Internal);
-            }
-        };
+        let (rows, names, adjustments) = fetched.map_err(|(operation, error)| {
+            diag_error!(ADMIN_STORE_OPERATION_FAILED, operation, error = %error, "admin store operation failed");
+            AdminError::Internal
+        })?;
 
         project_usage_rows_exact(
             cost,

@@ -57,9 +57,7 @@ pub trait HostServices: Send + Sync {
         _caller: &Caller,
         _kind: u32,
         _scope: &[u8],
-        _done: Box<
-            dyn FnOnce(Result<crate::abi::sdk::store::conditional::Expected, &'static str>) + Send,
-        >,
+        _done: Box<dyn FnOnce(Result<crate::host_records::Expected, &'static str>) + Send>,
     ) -> Result<(), &'static str> {
         Err("chain observation unsupported")
     }
@@ -128,7 +126,8 @@ pub trait HostServices: Send + Sync {
         counterparty: &str,
         item: &str,
         digest: &str,
-    ) -> Stored;
+        later: Later,
+    ) -> Ran;
 
     /// `trust.decide`: the operator's decision (`approve`, at `expected` when stated) about the
     fn trust_decide(
@@ -137,7 +136,8 @@ pub trait HostServices: Send + Sync {
         key: TrustKeyRef<'_>,
         expected: Option<&str>,
         approve: bool,
-    ) -> Stored;
+        later: Later,
+    ) -> Ran;
 
     /// `trust.state`: the kernel's trust state of `counterparty` and its items (a `KEY_*` value;
     fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored;
@@ -176,7 +176,8 @@ pub trait HostServices: Send + Sync {
         unit: Option<u64>,
         ttl_secs: u64,
         record: &[u8],
-    ) -> Stored;
+        later: Later,
+    ) -> Ran;
 
     /// `ticket.take`: the record of the ticket that admitted `unit`, once: READY `TICKET_TAKEN`
     fn ticket_take(&self, caller: &Caller, unit: Option<u64>) -> Stored;
@@ -239,7 +240,7 @@ pub trait HostServices: Send + Sync {
     fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran;
 
     /// `snapshot.read`: the host's metric families of `scope` (`abi::host::service`'s
-    fn snapshot_read(&self, caller: &Caller, scope: u32) -> Snapshot;
+    fn snapshot_read(&self, caller: &Caller, scope: u32, later: Later) -> Ran;
 }
 
 /// A `hook.call` request, as the host copied it out of the caller's `in` (validated:
@@ -265,6 +266,34 @@ pub enum Snapshot {
     NotReady,
     /// Refused, for this reason (the caller was not granted the snapshot, or the host has none).
     Refused(&'static str),
+}
+
+impl Snapshot {
+    /// Pointer-free completion custody. The loader lays out ABI pointers only
+    /// when delivering into the current caller-owned buffer.
+    pub fn stored(self) -> Stored {
+        match self {
+            Self::Families(families) => match serde_json::to_vec(&families) {
+                Ok(bytes) => {
+                    let mut stored = Stored::ready(families.len() as u64);
+                    stored.bytes = bytes;
+                    stored
+                }
+                Err(_) => {
+                    let mut stored = Stored::refused("snapshot encoding failed");
+                    stored.outcome = Outcome::Failed;
+                    stored
+                }
+            },
+            Self::NotReady => {
+                let mut stored = Stored::refused("the snapshot is not ready");
+                stored.outcome = Outcome::Failed;
+                stored.value = crate::abi::host::service::SNAPSHOT_NOT_READY_VALUE;
+                stored
+            }
+            Self::Refused(why) => Stored::refused(why),
+        }
+    }
 }
 
 /// A `unit.nest` request, as the host copied it out of the caller's `in`.

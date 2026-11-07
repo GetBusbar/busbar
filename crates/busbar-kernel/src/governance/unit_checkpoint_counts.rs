@@ -96,10 +96,12 @@ impl GovState {
 
     /// Once a recovered unit's durable receipts settle, reload its exact targets before allowing
     /// further admission. Active ordinary flushes retain ownership and postpone this refresh.
-    pub(super) fn refresh_recovered_unit_targets(
+    pub(super) async fn refresh_recovered_unit_targets(
         &self,
         snapshot: &UnitCheckpoint,
     ) -> RecordStoreResult<()> {
+        // Capture the entire hot value, then release every shard/flush guard
+        // before crossing Store. Publish only if that same value still owns it.
         let mut shards: Vec<_> = snapshot
             .targets
             .iter()
@@ -107,6 +109,90 @@ impl GovState {
             .collect();
         shards.sort_unstable();
         shards.dedup();
+        let capture = || -> RecordStoreResult<Vec<Option<BudgetCell>>> {
+            let guards: Vec<_> = shards
+                .iter()
+                .map(|index| {
+                    self.budget.shards[*index]
+                        .map
+                        .read()
+                        .unwrap_or_else(|p| p.into_inner())
+                })
+                .collect();
+            let flights = self
+                .budget_flushes
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            snapshot
+                .targets
+                .iter()
+                .map(|target| {
+                    let index = shards
+                        .binary_search(&self.budget.shard_index(&target.bucket))
+                        .expect("target shard held");
+                    let cell = guards[index].get(&target.bucket);
+                    if cell.is_some_and(|cell| {
+                        cell.dirty || cell.flushing != 0 || cell.correction.is_some()
+                    }) || flights.keys().any(|(bucket, _)| bucket == &target.bucket)
+                    {
+                        return Err(RecordStoreError(
+                            "recovered unit target still has ordinary raw custody".into(),
+                        ));
+                    }
+                    Ok(cell.cloned())
+                })
+                .collect()
+        };
+        let before = capture()?;
+        let epoch = self.recovery_selection_epoch();
+        let store = self.core_store()?;
+        let check_pending = || -> RecordStoreResult<()> {
+            for target in &snapshot.targets {
+                let namespace = crate::persistence::partition::namespace(
+                    super::persistence::ledger::USAGE,
+                    &[&target.window.to_be_bytes()],
+                );
+                if store
+                    .has_pending_namespace(namespace)
+                    .map_err(|e| RecordStoreError(format!("checkpoint ledger custody: {e:?}")))?
+                {
+                    return Err(RecordStoreError(
+                        "recovered unit target has an unresolved native candidate".into(),
+                    ));
+                }
+            }
+            Ok(())
+        };
+        check_pending()?;
+        let mut refreshed = Vec::new();
+        for (target, previous) in snapshot.targets.iter().zip(&before) {
+            if previous
+                .as_ref()
+                .is_some_and(|cell| cell.window_start > target.window)
+            {
+                refreshed.push(None);
+                continue;
+            }
+            let (plain, dated) = store
+                .ledger()
+                .get_usage_pair(&target.bucket, &era_bucket(&target.bucket), target.window)
+                .await?;
+            let mut cell = super::state::durable_cell(plain, dated, target.window)?;
+            cell.last_touch = crate::store::now();
+            if let Some(previous) = previous {
+                cell.group_owners = previous.group_owners.clone();
+            }
+            if let Some(group) = &target.group {
+                cell.group_owners.insert(group.clone());
+            }
+            refreshed.push(Some(cell));
+        }
+        check_pending()?;
+        if self.recovery_selection_epoch() != epoch {
+            return Err(RecordStoreError(
+                "recovery selection changed during unit reload".into(),
+            ));
+        }
         let mut guards: Vec<_> = shards
             .iter()
             .map(|index| {
@@ -120,46 +206,31 @@ impl GovState {
             .budget_flushes
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        for target in &snapshot.targets {
+        for (target, previous) in snapshot.targets.iter().zip(&before) {
             let index = shards
                 .binary_search(&self.budget.shard_index(&target.bucket))
                 .expect("target shard held");
-            if guards[index]
-                .get(&target.bucket)
-                .is_some_and(|cell| cell.dirty || cell.flushing != 0 || cell.correction.is_some())
+            if !same_checkpoint_cell(previous.as_ref(), guards[index].get(&target.bucket))
                 || flights.keys().any(|(bucket, _)| bucket == &target.bucket)
             {
                 return Err(RecordStoreError(
-                    "recovered unit target still has ordinary raw custody".into(),
+                    "running money target changed during durable reload".into(),
                 ));
             }
         }
-        drop(flights);
-        let mut refreshed = Vec::new();
-        for target in &snapshot.targets {
-            let index = shards
-                .binary_search(&self.budget.shard_index(&target.bucket))
-                .expect("target shard held");
-            let previous = guards[index].get(&target.bucket);
-            if previous.is_some_and(|cell| cell.window_start > target.window) {
-                continue;
-            }
-            let plain = self.store.get_usage(&target.bucket, target.window)?;
-            let dated = self
-                .store
-                .get_usage(&era_bucket(&target.bucket), target.window)?;
-            let mut cell = super::state::durable_cell(plain, dated, target.window)?;
-            cell.last_touch = crate::store::now();
-            if let Some(previous) = previous {
-                cell.group_owners = previous.group_owners.clone();
-            }
-            if let Some(group) = &target.group {
-                cell.group_owners.insert(group.clone());
-            }
-            refreshed.push((index, target.bucket.clone(), cell));
+        check_pending()?;
+        if self.recovery_selection_epoch() != epoch {
+            return Err(RecordStoreError(
+                "recovery selection changed before unit reload publication".into(),
+            ));
         }
-        for (index, bucket, cell) in refreshed {
-            guards[index].insert(bucket, cell);
+        for (target, cell) in snapshot.targets.iter().zip(refreshed) {
+            if let Some(cell) = cell {
+                let index = shards
+                    .binary_search(&self.budget.shard_index(&target.bucket))
+                    .expect("target shard held");
+                guards[index].insert(target.bucket.clone(), cell);
+            }
         }
         Ok(())
     }
@@ -284,5 +355,40 @@ impl GovState {
             guards[index].insert(bucket, cell);
         }
         Ok(())
+    }
+}
+
+// Exact hot-snapshot comparison is the publication revision check. No partial
+// comparison of only totals can hide a concurrent fee, era, watermark or owner.
+fn same_checkpoint_cell(a: Option<&BudgetCell>, b: Option<&BudgetCell>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            a.correction.is_none()
+                && b.correction.is_none()
+                && a.group_owners == b.group_owners
+                && a.flushing == b.flushing
+                && a.flushing_windows == b.flushing_windows
+                && a.window_start == b.window_start
+                && a.requests == b.requests
+                && a.billable_requests == b.billable_requests
+                && a.flushed_requests == b.flushed_requests
+                && a.flushed_billable_requests == b.flushed_billable_requests
+                && a.fee_eras == b.fee_eras
+                && a.flushed_fee_eras == b.flushed_fee_eras
+                && a.rolled == b.rolled
+                && a.rolled_eras == b.rolled_eras
+                && a.dirty == b.dirty
+                && a.last_touch == b.last_touch
+                && a.models.len() == b.models.len()
+                && a.models.iter().zip(&b.models).all(|(a, b)| {
+                    a.model == b.model
+                        && a.era == b.era
+                        && a.cur == b.cur
+                        && a.flushed == b.flushed
+                        && a.flushed_era == b.flushed_era
+                })
+        }
+        _ => false,
     }
 }

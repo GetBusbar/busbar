@@ -59,6 +59,7 @@ pub(crate) mod neutral;
 #[must_use]
 pub fn kernel_services(dest: Arc<dyn DestJudge>) -> KernelServices {
     KernelServices::new()
+        .with_mono_clock(Arc::new(crate::root::loader::dispatch::now_ns))
         .with_dest_judge(dest)
         .with_disk_lane(crate::root::linked::disk_lane())
 }
@@ -102,12 +103,12 @@ struct TicketEntry {
     source: Arc<TicketSource>,
     ready: bool,
     version: u64,
-    store: Arc<dyn busbar_contract::records::RecordStore>,
+    store: Arc<busbar_kernel::persistence::facade::CoreStore>,
     expires_at: u64,
 }
 
 struct TicketSource {
-    store: Arc<dyn busbar_contract::records::RecordStore>,
+    store: Arc<busbar_kernel::persistence::facade::CoreStore>,
     key: Arc<busbar_contract::records::VirtualKey>,
     money: std::sync::Weak<PlaneMoney>,
     instance: String,
@@ -187,7 +188,7 @@ impl TicketCustody {
         app: &busbar_kernel::state::App,
     ) -> Option<TicketSourceOwner> {
         let source = Arc::new(TicketSource {
-            store: app.governance.as_ref()?.store(),
+            store: app.governance.as_ref()?.core_store_handle().ok()?,
             key: Arc::clone(key?),
             money: Arc::downgrade(&served.money),
             instance: served.instance.clone(),
@@ -411,26 +412,17 @@ impl TicketCustody {
         if snapshots.is_empty() {
             return;
         }
-        let Ok(dead) = tokio::task::spawn_blocking(move || {
-            snapshots
-                .into_iter()
-                .filter_map(|(id, version, exp, store)| {
-                    (!store
-                        .plane_token_live(
-                            busbar_kernel::governance::TICKET_RECORD_KIND,
-                            &id,
-                            exp,
-                            busbar_kernel::store::now(),
-                        )
-                        .unwrap_or(false))
-                    .then_some((id, version))
-                })
-                .collect::<Vec<_>>()
-        })
-        .await
-        else {
-            return;
-        };
+        let mut dead = Vec::new();
+        for (id, version, expiry, store) in snapshots {
+            // An unavailable or malformed observation cannot release custody.
+            // The native owner evaluates expiry against the Store's clock.
+            if matches!(
+                busbar_kernel::governance::ticket_record_live(store, &id, expiry).await,
+                Ok(false)
+            ) {
+                dead.push((id, version));
+            }
+        }
         let removed = {
             let mut entries = self
                 .entries
@@ -478,8 +470,9 @@ pub(crate) fn claim_ticket_custody(
 
 pub struct LiveTickets(pub std::sync::Weak<busbar_kernel::state::AppHandle>);
 
+#[async_trait::async_trait]
 impl busbar_kernel::host_services::TicketPress for LiveTickets {
-    fn mint_for_unit(
+    async fn mint_for_unit(
         &self,
         unit: u64,
         caller: &Caller,
@@ -532,10 +525,11 @@ impl busbar_kernel::host_services::TicketPress for LiveTickets {
             now,
             |identity| node.bind(&source, identity),
         )
+        .await
         .map_err(TicketRefusal::reason)
     }
 
-    fn mint(
+    async fn mint(
         &self,
         key_id: &str,
         prefix: &str,
@@ -561,6 +555,7 @@ impl busbar_kernel::host_services::TicketPress for LiveTickets {
             record,
             now,
         )
+        .await
         .map_err(TicketRefusal::reason)
     }
 }
@@ -585,9 +580,10 @@ pub fn attach(
     }
 
     if let Some(gov) = records {
-        if let Some(calls) = gov.store_calls() {
-            kernel.attach_records(Arc::new(busbar_kernel::host_records::StoreRows(calls)));
-        }
+        let core = gov
+            .core_store_handle()
+            .expect("admitted governance persistence");
+        kernel.attach_persistence(core);
     }
     if let Some(owner) = demotion_owner(planes) {
         kernel.attach_demotions(Arc::clone(demotions), owner);
@@ -633,7 +629,10 @@ impl LateServices {
     #[must_use]
     pub fn new() -> Arc<Self> {
         Arc::new(LateServices {
-            slot: ServicesSlot::late(Arc::new(NotInstalled(KernelServices::new()))),
+            slot: ServicesSlot::late(Arc::new(NotInstalled(
+                KernelServices::new()
+                    .with_mono_clock(Arc::new(crate::root::loader::dispatch::now_ns)),
+            ))),
             kernel: OnceLock::new(),
         })
     }
@@ -721,16 +720,17 @@ impl HostServices for NotInstalled {
         _: busbar_contract::services::TrustKeyRef<'_>,
         _: Option<&str>,
         _: bool,
-    ) -> Stored {
-        not_installed()
+        _: Later,
+    ) -> Ran {
+        Ran::Now(not_installed())
     }
 
     fn trust_state(&self, _: &Caller, _: &str) -> Stored {
         not_installed()
     }
 
-    fn trust_sight_item(&self, _: &Caller, _: &str, _: &str, _: &str) -> Stored {
-        not_installed()
+    fn trust_sight_item(&self, _: &Caller, _: &str, _: &str, _: &str, _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
     fn trust_serves(&self, _: &Caller, _: &str, _: Option<&str>, _: Option<&str>) -> Stored {
@@ -757,8 +757,8 @@ impl HostServices for NotInstalled {
         not_installed()
     }
 
-    fn ticket_mint(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8]) -> Stored {
-        not_installed()
+    fn ticket_mint(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8], _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
     fn ticket_take(&self, _: &Caller, _: Option<u64>) -> Stored {
@@ -809,8 +809,8 @@ impl HostServices for NotInstalled {
         Ran::Now(not_installed())
     }
 
-    fn snapshot_read(&self, _: &Caller, _: u32) -> busbar_contract::services::Snapshot {
-        busbar_contract::services::Snapshot::Refused(NOT_INSTALLED)
+    fn snapshot_read(&self, _: &Caller, _: u32, _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 }
 
@@ -1064,7 +1064,7 @@ impl DoorApply {
         )
     }
 
-    pub fn apply(&self, app: &busbar_kernel::state::App) {
+    pub async fn apply(&self, app: &busbar_kernel::state::App) {
         if self.served_facts.section == busbar_contract::section::RESERVED_POOLS_KEY {
             return;
         }
@@ -1102,14 +1102,17 @@ impl DoorApply {
         };
 
         let scope = busbar_contract::config_time::ConfigScope::config_time();
-        match self.refreshed(
-            &section,
-            &handed,
-            &owned,
-            now.generation + 1,
-            Arc::clone(&app.secret_resolver) as Arc<dyn busbar_contract::secret::SecretResolve>,
-            &scope,
-        ) {
+        match self
+            .refreshed(
+                &section,
+                &handed,
+                &owned,
+                now.generation + 1,
+                Arc::clone(&app.secret_resolver) as Arc<dyn busbar_contract::secret::SecretResolve>,
+                &scope,
+            )
+            .await
+        {
             Ok(next) => {
                 let installed_generation = next.generation;
                 *self
@@ -1152,7 +1155,7 @@ impl DoorApply {
         }
     }
 
-    fn refreshed(
+    async fn refreshed(
         &self,
         section: &serde_yaml::Value,
         handed: &serde_yaml::Value,
@@ -1229,6 +1232,7 @@ impl DoorApply {
         };
         admission
             .commit_typed()
+            .await
             .map_err(DoorRefreshError::Admission)?;
         if let Some(routes) = fetches {
             bind_fetches(
@@ -1281,9 +1285,9 @@ pub fn applied_section(
 pub struct DoorAppliers(Vec<Arc<DoorApply>>);
 
 impl DoorAppliers {
-    pub fn apply(&self, app: &busbar_kernel::state::App) {
+    pub async fn apply(&self, app: &busbar_kernel::state::App) {
         for plane in &self.0 {
-            plane.apply(app);
+            plane.apply(app).await;
         }
     }
 
@@ -1504,11 +1508,10 @@ struct LeaseTick {
 }
 
 impl LeaseTick {
-    fn tick(&self) {
-        if let Some(lane) = self.node.journal_lane() {
-            lane.refresh_held_lease();
-        }
-        self.node.retry_held_journal();
+    async fn tick(&self) -> Result<(), String> {
+        // Native node-lease renewal belongs to the book's root-owned lifecycle.
+        // This worker only retries original journal custody asynchronously.
+        self.node.retry_held_journal().await
     }
 
     async fn ticks(self) {
@@ -1520,6 +1523,9 @@ impl LeaseTick {
 
         let mut sweep: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> =
             None;
+        type JournalFlush =
+            std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
+        let mut flushing: Option<JournalFlush> = None;
         loop {
             tokio::select! {
                 biased;
@@ -1528,12 +1534,23 @@ impl LeaseTick {
                     return;
                 }
                 _ = at.tick() => {
-                    let tick = Arc::clone(&this);
-                    let _refreshed = tokio::task::spawn_blocking(move || tick.tick()).await;
+                    if flushing.is_none() {
+                        let tick = Arc::clone(&this);
+                        flushing = Some(Box::pin(async move { tick.tick().await }));
+                    }
                     if sweep.is_none() {
                         let custody = Arc::clone(&this.node.ticket_custody);
                         sweep = Some(Box::pin(async move { custody.sweep().await }));
                     }
+                }
+                result = async {
+                    match flushing.as_mut() {
+                        Some(flushing) => flushing.await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    flushing = None;
+                    if let Err(error) = result { tracing::warn!(reason = error, "native journal custody is still pending"); }
                 }
                 () = async {
                     match sweep.as_mut() {
@@ -1547,7 +1564,7 @@ impl LeaseTick {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn compose_served(
+pub async fn compose_served(
     gov: Option<Arc<busbar_kernel::governance::GovState>>,
     doors: &[(String, DoorPlane)],
     dispatcher: &Arc<Dispatcher>,
@@ -1570,10 +1587,11 @@ pub fn compose_served(
         tables,
         &|_| datagram_binds(doors, sections),
     )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn compose_served_checked(
+pub async fn compose_served_checked(
     gov: Option<Arc<busbar_kernel::governance::GovState>>,
     doors: &[(String, DoorPlane)],
     dispatcher: &Arc<Dispatcher>,
@@ -1622,7 +1640,8 @@ pub fn compose_served_checked(
         Some(&egress),
         stage.as_ref(),
         tables,
-    )?;
+    )
+    .await?;
     served.post = Some(post);
     let binds = check(&served)?;
 
@@ -1744,8 +1763,14 @@ impl busbar_kernel::plane_driver::CallerFacts for GovCaller {
         }
     }
 
-    fn hook_read(&self, hook: &str, principal: Option<&str>, dialect: &str, identity: bool) {
-        self.host.hook_read(hook, principal, dialect, identity);
+    fn hook_read<'a>(
+        &'a self,
+        hook: &'a str,
+        principal: Option<&'a str>,
+        dialect: &'a str,
+        identity: bool,
+    ) -> busbar_kernel::audit::amend::ReadConfirmation<'a> {
+        self.host.hook_read(hook, principal, dialect, identity)
     }
 }
 
@@ -2005,7 +2030,7 @@ pub struct DoorEgress<'a> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn compose_planes(
+pub async fn compose_planes(
     doors: &[(String, DoorPlane)],
     dispatcher: &Arc<Dispatcher>,
     late: &LateServices,
@@ -2034,10 +2059,11 @@ pub fn compose_planes(
         &scope,
         tables,
     )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn compose_planes_over(
+pub(crate) async fn compose_planes_over(
     linked: &crate::root::linked::Linked,
     doors: &[(String, DoorPlane)],
     dispatcher: &Arc<Dispatcher>,
@@ -2132,6 +2158,7 @@ pub(crate) fn compose_planes_over(
             Arc::clone(&kernel),
             (served_facts.section, section),
         )
+        .await
         .map_err(|e| format!("{instance}: {e}"))?
         .with_records(Arc::clone(&kernel), caller.clone());
 
@@ -5138,12 +5165,20 @@ impl DataRoutes {
             }
         };
 
-        drop(carrier_end);
-
         self.post
             .reported(unit, report_of(&served.money, unit, &live.facts));
-        slot.finish_with(&self.post, &units);
+        if let Err(error) = slot.finish_with(&self.post, &units).await {
+            // Persistence uncertainty cannot rewrite the observed client/plane
+            // outcome or invent a different fee/refund verdict. The original
+            // audit and checkpoint custody remain pending; no ticket becomes
+            // ready until the native audit confirmation succeeds.
+            tracing::error!(?error, "session audit was not durably confirmed");
+        }
         served.money.settle_end(unit, status);
+        // This callback only unpairs the physical carrier. Keep it alive across
+        // terminal confirmation, then release it on failure as well: a real
+        // disconnect is resource cleanup, never a durable-success assertion.
+        drop(carrier_end);
     }
 
     async fn open_datagram(

@@ -142,15 +142,10 @@ async fn proof_role_pool_ceiling_refuses_an_over_ceiling_rotate() {
         &plugin_config,
         &directory,
     )
+    .await
     .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -163,13 +158,15 @@ async fn proof_role_pool_ceiling_refuses_an_over_ceiling_rotate() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let gov = app.governance.as_ref().expect("actual governance").clone();
@@ -193,7 +190,15 @@ async fn proof_role_pool_ceiling_refuses_an_over_ceiling_rotate() {
         .as_str()
         .expect("the actual operator minted the existing key")
         .to_string();
-    let before = gov.store().get_key(&id).unwrap().unwrap().generation_hash;
+    let before = gov
+        .core_store()
+        .unwrap()
+        .identity()
+        .get_key(&id)
+        .await
+        .unwrap()
+        .unwrap()
+        .generation_hash;
     let response = client
         .post(format!("http://{addr}/api/v1/admin/keys/{id}/rotate"))
         .header("x-admin-token", &delegated_token)
@@ -203,7 +208,15 @@ async fn proof_role_pool_ceiling_refuses_an_over_ceiling_rotate() {
     let status = response.status().as_u16();
     let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
     handle.abort();
-    let after = gov.store().get_key(&id).unwrap().unwrap().generation_hash;
+    let after = gov
+        .core_store()
+        .unwrap()
+        .identity()
+        .get_key(&id)
+        .await
+        .unwrap()
+        .unwrap()
+        .generation_hash;
     let moved = before != after;
     assert_eq!(
         status, 400,
@@ -354,15 +367,10 @@ async fn proof_role_pool_ceiling_rotates_an_in_ceiling_key() {
         &plugin_config,
         &directory,
     )
+    .await
     .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -375,13 +383,15 @@ async fn proof_role_pool_ceiling_rotates_an_in_ceiling_key() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let gov = app.governance.as_ref().expect("actual governance").clone();
@@ -406,7 +416,15 @@ async fn proof_role_pool_ceiling_rotates_an_in_ceiling_key() {
         .as_str()
         .expect("the actual operator minted the existing key")
         .to_string();
-    let before = gov.store().get_key(&id).unwrap().unwrap().generation_hash;
+    let before = gov
+        .core_store()
+        .unwrap()
+        .identity()
+        .get_key(&id)
+        .await
+        .unwrap()
+        .unwrap()
+        .generation_hash;
     let response = client
         .post(format!("http://{addr}/api/v1/admin/keys/{id}/rotate"))
         .header("x-admin-token", &delegated_token)
@@ -416,7 +434,15 @@ async fn proof_role_pool_ceiling_rotates_an_in_ceiling_key() {
     let status = response.status().as_u16();
     let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
     handle.abort();
-    let after = gov.store().get_key(&id).unwrap().unwrap().generation_hash;
+    let after = gov
+        .core_store()
+        .unwrap()
+        .identity()
+        .get_key(&id)
+        .await
+        .unwrap()
+        .unwrap()
+        .generation_hash;
     let moved = before != after;
     assert_eq!(status, 200, "an in-ceiling rotate answers: {body}");
     assert!(body["token"].is_string(), "{body}");
@@ -557,15 +583,10 @@ async fn a_past_ceiling_rotate_releases_its_idempotency_claim() {
         &plugin_config,
         &directory,
     )
+    .await
     .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -578,13 +599,15 @@ async fn a_past_ceiling_rotate_releases_its_idempotency_claim() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let router = busbar_kernel::build_router(app.clone());

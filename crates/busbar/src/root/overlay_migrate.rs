@@ -2,10 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Offline import of the overlay selected by an actual 1.5.5 deployment.
-use busbar_contract::store_calls::OpenedStore;
 use busbar_kernel::config;
+use busbar_kernel::persistence::facade::CoreStore;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub const FLAG: &str = "--migrate-overlay";
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
@@ -25,7 +26,9 @@ pub fn command(args: impl Iterator<Item = String>) -> Result<Option<PathBuf>, &'
             .split_once('=')
             .map_or((arg.as_str(), None), |(flag, value)| (flag, Some(value)));
         if !matches!(flag, FLAG | "--config" | "-c" | "--providers") {
-            return Err("overlay migration accepts only --config and --providers alongside --migrate-overlay");
+            return Err(
+                "overlay migration accepts only --config and --providers alongside --migrate-overlay",
+            );
         }
         let value = assigned
             .or_else(|| args.next().map(String::as_str))
@@ -122,13 +125,13 @@ pub fn capture_store(raw: &str, old_config: &Path) -> Result<(String, bool), Str
     let path = source_path(old_config, raw, env.as_deref())?;
     match std::fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok((raw.to_owned(), false))
+            return Ok((raw.to_owned(), false));
         }
         Err(_) => return Err("cannot inspect the old deployment's overlay".into()),
         Ok(_) => {}
     }
     let bytes = zeroize::Zeroizing::new(bounded_bytes(&path)?);
-    let overlay = config::overlay::parse_legacy_overlay(&bytes)?;
+    let overlay = busbar_migrations::config::overlay_legacy::parse_legacy_overlay(&bytes)?;
     let Some(store) = overlay
         .get("root")
         .and_then(|root| root.get("store"))
@@ -142,7 +145,7 @@ pub fn capture_store(raw: &str, old_config: &Path) -> Result<(String, bool), Str
         .ok_or("old configuration is not a mapping")?;
     root.insert(
         serde_yaml::Value::from("store"),
-        config::migrate_plugins::yaml_value(store)
+        busbar_migrations::config::migrate_plugins::yaml_value(store)
             .map_err(|_| "cannot encode the historical Store selection")?,
     );
     let yaml =
@@ -150,19 +153,21 @@ pub fn capture_store(raw: &str, old_config: &Path) -> Result<(String, bool), Str
     Ok((yaml, true))
 }
 
-pub fn run(
+pub async fn run(
     old_config: &Path,
     current_config: &Path,
     mut deploy: config::DeployCfg,
     defs: &std::collections::HashMap<String, config::ProviderDef>,
-    opened: &OpenedStore,
+    core: &Arc<CoreStore>,
     locked: bool,
 ) -> Result<(), String> {
     let old_bytes = zeroize::Zeroizing::new(bounded_bytes(old_config)?);
     let old_text = std::str::from_utf8(&old_bytes).map_err(|_| "old configuration is not UTF-8")?;
     let old_document = old_document(old_text)?;
     if old_document["config"]["locked"].as_bool() == Some(true) {
-        println!("{{\"schema\":\"busbar.overlay-file-migration/1\",\"status\":\"not_required\",\"source_preserved\":true}}");
+        println!(
+            "{{\"schema\":\"busbar.overlay-file-migration/1\",\"status\":\"not_required\",\"source_preserved\":true}}"
+        );
         return Ok(());
     }
     let env = std::env::var_os("BUSBAR_CONFIG_OVERLAY").map(PathBuf::from);
@@ -170,17 +175,15 @@ pub fn run(
     if std::fs::symlink_metadata(&path)
         .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
     {
-        println!("{{\"schema\":\"busbar.overlay-file-migration/1\",\"status\":\"not_required\",\"source_preserved\":true}}");
+        println!(
+            "{{\"schema\":\"busbar.overlay-file-migration/1\",\"status\":\"not_required\",\"source_preserved\":true}}"
+        );
         return Ok(());
     }
     if locked {
         return Err("migrate the overlay into a mutable current configuration before locking the deployment".into());
     }
-    let calls = opened
-        .calls
-        .as_ref()
-        .ok_or("overlay migration requires typed Store calls")?;
-    if calls.ephemeral() != Some(false) {
+    if core.info().durability == busbar_contract::persistence::Durability::Ephemeral {
         return Err(
             "overlay migration requires a Store instance that confirms durable persistence".into(),
         );
@@ -190,7 +193,7 @@ pub fn run(
     let current =
         std::str::from_utf8(&current).map_err(|_| "current configuration is not UTF-8")?;
     let host = super::config_migrate::RootHost::for_document(current, current_config);
-    let doc = config::migrate_overlay::migrate_overlay_with(&bytes, &host)?;
+    let doc = busbar_migrations::config::migrate_overlay::migrate_overlay_with(&bytes, &host)?;
     for (key, entries) in &doc.named_maps {
         let section = config::named_map::NamedMapSection::sections()
             .into_iter()
@@ -225,9 +228,17 @@ pub fn run(
     let mut source_sha256 = [0; 32];
     hex::decode_to_slice(busbar_contract::sha256_hex(&source), &mut source_sha256)
         .map_err(|_| "cannot digest overlay migration source")?;
-    let store = config::overlay::OverlayStore::new(calls.clone())?;
-    let applied = store.import_once(source_sha256, &doc)?;
-    println!("{{\"schema\":\"busbar.overlay-file-migration/1\",\"status\":\"{}\",\"source_preserved\":true,\"source_sha256\":\"{}\"}}", if applied { "applied" } else { "already_applied" }, hex::encode(source_sha256));
+    let store = config::overlay::OverlayStore::from_core(core.clone())?;
+    let applied = store.import_once_async(source_sha256, &doc).await?;
+    println!(
+        "{{\"schema\":\"busbar.overlay-file-migration/1\",\"status\":\"{}\",\"source_preserved\":true,\"source_sha256\":\"{}\"}}",
+        if applied {
+            "applied"
+        } else {
+            "already_applied"
+        },
+        hex::encode(source_sha256)
+    );
     Ok(())
 }
 

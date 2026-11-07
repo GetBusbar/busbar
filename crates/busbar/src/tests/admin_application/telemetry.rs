@@ -34,7 +34,7 @@ fn isolated() -> bool {
     true
 }
 
-fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
+async fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
     crate::dist_root_install::install();
     let store_library = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
@@ -86,15 +86,11 @@ fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -107,16 +103,20 @@ fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
-    busbar_kernel::boot::hydrate_all(&app).expect("the actual Store hydrates");
+    busbar_kernel::boot::hydrate_all(&app)
+        .await
+        .expect("the actual Store hydrates");
     (app, Scratch(directory))
 }
 
@@ -129,7 +129,7 @@ async fn telemetry_is_an_admin_read_protected_by_the_operator_door() {
         busbar_core_admin::required_scope(busbar_core_admin::KernelVerb::GetTelemetry),
         busbar_core_admin::VerbScope::ReadOnly
     );
-    let (app, _scratch) = application();
+    let (app, _scratch) = application().await;
     let router = busbar_core_admin::build_router(app);
     use tower::ServiceExt as _;
     for bearer in [None, Some("wrong")] {
@@ -173,7 +173,7 @@ async fn telemetry_http_route_reads_the_bounded_source_after_admin_authorization
         return;
     }
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
-    let (app, _scratch) = application();
+    let (app, _scratch) = application().await;
     let router = busbar_core_admin::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -208,9 +208,11 @@ async fn telemetry_http_route_reads_the_bounded_source_after_admin_authorization
         assert!(body["identities"].as_array().unwrap().len() <= 32);
         let observed_nonce = body["process_boot_nonce"].as_str().unwrap();
         assert_eq!(observed_nonce.len(), 32);
-        assert!(observed_nonce
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+        assert!(
+            observed_nonce
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        );
         if let Some(prior) = &nonce {
             assert_eq!(prior, observed_nonce);
         }
@@ -275,7 +277,7 @@ async fn info_process_generation_is_available_without_metrics_and_changes_on_res
         return;
     }
     assert!(!busbar_kernel::snapshot::recorder_installed());
-    let (app, _scratch) = application();
+    let (app, _scratch) = application().await;
     let (_, router, handle) =
         busbar_core_admin::build_split_routers_with_limits(app, 64 * 1024, 16, false);
     assert!(!busbar_kernel::snapshot::recorder_installed());
@@ -300,9 +302,11 @@ async fn info_process_generation_is_available_without_metrics_and_changes_on_res
         .expect("native OS randomness is available")
         .to_string();
     assert_eq!(nonce.len(), 32);
-    assert!(nonce
-        .bytes()
-        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+    assert!(
+        nonce
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    );
     assert!(
         !busbar_kernel::snapshot::recorder_installed(),
         "info must not enable metrics"
@@ -321,7 +325,7 @@ async fn info_process_generation_is_available_without_metrics_and_changes_on_res
     );
     let mut next = (*handle.load()).clone();
     next.config_version += 1;
-    handle.swap(Arc::new(next));
+    handle.swap(Arc::new(next)).await;
     let reloaded: serde_json::Value = client
         .get(&info_url)
         .bearer_auth(TOKEN)

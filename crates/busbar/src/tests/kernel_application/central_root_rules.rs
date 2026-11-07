@@ -33,8 +33,8 @@ impl Hearing {
 
 use crate::root::test_plugins as plugins;
 
-#[test]
-fn boot_refusal_releases_the_completed_candidates_routes_without_committing_limits() {
+#[tokio::test]
+async fn boot_refusal_releases_the_completed_candidates_routes_without_committing_limits() {
     #[derive(Default)]
     struct RefuseBoot {
         routes: Mutex<Option<std::sync::Weak<busbar_kernel::plugin_routes::PluginRouteTable>>>,
@@ -95,7 +95,7 @@ fn boot_refusal_releases_the_completed_candidates_routes_without_committing_limi
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let refusing = Arc::new(RefuseBoot::default());
     let rules: Arc<dyn RootRules> = refusing.clone();
-    let refusal = match busbar_kernel::build_app_from_config(
+    let refusal = match crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -104,7 +104,9 @@ fn boot_refusal_releases_the_completed_candidates_routes_without_committing_limi
         (None, None),
         None,
         &rules,
-    ) {
+    )
+    .await
+    {
         Err(refusal) => refusal,
         Ok(_) => panic!("startup published a refused candidate"),
     };
@@ -123,8 +125,8 @@ fn boot_refusal_releases_the_completed_candidates_routes_without_committing_limi
     assert!(!refusing.committed.load(std::sync::atomic::Ordering::SeqCst));
 }
 
-#[test]
-fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_the_old_app() {
+#[tokio::test]
+async fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_the_old_app() {
     struct RefuseBuilt(std::sync::atomic::AtomicUsize);
     impl RootRules for RefuseBuilt {
         fn check(&self, _: &busbar_kernel::config::RootCfg) -> Result<(), String> {
@@ -176,7 +178,7 @@ fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_the_old
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let accepting: Arc<dyn RootRules> = Arc::new(busbar_kernel::appbuild::AcceptAll);
-    let (prior, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (prior, rotate, limits) = crate::root::real_store::build_app(
         {
             let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default())
                 .expect("the same product deployment resolves");
@@ -192,28 +194,34 @@ fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_the_old
         None,
         &accepting,
     )
+    .await
     .expect("the original generation builds");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        prior
-            .governance
-            .as_ref()
-            .expect("the application has its configured governance Store")
-            .store_calls()
-            .expect("the configured product Store exposes actual calls"),
-        busbar_kernel::door::op_id().counter(),
-    );
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                prior
+                    .governance
+                    .as_ref()
+                    .expect("the application has its configured governance Store")
+                    .core_store_handle()
+                    .expect("the configured product Store exposes actual calls"),
+                busbar_kernel::door::op_id().counter(),
+            )
+            .expect("the native rate-card Store binds");
+    };
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the configured product Store boots its rate-card history");
-    limits.keep().expect("the original limits commit");
+    limits.keep().await.expect("the original limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let prior_version = prior.config_version;
     let reject = Arc::new(RefuseBuilt(std::sync::atomic::AtomicUsize::new(0)));
     let rules: Arc<dyn RootRules> = reject.clone();
-    let result = busbar_kernel::build_app_from_config(
+    let result = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -222,7 +230,8 @@ fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_the_old
         (None, None),
         Some(&prior),
         &rules,
-    );
+    )
+    .await;
     let refusal = match result {
         Err(refusal) => refusal,
         Ok(_) => panic!("the completed candidate escaped its listener refusal"),
@@ -232,8 +241,8 @@ fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_the_old
     assert_eq!(prior.config_version, prior_version);
 }
 
-#[test]
-fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
+#[tokio::test]
+async fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -280,7 +289,7 @@ fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
     let hearing = Arc::new(Hearing::default());
     let rules: Arc<dyn RootRules> = hearing.clone();
 
-    let (_app, _, unkept) = busbar_kernel::build_app_from_config(
+    let (_app, _, unkept) = crate::root::real_store::build_app(
         {
             let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default())
                 .expect("the same product deployment resolves");
@@ -296,6 +305,7 @@ fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
         None,
         &rules,
     )
+    .await
     .expect("the configuration builds");
     drop(unkept);
     assert!(
@@ -303,7 +313,7 @@ fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
         "a build dropped unkept raises nothing"
     );
 
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -313,22 +323,28 @@ fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
         None,
         &rules,
     )
+    .await
     .expect("the configuration builds");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .expect("the application has its configured governance Store")
-            .store_calls()
-            .expect("the configured product Store exposes actual calls"),
-        busbar_kernel::door::op_id().counter(),
-    );
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the application has its configured governance Store")
+                    .core_store_handle()
+                    .expect("the configured product Store exposes actual calls"),
+                busbar_kernel::door::op_id().counter(),
+            )
+            .expect("the native rate-card Store binds");
+    };
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the configured product Store boots its rate-card history");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert_eq!(
         hearing.heard(),
@@ -337,8 +353,8 @@ fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
     );
 }
 
-#[test]
-fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
+#[tokio::test]
+async fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
     const REFUSED: &str = "https://refused.root-rules.test";
     struct Refusing;
     impl busbar_kernel::appbuild::RootRules for Refusing {
@@ -390,7 +406,7 @@ fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
     let rules: Arc<dyn RootRules> = Arc::new(Refusing);
     config.public_url = Some(REFUSED.to_string());
     assert_eq!(
-        busbar_kernel::build_app_from_config(
+        crate::root::real_store::build_app(
             {
                 let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default())
                     .expect("the same product deployment resolves");
@@ -406,12 +422,13 @@ fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
             None,
             &rules,
         )
+        .await
         .map(|_| ()),
         Err("`agent_push.ca` is not a usable trust anchor".to_string()),
         "the rules' words, before anything is built"
     );
     config.public_url = None;
-    let (app, _, _) = busbar_kernel::build_app_from_config(
+    let (app, _, _) = crate::root::real_store::build_app(
         {
             let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default())
                 .expect("the same product deployment resolves");
@@ -427,6 +444,7 @@ fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
         None,
         &rules,
     )
+    .await
     .expect("a configuration they pass builds as before");
     assert!(
         std::sync::Arc::ptr_eq(&app.root_rules, &rules),

@@ -329,8 +329,8 @@ fn the_signing_key_reference_is_listed_for_the_kernel_to_resolve() {
     assert!(resolved.oauth_as.expect("accepted").secret_refs.is_empty());
 }
 
-#[test]
-fn a_refresh_chain_has_a_bounded_lifetime() {
+#[tokio::test]
+async fn a_refresh_chain_has_a_bounded_lifetime() {
     let plain: crate::config::OauthAsCfg =
         serde_json::from_value(serde_json::json!({"issuer": "https://as.example.com"}))
             .expect("parses");
@@ -340,6 +340,7 @@ fn a_refresh_chain_has_a_bounded_lifetime() {
         Vec::new(),
         crate::cimd::unconnected(),
     )
+    .await
     .expect("builds");
     assert_eq!(
         plane.server().config().refresh_token_ttl,
@@ -358,6 +359,7 @@ fn a_refresh_chain_has_a_bounded_lifetime() {
         Vec::new(),
         crate::cimd::unconnected(),
     )
+    .await
     .expect("builds");
     assert_eq!(
         plane.server().config().refresh_token_ttl,

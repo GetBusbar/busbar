@@ -481,7 +481,7 @@ fn the_host_refuses_a_capacity_with_a_null_buffer() {
 }
 
 #[test]
-fn the_services_that_never_pend_are_exactly_the_stated_eighteen() {
+fn the_services_that_never_pend_are_exactly_the_stated_fourteen() {
     let never: Vec<u32> = (0..SERVICES).filter(|s| !may_pend(*s)).collect();
     assert_eq!(
         never,
@@ -494,15 +494,11 @@ fn the_services_that_never_pend_are_exactly_the_stated_eighteen() {
             op::RANDOM_FILL,
             op::NEED_ADMIT,
             op::TRUST_VERIFY,
-            op::SNAPSHOT_READ,
-            op::TRUST_SIGHT_ITEM,
             op::TRUST_SERVES,
-            op::TRUST_DECIDE,
             op::TRUST_STATE,
             op::SESSION_EMIT,
             op::UNIT_HAND_IN,
             op::UNIT_REFUSE,
-            op::TICKET_MINT,
             op::TICKET_TAKE
         ]
     );
@@ -1038,7 +1034,7 @@ fn trust_decide_answers_a_verdict_or_an_undecided_code_and_never_pends() {
         decision: TRUST_DECIDE_APPROVE,
         _reserved: 0,
     };
-    assert!(!may_pend(op::TRUST_DECIDE));
+    assert!(may_pend(op::TRUST_DECIDE));
     let mut o = out(Outcome::Ready);
     for value in [
         TRUST_DECIDED_SERVING,
@@ -1060,7 +1056,7 @@ fn trust_decide_answers_a_verdict_or_an_undecided_code_and_never_pends() {
         );
     }
     let pending = out(Outcome::Pending);
-    assert!(check_trust_decide(&i, ready(&pending), &pending).is_err());
+    assert!(check_trust_decide(&i, ready(&pending), &pending).is_ok());
 }
 
 /// `snapshot.read`'s buffer alignment is the scrape layout's: every record the host lays out in

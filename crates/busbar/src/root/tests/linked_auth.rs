@@ -4,23 +4,17 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use busbar_contract::auth::{AuthModule, AuthVerdict, Principal};
 use busbar_kernel::auth::{AdminAuthChain, Operator};
 use busbar_kernel::config::{self, AuthCfg, AuthChainEntry, RoleBindingCfg, SecretRef};
-use busbar_kernel::governance::GovState;
 
 const TOKEN: &str = "admintok";
 
 fn link() {
+    crate::dist_root_install::install();
     busbar_kernel::preflight::install_linked_auth(
         crate::LINKED.auths,
         crate::root::auth_bindings::operator_words(),
     );
-    busbar_kernel_testkit::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
-    for decls in crate::LINKED.protocols {
-        busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
-    }
-
     crate::root::test_plane_registry::register();
 }
 
@@ -29,17 +23,28 @@ fn op() -> &'static str {
     config::operator_provider()
 }
 
-fn app(chain: &[&str], extra: Vec<(&str, Box<dyn AuthModule>)>) -> Arc<busbar_kernel::state::App> {
+async fn app(chain: &[&str], extra: Vec<&str>) -> Arc<busbar_kernel::state::App> {
     link();
-    let store = crate::root::real_store::records();
-    let gov = Arc::new(GovState::new(store, Some(TOKEN.to_string())).expect("governance"));
-    let mut app = busbar_kernel_testkit::test_support::TestApp::new()
-        .governance(gov)
-        .admin_chain(chain.iter().map(|s| s.to_string()).collect());
-    for (name, module) in extra {
-        app = app.admin_module(name, module);
+    let directory = crate::root::test_plugins::scratch("linked-auth-app");
+    let token = directory.join("admin.token");
+    let key = directory.join("signing.key");
+    std::fs::write(&token, TOKEN).unwrap();
+    std::fs::write(&key, hex::encode([7u8; 32])).unwrap();
+    let mut app = credentials_app(cfg_with_credentials(&token, &key), None)
+        .await
+        .expect("actual native auth app");
+    app.admin_chain = chain.iter().map(|name| (*name).into()).collect();
+    let mut admin = Arc::try_unwrap(app.admin_modules).expect("new fixture owns its admin chain");
+    for name in extra {
+        admin.modules.insert(
+            name.into(),
+            busbar_kernel::auth::AdminModule {
+                calls: synthetic_calls(name, "any"),
+            },
+        );
     }
-    app.build()
+    app.admin_modules = Arc::new(admin);
+    Arc::new(app)
 }
 
 async fn probe(
@@ -99,18 +104,130 @@ fn unauthorized() -> String {
     )
 }
 
-struct AnyCredential;
+mod synthetic {
+    use busbar_contract::abi::mechanism::door::{MarkWord, Statement};
+    use busbar_contract::abi::{
+        auth::AuthPoints,
+        sdk::{
+            auth_door::{
+                carrier, verify_tail, with_tail, Answer, Verdict, VerifyPlugin, VerifyView,
+            },
+            door::statement,
+            life::Refusal,
+        },
+    };
+    use busbar_contract::auth_calls::VerifiedIdentity;
 
-impl AuthModule for AnyCredential {
-    fn name(&self) -> &'static str {
-        "any-credential"
+    pub struct Judge {
+        mode: String,
     }
-    fn authenticate(&self, candidate: Option<&str>) -> AuthVerdict {
-        match candidate {
-            Some(_) => AuthVerdict::Identify(Principal::from_id("idp:someone")),
-            None => AuthVerdict::Pass,
+    impl VerifyPlugin for Judge {
+        fn open_refusing(settings: &[u8], _: &[&[u8]]) -> Result<Self, Refusal> {
+            let value: serde_json::Value = serde_json::from_slice(settings)
+                .map_err(|_| Refusal::failed("invalid fixture settings"))?;
+            let mode = value["mode"]
+                .as_str()
+                .ok_or_else(|| Refusal::failed("fixture mode required"))?;
+            if !matches!(mode, "any" | "groups" | "head-token") {
+                return Err(Refusal::failed("unknown fixture mode"));
+            }
+            Ok(Self { mode: mode.into() })
+        }
+        fn verify(&self, request: &VerifyView<'_>) -> Answer {
+            let verdict = match self.mode.as_str() {
+                "any" => {
+                    if request.credential().is_some() {
+                        Verdict::Identity(VerifiedIdentity {
+                            subject: "idp:someone".into(),
+                            ..Default::default()
+                        })
+                    } else {
+                        Verdict::Pass
+                    }
+                }
+                "groups" => match request
+                    .credential()
+                    .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                    .and_then(|value| value.strip_prefix("grp:"))
+                {
+                    Some(group) => Verdict::Identity(VerifiedIdentity {
+                        subject: "group-user".into(),
+                        groups: vec![group.into()],
+                        ..Default::default()
+                    }),
+                    None => Verdict::Pass,
+                },
+                "head-token" => {
+                    if request.line("authorization") == Some(b"Bearer admintok".as_slice()) {
+                        Verdict::Identity(VerifiedIdentity {
+                            subject: "operator".into(),
+                            ..Default::default()
+                        })
+                    } else {
+                        Verdict::Reject
+                    }
+                }
+                _ => unreachable!(),
+            };
+            verdict.into()
         }
     }
+    const CARRIERS: &[MarkWord] = &[carrier("authorization")];
+    busbar_contract::auth_verify_door!(
+        Judge,
+        with_tail(
+            Statement {
+                mark_words: CARRIERS.as_ptr(),
+                mark_words_len: CARRIERS.len(),
+                ..statement("linked-auth-fixture", "1.0.0", 64)
+            },
+            &verify_tail(0, AuthPoints::HEAD)
+        )
+    );
+}
+
+fn synthetic_registry(alias: &str) -> Arc<crate::root::loader::PluginRegistry> {
+    Arc::new(
+        crate::root::loader::PluginRegistry::empty()
+            .link(vec![crate::root::loader::LinkedPlugin::auth_door_named(
+                "linked-auth-fixture",
+                alias,
+                synthetic::door,
+            )])
+            .expect("the actual SDK auth fixture registers"),
+    )
+}
+fn synthetic_calls(alias: &str, mode: &str) -> Arc<dyn busbar_contract::auth_calls::AuthCalls> {
+    let dispatcher = Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+        Default::default(),
+    ));
+    crate::root::loader::auth_axis::AuthRows::new(synthetic_registry(alias), dispatcher)
+        .open(alias, alias, &serde_json::json!({"mode":mode}))
+        .expect("the SDK auth fixture opens")
+}
+fn synthetic_auth(alias: &str, mode: &str) -> busbar_kernel::auth::AuthMiddleware {
+    link();
+    let registry: Arc<dyn busbar_contract::plugin_rows::PluginRows> = synthetic_registry(alias);
+    let mut entry = AuthChainEntry::bare(alias);
+    entry.settings = serde_json::json!({"mode":mode})
+        .as_object()
+        .unwrap()
+        .clone();
+    busbar_kernel::auth::AuthMiddleware::new(
+        &AuthCfg::with_chain(vec![entry]),
+        &registry,
+        &config::secret::SecretResolver::builtins_only(),
+    )
+    .expect("the kernel opens the actual SDK auth chain")
+}
+
+fn shape_config() -> config::RootCfg {
+    let deploy = config::deploy_from_deserializer(serde_json::json!({
+        "providers":{},"models":{},"auth":{"chain":[],"admin_auth":[]},
+        "store":{"module":"fixture-shape-store"},
+    }))
+    .expect("structural validation deployment");
+    config::resolve(&deploy, &Default::default()).expect("structural validation configuration")
 }
 
 #[test]
@@ -165,7 +282,7 @@ fn the_info_auth_modules_are_the_inbound_rows_only() {
 
 #[tokio::test]
 async fn the_admin_door_answers_both_carriers_through_the_linked_row() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
     let op = op();
     let jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvciJ9.c2ln";
     let cases: [(Option<&str>, Option<&str>, u16); 9] = [
@@ -180,7 +297,7 @@ async fn the_admin_door_answers_both_carriers_through_the_linked_row() {
         (Some(jws), None, 401),
     ];
     for (bearer, header, want) in cases {
-        let (status, body) = probe(app(&[op], Vec::new()), bearer, header).await;
+        let (status, body) = probe(app(&[op], Vec::new()).await, bearer, header).await;
         assert_eq!(status, want, "bearer={bearer:?} header={header:?}: {body}");
         if want == 401 {
             assert_eq!(body, unauthorized(), "bearer={bearer:?} header={header:?}");
@@ -190,24 +307,24 @@ async fn the_admin_door_answers_both_carriers_through_the_linked_row() {
 
 #[tokio::test]
 async fn the_chain_ends_at_the_operator_credential_on_any_wrong_token() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
     let op = op();
     let jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvciJ9.c2ln";
     let chain = [op, "any-credential"];
-    let with_idp = || app(&chain, vec![("any-credential", Box::new(AnyCredential))]);
+    let with_idp = || async { app(&chain, vec!["any-credential"]).await };
 
-    let (status, body) = probe(with_idp(), Some(jws), None).await;
+    let (status, body) = probe(with_idp().await, Some(jws), None).await;
     assert_eq!(
         (status, body),
         (401, unauthorized()),
         "a wrong JWS-shaped token is refused terminally at the first arm, as in 1.5.5"
     );
-    let (status, body) = probe(with_idp(), Some(TOKEN), None).await;
+    let (status, body) = probe(with_idp().await, Some(TOKEN), None).await;
     assert_eq!(
         status, 200,
         "the operator token still identifies at the first arm: {body}"
     );
-    let (status, body) = probe(with_idp(), Some("wrong-opaque-token"), None).await;
+    let (status, body) = probe(with_idp().await, Some("wrong-opaque-token"), None).await;
     assert_eq!(
         (status, body),
         (401, unauthorized()),
@@ -217,9 +334,9 @@ async fn the_chain_ends_at_the_operator_credential_on_any_wrong_token() {
 
 #[tokio::test]
 async fn without_the_root_row_the_operator_token_is_refused() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
     let op = op();
-    let with_row = app(&[op], Vec::new());
+    let with_row = app(&[op], Vec::new()).await;
 
     let mut without_row = (*with_row).clone();
     without_row.admin_modules = Arc::new(AdminAuthChain {
@@ -278,7 +395,7 @@ fn an_unregistered_auth_module_is_refused_with_the_1_5_5_bytes() {
 #[test]
 fn a_role_shadowing_the_operator_principal_is_refused() {
     link();
-    let mut cfg = busbar_kernel_testkit::test_support::cfg_with_provider_api_key(SecretRef::none());
+    let mut cfg = shape_config();
     let mut auth = AuthCfg::default_none();
     auth.chain = vec![AuthChainEntry::bare(config::KEYS_MODULE)];
     let mut roles = HashMap::new();
@@ -302,8 +419,7 @@ fn a_role_shadowing_the_operator_principal_is_refused() {
 fn the_operator_token_ref_is_checked_by_shape_only() {
     link();
     let build = |token: SecretRef| -> Result<(), Vec<String>> {
-        let mut cfg =
-            busbar_kernel_testkit::test_support::cfg_with_provider_api_key(SecretRef::none());
+        let mut cfg = shape_config();
         let mut auth = AuthCfg::default_none();
         let mut entry = AuthChainEntry::bare(config::operator_provider());
         entry.token = Some(token);
@@ -338,32 +454,79 @@ fn cfg_with_credentials(
     token_path: &std::path::Path,
     key_path: &std::path::Path,
 ) -> busbar_kernel::config::RootCfg {
-    let mut cfg = busbar_kernel_testkit::test_support::cfg_with_provider_api_key(
-        busbar_kernel::config::SecretRef::none(),
-    );
-    let mut admin_entry =
-        busbar_kernel::config::AuthChainEntry::bare(busbar_kernel::config::operator_provider());
-    admin_entry.token = Some(busbar_kernel::config::SecretRef::file(
-        token_path.to_string_lossy().to_string(),
-    ));
-    cfg.auth = Some(busbar_kernel::config::AuthCfg {
-        signing_key: Some(busbar_kernel::config::SecretRef::file(
-            key_path.to_string_lossy().to_string(),
-        )),
-        chain: vec![],
-        admin_auth: vec![admin_entry],
-        role_bindings: busbar_kernel::config::RoleBindings::new(),
-        methods: Default::default(),
-        key_ttl: None,
-        policy: Default::default(),
+    let directory = token_path.parent().expect("fixture secret directory");
+    let library_path = crate::root::test_plugins::application_store_library();
+    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
+        .expect("actual native Store rendering")
+        .expect("Store statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("native Store declaration")
+        .name;
+    let archive = directory.join("store.tar.gz");
+    if !archive.exists() {
+        let mut manifest = crate::root::test_plugins::manifest(
+            "store",
+            &module,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
+        );
+        manifest.statement = Some(hex::encode(statement));
+        let bytes = std::fs::read(library_path).expect("actual native Store image");
+        let archive_bytes = crate::root::test_plugins::signed(
+            &crate::dist_root_install::release_key(),
+            manifest,
+            &bytes,
+        );
+        std::fs::write(archive, archive_bytes).expect("stage actual Store archive");
+    }
+    let operator = config::operator_provider();
+    let mut document = serde_json::json!({
+        "providers": {}, "models": {},
+        "auth": {"chain":[],"admin_auth":[operator],"signing_key":{"file":key_path}},
+        "identity-providers": {},
+        "store": {"module": module,"settings":crate::root::test_plugins::application_store_settings(directory)},
     });
-    cfg
+    document["identity-providers"][operator] = serde_json::json!({
+        "module":operator,"token":{"file":token_path},
+    });
+    let deploy = config::deploy_from_deserializer(document).expect("credential deployment parses");
+    config::resolve(&deploy, &Default::default()).expect("credential deployment resolves")
 }
 
-#[test]
-fn admin_token_secret_ref_re_resolves_on_apply() {
+async fn credentials_app(
+    cfg: config::RootCfg,
+    prior: Option<&busbar_kernel::state::App>,
+) -> Result<busbar_kernel::state::App, String> {
+    let database = std::path::PathBuf::from(
+        cfg.store.as_ref().expect("explicit native Store").settings["db_path"]
+            .as_str()
+            .expect("fixture SQLite path"),
+    );
+    let plugins =
+        crate::root::test_plugins::trusted_config(database.parent().expect("Store directory"));
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = crate::root::real_store::build_app(
+        cfg,
+        plugins,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        prior,
+        &rules,
+    )
+    .await?;
+    drop(limits);
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    Ok(app)
+}
+
+#[tokio::test]
+async fn admin_token_secret_ref_re_resolves_on_apply() {
     link();
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
     let dir = std::env::temp_dir().join(format!("busbar-high7-token-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let token_path = dir.join("admin.token");
@@ -371,9 +534,9 @@ fn admin_token_secret_ref_re_resolves_on_apply() {
     std::fs::write(&token_path, "tok-v1").unwrap();
     std::fs::write(&key_path, hex::encode([7u8; 32])).unwrap();
 
-    let prior =
-        busbar_kernel_testkit::app::build_once(cfg_with_credentials(&token_path, &key_path), None)
-            .expect("boot");
+    let prior = credentials_app(cfg_with_credentials(&token_path, &key_path), None)
+        .await
+        .expect("boot");
     let gov = prior.governance.clone().expect("governance");
     assert_eq!(
         gov.admin_token_hash().as_deref(),
@@ -382,11 +545,9 @@ fn admin_token_secret_ref_re_resolves_on_apply() {
     );
 
     std::fs::write(&token_path, "tok-v2").unwrap();
-    let next = busbar_kernel_testkit::app::build_once(
-        cfg_with_credentials(&token_path, &key_path),
-        Some(&prior),
-    )
-    .expect("apply");
+    let next = credentials_app(cfg_with_credentials(&token_path, &key_path), Some(&prior))
+        .await
+        .expect("apply");
 
     assert!(
         std::sync::Arc::ptr_eq(next.governance.as_ref().unwrap(), &gov),
@@ -415,10 +576,10 @@ fn admin_token_secret_ref_re_resolves_on_apply() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
+#[tokio::test]
+async fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
     link();
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
     let dir = std::env::temp_dir().join(format!("busbar-high7-signing-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let token_path = dir.join("admin.token");
@@ -426,9 +587,9 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
     std::fs::write(&token_path, "tok").unwrap();
     std::fs::write(&key_path, hex::encode([7u8; 32])).unwrap();
 
-    let prior =
-        busbar_kernel_testkit::app::build_once(cfg_with_credentials(&token_path, &key_path), None)
-            .expect("boot");
+    let prior = credentials_app(cfg_with_credentials(&token_path, &key_path), None)
+        .await
+        .expect("boot");
     let gov = prior.governance.clone().expect("governance");
     let spec = busbar_kernel::governance::NewKeySpec {
         name: "k".into(),
@@ -438,7 +599,10 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
         ..Default::default()
     };
     let now = busbar_kernel::store::now();
-    let (_binding, old_token) = gov.mint_signed(spec, now + 10_000, now).expect("mint");
+    let (_binding, old_token) = gov
+        .mint_signed_async(spec, now + 10_000, now)
+        .await
+        .expect("mint");
     assert!(
         gov.verify_token(old_token.expose(&busbar_kernel::seal::lend()), now, None)
             .is_some(),
@@ -446,11 +610,9 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
     );
 
     std::fs::write(&key_path, hex::encode([9u8; 32])).unwrap();
-    busbar_kernel_testkit::app::build_once(
-        cfg_with_credentials(&token_path, &key_path),
-        Some(&prior),
-    )
-    .expect("apply");
+    credentials_app(cfg_with_credentials(&token_path, &key_path), Some(&prior))
+        .await
+        .expect("apply");
 
     assert!(
         gov.verify_token(old_token.expose(&busbar_kernel::seal::lend()), now, None)
@@ -465,21 +627,21 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
         ..Default::default()
     };
     let (_b2, fresh) = gov
-        .mint_signed(spec2, now + 10_000, now)
+        .mint_signed_async(spec2, now + 10_000, now)
+        .await
         .expect("mint under the new key");
     assert!(
-        gov.verify_token(fresh.expose(&busbar_kernel::seal::lend()), now, None).is_some(),
+        gov.verify_token(fresh.expose(&busbar_kernel::seal::lend()), now, None)
+            .is_some(),
         "the engine mints AND verifies under the rotated key (signer and verifier swap as one unit)"
     );
 
     std::fs::remove_file(&key_path).unwrap();
-    let err = match busbar_kernel_testkit::app::build_once(
-        cfg_with_credentials(&token_path, &key_path),
-        Some(&prior),
-    ) {
-        Err(e) => e,
-        Ok(_) => panic!("an unresolvable signing-key ref must refuse the apply"),
-    };
+    let err =
+        match credentials_app(cfg_with_credentials(&token_path, &key_path), Some(&prior)).await {
+            Err(e) => e,
+            Ok(_) => panic!("an unresolvable signing-key ref must refuse the apply"),
+        };
     assert!(
         err.contains("signing_key"),
         "the refusal names the ref: {err}"
@@ -487,10 +649,10 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn blank_admin_token_refuses_to_start() {
+#[tokio::test]
+async fn blank_admin_token_refuses_to_start() {
     link();
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
     let dir = std::env::temp_dir().join(format!("busbar-blank-admin-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let key_path = dir.join("signing.key");
@@ -499,10 +661,7 @@ fn blank_admin_token_refuses_to_start() {
     for blank in ["", "   ", "\n\t "] {
         let token_path = dir.join("admin.token");
         std::fs::write(&token_path, blank).unwrap();
-        let err = match busbar_kernel_testkit::app::build_once(
-            cfg_with_credentials(&token_path, &key_path),
-            None,
-        ) {
+        let err = match credentials_app(cfg_with_credentials(&token_path, &key_path), None).await {
             Err(e) => e,
             Ok(_) => panic!("a blank admin token ({blank:?}) must refuse to start"),
         };
@@ -520,9 +679,9 @@ fn blank_admin_token_refuses_to_start() {
 
     let token_path = dir.join("admin.token");
     std::fs::write(&token_path, "real-token").unwrap();
-    let app =
-        busbar_kernel_testkit::app::build_once(cfg_with_credentials(&token_path, &key_path), None)
-            .expect("boot");
+    let app = credentials_app(cfg_with_credentials(&token_path, &key_path), None)
+        .await
+        .expect("boot");
     let gov = app.governance.clone().expect("governance");
     assert_eq!(
         gov.admin_token_hash().as_deref(),
@@ -556,7 +715,7 @@ async fn the_operator_module_named_by_its_canonical_name_is_the_operator_credent
 
 async fn renamed_provider_is_the_operator_credential(module: &str) {
     link();
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
     let dir = std::env::temp_dir().join(format!(
         "busbar-op-by-module-{module}-{}",
         std::process::id()
@@ -574,7 +733,7 @@ async fn renamed_provider_is_the_operator_credential(module: &str) {
     let ops: config::IdentityProviderCfg =
         serde_yaml::from_str(&format!("module: {module}")).expect("ops");
     cfg.identity_providers.insert("ops".to_string(), ops);
-    let app = Arc::new(busbar_kernel_testkit::app::build_once(cfg, None).expect("boot"));
+    let app = Arc::new(credentials_app(cfg, None).await.expect("boot"));
     let _ = std::fs::remove_dir_all(&dir);
 
     assert!(
@@ -603,12 +762,12 @@ async fn renamed_provider_is_the_operator_credential(module: &str) {
 
 #[tokio::test]
 async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that_module() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
     let op = op();
 
-    let named_op = || {
-        let base = app(&[op], Vec::new());
-        let defs = [(op, AnyCredential.name())].into_iter();
+    let named_op = || async {
+        let base = app(&[op], Vec::new()).await;
+        let defs = [(op, "any-credential")].into_iter();
         let is_op = |m: &str| config::names_operator(m);
 
         let operator = Operator::open(op, defs, &is_op, false, None, |_| unreachable!())
@@ -622,20 +781,20 @@ async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that
         named.admin_modules = Arc::new(AdminAuthChain {
             modules: HashMap::from([(
                 op.to_string(),
-                busbar_kernel_testkit::test_support::auth_helpers::in_process(Box::new(
-                    AnyCredential,
-                )),
+                busbar_kernel::auth::AdminModule {
+                    calls: synthetic_calls("any-credential", "any"),
+                },
             )]),
             operator,
         });
         Arc::new(named)
     };
-    let (status, body) = probe(named_op(), Some("an-idp-credential"), None).await;
+    let (status, body) = probe(named_op().await, Some("an-idp-credential"), None).await;
     assert_eq!(
         status, 403,
         "the configured module is consulted and identifies the caller: {body}"
     );
-    let (status, body) = probe(named_op(), Some(TOKEN), None).await;
+    let (status, body) = probe(named_op().await, Some(TOKEN), None).await;
     assert_eq!(
         status, 403,
         "the operator token is not judged by the operator credential here: {body}"
@@ -646,8 +805,9 @@ async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that
 struct Answers200;
 
 #[cfg(feature = "root-admin")]
+#[async_trait::async_trait]
 impl crate::root::units_admin::AdminDispatch for Answers200 {
-    fn execute(
+    async fn execute(
         &self,
         _verb: busbar_core_admin::KernelVerb,
         _request: &crate::root::units_admin::AdminRequest,
@@ -664,13 +824,13 @@ impl crate::root::units_admin::AdminDispatch for Answers200 {
 const DOOR_401: &str = r#"{"error":{"code":"unauthorized","message":"missing or invalid admin credential (Bearer or x-admin-token)"}}"#;
 
 #[cfg(feature = "root-admin")]
-fn through_the_loop(
+async fn through_the_loop(
     handle: &Arc<busbar_kernel::state::AppHandle>,
     (method, path): (&str, &str),
     bearer: Option<&str>,
     header: Option<&str>,
 ) -> (u16, String) {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
     let units = crate::root::kernel::ProductionUnits::admin_only(
         Arc::new(Answers200),
         crate::root::units_admin::live_admin_door(Arc::clone(handle)),
@@ -686,15 +846,17 @@ fn through_the_loop(
     let map: axum::http::HeaderMap = (headers.iter())
         .map(|(n, v)| (n.parse().unwrap(), v.parse().unwrap()))
         .collect();
-    let answer = node.answer(crate::root::units_admin::AdminRequest {
-        method: method.to_string(),
-        path: path.to_string(),
-        credential: crate::root::units_admin::presented_credential(&map),
-        headers,
-        body: Vec::new(),
-        at: 1_700_000_000,
-        unit: node.next_unit(),
-    });
+    let answer = node
+        .answer(crate::root::units_admin::AdminRequest {
+            method: method.to_string(),
+            path: path.to_string(),
+            credential: crate::root::units_admin::presented_credential(&map),
+            headers,
+            body: Vec::new(),
+            at: 1_700_000_000,
+            unit: node.next_unit(),
+        })
+        .await;
     (answer.status, String::from_utf8(answer.body).unwrap())
 }
 
@@ -702,19 +864,23 @@ fn through_the_loop(
 const INFO: (&str, &str) = ("GET", "/api/v1/admin/info");
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn an_empty_admin_chain_is_the_open_posture_on_the_loop() {
-    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app(&[], Vec::new())));
-    assert_eq!(through_the_loop(&handle, INFO, None, None).0, 200);
+#[tokio::test]
+async fn an_empty_admin_chain_is_the_open_posture_on_the_loop() {
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(
+        app(&[], Vec::new()).await,
+    ));
+    assert_eq!(through_the_loop(&handle, INFO, None, None).await.0, 200);
     let write = ("POST", "/api/v1/admin/keys");
-    assert_eq!(through_the_loop(&handle, write, None, None).0, 200);
+    assert_eq!(through_the_loop(&handle, write, None, None).await.0, 200);
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn the_loop_judges_the_operator_token_on_both_carriers_as_1_5_5_did() {
+#[tokio::test]
+async fn the_loop_judges_the_operator_token_on_both_carriers_as_1_5_5_did() {
     let op = op();
-    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app(&[op], Vec::new())));
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(
+        app(&[op], Vec::new()).await,
+    ));
     let jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvciJ9.c2ln";
     let cases: [(Option<&str>, Option<&str>, u16); 9] = [
         (None, None, 401),
@@ -728,7 +894,7 @@ fn the_loop_judges_the_operator_token_on_both_carriers_as_1_5_5_did() {
         (Some(jws), None, 401),
     ];
     for (bearer, header, want) in cases {
-        let (status, body) = through_the_loop(&handle, INFO, bearer, header);
+        let (status, body) = through_the_loop(&handle, INFO, bearer, header).await;
         assert_eq!(status, want, "bearer={bearer:?} header={header:?}: {body}");
         if want == 401 {
             assert_eq!(body, DOOR_401, "bearer={bearer:?} header={header:?}");
@@ -737,44 +903,46 @@ fn the_loop_judges_the_operator_token_on_both_carriers_as_1_5_5_did() {
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn an_external_admin_module_is_consulted_by_the_loop() {
+#[tokio::test]
+async fn an_external_admin_module_is_consulted_by_the_loop() {
     let op = op();
     let jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvciJ9.c2ln";
-    let first = Arc::new(busbar_kernel::state::AppHandle::new(app(
-        &["any-credential", op],
-        vec![("any-credential", Box::new(AnyCredential))],
-    )));
-    assert_eq!(through_the_loop(&first, INFO, Some(jws), None).0, 403);
+    let first = Arc::new(busbar_kernel::state::AppHandle::new(
+        app(&["any-credential", op], vec!["any-credential"]).await,
+    ));
+    assert_eq!(through_the_loop(&first, INFO, Some(jws), None).await.0, 403);
     assert_eq!(
-        through_the_loop(&first, INFO, None, None),
+        through_the_loop(&first, INFO, None, None).await,
         (401, DOOR_401.to_string())
     );
-    let behind = Arc::new(busbar_kernel::state::AppHandle::new(app(
-        &[op, "any-credential"],
-        vec![("any-credential", Box::new(AnyCredential))],
-    )));
-    assert_eq!(through_the_loop(&behind, INFO, Some(TOKEN), None).0, 200);
+    let behind = Arc::new(busbar_kernel::state::AppHandle::new(
+        app(&[op, "any-credential"], vec!["any-credential"]).await,
+    ));
+    assert_eq!(
+        through_the_loop(&behind, INFO, Some(TOKEN), None).await.0,
+        200
+    );
     for wrong in [jws, "wrong-opaque-token"] {
         assert_eq!(
-            through_the_loop(&behind, INFO, Some(wrong), None),
+            through_the_loop(&behind, INFO, Some(wrong), None).await,
             (401, DOOR_401.to_string())
         );
     }
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn a_swapped_admin_chain_is_the_loops_next_door() {
+#[tokio::test]
+async fn a_swapped_admin_chain_is_the_loops_next_door() {
     link();
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
     let dir = std::env::temp_dir().join(format!("busbar-live-door-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let (token_path, key_path) = (dir.join("admin.token"), dir.join("signing.key"));
     std::fs::write(&token_path, "tok-live").unwrap();
     std::fs::write(&key_path, hex::encode([7u8; 32])).unwrap();
     let closed = Arc::new(
-        busbar_kernel_testkit::app::build_once(cfg_with_credentials(&token_path, &key_path), None)
+        credentials_app(cfg_with_credentials(&token_path, &key_path), None)
+            .await
             .expect("boot"),
     );
     let mut open = (*closed).clone();
@@ -787,7 +955,7 @@ fn a_swapped_admin_chain_is_the_loops_next_door() {
         crate::root::units_admin::live_admin_door(Arc::clone(&handle)),
     );
     let node = crate::root::units_admin::AdminNode::new(crate::root::kernel::new_kernel(), units);
-    let ask = |node: &crate::root::units_admin::AdminNode| {
+    async fn ask(node: &crate::root::units_admin::AdminNode) -> u16 {
         node.answer(crate::root::units_admin::AdminRequest {
             method: INFO.0.to_string(),
             path: INFO.1.to_string(),
@@ -797,43 +965,25 @@ fn a_swapped_admin_chain_is_the_loops_next_door() {
             at: 1_700_000_000,
             unit: node.next_unit(),
         })
+        .await
         .status
-    };
-    assert_eq!(ask(&node), 401, "the operator chain, no credential");
-    handle.swap(Arc::clone(&open));
+    }
+    assert_eq!(ask(&node).await, 401, "the operator chain, no credential");
+    handle.swap(Arc::clone(&open)).await;
     assert_eq!(
-        ask(&node),
+        ask(&node).await,
         200,
         "the swapped-in empty chain opens the SAME node's door"
     );
-    handle.swap(closed);
-    assert_eq!(ask(&node), 401, "and swapping it back closes it");
+    handle.swap(closed).await;
+    assert_eq!(ask(&node).await, 401, "and swapping it back closes it");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_door_on_the_data_plane_chain_judges_the_request_it_is_lent() {
     use busbar_kernel::auth::{AuthMiddleware, ChainHead, ChainVerdict};
-    let op = op();
-    let registry = busbar_kernel::preflight::plugins_preflight(
-        None,
-        None,
-        &config::IdentityProviders::new(),
-        &HashMap::new(),
-        &config::PluginsCfg::default(),
-        &config::ExportCfg::default(),
-    )
-    .expect("the linked rows");
-    let digest = busbar_contract::redacted::sha256_hex(TOKEN.as_bytes());
-    let door = crate::root::dispatch::auth_axis(registry)
-        .open(op, "data-door", &serde_json::Value::String(digest))
-        .expect("the linked door opens through the root's auth axis");
-    let auth = Arc::new(
-        busbar_kernel_testkit::test_support::auth_helpers::from_doors_for_test(vec![(
-            "data-door".to_string(),
-            door,
-        )]),
-    );
+    let auth = Arc::new(synthetic_auth("data-door", "head-token"));
     let judged = |token: Option<&str>, head: bool| {
         let headers = token.map(bearer).unwrap_or_default();
         let head = match head {
@@ -900,15 +1050,12 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
     );
     let mut role_bindings = config::RoleBindings::new();
     role_bindings.insert(module.to_string(), table);
-    let auth = Arc::new(
-        busbar_kernel_testkit::test_support::auth_helpers::new_builtin(&AuthCfg::with_chain(vec![
-            AuthChainEntry::bare(module),
-        ])),
-    );
-    let app = busbar_kernel_testkit::test_support::TestApp::new()
-        .auth(Arc::clone(&auth))
-        .role_bindings(role_bindings)
-        .build();
+    let auth = Arc::new(synthetic_auth(module, "groups"));
+    let base = app(&[], Vec::new()).await;
+    let mut configured = (*base).clone();
+    configured.auth = Arc::clone(&auth);
+    configured.role_bindings = role_bindings;
+    let app = Arc::new(configured);
     let pools = crate::root::door_steps::DoorPools::of(
         &serde_yaml::from_str(
             "models:\n  rekey-model: {provider: p}\npools:\n  gpool-a:\n    members: \
@@ -989,17 +1136,16 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
 
 #[tokio::test]
 async fn the_data_listener_reads_the_three_1_5_5_lines_in_1_5_5_order() {
-    use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
     use busbar_kernel::governance::NewKeySpec;
-    link();
-    let store = crate::root::real_store::records();
-    let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some(TOKEN.to_string()), Some(signer)).expect("gov"),
-    );
+    let base = app(&[], Vec::new()).await;
+    let gov = base
+        .governance
+        .as_ref()
+        .expect("actual native governance")
+        .clone();
     let now = busbar_kernel::store::now();
     let (_, token) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "carriers".into(),
                 ..Default::default()
@@ -1007,12 +1153,28 @@ async fn the_data_listener_reads_the_three_1_5_5_lines_in_1_5_5_order() {
             now + 3_600,
             now,
         )
+        .await
         .expect("mint");
     let token = token.expose(&busbar_kernel::seal::lend()).clone();
-    let app = busbar_kernel_testkit::test_support::TestApp::new()
-        .keys_chain()
-        .governance(gov)
-        .build();
+    let registry = busbar_kernel::preflight::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &Default::default(),
+        &Default::default(),
+    )
+    .expect("actual linked auth registry");
+    let mut configured = (*base).clone();
+    configured.auth = Arc::new(
+        busbar_kernel::auth::AuthMiddleware::new(
+            &AuthCfg::with_chain(vec![AuthChainEntry::bare(config::KEYS_MODULE)]),
+            &registry,
+            &config::secret::SecretResolver::builtins_only(),
+        )
+        .expect("actual keys middleware"),
+    );
+    let app = Arc::new(configured);
     let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

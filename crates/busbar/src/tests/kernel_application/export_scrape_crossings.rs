@@ -62,8 +62,8 @@ fn metrics_route_declarations_come_from_the_actual_sink() {
     }
 }
 
-#[test]
-fn a_granted_scrape_is_the_actual_sinks_rendering_of_the_snapshot() {
+#[tokio::test]
+async fn a_granted_scrape_is_the_actual_sinks_rendering_of_the_snapshot() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let granted = busbar_kernel::export::serve_test_sink(sink());
     let resp = granted.handle_http(&get("/metrics"));
@@ -93,15 +93,15 @@ fn a_granted_scrape_is_the_actual_sinks_rendering_of_the_snapshot() {
         )
     );
     assert_eq!(
-        busbar_kernel::export::read_test_snapshot(0),
+        busbar_kernel::export::read_test_snapshot(0).await,
         busbar_contract::services::Snapshot::Refused(
             "the snapshot is lent only to the crossing granted it"
         )
     );
 }
 
-#[test]
-fn an_ungranted_actual_sink_cannot_read_the_snapshot() {
+#[tokio::test]
+async fn an_ungranted_actual_sink_cannot_read_the_snapshot() {
     use busbar_contract::export_calls::ServeRequest;
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let sink = sink();
@@ -118,7 +118,7 @@ fn an_ungranted_actual_sink_cannot_read_the_snapshot() {
         "the actual exporter must refuse an ungranted snapshot read"
     );
     assert_eq!(
-        busbar_kernel::export::read_test_snapshot(0),
+        busbar_kernel::export::read_test_snapshot(0).await,
         busbar_contract::services::Snapshot::Refused(
             "the snapshot is lent only to the crossing granted it"
         )

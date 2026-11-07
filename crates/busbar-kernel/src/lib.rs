@@ -96,7 +96,7 @@ mod settlement;
 pub mod teller;
 pub mod tick;
 
-pub use busbar_kernel_seams::slice;
+pub mod slice;
 
 pub use busbar_contract::Millis;
 
@@ -156,6 +156,8 @@ pub mod hooks;
 pub mod host_chains;
 pub mod host_disk;
 pub mod host_records;
+#[allow(dead_code)]
+pub mod host_records_async;
 pub mod host_units;
 pub mod host_verify;
 pub mod host_work;
@@ -187,6 +189,7 @@ pub mod profile;
 
 pub mod ratelimit;
 
+pub mod persistence;
 pub mod session;
 pub mod state;
 pub mod store;

@@ -144,6 +144,8 @@ mod replay_handles {
         clocks: Vec<CompletionHandle>,
         bodies: usize,
         streams: usize,
+        written_streams: Vec<u64>,
+        closed_streams: Vec<u64>,
         zero_used: bool,
         now: u64,
     }
@@ -239,6 +241,7 @@ mod replay_handles {
         // SAFETY: the SDK owns this exact IoIn and its initialized read-only write prefix.
         let input = unsafe { &*input.cast::<IoIn>() };
         let bytes = unsafe { std::slice::from_raw_parts(input.buf, input.len) };
+        script(|s| s.written_streams.push(input.stream));
         let (outcome, written) = cross(Kind::Write, input.head.handle, bytes);
         if outcome == Outcome::Ready {
             unsafe { (*out).len = written as u64 };
@@ -263,6 +266,7 @@ mod replay_handles {
     extern "C" fn close(_: HostCtx, input: *const c_void, _: *mut ServiceOut) -> RawOutcome {
         // SAFETY: the SDK supplies the exact initialized StreamIn to its CLOSE slot.
         let input = unsafe { &*input.cast::<StreamIn>() };
+        script(|s| s.closed_streams.push(input.stream));
         RawOutcome::of(cross(Kind::Close, input.head.handle, &[]).0)
     }
 
@@ -396,6 +400,160 @@ mod replay_handles {
 
     fn calls(kind: Kind) -> Vec<Call> {
         script(|s| s.calls.iter().filter(|c| c.kind == kind).cloned().collect())
+    }
+
+    #[test]
+    fn lifecycle_channels_retain_distinct_native_streams_across_tickets() {
+        use crate::abi::sdk::store::wire::{drive_channels, Channels};
+        let host = host(Mode::RepeatedPending);
+        let channels = Channels::new(3);
+        for phase in 0..2 {
+            script(|s| {
+                s.held.clear();
+                s.written_streams.clear();
+            });
+            let mut parked = None;
+            for attempt in 0..24 {
+                let mut op = Op::enter(TICKET, Some(&host), parked, None);
+                let result = drive_channels(&mut op, &channels, move |wires| {
+                    Box::pin(async move {
+                        for (index, wire) in wires.iter().enumerate() {
+                            if phase == 0 {
+                                wire.connect(0, None).await?;
+                                wire.set_session(index);
+                            } else {
+                                // Persistent protocol clients need not reconnect or reset.
+                                assert_eq!(wire.session::<usize>(), Some(index));
+                            }
+                            wire.write_all(b"B").await?;
+                            if phase == 0 {
+                                wire.fill().await?;
+                            }
+                            wire.input(|bytes| assert_eq!(bytes.as_slice(), b"reply"));
+                        }
+                        Ok::<_, ConnFailure>(())
+                    })
+                });
+                match result {
+                    Step::Ready(result) => {
+                        result.unwrap();
+                        break;
+                    }
+                    Step::Pending { .. } => {
+                        parked = Some(op.into_parked());
+                    }
+                }
+                assert!(attempt < 23, "channel operation did not finish");
+            }
+            assert_eq!(script(|s| s.streams), 3);
+            assert_eq!(script(|s| s.written_streams.clone()), vec![1, 2, 3]);
+            assert!(script(|s| s.closed_streams.is_empty()));
+        }
+        drop(channels);
+        let mut closed = script(|s| s.closed_streams.clone());
+        closed.sort();
+        assert_eq!(closed, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn cancelling_a_lifecycle_operation_closes_every_checked_out_channel() {
+        use crate::abi::sdk::store::wire::{drive_channels, Channels};
+        let host = host(Mode::CancelRead);
+        let channels = Channels::new(3);
+        let mut op = Op::enter(TICKET, Some(&host), None, None);
+        let result = drive_channels(&mut op, &channels, |wires| {
+            Box::pin(async move {
+                for wire in &wires {
+                    wire.connect(0, None).await?;
+                }
+                wires[2].fill().await?;
+                Ok::<_, ConnFailure>(())
+            })
+        });
+        assert!(matches!(result, Step::Pending { .. }));
+        drop(op.into_parked());
+        let mut closed = script(|s| s.closed_streams.clone());
+        closed.sort();
+        assert_eq!(closed, vec![1, 2, 3]);
+        assert!(!channels.active.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn a_second_lifecycle_call_waits_for_the_active_channel_driver() {
+        use crate::abi::sdk::store::wire::{drive_channels, Channels};
+        let host = host(Mode::CancelRead);
+        let channels = Channels::new(1);
+        let mut first = Op::enter(HOLDER, Some(&host), None, None);
+        assert!(matches!(
+            drive_channels(&mut first, &channels, |wires| Box::pin(async move {
+                wires[0].connect(0, None).await?;
+                wires[0].fill().await?;
+                Ok::<_, ConnFailure>(())
+            })),
+            Step::Pending { .. }
+        ));
+        let mut second = Op::enter(TICKET, Some(&host), None, None);
+        assert!(matches!(drive_channels(&mut second, &channels, |_| {
+            panic!("a second body must not access active channels")
+        }), Step::<()>::Pending { wake_at_ns } if wake_at_ns > 0));
+        let waiting = second.into_parked();
+        drop(first.into_parked());
+        let mut second = Op::enter(TICKET, Some(&host), Some(waiting), None);
+        assert_eq!(
+            drive_channels(&mut second, &channels, |_| Box::pin(async {})),
+            Step::Ready(())
+        );
+    }
+
+    #[test]
+    fn codec_readiness_yields_to_the_host_timer_without_a_native_connection() {
+        use crate::abi::sdk::store::wire::{drive_channels, Channels};
+        let host = host(Mode::RepeatedPending);
+        let channels = Channels::new(1);
+        let mut op = Op::enter(TICKET, Some(&host), None, None);
+        let answer = drive_channels(&mut op, &channels, |wires| {
+            Box::pin(async move {
+                script(|s| s.bodies += 1);
+                wires[0].wait_codec().await?;
+                Ok::<_, ConnFailure>(())
+            })
+        });
+        assert!(matches!(
+            answer,
+            Step::Pending {
+                wake_at_ns: 1_000_000
+            }
+        ));
+        assert!(script(|s| s.calls.is_empty()));
+        let mut op = Op::enter(TICKET, Some(&host), Some(op.into_parked()), None);
+        assert_eq!(
+            drive_channels(&mut op, &channels, |_| panic!("resume must retain body")),
+            Step::<Result<(), ConnFailure>>::Ready(Ok(()))
+        );
+        assert_eq!(script(|s| s.bodies), 1);
+        assert!(script(|s| s.calls.is_empty()));
+    }
+
+    #[test]
+    fn cancelling_a_codec_wait_releases_its_driver_and_resets_the_next_yield() {
+        use crate::abi::sdk::store::wire::{drive_channels, Channels};
+        let host = host(Mode::RepeatedPending);
+        let channels = Channels::new(1);
+        for _ in 0..2 {
+            let mut op = Op::enter(TICKET, Some(&host), None, None);
+            let answer = drive_channels(&mut op, &channels, |wires| {
+                Box::pin(async move { wires[0].wait_codec().await })
+            });
+            assert!(matches!(
+                answer,
+                Step::Pending {
+                    wake_at_ns: 1_000_000
+                }
+            ));
+            drop(op.into_parked());
+            assert!(!channels.active.load(Ordering::Acquire));
+        }
+        assert!(script(|s| s.calls.is_empty()));
     }
 
     #[test]

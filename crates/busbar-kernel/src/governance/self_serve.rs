@@ -1,15 +1,6 @@
 use super::*;
 
 impl GovState {
-    #[cfg(test)]
-    pub(crate) fn observe_self_mint_wait(
-        &self,
-        user_sub: &str,
-    ) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
-        self.mutation_claims
-            .observe_wait(MutationKey::Subject(user_sub.to_string()))
-    }
-
     fn derive_self_subject(seed: &[u8; 32], user_sub: &str, epoch: u64) -> String {
         let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, seed);
         let msg = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}#{epoch}");
@@ -17,22 +8,29 @@ impl GovState {
         format!("{VK_ID_PREFIX}{}", hex::encode(&tag.as_ref()[..16]))
     }
 
-    fn current_self_binding(&self, user_sub: &str) -> Option<Arc<VirtualKey>> {
+    fn current_self_binding(rows: &[VirtualKey], user_sub: &str) -> Option<Arc<VirtualKey>> {
         let group = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}");
-        self.caches_read()
-            .by_id
-            .values()
-            .find(|k| {
-                k.enabled && k.deleted_at.is_none() && k.group.as_deref() == Some(group.as_str())
+        rows.iter()
+            .find(|key| {
+                key.enabled
+                    && key.deleted_at.is_none()
+                    && key.group.as_deref() == Some(group.as_str())
             })
             .cloned()
+            .map(Arc::new)
     }
 
-    fn read_self_binding(&self, id: &str, user_sub: &str) -> RecordStoreResult<Arc<VirtualKey>> {
+    async fn read_self_binding(
+        &self,
+        id: &str,
+        user_sub: &str,
+    ) -> RecordStoreResult<Arc<VirtualKey>> {
         let group = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}");
         let key = self
-            .store
-            .get_key(id)?
+            .core_store()?
+            .identity()
+            .get_key(id)
+            .await?
             .filter(|k| {
                 k.enabled && k.deleted_at.is_none() && k.group.as_deref() == Some(group.as_str())
             })
@@ -40,11 +38,15 @@ impl GovState {
             .ok_or_else(|| {
                 RecordStoreError("self-serve binding changed; retry the request".into())
             })?;
-        self.patch_key_in_caches(key.clone());
         Ok(key)
     }
 
-    fn self_mint_refusal(&self, user_sub: &str, provider: &str) -> Option<SelfMintRefusal> {
+    fn self_mint_refusal(
+        &self,
+        user_sub: &str,
+        provider: &str,
+        rows: &[VirtualKey],
+    ) -> Option<SelfMintRefusal> {
         if self
             .transition_self_holds
             .read()
@@ -57,8 +59,7 @@ impl GovState {
             return None;
         }
         let group = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}");
-        let caches = self.caches_read();
-        let rows = caches.by_id.values().filter(|k| {
+        let rows = rows.iter().filter(|k| {
             k.deleted_at.is_none()
                 && (k.group.as_deref() == Some(group.as_str())
                     || k.idp_subject.as_deref() == Some(user_sub))
@@ -86,7 +87,7 @@ impl GovState {
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
-    fn first_free_self_epoch(
+    async fn first_free_self_epoch(
         &self,
         seed: &[u8; 32],
         user_sub: &str,
@@ -98,11 +99,7 @@ impl GovState {
             let epoch = from.saturating_add(stride);
             let id = Self::derive_self_subject(seed, user_sub, epoch);
 
-            let holds = self.self_mint_holds();
-            let occupied = self
-                .store
-                .get_key(&id)?
-                .is_some_and(|k| holds || k.deleted_at.is_some());
+            let occupied = self.core_store()?.identity().get_key(&id).await?.is_some();
             if !occupied {
                 return Ok((id, epoch));
             }
@@ -119,7 +116,7 @@ impl GovState {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn write_self_binding(
+    async fn write_self_binding(
         &self,
         material: &SigningMaterial,
         user_sub: &str,
@@ -128,9 +125,10 @@ impl GovState {
         epoch: u64,
         exp: u64,
         now: u64,
+        previous: Option<&VirtualKey>,
     ) -> RecordStoreResult<(VirtualKey, String)> {
         let seed = material.signer.secret_bytes();
-        let (id, epoch) = self.first_free_self_epoch(&seed, user_sub, epoch)?;
+        let (id, epoch) = self.first_free_self_epoch(&seed, user_sub, epoch).await?;
         let generation = epoch.to_string();
         let binding = VirtualKey {
             id: id.clone(),
@@ -153,12 +151,49 @@ impl GovState {
             idp_provider: Some(provider.to_string()),
             ..Default::default()
         };
-        self.store.put_key(&binding)?;
+        let mut ids = vec![id.clone()];
+        if let Some(previous) = previous {
+            ids.push(previous.id.clone());
+        }
+        ids.sort();
+        ids.dedup();
+        let mut key_claims = Vec::new();
+        for id in &ids {
+            key_claims.push(self.identity_key_guard(id).await);
+        }
+        let identity = self.core_store()?.identity();
+        let commit = match previous {
+            Some(previous) => {
+                if identity.is_denied(&previous.id).await? {
+                    return Err(RecordStoreError("self binding is revoked".into()));
+                }
+                identity.replace_key(previous, &binding).await?
+            }
+            None => {
+                let before = identity.get_key(&binding.id).await?;
+                if before.as_ref().is_some_and(|key| {
+                    self.self_mint_holds()
+                        || key.deleted_at.is_some()
+                        || key.group.as_deref() != binding.group.as_deref()
+                        || key
+                            .idp_subject
+                            .as_deref()
+                            .is_some_and(|subject| subject != user_sub)
+                }) {
+                    return Err(RecordStoreError(
+                        "self binding changed; retry the request".into(),
+                    ));
+                }
+                identity.compare_self_key(before.as_ref(), &binding).await?
+            }
+        };
+        let binding = super::identity_runtime::committed_key(&commit, &id)?;
+        self.publish_identity(commit);
         let token = material.signer.mint(&id, exp, Some(&generation));
         Ok((binding, token))
     }
 
-    pub fn issue_self(
+    pub async fn issue_self(
         &self,
         user_sub: &str,
         provider: &str,
@@ -168,9 +203,10 @@ impl GovState {
     ) -> Result<(VirtualKey, String), SelfMintError> {
         let scopes = crate::governance::pool_scopes(allowed_pools);
         self.issue_self_scoped(user_sub, provider, scopes, exp, now)
+            .await
     }
 
-    pub fn issue_self_scoped(
+    pub async fn issue_self_scoped(
         &self,
         user_sub: &str,
         provider: &str,
@@ -186,17 +222,33 @@ impl GovState {
         };
 
         let _mint = self
-            .mutation_claims
-            .claim_checked(MutationKey::Subject(user_sub.to_string()))
-            .ok_or_else(|| RecordStoreError("reentrant self-serve mutation refused".into()))?;
-        if let Some(refusal) = self.self_mint_refusal(user_sub, provider) {
+            .identity_claim(IdentityClaimKey::Subject(user_sub.into()))
+            .await;
+        let rows = self.core_store()?.identity().self_keys(user_sub).await?;
+        if let Some(refusal) = self.self_mint_refusal(user_sub, provider, &rows) {
             return Err(SelfMintError::Refused(refusal));
         }
-        match self.current_self_binding(user_sub) {
+        match Self::current_self_binding(&rows, user_sub) {
             Some(existing) => {
-                let _key = self.claim_key_mutation(&existing.id)?;
-                let existing = self.read_self_binding(&existing.id, user_sub)?;
-
+                let _key = self.identity_key_guard(&existing.id).await;
+                let existing = self.read_self_binding(&existing.id, user_sub).await?;
+                if self
+                    .core_store()?
+                    .identity()
+                    .is_denied(&existing.id)
+                    .await?
+                {
+                    self.refresh_order
+                        .patch(|| self.denylist.insert(&existing.id));
+                    return Err(SelfMintError::Refused(SelfMintRefusal::Disabled));
+                }
+                if let Some(refusal) = self.self_mint_refusal(
+                    user_sub,
+                    provider,
+                    std::slice::from_ref(existing.as_ref()),
+                ) {
+                    return Err(SelfMintError::Refused(refusal));
+                }
                 let new_scopes = allowed_scopes.clone();
 
                 let adopt = existing.idp_provider.is_none();
@@ -204,35 +256,50 @@ impl GovState {
                     let mut updated = (*existing).clone();
                     updated.allowed_scopes = new_scopes;
                     updated.idp_provider = Some(provider.to_string());
-                    self.store.put_key(&updated)?;
-                    self.patch_key_in_caches(Arc::new(updated.clone()));
-                    self.refresh()?;
+                    let commit = self
+                        .core_store()?
+                        .identity()
+                        .compare_self_key(Some(existing.as_ref()), &updated)
+                        .await?;
+                    let updated = super::identity_runtime::committed_key(&commit, &updated.id)?;
+                    self.publish_identity(commit);
                     let generation = binding_generation(&updated.generation_hash);
                     let token = material.signer.mint(&updated.id, exp, generation);
                     Ok((updated, token))
                 } else {
+                    self.publish_identity(
+                        crate::governance::persistence::identity::IdentityCommit {
+                            changed: false,
+                            revision: existing.revision,
+                            keys: vec![(*existing).clone()],
+                            credentials: Vec::new(),
+                            denied: Vec::new(),
+                        },
+                    );
                     let generation = binding_generation(&existing.generation_hash);
                     let token = material.signer.mint(&existing.id, exp, generation);
                     Ok(((*existing).clone(), token))
                 }
             }
             None => {
-                let out = self.write_self_binding(
-                    &material,
-                    user_sub,
-                    provider,
-                    allowed_scopes,
-                    0,
-                    exp,
-                    now,
-                )?;
-                self.refresh()?;
+                let out = self
+                    .write_self_binding(
+                        &material,
+                        user_sub,
+                        provider,
+                        allowed_scopes,
+                        0,
+                        exp,
+                        now,
+                        None,
+                    )
+                    .await?;
                 Ok(out)
             }
         }
     }
 
-    pub fn refresh_self(
+    pub async fn refresh_self(
         &self,
         user_sub: &str,
         provider: &str,
@@ -242,9 +309,10 @@ impl GovState {
     ) -> Result<(VirtualKey, String), SelfMintError> {
         let scopes = crate::governance::pool_scopes(allowed_pools);
         self.refresh_self_scoped(user_sub, provider, scopes, exp, now)
+            .await
     }
 
-    pub fn refresh_self_scoped(
+    pub async fn refresh_self_scoped(
         &self,
         user_sub: &str,
         provider: &str,
@@ -260,99 +328,37 @@ impl GovState {
         };
 
         let _mint = self
-            .mutation_claims
-            .claim_checked(MutationKey::Subject(user_sub.to_string()))
-            .ok_or_else(|| RecordStoreError("reentrant self-serve mutation refused".into()))?;
-        if let Some(refusal) = self.self_mint_refusal(user_sub, provider) {
+            .identity_claim(IdentityClaimKey::Subject(user_sub.into()))
+            .await;
+        let rows = self.core_store()?.identity().self_keys(user_sub).await?;
+        if let Some(refusal) = self.self_mint_refusal(user_sub, provider, &rows) {
             return Err(SelfMintError::Refused(refusal));
         }
-        let existing = self.current_self_binding(user_sub);
-        let _key = existing
-            .as_ref()
-            .map(|key| self.claim_key_mutation(&key.id))
-            .transpose()?;
-        let (new_epoch, old_id) = match existing {
-            Some(existing) => {
-                let existing = self.read_self_binding(&existing.id, user_sub)?;
-                let cur = binding_generation(&existing.generation_hash)
-                    .and_then(|g| g.parse::<u64>().ok())
-                    .unwrap_or(0);
-                (cur.saturating_add(1), Some(existing.id.clone()))
-            }
-            None => (0, None),
+        let previous = match Self::current_self_binding(&rows, user_sub) {
+            Some(existing) => Some(self.read_self_binding(&existing.id, user_sub).await?),
+            None => None,
         };
-        let out = self.write_self_binding(
-            &material,
-            user_sub,
-            provider,
-            allowed_scopes,
-            new_epoch,
-            exp,
-            now,
-        )?;
-        let needs_reconcile = old_id.as_ref().is_none_or(|old| old == &out.0.id);
-        if let Some(old) = old_id {
-            if old != out.0.id {
-                if let Err(delete_err) = self.store.delete_key(&old) {
-                    return Err(SelfMintError::Store(match self.delete_key(&out.0.id) {
-                        Ok(()) => RecordStoreError(format!(
-                            "self-serve refresh for '{user_sub}' failed to tombstone the prior \
-                             binding '{old}' ({delete_err}); rolled back the newly-minted binding \
-                             '{}' so the prior token remains the sole valid credential — retry the \
-                             refresh",
-                            out.0.id
-                        )),
-                        Err(rollback_err) => {
-                            diag_error!(
-                                REFRESH_SELF_INCONSISTENT_BINDING,
-                                user_sub = %user_sub,
-                                old_id = %old,
-                                new_id = %out.0.id,
-                                delete_err = %delete_err,
-                                rollback_err = %rollback_err,
-                                "refresh_self: failed to tombstone the prior self-serve binding AND \
-                                 failed to roll back the newly-written one — subject may now have \
-                                 TWO live bindings; manual store inspection required"
-                            );
-                            RecordStoreError(format!(
-                                "self-serve refresh for '{user_sub}' left an INCONSISTENT store \
-                                 state: the prior binding '{old}' could not be tombstoned \
-                                 ({delete_err}) and the rollback of the new binding '{}' also failed \
-                                 ({rollback_err}) — both bindings may still be live; manual \
-                                 intervention required",
-                                out.0.id
-                            ))
-                        }
-                    }));
-                }
-                self.evict_key_from_caches(&old);
-                if let Err(refresh_err) = self.refresh() {
-                    diag_error!(
-                        REFRESH_SELF_CACHE_REFRESH_FAILED,
-                        user_sub = %user_sub,
-                        old_id = %old,
-                        new_id = %out.0.id,
-                        refresh_err = %refresh_err,
-                        "refresh_self: cache refresh failed after tombstoning the prior self-serve \
-                         binding in the store; evicting the prior binding directly from the cache \
-                         so its token stops verifying immediately"
-                    );
-                    return Err(SelfMintError::Store(RecordStoreError(format!(
-                        "self-serve refresh for '{user_sub}' rotated the store successfully (the \
-                         prior binding '{old}' is tombstoned, the new binding '{}' is live) but \
-                         the cache reconcile failed ({refresh_err}); the prior binding was evicted \
-                         directly from the cache as a best-effort fix so its token no longer \
-                         verifies, but the cache may be stale for OTHER entries until the next \
-                         successful refresh — retry is safe",
-                        out.0.id
-                    ))));
-                }
-            }
-        }
-        if needs_reconcile {
-            self.evict_key_from_caches(&out.0.id);
-            self.refresh()?;
-        }
+        let epoch = previous
+            .as_ref()
+            .map(|key| {
+                binding_generation(&key.generation_hash)
+                    .and_then(|generation| generation.parse::<u64>().ok())
+                    .unwrap_or(0)
+                    .saturating_add(1)
+            })
+            .unwrap_or(0);
+        let out = self
+            .write_self_binding(
+                &material,
+                user_sub,
+                provider,
+                allowed_scopes,
+                epoch,
+                exp,
+                now,
+                previous.as_deref(),
+            )
+            .await?;
         Ok(out)
     }
 }

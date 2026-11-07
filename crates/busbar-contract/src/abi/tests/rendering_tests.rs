@@ -753,23 +753,13 @@ fn a_tail_list_or_string_out_of_bounds_is_refused_before_it_is_read() {
 
 #[test]
 fn every_kind_renders_its_tail_facts_not_only_its_size() {
-    use crate::abi::{export, hook, plane, store, transport};
+    use crate::abi::{export, hook, plane, transport};
     let differs = |kind: KindCode,
                    a: &dyn Fn() -> Result<Vec<u8>, RenderError>,
                    b: &dyn Fn() -> Result<Vec<u8>, RenderError>| {
         let (a, b) = (a().expect("renders"), b().expect("renders"));
         assert_ne!(a, b, "{kind:?}: a tail fact did not change the rendering");
     };
-    let s0: store::StoreTail = zeroed_tail();
-    let s1 = store::StoreTail {
-        fork_refusal: 1,
-        ..s0
-    };
-    differs(
-        KindCode::Store,
-        &|| with_tail(KindCode::Store, &s0),
-        &|| with_tail(KindCode::Store, &s1),
-    );
     let h0: hook::Tail = zeroed_tail();
     let h1 = hook::Tail {
         infallible: 1,
@@ -833,36 +823,21 @@ fn distinct_tail_renderings<T>(kind: KindCode, cases: &[(&str, T)]) {
 }
 
 #[test]
-fn store_durability_and_fork_refusal_are_independent_signed_facts() {
-    use crate::abi::store::StoreTail;
-    let base: StoreTail = zeroed_tail();
-    distinct_tail_renderings(
-        KindCode::Store,
-        &[
-            ("neither", base),
-            (
-                "durable plane",
-                StoreTail {
-                    durable_plane: 1,
-                    ..base
-                },
-            ),
-            (
-                "fork refusal",
-                StoreTail {
-                    fork_refusal: 1,
-                    ..base
-                },
-            ),
-            (
-                "both",
-                StoreTail {
-                    durable_plane: 1,
-                    fork_refusal: 1,
-                    ..base
-                },
-            ),
-        ],
+fn primitive_store_renders_its_abi_without_a_business_capability_tail() {
+    let mut st = Statement {
+        kind: KindCode::Store as u32,
+        kind_abi: crate::abi::store::v4::ABI_VERSION,
+        ..statement("primitive-store", "1.6.0", 1)
+    };
+    let original = bytes(&st);
+    let decoded = read(&original).expect("canonical primitive declaration");
+    assert!(decoded.kind_tail.is_empty());
+    assert_eq!(decoded.kind_abi, crate::abi::store::v4::ABI_VERSION);
+    st.kind_abi += 1;
+    assert_ne!(
+        bytes(&st),
+        original,
+        "the ABI remains a signed declaration fact"
     );
 }
 
@@ -1532,3 +1507,55 @@ fn a_plane_tails_cli_help_reads_back_with_no_library() {
 }
 
 const DIALECTS: &[AbiStr] = &[abi_str("golden-dialect")];
+
+#[test]
+fn plane_record_authorities_read_without_loading_and_reject_malformed_tails() {
+    use crate::abi::plane::{PlaneTail, RecordChain, RecordRetention, CHAIN_LENGTH_PREFIXED};
+    let kinds = [abi_str("example.requests")];
+    let chains = [RecordChain {
+        kind: 0,
+        framing: CHAIN_LENGTH_PREFIXED,
+        flags: 0,
+        _reserved: 0,
+    }];
+    let retention = [RecordRetention {
+        kind: 0,
+        rule: crate::host_records::RETENTION_TERMINAL_ONLY,
+    }];
+    let tail = PlaneTail {
+        record_kinds: kinds.as_ptr(),
+        record_kinds_len: kinds.len(),
+        record_chains: chains.as_ptr(),
+        record_chains_len: chains.len(),
+        record_retentions: retention.as_ptr(),
+        record_retentions_len: retention.len(),
+        ..zeroed_tail()
+    };
+    let statement = read(&with_tail(KindCode::Plane, &tail).unwrap()).unwrap();
+    let records = read_plane_records(&statement.kind_tail, statement.kind_tail_size).unwrap();
+    assert_eq!(records.kinds, ["example.requests"]);
+    assert_eq!(records.chains[0].framing, CHAIN_LENGTH_PREFIXED);
+    assert_eq!(
+        records.retentions[0].rule,
+        crate::host_records::RETENTION_TERMINAL_ONLY
+    );
+    for end in 0..statement.kind_tail.len() {
+        assert!(
+            read_plane_records(&statement.kind_tail[..end], statement.kind_tail_size).is_err(),
+            "truncation at {end}"
+        );
+    }
+    let mut extra = statement.kind_tail.clone();
+    extra.push(0);
+    assert!(read_plane_records(&extra, statement.kind_tail_size).is_err());
+    let bad = [RecordChain {
+        kind: 1,
+        ..chains[0]
+    }];
+    let tail = PlaneTail {
+        record_chains: bad.as_ptr(),
+        ..tail
+    };
+    let statement = read(&with_tail(KindCode::Plane, &tail).unwrap()).unwrap();
+    assert!(read_plane_records(&statement.kind_tail, statement.kind_tail_size).is_err());
+}

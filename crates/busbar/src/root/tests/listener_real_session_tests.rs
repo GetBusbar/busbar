@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 const VALID: &[u8] = b"GET /session HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
 
-fn app() -> Arc<busbar_kernel::state::App> {
+async fn app() -> Arc<busbar_kernel::state::App> {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -51,7 +51,7 @@ fn app() -> Arc<busbar_kernel::state::App> {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -61,6 +61,7 @@ fn app() -> Arc<busbar_kernel::state::App> {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the door deployment");
     drop(limits);
     drop(rotate);
@@ -115,7 +116,7 @@ async fn real_framer() -> (tokio::sync::MutexGuard<'static, ()>, DataFramer) {
     }])
     .unwrap();
     crate::root::inbound::stage(guests, Vec::new());
-    let app = app();
+    let app = app().await;
     assert!(crate::root::inbound::publish(&app).is_some());
     (publishing, framer)
 }

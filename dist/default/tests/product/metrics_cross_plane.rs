@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::records::{UsageLedger, VirtualKey};
-use busbar_kernel::governance::{
-    GovState, MeteringDelta, MeteringRow, RecordStore, RecordStoreError, RecordStoreResult,
-};
+use busbar_contract::records::VirtualKey;
+use busbar_kernel::governance::GovState;
 use busbar_kernel::snapshot::{
     refresh_scrape_gauges, LANE_AVAILABLE, LANE_AVAILABLE_PERMITS, LANE_INFLIGHT,
     LANE_RECOVERY_HINT_MS, LANE_STATE, POOL_QUEUED,
@@ -36,7 +34,7 @@ fn render() -> String {
         .expect("the scrape is UTF-8")
 }
 
-fn app(model: &str, pools: &[&str], cap: Option<usize>) -> busbar_kernel::state::App {
+async fn app(model: &str, pools: &[&str], cap: Option<usize>) -> busbar_kernel::state::App {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -92,7 +90,7 @@ fn app(model: &str, pools: &[&str], cap: Option<usize>) -> busbar_kernel::state:
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -102,6 +100,7 @@ fn app(model: &str, pools: &[&str], cap: Option<usize>) -> busbar_kernel::state:
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the door deployment");
     drop(limits);
     drop(rotate);
@@ -136,14 +135,14 @@ fn gauge_value(out: &str, metric: &str, pool: &str) -> Option<f64> {
         .and_then(|v| v.trim().parse::<f64>().ok())
 }
 
-#[test]
-fn test_scrape_gauges_lane_state_no_governance() {
+#[tokio::test]
+async fn test_scrape_gauges_lane_state_no_governance() {
     register_planes();
     init();
 
-    let app = app("model-x", &["pool-x"], None);
+    let app = app("model-x", &["pool-x"], None).await;
 
-    refresh_scrape_gauges(&app);
+    refresh_scrape_gauges(&app).await.unwrap();
 
     let out = render();
     assert!(
@@ -156,18 +155,18 @@ fn test_scrape_gauges_lane_state_no_governance() {
     );
 }
 
-#[test]
-fn test_scrape_gauges_lane_available_flips_on_saturation() {
+#[tokio::test]
+async fn test_scrape_gauges_lane_available_flips_on_saturation() {
     register_planes();
     init();
 
-    let app = app("cap-model", &["cap-pool"], Some(1));
+    let app = app("cap-model", &["cap-pool"], Some(1)).await;
     let sem = app
         .store
         .lane_semaphore(0)
         .expect("the product lane's semaphore");
 
-    refresh_scrape_gauges(&app);
+    refresh_scrape_gauges(&app).await.unwrap();
     let out = render();
     assert_eq!(
         gauge_value(&out, LANE_AVAILABLE, "cap-pool"),
@@ -199,7 +198,7 @@ fn test_scrape_gauges_lane_available_flips_on_saturation() {
         .clone()
         .try_acquire_owned()
         .expect("hold the only permit");
-    refresh_scrape_gauges(&app);
+    refresh_scrape_gauges(&app).await.unwrap();
     let out = render();
     assert_eq!(
         gauge_value(&out, LANE_AVAILABLE, "cap-pool"),
@@ -223,14 +222,14 @@ fn test_scrape_gauges_lane_available_flips_on_saturation() {
     );
 }
 
-#[test]
-fn test_scrape_gauges_unbounded_lane_omits_available_permits() {
+#[tokio::test]
+async fn test_scrape_gauges_unbounded_lane_omits_available_permits() {
     register_planes();
     init();
 
-    let app = app("unb-model", &["unb-pool"], None);
+    let app = app("unb-model", &["unb-pool"], None).await;
 
-    refresh_scrape_gauges(&app);
+    refresh_scrape_gauges(&app).await.unwrap();
     let out = render();
 
     assert_eq!(
@@ -246,17 +245,17 @@ fn test_scrape_gauges_unbounded_lane_omits_available_permits() {
     );
 }
 
-#[test]
-fn test_scrape_gauges_breaker_open_lane_unavailable() {
+#[tokio::test]
+async fn test_scrape_gauges_breaker_open_lane_unavailable() {
     register_planes();
     init();
 
-    let app = app("brk-model", &["brk-pool"], None);
+    let app = app("brk-model", &["brk-pool"], None).await;
 
     let t = now();
     app.store.force_open_in("brk-pool", 0, t + 30);
 
-    refresh_scrape_gauges(&app);
+    refresh_scrape_gauges(&app).await.unwrap();
     let out = render();
     assert_eq!(
         gauge_value(&out, LANE_AVAILABLE, "brk-pool"),
@@ -277,12 +276,12 @@ fn test_scrape_gauges_breaker_open_lane_unavailable() {
     );
 }
 
-#[test]
-fn test_scrape_gauges_pool_queued_defined_reads_zero() {
+#[tokio::test]
+async fn test_scrape_gauges_pool_queued_defined_reads_zero() {
     register_planes();
     init();
-    let app = app("q-model", &["q-pool"], None);
-    refresh_scrape_gauges(&app);
+    let app = app("q-model", &["q-pool"], None).await;
+    refresh_scrape_gauges(&app).await.unwrap();
     let out = render();
     assert_eq!(
         gauge_value(&out, POOL_QUEUED, "q-pool"),
@@ -291,67 +290,24 @@ fn test_scrape_gauges_pool_queued_defined_reads_zero() {
     );
 }
 
-struct ScrapeTimeBrokenKeyListStore {
-    inner: Arc<dyn RecordStore>,
-    calls: std::sync::atomic::AtomicUsize,
-}
-impl RecordStore for ScrapeTimeBrokenKeyListStore {
-    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if n == 0 {
-            self.inner.list_keys()
-        } else {
-            Err(RecordStoreError(
-                "governance store unavailable (simulated scrape-time outage)".into(),
-            ))
-        }
-    }
-    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
-        self.inner.put_key(key)
-    }
-    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-        self.inner.get_key(id)
-    }
-    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-        self.inner.delete_key(id)
-    }
-    fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
-        self.inner.get_usage(bucket_id, window_start)
-    }
-    fn put_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        ledger: &UsageLedger,
-    ) -> RecordStoreResult<()> {
-        self.inner.put_usage(bucket_id, window_start, ledger)
-    }
-    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
-        self.inner.add_metering(delta)
-    }
-    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-        self.inner.list_metering(bucket)
-    }
-}
-
-#[test]
-fn test_scrape_gauges_lane_state_survives_governance_all_keys_failure() {
+#[tokio::test]
+async fn test_scrape_gauges_lane_state_survives_governance_all_keys_failure() {
     register_planes();
     init();
 
     let key = sample_vkey("vk_broken_store01");
-    let store = Arc::new(ScrapeTimeBrokenKeyListStore {
-        inner: crate::root::real_store::records(),
-        calls: std::sync::atomic::AtomicUsize::new(0),
-    });
-    store.put_key(&key).unwrap();
+    let faults = crate::root::store_double::NativeFaults::open().await;
+    let store = crate::root::real_store::core_over(faults.clone()).await;
+    store.identity().put_key(&key).await.unwrap();
+    let gov = Arc::new(GovState::new_with_core(store, None, None).await.unwrap());
+    faults
+        .unreadable
+        .store(true, std::sync::atomic::Ordering::SeqCst);
 
-    let gov = Arc::new(GovState::new(store, None).unwrap());
-
-    let mut app = app("model-broken", &["pool-broken"], None);
+    let mut app = app("model-broken", &["pool-broken"], None).await;
     app.governance = Some(gov);
 
-    refresh_scrape_gauges(&app);
+    assert!(refresh_scrape_gauges(&app).await.is_err());
 
     let out = render();
 
@@ -370,14 +326,14 @@ fn test_scrape_gauges_lane_state_survives_governance_all_keys_failure() {
     );
 }
 
-#[test]
-fn test_lane_state_healthy_is_zero() {
+#[tokio::test]
+async fn test_lane_state_healthy_is_zero() {
     register_planes();
     init();
 
-    let app = app("model-h", &["pool-h"], None);
+    let app = app("model-h", &["pool-h"], None).await;
 
-    refresh_scrape_gauges(&app);
+    refresh_scrape_gauges(&app).await.unwrap();
 
     let out = render();
 
@@ -400,12 +356,12 @@ fn test_lane_state_healthy_is_zero() {
     );
 }
 
-#[test]
-fn test_lane_state_tripped_pool_reads_two_despite_healthy_sibling_pool() {
+#[tokio::test]
+async fn test_lane_state_tripped_pool_reads_two_despite_healthy_sibling_pool() {
     register_planes();
     init();
 
-    let app = app("model-ho", &["pool-tripped", "pool-sibling"], None);
+    let app = app("model-ho", &["pool-tripped", "pool-sibling"], None).await;
     let store = app.store.clone();
 
     let t = now();
@@ -413,7 +369,7 @@ fn test_lane_state_tripped_pool_reads_two_despite_healthy_sibling_pool() {
     let _ = store.cooldown_remaining_in("pool-sibling", 0, t);
     store.force_open_in("pool-tripped", 0, t + 600);
 
-    refresh_scrape_gauges(&app);
+    refresh_scrape_gauges(&app).await.unwrap();
     let out = render();
 
     assert_eq!(
@@ -434,19 +390,19 @@ fn test_lane_state_tripped_pool_reads_two_despite_healthy_sibling_pool() {
     );
 }
 
-#[test]
-fn test_lane_state_by_model_tripped_default_cell_reads_two_despite_healthy_pool_cell() {
+#[tokio::test]
+async fn test_lane_state_by_model_tripped_default_cell_reads_two_despite_healthy_pool_cell() {
     register_planes();
     init();
 
-    let app = app("model-by", &["some-pool"], None);
+    let app = app("model-by", &["some-pool"], None).await;
     let store = app.store.clone();
 
     let t = now();
     let _ = store.cooldown_remaining_in("some-pool", 0, t);
     store.force_open_in("", 0, t + 600);
 
-    refresh_scrape_gauges(&app);
+    refresh_scrape_gauges(&app).await.unwrap();
     let out = render();
 
     assert_eq!(
@@ -461,12 +417,12 @@ fn test_lane_state_by_model_tripped_default_cell_reads_two_despite_healthy_pool_
     );
 }
 
-#[test]
-fn test_lane_state_half_open_probe_on_own_cell_reads_one() {
+#[tokio::test]
+async fn test_lane_state_half_open_probe_on_own_cell_reads_one() {
     register_planes();
     init();
 
-    let app = app("model-probe", &["pool-probe", "pool-probe-sib"], None);
+    let app = app("model-probe", &["pool-probe", "pool-probe-sib"], None).await;
     let store = app.store.clone();
 
     let t = now();
@@ -474,7 +430,7 @@ fn test_lane_state_half_open_probe_on_own_cell_reads_one() {
 
     store.force_open_in("pool-probe", 0, t.saturating_sub(1));
 
-    refresh_scrape_gauges(&app);
+    refresh_scrape_gauges(&app).await.unwrap();
     let out = render();
     assert_eq!(
         gauge_value(&out, LANE_STATE, "pool-probe"),
@@ -491,7 +447,7 @@ fn test_lane_state_half_open_probe_on_own_cell_reads_one() {
         "the admit must have WON the recovery probe"
     );
 
-    refresh_scrape_gauges(&app);
+    refresh_scrape_gauges(&app).await.unwrap();
     let out = render();
     assert_eq!(
         gauge_value(&out, LANE_STATE, "pool-probe"),
@@ -505,12 +461,12 @@ fn test_lane_state_half_open_probe_on_own_cell_reads_one() {
     );
 }
 
-#[test]
-fn test_lane_state_by_model_default_cell_untouched_zero_cooldown_reports_healthy() {
+#[tokio::test]
+async fn test_lane_state_by_model_default_cell_untouched_zero_cooldown_reports_healthy() {
     register_planes();
     init();
 
-    let app = app("model-zero", &["poolX", "poolY"], None);
+    let app = app("model-zero", &["poolX", "poolY"], None).await;
     let store = app.store.clone();
 
     let t = now();
@@ -518,7 +474,7 @@ fn test_lane_state_by_model_default_cell_untouched_zero_cooldown_reports_healthy
     store.force_open_in("poolX", 0, t + 600);
     store.force_open_in("poolY", 0, t + 600);
 
-    refresh_scrape_gauges(&app);
+    refresh_scrape_gauges(&app).await.unwrap();
     let out = render();
 
     let model_line = out.lines().find(|l| {
@@ -536,8 +492,8 @@ fn test_lane_state_by_model_default_cell_untouched_zero_cooldown_reports_healthy
     );
 }
 
-#[test]
-fn the_scrapes_pool_queued_gauge_reads_the_live_depth() {
+#[tokio::test]
+async fn the_scrapes_pool_queued_gauge_reads_the_live_depth() {
     use busbar_kernel::plane_driver::route_tables::{
         set_pool_queued_depth, ConfigTables, EngineTablesView,
     };
@@ -546,7 +502,7 @@ fn the_scrapes_pool_queued_gauge_reads_the_live_depth() {
 
     let pool = "q-live-pool";
 
-    let app = app("q-live-model", &[pool], None);
+    let app = app("q-live-model", &[pool], None).await;
     let door_tables = ConfigTables::default();
 
     set_pool_queued_depth(pool, 1);
@@ -555,7 +511,7 @@ fn the_scrapes_pool_queued_gauge_reads_the_live_depth() {
         1,
         "the door read seam must reflect the live park depth (1 while parked)"
     );
-    refresh_scrape_gauges(&app);
+    refresh_scrape_gauges(&app).await.unwrap();
     let out = render();
     let live = app.engine_tables_view().queued_depth(pool) as f64;
     assert_eq!(
@@ -570,7 +526,7 @@ fn the_scrapes_pool_queued_gauge_reads_the_live_depth() {
         0,
         "the door read seam must return to 0 once the parked request leaves"
     );
-    refresh_scrape_gauges(&app);
+    refresh_scrape_gauges(&app).await.unwrap();
     let out = render();
     assert_eq!(
         gauge_value(&out, POOL_QUEUED, pool),

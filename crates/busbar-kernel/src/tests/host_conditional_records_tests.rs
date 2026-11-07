@@ -1,6 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+trait ReadyAdmission {
+    fn admit_ready(
+        &self,
+        instance: &str,
+        facts: crate::host_services::InstanceFacts,
+    ) -> Result<(), crate::host_services::AdmitRefused>;
+}
+impl ReadyAdmission for crate::host_services::KernelServices {
+    fn admit_ready(
+        &self,
+        instance: &str,
+        facts: crate::host_services::InstanceFacts,
+    ) -> Result<(), crate::host_services::AdmitRefused> {
+        futures::FutureExt::now_or_never(self.admit(instance, facts))
+            .expect("in-memory fixture admission finishes in one poll")
+    }
+}
 use super::*;
 use crate::host_chains::{ChainFraming, ConditionalChain, CHAIN_LIFE_SCHEMA};
 use busbar_contract::abi::plane::{RecordChain, CHAIN_DIGESTS_SCOPE, CHAIN_PIPE_SEPARATED};
@@ -32,18 +49,18 @@ impl RecordRows for AtomicRows {
         true
     }
 
-    fn record_transaction(&self, request: &Request) -> Result<Decision, StoreFailure> {
+    fn record_transaction(&self, request: &Request) -> Result<Decision, RecordFailure> {
         let mut state = self.0.lock().unwrap();
         state.calls.push(request.clone());
         if state.refuse {
-            return Err(StoreFailure::Refused("temporarily unsupported".into()));
+            return Err(RecordFailure::Refused("temporarily unsupported".into()));
         }
         let fingerprint = request.fingerprint();
         if let Some(held) = state.receipts.get(&request.op_id.0) {
             return if *held == fingerprint {
                 Ok(Decision::Applied)
             } else {
-                Err(StoreFailure::Conflict)
+                Err(RecordFailure::Conflict)
             };
         }
         for predicate in &request.predicates {
@@ -60,7 +77,7 @@ impl RecordRows for AtomicRows {
         }
         if state.fail_before_commit {
             state.fail_before_commit = false;
-            return Err(StoreFailure::Failed("rolled back".into()));
+            return Err(RecordFailure::Failed("rolled back".into()));
         }
         for mutation in &request.mutations {
             match mutation {
@@ -88,7 +105,7 @@ impl RecordRows for AtomicRows {
         state.receipts.insert(request.op_id.0, fingerprint);
         if state.lose_reply {
             state.lose_reply = false;
-            Err(StoreFailure::Fault("lost commit answer".into()))
+            Err(RecordFailure::Fault("lost commit answer".into()))
         } else {
             Ok(Decision::Applied)
         }
@@ -586,7 +603,7 @@ fn services(rows: Arc<AtomicRows>, opted_in: bool) -> crate::host_services::Kern
         .with_records(rows)
         .with_pool(Arc::new(Inline));
     services
-        .admit(
+        .admit_ready(
             INSTANCE,
             crate::host_services::InstanceFacts {
                 record_kinds: vec![STATE, EVENTS, RecordSchemaId::new("cache")],
@@ -761,7 +778,7 @@ fn invalid_or_repeated_conditional_kind_is_refused_at_admission() {
     for required in [vec![1], vec![0, 0]] {
         let host = crate::host_services::KernelServices::new();
         assert!(matches!(
-            host.admit(
+            host.admit_ready(
                 INSTANCE,
                 crate::host_services::InstanceFacts {
                     record_kinds: vec![STATE],
@@ -827,7 +844,7 @@ fn missing_store_capability_refuses_before_transaction_dispatch() {
     let host = crate::host_services::KernelServices::new()
         .with_records(Arc::new(UnsupportedRows(Arc::clone(&rows))))
         .with_pool(Arc::new(Inline));
-    host.admit(
+    host.admit_ready(
         INSTANCE,
         crate::host_services::InstanceFacts {
             record_kinds: vec![STATE],
@@ -966,7 +983,7 @@ fn selected_schema_alias_cannot_admit_a_plain_writer_into_chain_storage() {
         .with_records(rows.clone())
         .with_pool(Arc::new(Inline));
     assert!(host
-        .admit(
+        .admit_ready(
             INSTANCE,
             crate::host_services::InstanceFacts {
                 record_kinds: vec![EVENTS, EVENTS],
@@ -1007,7 +1024,7 @@ fn selected_schema_alias_cannot_admit_a_plain_writer_into_chain_storage() {
     assert!(rows.0.lock().unwrap().calls.is_empty());
 
     assert!(host
-        .admit(
+        .admit_ready(
             INSTANCE,
             crate::host_services::InstanceFacts {
                 record_kinds: vec![EVENTS, EVENTS],
@@ -1087,13 +1104,12 @@ fn two_ordered_appends_use_one_fence_and_link_frames_in_one_atomic_publication()
             }
         }
     }
-    use crate::audit::journal::NeutralRecord;
     use crate::audit::ChainedRecord;
     assert_eq!(frames.len(), 2);
     assert_eq!(frames[0].seq(), 1);
     assert_eq!(frames[1].seq(), 2);
     crate::audit::verify_chain(&frames).unwrap();
-    assert_eq!(frames[1].content(), b"delegated");
+    assert_eq!(frames[1].content.as_slice(), b"delegated");
 }
 
 #[test]

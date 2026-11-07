@@ -65,7 +65,8 @@ async fn hosted_with_secret(
             "advanced":{"allow_destinations":["127.0.0.1"]},
         }),
         &library,
-    );
+    )
+    .await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let router = busbar_kernel::build_router(app);

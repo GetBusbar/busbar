@@ -111,66 +111,22 @@ pub(crate) fn base_deploy() -> DeployCfg {
 }
 
 #[test]
-fn augment_config_error_adds_auth_mode_migration_hint() {
-    let augmented =
-        crate::config::augment_config_error("unknown field `mode`, expected one of `chain`");
-    assert!(
-        augmented.contains("auth.mode:"),
-        "hint names the removed key: {augmented}"
-    );
-    assert!(
-        augmented.contains("auth.chain:"),
-        "hint points to the new key: {augmented}"
-    );
-    assert!(
-        augmented.contains("upstream_credentials"),
-        "hint covers the passthrough migration: {augmented}"
-    );
-
-    assert_eq!(
-        crate::config::augment_config_error("some other yaml error"),
-        "some other yaml error"
-    );
-
-    let legacy = "providers: {}\nauth:\n  mode: none\n";
-    let err = serde_yaml::from_str::<crate::config::DeployCfg>(legacy)
-        .map_err(crate::config::augment_config_error)
-        .expect_err("legacy auth.mode must fail to parse");
-    assert!(
-        err.contains("auth.chain:"),
-        "end-to-end error carries the hint: {err}"
-    );
-}
-
-#[test]
-fn augment_config_error_adds_hook_stage_rename_hint() {
-    for (old, new) in [
-        ("route", "candidate"),
-        ("attempt", "routing"),
-        ("completion", "response"),
-    ] {
-        let augmented = crate::config::augment_config_error(format!(
-            "unknown variant `{old}`, expected one of `request`, `candidate`, `routing`, `response`"
-        ));
-        assert!(
-            augmented.contains(&format!("`{old}`")) && augmented.contains(&format!("`{new}`")),
-            "hint must name the old AND new stage value: {augmented}"
-        );
-        assert!(
-            augmented.contains("--migrate-config"),
-            "hint must point at the migrator: {augmented}"
-        );
+fn current_reader_rejects_retired_auth_and_stage_forms() {
+    let err =
+        serde_yaml::from_str::<crate::config::DeployCfg>("providers: {}\nauth:\n  mode: none\n")
+            .map_err(crate::config::augment_config_error)
+            .expect_err("retired auth mode");
+    assert!(err.contains("mode"), "{err}");
+    for old in ["route", "attempt", "completion"] {
+        let yaml = format!("kind: tap\nmodule: p\nphase: [{old}]\n");
+        let err = serde_yaml::from_str::<HookCfg>(&yaml)
+            .map_err(crate::config::augment_config_error)
+            .expect_err("retired stage");
+        assert!(err.contains(old), "{err}");
     }
-
-    let legacy = "kind: tap\nmodule: p\nphase: [completion]\n";
-    let err = serde_yaml::from_str::<HookCfg>(legacy)
-        .map_err(crate::config::augment_config_error)
-        .expect_err(
-            "an old-form `completion` stage value must fail to parse (HARD rename, no alias)",
-        );
-    assert!(
-        err.contains("`completion`") && err.contains("`response`") && err.contains("1.5.3"),
-        "end-to-end error names the rename and version: {err}"
+    assert_eq!(
+        crate::config::augment_config_error("current reader error"),
+        "current reader error"
     );
 }
 
@@ -297,29 +253,14 @@ fn test_removed_key_aliases_are_rejected() {
 }
 
 #[test]
-fn test_retired_observability_export_keys_loud_fail_with_hint() {
-    install_normal_root_metadata();
-    let err = serde_yaml::from_str::<DeployCfg>(
-        "observability:\n  request_log_webhook_url: \"https://x.example.com/l\"\nproviders: {}\nmodels: {}\npools: {}\n",
-    )
-    .expect_err("the retired observability block must be rejected");
-    let hint = crate::config::augment_config_error(err);
-    assert!(
-        hint.contains("observability")
-            && hint.contains("request-log-webhook")
-            && hint.contains("--migrate-config"),
-        "the retired block's error must name the new export home + the migrator; got: {hint}"
-    );
-
-    let err = serde_yaml::from_str::<DeployCfg>(
-        "metrics:\n  buffer_seconds: 60\nproviders: {}\nmodels: {}\npools: {}\n",
-    )
-    .expect_err("the retired metrics block must be rejected");
-    let hint = crate::config::augment_config_error(err);
-    assert!(
-        hint.contains("export.prometheus") && hint.contains("--migrate-config"),
-        "the retired metrics block must point at export.prometheus + the migrator; got: {hint}"
-    );
+fn current_reader_rejects_retired_observability_fields() {
+    for key in ["observability", "metrics"] {
+        let yaml = format!("{key}: {{}}\nproviders: {{}}\nmodels: {{}}\npools: {{}}\n");
+        let err = serde_yaml::from_str::<DeployCfg>(&yaml)
+            .map_err(crate::config::augment_config_error)
+            .expect_err("retired root field");
+        assert!(err.contains("unknown field") && err.contains(key), "{err}");
+    }
 }
 
 #[test]
@@ -2966,7 +2907,7 @@ pub(crate) fn install_normal_root_metadata() {
             !migration.is_empty(),
             "the normal root carries its migration table"
         );
-        crate::config::migration_table::install(migration);
+        crate::config::declared_vocabulary::install(migration);
         let operator = table("operator-auth");
         let row = operator
             .iter()

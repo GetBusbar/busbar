@@ -204,9 +204,9 @@ use super::mechanism::check::{contract, OpContract};
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 
-/// The transport kind's ABI version: `2` requires semantic rate-limit fault and namespace provenance.
-/// v1.5.5 had no transport ABI; incompatible development generation `1` is refused.
-pub const ABI_VERSION: u32 = 2;
+/// The transport kind's initial released ABI; v1.5.5 had no transport kind ABI.
+/// Admission also requires the current layout fingerprint.
+pub const ABI_VERSION: u32 = 1;
 
 /// The transport kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
 pub const LAYOUT_FINGERPRINT: u64 = 0x715dbad81f3872c0;

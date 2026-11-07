@@ -1,117 +1,84 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
-use super::*;
-use crate::root::durability::store_chain::{read_chain, JournalLane};
-use crate::root::durability::store_identity::take_node;
-use std::sync::Condvar;
+
+use crate::root::durability::audit_entry;
+use crate::root::durability::tests::{audit_inputs, audit_pass, NativeFixture, BUDGET};
+use busbar_contract::persistence::Mutation;
+use busbar_kernel::persistence::journal::RuntimeJournal;
+use busbar_kernel_audit::{Audit, AuditChain, AuditSigningKey};
+use std::sync::Arc;
 use std::time::Duration;
 
-#[derive(Default)]
-struct PublicationGate {
-    state: Mutex<(bool, bool)>,
-    changed: Condvar,
-}
-impl PublicationGate {
-    fn enter(&self) {
-        let mut state = self.state.lock().unwrap();
-        state.0 = true;
-        self.changed.notify_all();
-        while !state.1 {
-            state = self.changed.wait(state).unwrap();
-        }
-    }
-    fn release(&self) {
-        self.state.lock().unwrap().1 = true;
-        self.changed.notify_all();
-    }
-}
-struct ReleaseGate(Arc<PublicationGate>);
-impl Drop for ReleaseGate {
-    fn drop(&mut self) {
-        self.0.release();
-    }
-}
-
-#[test]
-fn actual_lane_acknowledges_only_the_whole_published_prefix_and_restarts_without_cleanup() {
-    const HOST: &str = "audit-group-lane-restart";
-    let slots = RecordSlots::new();
-    let taken = take_node(&slots, HOST).unwrap();
-    let node = taken.id;
-    let lane = JournalLane::with_capacity(slots.calls(), "actual-memory", 32).unwrap();
-    lane.hold_lease(taken.lease.unwrap());
-    let gate = Arc::new(PublicationGate::default());
-
-    let _release = ReleaseGate(gate.clone());
-    let callback = gate.clone();
-    slots.on_transaction(move |request| {
-        if request.mutations.iter().any(|mutation| matches!(mutation, Mutation::Put { schema, key, .. } if schema == SCHEMA && key == &tip_key(node))) { callback.enter(); }
-        None
-    });
-    let mut sealed = Sealed::for_node(node);
-    let records: Vec<_> = (0..3)
-        .map(|i| raw(&sealed.audit(START + i * HEAD_SAMPLE_SECONDS)))
+#[tokio::test]
+async fn actual_lane_acknowledges_only_the_whole_published_prefix_and_restarts() {
+    let fixture = NativeFixture::new(91).await;
+    let mut chain = AuditChain::new()
+        .sealing_as(91)
+        .signing_with(AuditSigningKey::from_seed(&[0x64; 32]));
+    let audits: Vec<_> = (1..=3)
+        .map(|seq| chain.seal(audit_inputs(seq), &audit_pass()))
         .collect();
-    lane.shipper().ship(&records).unwrap();
-    {
-        let state = gate.state.lock().unwrap();
-        let (state, _) = gate
-            .changed
-            .wait_timeout_while(state, Duration::from_secs(5), |state| !state.0)
-            .unwrap();
-        assert!(state.0, "the actual final publication reached its gate");
-    }
-    assert_eq!(lane.pending(), records.len());
-    for record in &records {
-        assert!(lane
-            .wait_acked(node, record.node_seq, Duration::ZERO)
-            .is_err());
-    }
-    gate.release();
-    lane.wait_acked(
-        node,
-        records.last().unwrap().node_seq,
-        Duration::from_secs(5),
-    )
-    .unwrap();
-    assert_eq!(lane.pending(), 0);
-    for record in &records {
-        lane.wait_acked(node, record.node_seq, Duration::ZERO)
-            .unwrap();
-    }
-    slots.on_transaction(|_| None);
-    lane.release_held_lease();
-
-    let replay = read_chain(&slots, node).unwrap();
-    assert_eq!(replay.len(), records.len());
-    for (old, stored) in records.iter().zip(&replay) {
-        assert_eq!(old.identity(), stored.identity());
-        assert_eq!(old.body, stored.body);
-    }
-    let taken = take_node(&slots, HOST).unwrap();
-    assert_eq!(taken.id, node);
-    let restarted = JournalLane::with_capacity(slots.calls(), "actual-memory", 32).unwrap();
-    restarted.hold_lease(taken.lease.unwrap());
-    let writes = Arc::new(AtomicUsize::new(0));
-    let count = writes.clone();
-    slots.on_transaction(move |_| {
-        count.fetch_add(1, Ordering::SeqCst);
-        None
-    });
-    restarted.shipper().ship(&replay).unwrap();
-    restarted
-        .wait_acked(
-            node,
-            replay.last().unwrap().node_seq,
-            Duration::from_secs(5),
-        )
+    let entries: Vec<_> = audits
+        .iter()
+        .map(|record| audit_entry(record).unwrap())
+        .collect();
+    let run = fixture.journal.stage_run(&entries).unwrap();
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let (gate, resume) = (entered.clone(), release.clone());
+    *fixture.faults.on_commit.lock().unwrap() = Some(Arc::new(move |request| {
+        let (gate, resume) = (gate.clone(), resume.clone());
+        Box::pin(async move {
+            if request.candidate().mutations.iter().any(|mutation|
+                matches!(mutation, Mutation::Put { address, .. } if address.key.get(24) == Some(&b'H'))) {
+                gate.notify_one();
+                resume.notified().await;
+            }
+            Ok(())
+        })
+    }));
+    let writer = fixture.journal.clone();
+    let pending = run.clone();
+    let confirm = tokio::spawn(async move { writer.confirm(&pending).await });
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
         .unwrap();
-    assert_eq!(restarted.pending(), 0);
-    assert_eq!(
-        writes.load(Ordering::SeqCst),
-        0,
-        "reconstructed whole-group proof must retire without cleanup or publication"
+    assert_eq!(fixture.journal.pending_records(), 3);
+    assert!(!fixture.journal.is_confirmed(&run).unwrap());
+    assert!(fixture
+        .journal
+        .read_records(BUDGET)
+        .await
+        .unwrap()
+        .is_empty());
+    release.notify_one();
+    tokio::time::timeout(Duration::from_secs(5), confirm)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(fixture.journal.pending_records(), 0);
+    assert!(fixture.journal.is_confirmed(&run).unwrap());
+    *fixture.faults.on_commit.lock().unwrap() = None;
+    let stored = fixture.journal.read_records(BUDGET).await.unwrap();
+    assert_eq!(stored.len(), 3);
+    busbar_kernel_wal::verify_journal(&stored).unwrap();
+    let reopened = RuntimeJournal::open(fixture.core.clone(), 91, BUDGET)
+        .await
+        .unwrap();
+    fixture.faults.clear_observations();
+    let replay = reopened.read_records(BUDGET).await.unwrap();
+    assert_eq!(replay, stored);
+    assert_eq!(reopened.pending_records(), 0);
+    assert_eq!(reopened.next_seq(), 4);
+    assert!(
+        fixture.faults.requests.lock().unwrap().is_empty(),
+        "reconstructed proof requires no cleanup or publication"
     );
-    slots.on_transaction(|_| None);
-    restarted.release_held_lease();
+    let decoded: Vec<_> = replay
+        .iter()
+        .map(|r| crate::root::durability::decode_audit(r).unwrap().unwrap())
+        .collect();
+    assert_eq!(decoded, audits);
+    AuditChain::verify_chain(&decoded).unwrap();
 }

@@ -286,7 +286,7 @@ async fn serve(fapi2: bool) -> Subject {
         ],
     };
 
-    let app = application_with_resource_auth(Some(&cfg), None, true);
+    let app = application_with_resource_auth(Some(&cfg), None, true).await;
     let router = busbar_kernel::build_router(Arc::clone(&app));
     tokio::spawn(async move {
         super::serve_tls(listener, router).await;

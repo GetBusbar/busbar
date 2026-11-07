@@ -6,219 +6,50 @@ use std::sync::Arc;
 use crate::root::test_plugins as plugins;
 use crate::test_common as common;
 
-use busbar_contract::abi::store::OpId;
-use busbar_contract::kinds::RecordBytes;
-use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
-use busbar_contract::store_calls::StoreCall;
+use busbar_contract::persistence::*;
 
-struct ObservedStoreCalls {
-    calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
+struct ObservedBackend {
+    actual: Arc<dyn PersistenceBackend>,
     record_writes: std::sync::atomic::AtomicUsize,
     transactions: std::sync::atomic::AtomicUsize,
 }
-
-impl busbar_contract::store_calls::StoreCalls for ObservedStoreCalls {
-    fn supports_usage_correction(&self) -> bool {
-        self.calls.supports_usage_correction()
+impl PersistenceBackend for ObservedBackend {
+    fn info(&self) -> BackendInfo {
+        self.actual.info()
     }
-
-    fn apply_usage_correction<'a>(
-        &'a self,
-        request: &'a busbar_contract::records::correction::Request,
-    ) -> StoreCall<'a, busbar_contract::records::correction::Decision> {
-        self.calls.apply_usage_correction(request)
+    fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
+        self.actual.read(request)
     }
-
-    fn supports_record_transaction(&self) -> bool {
-        self.calls.supports_record_transaction()
+    fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
+        self.actual.scan(request)
     }
-
-    fn record_transaction<'a>(
-        &'a self,
-        request: &'a busbar_contract::abi::sdk::store::conditional::Request,
-    ) -> StoreCall<'a, busbar_contract::abi::sdk::store::conditional::Decision> {
-        self.transactions
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.calls.record_transaction(request)
+    fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
+        self.actual.clock(dataset)
     }
-
-    fn add_usage_batch<'a>(
-        &'a self,
-        op: OpId,
-        cells: &'a [(&'a str, u64, UsageDelta)],
-    ) -> StoreCall<'a, ()> {
-        self.calls.add_usage_batch(op, cells)
-    }
-
-    fn add_metering_batch<'a>(
-        &'a self,
-        op: OpId,
-        deltas: &'a [MeteringDelta],
-    ) -> StoreCall<'a, ()> {
-        self.calls.add_metering_batch(op, deltas)
-    }
-
-    fn record_put<'a>(
-        &'a self,
-        schema: &'a str,
-        key: &'a [u8],
-        value: &'a RecordBytes,
-    ) -> StoreCall<'a, ()> {
-        self.record_writes
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.calls.record_put(schema, key, value)
-    }
-
-    fn record_get<'a>(
-        &'a self,
-        schema: &'a str,
-        key: &'a [u8],
-    ) -> StoreCall<'a, Option<RecordBytes>> {
-        self.calls.record_get(schema, key)
-    }
-
-    fn record_scan<'a>(
-        &'a self,
-        schema: &'a str,
-        prefix: &'a [u8],
-        limit: u32,
-    ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
-        self.calls.record_scan(schema, prefix, limit)
-    }
-
-    fn put_key<'a>(&'a self, key: &'a busbar_contract::records::VirtualKey) -> StoreCall<'a, ()> {
-        self.calls.put_key(key)
-    }
-
-    fn get_key<'a>(
-        &'a self,
-        id: &'a str,
-    ) -> StoreCall<'a, Option<busbar_contract::records::VirtualKey>> {
-        self.calls.get_key(id)
-    }
-
-    fn list_keys(&self) -> StoreCall<'_, Vec<busbar_contract::records::VirtualKey>> {
-        self.calls.list_keys()
-    }
-
-    fn delete_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, ()> {
-        self.calls.delete_key(id)
-    }
-
-    fn put_key_with_credential<'a>(
-        &'a self,
-        key: &'a busbar_contract::records::VirtualKey,
-        secret: &'a busbar_contract::records::CredentialSecret,
-    ) -> StoreCall<'a, ()> {
-        self.calls.put_key_with_credential(key, secret)
-    }
-
-    fn list_credentials<'a>(
-        &'a self,
-        key_id: &'a str,
-    ) -> StoreCall<'a, Vec<busbar_contract::records::CredentialMeta>> {
-        self.calls.list_credentials(key_id)
-    }
-
-    fn revoke_credential<'a>(&'a self, id: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
-        self.calls.revoke_credential(id, reason)
-    }
-
-    fn list_credentials_since(
-        &self,
-        since: u64,
-    ) -> StoreCall<'_, Vec<busbar_contract::records::CredentialSecret>> {
-        self.calls.list_credentials_since(since)
-    }
-
-    fn add_denylist<'a>(&'a self, sub: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
-        self.calls.add_denylist(sub, reason)
-    }
-
-    fn list_denylist(&self) -> StoreCall<'_, Vec<String>> {
-        self.calls.list_denylist()
-    }
-
-    fn list_metering(
-        &self,
-        bucket: u64,
-    ) -> StoreCall<'_, Vec<busbar_contract::records::MeteringRow>> {
-        self.calls.list_metering(bucket)
-    }
-
-    fn list_audit(&self) -> StoreCall<'_, Vec<busbar_contract::records::AuditRecord>> {
-        self.calls.list_audit()
-    }
-
-    fn list_audit_tail(
-        &self,
-        limit: u64,
-    ) -> StoreCall<'_, Vec<busbar_contract::records::AuditRecord>> {
-        self.calls.list_audit_tail(limit)
-    }
-
-    fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
-        self.calls.upsert_plane_record(record)
-    }
-
-    fn get_plane_record<'a>(
-        &'a self,
-        kind: &'a str,
-        id: &'a str,
-    ) -> StoreCall<'a, Option<Vec<u8>>> {
-        self.calls.get_plane_record(kind, id)
-    }
-
-    fn append_plane_record<'a>(
-        &'a self,
-        op: OpId,
-        record: PlaneRecordRef<'a>,
-    ) -> StoreCall<'a, ()> {
-        self.calls.append_plane_record(op, record)
-    }
-
-    fn list_plane_records<'a>(
-        &'a self,
-        kind: &'a str,
-        selector: &'a PlaneSelector<'a>,
-    ) -> StoreCall<'a, Vec<Vec<u8>>> {
-        self.calls.list_plane_records(kind, selector)
-    }
-
-    fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
-        self.calls.delete_plane_record(kind, id)
-    }
-
-    fn redeem_plane_token<'a>(
-        &'a self,
-        kind: &'a str,
-        token: &'a str,
-        expires_at: u64,
-        now: u64,
-    ) -> StoreCall<'a, bool> {
-        self.calls.redeem_plane_token(kind, token, expires_at, now)
-    }
-
-    fn plane_token_live<'a>(
-        &'a self,
-        kind: &'a str,
-        token: &'a str,
-        expires_at: u64,
-        now: u64,
-    ) -> StoreCall<'a, bool> {
-        self.calls.plane_token_live(kind, token, expires_at, now)
-    }
-
-    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> StoreCall<'a, Vec<String>> {
-        self.calls.list_plane_record_parents(kind)
-    }
-
-    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
-        self.calls.purge_plane_records_before(kind, before)
-    }
-
-    fn purge_usage_before(&self, before: u64) -> StoreCall<'_, u64> {
-        self.calls.purge_usage_before(before)
+    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+        let overlay_writes = candidate
+            .candidate()
+            .mutations
+            .iter()
+            .filter(|mutation| {
+                let Mutation::Put { address, .. } = mutation else {
+                    return false;
+                };
+                busbar_kernel::persistence::scoped::migration_authorizes(
+                    true,
+                    "busbar.config.overlay",
+                    "busbar.config.overlay.v1",
+                    address,
+                )
+            })
+            .count();
+        if overlay_writes > 0 {
+            self.transactions
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.record_writes
+                .fetch_add(overlay_writes, std::sync::atomic::Ordering::SeqCst);
+        }
+        self.actual.commit(candidate)
     }
 }
 
@@ -285,15 +116,10 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
         &plugin_config,
         &directory,
     )
+    .await
     .expect("the actual Store bootstraps its config authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional config records");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional config records");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -308,13 +134,15 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the actual product builds the session deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let gov = app
@@ -385,7 +213,8 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
         "the actual key is admitted through its published enforcement chain (not MissingGroup)"
     );
     let persisted = overlay
-        .read_required()
+        .read_required_async()
+        .await
         .expect("read the actual Store overlay")
         .expect("group provisioning persisted a real overlay generation");
     assert_eq!(persisted.groups.get("user:sam"), Some(leaf));
@@ -413,7 +242,8 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
         "team + exactly one user leaf (no duplicate)"
     );
     let self_rows = gov
-        .all_keys()
+        .all_keys_async()
+        .await
         .unwrap()
         .into_iter()
         .filter(|key| {
@@ -491,15 +321,10 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
             &plugin_config,
             &directory,
         )
+        .await
         .expect("the actual Store bootstraps its config authority");
-        let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-            anchor
-                .calls
-                .as_ref()
-                .cloned()
-                .expect("the actual Store exposes typed calls"),
-        )
-        .expect("the actual Store supports conditional config records");
+        let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+            .expect("the actual Store supports conditional config records");
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -514,14 +339,15 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
             Some(anchor),
             true,
         )
+        .await
         .expect("the actual product builds the session deployment");
         limits.stage_boot();
-        let _book = crate::root::boot::book(&app, &module).expect(
+        let _book = crate::root::boot::book(&app, &module).await.expect(
             "the actual Store binds rate-card history and usage recovery before activation",
         );
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         let app = Arc::new(app);
         let gov = app
@@ -532,13 +358,15 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
         let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
         let before = handle.load();
         let overlay_before = overlay
-            .read_bytes()
+            .read_bytes_async()
+            .await
             .expect("read the actual overlay before refusal");
 
         let old = if refresh {
             let now = busbar_kernel::store::now();
             Some(
                 gov.issue_self("sam", "corp", None, now.saturating_add(3600), now)
+                    .await
                     .expect("the original team credential can be issued")
                     .1,
             )
@@ -565,7 +393,8 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
         );
         assert_eq!(
             overlay
-                .read_bytes()
+                .read_bytes_async()
+                .await
                 .expect("read the actual overlay after refusal"),
             overlay_before,
             "refusal must not persist a changed group"
@@ -578,7 +407,8 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
             );
         } else {
             assert!(
-                gov.all_keys()
+                gov.all_keys_async()
+                    .await
                     .unwrap()
                     .into_iter()
                     .filter(|key| key.enabled
@@ -659,6 +489,7 @@ async fn existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persi
         &plugin_config,
         &directory,
     )
+    .await
     .expect("the actual Store bootstraps its config authority");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
@@ -674,13 +505,15 @@ async fn existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persi
         Some(anchor),
         true,
     )
+    .await
     .expect("the actual product builds the session deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let gov = app
@@ -729,7 +562,8 @@ async fn existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persi
             .is_some());
     }
     assert_eq!(
-        gov.all_keys()
+        gov.all_keys_async()
+            .await
             .unwrap()
             .into_iter()
             .filter(|key| key.enabled
@@ -799,30 +633,30 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the product deployment resolves");
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-        let mut anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+        let mut observed = None;
+        let fresh = crate::root::test_plugins::provision_fresh_application_store_with_backend(
             &config,
             &plugin_config,
             &directory,
+            |actual| {
+                let backend = Arc::new(ObservedBackend {
+                    actual,
+                    record_writes: std::sync::atomic::AtomicUsize::new(0),
+                    transactions: std::sync::atomic::AtomicUsize::new(0),
+                });
+                observed = Some(backend.clone());
+                backend
+            },
         )
-        .expect("the actual Store bootstraps its config authority");
-        let observed = Arc::new(ObservedStoreCalls {
-            calls: anchor
-                .calls
-                .as_ref()
-                .cloned()
-                .expect("the actual Store exposes typed calls"),
-            record_writes: std::sync::atomic::AtomicUsize::new(0),
-            transactions: std::sync::atomic::AtomicUsize::new(0),
-        });
-        anchor.calls = Some(observed.clone());
-        let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-            anchor
-                .calls
-                .as_ref()
-                .cloned()
-                .expect("the actual Store exposes typed calls"),
-        )
-        .expect("the actual Store supports conditional config records");
+        .await
+        .expect("the actual Store is provisioned through its primitive observer");
+        let anchor = fresh
+            .initialize_principal_format(&config, &plugin_config)
+            .await
+            .expect("the actual Store bootstraps its config authority");
+        let observed = observed.expect("the primitive observer was installed");
+        let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+            .expect("the actual Store supports conditional config records");
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -837,14 +671,15 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
             Some(anchor),
             true,
         )
+        .await
         .expect("the actual product builds the session deployment");
         limits.stage_boot();
-        let _book = crate::root::boot::book(&app, &module).expect(
+        let _book = crate::root::boot::book(&app, &module).await.expect(
             "the actual Store binds rate-card history and usage recovery before activation",
         );
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         let app = Arc::new(app);
         let gov = app
@@ -853,7 +688,8 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
             .expect("the actual Store supplies governance")
             .clone();
         let overlay_before = overlay
-            .read_bytes()
+            .read_bytes_async()
+            .await
             .expect("the actual overlay reads before exchange");
         let writes_before = observed
             .record_writes
@@ -889,11 +725,11 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
             assert_eq!(status, axum::http::StatusCode::FORBIDDEN, "{body}");
             assert!(body.get("api_key").is_none(), "no credential is issued");
             assert!(
-                gov.all_keys().unwrap().is_empty(),
+                gov.all_keys_async().await.unwrap().is_empty(),
                 "the refused exchange must not write any key to its attached store"
             );
             assert_eq!(
-                overlay.read_bytes().unwrap(),
+                overlay.read_bytes_async().await.unwrap(),
                 overlay_before,
                 "no overlay publication"
             );
@@ -923,7 +759,8 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
                 Some("user:oidc-v2:aHR0cHM6Ly9pc3N1ZXIuZTJlLmludmFsaWQ:subject")
             );
             assert_eq!(
-                gov.all_keys()
+                gov.all_keys_async()
+                    .await
                     .unwrap()
                     .into_iter()
                     .filter(|key| key.enabled
@@ -933,7 +770,7 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
                     .count(),
                 1
             );
-            assert_eq!(gov.all_keys().unwrap().len(), 1);
+            assert_eq!(gov.all_keys_async().await.unwrap().len(), 1);
             assert!(
                 observed
                     .record_writes
@@ -1031,30 +868,30 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
             let config = busbar_kernel::config::resolve(&deploy, &Default::default())
                 .expect("the product deployment resolves");
             let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-            let mut anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+            let mut observed = None;
+            let fresh = crate::root::test_plugins::provision_fresh_application_store_with_backend(
                 &config,
                 &plugin_config,
                 &directory,
+                |actual| {
+                    let backend = Arc::new(ObservedBackend {
+                        actual,
+                        record_writes: std::sync::atomic::AtomicUsize::new(0),
+                        transactions: std::sync::atomic::AtomicUsize::new(0),
+                    });
+                    observed = Some(backend.clone());
+                    backend
+                },
             )
-            .expect("the actual Store bootstraps its config authority");
-            let observed = Arc::new(ObservedStoreCalls {
-                calls: anchor
-                    .calls
-                    .as_ref()
-                    .cloned()
-                    .expect("the actual Store exposes typed calls"),
-                record_writes: std::sync::atomic::AtomicUsize::new(0),
-                transactions: std::sync::atomic::AtomicUsize::new(0),
-            });
-            anchor.calls = Some(observed.clone());
-            let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-                anchor
-                    .calls
-                    .as_ref()
-                    .cloned()
-                    .expect("the actual Store exposes typed calls"),
-            )
-            .expect("the actual Store supports conditional config records");
+            .await
+            .expect("the actual Store is provisioned through its primitive observer");
+            let anchor = fresh
+                .initialize_principal_format(&config, &plugin_config)
+                .await
+                .expect("the actual Store bootstraps its config authority");
+            let observed = observed.expect("the primitive observer was installed");
+            let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+                .expect("the actual Store supports conditional config records");
             let rules = Arc::new(crate::root::door_steps::Rules::default())
                 as Arc<dyn busbar_kernel::appbuild::RootRules>;
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -1069,14 +906,15 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                 Some(anchor),
                 true,
             )
+            .await
             .expect("the actual product builds the session deployment");
             limits.stage_boot();
-            let _book = crate::root::boot::book(&app, &module).expect(
+            let _book = crate::root::boot::book(&app, &module).await.expect(
                 "the actual Store binds rate-card history and usage recovery before activation",
             );
-            limits.keep().expect("the product limits commit");
+            limits.keep().await.expect("the product limits commit");
             if let Some(rotate) = rotate {
-                rotate();
+                rotate.await;
             }
             let app = Arc::new(app);
             let gov = app
@@ -1088,7 +926,8 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                 busbar_kernel::router::build_router_with_limits(app, 64 * 1024, 1, false);
             let before = handle.load();
             let overlay_before = overlay
-                .read_bytes()
+                .read_bytes_async()
+                .await
                 .expect("the actual overlay reads before admission");
             let writes_before = observed
                 .record_writes
@@ -1113,8 +952,8 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                 .unwrap();
                 assert_eq!(anonymous.status(), axum::http::StatusCode::UNAUTHORIZED);
                 assert!(Arc::ptr_eq(&before, &handle.load()));
-                assert!(gov.all_keys().unwrap().is_empty());
-                assert_eq!(overlay.read_bytes().unwrap(), overlay_before);
+                assert!(gov.all_keys_async().await.unwrap().is_empty());
+                assert_eq!(overlay.read_bytes_async().await.unwrap(), overlay_before);
                 assert_eq!(
                     observed
                         .record_writes
@@ -1203,13 +1042,14 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                     key.group.as_deref(),
                     Some("user:oidc-v2:aHR0cHM6Ly9pc3N1ZXIuZTJlLmludmFsaWQ:subject")
                 );
-                assert_eq!(gov.all_keys().unwrap().len(), 1);
+                assert_eq!(gov.all_keys_async().await.unwrap().len(), 1);
                 assert!(handle
                     .load()
                     .groups_registry
                     .contains_key("user:oidc-v2:aHR0cHM6Ly9pc3N1ZXIuZTJlLmludmFsaWQ:subject"));
                 let persisted = overlay
-                    .read_required()
+                    .read_required_async()
+                    .await
                     .expect("the real Store overlay reads")
                     .expect("the allowed mint persisted an actual overlay generation");
                 assert_eq!(
@@ -1219,7 +1059,10 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                     Some("team")
                 );
             } else {
-                assert!(gov.all_keys().unwrap().is_empty(), "no binding was written");
+                assert!(
+                    gov.all_keys_async().await.unwrap().is_empty(),
+                    "no binding was written"
+                );
                 assert!(
                     Arc::ptr_eq(&before, &handle.load()),
                     "no group snapshot swap"
@@ -1228,7 +1071,7 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                     .groups_registry
                     .contains_key("user:oidc-v2:aHR0cHM6Ly9pc3N1ZXIuZTJlLmludmFsaWQ:subject"));
                 assert_eq!(
-                    overlay.read_bytes().unwrap(),
+                    overlay.read_bytes_async().await.unwrap(),
                     overlay_before,
                     "no group overlay was persisted"
                 );

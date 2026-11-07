@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::governance::{GovState, NewKeySpec};
-use busbar_contract::records::{CredentialSecret, RecordStore, SecretForm};
+use busbar_contract::records::{CredentialSecret, SecretForm};
 use std::sync::Arc;
 
 fn meta(id: &str, public_id: &str) -> CredentialMeta {
@@ -138,25 +138,27 @@ fn an_at_rest_key_is_32_bytes_or_64_hex_characters() {
     assert!(!e.contains("short-secret-value"), "{e}");
 }
 
-fn signing_gov(store: Arc<busbar_plugin_loader::store_v3::LoadedStore>, seed: u8) -> GovState {
+async fn signing_gov(store: Arc<crate::persistence::facade::CoreStore>, seed: u8) -> GovState {
     let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
         &[seed; 32],
         crate::governance::signing::DEFAULT_KID,
     );
-    GovState::new_with_signer(store, None, Some(signer)).unwrap()
+    GovState::new_with_core(store, None, Some(signer))
+        .await
+        .unwrap()
 }
 
-fn node(
-    store: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+async fn node(
+    store: Arc<crate::persistence::facade::CoreStore>,
     seed: u8,
     prev: Option<u8>,
 ) -> GovState {
-    let g = signing_gov(store, 7);
+    let g = signing_gov(store, 7).await;
     g.set_at_rest_keys(Some(keys(seed, prev)));
     g
 }
 
-fn try_mint(g: &GovState) -> crate::governance::RecordStoreResult<(String, String)> {
+async fn try_mint(g: &GovState) -> crate::governance::RecordStoreResult<(String, String)> {
     let kind = crate::tests::frozen_text("signed_credential_kind");
     let shape = busbar_contract::auth_calls::IssuedShape {
         id_prefix: "AKIA".to_string(),
@@ -166,21 +168,23 @@ fn try_mint(g: &GovState) -> crate::governance::RecordStoreResult<(String, Strin
         secret_alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
             .to_string(),
     };
-    let (_, _, public_id, secret) = g.mint_signed_with_credential(
-        NewKeySpec {
-            name: "at-rest".to_string(),
-            ..Default::default()
-        },
-        2_000_000_000,
-        1_700_000_000,
-        kind.as_str().expect("the frozen credential kind is text"),
-        &shape,
-    )?;
+    let (_, _, public_id, secret) = g
+        .mint_signed_with_credential_async(
+            NewKeySpec {
+                name: "at-rest".to_string(),
+                ..Default::default()
+            },
+            2_000_000_000,
+            1_700_000_000,
+            kind.as_str().expect("the frozen credential kind is text"),
+            &shape,
+        )
+        .await?;
     Ok((public_id, secret.expose(&crate::seal::lend()).clone()))
 }
 
-fn mint(g: &GovState) -> (String, String) {
-    try_mint(g).unwrap()
+async fn mint(g: &GovState) -> (String, String) {
+    try_mint(g).await.unwrap()
 }
 
 fn now() -> u64 {
@@ -197,8 +201,8 @@ fn read(g: &GovState, public_id: &str) -> (String, bool) {
     (s.expose(&crate::seal::lend()).clone(), live)
 }
 
-fn row(store: &busbar_plugin_loader::store_v3::LoadedStore) -> CredentialSecret {
-    let rows = store.list_credentials_since(0).unwrap();
+async fn row(store: &crate::persistence::facade::CoreStore) -> CredentialSecret {
+    let rows = store.identity().list_credentials_since(0).await.unwrap();
     assert_eq!(rows.len(), 1);
     rows.into_iter().next().unwrap()
 }
@@ -207,33 +211,40 @@ fn kid_of(envelope: &str) -> &str {
     sealed_kid(envelope).expect("a sealed envelope")
 }
 
-#[test]
-fn a_minted_recoverable_credential_reaches_the_store_sealed_and_still_authenticates() {
-    let store = crate::real_store::store();
-    let g = node(store.clone(), 1, None);
-    let (public_id, secret) = mint(&g);
-    let r = row(&store);
+#[tokio::test]
+async fn a_minted_recoverable_credential_reaches_the_store_sealed_and_still_authenticates() {
+    let store = crate::real_store::core().await;
+    let g = node(store.clone(), 1, None).await;
+    let (public_id, secret) = mint(&g).await;
+    let r = row(&store).await;
     assert!(r.secret.starts_with("v1:aead:"), "not sealed");
     assert_eq!(kid_of(&r.secret), keys(1, None).kid());
     assert!(!r.secret.contains(&secret));
     assert_eq!(read(&g, &public_id), (secret, true));
 }
 
-#[test]
-fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_with_the_sentence() {
-    let store = crate::real_store::store();
-    let g = signing_gov(store.clone(), 7);
-    let e = try_mint(&g).unwrap_err().to_string();
+#[tokio::test]
+async fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_with_the_sentence() {
+    let store = crate::real_store::core().await;
+    let g = signing_gov(store.clone(), 7).await;
+    let e = try_mint(&g).await.unwrap_err().to_string();
     assert!(e.contains(NO_KEY_REFUSAL), "{e}");
     assert!(e.contains("credentials.at_rest.key"), "{e}");
-    assert!(store.list_credentials_since(0).unwrap().is_empty());
     assert!(
-        store.list_keys().unwrap().is_empty(),
+        store
+            .identity()
+            .list_credentials_since(0)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store.identity().list_keys().await.unwrap().is_empty(),
         "a binding was written"
     );
 
-    assert!(g
-        .mint_signed(
+    assert!(
+        g.mint_signed_async(
             NewKeySpec {
                 name: "bearer".to_string(),
                 ..Default::default()
@@ -241,112 +252,120 @@ fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_with_the_s
             2_000_000_000,
             1_700_000_000,
         )
-        .is_ok());
+        .await
+        .is_ok()
+    );
 }
 
-#[test]
-fn rotation_reseals_a_row_under_the_new_key_and_it_still_authenticates() {
-    let store = crate::real_store::store();
-    let (public_id, secret) = mint(&node(store.clone(), 1, None));
-    let before = row(&store);
+#[tokio::test]
+async fn rotation_reseals_a_row_under_the_new_key_and_it_still_authenticates() {
+    let store = crate::real_store::core().await;
+    let (public_id, secret) = mint(&node(store.clone(), 1, None).await).await;
+    let before = row(&store).await;
     assert_eq!(kid_of(&before.secret), keys(1, None).kid());
 
-    let rotated = node(store.clone(), 2, Some(1));
+    let rotated = node(store.clone(), 2, Some(1)).await;
     assert_eq!(read(&rotated, &public_id), (secret.clone(), true));
 
-    let pass = rotated.rewrap_credentials(now()).unwrap();
+    let pass = rotated.rewrap_credentials_async(now()).await.unwrap();
     assert_eq!((pass.resealed, pass.pending), (1, 0), "{pass:?}");
-    let after = row(&store);
+    let after = row(&store).await;
     assert_eq!(kid_of(&after.secret), keys(2, None).kid());
     assert!(!after.secret.contains(&secret));
     assert_eq!(after.meta.id, before.meta.id);
     assert_eq!(read(&rotated, &public_id), (secret.clone(), true));
 
     assert_eq!(
-        read(&node(store.clone(), 2, None), &public_id),
+        read(&node(store.clone(), 2, None).await, &public_id),
         (secret, true)
     );
 
-    let again = rotated.rewrap_credentials(now()).unwrap();
+    let again = rotated.rewrap_credentials_async(now()).await.unwrap();
     assert_eq!((again.resealed, again.pending), (0, 0), "{again:?}");
 }
 
-#[test]
-fn two_nodes_rotating_together_reseal_a_row_once() {
-    let store = crate::real_store::store();
-    let (public_id, secret) = mint(&node(store.clone(), 1, None));
-    let x = node(store.clone(), 2, Some(1));
-    let y = node(store.clone(), 2, Some(1));
+#[tokio::test]
+async fn two_nodes_rotating_together_reseal_a_row_once() {
+    let store = crate::real_store::core().await;
+    let (public_id, secret) = mint(&node(store.clone(), 1, None).await).await;
+    let x = node(store.clone(), 2, Some(1)).await;
+    let y = node(store.clone(), 2, Some(1)).await;
 
-    let candidates = store.list_credentials_since(0).unwrap();
-    let first = x.rewrap_rows(candidates.clone(), now()).unwrap();
-    let second = y.rewrap_rows(candidates, now()).unwrap();
+    let candidates = store.identity().list_credentials_since(0).await.unwrap();
+    let first = x
+        .rewrap_rows_async(candidates.clone(), now())
+        .await
+        .unwrap();
+    let second = y.rewrap_rows_async(candidates, now()).await.unwrap();
     assert_eq!(first.resealed + second.resealed, 1, "{first:?} {second:?}");
-    assert_eq!(kid_of(&row(&store).secret), keys(2, None).kid());
+    assert_eq!(kid_of(&row(&store).await.secret), keys(2, None).kid());
     assert_eq!(read(&y, &public_id), (secret, true));
 }
 
-#[test]
-fn a_rewrap_never_revives_a_revoked_row() {
-    let store = crate::real_store::store();
-    let (public_id, _) = mint(&node(store.clone(), 1, None));
-    let rotated = node(store.clone(), 2, Some(1));
-    let candidates = store.list_credentials_since(0).unwrap();
+#[tokio::test]
+async fn a_rewrap_never_revives_a_revoked_row() {
+    let store = crate::real_store::core().await;
+    let (public_id, _) = mint(&node(store.clone(), 1, None).await).await;
+    let rotated = node(store.clone(), 2, Some(1)).await;
+    let candidates = store.identity().list_credentials_since(0).await.unwrap();
     store
+        .identity()
         .revoke_credential(&candidates[0].meta.id, "leaked")
+        .await
         .unwrap();
-    let pass = rotated.rewrap_rows(candidates, now()).unwrap();
+    let pass = rotated.rewrap_rows_async(candidates, now()).await.unwrap();
     assert_eq!(pass.resealed, 0, "{pass:?}");
-    let r = row(&store);
+    let r = row(&store).await;
     assert!(r.meta.revoked_at.is_some(), "the revocation was undone");
     assert!(r.secret.is_empty(), "revocation must retire the envelope");
     assert_eq!(r.meta.secret_form, SecretForm::None);
-    rotated.refresh().unwrap();
+    rotated.refresh_async().await.unwrap();
     assert!(!read(&rotated, &public_id).1);
 }
 
-#[test]
-fn a_row_under_neither_key_does_not_authenticate() {
-    let store = crate::real_store::store();
-    let (public_id, secret) = mint(&node(store.clone(), 1, None));
-    let stranger = node(store.clone(), 3, Some(4));
+#[tokio::test]
+async fn a_row_under_neither_key_does_not_authenticate() {
+    let store = crate::real_store::core().await;
+    let (public_id, secret) = mint(&node(store.clone(), 1, None).await).await;
+    let stranger = node(store.clone(), 3, Some(4)).await;
     let (got, live) = read(&stranger, &public_id);
     assert!(!live);
     assert_ne!(got, secret);
     assert_eq!(got, "");
-    let pass = stranger.rewrap_credentials(now()).unwrap();
+    let pass = stranger.rewrap_credentials_async(now()).await.unwrap();
     assert_eq!((pass.resealed, pass.pending), (0, 0), "{pass:?}");
-    assert_eq!(kid_of(&row(&store).secret), keys(1, None).kid());
+    assert_eq!(kid_of(&row(&store).await.secret), keys(1, None).kid());
 
-    assert!(!read(&signing_gov(store, 7), &public_id).1);
+    assert!(!read(&signing_gov(store, 7).await, &public_id).1);
 }
 
-fn legacy_store() -> (
-    Arc<busbar_plugin_loader::store_v3::LoadedStore>,
-    String,
-    String,
-) {
-    let source = crate::real_store::store();
-    let (public_id, secret) = mint(&node(source.clone(), 1, None));
-    let mut legacy = row(&source);
+async fn legacy_store() -> (Arc<crate::persistence::facade::CoreStore>, String, String) {
+    let source = crate::real_store::core().await;
+    let (public_id, secret) = mint(&node(source.clone(), 1, None).await).await;
+    let mut legacy = row(&source).await;
     legacy.secret = format!("v1:plain:{secret}");
-    let key = source.get_key(&legacy.meta.key_id).unwrap().unwrap();
-    let store = crate::real_store::store();
-    store.put_key(&key).unwrap();
-    store.put_credential(&legacy).unwrap();
+    let key = source
+        .identity()
+        .get_key(&legacy.meta.key_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let store = crate::real_store::core().await;
+    store.identity().put_key(&key).await.unwrap();
+    store.identity().put_credential(&legacy).await.unwrap();
     (store, public_id, secret)
 }
 
-#[test]
-fn a_legacy_plain_row_is_resealed_under_the_key() {
-    let (store, public_id, secret) = legacy_store();
-    let g = node(store.clone(), 1, None);
-    g.refresh().unwrap();
+#[tokio::test]
+async fn a_legacy_plain_row_is_resealed_under_the_key() {
+    let (store, public_id, secret) = legacy_store().await;
+    let g = node(store.clone(), 1, None).await;
+    g.refresh_async().await.unwrap();
     assert_eq!(read(&g, &public_id), (secret.clone(), true));
 
-    let pass = g.rewrap_credentials(now()).unwrap();
+    let pass = g.rewrap_credentials_async(now()).await.unwrap();
     assert_eq!((pass.resealed, pass.pending), (1, 0), "{pass:?}");
-    let r = row(&store);
+    let r = row(&store).await;
     assert_eq!(kid_of(&r.secret), keys(1, None).kid());
     assert!(!r.secret.contains(&secret));
     assert_eq!(read(&g, &public_id), (secret, true));
@@ -354,97 +373,29 @@ fn a_legacy_plain_row_is_resealed_under_the_key() {
 
 mod immutable_store {
     use super::*;
-    use busbar_contract::records::{
-        MeteringDelta, MeteringRow, RecordStoreError, RecordStoreResult, UsageLedger, VirtualKey,
-    };
-
-    struct ImmutableStore(Arc<busbar_plugin_loader::store_v3::LoadedStore>);
-
-    impl RecordStore for ImmutableStore {
-        fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
-            self.0.put_key(key)
-        }
-        fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-            self.0.get_key(id)
-        }
-        fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-            self.0.list_keys()
-        }
-        fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-            self.0.delete_key(id)
-        }
-        fn get_usage(&self, bucket: &str, window: u64) -> RecordStoreResult<UsageLedger> {
-            self.0.get_usage(bucket, window)
-        }
-        fn put_usage(&self, bucket: &str, window: u64, row: &UsageLedger) -> RecordStoreResult<()> {
-            self.0.put_usage(bucket, window, row)
-        }
-        fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
-            self.0.add_metering(delta)
-        }
-        fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-            self.0.list_metering(bucket)
-        }
-        fn put_credential(&self, secret: &CredentialSecret) -> RecordStoreResult<()> {
-            if self.0.list_credentials_since(0)?.iter().any(|old| {
-                old.meta.id == secret.meta.id
-                    && old.meta.revoked_at.is_none()
-                    && old.secret != secret.secret
-            }) {
-                return Err(RecordStoreError(
-                    "live credential replacement refused".into(),
-                ));
-            }
-            self.0.put_credential(secret)
-        }
-        fn rewrap_credential(
-            &self,
-            expected: &CredentialSecret,
-            replacement: &str,
-        ) -> RecordStoreResult<bool> {
-            self.0.rewrap_credential(expected, replacement)
-        }
-        fn list_credentials(&self, key: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
-            self.0.list_credentials(key)
-        }
-        fn list_credentials_since(&self, since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
-            self.0.list_credentials_since(since)
-        }
-        fn revoke_credential(&self, id: &str, reason: &str) -> RecordStoreResult<()> {
-            self.0.revoke_credential(id, reason)
-        }
-        fn redeem_plane_token(
-            &self,
-            kind: &str,
-            token: &str,
-            expires: u64,
-            now: u64,
-        ) -> RecordStoreResult<bool> {
-            self.0.redeem_plane_token(kind, token, expires, now)
-        }
-    }
-
-    fn rewrap(legacy_plaintext: bool) {
+    async fn rewrap(legacy_plaintext: bool) {
         let (backing, public_id, secret) = if legacy_plaintext {
-            legacy_store()
+            legacy_store().await
         } else {
-            let backing = crate::real_store::store();
-            let (public_id, secret) = mint(&node(backing.clone(), 1, None));
+            let backing = crate::real_store::core().await;
+            let (public_id, secret) = mint(&node(backing.clone(), 1, None).await).await;
             (backing, public_id, secret)
         };
-        let before = row(&backing);
-        let store = Arc::new(ImmutableStore(backing.clone()));
+        let before = row(&backing).await;
+        let store = backing.clone();
         let mut forbidden = before.clone();
         forbidden.secret = "v1:plain:replacement".into();
-        assert!(store.put_credential(&forbidden).is_err());
-        assert_eq!(row(&backing).secret, before.secret);
+        assert!(store.identity().put_credential(&forbidden).await.is_err());
+        assert_eq!(row(&backing).await.secret, before.secret);
 
-        let rotated = GovState::new_with_signer(store.clone(), None, None).unwrap();
+        let rotated = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
         rotated.set_at_rest_keys(Some(keys(2, Some(1))));
         assert_eq!(read(&rotated, &public_id), (secret.clone(), true));
-        let pass = rotated.rewrap_credentials(now()).unwrap();
+        let pass = rotated.rewrap_credentials_async(now()).await.unwrap();
         assert_eq!((pass.resealed, pass.pending), (1, 0), "{pass:?}");
-        let after = row(&backing);
+        let after = row(&backing).await;
         assert_eq!(kid_of(&after.secret), keys(2, None).kid());
         assert_eq!(after.meta.id, before.meta.id);
         assert_eq!(after.meta.key_id, before.meta.key_id);
@@ -453,34 +404,36 @@ mod immutable_store {
         assert!(!after.secret.contains(&secret));
         assert!(after.meta.revision > before.meta.revision);
 
-        let retired = GovState::new_with_signer(store.clone(), None, None).unwrap();
+        let retired = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
         retired.set_at_rest_keys(Some(keys(2, None)));
         assert_eq!(read(&retired, &public_id), (secret, true));
-        assert!(store.put_credential(&forbidden).is_err());
-        let again = retired.rewrap_credentials(now()).unwrap();
+        assert!(store.identity().put_credential(&forbidden).await.is_err());
+        let again = retired.rewrap_credentials_async(now()).await.unwrap();
         assert_eq!((again.resealed, again.pending), (0, 0), "{again:?}");
-        assert_eq!(row(&backing).meta.revision, after.meta.revision);
+        assert_eq!(row(&backing).await.meta.revision, after.meta.revision);
     }
 
-    #[test]
-    fn key_rotation_works_without_allowing_ordinary_live_secret_replacement() {
-        rewrap(false);
+    #[tokio::test]
+    async fn key_rotation_works_without_allowing_ordinary_live_secret_replacement() {
+        rewrap(false).await;
     }
 
-    #[test]
-    fn legacy_plaintext_is_sealed_without_allowing_ordinary_live_secret_replacement() {
-        rewrap(true);
+    #[tokio::test]
+    async fn legacy_plaintext_is_sealed_without_allowing_ordinary_live_secret_replacement() {
+        rewrap(true).await;
     }
 
-    #[test]
-    fn racing_rewraps_apply_once_and_stale_replay_cannot_increment_revision() {
-        let store = crate::real_store::store();
-        mint(&node(store.clone(), 1, None));
-        let expected = row(&store);
+    #[tokio::test]
+    async fn racing_rewraps_apply_once_and_stale_replay_cannot_increment_revision() {
+        let store = crate::real_store::core().await;
+        mint(&node(store.clone(), 1, None).await).await;
+        let expected = row(&store).await;
         let replacement = keys(2, Some(1))
             .seal(&expected.meta, b"replacement")
             .unwrap();
-        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
         let workers: Vec<_> = (0..2)
             .map(|_| {
                 let (store, expected, replacement, barrier) = (
@@ -489,19 +442,23 @@ mod immutable_store {
                     replacement.clone(),
                     barrier.clone(),
                 );
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    store.rewrap_credential(&expected, &replacement).unwrap()
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    store
+                        .identity()
+                        .rewrap_credential(&expected, &replacement)
+                        .await
+                        .unwrap()
                 })
             })
             .collect();
-        barrier.wait();
-        let applied = workers
-            .into_iter()
-            .map(|w| usize::from(w.join().unwrap()))
-            .sum::<usize>();
+        barrier.wait().await;
+        let mut applied = 0;
+        for worker in workers {
+            applied += usize::from(worker.await.unwrap());
+        }
         assert_eq!(applied, 1);
-        let after = row(&store);
+        let after = row(&store).await;
         assert_eq!(after.secret, replacement);
         let mut meta = after.meta.clone();
         meta.revision = expected.meta.revision;
@@ -509,29 +466,50 @@ mod immutable_store {
             meta, expected.meta,
             "CAS only changes envelope and store revision"
         );
-        assert!(!store.rewrap_credential(&expected, &replacement).unwrap());
-        assert_eq!(row(&store), after, "replay makes no write");
+        assert!(
+            !store
+                .identity()
+                .rewrap_credential(&expected, &replacement)
+                .await
+                .unwrap()
+        );
+        assert_eq!(row(&store).await, after, "replay makes no write");
     }
 
-    #[test]
-    fn rewrap_cannot_resurrect_a_revoked_or_deleted_snapshot() {
+    #[tokio::test]
+    async fn rewrap_cannot_resurrect_a_revoked_or_deleted_snapshot() {
         for delete in [false, true] {
-            let store = crate::real_store::store();
-            mint(&node(store.clone(), 1, None));
-            let expected = row(&store);
+            let store = crate::real_store::core().await;
+            mint(&node(store.clone(), 1, None).await).await;
+            let expected = row(&store).await;
             let replacement = keys(2, Some(1))
                 .seal(&expected.meta, b"replacement")
                 .unwrap();
             if delete {
-                store.delete_key(&expected.meta.key_id).unwrap();
+                store
+                    .identity()
+                    .delete_key(&expected.meta.key_id)
+                    .await
+                    .unwrap();
             } else {
                 store
+                    .identity()
                     .revoke_credential(&expected.meta.id, "retired")
+                    .await
                     .unwrap();
             }
-            let before = store.list_credentials_since(0).unwrap();
-            assert!(!store.rewrap_credential(&expected, &replacement).unwrap());
-            assert_eq!(store.list_credentials_since(0).unwrap(), before);
+            let before = store.identity().list_credentials_since(0).await.unwrap();
+            assert!(
+                !store
+                    .identity()
+                    .rewrap_credential(&expected, &replacement)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                store.identity().list_credentials_since(0).await.unwrap(),
+                before
+            );
         }
     }
 }

@@ -96,7 +96,7 @@ fn planes() -> &'static PlaneKeys {
     })
 }
 
-fn app(cost: CostModel) -> busbar_kernel::state::App {
+async fn app(cost: CostModel) -> busbar_kernel::state::App {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -134,7 +134,7 @@ fn app(cost: CostModel) -> busbar_kernel::state::App {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         crate::root::test_plugins::trusted_config(&directory),
         None,
@@ -144,12 +144,13 @@ fn app(cost: CostModel) -> busbar_kernel::state::App {
         None,
         &rules,
     )
+    .await
     .expect("the actual root builds the Store and admin application");
 
     limits.stage_boot();
     drop(limits);
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     app.cost = Arc::new(cost);
     app
@@ -285,7 +286,7 @@ async fn with_no_history_source_the_read_is_the_previous_release_to_the_byte() {
             ..Default::default()
         },
     )]);
-    let app = app(CostModel::resolve_parts(Some(&rates), 3, &BTreeMap::new()));
+    let app = app(CostModel::resolve_parts(Some(&rates), 3, &BTreeMap::new())).await;
     assert!(crate::root::kernel::ROOT_CARD.history().is_none());
     let gov = app.governance.as_ref().unwrap();
     let now = busbar_kernel::store::now();
@@ -297,7 +298,7 @@ async fn with_no_history_source_the_read_is_the_previous_release_to_the_byte() {
     for _ in 0..3 {
         gov.record_metering(KEY, LANE, PROVIDER, Some(&usage), now);
     }
-    gov.flush_metering();
+    gov.flush_metering().await;
     let view = read(app, None).await;
     assert_eq!(
         view.total.spend_micros, 750_090_000,
@@ -324,7 +325,7 @@ async fn an_old_served_entry_prices_both_the_row_and_its_itemized_classes() {
     let activated = (bucket - day / 2) * 1_000;
     let old_cost = carded_cost(OLD_CALL_MICROS, OLD_REQUEST_MINOR, 0);
     let new_cost = carded_cost(NEW_CALL_MICROS, NEW_REQUEST_MINOR, 0);
-    let app = app(new_cost);
+    let app = app(new_cost).await;
     assert!(crate::root::kernel::ROOT_CARD.history().is_none());
     crate::root::kernel::ROOT_CARD.apply(app.cost.card().clone(), 0);
     crate::root::kernel::ROOT_CARD.apply(old_cost.card().clone(), old_era);
@@ -335,7 +336,9 @@ async fn an_old_served_entry_prices_both_the_row_and_its_itemized_classes() {
     app.governance
         .as_ref()
         .unwrap()
-        .store()
+        .core_store_handle()
+        .unwrap()
+        .ledger()
         .add_metering(&busbar_contract::records::MeteringDelta {
             scale: 0,
             key_id: KEY.to_string(),
@@ -353,6 +356,7 @@ async fn an_old_served_entry_prices_both_the_row_and_its_itemized_classes() {
             priced_from_ms: old_era,
             usage_units: BTreeMap::from([(TOOL_CLASS.to_string(), i128::from(CALLS))]),
         })
+        .await
         .unwrap();
     let view = read(app, Some(bucket)).await;
     let call_count = i64::try_from(CALLS).unwrap();
@@ -365,12 +369,17 @@ async fn an_old_served_entry_prices_both_the_row_and_its_itemized_classes() {
 }
 
 async fn serve(pool_calls: usize, plane: &str, calls: usize) -> (i64, i64) {
-    let app = app(cost());
+    let app = app(cost()).await;
     let gov = app
         .governance
         .as_ref()
         .expect("the actual Store opened governance");
-    gov.store().put_key(&key()).unwrap();
+    gov.core_store_handle()
+        .expect("actual admitted CoreStore")
+        .identity()
+        .put_key(&key())
+        .await
+        .unwrap();
     let now = busbar_kernel::store::now();
     for _ in 0..pool_calls {
         assert!(
@@ -387,9 +396,10 @@ async fn serve(pool_calls: usize, plane: &str, calls: usize) -> (i64, i64) {
         );
         gov.record_metering(KEY, "srv.read", plane, None, now);
     }
-    gov.flush_metering();
+    gov.flush_metering().await;
     let book = gov
-        .usage_for(&app.cost, KEY, now)
+        .usage_for_async(&app.cost, KEY, now)
+        .await
         .unwrap()
         .expect("the key's usage")
         .spend_cents;
@@ -453,12 +463,17 @@ async fn serve_calls(cost: fn() -> CostModel, calls: &[Call]) -> (i64, i64) {
 async fn serve_calls_view(cost: fn() -> CostModel, calls: &[Call]) -> (i64, UsageRead) {
     use busbar_kernel::cost::{plane_fee_lane, PER_SESSION};
     let fee_plane = planes().fee;
-    let app = app(cost());
+    let app = app(cost()).await;
     let gov = app
         .governance
         .as_ref()
         .expect("the actual Store opened governance");
-    gov.store().put_key(&key()).unwrap();
+    gov.core_store_handle()
+        .expect("actual admitted CoreStore")
+        .identity()
+        .put_key(&key())
+        .await
+        .unwrap();
     let cost = cost();
     let now = busbar_kernel::store::now();
     let key = key();
@@ -524,9 +539,10 @@ async fn serve_calls_view(cost: fn() -> CostModel, calls: &[Call]) -> (i64, Usag
         }
     }
 
-    gov.flush_metering();
+    gov.flush_metering().await;
     let book = gov
-        .usage_for(&cost, KEY, now)
+        .usage_for_async(&cost, KEY, now)
+        .await
         .unwrap()
         .expect("the key's usage")
         .spend_cents;

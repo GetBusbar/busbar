@@ -38,7 +38,7 @@ use crate::root::test_plugins as plugins;
 use busbar_kernel::plane_driver::registry::{PlaneDecl, PlaneDeclaration};
 use std::sync::Arc;
 
-static PROBE_RUN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static PROBE_RUN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -106,10 +106,8 @@ static PROBE: PlaneDecl = PlaneDecl {
     door: None,
 };
 
-fn boot_hooks_run(sections: &[&'static str]) -> (usize, usize) {
-    let _one = PROBE_RUN
-        .lock()
-        .expect("probe fixture serializes its counters");
+async fn boot_hooks_run(sections: &[&'static str]) -> (usize, usize) {
+    let _one = PROBE_RUN.lock().await;
     crate::dist_root_install::install();
     linked::install();
     busbar_kernel::plane_driver::registry::publish_planes(&[&PROBE]);
@@ -152,7 +150,7 @@ fn boot_hooks_run(sections: &[&'static str]) -> (usize, usize) {
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -162,17 +160,21 @@ fn boot_hooks_run(sections: &[&'static str]) -> (usize, usize) {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, "configured-store")
+        .await
         .expect("the actual configured Store binds boot rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 
-    busbar_kernel::boot::hydrate_all(&app).expect("hydrate");
+    busbar_kernel::boot::hydrate_all(&app)
+        .await
+        .expect("hydrate");
     let handle = std::sync::Arc::new(busbar_kernel::state::AppHandle::new(app));
     busbar_kernel::boot::start_planes(&handle).expect("start");
     let result = (
@@ -183,8 +185,8 @@ fn boot_hooks_run(sections: &[&'static str]) -> (usize, usize) {
     result
 }
 
-#[test]
-fn an_unconfigured_plane_hydrates_and_starts_nothing() {
+#[tokio::test]
+async fn an_unconfigured_plane_hydrates_and_starts_nothing() {
     const CHILD: &str = "BUSBAR_LAW7_PROBE_CHILD";
     if std::env::var(CHILD).ok().as_deref()
         != Some("an_unconfigured_plane_hydrates_and_starts_nothing")
@@ -211,14 +213,14 @@ fn an_unconfigured_plane_hydrates_and_starts_nothing() {
         return;
     }
     assert_eq!(
-        boot_hooks_run(&[]),
+        boot_hooks_run(&[]).await,
         (0, 0),
         "a plane whose config section is absent must never have its hydrate/start hooks run (Law 7)"
     );
 }
 
-#[test]
-fn a_configured_plane_still_hydrates_and_starts() {
+#[tokio::test]
+async fn a_configured_plane_still_hydrates_and_starts() {
     const CHILD: &str = "BUSBAR_LAW7_PROBE_CHILD";
     if std::env::var(CHILD).ok().as_deref() != Some("a_configured_plane_still_hydrates_and_starts")
     {
@@ -244,14 +246,14 @@ fn a_configured_plane_still_hydrates_and_starts() {
         return;
     }
     assert_eq!(
-        boot_hooks_run(&[PROBE_SECTION]),
+        boot_hooks_run(&[PROBE_SECTION]).await,
         (1, 1),
         "a plane whose config section is present must hydrate and start"
     );
 }
 
-#[test]
-fn only_a_configured_plane_builds_its_slot() {
+#[tokio::test]
+async fn only_a_configured_plane_builds_its_slot() {
     const CHILD: &str = "BUSBAR_LAW7_PROBE_CHILD";
     if std::env::var(CHILD).ok().as_deref() != Some("only_a_configured_plane_builds_its_slot") {
         let module = module_path!()
@@ -277,11 +279,9 @@ fn only_a_configured_plane_builds_its_slot() {
     }
     crate::dist_root_install::install();
     let fallback = linked::fallback();
-    let _one = PROBE_RUN
-        .lock()
-        .expect("probe fixture serializes its counters");
+    let _one = PROBE_RUN.lock().await;
     busbar_kernel::plane_driver::registry::publish_planes(&[&PROBE]);
-    let build = |sections: &[&'static str]| {
+    let build = async |sections: &[&'static str]| {
         let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual store statement reads")
@@ -318,7 +318,7 @@ fn only_a_configured_plane_builds_its_slot() {
         let plugin_config = plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (app, rotate, limits) = crate::root::real_store::build_app(
             config,
             plugin_config,
             None,
@@ -328,13 +328,15 @@ fn only_a_configured_plane_builds_its_slot() {
             None,
             &rules,
         )
+        .await
         .expect("the actual product builds the door deployment");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
+            .await
             .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         let app = Arc::new(app);
 
@@ -346,12 +348,12 @@ fn only_a_configured_plane_builds_its_slot() {
         )
     };
     assert_eq!(
-        build(&[]),
+        build(&[]).await,
         (0, false, false, true),
         "unconfigured: no build call, no slot; the fallback plane stays configured"
     );
     assert_eq!(
-        build(&[PROBE_SECTION]),
+        build(&[PROBE_SECTION]).await,
         (1, true, true, true),
         "configured: built once, slot present"
     );
@@ -394,7 +396,7 @@ async fn resolve_reads_the_configured_plane_sections_off_the_config() {
         sections(&format!(
             "tools:\n  t1: {{ url: \"https://127.0.0.1:{}/rpc\", pin: {{ mechanism: cert_spki, key: \"{}\" }} }}\n\
              agents:\n  a1: {{ url: \"https://127.0.0.1:{}/rpc\", pin: {{ mechanism: cert_spki, key: \"{}\" }} }}\n",
-             peer.port, peer.pin, peer.port, peer.pin,
+            peer.port, peer.pin, peer.port, peer.pin,
         )),
         vec!["agents", "tools"]
     );

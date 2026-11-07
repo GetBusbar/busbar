@@ -1,385 +1,288 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::{Journal, NeutralBody};
-use crate::audit::stream_registry::{StreamInput, StreamRecord};
-use crate::audit::{verify_chain, ChainedRecord, Framing};
-use crate::store::plane_view::{decode, PlaneStore};
-use busbar_contract::records::{PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStoreResult};
-use std::sync::mpsc::{self, RecvTimeoutError};
+//! Native asynchronous crossings hold no per-scope thread claim. Contention is
+//! resolved by the immutable candidate's atomic conditions and explicit replanning.
+use super::journal_tests::{append, records, FRAMING, INSTANCE, SCHEMA};
+use crate::host_chains::{ChainBook, OrdinaryChain, CHAIN_LIFE_SCHEMA};
+use crate::host_records_async::AsyncRecords;
+use crate::persistence::host_records::Outcome;
+use busbar_contract::persistence::*;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::oneshot;
 
-const KIND: &str = "journal_lock_test";
-
-const WAIT: Duration = Duration::from_secs(10);
-
-const SETTLE: Duration = Duration::from_millis(300);
-
-/// Which store crossing a park holds.
+const WAIT: Duration = Duration::from_secs(5);
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Op {
-    Append,
-    List,
+enum Crossing {
+    Read,
+    Commit,
 }
-
-struct Park {
-    op: Op,
-    scope: String,
-    entered: mpsc::Sender<()>,
-    release: mpsc::Receiver<()>,
+struct Pause {
+    crossing: Crossing,
+    entered: oneshot::Sender<()>,
+    release: oneshot::Receiver<()>,
 }
-
-struct Reenter {
-    journal: Arc<Journal<StreamRecord>>,
-    scope: String,
-    answer: mpsc::Sender<Result<u64, String>>,
-}
-
-#[derive(Default)]
-struct GateStore {
-    rows: Mutex<Vec<PlaneRecord>>,
-    park: Mutex<Option<Park>>,
+type Reenter = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+struct GateBackend {
+    inner: Arc<dyn PersistenceBackend>,
+    pause: Mutex<Option<Pause>>,
     reenter: Mutex<Option<Reenter>>,
 }
-
-impl GateStore {
-    fn parked(&self, op: Op, scope: Option<&str>) {
-        let park = {
-            let mut slot = self.park.lock().unwrap();
-            let hit = matches!(
-                slot.as_ref(),
-                Some(p) if p.op == op && Some(p.scope.as_str()) == scope
-            );
-            if hit {
-                slot.take()
+impl GateBackend {
+    fn pause(&self, crossing: Crossing) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (entered, observed) = oneshot::channel();
+        let (release, released) = oneshot::channel();
+        assert!(self
+            .pause
+            .lock()
+            .unwrap()
+            .replace(Pause {
+                crossing,
+                entered,
+                release: released
+            })
+            .is_none());
+        (observed, release)
+    }
+    async fn crossing(&self, crossing: Crossing) {
+        let pause = {
+            let mut held = self.pause.lock().unwrap();
+            if held
+                .as_ref()
+                .is_some_and(|pause| pause.crossing == crossing)
+            {
+                held.take()
             } else {
                 None
             }
         };
-        if let Some(p) = park {
-            let _ = p.entered.send(());
-            let _ = p.release.recv();
+        if let Some(pause) = pause {
+            let _ = pause.entered.send(());
+            let _ = pause.release.await;
         }
-    }
-}
-
-impl PlaneStore for GateStore {
-    fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        self.rows.lock().unwrap().push(record.to_record());
-        Ok(())
-    }
-    fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
-        Ok(None)
-    }
-    fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        let row = record.to_record();
-        let reenter = self.reenter.lock().unwrap().take();
-        if let Some(r) = reenter {
-            let inner = r
-                .journal
-                .append_scoped(KIND, &r.scope, input(b"inner"), &reframe)
-                .map(|rec| rec.seq())
-                .map_err(|e| e.to_string());
-            let _ = r.answer.send(inner);
-        }
-        self.parked(Op::Append, row.parent.as_deref());
-        self.rows.lock().unwrap().push(row);
-        Ok(())
-    }
-    fn list_plane_records(
-        &self,
-        kind: &str,
-        selector: &PlaneSelector,
-    ) -> RecordStoreResult<Vec<Vec<u8>>> {
-        let scope = match selector {
-            PlaneSelector::All => None,
-            PlaneSelector::Parent(p) => Some(&**p),
+        let reenter = if crossing == Crossing::Commit {
+            self.reenter.lock().unwrap().take()
+        } else {
+            None
         };
-        self.parked(Op::List, scope);
-        let rows = self.rows.lock().unwrap();
-        Ok(rows
-            .iter()
-            .filter(|r| r.kind == kind)
-            .filter(|r| scope.is_none() || r.parent.as_deref() == scope)
-            .map(|r| r.body.clone())
-            .collect())
-    }
-    fn list_plane_record_parents(&self, kind: &str) -> RecordStoreResult<Vec<String>> {
-        let rows = self.rows.lock().unwrap();
-        let mut parents: Vec<String> = rows
-            .iter()
-            .filter(|r| r.kind == kind)
-            .filter_map(|r| r.parent.clone())
-            .collect();
-        parents.sort();
-        parents.dedup();
-        Ok(parents)
-    }
-    fn purge_plane_records(
-        &self,
-        _kind: &str,
-        _before: u64,
-        _retention: busbar_contract::records::Retention,
-    ) -> RecordStoreResult<u64> {
-        Ok(0)
-    }
-    fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
-        Ok(())
-    }
-    fn redeem_plane_token(
-        &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> RecordStoreResult<bool> {
-        Ok(true)
-    }
-    fn plane_token_live(
-        &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> RecordStoreResult<bool> {
-        Ok(false)
+        if let Some(reenter) = reenter {
+            reenter().await;
+        }
     }
 }
-
-fn input(content: &[u8]) -> StreamInput {
-    StreamInput::new(content.to_vec(), Framing::LengthPrefixed, true)
+impl PersistenceBackend for GateBackend {
+    fn info(&self) -> BackendInfo {
+        self.inner.info()
+    }
+    fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
+        Box::pin(async move {
+            self.crossing(Crossing::Read).await;
+            self.inner.read(request).await
+        })
+    }
+    fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
+        self.inner.scan(request)
+    }
+    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+        Box::pin(async move {
+            self.crossing(Crossing::Commit).await;
+            self.inner.commit(candidate).await
+        })
+    }
+    fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
+        self.inner.clock(dataset)
+    }
 }
-
-fn reframe(scope: &str, body: &[u8]) -> RecordStoreResult<StreamRecord> {
-    let b: NeutralBody = decode(body)?;
-    Ok(StreamRecord::from_parts(
-        scope.to_string(),
-        b.seq,
-        b.prev_hash,
-        b.hash,
-        b.content,
-        Framing::LengthPrefixed,
-        true,
-    ))
-}
-
-fn journal_over(store: &Arc<GateStore>) -> Arc<Journal<StreamRecord>> {
-    let j = Arc::new(Journal::<StreamRecord>::new(1024));
-    j.set_sink(store.clone());
-    j
-}
-
-fn park(store: &GateStore, op: Op, scope: &str) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
-    let (entered_tx, entered_rx) = mpsc::channel();
-    let (release_tx, release_rx) = mpsc::channel();
-    *store.park.lock().unwrap() = Some(Park {
-        op,
-        scope: scope.to_string(),
-        entered: entered_tx,
-        release: release_rx,
+async fn fixture() -> (Arc<GateBackend>, Arc<AsyncRecords>) {
+    let backend = Arc::new(GateBackend {
+        inner: crate::real_store::native_backend().await,
+        pause: Mutex::new(None),
+        reenter: Mutex::new(None),
     });
-    (entered_rx, release_tx)
+    let core = crate::real_store::core_over(backend.clone()).await;
+    let rows = Arc::new(
+        AsyncRecords::authorized(
+            core,
+            INSTANCE,
+            [SCHEMA.as_str().into(), CHAIN_LIFE_SCHEMA.as_str().into()],
+        )
+        .unwrap(),
+    );
+    (backend, rows)
 }
-
-fn append_in_thread(
-    j: &Arc<Journal<StreamRecord>>,
-    scope: &str,
+fn start(
+    rows: Arc<AsyncRecords>,
+    scope: &'static str,
     content: &'static [u8],
-) -> mpsc::Receiver<Result<u64, String>> {
-    let (tx, rx) = mpsc::channel();
-    let j = Arc::clone(j);
-    let scope = scope.to_string();
-    std::thread::spawn(move || {
-        let out = j
-            .append_scoped(KIND, &scope, input(content), &reframe)
-            .map(|r| r.seq())
-            .map_err(|e| e.to_string());
-        let _ = tx.send(out);
-    });
-    rx
+) -> tokio::task::JoinHandle<Outcome> {
+    tokio::spawn(async move { append(&ChainBook::default(), &rows, scope, content).await })
 }
-
-#[test]
-fn an_append_to_another_scope_completes_while_one_scopes_store_write_is_parked() {
-    let store = Arc::new(GateStore::default());
-    let j = journal_over(&store);
-    let (entered, release) = park(&store, Op::Append, "scope-a");
-    let a = append_in_thread(&j, "scope-a", b"a1");
-    entered
-        .recv_timeout(WAIT)
-        .expect("scope A's write reaches the store");
-    let b = append_in_thread(&j, "scope-b", b"b1");
-    let b_done = b.recv_timeout(WAIT);
-    let _ = release.send(());
-    assert_eq!(
-        b_done.expect("scope B's append finishes while scope A's store write is parked"),
-        Ok(1)
-    );
-    assert_eq!(
-        a.recv_timeout(WAIT)
-            .expect("scope A's append finishes once released"),
-        Ok(1)
-    );
-    assert_eq!(j.next_seq("scope-a"), 2);
-    assert_eq!(j.next_seq("scope-b"), 2);
-}
-
-#[test]
-fn a_store_that_appends_to_another_scope_from_inside_its_write_does_not_deadlock() {
-    let store = Arc::new(GateStore::default());
-    let j = journal_over(&store);
-    let (inner_tx, inner_rx) = mpsc::channel();
-    *store.reenter.lock().unwrap() = Some(Reenter {
-        journal: Arc::clone(&j),
-        scope: "scope-b".to_string(),
-        answer: inner_tx,
-    });
-    let outer = append_in_thread(&j, "scope-a", b"a1");
-    assert_eq!(
-        outer
-            .recv_timeout(WAIT)
-            .expect("the outer append returns instead of waiting on its own lock"),
-        Ok(1)
-    );
-    assert_eq!(
-        inner_rx.recv_timeout(WAIT).expect("the inner append ran"),
-        Ok(1)
-    );
-    assert_eq!(j.next_seq("scope-a"), 2);
-    assert_eq!(j.next_seq("scope-b"), 2);
-}
-
-#[test]
-fn a_store_that_reenters_its_own_scope_is_refused_not_deadlocked() {
-    let store = Arc::new(GateStore::default());
-    let j = journal_over(&store);
-    let (inner_tx, inner_rx) = mpsc::channel();
-    *store.reenter.lock().unwrap() = Some(Reenter {
-        journal: Arc::clone(&j),
-        scope: "scope-a".to_string(),
-        answer: inner_tx,
-    });
-    let outer = append_in_thread(&j, "scope-a", b"a1");
-    assert_eq!(
-        outer
-            .recv_timeout(WAIT)
-            .expect("the outer append returns instead of waiting on itself"),
-        Ok(1)
-    );
-    let inner = inner_rx.recv_timeout(WAIT).expect("the inner append ran");
-    assert!(
-        inner.is_err(),
-        "the same-scope re-entry is refused: {inner:?}"
-    );
-    assert_eq!(j.next_seq("scope-a"), 2);
-    let rows = store
-        .list_plane_records(KIND, &PlaneSelector::Parent("scope-a".into()))
-        .unwrap();
-    assert_eq!(rows.len(), 1, "only the outer record is durable");
-}
-
-#[test]
-fn two_concurrent_appends_to_one_scope_still_chain_gap_free() {
-    let store = Arc::new(GateStore::default());
-    let j = journal_over(&store);
-    let (entered, release) = park(&store, Op::Append, "scope-a");
-    let first = append_in_thread(&j, "scope-a", b"first");
-    entered
-        .recv_timeout(WAIT)
-        .expect("the first write reaches the store");
-    let second = append_in_thread(&j, "scope-a", b"second");
-    assert_eq!(
-        second.recv_timeout(SETTLE),
-        Err(RecvTimeoutError::Timeout),
-        "a second append to the same scope waits for the first's durable write"
-    );
-    let _ = release.send(());
-    assert_eq!(first.recv_timeout(WAIT).expect("first finishes"), Ok(1));
-    assert_eq!(second.recv_timeout(WAIT).expect("second finishes"), Ok(2));
-    let records: Vec<StreamRecord> = store
-        .list_plane_records(KIND, &PlaneSelector::Parent("scope-a".into()))
+async fn finish(task: tokio::task::JoinHandle<Outcome>) -> Outcome {
+    tokio::time::timeout(WAIT, task)
+        .await
+        .expect("native crossing completed without a held scope lock")
         .unwrap()
-        .iter()
-        .map(|body| reframe("scope-a", body))
-        .collect::<RecordStoreResult<_>>()
-        .unwrap();
-    assert_eq!(
-        records.iter().map(|r| r.seq()).collect::<Vec<_>>(),
-        vec![1, 2]
-    );
-    assert!(verify_chain(&records).is_ok(), "the two records chain");
-    assert_eq!(j.next_seq("scope-a"), 3);
 }
 
-#[test]
-fn an_append_completes_while_a_resume_is_parked_reading_another_scope() {
-    let store = Arc::new(GateStore::default());
-    let j = journal_over(&store);
-    j.append_scoped(KIND, "scope-a", input(b"a1"), &reframe)
-        .expect("seed scope A");
-    j.forget("scope-a");
-    let (entered, release) = park(&store, Op::List, "scope-a");
-    let a = append_in_thread(&j, "scope-a", b"a2");
-    entered
-        .recv_timeout(WAIT)
-        .expect("the resume reaches scope A's read");
-    let b = append_in_thread(&j, "scope-b", b"b1");
-    let b_done = b.recv_timeout(WAIT);
-    let _ = release.send(());
+#[tokio::test]
+async fn an_append_to_another_scope_completes_while_one_scopes_native_commit_is_parked() {
+    let (backend, rows) = fixture().await;
+    let (entered, release) = backend.pause(Crossing::Commit);
+    let first = start(rows.clone(), "one", b"first");
+    tokio::time::timeout(WAIT, entered).await.unwrap().unwrap();
     assert_eq!(
-        b_done.expect("scope B's append finishes while the resume reads scope A"),
-        Ok(1)
+        finish(start(rows.clone(), "two", b"independent")).await,
+        Outcome::Applied
     );
-    assert_eq!(
-        a.recv_timeout(WAIT)
-            .expect("the resumed append finishes once released"),
-        Ok(2),
-        "scope A continued its persisted tail"
-    );
-    assert_eq!(j.next_seq("scope-a"), 3);
+    release.send(()).unwrap();
+    assert_eq!(finish(first).await, Outcome::Applied);
+    assert_eq!(records(&rows, "one").await.len(), 1);
+    assert_eq!(records(&rows, "two").await.len(), 1);
 }
 
-#[test]
-fn a_same_scope_append_behind_a_parked_store_write_is_refused_at_the_claim_deadline() {
-    let store = Arc::new(GateStore::default());
-    let mut journal = Journal::<StreamRecord>::new(1024);
-    journal.set_claim_wait(Duration::from_millis(50));
-    journal.set_sink(store.clone());
-    let j = Arc::new(journal);
-    let (entered, release) = park(&store, Op::Append, "scope-a");
-    let first = append_in_thread(&j, "scope-a", b"first");
-    entered
-        .recv_timeout(WAIT)
-        .expect("the first write reaches the store");
+#[tokio::test]
+async fn a_native_backend_can_reenter_another_scope_without_holding_a_core_lock() {
+    let (backend, rows) = fixture().await;
+    let nested = rows.clone();
+    *backend.reenter.lock().unwrap() = Some(Box::new(move || {
+        Box::pin(async move {
+            assert_eq!(
+                append(&ChainBook::default(), &nested, "inner", b"nested").await,
+                Outcome::Applied
+            );
+        })
+    }));
+    assert_eq!(
+        finish(start(rows.clone(), "outer", b"outer")).await,
+        Outcome::Applied
+    );
+    assert_eq!(records(&rows, "inner").await.len(), 1);
+    assert_eq!(records(&rows, "outer").await.len(), 1);
+}
 
-    let second = append_in_thread(&j, "scope-a", b"second");
-    let second_done = second.recv_timeout(WAIT);
-    let _ = release.send(());
-    let refused = second_done
-        .expect("the second append returns while the first write is still parked in the store");
-    assert!(
-        refused.is_err(),
-        "the second append is refused at the claim deadline: {refused:?}"
-    );
-    assert_eq!(first.recv_timeout(WAIT).expect("first finishes"), Ok(1));
+#[tokio::test]
+async fn a_native_reentry_to_the_same_scope_conflicts_instead_of_deadlocking() {
+    let (backend, rows) = fixture().await;
+    let nested = rows.clone();
+    *backend.reenter.lock().unwrap() = Some(Box::new(move || {
+        Box::pin(async move {
+            assert_eq!(
+                append(&ChainBook::default(), &nested, "same", b"nested").await,
+                Outcome::Applied
+            );
+        })
+    }));
     assert_eq!(
-        j.append_scoped(KIND, "scope-a", input(b"third"), &reframe)
-            .map(|r| r.seq())
-            .map_err(|e| e.to_string()),
-        Ok(2),
-        "the refused append burned no sequence"
+        finish(start(rows.clone(), "same", b"outer")).await,
+        Outcome::ConditionConflict
     );
-    let records: Vec<StreamRecord> = store
-        .list_plane_records(KIND, &PlaneSelector::Parent("scope-a".into()))
-        .unwrap()
-        .iter()
-        .map(|body| reframe("scope-a", body))
-        .collect::<RecordStoreResult<_>>()
+    assert_eq!(
+        append(&ChainBook::default(), &rows, "same", b"outer").await,
+        Outcome::Applied
+    );
+    let restored = records(&rows, "same").await;
+    assert_eq!(restored.len(), 2);
+    assert!(crate::audit::verify_chain(&restored).is_ok());
+    assert_eq!(restored[0].content, b"nested");
+    assert_eq!(restored[1].content, b"outer");
+}
+
+#[tokio::test]
+async fn concurrent_candidates_for_one_scope_conflict_then_replan_gap_free() {
+    let (_, rows) = fixture().await;
+    let book_a = ChainBook::default();
+    let book_b = ChainBook::default();
+    let mut operation_a = [0; 16];
+    let mut operation_b = [0; 16];
+    getrandom::fill(&mut operation_a).unwrap();
+    getrandom::fill(&mut operation_b).unwrap();
+    let (request_a, _) = book_a
+        .prepare_ordinary_async(
+            &rows,
+            OrdinaryChain {
+                instance: INSTANCE,
+                schema: SCHEMA,
+                scope: "race",
+                content: b"a",
+                framing: FRAMING,
+            },
+            operation_a,
+        )
+        .await
         .unwrap();
+    let (request_b, _) = book_b
+        .prepare_ordinary_async(
+            &rows,
+            OrdinaryChain {
+                instance: INSTANCE,
+                schema: SCHEMA,
+                scope: "race",
+                content: b"b",
+                framing: FRAMING,
+            },
+            operation_b,
+        )
+        .await
+        .unwrap();
+    let (a, b) = tokio::join!(rows.conditional(&request_a), rows.conditional(&request_b));
+    let (a, b) = (a.unwrap(), b.unwrap());
+    assert!(matches!(
+        (a, b),
+        (Outcome::Applied, Outcome::ConditionConflict)
+            | (Outcome::ConditionConflict, Outcome::Applied)
+    ));
+    let missing = if a == Outcome::ConditionConflict {
+        b"a"
+    } else {
+        b"b"
+    };
     assert_eq!(
-        records.iter().map(|r| r.seq()).collect::<Vec<_>>(),
-        vec![1, 2]
+        append(&ChainBook::default(), &rows, "race", missing).await,
+        Outcome::Applied
     );
-    assert!(verify_chain(&records).is_ok(), "the two records chain");
+    let restored = records(&rows, "race").await;
+    assert_eq!(restored.len(), 2);
+    assert!(crate::audit::verify_chain(&restored).is_ok());
+}
+
+#[tokio::test]
+async fn an_append_completes_while_another_scope_is_parked_reading_its_resume() {
+    let (backend, rows) = fixture().await;
+    assert_eq!(
+        append(&ChainBook::default(), &rows, "resume", b"old").await,
+        Outcome::Applied
+    );
+    let (entered, release) = backend.pause(Crossing::Read);
+    let resuming = start(rows.clone(), "resume", b"new");
+    tokio::time::timeout(WAIT, entered).await.unwrap().unwrap();
+    assert_eq!(
+        finish(start(rows.clone(), "other", b"independent")).await,
+        Outcome::Applied
+    );
+    release.send(()).unwrap();
+    assert_eq!(finish(resuming).await, Outcome::Applied);
+    assert_eq!(records(&rows, "resume").await.len(), 2);
+}
+
+#[tokio::test]
+async fn a_parked_native_commit_never_holds_a_thread_claim_over_its_scope() {
+    let (backend, rows) = fixture().await;
+    let (entered, release) = backend.pause(Crossing::Commit);
+    let blocked = start(rows.clone(), "same", b"delayed");
+    tokio::time::timeout(WAIT, entered).await.unwrap().unwrap();
+    assert_eq!(
+        finish(start(rows.clone(), "same", b"winner")).await,
+        Outcome::Applied
+    );
+    release.send(()).unwrap();
+    assert_eq!(finish(blocked).await, Outcome::ConditionConflict);
+    assert_eq!(records(&rows, "same").await.len(), 1);
+    assert_eq!(
+        append(&ChainBook::default(), &rows, "same", b"delayed").await,
+        Outcome::Applied
+    );
+    assert!(crate::audit::verify_chain(&records(&rows, "same").await).is_ok());
 }

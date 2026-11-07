@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::{future::Future, pin::Pin};
 
 use super::AdminAnswer;
 use busbar_core_admin::GovernanceError;
@@ -37,52 +38,56 @@ pub enum Refused {
     Ledger(AdjustRefused),
 }
 
-pub type UsageAdjuster =
-    Arc<dyn Fn(&Correction) -> Result<Result<(), Refused>, String> + Send + Sync>;
+pub type AdjustmentFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Result<(), Refused>, String>> + Send + 'a>>;
+
+pub type UsageAdjuster = Arc<dyn for<'a> Fn(&'a Correction) -> AdjustmentFuture<'a> + Send + Sync>;
 
 #[must_use]
 pub fn no_ledger() -> UsageAdjuster {
-    Arc::new(|_| Err("no ledger is bound on this node".to_string()))
+    Arc::new(|_| Box::pin(async { Err("no ledger is bound on this node".to_string()) }))
 }
 
 #[must_use]
 pub fn live_adjuster(app: Arc<busbar_kernel::state::AppHandle>) -> UsageAdjuster {
     Arc::new(move |c: &Correction| {
-        let snapshot = app.load();
-        let Some(gov) = snapshot.governance.clone() else {
-            return Err("this node has no governance store".to_string());
-        };
-        let history = busbar_kernel::rate_apply::dated_history();
-        let era = match history.as_deref() {
-            Some(history) => match history.entry(&c.entry) {
-                Some(entry) => entry.effective_from(),
-                None => return Ok(Err(Refused::UnknownEntry)),
-            },
+        let app = app.clone();
+        Box::pin(async move {
+            let snapshot = app.load();
+            let Some(gov) = snapshot.governance.clone() else {
+                return Err("this node has no governance store".to_string());
+            };
+            let history = busbar_kernel::rate_apply::dated_history();
+            let era = match history.as_deref() {
+                Some(history) => match history.entry(&c.entry) {
+                    Some(entry) => entry.effective_from(),
+                    None => return Ok(Err(Refused::UnknownEntry)),
+                },
 
-            None => return Ok(Err(Refused::UnknownEntry)),
-        };
-        let adjustment = busbar_kernel::governance::Adjustment {
-            key_id: &c.key,
-            pool: &c.pool,
-            model: &c.lane,
-            entry_era: era,
-            entry_id: Some(c.entry.id()),
-            card_epoch_ms: c.card_epoch_ms,
-            delta: &c.delta,
-            now: busbar_kernel::store::now(),
-        };
-        crate::root::durability::off_runtime(|| {
-            gov.adjust_usage_exact_action(&snapshot.cost, &adjustment, c.action_id.as_deref())
+                None => return Ok(Err(Refused::UnknownEntry)),
+            };
+            let adjustment = busbar_kernel::governance::Adjustment {
+                key_id: &c.key,
+                pool: &c.pool,
+                model: &c.lane,
+                entry_era: era,
+                entry_id: Some(c.entry.id()),
+                card_epoch_ms: c.card_epoch_ms,
+                delta: &c.delta,
+                now: busbar_kernel::store::now(),
+            };
+            gov.adjust_usage_exact_action_async(&snapshot.cost, &adjustment, c.action_id.as_deref())
+                .await
+                .map(|applied| applied.map_err(Refused::Ledger))
+                .map_err(|e| e.to_string())
         })
-        .map(|applied| applied.map_err(Refused::Ledger))
-        .map_err(|e| e.to_string())
     })
 }
 
-pub(crate) fn adjust_effect(
+pub(crate) async fn adjust_effect(
     body: &[u8],
     scope: busbar_contract::authz::Scope,
-    pool_known: &dyn Fn(&str) -> bool,
+    pool_known: &(dyn Fn(&str) -> bool + Sync),
     adjuster: &UsageAdjuster,
 ) -> Result<AdminAnswer, GovernanceError> {
     if scope != busbar_contract::authz::Scope::Full {
@@ -109,12 +114,12 @@ pub(crate) fn adjust_effect(
         ));
     }
     let correction = parse_correction(body, pool_known, false)?;
-    apply_correction(correction, adjuster)
+    apply_correction(correction, adjuster).await
 }
 
 fn parse_correction(
     body: &[u8],
-    pool_known: &dyn Fn(&str) -> bool,
+    pool_known: &(dyn Fn(&str) -> bool + Sync),
     exact: bool,
 ) -> Result<Correction, GovernanceError> {
     let doc: serde_json::Value =
@@ -175,12 +180,12 @@ fn parse_correction(
     })
 }
 
-fn apply_correction(
+async fn apply_correction(
     correction: Correction,
     adjuster: &UsageAdjuster,
 ) -> Result<AdminAnswer, GovernanceError> {
     let entry = correction.entry;
-    match adjuster(&correction) {
+    match adjuster(&correction).await {
         Err(why) => {
             tracing::error!(why = %why, "an adjustment could not reach the ledger");
             Err(GovernanceError::Store)
@@ -231,14 +236,17 @@ mod key_tests {
     use super::*;
     use std::sync::Mutex;
 
-    #[test]
-    fn an_adjustment_keeps_the_exact_entry_key_in_the_request_and_response() {
+    #[tokio::test]
+    async fn an_adjustment_keeps_the_exact_entry_key_in_the_request_and_response() {
         let entry = busbar_kernel::cost::EntryKey::new(300, [7; 8], 1);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let received = seen.clone();
         let adjuster: UsageAdjuster = Arc::new(move |correction| {
-            received.lock().unwrap().push(correction.entry);
-            Ok(Ok(()))
+            let received = received.clone();
+            Box::pin(async move {
+                received.lock().unwrap().push(correction.entry);
+                Ok(Ok(()))
+            })
         });
         let body = serde_json::to_vec(&serde_json::json!({
             "key": "key", "lane": "lane", "entry": entry.hex(), "card_epoch_ms": 350,
@@ -251,6 +259,7 @@ mod key_tests {
             &|pool| pool == "pool",
             &adjuster,
         )
+        .await
         .unwrap();
         assert_eq!(answer.status, 200);
         assert_eq!(*seen.lock().unwrap(), vec![entry]);
@@ -258,8 +267,8 @@ mod key_tests {
         assert_eq!(reply["entry"], entry.hex());
     }
 
-    #[test]
-    fn an_adjustment_refuses_ordinal_and_malformed_tokens_before_the_ledger() {
+    #[tokio::test]
+    async fn an_adjustment_refuses_ordinal_and_malformed_tokens_before_the_ledger() {
         let adjuster: UsageAdjuster = Arc::new(|_| panic!("invalid entry reached the ledger"));
         for entry in [
             serde_json::json!(1),
@@ -278,7 +287,8 @@ mod key_tests {
                     busbar_contract::authz::Scope::Full,
                     &|_| true,
                     &adjuster
-                ),
+                )
+                .await,
                 Err(GovernanceError::Validation)
             ));
         }

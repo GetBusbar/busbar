@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A STORE OP'S BODY AS A FUTURE OVER ITS ONE RAW CONNECTION (THE DESIGN, the plugin ABI: every
+//! Store futures driven through the host ticket over ordinary or retained native connections.
 
 use std::any::Any;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::task::{Context, Poll, Waker};
 
@@ -29,6 +30,10 @@ pub const UPGRADE_OVER_UNREAD_INPUT: &str =
 /// How long an op waiting for a kept connection, or re-offering a write the connector had no
 const RETRY_NS: u64 = 5_000_000;
 
+// A fast native peer can keep every service Ready. Bound one ticketed crossing
+// even then, including partial writes inside a single wire request.
+const READY_UNITS_PER_ENTRY: usize = 32;
+
 /// A store op's body, as [`drive`] runs it.
 pub type Body<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
@@ -43,6 +48,9 @@ enum Ask {
     Reconnect,
     Close,
     Identity,
+    CodecWait {
+        yielded: bool,
+    },
     Write,
     Read,
     Upgrade {
@@ -191,6 +199,16 @@ impl Wire {
             .as_ref()
             .map(|i| i.os_user.clone())
             .unwrap_or_default())
+    }
+
+    /// Yield this operation to its host timer while a retained pure codec worker
+    /// produces its next bounded result. Check the worker's result slot before
+    /// calling this, then check it again after the yield. This performs no native
+    /// I/O and does not run a worker or another executor inside the wire driver.
+    pub async fn wait_codec(&self) -> Result<(), ConnFailure> {
+        self.ask(Ask::CodecWait { yielded: false })
+            .await
+            .map(|_| ())
     }
 
     /// BOUND every wire call from the next one on by `ms` milliseconds in all (`0` = unbound): once
@@ -523,19 +541,30 @@ impl ReadBufs {
     }
 }
 
-/// What [`drive`] parks on the op's ticket across a PENDING answer.
-struct Running<T> {
-    body: Mutex<Body<T>>,
+/// One independently scheduled connection in an operation.
+struct Channel {
     wire: Wire,
     pool: Option<Arc<Pool>>,
     waiter: Mutex<Option<Arc<Waiter>>>,
-    /// The op's claim on one of the set's connections.
     lease: Mutex<Option<Lease>>,
-    /// The read buffer the op took on its first read, kept across a PENDING answer.
-    buf: Mutex<Option<Zeroizing<Vec<u8>>>>,
+    checkout: Mutex<Option<Checkout>>,
+    host: Option<Host>,
+    persistent: bool,
 }
 
-impl<T> Running<T> {
+impl Channel {
+    fn new(pool: Option<Arc<Pool>>, host: Option<Host>) -> Self {
+        Self {
+            wire: Wire::default(),
+            pool,
+            host,
+            persistent: false,
+            waiter: Mutex::new(None),
+            lease: Mutex::new(None),
+            checkout: Mutex::new(None),
+        }
+    }
+
     fn take_waiter(&self) -> Option<Arc<Waiter>> {
         self.waiter
             .lock()
@@ -556,15 +585,99 @@ impl<T> Running<T> {
     }
 }
 
-impl<T> Drop for Running<T> {
+impl Drop for Channel {
     fn drop(&mut self) {
         {
             let mut state = self.wire.state();
-            state.input.clear();
+            let retained =
+                self.persistent && self.pool.as_ref().is_some_and(|pool| pool.idle() > 0);
+            if !retained {
+                state.input.clear();
+            }
             state.out.clear();
+            state.conn = None;
+            state.ask = None;
+            state.answer = None;
         }
         self.unwait();
+        if let (Some(conn), Some(host)) = (
+            self.checkout
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take(),
+            self.host,
+        ) {
+            let _ = host.connector(Ticket::NONE).close(conn.stream);
+        }
     }
+}
+
+/// Dedicated native connections retained by one backend lifecycle session.
+/// Each position owns a distinct one-connection pool, including its protocol state.
+#[derive(Debug)]
+pub struct Channels {
+    pools: Vec<Arc<Pool>>,
+    wires: Vec<Wire>,
+    active: Arc<AtomicBool>,
+}
+
+impl Channels {
+    /// Reserve `count` independent channels. At least one is required.
+    #[must_use]
+    pub fn new(count: usize) -> Self {
+        assert!(count > 0, "native channels require a connection slot");
+        Self {
+            pools: (0..count).map(|_| Pool::new(1)).collect(),
+            wires: (0..count).map(|_| Wire::default()).collect(),
+            active: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+/// Run a lifecycle operation over its independent retained connections.
+/// Await channel services sequentially within the body. All services use the operation's
+/// existing host ticket; cloning an individual Wire still shares that one channel.
+pub fn drive_channels<T: 'static>(
+    cx: &mut Op<'_>,
+    channels: &Channels,
+    start: impl FnOnce(Vec<Wire>) -> Body<T>,
+) -> Step<T> {
+    let _ = cx.resume::<WaitingChannels>();
+    // A resumed driver already holds the claim. A waiting request must acquire it.
+    let resumed = cx.resume::<Running<T>>();
+    if let Some(running) = resumed {
+        cx.park(running);
+    } else if channels.active.swap(true, Ordering::AcqRel) {
+        cx.park(WaitingChannels);
+        return Step::Pending {
+            wake_at_ns: later(cx, RETRY_NS),
+        };
+    }
+    run_channels(
+        cx,
+        channels.pools.iter().cloned().map(Some).collect(),
+        Some(&channels.wires),
+        Some(channels.active.clone()),
+        start,
+    )
+}
+
+struct WaitingChannels;
+
+struct ChannelClaim(Arc<AtomicBool>);
+impl Drop for ChannelClaim {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+/// What the host ticket retains across a pending operation.
+struct Running<T> {
+    body: Mutex<Body<T>>,
+    channels: Vec<Channel>,
+    active: usize,
+    buf: Mutex<Option<Zeroizing<Vec<u8>>>>,
+    _claim: Option<ChannelClaim>,
 }
 
 /// RUN `start`'s body over the op's own connection, across the op's entries: a fresh entry starts
@@ -627,23 +740,48 @@ fn run<T: 'static>(
     pool: Option<&Arc<Pool>>,
     start: impl FnOnce(Wire) -> Body<T>,
 ) -> Step<T> {
-    let running = match cx.resume::<Running<T>>() {
+    run_channels(cx, vec![pool.cloned()], None, None, |mut wires| {
+        start(wires.remove(0))
+    })
+}
+
+fn run_channels<T: 'static>(
+    cx: &mut Op<'_>,
+    pools: Vec<Option<Arc<Pool>>>,
+    wires: Option<&[Wire]>,
+    claim: Option<Arc<AtomicBool>>,
+    start: impl FnOnce(Vec<Wire>) -> Body<T>,
+) -> Step<T> {
+    let mut running = match cx.resume::<Running<T>>() {
         Some(r) => r,
-        None if cx.resuming() => {
+        None if cx.resuming() && claim.is_none() => {
             panic!("a store op's RESUME found no parked wire body: it is never run afresh")
         }
         None => {
-            let wire = Wire::default();
+            let channels: Vec<_> = pools
+                .into_iter()
+                .enumerate()
+                .map(|(index, pool)| {
+                    let mut channel = Channel::new(pool, cx.host().copied());
+                    if let Some(wires) = wires {
+                        channel.wire = wires[index].clone();
+                        channel.wire.state().bound_at = None;
+                        channel.persistent = true;
+                    }
+                    channel
+                })
+                .collect();
+            let wires = channels.iter().map(|c| c.wire.clone()).collect();
             Running {
-                body: Mutex::new(start(wire.clone())),
-                wire,
-                pool: pool.cloned(),
-                waiter: Mutex::new(None),
-                lease: Mutex::new(None),
+                body: Mutex::new(start(wires)),
+                _claim: claim.map(ChannelClaim),
+                channels,
+                active: 0,
                 buf: Mutex::new(None),
             }
         }
     };
+    let mut ready_units = 0;
     let waker = Waker::noop();
     let mut poll_cx = Context::from_waker(waker);
     let mut buf = running
@@ -659,22 +797,39 @@ fn run<T: 'static>(
             .as_mut()
             .poll(&mut poll_cx);
         if let Poll::Ready(t) = polled {
-            running.unwait();
-            finish(cx, &running);
+            for index in 0..running.channels.len() {
+                select_channel(cx, &mut running, index);
+                let channel = &running.channels[index];
+                channel.unwait();
+                finish(cx, channel);
+                // A connection not retained in its pool must close before selecting another.
+                cx.close_checkout();
+            }
             if let (Some(b), Some(reads)) = (buf.take(), cx.reads()) {
                 reads.give(b);
             }
             return Step::Ready(t);
         }
-        let ask = running.wire.state().ask.clone();
-        let Some(ask) = ask else {
+        let selected = running
+            .channels
+            .iter()
+            .position(|c| c.wire.state().ask.is_some());
+        let Some(index) = selected else {
             panic!("a store op's wire body awaited something other than its wire");
         };
-        let bound = bound_check(cx, &running.wire);
+        select_channel(cx, &mut running, index);
+        let channel = &running.channels[index];
+        let ask = channel
+            .wire
+            .state()
+            .ask
+            .clone()
+            .expect("selected wire request");
+        let bound = bound_check(cx, &channel.wire);
         let served = match bound {
             Bound::Passed => {
                 cx.abandon_pending_service();
-                running.unwait();
+                channel.unwait();
                 Served::Answer(Err(ConnFailure::Failed(
                     crate::conn::ConnError::Timeout.text().to_owned(),
                 )))
@@ -688,7 +843,7 @@ fn run<T: 'static>(
                 } else {
                     &mut []
                 };
-                serve(cx, &running, &ask, read)
+                serve(cx, channel, &ask, read, &mut ready_units)
             }
         };
         let served = match (served, bound) {
@@ -707,7 +862,7 @@ fn run<T: 'static>(
                 if a.is_err() {
                     cx.abandon_pending_service();
                 }
-                let mut st = running.wire.state();
+                let mut st = channel.wire.state();
                 if a.is_err() || matches!((&ask, &a), (Ask::Read, Ok(0))) {
                     st.unfit = true;
                 }
@@ -717,7 +872,15 @@ fn run<T: 'static>(
                 }
                 st.ask = None;
                 st.answer = Some(a);
+                drop(st);
+                if ready_quantum(
+                    cx.can_pend() && cx.host().is_some_and(Host::can_wake),
+                    &mut ready_units,
+                ) {
+                    return park_ready(cx, running, buf);
+                }
             }
+            Served::Cooperate => return park_ready(cx, running, buf),
             Served::Pending { wake_at_ns, replay } => {
                 if replay {
                     cx.replay_last_service();
@@ -730,13 +893,69 @@ fn run<T: 'static>(
     }
 }
 
+/// Count completed work without creating a new logical connector service.
+fn ready_quantum(can_wake: bool, units: &mut usize) -> bool {
+    *units += 1;
+    if *units < READY_UNITS_PER_ENTRY {
+        return false;
+    }
+    *units = 0;
+    can_wake
+}
+
+fn park_ready<T: 'static>(
+    cx: &mut Op<'_>,
+    running: Running<T>,
+    buf: Option<Zeroizing<Vec<u8>>>,
+) -> Step<T> {
+    let host = cx.host().copied().expect("cooperative wake was checked");
+    let ticket = cx.ticket();
+    *running.buf.lock().unwrap_or_else(PoisonError::into_inner) = buf;
+    // Keep the exact body, completed answer, checkout and read loan before the
+    // wake. The host latches it until this crossing returns Pending; no Ready I/O
+    // is reissued and no extra clock service can alter its completion handle.
+    cx.park(running);
+    host.wake(ticket);
+    Step::Pending {
+        wake_at_ns: u64::MAX,
+    }
+}
+
+/// Only one host service is in flight. Move connection custody when the body
+/// switches channels, without changing its ticket or completion sequence.
+fn select_channel<T>(cx: &mut Op<'_>, running: &mut Running<T>, index: usize) {
+    if running.active == index {
+        return;
+    }
+    *running.channels[running.active]
+        .checkout
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = cx.take_checkout();
+    if let Some(conn) = running.channels[index]
+        .checkout
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+    {
+        cx.adopt(conn);
+    }
+    running.active = index;
+}
+
 /// The body answered: a fit connection on a set goes back to it; any other is closed by the door.
-fn finish<T>(cx: &mut Op<'_>, running: &Running<T>) {
+fn finish(cx: &mut Op<'_>, running: &Channel) {
     let Some(pool) = &running.pool else { return };
     let mut lease = running.lease.lock().unwrap_or_else(PoisonError::into_inner);
     let (fit, session) = {
         let mut st = running.wire.state();
-        (!st.unfit && st.conn.is_some(), st.session.take())
+        (
+            !st.unfit && st.conn.is_some(),
+            if running.persistent {
+                None
+            } else {
+                st.session.take()
+            },
+        )
     };
     if !fit {
         return;
@@ -785,6 +1004,8 @@ fn bound_check(cx: &mut Op<'_>, wire: &Wire) -> Bound {
 /// What one service answered.
 enum Served {
     Answer(Result<usize, ConnFailure>),
+    /// Partial write progress is retained; continue on the same host ticket.
+    Cooperate,
     Pending {
         wake_at_ns: u64,
         /// A real in-flight host service retries its handle. Timer/pool/no-progress waits do not.
@@ -802,9 +1023,9 @@ fn later(cx: &mut Op<'_>, delta: u64) -> u64 {
 }
 
 /// Draw the op's connection: an idle kept one, a new one under the bound, or wait.
-fn connect<T>(
+fn connect(
     cx: &mut Op<'_>,
-    running: &Running<T>,
+    running: &Channel,
     need: u32,
     target: Option<&str>,
     timeout_ms: u32,
@@ -834,7 +1055,9 @@ fn connect<T>(
             w.reused = true;
             w.unfit = false;
             w.insecure = false;
-            w.session = idle.session;
+            if !running.persistent {
+                w.session = idle.session;
+            }
             return Served::Answer(Ok(0));
         }
         if st.live < pool.max {
@@ -902,7 +1125,13 @@ fn connect<T>(
 }
 
 /// Make the connector service `ask` names: its answer, or PENDING (the ask stays posted and is
-fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) -> Served {
+fn serve(
+    cx: &mut Op<'_>,
+    running: &Channel,
+    ask: &Ask,
+    buf: &mut [u8],
+    ready_units: &mut usize,
+) -> Served {
     let wire = &running.wire;
     match ask {
         Ask::Connect {
@@ -931,6 +1160,8 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
             };
             if had {
                 cx.close_checkout();
+            }
+            {
                 let mut w = wire.state();
                 w.input.clear();
                 w.out.clear();
@@ -974,6 +1205,19 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
             };
         }
         Ask::Close => {
+            // Closing a retained protocol client in a later call must close its
+            // native stream even before that call performs any I/O.
+            if running.persistent && wire.state().conn.is_none() {
+                let last = wire.state().last.clone();
+                if let Some((need, target, timeout_ms)) = last {
+                    if running.pool.as_ref().is_some_and(|pool| pool.idle() > 0) {
+                        match connect(cx, running, need, target.as_deref(), timeout_ms, false) {
+                            Served::Answer(Ok(_)) => {}
+                            other => return other,
+                        }
+                    }
+                }
+            }
             wire.state().conn.take();
             cx.close_checkout();
             let mut w = wire.state();
@@ -986,6 +1230,32 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
             w.confirm_secure = false;
             w.last = None;
             return Served::Answer(Ok(0));
+        }
+        Ask::CodecWait { yielded } => {
+            if *yielded {
+                return Served::Answer(Ok(0));
+            }
+            if !cx.can_pend() {
+                return Served::Answer(Err(ConnFailure::NoTicket));
+            }
+            let mut services = match cx.connector() {
+                Ok(services) => services,
+                Err(error) => return Served::Answer(Err(error)),
+            };
+            return match services.clock_now() {
+                Poll::Ready(Ok(now)) => {
+                    wire.state().ask = Some(Ask::CodecWait { yielded: true });
+                    Served::Pending {
+                        wake_at_ns: now.mono_ns.saturating_add(RETRY_NS / 5),
+                        replay: false,
+                    }
+                }
+                Poll::Ready(Err(error)) => Served::Answer(Err(error)),
+                Poll::Pending => Served::Pending {
+                    wake_at_ns: 0,
+                    replay: true,
+                },
+            };
         }
         Ask::Identity => {
             let mut services = match cx.connector() {
@@ -1006,17 +1276,38 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
         }
         _ => {}
     }
+    // A retained protocol client may post I/O directly on its persistent Wire in
+    // the next lifecycle call. Reacquire that channel's exact idle native stream.
+    if wire.state().conn.is_none() {
+        let last = wire.state().last.clone();
+        if let Some((need, target, timeout_ms)) = last {
+            if running.persistent && running.pool.as_ref().is_none_or(|pool| pool.idle() == 0) {
+                return Served::Answer(Err(ConnFailure::Refused(
+                    "the retained native channel was lost".into(),
+                )));
+            }
+            match connect(cx, running, need, target.as_deref(), timeout_ms, false) {
+                Served::Answer(Ok(_)) => {}
+                other => return other,
+            }
+        }
+    }
     let Some(stream) = wire.state().conn.as_ref().map(|c| c.stream) else {
         return Served::Answer(Err(ConnFailure::Refused(
             "the store's wire is not connected".into(),
         )));
     };
+    let can_cooperate = cx.can_pend() && cx.host().is_some_and(Host::can_wake);
     let mut services = match cx.connector() {
         Ok(s) => s,
         Err(e) => return Served::Answer(Err(e)),
     };
     match ask {
-        Ask::Connect { .. } | Ask::Reconnect | Ask::Close | Ask::Identity => {
+        Ask::Connect { .. }
+        | Ask::Reconnect
+        | Ask::Close
+        | Ask::Identity
+        | Ask::CodecWait { .. } => {
             unreachable!("answered above")
         }
         Ask::Write => loop {
@@ -1068,6 +1359,9 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
                             wake_at_ns: later(cx, RETRY_NS / 5),
                             replay: false,
                         };
+                    }
+                    if ready_quantum(can_cooperate, ready_units) {
+                        return Served::Cooperate;
                     }
                 }
                 Poll::Ready(Err(e)) => return Served::Answer(Err(e)),

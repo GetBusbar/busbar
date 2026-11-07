@@ -3,7 +3,7 @@
 
 use crate::root::test_plugins as plugins;
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
-use busbar_contract::abi::host::service::{UnitRef, FLOW_CONTINUE};
+use busbar_contract::abi::host::service::{FLOW_CONTINUE, UnitRef};
 use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
 use busbar_kernel::governance::NewKeySpec;
 use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
@@ -119,26 +119,37 @@ async fn actual_inbound_generation_keeps_only_original_request_authority() {
         });
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let native_config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the unchanged deployment resolves for its first actual build");
+    let native_plugins = plugin_config.clone();
+    let native_core = crate::root::real_store::core_over(
+        busbar_kernel::appbuild::bootstrap_config_store(&native_config, &native_plugins)
+            .await
+            .expect("actual Store opens for native startup"),
+    )
+    .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        busbar_kernel::config::resolve(&deploy, &Default::default())
-            .expect("the unchanged deployment resolves for its first actual build"),
-        plugin_config.clone(),
+        native_config,
+        native_plugins,
         None,
         Default::default(),
         Default::default(),
         (None, None),
         None,
         &rules,
-        None,
+        Some(native_core),
         true,
     )
+    .await
     .expect("the actual product builds the session deployment");
     limits.stage_boot();
-    let book = crate::root::boot::book(&app, &module).expect("the actual Store boots rate history");
-    limits.keep().expect("the product limits commit");
+    let book = crate::root::boot::book(&app, &module)
+        .await
+        .expect("the actual Store boots rate history");
+    limits.keep().await.expect("the product limits commit");
     let _book = book;
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let gov = Arc::clone(
@@ -176,7 +187,7 @@ async fn actual_inbound_generation_keeps_only_original_request_authority() {
     let auth = inbound.specs(7, 3).unwrap()[0].auth;
     let now = busbar_kernel::store::now();
     let (_, token) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "generation-original".into(),
                 ..Default::default()
@@ -184,6 +195,7 @@ async fn actual_inbound_generation_keeps_only_original_request_authority() {
             now + 3600,
             now,
         )
+        .await
         .unwrap();
     let token = token.expose(&busbar_kernel::seal::lend()).clone();
     let mut original = Head::default();
@@ -220,22 +232,34 @@ async fn actual_inbound_generation_keeps_only_original_request_authority() {
     .unwrap();
     assert_eq!(first.flow, FLOW_CONTINUE);
     let old_app = Arc::downgrade(&app);
+    let native_config = config;
+    let native_plugins = plugin_config;
+    let native_core = app
+        .governance
+        .as_ref()
+        .expect("reload governance")
+        .core_store_handle()
+        .expect("reload native Store");
     let (replacement, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
-        plugin_config,
+        native_config,
+        native_plugins,
         None,
         Default::default(),
         Default::default(),
         (None, None),
         Some(&app),
         &rules,
-        None,
+        Some(native_core),
         false,
     )
+    .await
     .expect("a normal reload builds against the original Store lineage");
-    limits.keep().expect("the actual replacement limits commit");
+    limits
+        .keep()
+        .await
+        .expect("the actual replacement limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let replacement = Arc::new(replacement);
     for generation in 4..=6 {

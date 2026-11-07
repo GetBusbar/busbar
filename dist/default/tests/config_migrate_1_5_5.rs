@@ -173,7 +173,7 @@ fn a_1_5_5_provider_with_no_bindings_keeps_its_users_after_migration() {
     let before = resolved(&raw);
     assert!(admitted(&before, &[]).is_none() && admitted(&before, &["eng"]).is_none());
 
-    let out = busbar_kernel::config::migrate::migrate_config(&raw).expect("migrates");
+    let out = busbar_migrations::config::migrate::migrate_config(&raw).expect("migrates");
     assert!(
         out.changes
             .iter()

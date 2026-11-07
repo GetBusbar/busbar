@@ -10,12 +10,12 @@ use crate::core_routes::CoreRouter;
 use busbar_contract::SecretRef;
 
 type AsPlaneBuildFn = fn(
-    &serde_yaml::Value,
+    serde_yaml::Value,
     Vec<(String, String)>,
     Vec<String>,
-    Option<&Arc<dyn Any + Send + Sync>>,
-    Option<Arc<dyn busbar_contract::store_calls::StoreCalls>>,
-) -> Result<Arc<dyn Any + Send + Sync>, String>;
+    Option<Arc<dyn Any + Send + Sync>>,
+    Option<Arc<crate::persistence::facade::CoreStore>>,
+) -> Pin<Box<dyn Future<Output = Result<Arc<dyn Any + Send + Sync>, String>> + Send>>;
 
 type AsPlaneCheckFn = fn(&serde_yaml::Value) -> Result<Vec<(String, SecretRef)>, String>;
 

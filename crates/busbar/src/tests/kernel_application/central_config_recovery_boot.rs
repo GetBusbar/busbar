@@ -3,11 +3,11 @@
 
 use crate::root::test_plugins as plugins;
 use busbar_kernel::appbuild::AcceptAll;
-use busbar_kernel::config::overlay::{persist_root, RootSettings};
+use busbar_kernel::config::overlay::{RootSettings, persist_root_async as persist_root};
 use std::sync::Arc;
 
-#[test]
-fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() {
+#[tokio::test]
+async fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -53,9 +53,12 @@ fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() {
         },
     )];
     let cfg = config;
-    let opened = busbar_kernel::appbuild::bootstrap_config_store(&cfg, &plugin_config).unwrap();
-    let calls = opened.calls.as_ref().unwrap().clone();
-    let backend = busbar_kernel::config::overlay::OverlayStore::new(calls.clone()).unwrap();
+    let opened = busbar_kernel::appbuild::bootstrap_config_store(&cfg, &plugin_config)
+        .await
+        .unwrap();
+    let opened = crate::root::real_store::core_over(opened).await;
+    let calls = opened.clone();
+    let backend = busbar_kernel::config::overlay::OverlayStore::from_core(calls.clone()).unwrap();
     persist_root(
         Some(&backend),
         &RootSettings {
@@ -63,6 +66,7 @@ fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() {
             ..Default::default()
         },
     )
+    .await
     .unwrap();
     let rules: std::sync::Arc<dyn busbar_kernel::appbuild::RootRules> =
         std::sync::Arc::new(AcceptAll);
@@ -78,15 +82,16 @@ fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() {
         Some(opened),
         false,
     )
+    .await
     .unwrap();
     assert!(std::sync::Arc::ptr_eq(
-        &app.governance.unwrap().store_calls().unwrap(),
+        &app.governance.unwrap().core_store_handle().unwrap(),
         &calls
     ));
 }
 
-#[test]
-fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stale_app_commit() {
+#[tokio::test]
+async fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stale_app_commit() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -131,10 +136,15 @@ fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stale_app_
             sha256: Some(digest),
         },
     )];
-    let opened = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config).unwrap();
-    let calls = opened.calls.as_ref().unwrap().clone();
-    let backend = busbar_kernel::config::overlay::OverlayStore::new(calls.clone()).unwrap();
-    persist_root(Some(&backend), &RootSettings::default()).unwrap();
+    let opened = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
+        .unwrap();
+    let opened = crate::root::real_store::core_over(opened).await;
+    let calls = opened.clone();
+    let backend = busbar_kernel::config::overlay::OverlayStore::from_core(calls.clone()).unwrap();
+    persist_root(Some(&backend), &RootSettings::default())
+        .await
+        .unwrap();
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
         Arc::new(crate::root::door_steps::Rules::default());
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -149,33 +159,39 @@ fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stale_app_
         Some(opened),
         false,
     )
+    .await
     .unwrap();
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds the boot rate history before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
-    let handle = busbar_kernel::state::AppHandle::new(Arc::new(app));
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::new(app)));
     let before = handle.load();
-    let other = busbar_kernel::config::overlay::OverlayStore::new(calls).unwrap();
-    busbar_kernel::config::overlay::persist_groups(
+    let other = busbar_kernel::config::overlay::OverlayStore::from_core(calls).unwrap();
+    busbar_kernel::config::overlay::persist_groups_async(
         Some(&other),
         &std::collections::BTreeMap::from([("remote_security_team".into(), Default::default())]),
         None,
         None,
         &Default::default(),
     )
+    .await
     .unwrap();
 
-    assert!(backend
-        .read_required()
-        .unwrap()
-        .unwrap()
-        .groups
-        .contains_key("remote_security_team"));
-    assert!(backend.read_bytes().unwrap().is_some());
+    assert!(
+        backend
+            .read_required_async()
+            .await
+            .unwrap()
+            .unwrap()
+            .groups
+            .contains_key("remote_security_team")
+    );
+    assert!(backend.read_bytes_async().await.unwrap().is_some());
     let next = std::sync::Arc::new(
         busbar_kernel::governance::group_provision::build_with_group(
             &before,
@@ -184,20 +200,29 @@ fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stale_app_
         )
         .unwrap(),
     );
-    let persist = busbar_kernel::governance::group_provision::persist_provisioned_group(
+    let persist = busbar_kernel::governance::group_provision::persist_provisioned_group_async(
         next.clone(),
         "local_candidate".into(),
         "test".into(),
     );
-    assert!(handle.commit_and_swap(next, persist).is_err());
+    let refused: Result<(), busbar_kernel::config::transaction::TxnError> =
+        busbar_kernel::config::transaction::config_transaction(&handle, move |_| {
+            Ok(busbar_kernel::config::transaction::Outcome::commit_async(
+                next,
+                persist,
+                (),
+            ))
+        })
+        .await;
+    assert!(refused.is_err());
     assert!(std::sync::Arc::ptr_eq(&handle.load(), &before));
-    let stored = backend.read_required().unwrap().unwrap();
+    let stored = backend.read_required_async().await.unwrap().unwrap();
     assert!(stored.groups.contains_key("remote_security_team"));
     assert!(!stored.groups.contains_key("local_candidate"));
 }
 
-#[test]
-fn bootstrap_opens_the_anchor_before_requiring_modules_whose_pins_it_must_recover() {
+#[tokio::test]
+async fn bootstrap_opens_the_anchor_before_requiring_modules_whose_pins_it_must_recover() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -250,8 +275,11 @@ fn bootstrap_opens_the_anchor_before_requiring_modules_whose_pins_it_must_recove
         )
         .unwrap(),
     );
-    let opened = busbar_kernel::appbuild::bootstrap_config_store(&cfg, &plugin_config).unwrap();
-    assert!(opened.calls.is_some());
+    let opened = busbar_kernel::appbuild::bootstrap_config_store(&cfg, &plugin_config)
+        .await
+        .unwrap();
+    let opened = crate::root::real_store::core_over(opened).await;
+    assert_ne!(opened.info().dataset.0, [0; 16]);
     assert!(
         busbar_kernel::config_validate::check(
             &cfg,
@@ -268,8 +296,8 @@ fn bootstrap_opens_the_anchor_before_requiring_modules_whose_pins_it_must_recove
     );
 }
 
-#[test]
-fn root_recovery_can_run_before_hydration_without_changing_standalone_builds() {
+#[tokio::test]
+async fn root_recovery_can_run_before_hydration_without_changing_standalone_builds() {
     use busbar_contract::records::{UsageLedger, VirtualKey};
     use std::sync::Arc;
 
@@ -319,10 +347,14 @@ fn root_recovery_can_run_before_hydration_without_changing_standalone_builds() {
             },
         )];
         let cfg = config;
-        let opened = busbar_kernel::appbuild::bootstrap_config_store(&cfg, &plugin_config).unwrap();
-        let records = Arc::clone(&opened.records);
+        let opened = busbar_kernel::appbuild::bootstrap_config_store(&cfg, &plugin_config)
+            .await
+            .unwrap();
+        let opened = crate::root::real_store::core_over(opened).await;
+        let records = Arc::clone(&opened);
         let id = "vk_recovery_boot_order";
         records
+            .identity()
             .put_key(&VirtualKey {
                 id: id.into(),
                 name: "recovery boot ordering".into(),
@@ -330,8 +362,10 @@ fn root_recovery_can_run_before_hydration_without_changing_standalone_builds() {
                 enabled: true,
                 ..Default::default()
             })
+            .await
             .unwrap();
         records
+            .ledger()
             .put_usage(
                 id,
                 0,
@@ -340,6 +374,7 @@ fn root_recovery_can_run_before_hydration_without_changing_standalone_builds() {
                     ..Default::default()
                 },
             )
+            .await
             .unwrap();
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> = Arc::new(AcceptAll);
         let (app, _, _limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -354,8 +389,10 @@ fn root_recovery_can_run_before_hydration_without_changing_standalone_builds() {
             Some(opened),
             recover_first,
         )
+        .await
         .unwrap();
         records
+            .ledger()
             .put_usage(
                 id,
                 0,
@@ -364,17 +401,23 @@ fn root_recovery_can_run_before_hydration_without_changing_standalone_builds() {
                     ..Default::default()
                 },
             )
+            .await
             .unwrap();
         let gov = app.governance.as_ref().unwrap();
         let now = busbar_kernel::store::now();
         assert_eq!(
-            gov.usage_for(&app.cost, id, now).unwrap().unwrap().requests,
+            gov.usage_for_async(&app.cost, id, now)
+                .await
+                .unwrap()
+                .unwrap()
+                .requests,
             if recover_first { 11 } else { 7 },
             "only the explicit recovery boot postpones its initial Store snapshot"
         );
         if recover_first {
-            gov.hydrate_budgets(&app.cost, now).unwrap();
+            gov.hydrate_budgets_async(&app.cost, now).await.unwrap();
             records
+                .ledger()
                 .put_usage(
                     id,
                     0,
@@ -383,9 +426,14 @@ fn root_recovery_can_run_before_hydration_without_changing_standalone_builds() {
                         ..Default::default()
                     },
                 )
+                .await
                 .unwrap();
             assert_eq!(
-                gov.usage_for(&app.cost, id, now).unwrap().unwrap().requests,
+                gov.usage_for_async(&app.cost, id, now)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .requests,
                 11,
                 "the recovery boot explicitly installs the fresh snapshot before serving"
             );

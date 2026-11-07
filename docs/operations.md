@@ -381,8 +381,8 @@ need unauthenticated scraping under your threat model.
 ## Circuit breaker
 
 The breaker decides health from real request outcomes (passive), with optional
-active probing layered on top. The disposition pipeline (see
-[architecture.md](architecture.md)) decides *whether* an outcome counts as an
+active probing layered on top. The disposition pipeline in
+[`busbar-kernel-breaker`](../crates/busbar-kernel-breaker/src/classify.rs) decides *whether* an outcome counts as an
 upstream fault; this section covers *what happens to the lane* once it does.
 
 The breaker is keyed on the **target** about to be called, and it runs on all three

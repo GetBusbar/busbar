@@ -79,7 +79,7 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -89,13 +89,15 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual application Store binds history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let target_name = module.clone();
     let target_version = module_version.clone();
@@ -145,17 +147,15 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
         .governance
         .as_ref()
         .expect("actual governance")
-        .store_calls()
+        .core_store_handle()
         .expect("actual Store calls");
-    crate::root::kernel::ROOT_CARD.keep_in_store(calls.clone(), 91);
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
-        .expect("the actual rate history boots in its Store");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(calls)
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(calls)
         .expect("the actual Store opens its overlay");
     app.overlay_path = Some(overlay.clone());
     let app = Arc::new(app);
-    busbar_kernel::boot::hydrate_all(&app).expect("the actual root hydrates before admin rollback");
+    busbar_kernel::boot::hydrate_all(&app)
+        .await
+        .expect("the actual root hydrates before admin rollback");
     let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -165,7 +165,8 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
         .build()
         .unwrap();
     let prior = overlay
-        .read_required()
+        .read_required_async()
+        .await
         .unwrap()
         .map(|doc| doc.plugin_versions);
     let response = client
@@ -186,7 +187,8 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
     );
     assert_eq!(
         overlay
-            .read_required()
+            .read_required_async()
+            .await
             .unwrap()
             .map(|doc| doc.plugin_versions),
         prior,
@@ -258,7 +260,7 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (mut app, rotate, limits) = crate::root::real_store::build_app(
             config,
             plugin_config,
             None,
@@ -268,13 +270,15 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
             None,
             &rules,
         )
+        .await
         .expect("the actual product builds the swap deployment");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, &module)
+            .await
             .expect("the actual application Store binds history before activation");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         let (target_name, target_version, library, manifest) = if anchor_target {
             (module.clone(), module_version.clone(), library, manifest)
@@ -358,20 +362,18 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
             .governance
             .as_ref()
             .expect("actual governance")
-            .store_calls()
+            .core_store_handle()
             .expect("actual Store calls");
-        crate::root::kernel::ROOT_CARD.keep_in_store(calls.clone(), 91);
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .expect("the actual rate history boots in its Store");
-        let overlay = busbar_kernel::config::overlay::OverlayStore::new(calls)
+        let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(calls)
             .expect("the actual Store opens its overlay");
         app.overlay_path = Some(overlay.clone());
         let prior = std::collections::BTreeMap::from([("prior-plugin".into(), "3.0.0".into())]);
-        busbar_kernel::config::overlay::try_persist_plugin_versions(Some(&overlay), &prior)
+        busbar_kernel::config::overlay::try_persist_plugin_versions_async(Some(&overlay), &prior)
+            .await
             .expect("the prior pin persists in the real Store");
         let app = Arc::new(app);
         busbar_kernel::boot::hydrate_all(&app)
+            .await
             .expect("the actual root hydrates before admin rollback");
         let router = busbar_kernel::build_router(app);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -393,7 +395,8 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
         assert_eq!(status, 200, "safe anchor/nonanchor rollback: {view}");
         assert_eq!(view["name"], target_name);
         let persisted = overlay
-            .read_required()
+            .read_required_async()
+            .await
             .unwrap()
             .expect("the actual Store has the persisted pin merge");
         assert_eq!(persisted.plugin_versions[&target_name], target_version);
@@ -464,7 +467,7 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -474,13 +477,15 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual application Store binds history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let target_name = module.clone();
     let target_version = module_version.clone();
@@ -530,13 +535,9 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
         .governance
         .as_ref()
         .expect("actual governance")
-        .store_calls()
+        .core_store_handle()
         .expect("actual Store calls");
-    crate::root::kernel::ROOT_CARD.keep_in_store(calls.clone(), 91);
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
-        .expect("the actual rate history boots in its Store");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(calls)
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(calls)
         .expect("the actual Store opens its overlay");
     app.overlay_path = Some(overlay.clone());
     let original = archive;
@@ -546,7 +547,9 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
     );
     std::fs::write(directory.join("target.tar.gz"), &original).unwrap();
     let app = Arc::new(app);
-    busbar_kernel::boot::hydrate_all(&app).expect("the actual root hydrates before admin rollback");
+    busbar_kernel::boot::hydrate_all(&app)
+        .await
+        .expect("the actual root hydrates before admin rollback");
     let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -631,7 +634,7 @@ async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_sto
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -641,13 +644,15 @@ async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_sto
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual application Store binds history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let secret_path = std::path::PathBuf::from(
         std::env::var_os("BUSBAR_BOOTSTRAP_TEST_SECRET_PLUGIN").expect(
@@ -741,17 +746,15 @@ async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_sto
         .governance
         .as_ref()
         .expect("actual governance")
-        .store_calls()
+        .core_store_handle()
         .expect("actual Store calls");
-    crate::root::kernel::ROOT_CARD.keep_in_store(calls.clone(), 91);
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
-        .expect("the actual rate history boots in its Store");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(calls)
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(calls)
         .expect("the actual Store opens its overlay");
     app.overlay_path = Some(overlay.clone());
     let app = Arc::new(app);
-    busbar_kernel::boot::hydrate_all(&app).expect("the actual root hydrates before admin rollback");
+    busbar_kernel::boot::hydrate_all(&app)
+        .await
+        .expect("the actual root hydrates before admin rollback");
     let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -761,7 +764,8 @@ async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_sto
         .build()
         .unwrap();
     let prior = overlay
-        .read_required()
+        .read_required_async()
+        .await
         .unwrap()
         .map(|doc| doc.plugin_versions);
     let response = client
@@ -780,7 +784,8 @@ async fn a_secret_plugin_needed_to_open_the_anchor_cannot_rely_on_its_unread_sto
     );
     assert_eq!(
         overlay
-            .read_required()
+            .read_required_async()
+            .await
             .unwrap()
             .map(|doc| doc.plugin_versions),
         prior,

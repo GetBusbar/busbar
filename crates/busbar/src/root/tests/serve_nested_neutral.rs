@@ -6,16 +6,18 @@ use super::*;
 #[tokio::test]
 async fn a_real_third_claim_nested_reply_preserves_opaque_status_fields_and_governance() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("nested-neutral-third-claim", true);
+    let g = governed("nested-neutral-third-claim", true).await;
     let (status, body) = g.post("/call/nest:/framed/nested-opaque", true).await;
     assert_eq!(
         status, 200,
         "the parent's fixed operator response remains unchanged"
     );
-    assert_eq!(body, "nested:70001:opaque child body:opaque-fields",
-        "the actual parent reads the child status and duplicate opaque field bytes through unit.nest");
     assert_eq!(
-        g.requests(),
+        body, "nested:70001:opaque child body:opaque-fields",
+        "the actual parent reads the child status and duplicate opaque field bytes through unit.nest"
+    );
+    assert_eq!(
+        g.requests().await,
         2,
         "both units use the parent's key and admission path"
     );

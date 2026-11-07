@@ -337,15 +337,11 @@ pub const fn may_pend(service: u32) -> bool {
             | op::RANDOM_FILL
             | op::NEED_ADMIT
             | op::TRUST_VERIFY
-            | op::SNAPSHOT_READ
-            | op::TRUST_SIGHT_ITEM
             | op::TRUST_SERVES
-            | op::TRUST_DECIDE
             | op::TRUST_STATE
             | op::SESSION_EMIT
             | op::UNIT_HAND_IN
             | op::UNIT_REFUSE
-            | op::TICKET_MINT
             | op::TICKET_TAKE
     ) && service < SERVICES
 }
@@ -699,7 +695,7 @@ pub const TRUST_QUARANTINED: u64 = 4;
 /// the plane's own per-item trust key) is offered at now, from the plane's live re-fetch; the
 /// kernel records it and answers a `TRUST_*` sighting verdict (`TRUST_NEW` the first sighting,
 /// `TRUST_SAME` the same digest as the last, `TRUST_DRIFTED` another, `TRUST_QUARANTINED` when
-/// the counterparty is). Never pends.
+/// the counterparty is). May pend while a durable demotion settles.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct TrustSightItemIn {
@@ -750,7 +746,7 @@ pub const DISTRUST_UNKNOWN_ITEM: u64 = 6;
 /// there), made through the plane's own administrative verb: the ONE decide path the core-admin
 /// `POST /api/v1/admin/trust/approve` and `/revoke` take, durable alike. An approval approves what
 /// the caller SAW: `expected`, when stated, must be the key's current sighting. `value` = the
-/// `TRUST_DECIDED_*` verdict after it, or the `UNDECIDED_*` that refused it. Never pends.
+/// `TRUST_DECIDED_*` verdict after it, or the `UNDECIDED_*` that refused it. May pend while the durable decision settles.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct TrustDecideIn {
@@ -1035,6 +1031,10 @@ pub fn check_hook_call_in(i: &HookCallIn) -> Result<(), Fault> {
     Ok(())
 }
 
+/// Failed snapshot reads with this value mean the recorder is not installed yet.
+/// Other Failed outcomes retain their failure meaning.
+pub const SNAPSHOT_NOT_READY_VALUE: u64 = 1;
+
 /// [`op::SNAPSHOT_READ`]'s `in`: THE HOST SNAPSHOT SERVICE (kind-neutral; `BUSBAR-1.6.0.md` owner
 /// law 2026-09-27, "the data a plugin needs arrives through a kind-neutral host service, for example
 /// a metrics snapshot service"). The host's metric families of `scope` ([`SNAPSHOT_SCOPE_WHOLE`] |
@@ -1044,12 +1044,14 @@ pub fn check_hook_call_in(i: &HookCallIn) -> Result<(), Fault> {
 /// `ScrapeFamily` array at offset `0`, `len` the bytes the layout used; no spans. `into.buf` holds
 /// [`SNAPSHOT_ALIGN`] alignment, or the call is FAULT.
 ///
-/// FAILED with no `needed_*` = NOT READY (the host's recorder is not installed yet): the caller
+/// FAILED with no `needed_*` and `value` = [`SNAPSHOT_NOT_READY_VALUE`] means NOT READY
+/// (the host's recorder is not installed yet): the caller
 /// answers "not ready, retry", never an empty success. A short buffer is FAILED with
 /// `needed_bytes`, as every service. The scope is a kind-neutral argument, never a plugin's name.
 /// The host lends the snapshot only to the crossing it granted it (the instance that serves its
-/// well-known exposition routes); any other caller is REFUSED. Never pends: a ticketless re-call
-/// after a short answer reads the snapshot again.
+/// well-known exposition routes); any other caller is REFUSED. May pend while current gauges
+/// are read. The same ticketed handle retains one result across Pending and short-buffer retries;
+/// the host rebuilds layout pointers into the current caller buffer on delivery.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct SnapshotReadIn {
@@ -1579,7 +1581,7 @@ pub const MAX_TICKET_RECORD: u64 = 64 * 1024;
 /// [`CLAIM_TICKET`](crate::abi::plane::CLAIM_TICKET) claim's gate verifies. READY: the ticket
 /// credential in the bytes written (no span), `value` = its expiry in Unix seconds. A crossing that
 /// serves no unit, a unit with no principal, or a plugin that declares no issued-id prefix is
-/// REFUSED. Never pends.
+/// REFUSED. May pend until the minted credential and its bound record are durably published.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct TicketMintIn {

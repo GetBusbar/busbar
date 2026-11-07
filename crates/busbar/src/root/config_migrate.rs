@@ -3,10 +3,11 @@
 
 use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
+use zeroize::Zeroize;
 
 use busbar_contract::abi::sdk::migrate::Migrated;
-use busbar_kernel::config::migrate_plugins::MigrateHost;
 use busbar_kernel::config::PluginsCfg;
+use busbar_migrations::config::migrate_plugins::MigrateHost;
 
 use crate::root::loader::PluginRegistry;
 
@@ -282,6 +283,9 @@ pub struct RootHost {
     index: OnceCell<Result<Index, String>>,
 
     fetched: OnceCell<FetchedDir>,
+    startup: Option<std::sync::Arc<crate::root::startup_upgrade::documents::Documents>>,
+    templates: busbar_migrations::config::templates::ResolvedTemplates,
+    runtime_only: std::cell::Cell<bool>,
 }
 
 const STAGING_RANDOM_BYTES: usize = 16;
@@ -339,6 +343,91 @@ impl RootHost {
             local: OnceCell::new(),
             index: OnceCell::new(),
             fetched: OnceCell::new(),
+            startup: None,
+            templates: Default::default(),
+            runtime_only: std::cell::Cell::new(false),
+        }
+    }
+
+    /// Startup keeps authored-document replacements and protected artifact intents in custody.
+    pub(super) fn for_startup_document(
+        raw: &str,
+        detection: &str,
+        config: &Path,
+        documents: std::sync::Arc<crate::root::startup_upgrade::documents::Documents>,
+    ) -> Result<Self, String> {
+        let mut host = Self::for_document(detection, config);
+        host.templates =
+            busbar_migrations::config::templates::ResolvedTemplates::from_yaml(raw, detection)?;
+        host.startup = Some(documents);
+        Ok(host)
+    }
+
+    /// Frozen Store JSON has already been authored/resolved by its historical
+    /// writer. Keep retained config/catalog/plugin custody, without treating any
+    /// coincident `${VAR}` data as an authored YAML substitution.
+    pub(super) fn for_frozen_overlay(
+        raw: &str,
+        detection: &str,
+        config: &Path,
+        documents: std::sync::Arc<crate::root::startup_upgrade::documents::Documents>,
+    ) -> Result<Self, String> {
+        let mut host = Self::for_startup_document(raw, detection, config, documents)?;
+        host.templates = Default::default();
+        Ok(host)
+    }
+
+    pub(super) fn runtime_only(&self) -> bool {
+        self.runtime_only.get()
+    }
+
+    fn migrate_settings(
+        &self,
+        kind: &str,
+        module: &str,
+        settings: &serde_json::Value,
+        from: &str,
+    ) -> Result<Option<(String, Migrated)>, String> {
+        use crate::root::loader::dispatch::{load::raw, migrate::migrate_door};
+        if let Some((name, door)) = Self::linked_door(kind, module) {
+            return Ok(migrate_door(raw(door), settings, from)?.map(|m| (name, m)));
+        }
+
+        if kind == busbar_contract::abi::mechanism::kind::PLANE {
+            return Ok(None);
+        }
+        let local = self.local();
+        if let Some(row) = local.resolve(module).filter(|r| r.manifest.kind == kind) {
+            return Ok(row
+                .migrate(settings, from)?
+                .map(|m| (row.manifest.name.clone(), m)));
+        }
+
+        let Ok(fetched) = self.fetch(kind, module) else {
+            return Ok(None);
+        };
+        let Some(row) = fetched.resolve(module).filter(|r| r.manifest.kind == kind) else {
+            return Ok(None);
+        };
+        Ok(row
+            .migrate(settings, from)?
+            .map(|m| (row.manifest.name.clone(), m)))
+    }
+
+    fn catalog_source(&self) -> Result<Option<(PathBuf, zeroize::Zeroizing<String>)>, String> {
+        if let Some(documents) = &self.startup {
+            if let Some(source) = documents.original_provider()? {
+                return Ok(Some(source));
+            }
+        }
+        let (_, path) = self.catalog_path();
+        match std::fs::read_to_string(&path) {
+            Ok(raw) => Ok(Some((path, zeroize::Zeroizing::new(raw)))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) if self.startup.is_some() => {
+                Err("original providers source could not be read".into())
+            }
+            Err(_) => Ok(None),
         }
     }
 
@@ -474,6 +563,23 @@ impl RootHost {
 }
 
 impl MigrateHost for RootHost {
+    fn admit_config_profile(
+        &self,
+        proof: &busbar_migrations::config::HistoricalConfigProof,
+    ) -> Result<(), String> {
+        if let Some(documents) = &self.startup {
+            documents.admit_config_profile(proof)?;
+        }
+        Ok(())
+    }
+
+    fn resolved_authored_scalar(
+        &self,
+        template: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        self.templates.scalar(template)
+    }
+
     fn plane_selecting_sections(&self, module: &str) -> Vec<String> {
         crate::root::boot::DOOR_CANDIDATES
             .get()
@@ -497,6 +603,8 @@ impl MigrateHost for RootHost {
         {
             return Ok(());
         }
+        let resolved = busbar_migrations::config::templates::resolved_settings(settings, self)?;
+        let settings = &resolved;
         if let Some((_, door)) = Self::linked_door(kind, module) {
             return crate::root::loader::dispatch::migrate::validate_migrated_door(
                 crate::root::loader::dispatch::load::raw(door),
@@ -524,6 +632,22 @@ impl MigrateHost for RootHost {
         path: &[String],
         bytes: &[u8],
     ) -> Result<String, String> {
+        if let Some(documents) = &self.startup {
+            let output = crate::root::loader::migration_secrets::externalized_path(
+                &self.config,
+                site,
+                path,
+            )?;
+            return documents.stage_secret(
+                crate::root::startup_upgrade::documents::SecretPublication {
+                    config_path: self.config.clone(),
+                    site: site.to_owned(),
+                    settings_path: path.to_vec(),
+                    bytes: zeroize::Zeroizing::new(bytes.to_vec()),
+                    path: output,
+                },
+            );
+        }
         crate::root::migration_secrets::externalize(&self.config, site, path, bytes)
     }
 
@@ -534,30 +658,23 @@ impl MigrateHost for RootHost {
         settings: &serde_json::Value,
         from: &str,
     ) -> Result<Option<(String, Migrated)>, String> {
-        use crate::root::loader::dispatch::{load::raw, migrate::migrate_door};
-        if let Some((name, door)) = Self::linked_door(kind, module) {
-            return Ok(migrate_door(raw(door), settings, from)?.map(|m| (name, m)));
+        match self.migrate_settings(kind, module, settings, from) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                let resolved =
+                    busbar_migrations::config::templates::resolved_settings(settings, self)?;
+                if &resolved == settings || self.startup.is_none() {
+                    return Err(error);
+                }
+                // One registered converter sees the actual resolved legacy input. Do not
+                // infer arithmetic from differential probes or persist a frozen env value.
+                let converted = self.migrate_settings(kind, module, &resolved, from)?;
+                if converted.is_some() {
+                    self.runtime_only.set(true);
+                }
+                Ok(converted)
+            }
         }
-
-        if kind == busbar_contract::abi::mechanism::kind::PLANE {
-            return Ok(None);
-        }
-        let local = self.local();
-        if let Some(row) = local.resolve(module).filter(|r| r.manifest.kind == kind) {
-            return Ok(row
-                .migrate(settings, from)?
-                .map(|m| (row.manifest.name.clone(), m)));
-        }
-
-        let Ok(fetched) = self.fetch(kind, module) else {
-            return Ok(None);
-        };
-        let Some(row) = fetched.resolve(module).filter(|r| r.manifest.kind == kind) else {
-            return Ok(None);
-        };
-        Ok(row
-            .migrate(settings, from)?
-            .map(|m| (row.manifest.name.clone(), m)))
     }
 
     fn repin(&self, github: &str) -> Result<Option<String>, String> {
@@ -575,14 +692,24 @@ impl MigrateHost for RootHost {
     }
 
     fn rewrite_catalog(&self) -> Result<Option<(String, Vec<String>)>, String> {
-        let (dir, path) = self.catalog_path();
-        let Ok(raw) = std::fs::read_to_string(&path) else {
+        let (dir, _) = self.catalog_path();
+        let Some((path, raw)) = self.catalog_source()? else {
             return Ok(None);
         };
         let shown = path.display().to_string();
-        let Some(m) = busbar_kernel::config::migrate_catalog::migrate_catalog(&raw, &shown)? else {
+        let Some(mut m) =
+            busbar_migrations::config::migrate_catalog::migrate_catalog(&raw, &shown)?
+        else {
             return Ok(None);
         };
+        if let Some(documents) = &self.startup {
+            let staged = documents.stage_catalog(&path, &raw, &m.yaml);
+            m.yaml.zeroize();
+            m.changes.zeroize();
+            staged?;
+            // The source path is retained; startup publishes this same document only after validation.
+            return Ok(None);
+        }
         let stem = path.file_stem().map_or_else(
             || UNNAMED_PROVIDERS_CATALOG_STEM.into(),
             |s| s.to_string_lossy().into_owned(),
@@ -600,9 +727,7 @@ impl MigrateHost for RootHost {
     fn providers_catalog(
         &self,
     ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String> {
-        let (_, path) = self.catalog_path();
-
-        let Ok(raw) = std::fs::read_to_string(&path) else {
+        let Some((path, raw)) = self.catalog_source()? else {
             return Ok(None);
         };
         let shown = path.display();
@@ -610,6 +735,9 @@ impl MigrateHost for RootHost {
             Ok(serde_json::Value::Object(entries)) => Ok(Some(entries)),
             Ok(serde_json::Value::Null) => Ok(None),
             Ok(_) => Err(format!("{shown}: not a map of providers")),
+            Err(_) if self.startup.is_some() => {
+                Err("original providers source is invalid YAML".into())
+            }
             Err(e) => Err(format!("{shown}: {e}")),
         }
     }

@@ -159,7 +159,8 @@ fn verify_without_verdict(plane: &'static str, provider: &str, kind: &'static st
     }
 }
 
-const AUTH_REPLAY: &str = "auth-replay";
+pub(crate) const AUTH_REPLAY_OWNER: &str = "busbar.auth-replay";
+pub(crate) const AUTH_REPLAY: &str = "auth-replay";
 
 pub(crate) async fn replay_claimed(
     gov: Option<&crate::governance::GovState>,
@@ -170,15 +171,36 @@ pub(crate) async fn replay_claimed(
     if replay.key.is_empty() {
         return true;
     }
-    let Some(calls) = gov.and_then(crate::governance::GovState::store_calls) else {
+    let Some(gov) = gov else {
+        return false;
+    };
+    let Ok(core) = gov.core_store() else {
         return false;
     };
     let token = format!("{provider}/{}", replay.key);
-    let expires_at = now.saturating_add(replay.ttl_secs);
-    calls
-        .redeem_plane_token(AUTH_REPLAY, &token, expires_at, now)
+    let Some(expires_at) = now
+        .checked_add(replay.ttl_secs)
+        .filter(|expiry| *expiry < u64::MAX)
+    else {
+        return false;
+    };
+    if !matches!(
+        crate::persistence::claims::Claims::authorized(core, AUTH_REPLAY_OWNER, AUTH_REPLAY)
+            .redeem(&token, expires_at)
+            .await,
+        Ok(crate::persistence::claims::Outcome::Claimed)
+    ) {
+        return false;
+    }
+    // Custody resolution may report an original Applied receipt after expiry.
+    // A fresh auth invocation can receive that win only inside its original
+    // native deadline, never by extending the retained candidate's expiry.
+    core.backend()
+        .clock(core.info().dataset)
         .await
-        .unwrap_or(false)
+        .is_ok_and(|clock| {
+            clock.authority == core.info().clock_authority && clock.unix_seconds <= expires_at
+        })
 }
 
 /// A REPLAY CLAIM NOT YET WON: the claim a verified identity asked `provider` for, at the instant
@@ -354,38 +376,6 @@ const AUTH_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(
 
 static AUTH_ADMISSION_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(AUTH_ADMISSION_MAX_INFLIGHT));
-
-struct TicketStoreTask<T>(tokio::task::JoinHandle<T>);
-
-impl<T> Drop for TicketStoreTask<T> {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-pub(crate) async fn ticket_store<T: Send + 'static>(
-    run: impl FnOnce() -> Option<T> + Send + 'static,
-) -> Option<T> {
-    ticket_store_on(&AUTH_ADMISSION_PERMITS, run).await
-}
-
-async fn ticket_store_on<T: Send + 'static>(
-    permits: &'static tokio::sync::Semaphore,
-    run: impl FnOnce() -> Option<T> + Send + 'static,
-) -> Option<T> {
-    if tokio::runtime::Handle::try_current().is_err() {
-        return run();
-    }
-    let Ok(Ok(permit)) = tokio::time::timeout(AUTH_ADMISSION_WAIT, permits.acquire()).await else {
-        auth_saturated();
-        return None;
-    };
-    let mut task = TicketStoreTask(tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        run()
-    }));
-    (&mut task.0).await.ok().flatten()
-}
 
 const ADMIN_ADMISSION_MAX_INFLIGHT: usize = 16;
 
@@ -1707,6 +1697,18 @@ pub fn admin_verdict(app: &App, method: &str, target: &str, headers: &HeaderMap)
     AdminVerdict { door, claim }
 }
 
+/// Await authoritative credential verification before projecting the admin verdict.
+/// Replay custody is returned to the same admission owner as the synchronous probe.
+pub async fn admin_verdict_async(
+    app: &App,
+    method: &str,
+    target: &str,
+    headers: &HeaderMap,
+) -> AdminVerdict {
+    let (door, claim) = probe_admin_verdict_async(app, method, target, headers).await;
+    AdminVerdict { door, claim }
+}
+
 fn probe_admin_door(
     app: &App,
     method: &str,
@@ -1738,23 +1740,23 @@ fn probe_admin_verdict(
     target: &str,
     headers: &HeaderMap,
 ) -> (AdminDoor, Option<PendingClaim>) {
-    let mut strips = Vec::new();
-    let judged = std::pin::pin!(judge_admin_chain(
-        app,
-        method,
-        target,
-        headers,
-        true,
-        &mut strips
-    ));
+    let judged = std::pin::pin!(probe_admin_verdict_async(app, method, target, headers));
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    let (verdict, cap, replay, no_verdict) = match std::future::Future::poll(judged, &mut cx) {
-        std::task::Poll::Ready(judged) => judged,
+    match std::future::Future::poll(judged, &mut cx) {
+        std::task::Poll::Ready(verdict) => verdict,
+        std::task::Poll::Pending => (AdminDoor::Unavailable(VerifierUnavailable::NoVerdict), None),
+    }
+}
 
-        std::task::Poll::Pending => {
-            return (AdminDoor::Unavailable(VerifierUnavailable::NoVerdict), None);
-        }
-    };
+async fn probe_admin_verdict_async(
+    app: &App,
+    method: &str,
+    target: &str,
+    headers: &HeaderMap,
+) -> (AdminDoor, Option<PendingClaim>) {
+    let mut strips = Vec::new();
+    let (verdict, cap, replay, no_verdict) =
+        judge_admin_chain(app, method, target, headers, true, &mut strips).await;
     admin_probe_projection(admin_chain_outcome(verdict, no_verdict), |verdict| {
         admin_door_claim_of(app, verdict, cap, replay)
     })
@@ -2770,10 +2772,6 @@ mod plugin_chain_tests;
 #[cfg(test)]
 #[path = "tests/acceptance_1_5_5_tests.rs"]
 mod acceptance_1_5_5_tests;
-
-#[cfg(test)]
-#[path = "tests/ticket_store_tests.rs"]
-mod ticket_store_tests;
 
 #[cfg(test)]
 #[path = "tests/ticket_admission_policy.rs"]

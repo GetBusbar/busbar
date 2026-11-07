@@ -134,20 +134,22 @@ impl AdminTransport for JsonV1 {
 
 /// Keep the response projection and its ETag on the same immutable generation. In particular,
 /// mutation callers supply the installed snapshot, never a second load of the current handle.
-fn response_snapshot(app: Arc<busbar_kernel::state::App>) -> Arc<busbar_kernel::state::App> {
+async fn response_snapshot(app: Arc<busbar_kernel::state::App>) -> Arc<busbar_kernel::state::App> {
     #[cfg(any(test, feature = "test-support"))]
-    let _ = RESPONSE_SNAPSHOT_OBSERVER.try_with(|observer| observer());
+    if let Ok(future) = RESPONSE_SNAPSHOT_OBSERVER.try_with(|observer| observer()) {
+        future.await;
+    }
     app
 }
 
 #[cfg(any(test, feature = "test-support"))]
 tokio::task_local! {
-    static RESPONSE_SNAPSHOT_OBSERVER: Arc<dyn Fn() + Send + Sync>;
+    static RESPONSE_SNAPSHOT_OBSERVER: Arc<dyn Fn() -> busbar_kernel::state::ApplyFuture + Send + Sync>;
 }
 
 #[cfg(feature = "test-support")]
 pub async fn with_response_snapshot_observer<F: std::future::Future>(
-    observer: Arc<dyn Fn() + Send + Sync>,
+    observer: Arc<dyn Fn() -> busbar_kernel::state::ApplyFuture + Send + Sync>,
     future: F,
 ) -> F::Output {
     RESPONSE_SNAPSHOT_OBSERVER.scope(observer, future).await

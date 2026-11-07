@@ -309,6 +309,44 @@ impl WorkBook {
         Ok(())
     }
 
+    pub(crate) async fn load_native(
+        &self,
+        rows: &crate::persistence::scoped::ScopedStore,
+        instance: &Arc<str>,
+    ) -> Result<(), crate::persistence::scoped::Error> {
+        if self.loaded(instance) {
+            return Ok(());
+        }
+        let mut cursor = None;
+        let mut found = Vec::new();
+        loop {
+            let page = rows
+                .page(WORK_SCHEMA.as_str(), &[], cursor.as_ref())
+                .await?;
+            for (key, row) in page.rows {
+                if let Ok(reference) = Reference::try_from(key.as_slice()) {
+                    if let Some(work) =
+                        Work::read(instance, reference, row.expose(&crate::seal::lend()))
+                    {
+                        found.push(work);
+                    }
+                }
+            }
+            cursor = page.next;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let mut book = self.lock();
+        if !book.loaded.contains(instance) {
+            for work in found {
+                book.insert(work);
+            }
+            book.loaded.insert(Arc::clone(instance));
+        }
+        Ok(())
+    }
+
     pub fn sweep(&self, instance: &str, now_ms: u64, retain_ms: u64) -> Vec<Reference> {
         let mut book = self.lock();
         let gone: Vec<u64> = book

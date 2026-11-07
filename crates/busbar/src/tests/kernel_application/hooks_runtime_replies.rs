@@ -142,7 +142,7 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugins,
         None,
@@ -152,24 +152,30 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         None,
         &rules,
     )
+    .await
     .expect("the actual root opens the signed products and builds the pool chains");
     if !crate::root::kernel::ROOT_CARD.keeps_store() {
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the actual deployment configured governance")
-                .store_calls()
-                .expect("the configured Store exposes its rate-history slots"),
-            143,
-        );
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the actual deployment configured governance")
+                        .core_store_handle()
+                        .expect("the configured Store exposes its rate-history slots"),
+                    143,
+                )
+                .expect("the native rate-card Store binds");
+        };
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the configured Store boots its initial rate history");
     }
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
 
     use busbar_contract::hooks::{
@@ -363,9 +369,11 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         RoutingDecision::Prefer(vec![0]),
         "no content reached the gate → it ranks, never rejects"
     );
-    assert!(recorded.lock().unwrap().last().unwrap()["request"]
-        .get("messages")
-        .is_none());
+    assert!(
+        recorded.lock().unwrap().last().unwrap()["request"]
+            .get("messages")
+            .is_none()
+    );
 
     use busbar_kernel::config::PolicyOnError;
     let ResolvedPolicy::Policy {

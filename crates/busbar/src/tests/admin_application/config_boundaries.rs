@@ -98,7 +98,7 @@ async fn hook_register_and_replace_refuse_oversized_timeouts_without_swapping() 
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -108,33 +108,38 @@ async fn hook_register_and_replace_refuse_oversized_timeouts_without_swapping() 
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let boot_calls = app
         .governance
         .as_ref()
         .expect("actual governance")
-        .store_calls()
+        .core_store_handle()
         .expect("actual boot Store calls");
-    crate::root::kernel::ROOT_CARD.keep_in_store(boot_calls, 101);
+    crate::root::kernel::ROOT_CARD
+        .keep_in_store(boot_calls, 101)
+        .expect("actual rate history binds once");
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the actual rate history boots before rates are committed");
     limits
         .keep()
+        .await
         .expect("the booted actual rates and limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let hook =
         serde_json::from_value(serde_json::json!({"kind": "gate", "module": "test-hook"})).unwrap();
 
     app.hook_registry.insert("existing".into(), hook);
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(
         app.governance
             .as_ref()
             .expect("actual governance")
-            .store_calls()
+            .core_store_handle()
             .expect("actual store calls"),
     )
     .expect("the actual Store supports overlay transactions");
@@ -173,7 +178,7 @@ async fn hook_register_and_replace_refuse_oversized_timeouts_without_swapping() 
     }
     assert!(Arc::ptr_eq(&before, &handle.load()));
     assert!(!handle.load().hook_registry.contains_key("new"));
-    assert!(overlay.read_required().unwrap().is_none());
+    assert!(overlay.read_required_async().await.unwrap().is_none());
     server.abort();
     println!("{WITNESS}");
 }
@@ -268,7 +273,7 @@ async fn reload_refuses_env_policy_injection_without_publishing() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -278,23 +283,28 @@ async fn reload_refuses_env_policy_injection_without_publishing() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let boot_calls = app
         .governance
         .as_ref()
         .expect("actual governance")
-        .store_calls()
+        .core_store_handle()
         .expect("actual boot Store calls");
-    crate::root::kernel::ROOT_CARD.keep_in_store(boot_calls, 101);
+    crate::root::kernel::ROOT_CARD
+        .keep_in_store(boot_calls, 101)
+        .expect("actual rate history binds once");
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the actual rate history boots before rates are committed");
     limits
         .keep()
+        .await
         .expect("the booted actual rates and limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     const VAR: &str = "BUSBAR_TEST_KC_ADMIN_POLICY_TTL";
     std::env::set_var(VAR, r#"90d"}, policy: {self_mint: true, default_ttl: "90d"#);
@@ -305,11 +315,11 @@ async fn reload_refuses_env_policy_injection_without_publishing() {
     std::fs::write(&config_path, r#"{providers: {}, models: {}, store: {module: memory}, auth: {policy: {self_mint: false, max_ttl: 7d, default_ttl: "${BUSBAR_TEST_KC_ADMIN_POLICY_TTL}"}}}"#).unwrap();
     app.config_path = Some(config_path);
     app.providers_path = Some(providers_path);
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(
         app.governance
             .as_ref()
             .expect("actual governance")
-            .store_calls()
+            .core_store_handle()
             .expect("actual store calls"),
     )
     .expect("the actual Store supports overlay transactions");

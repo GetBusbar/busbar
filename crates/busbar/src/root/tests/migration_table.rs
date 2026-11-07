@@ -30,7 +30,7 @@ fn retired_word_meets_its_1_5_5_bytes(n: usize) {
          providers: {{}}\nmodels: {{}}\npools: {{}}\n"
     );
 
-    let out = busbar_kernel::config::migrate::migrate_config(&raw).expect("migrates");
+    let out = busbar_migrations::config::migrate::migrate_config(&raw).expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("the output parses");
     assert_eq!(doc["store"]["module"].as_str(), Some(module.as_str()));
     assert_eq!(
@@ -107,7 +107,7 @@ fn the_observability_lift_out_meets_its_1_5_5_bytes() {
     let text = |k: &str| field(&g, k);
     let raw = text("config");
 
-    let out = busbar_kernel::config::migrate::migrate_config(&raw).expect("migrates");
+    let out = busbar_migrations::config::migrate::migrate_config(&raw).expect("migrates");
     let changes = bullets(&text("migrate_stderr"), "CHANGES (", "  - ");
     assert!(
         !changes.is_empty(),
@@ -299,13 +299,32 @@ fn the_committed_migration_table_is_the_render() {
 }
 
 #[test]
-fn a_linked_plugin_reads_its_former_names_by_its_alias() {
+fn historical_conversion_reads_former_names_by_current_alias() {
     install();
     assert_eq!(
-        busbar_kernel::config::migration_table::former_names("webrequest"),
+        busbar_migrations::config::migration_table::former_names("webrequest"),
         ["busbar-webrequest"]
     );
     assert!(
-        busbar_kernel::config::migration_table::former_names("planted-never-renamed").is_empty()
+        busbar_migrations::config::migration_table::former_names("planted-never-renamed")
+            .is_empty()
     );
+}
+
+#[test]
+fn former_module_names_are_converted_without_runtime_alias_admission() {
+    install();
+    let raw = "store: {module: busbar-store-postgres-plugin}\nidentity-providers: {company: {module: busbar-auth-oidc-plugin}}\nauth: {chain: [company]}\n";
+    let out = busbar_migrations::config::normalize_authored(
+        raw,
+        &busbar_migrations::config::migrate_plugins::NoPlugins,
+    )
+    .expect("structural conversion");
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
+    assert_eq!(doc["store"]["module"].as_str(), Some("postgres"));
+    assert_eq!(
+        doc["identity-providers"]["company"]["module"].as_str(),
+        Some("oidc")
+    );
+    assert_eq!(doc["auth"]["chain"][0].as_str(), Some("company"));
 }

@@ -51,7 +51,7 @@ fn vkey(allowed_pools: &[&str]) -> Arc<VirtualKey> {
     })
 }
 
-fn topology_app() -> Arc<App> {
+async fn topology_app() -> Arc<App> {
     register_planes();
     let yaml = r#"providers:
   fixture: {api_key: none}
@@ -105,7 +105,7 @@ pools:
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -115,13 +115,15 @@ pools:
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, "configured-store")
+        .await
         .expect("the actual configured Store binds boot rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     Arc::new(app)
 }
@@ -136,7 +138,7 @@ async fn stats_json(app: Arc<App>, gov: GovCtx) -> Value {
 
 #[tokio::test]
 async fn test_stats_restricted_key_sees_only_its_pools_and_lanes() {
-    let app = topology_app();
+    let app = topology_app().await;
     let gov = GovCtx {
         key: Some(vkey(&["pool-a"])),
     };
@@ -167,7 +169,7 @@ async fn test_stats_restricted_key_sees_only_its_pools_and_lanes() {
 
 #[tokio::test]
 async fn test_stats_empty_allowed_pools_sees_full_topology() {
-    let app = topology_app();
+    let app = topology_app().await;
     let gov = GovCtx {
         key: Some(vkey(&[])),
     };
@@ -182,7 +184,7 @@ async fn test_stats_empty_allowed_pools_sees_full_topology() {
 
 #[tokio::test]
 async fn test_stats_no_key_sees_full_topology() {
-    let app = topology_app();
+    let app = topology_app().await;
     let body = stats_json(app, GovCtx::default()).await;
 
     let pools = body["pools"].as_object().expect("pools object");
@@ -243,7 +245,7 @@ pools:
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -253,13 +255,15 @@ pools:
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, "configured-store")
+        .await
         .expect("the actual configured Store binds boot rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 
@@ -381,7 +385,7 @@ pools:
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -391,13 +395,15 @@ pools:
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, "configured-store")
+        .await
         .expect("the actual configured Store binds boot rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 
@@ -482,7 +488,7 @@ pools:
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -492,13 +498,15 @@ pools:
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, "configured-store")
+        .await
         .expect("the actual configured Store binds boot rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 
@@ -548,7 +556,7 @@ async fn models_ids(app: Arc<App>, gov: GovCtx) -> Vec<String> {
 
 #[tokio::test]
 async fn test_v1_models_lists_pools_and_models() {
-    let app = topology_app();
+    let app = topology_app().await;
     let ids = models_ids(app, GovCtx::default()).await;
     assert_eq!(
         ids,
@@ -559,7 +567,7 @@ async fn test_v1_models_lists_pools_and_models() {
 
 #[tokio::test]
 async fn test_v1_models_restricted_key_sees_only_reachable_names() {
-    let app = topology_app();
+    let app = topology_app().await;
     let gov = GovCtx {
         key: Some(vkey(&["pool-a"])),
     };
@@ -573,7 +581,7 @@ async fn test_v1_models_restricted_key_sees_only_reachable_names() {
 
 #[tokio::test]
 async fn test_v1_models_empty_allowed_pools_sees_all() {
-    let app = topology_app();
+    let app = topology_app().await;
     let gov = GovCtx {
         key: Some(vkey(&[])),
     };
@@ -583,7 +591,7 @@ async fn test_v1_models_empty_allowed_pools_sees_all() {
 
 const LISTING_KIND: &str = "listing_door_entry";
 
-fn with_listing_door(
+async fn with_listing_door(
     key: &'static str,
     section: &'static str,
     names: &'static [&'static str],
@@ -630,7 +638,7 @@ fn with_listing_door(
     };
     let facing = (reg.facing)(b"", b"", None, &[]).expect("faces");
     let decl = fold(reg).expect("the listing door folds");
-    let mut app = topology_app();
+    let mut app = topology_app().await;
     Arc::make_mut(&mut app).plane_slots.insert(
         decl.key,
         Arc::new(DoorSlot {
@@ -648,7 +656,8 @@ async fn test_v1_models_appends_each_plane_generations_listed_names() {
         "v1-models-listing",
         "v1_models_listing",
         &["listed-b", "pool-a", "listed-a"],
-    );
+    )
+    .await;
     assert_eq!(
         models_ids(Arc::clone(&app), GovCtx::default()).await,
         ["pool-a", "pool-b", "model-a0", "model-a1", "model-b", "listed-b", "listed-a"],
@@ -683,7 +692,7 @@ async fn test_v1_models_appends_each_plane_generations_listed_names() {
 
 #[tokio::test]
 async fn test_v1_models_bytes_unchanged_when_no_plane_lists_a_name() {
-    let quiet = with_listing_door("v1-models-quiet", "v1_models_quiet", &[]);
+    let quiet = with_listing_door("v1-models-quiet", "v1_models_quiet", &[]).await;
     for gov in [
         GovCtx::default(),
         GovCtx {
@@ -692,7 +701,7 @@ async fn test_v1_models_bytes_unchanged_when_no_plane_lists_a_name() {
     ] {
         assert_eq!(
             catalog_names(&quiet, &gov),
-            catalog_names(&topology_app(), &gov),
+            catalog_names(topology_app().await.as_ref(), &gov),
             "a plane listing nothing moves no name"
         );
     }
@@ -812,7 +821,7 @@ pools:
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -822,13 +831,15 @@ pools:
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, "configured-store")
+        .await
         .expect("the actual configured Store binds boot rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 

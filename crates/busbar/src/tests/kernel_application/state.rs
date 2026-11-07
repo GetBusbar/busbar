@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use busbar_kernel::plane_driver::EngineHost;
 
@@ -15,8 +15,8 @@ fn count_attach(host: &Arc<dyn EngineHost>) {
     ATTACHED.fetch_add(1, Ordering::SeqCst);
 }
 
-#[test]
-fn every_swap_re_attaches_the_probers_the_root_bound() {
+#[tokio::test]
+async fn every_swap_re_attaches_the_probers_the_root_bound() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -55,7 +55,7 @@ fn every_swap_re_attaches_the_probers_the_root_bound() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -65,27 +65,33 @@ fn every_swap_re_attaches_the_probers_the_root_bound() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .expect("the application has its configured governance Store")
-            .store_calls()
-            .expect("the configured product Store exposes actual calls"),
-        busbar_kernel::door::op_id().counter(),
-    );
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the application has its configured governance Store")
+                    .core_store_handle()
+                    .expect("the configured product Store exposes actual calls"),
+                busbar_kernel::door::op_id().counter(),
+            )
+            .expect("the native rate-card Store binds");
+    }
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the configured product Store boots its rate-card history");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let handle = busbar_kernel::state::AppHandle::new(Arc::clone(&app));
     let before = ATTACHED.load(Ordering::SeqCst);
-    handle.swap(Arc::new((*app).clone()));
+    handle.swap(Arc::new((*app).clone())).await;
     assert_eq!(
         ATTACHED.load(Ordering::SeqCst),
         before,
@@ -93,8 +99,8 @@ fn every_swap_re_attaches_the_probers_the_root_bound() {
     );
 
     handle.attach_on_swap(count_attach);
-    handle.swap(Arc::new((*app).clone()));
-    handle.swap(Arc::new((*app).clone()));
+    handle.swap(Arc::new((*app).clone())).await;
+    handle.swap(Arc::new((*app).clone())).await;
     assert_eq!(
         ATTACHED.load(Ordering::SeqCst),
         before + 2,

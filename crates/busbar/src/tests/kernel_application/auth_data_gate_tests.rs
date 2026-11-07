@@ -56,16 +56,14 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store bootstraps its config authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
+    let anchor = crate::root::real_store::core_over(
+        busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+            .await
+            .expect("the actual Store bootstraps its config authority"),
     )
-    .expect("the actual Store supports conditional config records");
+    .await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional config records");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -80,13 +78,15 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the actual product builds the session deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let gov = app
@@ -95,7 +95,7 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
         .expect("normal root opened governance");
     let now = busbar_kernel::store::now();
     let (key, secret) = gov
-        .mint_signed(
+        .mint_signed_async(
             busbar_kernel::governance::NewKeySpec {
                 name: "auth-data-gate".into(),
                 allowed_pools: Some(vec!["pa".into()]),
@@ -104,6 +104,7 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
             now + 3600,
             now,
         )
+        .await
         .expect("mint through actual root governance and Store");
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
@@ -226,10 +227,14 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store bootstraps its config authority");
+    let anchor = crate::root::real_store::core_over(
+        busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+            .await
+            .expect("the actual Store bootstraps its config authority"),
+    )
+    .await;
     anchor
-        .records
+        .identity()
         .put_key(&busbar_kernel::governance::VirtualKey {
             id: "empty".into(),
             generation_hash: busbar_contract::redacted::sha256_hex(b""),
@@ -240,15 +245,10 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
             revision: 1,
             ..Default::default()
         })
+        .await
         .expect("the actual Store contains the empty-secret-hash row before root cache load");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional config records");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional config records");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -263,13 +263,15 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the actual product builds the session deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let router = busbar_kernel::build_router(app);
@@ -355,16 +357,14 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store bootstraps its config authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
+    let anchor = crate::root::real_store::core_over(
+        busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+            .await
+            .expect("the actual Store bootstraps its config authority"),
     )
-    .expect("the actual Store supports conditional config records");
+    .await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional config records");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -379,13 +379,15 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the actual product builds the session deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let router = busbar_kernel::build_router(app);
@@ -466,16 +468,14 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store bootstraps its config authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
+    let anchor = crate::root::real_store::core_over(
+        busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+            .await
+            .expect("the actual Store bootstraps its config authority"),
     )
-    .expect("the actual Store supports conditional config records");
+    .await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional config records");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -490,13 +490,15 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the actual product builds the session deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let gov = app
@@ -505,7 +507,7 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
         .expect("normal root opened governance");
     let now = busbar_kernel::store::now();
     let (key, secret) = gov
-        .mint_signed(
+        .mint_signed_async(
             busbar_kernel::governance::NewKeySpec {
                 name: "auth-data-gate".into(),
                 allowed_pools: Some(vec!["pa".into()]),
@@ -514,8 +516,10 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
             now + 3600,
             now,
         )
+        .await
         .expect("mint through actual root governance and Store");
-    gov.update_key(&key.id, Some(false), None)
+    gov.update_key_outcome_async(&key.id, Some(false), None)
+        .await
         .expect("disable actual persisted key");
     let bearer = format!("Bearer {}", secret.expose(&busbar_kernel::seal::lend()));
     let router = busbar_kernel::build_router(app);
@@ -600,16 +604,14 @@ async fn test_admin_prefix_is_boundary_safe() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store bootstraps its config authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
+    let anchor = crate::root::real_store::core_over(
+        busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+            .await
+            .expect("the actual Store bootstraps its config authority"),
     )
-    .expect("the actual Store supports conditional config records");
+    .await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional config records");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -624,13 +626,15 @@ async fn test_admin_prefix_is_boundary_safe() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the actual product builds the session deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let router = busbar_kernel::build_router(app);
@@ -734,16 +738,14 @@ async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack()
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
-        .expect("the actual Store bootstraps its config authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
+    let anchor = crate::root::real_store::core_over(
+        busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+            .await
+            .expect("the actual Store bootstraps its config authority"),
     )
-    .expect("the actual Store supports conditional config records");
+    .await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional config records");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -758,13 +760,15 @@ async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack()
         Some(anchor),
         true,
     )
+    .await
     .expect("the actual product builds the session deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     fn collect_strings<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {

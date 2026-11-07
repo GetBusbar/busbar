@@ -119,7 +119,23 @@ class ModernCI:
                           "core-pin override to re-run a plugin's conformance against the release commit")
 
     def dev_head(self, repo: str) -> str:
-        p = subprocess.run(["git", "ls-remote", f"https://git.getbusbar.dev/{repo}.git", "refs/heads/dev"],
+        server = os.environ.get("CI_SERVER_URL") or os.environ.get("BUSBAR_GIT_SERVER_URL")
+        if not server:
+            origin = subprocess.run(["git", "remote", "get-url", "origin"], cwd=HERE.parent.parent,
+                                    capture_output=True, text=True)
+            remote = origin.stdout.strip()
+            if origin.returncode != 0 or not remote:
+                raise CannotRun("set BUSBAR_GIT_SERVER_URL or configure the origin remote")
+            # Keep the configured forge and its authentication method, including SCP-style SSH.
+            if "://" in remote:
+                server = remote.rsplit("/", 2)[0]
+            elif ":" in remote:
+                server = remote.split(":", 1)[0] + ":"
+            else:
+                raise CannotRun("origin must use HTTPS/SSH or set BUSBAR_GIT_SERVER_URL")
+        separator = "" if server.endswith(":") else "/"
+        remote = f"{server.rstrip('/')}{separator}{repo}.git"
+        p = subprocess.run(["git", "ls-remote", remote, "refs/heads/dev"],
                            capture_output=True, text=True)
         m = re.match(r"([0-9a-f]{40})\s", p.stdout)
         if p.returncode != 0 or not m:

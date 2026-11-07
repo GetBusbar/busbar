@@ -209,6 +209,25 @@ fn over_cap() {
     OVER_CAP.with(|c| c.set(true));
 }
 
+fn stated_collections(
+    blob: Blob,
+    extensions: &[u8],
+    kinds: u64,
+) -> Result<Vec<plane::RecordCollection>, String> {
+    let rows = plane::collections::from_extensions(extensions, kinds)
+        .map_err(|_| "invalid plane record collection declaration")?;
+    if busbar_contract::abi::mechanism::extensions::get(
+        extensions,
+        plane::collections::EXT_RECORD_COLLECTIONS,
+    )
+    .is_some()
+        && (blob.fmt != busbar_contract::abi::mechanism::call::BLOB_OCTETS || blob.flags != 0)
+    {
+        return Err("invalid plane record collection declaration blob".into());
+    }
+    Ok(rows)
+}
+
 fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
     // SAFETY: `PlaneTail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid); a
     // non-NULL kind tail is `'static` plugin data of its stated size.
@@ -278,6 +297,8 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
         unsafe { crate::dispatch::validate::lent(st.extensions.ptr, st.extensions.len) }
             .ok_or("invalid plane Statement extensions")?
     };
+    decl.record_collections =
+        stated_collections(st.extensions, extensions, tail.record_kinds_len as u64)?;
     use busbar_contract::abi::sdk::plane::conditional;
     if conditional::present(extensions) {
         if st.extensions.fmt != busbar_contract::abi::mechanism::call::BLOB_OCTETS
@@ -585,6 +606,7 @@ fn declared(t: &PlaneTail) -> InstanceDecl {
         conditional_record_kinds: Vec::new(),
         label: Arc::from(""),
         record_kinds: words(t.record_kinds, t.record_kinds_len),
+        record_collections: Vec::new(),
         signing: (!domain.is_empty() && !prefix.is_empty()).then_some((domain, prefix)),
         scope_kinds: words(t.scope_kinds, t.scope_kinds_len),
         trust_keys,
@@ -1922,4 +1944,49 @@ fn provider_key_statement_bound_precedes_every_slice() {
         flags: 0,
     };
     assert!(stated_provider_keys(oversized).is_err());
+}
+
+#[cfg(test)]
+#[test]
+fn collection_statement_admits_only_supported_complete_descriptor() {
+    use busbar_contract::abi::mechanism::{call::BLOB_OCTETS, extensions};
+    use plane::collections::{self, CollectionMode, RecordCollection};
+    let rows = [
+        RecordCollection {
+            kind: 0,
+            mode: CollectionMode::Upsert,
+            parent: None,
+        },
+        RecordCollection {
+            kind: 1,
+            mode: CollectionMode::Append,
+            parent: Some(0),
+        },
+    ];
+    let valid = collections::encode(&rows, 2).unwrap();
+    for invalid in [false, true] {
+        let mut value = valid.clone();
+        if invalid {
+            value[..4].copy_from_slice(&2u32.to_le_bytes());
+        }
+        let bytes = extensions::encode(&[(collections::EXT_RECORD_COLLECTIONS, &value)]);
+        let blob = Blob {
+            ptr: bytes.as_ptr(),
+            len: bytes.len(),
+            fmt: BLOB_OCTETS,
+            flags: 0,
+        };
+        let result = stated_collections(blob, &bytes, 2);
+        if invalid {
+            assert!(result.is_err());
+        } else {
+            assert_eq!(result.unwrap(), rows);
+            let mut wrong = blob;
+            wrong.fmt = busbar_contract::abi::mechanism::call::BLOB_JSON;
+            assert!(stated_collections(wrong, &bytes, 2).is_err());
+            wrong = blob;
+            wrong.flags = busbar_contract::abi::mechanism::call::BLOB_SECRET;
+            assert!(stated_collections(wrong, &bytes, 2).is_err());
+        }
+    }
 }

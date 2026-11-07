@@ -144,18 +144,14 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     eprintln!("OpenAPI census: opening the shared actual Store");
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+    let backend = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(backend).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
 
-    let compose = |established: Option<&busbar_kernel::state::App>| {
+    let compose = async |established: Option<&busbar_kernel::state::App>| {
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the actual admin deployment resolves");
         let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -167,12 +163,10 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
             (None, None),
             None,
             &rules,
-            Some(busbar_contract::store_calls::OpenedStore {
-                records: anchor.records.clone(),
-                calls: anchor.calls.clone(),
-            }),
+            Some(anchor.clone()),
             true,
         )
+        .await
         .expect("the real root composes the configured Store and admin application");
         if let Some(established) = established {
             app.governance = established.governance.clone();
@@ -192,30 +186,29 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         }
         (app, rotate, limits)
     };
-    let (app, rotate, limits) = compose(None);
+    let (app, rotate, limits) = compose(None).await;
     limits.stage_boot();
     eprintln!("OpenAPI census: binding the one actual node journal");
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     eprintln!("OpenAPI census: shared actual Store and node journal activated");
-    let spawn = || {
-        let (fresh, rotate, limits) = compose(Some(&app));
+    let spawn = async || {
+        let (fresh, rotate, limits) = compose(Some(&app)).await;
         limits.stage_boot();
-        limits.keep().expect("the actual batch limits commit");
+        limits.keep().await.expect("the actual batch limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         let router = busbar_kernel::build_router(Arc::new(fresh));
-        async move {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = listener.local_addr().unwrap();
-            let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-            (addr, handle)
-        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        (addr, handle)
     };
     use std::collections::{BTreeMap, BTreeSet};
     const PREFIX: &str = busbar_core_admin::v1::contract::ADMIN_PREFIX;

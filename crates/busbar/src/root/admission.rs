@@ -215,10 +215,10 @@ impl PluginAdmission for RootAdmission {
         let installed =
             crate::root::loader::scan_and_validate(dir, &installed_policy).map_err(|errors| {
                 Refusal::Conflict(format!(
-                "cannot validate the installed plugin set before publishing (fix or remove the \
+                    "cannot validate the installed plugin set before publishing (fix or remove the \
                  offending tarball first): {}",
-                errors.join("; ")
-            ))
+                    errors.join("; ")
+                ))
             })?;
         for existing in installed.loadable() {
             if existing.file == file {
@@ -400,6 +400,67 @@ impl DurableFs for RootDurable {
     fn create_dir_all(&self, path: &Path) -> std::io::Result<()> {
         crate::root::loader::durable::create_dir_all(path)
     }
+
+    fn inspect_document(
+        &self,
+        path: &Path,
+        original: &[u8],
+        converted: &[u8],
+    ) -> std::io::Result<busbar_kernel::durable::DocumentInspection> {
+        use crate::root::loader::durable::DocumentInspection as Native;
+        use busbar_kernel::durable::DocumentInspection as Host;
+        Ok(
+            match crate::root::loader::durable::inspect_document(path, original, converted)? {
+                Native::Original {
+                    metadata,
+                    read_only,
+                } => Host::Original {
+                    metadata,
+                    read_only,
+                },
+                Native::Converted => Host::Converted,
+                Native::Missing => Host::Missing,
+                Native::Changed => Host::Changed,
+            },
+        )
+    }
+
+    fn replace_document(
+        &self,
+        path: &Path,
+        original: &[u8],
+        converted: &[u8],
+        metadata: &[u8],
+    ) -> std::io::Result<busbar_kernel::durable::DocumentReplace> {
+        document_replace(crate::root::loader::durable::replace_document(
+            path, original, converted, metadata,
+        ))
+    }
+
+    fn recover_document(
+        &self,
+        path: &Path,
+        converted: &[u8],
+        metadata: &[u8],
+    ) -> std::io::Result<busbar_kernel::durable::DocumentReplace> {
+        document_replace(crate::root::loader::durable::recover_document(
+            path, converted, metadata,
+        ))
+    }
+}
+
+fn document_replace(
+    result: std::io::Result<crate::root::loader::durable::DocumentReplace>,
+) -> std::io::Result<busbar_kernel::durable::DocumentReplace> {
+    use crate::root::loader::durable::DocumentReplace as Native;
+    use busbar_kernel::durable::DocumentReplace as Host;
+    Ok(match result? {
+        Native::Published => Host::Published,
+        Native::AlreadyConverted => Host::AlreadyConverted,
+        Native::ReadOnly => Host::ReadOnly,
+        Native::Missing => Host::Missing,
+        Native::Changed => Host::Changed,
+    })
 }
 
 pub fn plugin_logs(cfg: &PluginsCfg) -> Result<(), String> {
@@ -429,16 +490,19 @@ pub fn dispatch_latched() -> bool {
 
 #[cfg(test)]
 mod store_overlay_management {
-    use busbar_kernel::config::overlay::{persist_root, resolve_backend, RootSettings};
+    use busbar_kernel::config::overlay::{persist_root_async, resolve_backend, RootSettings};
     use busbar_kernel::config::ConfigMgmtCfg;
-    #[test]
-    fn mutable_management_persists_to_the_configured_store() {
+    #[tokio::test]
+    async fn mutable_management_persists_to_the_configured_store() {
         let cfg = ConfigMgmtCfg { locked: false };
         assert!(resolve_backend(&cfg).enabled);
-        let store =
-            busbar_kernel::config::overlay::OverlayStore::new(crate::root::real_store::store())
-                .expect("the actual configured Store supports conditional overlay persistence");
-        persist_root(Some(&store), &RootSettings::default()).unwrap();
-        assert!(store.read_bytes().unwrap().is_some());
+        let store = busbar_kernel::config::overlay::OverlayStore::from_core(
+            crate::root::real_store::core().await,
+        )
+        .expect("the actual configured Store supports conditional overlay persistence");
+        persist_root_async(Some(&store), &RootSettings::default())
+            .await
+            .unwrap();
+        assert!(store.read_bytes_async().await.unwrap().is_some());
     }
 }

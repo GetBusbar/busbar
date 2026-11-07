@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future as _;
 use std::sync::Arc;
 
 use crate::auth::{open_operator, AuthMiddleware};
@@ -253,20 +254,27 @@ pub fn load_config_from_disk_compacting_document_patches(
             config_path.display()
         )
     })?;
-    let interpolated_config =
-        config::interpolate_env_with(&raw_config, env_mode, &mut unset_env_vars)
-            .map_err(|e| format!("config.yaml: {e}"))?;
+    let normalized_config =
+        rules.normalize_document(ConfigDocument::Deployment, config_path, &raw_config)?;
+    let interpolated_config = config::interpolate_env_with(
+        normalized_config
+            .as_deref()
+            .map_or(raw_config.as_str(), String::as_str),
+        env_mode,
+        &mut unset_env_vars,
+    )
+    .map_err(|e| format!("config.yaml: {e}"))?;
 
     if let Some(admission) = admission.as_deref_mut() {
         admission.check_config(&interpolated_config)?;
     }
 
     if let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&interpolated_config) {
-        let markers = config::migrate::detect_legacy_markers(&doc);
+        let markers = config::current_format::detect_legacy_markers(&doc);
         if !markers.is_empty() {
             return Err(format!(
                 "config.yaml: {}",
-                config::migrate::legacy_config_error(&markers)
+                config::current_format::legacy_config_error(&markers)
             ));
         }
 
@@ -318,9 +326,16 @@ pub fn load_config_from_disk_compacting_document_patches(
             providers_path.display()
         )
     })?;
-    let interpolated_providers =
-        config::interpolate_env_with(&raw_providers, env_mode, &mut unset_env_vars)
-            .map_err(|e| format!("providers.yaml: {e}"))?;
+    let normalized_providers =
+        rules.normalize_document(ConfigDocument::Providers, &providers_path, &raw_providers)?;
+    let interpolated_providers = config::interpolate_env_with(
+        normalized_providers
+            .as_deref()
+            .map_or(raw_providers.as_str(), String::as_str),
+        env_mode,
+        &mut unset_env_vars,
+    )
+    .map_err(|e| format!("providers.yaml: {e}"))?;
     if let Some(admission) = admission {
         admission.check_catalog(&interpolated_providers)?;
     }
@@ -374,7 +389,7 @@ pub fn load_config_from_disk_compacting_document_patches(
     })
 }
 
-pub fn load_config_from_disk_with_store(
+pub async fn load_config_from_disk_with_store(
     config_path: &std::path::Path,
     providers_override: Option<&std::path::Path>,
     safe_mode: bool,
@@ -391,7 +406,7 @@ pub fn load_config_from_disk_with_store(
         if safe_mode {
             loaded.overlay_path = Some(store);
         } else {
-            let (reopened, doc) = store.reopen_for_reload()?;
+            let (reopened, doc) = store.reopen_for_reload_async().await?;
             let mut patched_locked = false;
             if let Some(doc) = doc
                 .as_ref()
@@ -415,10 +430,25 @@ pub fn load_config_from_disk_with_store(
     Ok(loaded)
 }
 
-pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
+pub type GovCredentialRotation = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 
-fn rewrap_at_rest(gs: &governance::GovState) {
-    match gs.rewrap_credentials(busbar_kernel::store::now()) {
+async fn rewrap_at_rest(gs: &governance::GovState) {
+    let pass = gs
+        .rewrap_credentials_async(busbar_kernel::store::now())
+        .await;
+    if pass.is_err() {
+        // Reconcile a lost native rewrap reply before the candidate's readiness
+        // barrier. Refresh retries only identity-owned original attempts, then
+        // reloads confirmed canonical rows; it never generates another envelope.
+        if let Err(error) = gs.refresh_async().await {
+            diag_warn!(
+                crate::diagnostics::CREDENTIAL_AT_REST_REWRAP_PENDING,
+                error = %error,
+                "canonical identity refresh remains deferred after credential re-wrap"
+            );
+        }
+    }
+    match pass {
         Ok(pass) if pass.pending > 0 => diag_warn!(
             crate::diagnostics::CREDENTIAL_AT_REST_REWRAP_PENDING,
             resealed = pass.resealed,
@@ -437,9 +467,8 @@ fn rewrap_at_rest(gs: &governance::GovState) {
         Err(e) => diag_warn!(
             crate::diagnostics::CREDENTIAL_AT_REST_REWRAP_PENDING,
             error = %e,
-            "the recoverable credentials could not be re-sealed under credentials.at_rest.key; \
-             they still open under the key they were sealed under, and the next boot or reload \
-             retries"
+            "the credential re-wrap pass did not complete; canonical identity reconciliation \
+             was attempted before readiness, and remaining work is retried at the next boot or reload"
         ),
     }
 }
@@ -481,24 +510,59 @@ impl InstalledLimits {
         crate::rate_apply::card_applied(&self.configured_card);
     }
 
-    pub fn prepare_rates(self) -> Result<PreparedLimits, String> {
-        let rates = crate::rate_apply::prepare(&self.configured_card, &self.rates.raw())?;
+    pub async fn prepare_rates(self) -> Result<PreparedLimits, String> {
+        let rates = crate::rate_apply::prepare(&self.configured_card, &self.rates.raw()).await?;
         Ok(PreparedLimits {
             installed: self,
             rates,
         })
     }
 
-    pub fn prepare_rates_for_reload(self) -> Result<PreparedLimits, String> {
-        let rates = crate::rate_apply::prepare_recovery(&self.configured_card, &self.rates.raw())?;
+    pub async fn prepare_rates_for_reload(self) -> Result<PreparedLimits, String> {
+        let rates =
+            crate::rate_apply::prepare_recovery(&self.configured_card, &self.rates.raw()).await?;
         Ok(PreparedLimits {
             installed: self,
             rates,
         })
     }
 
-    pub fn keep(self) -> Result<(), String> {
-        self.prepare_rates()?.confirm_activation()?.keep().notify();
+    pub async fn prepare_rates_with_origin(self, origin: &str) -> Result<PreparedLimits, String> {
+        let rates = crate::rate_apply::prepare_with_origin(
+            &self.configured_card,
+            &self.rates.raw(),
+            origin,
+        )
+        .await?;
+        Ok(PreparedLimits {
+            installed: self,
+            rates,
+        })
+    }
+
+    pub async fn prepare_rates_for_reload_with_origin(
+        self,
+        origin: &str,
+    ) -> Result<PreparedLimits, String> {
+        let rates = crate::rate_apply::prepare_recovery_with_origin(
+            &self.configured_card,
+            &self.rates.raw(),
+            origin,
+        )
+        .await?;
+        Ok(PreparedLimits {
+            installed: self,
+            rates,
+        })
+    }
+
+    pub async fn keep(self) -> Result<(), String> {
+        self.prepare_rates()
+            .await?
+            .confirm_activation()
+            .await?
+            .keep()
+            .notify();
         Ok(())
     }
 }
@@ -510,11 +574,11 @@ pub struct PreparedLimits {
 }
 
 impl PreparedLimits {
-    pub fn confirm_activation(self) -> Result<ConfirmedLimits, String> {
+    pub async fn confirm_activation(self) -> Result<ConfirmedLimits, String> {
         let Self { installed, rates } = self;
         Ok(ConfirmedLimits {
             installed,
-            rates: rates.confirm_activation()?,
+            rates: rates.confirm_activation().await?,
         })
     }
 }
@@ -569,8 +633,28 @@ pub(crate) fn plane_is_open_for_build(
     (fallback || written.contains(section)) && (fallback || !awaiting_restart.contains(&section))
 }
 
+/// An authored input document. Historical conversion belongs to the composition root's
+/// migration library; the kernel continues to parse only its current format.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigDocument {
+    Deployment,
+    Providers,
+}
+
 pub trait RootRules: Send + Sync {
     fn check(&self, cfg: &config::RootCfg) -> Result<(), String>;
+
+    /// Normalize authored bytes before environment expansion. Returning `None` preserves
+    /// the exact original document. Converted material remains in wiping custody and must
+    /// preserve authored secret references; this hook never publishes a configuration.
+    fn normalize_document(
+        &self,
+        _kind: ConfigDocument,
+        _path: &std::path::Path,
+        _raw: &str,
+    ) -> Result<Option<zeroize::Zeroizing<String>>, String> {
+        Ok(None)
+    }
 
     fn check_built(&self, _app: &App) -> Result<(), String> {
         Ok(())
@@ -610,10 +694,41 @@ impl RootRules for AcceptAll {
     }
 }
 
-pub fn bootstrap_config_store(
+pub async fn bootstrap_config_store(
     cfg: &config::RootCfg,
     plugins: &config::PluginsCfg,
-) -> Result<busbar_contract::store_calls::OpenedStore, String> {
+) -> Result<busbar_contract::persistence::axis::OpenedBackend, String> {
+    let (registry, resolver) = bootstrap_store_inputs(cfg, plugins).await?;
+    open_config_store(cfg.store.as_ref(), &registry, &resolver).await
+}
+
+/// Inspect a configured Store before ordinary OPEN can initialize or select its dataset.
+/// Historical transformation is supplied by the composition root, not this projection.
+pub async fn prepare_config_store(
+    cfg: &config::RootCfg,
+    plugins: &config::PluginsCfg,
+) -> Result<busbar_contract::persistence::lifecycle::axis::Prepared, String> {
+    let (registry, resolver) = bootstrap_store_inputs(cfg, plugins).await?;
+    let (door, label, settings) = config_store_inputs(cfg.store.as_ref(), &registry, &resolver)?;
+    let axis = crate::preflight::root_rows()
+        .store_axis
+        .ok_or("no Store axis is installed")?;
+    axis()
+        .prepare(door, &label, settings.as_bytes())
+        .await
+        .map_err(|_| format!("Store '{label}' native preparation refused"))
+}
+
+async fn bootstrap_store_inputs(
+    cfg: &config::RootCfg,
+    plugins: &config::PluginsCfg,
+) -> Result<
+    (
+        Arc<dyn busbar_contract::plugin_rows::PluginRows>,
+        config::secret::SecretResolver,
+    ),
+    String,
+> {
     // This is a Store-only bootstrap projection. Overlay definitions do not exist yet;
     // the composition root validates the complete effective configuration after recovery.
     config_validate::validate_bootstrap_security(cfg).map_err(|errors| errors.join("; "))?;
@@ -632,7 +747,7 @@ pub fn bootstrap_config_store(
     let dependencies = bootstrap_dependency_names(cfg, registry.as_ref());
     validate_bootstrap_artifacts(registry.as_ref(), &dependencies, plugins)?;
     if let Some(admit) = crate::preflight::root_rows().secret_admit {
-        admit(&registry, plugins)?;
+        admit(&registry, plugins).await?;
     }
     let bootstrap_secrets = cfg
         .secrets
@@ -649,7 +764,7 @@ pub fn bootstrap_config_store(
     let _admin = resolve_admin_token(cfg.auth.as_ref(), &resolver)?;
     let _signer = resolve_signing_key(cfg.auth.as_ref(), &resolver)?;
     let _at_rest = resolve_at_rest_keys(&cfg.credentials, &resolver)?;
-    open_config_store(cfg.store.as_ref(), &registry, &resolver)
+    Ok((registry, resolver))
 }
 
 pub fn bootstrap_dependency_names(
@@ -762,11 +877,34 @@ pub fn validate_bootstrap_archive(
     Ok(())
 }
 
-fn open_config_store(
+async fn open_config_store(
     store: Option<&config::StoreCfg>,
     registry: &Arc<dyn busbar_contract::plugin_rows::PluginRows>,
     resolver: &config::secret::SecretResolver,
-) -> Result<busbar_contract::store_calls::OpenedStore, String> {
+) -> Result<busbar_contract::persistence::axis::OpenedBackend, String> {
+    let (door, label, settings) = config_store_inputs(store, registry, resolver)?;
+    let failed = |error: String| format!("store '{label}' plugin load failed: {error}");
+    let axis = crate::preflight::root_rows()
+        .store_axis
+        .ok_or_else(|| failed("no store axis is installed".into()))?;
+    axis()
+        .open(door, &label, settings.as_bytes())
+        .await
+        .map_err(failed)
+}
+
+fn config_store_inputs(
+    store: Option<&config::StoreCfg>,
+    registry: &Arc<dyn busbar_contract::plugin_rows::PluginRows>,
+    resolver: &config::secret::SecretResolver,
+) -> Result<
+    (
+        busbar_contract::persistence::axis::StoreDoor,
+        String,
+        zeroize::Zeroizing<String>,
+    ),
+    String,
+> {
     let store = store.ok_or_else(config::store_required)?;
     let row = registry.resolve(&store.module);
     let resolved = if row.as_ref().is_some_and(|row| row.in_process) {
@@ -786,12 +924,7 @@ fn open_config_store(
     drop(resolved);
     let failed = |error: String| format!("store '{}' plugin load failed: {error}", store.module);
     let door = registry.store_door(&store.module).map_err(failed)?;
-    let axis = crate::preflight::root_rows()
-        .store_axis
-        .ok_or_else(|| failed("no store axis is installed".into()))?;
-    axis()
-        .open(door, &store.module, settings.as_bytes())
-        .map_err(failed)
+    Ok((door, store.module.clone(), settings))
 }
 
 fn fetch_config_plugins(
@@ -834,7 +967,7 @@ fn fetch_config_plugins(
 #[cold]
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
-pub fn build_app_from_config(
+pub async fn build_app_from_config(
     cfg: config::RootCfg,
     plugins_cfg: config::PluginsCfg,
     overlay_path: Option<Arc<config::overlay::OverlayStore>>,
@@ -856,10 +989,11 @@ pub fn build_app_from_config(
         None,
         false,
     )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn build_app_from_config_with_store(
+pub async fn build_app_from_config_with_store(
     cfg: config::RootCfg,
     plugins_cfg: config::PluginsCfg,
     overlay_path: Option<Arc<config::overlay::OverlayStore>>,
@@ -868,7 +1002,40 @@ pub fn build_app_from_config_with_store(
     config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
     prior: Option<&state::App>,
     rules: &Arc<dyn RootRules>,
-    boot_store: Option<busbar_contract::store_calls::OpenedStore>,
+    boot_store: Option<Arc<crate::persistence::facade::CoreStore>>,
+    recover_usage_before_hydration: bool,
+) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
+    let limits = cfg.limits.clone();
+    let mut future = std::pin::pin!(build_app_native(
+        cfg,
+        plugins_cfg,
+        overlay_path,
+        base_hook_names,
+        base_group_names,
+        config_paths,
+        prior,
+        rules,
+        boot_store,
+        recover_usage_before_hydration
+    ));
+    std::future::poll_fn(move |context| {
+        let _scope = config::limits::BuildScope::enter(&limits);
+        future.as_mut().poll(context)
+    })
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn build_app_native(
+    cfg: config::RootCfg,
+    plugins_cfg: config::PluginsCfg,
+    overlay_path: Option<Arc<config::overlay::OverlayStore>>,
+    base_hook_names: std::collections::HashSet<String>,
+    base_group_names: std::collections::HashSet<String>,
+    config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
+    prior: Option<&state::App>,
+    rules: &Arc<dyn RootRules>,
+    boot_store: Option<Arc<crate::persistence::facade::CoreStore>>,
     recover_usage_before_hydration: bool,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
     config::security_policy::check_candidate(prior, &cfg, &plugins_cfg)?;
@@ -886,8 +1053,6 @@ pub fn build_app_from_config_with_store(
     let destinations = cfg.destinations();
 
     let app_config_version = prior.map_or(0, |p| p.config_version.wrapping_add(1));
-
-    let _limits_scope = busbar_kernel::config::limits::BuildScope::enter(&cfg.limits);
 
     let cfg_export = cfg.export.clone();
     let auth_cfg = cfg
@@ -954,7 +1119,7 @@ pub fn build_app_from_config_with_store(
     })?;
 
     if let Some(admit) = crate::preflight::root_rows().secret_admit {
-        admit(&plugin_registry, &plugins_cfg)?;
+        admit(&plugin_registry, &plugins_cfg).await?;
     }
 
     let transition_requirements =
@@ -1216,19 +1381,12 @@ pub fn build_app_from_config_with_store(
     let mut rotated_digest: Option<Option<String>> = None;
     let governance = if let Some(p) = prior {
         if let Some(gs) = p.governance.clone() {
-            let transition_holds = match gs.store_calls() {
-                Some(calls) => governance::principal_transition::guard(
-                    calls,
-                    &governance::principal_transition::store_fingerprint(&cfg.store)?,
-                    &transition_requirements,
-                )?,
-                None if transition_requirements.iter().all(|r| r.format.is_empty()) => {
-                    Default::default()
-                }
-                None => {
-                    return Err("auth principal format requires a Store receipt capability".into())
-                }
-            };
+            let transition_holds = governance::principal_transition::guard_native(
+                gs.core_store_handle().map_err(|error| error.to_string())?,
+                &governance::principal_transition::store_fingerprint(&cfg.store)?,
+                &transition_requirements,
+            )
+            .await?;
             // This is deny-only state from a completed receipt, never an authority grant.
             gs.install_transition_self_holds(transition_holds);
             let auth = cfg.auth.as_ref();
@@ -1262,7 +1420,7 @@ pub fn build_app_from_config_with_store(
                 None => None,
             };
             if admin_token.is_some() || signer.is_some() || at_rest.is_some() {
-                rotate_gov_credentials = Some(Box::new(move || {
+                rotate_gov_credentials = Some(Box::pin(async move {
                     if let Some(token) = admin_token {
                         gs.set_admin_token(
                             token
@@ -1276,32 +1434,23 @@ pub fn build_app_from_config_with_store(
                     if let Some(keys) = at_rest {
                         gs.set_at_rest_keys(Some(keys));
 
-                        rewrap_at_rest(&gs);
+                        rewrap_at_rest(&gs).await;
                     }
                 }));
             }
         }
         p.governance.clone()
     } else {
-        let g = cfg.store.clone().ok_or_else(config::store_required)?;
+        cfg.store.as_ref().ok_or_else(config::store_required)?;
 
         let stateful = cfg.plane_defs.values().any(|d| !d.def_names().is_empty())
             || cfg.plane_pools.values().any(|p| !p.is_empty());
 
-        let row = plugin_registry.resolve(&g.module);
-        let opened = match boot_store {
-            Some(opened) => opened,
-            None => open_config_store(
-                cfg.store.as_ref(),
-                &plugin_registry,
-                secret_resolver.as_ref(),
-            )?,
-        };
-        let ephemeral = opened
-            .calls
-            .as_ref()
-            .and_then(|calls| calls.ephemeral())
-            .unwrap_or_else(|| row.as_ref().is_some_and(|p| p.ephemeral));
+        let core = boot_store.ok_or_else(|| {
+            "normal app boot requires the admitted CoreStore from Startup".to_string()
+        })?;
+        let ephemeral =
+            core.info().durability == busbar_contract::persistence::Durability::Ephemeral;
         if ephemeral {
             diag_warn!(
                 GOVERNANCE_STORE_EPHEMERAL,
@@ -1313,19 +1462,12 @@ pub fn build_app_from_config_with_store(
                 diag_warn!(STATEFUL_PLANE_EPHEMERAL_STORE, "{msg}");
             }
         }
-        let transition_holds = match opened.calls.as_ref() {
-            Some(calls) => governance::principal_transition::guard(
-                calls.clone(),
-                &governance::principal_transition::store_fingerprint(&cfg.store)?,
-                &transition_requirements,
-            )?,
-            None if transition_requirements.iter().all(|r| r.format.is_empty()) => {
-                Default::default()
-            }
-            None => return Err("auth principal format requires a Store receipt capability".into()),
-        };
-        let store: Arc<dyn governance::RecordStore> = opened.records;
-        let store_calls = opened.calls;
+        let transition_holds = governance::principal_transition::guard_native(
+            core.clone(),
+            &governance::principal_transition::store_fingerprint(&cfg.store)?,
+            &transition_requirements,
+        )
+        .await?;
 
         let admin_token: Option<busbar_contract::redacted::Secret<String>> =
             resolve_admin_token(cfg.auth.as_ref(), &secret_resolver)?;
@@ -1333,27 +1475,28 @@ pub fn build_app_from_config_with_store(
         let signer = resolve_signing_key(cfg.auth.as_ref(), &secret_resolver)?;
 
         let at_rest = resolve_at_rest_keys(&cfg.credentials, &secret_resolver)?;
-        match governance::GovState::new_with_signer(
-            store,
+        match governance::GovState::new_with_core(
+            core,
             admin_token
                 .as_ref()
                 .map(|r| r.expose(&crate::seal::lend()).clone()),
             signer,
-        ) {
+        )
+        .await
+        {
             Ok(gs) => {
                 gs.install_transition_self_holds(transition_holds);
                 let gs = Arc::new(gs);
 
-                if let Some(calls) = store_calls {
-                    gs.attach_store_calls(calls);
-                }
-
                 if gs.set_at_rest_keys(at_rest) {
-                    rewrap_at_rest(&gs);
+                    rewrap_at_rest(&gs).await;
                 }
 
                 if !recover_usage_before_hydration {
-                    if let Err(e) = gs.hydrate_budgets(&cost, busbar_kernel::store::now()) {
+                    if let Err(e) = gs
+                        .hydrate_budgets_async(&cost, busbar_kernel::store::now())
+                        .await
+                    {
                         return Err(format!(
                             "governance boot: budget hydration failed ({e}); refusing to start with an \
                              unenforced (reset) ledger. Fix the durable store and restart."
@@ -1361,7 +1504,7 @@ pub fn build_app_from_config_with_store(
                     }
                 }
 
-                let keys = gs.all_keys().map_err(|e| {
+                let keys = gs.all_keys_async().await.map_err(|e| {
                     format!(
                         "governance boot: could not read stored keys to validate budget_group \
                          references ({e}); refusing to start unvalidated. Fix the durable store and \
@@ -1380,7 +1523,7 @@ pub fn build_app_from_config_with_store(
                     }
                 }
 
-                let key_count = gs.all_keys().map(|k| k.len()).unwrap_or(0);
+                let key_count = gs.all_keys_async().await.map(|k| k.len()).unwrap_or(0);
                 if let Some(banner) =
                     inert_durable_keys_banner(!ephemeral, key_count, auth_mw.keys_in_chain)
                 {
@@ -1602,14 +1745,21 @@ pub fn build_app_from_config_with_store(
                 .into_iter()
                 .collect();
 
-            let store = governance.as_ref().and_then(|gs| gs.store_calls());
-            Some((seam.build)(
-                &checked.block,
-                secrets,
-                protected_resources,
-                prior.and_then(state::App::oauth_as_any),
-                store,
-            )?)
+            let store = governance
+                .as_ref()
+                .map(|gs| gs.core_store_handle())
+                .transpose()
+                .map_err(|error| format!("oauth_as store: {error}"))?;
+            Some(
+                (seam.build)(
+                    checked.block.clone(),
+                    secrets,
+                    protected_resources,
+                    prior.and_then(state::App::oauth_as_any).cloned(),
+                    store,
+                )
+                .await?,
+            )
         }
     };
 

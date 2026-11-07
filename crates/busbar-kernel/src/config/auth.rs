@@ -498,12 +498,7 @@ pub use busbar_kernel_identity::operator::{
 };
 
 pub fn names_operator(module: &str) -> bool {
-    let op = operator_provider();
-    busbar_kernel_identity::operator::names(op, module)
-        || (!op.is_empty()
-            && crate::config::migration_table::former_names(op)
-                .iter()
-                .any(|f| f == module))
+    busbar_kernel_identity::operator::names(operator_provider(), module)
 }
 
 pub fn builtin_identity_providers() -> [&'static str; 2] {

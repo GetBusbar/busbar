@@ -40,17 +40,17 @@ fn captured_rates() -> std::collections::BTreeMap<String, busbar_kernel::config:
     std::collections::BTreeMap::from([("priced-context".into(), entry)])
 }
 
-fn app(
+async fn app(
     with_llm: bool,
 ) -> (
     Arc<busbar_kernel::state::App>,
     busbar_kernel::config::RootCfg,
     crate::root::durability::NodeBook,
 ) {
-    app_with_admin_reader(with_llm, false)
+    app_with_admin_reader(with_llm, false).await
 }
 
-fn app_with_admin_reader(
+async fn app_with_admin_reader(
     with_llm: bool,
     reader: bool,
 ) -> (
@@ -179,14 +179,29 @@ fn app_with_admin_reader(
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let boot_store = reader.then(|| {
-        crate::root::test_plugins::bootstrap_fresh_application_store(
-            &config,
-            &plugin_config,
-            &directory,
+    let boot_store = if reader {
+        Some(
+            crate::root::test_plugins::bootstrap_fresh_application_store(
+                &config,
+                &plugin_config,
+                &directory,
+            )
+            .await
+            .expect("provision the actual new marked-auth fixture Store"),
         )
-        .expect("provision the actual new marked-auth fixture Store")
-    });
+    } else {
+        None
+    };
+    let core = if let Some(core) = boot_store {
+        core
+    } else {
+        crate::root::real_store::core_over(
+            busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+                .await
+                .expect("actual native backend"),
+        )
+        .await
+    };
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -196,23 +211,26 @@ fn app_with_admin_reader(
         (None, None),
         None,
         &rules,
-        boot_store,
+        Some(core),
         false,
     )
+    .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
     let book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate history before request admission");
     limits
         .keep()
+        .await
         .expect("the normal configured limits activate");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     (Arc::new(app), listener_config, book)
 }
 
-fn actual_listener_with_routers(
+async fn actual_listener_with_routers(
     app: Arc<busbar_kernel::state::App>,
     config: &busbar_kernel::config::RootCfg,
     book: &crate::root::durability::NodeBook,
@@ -299,6 +317,7 @@ fn actual_listener_with_routers(
         None,
         &Default::default(),
     )
+    .await
     .expect("the actual linked LLM OPEN claims are admitted by the normal driver");
     let framer = move |scheme: &str| connector.framer_for(scheme);
     let topology = crate::root::boot::configured_listener_needs(config, &sections)
@@ -376,18 +395,20 @@ fn actual_listener_with_routers(
     (listener, data, admin)
 }
 
-fn actual_listener(
+async fn actual_listener(
     app: Arc<busbar_kernel::state::App>,
     config: &busbar_kernel::config::RootCfg,
     book: &crate::root::durability::NodeBook,
     with_llm: bool,
 ) -> kin::Listener {
-    actual_listener_with_routers(app, config, book, with_llm).0
+    actual_listener_with_routers(app, config, book, with_llm)
+        .await
+        .0
 }
 
-fn side() -> (Arc<Inbound>, GuestList) {
-    let (app, config, book) = app(true);
-    let listener = actual_listener(app, &config, &book, true);
+async fn side() -> (Arc<Inbound>, GuestList) {
+    let (app, config, book) = app(true).await;
+    let listener = actual_listener(app, &config, &book, true).await;
     let guests = listener.guests.clone();
     let next = Arc::new(AtomicU64::new(1));
     let inbound = Inbound::new(
@@ -545,14 +566,14 @@ fn captured_request(name: &str) -> Value {
         .clone()
 }
 
-fn captured_key(app: &busbar_kernel::state::App) -> busbar_contract::Secret<String> {
+async fn captured_key(app: &busbar_kernel::state::App) -> busbar_contract::Secret<String> {
     let now = busbar_kernel::store::now();
     let gov = app
         .governance
         .as_ref()
         .expect("the actual Store owns the captured caller's key");
     let (_, token) = gov
-        .mint_signed(
+        .mint_signed_async(
             busbar_kernel::governance::NewKeySpec {
                 name: "inbound-captured-caller".into(),
                 ..Default::default()
@@ -560,8 +581,10 @@ fn captured_key(app: &busbar_kernel::state::App) -> busbar_contract::Secret<Stri
             now + 3600,
             now,
         )
+        .await
         .expect("the actual configured signer mints the captured authenticated caller");
-    gov.hydrate_budgets(&app.cost, now)
+    gov.hydrate_budgets_async(&app.cost, now)
+        .await
         .expect("the actual caller's budgets hydrate");
     assert!(
         app.cost.model_unpriced("nope"),
@@ -641,11 +664,11 @@ fn assert_current_admin_body_cap(response: &kin::Refusal) {
 }
 
 async fn refused_against(family: &str, cause: u32) -> Vec<String> {
-    let (side, guests) = side();
-    let (router_app, router_config, router_book) = app(true);
-    let token = captured_key(&router_app);
+    let (side, guests) = side().await;
+    let (router_app, router_config, router_book) = app(true).await;
+    let token = captured_key(&router_app).await;
     let (_, data, admin) =
-        actual_listener_with_routers(router_app, &router_config, &router_book, true);
+        actual_listener_with_routers(router_app, &router_config, &router_book, true).await;
     let mut failing = Vec::new();
     for (name, head, credentialed) in crosscut(family) {
         let captured = captured_request(&name);
@@ -715,9 +738,9 @@ async fn captured_over_gate_cells_follow_their_current_contracts() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn captured_rate_and_admin_body_cap_follow_their_current_contracts() {
-    let (app, config, book) = app(true);
-    let token = captured_key(&app);
-    let (_, data, admin) = actual_listener_with_routers(app, &config, &book, true);
+    let (app, config, book) = app(true).await;
+    let token = captured_key(&app).await;
+    let (_, data, admin) = actual_listener_with_routers(app, &config, &book, true).await;
     for (family, target, router) in [
         ("unknown-path", "/x/v1/chat/completions", data),
         ("413", "/api/v1/admin/keys", admin),
@@ -740,8 +763,8 @@ async fn captured_rate_and_admin_body_cap_follow_their_current_contracts() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn actual_listener_refusal_uses_only_its_sealed_claimant_route_and_dialect() {
-    let (app, config, book) = app(true);
-    let listener = actual_listener(app, &config, &book, true);
+    let (app, config, book) = app(true).await;
+    let listener = actual_listener(app, &config, &book, true).await;
     let (name, head, _) = crosscut("wrong-method")
         .into_iter()
         .find(|(_, head, credentialed)| head.target == "/v1/messages" && *credentialed)
@@ -790,7 +813,7 @@ async fn actual_listener_refusal_uses_only_its_sealed_claimant_route_and_dialect
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retained_listener_refusals_keep_the_actual_llm_producer_after_its_claims_are_removed() {
-    let (side, guests) = side();
+    let (side, guests) = side().await;
     let (name, head, _) = crosscut("wrong-method")
         .into_iter()
         .find(|(_, head, credentialed)| head.target == "/v1/messages" && *credentialed)
@@ -817,8 +840,8 @@ async fn retained_listener_refusals_keep_the_actual_llm_producer_after_its_claim
         "the actual linked producer matches the retained wire golden"
     );
 
-    let (next_app, next_config, next_book) = app(false);
-    let next = actual_listener(next_app, &next_config, &next_book, false);
+    let (next_app, next_config, next_book) = app(false).await;
+    let next = actual_listener(next_app, &next_config, &next_book, false).await;
     assert!(
         matches!(
             next.guests.matched(&head.method, &head.target, &[]),
@@ -888,18 +911,18 @@ async fn actual_admin_body_cap_uses_current_413_contract_and_preserves_authority
     const EXISTING: &str = "/api/v1/admin/keys";
     const NEW: &str = "/api/v1/admin/ledger/recovery/list";
     const OVERSIZE: usize = 33 * 1024 * 1024;
-    let (app, config, book) = app_with_admin_reader(false, true);
+    let (app, config, book) = app_with_admin_reader(false, true).await;
     let gov = app
         .governance
         .as_ref()
         .expect("the actual Store owns the key collection")
         .clone();
     let before = gov
-        .store()
-        .list_keys()
+        .all_keys_async()
+        .await
         .expect("the actual key collection reads")
         .len();
-    let (_, _, admin) = actual_listener_with_routers(app, &config, &book, false);
+    let (_, _, admin) = actual_listener_with_routers(app, &config, &book, false).await;
     let existing = send(
         admin.clone(),
         "POST",
@@ -940,8 +963,8 @@ async fn actual_admin_body_cap_uses_current_413_contract_and_preserves_authority
         "an oversized write cannot bypass the actual read-only grant"
     );
     assert_eq!(
-        gov.store()
-            .list_keys()
+        gov.all_keys_async()
+            .await
             .expect("the actual key collection reads after refusal")
             .len(),
         before,

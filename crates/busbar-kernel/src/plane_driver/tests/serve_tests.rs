@@ -294,7 +294,7 @@ async fn a_door_plane_admin_route_sees_no_consumed_credential_and_its_row_names_
 
 #[tokio::test]
 async fn an_applied_answer_whose_head_cannot_render_is_still_audited() {
-    crate::audit::auditlog::ensure_global_audit_stream_registered();
+    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
     let echo = std::sync::Arc::new(Echo::default());
     echo.status.store(1_000, Ordering::SeqCst);
 
@@ -329,6 +329,9 @@ async fn an_applied_answer_whose_head_cannot_render_is_still_audited() {
         .await;
     tables.withdraw("unrendered-red");
     assert_eq!(resp.status(), 502, "no response can carry status 1000");
+    crate::audit::auditlog::flush_pending()
+        .await
+        .expect("native applied-answer audit confirmed");
     let rows =
         crate::audit::auditlog::AUDIT_LOG.list_filtered(0, 16, Some("unrendered.ping"), None);
     assert_eq!(rows.len(), 1, "the applied mutation is audited: {rows:?}");

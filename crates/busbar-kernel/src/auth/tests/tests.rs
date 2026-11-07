@@ -1146,17 +1146,70 @@ fn hook_answer(
     }
 }
 
-fn replay_gov() -> std::sync::Arc<crate::governance::GovState> {
-    let actual = crate::real_store::store();
-    let gov = crate::governance::GovState::new(actual.clone(), None).expect("gov");
-    assert!(gov.attach_store_calls(actual));
-    std::sync::Arc::new(gov)
+async fn replay_gov() -> std::sync::Arc<crate::governance::GovState> {
+    std::sync::Arc::new(
+        crate::governance::GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .expect("native governance"),
+    )
+}
+
+struct RefusedReplayBackend {
+    inner: std::sync::Arc<dyn busbar_contract::persistence::PersistenceBackend>,
+    refuse: std::sync::atomic::AtomicBool,
+}
+impl busbar_contract::persistence::PersistenceBackend for RefusedReplayBackend {
+    fn info(&self) -> busbar_contract::persistence::BackendInfo {
+        self.inner.info()
+    }
+    fn read(
+        &self,
+        request: std::sync::Arc<busbar_contract::persistence::Read>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ReadResult> {
+        self.inner.read(request)
+    }
+    fn scan(
+        &self,
+        request: std::sync::Arc<busbar_contract::persistence::Scan>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Page> {
+        self.inner.scan(request)
+    }
+    fn clock(
+        &self,
+        dataset: busbar_contract::persistence::DatasetId,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ClockObservation>
+    {
+        self.inner.clock(dataset)
+    }
+    fn commit(
+        &self,
+        request: busbar_contract::persistence::PreparedCandidate,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
+        if self.refuse.load(std::sync::atomic::Ordering::SeqCst) {
+            Box::pin(async { Err(busbar_contract::persistence::Failure::Refused) })
+        } else {
+            self.inner.commit(request)
+        }
+    }
 }
 
 #[tokio::test]
-async fn a_replay_claim_with_no_store_calls_to_redeem_in_is_refused() {
+async fn a_replay_claim_with_refused_native_persistence_is_refused() {
     use busbar_contract::auth_calls::{Replay, VerifiedIdentity};
-    let bare = crate::governance::GovState::new(crate::real_store::store(), None).expect("gov");
+    let backend = std::sync::Arc::new(RefusedReplayBackend {
+        inner: crate::real_store::native_backend().await,
+        refuse: std::sync::atomic::AtomicBool::new(false),
+    });
+    let bare = crate::governance::GovState::new_with_core(
+        crate::real_store::core_over(backend.clone()).await,
+        None,
+        None,
+    )
+    .await
+    .expect("native governance");
+    backend
+        .refuse
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let now = busbar_kernel::store::now();
     let asks = VerifiedIdentity {
         subject: "subject".into(),
@@ -1178,7 +1231,7 @@ async fn a_replay_claim_with_no_store_calls_to_redeem_in_is_refused() {
 #[tokio::test]
 async fn the_signed_ingress_claims_its_identitys_replay_key() {
     use busbar_contract::auth_calls::{Replay, VerifiedIdentity};
-    let gov = replay_gov();
+    let gov = replay_gov().await;
     let now = busbar_kernel::store::now();
     let asks = VerifiedIdentity {
         subject: "subject".into(),
@@ -1210,7 +1263,7 @@ async fn the_signed_ingress_claims_its_identitys_replay_key() {
 
 #[tokio::test]
 async fn a_replayed_verified_identity_inside_its_ttl_is_denied() {
-    let gov = replay_gov();
+    let gov = replay_gov().await;
 
     let run = |key: &str, gov: Option<std::sync::Arc<crate::governance::GovState>>| {
         let answered = chain_verdict_of(hook_answer(Some(key), Vec::new()));
@@ -1247,7 +1300,7 @@ async fn a_replayed_verified_identity_inside_its_ttl_is_denied() {
 
 #[tokio::test]
 async fn a_replayed_verified_delivery_is_denied_before_dispatch() {
-    let gov = replay_gov();
+    let gov = replay_gov().await;
     let bindings = bindings_for("door", &[("hooks", binding(None, None, None))]);
     let run = || {
         let answered = chain_verdict_of(hook_answer(Some("standard-webhooks/msg_1"), Vec::new()));
@@ -1317,7 +1370,7 @@ fn named_credential_stripping_preserves_both_request_targets_and_other_headers()
 
 #[tokio::test]
 async fn an_admin_identity_replayed_is_denied_and_its_named_lines_ride_out() {
-    let gov = replay_gov();
+    let gov = replay_gov().await;
     let now = busbar_kernel::store::now();
     let project = || {
         let mut carried = AdminCarried::default();
@@ -1386,7 +1439,7 @@ async fn still_unclaimed(gov: &crate::governance::GovState, provider: &str, key:
 
 #[tokio::test]
 async fn a_delivery_refused_for_its_grant_leaves_its_replay_key_unclaimed() {
-    let gov = replay_gov();
+    let gov = replay_gov().await;
     let run = || {
         let answered = chain_verdict_of(hook_answer(Some("standard-webhooks/msg_r6"), Vec::new()));
         let verdict = complete_chain(chain_position_verdict("door", answered.verdict));
@@ -1423,7 +1476,7 @@ async fn a_delivery_refused_for_its_grant_leaves_its_replay_key_unclaimed() {
 
 #[tokio::test]
 async fn a_session_refused_for_its_grant_claims_no_replay_key() {
-    let gov = replay_gov();
+    let gov = replay_gov().await;
     let now = busbar_kernel::store::now();
     for _ in 0..2 {
         let answered = chain_verdict_of(hook_answer(Some("standard-webhooks/msg_r6s"), Vec::new()));
@@ -1446,7 +1499,7 @@ async fn a_session_refused_for_its_grant_claims_no_replay_key() {
 #[tokio::test]
 async fn an_admin_identity_refused_for_scope_leaves_its_replay_key_unclaimed() {
     use busbar_contract::authz::Scope;
-    let gov = replay_gov();
+    let gov = replay_gov().await;
     let now = busbar_kernel::store::now();
 
     let project = || {
@@ -1505,7 +1558,7 @@ async fn an_admin_identity_refused_for_scope_leaves_its_replay_key_unclaimed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_racing_identical_deliveries_admit_at_most_one() {
-    let gov = replay_gov();
+    let gov = replay_gov().await;
     let bindings = std::sync::Arc::new(bindings_for(
         "door",
         &[("hooks", binding(None, None, None))],

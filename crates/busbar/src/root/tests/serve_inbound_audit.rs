@@ -2,11 +2,14 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use crate::root::durability::{build_on_store, DurabilityConfig, JournalLane};
+use crate::root::durability::tests::{NativeFixture, BUDGET};
+use crate::root::durability::{build_on_store, DurabilityConfig};
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
 use busbar_contract::abi::host::service::{FLOW_CONTINUE, FLOW_STOP, REFUSE_STOPPED};
 use busbar_contract::caps::{Outcome, ReasonCode, StepName};
 use busbar_kernel::inbound::{Call, Refuse};
+use busbar_kernel::persistence::journal::RuntimeJournal;
+use std::sync::atomic::Ordering;
 
 const GENERATION: u64 = 41;
 
@@ -175,11 +178,10 @@ impl Ingress {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn first_auth_refusals_and_success_keep_one_signed_persisted_identity() {
     let _one = PUBLISHING.lock().await;
-    let slots = crate::root::store_double::RecordSlots::new();
-    let lane = JournalLane::start(slots.calls(), "inbound-audit-store").unwrap();
     let node_id = busbar_kernel::door::op_id().counter();
-    let mut durability =
-        build_on_store(&DurabilityConfig::default(), node_id, lane.clone(), None).unwrap();
+    let fixture = NativeFixture::new(node_id).await;
+    let lane = fixture.journal.clone();
+    let mut durability = fixture.book().await;
     durability.record = busbar_kernel_audit::AuditChain::new()
         .sealing_as(node_id)
         .signing_with(busbar_kernel_audit::AuditSigningKey::from_seed(&[0x71; 32]));
@@ -194,7 +196,8 @@ async fn first_auth_refusals_and_success_keep_one_signed_persisted_identity() {
         Some((Arc::clone(&node), Arc::clone(&book))),
         None,
         false,
-    );
+    )
+    .await;
     let routes = crate::root::serve::door_mounts(
         g.served.clone(),
         || None,
@@ -224,7 +227,7 @@ async fn first_auth_refusals_and_success_keep_one_signed_persisted_identity() {
     };
     assert_eq!(ingress.host.refuse(refuse()).unwrap().status, 401);
     assert!(ingress.host.refuse(refuse()).is_err());
-    assert_eq!(g.requests(), 0);
+    assert_eq!(g.requests().await, 0);
     assert_eq!(g.money.open_units(), 0);
     assert_eq!(g.post.open_units(), 0);
 
@@ -237,7 +240,7 @@ async fn first_auth_refusals_and_success_keep_one_signed_persisted_identity() {
         .await
         .is_err());
     drop(admission);
-    assert_eq!(g.requests(), 0);
+    assert_eq!(g.requests().await, 0);
 
     let (good, head) = ingress.authenticate(3, &g.token).await;
     let admission = ingress.claim(3, &good, head);
@@ -269,12 +272,16 @@ async fn first_auth_refusals_and_success_keep_one_signed_persisted_identity() {
     assert_eq!(*output.body.lock().unwrap(), b"hello");
     ingress.host.stream_ended(OWNER, FRAMING, 3);
     drop(admission);
-    assert_eq!(g.requests(), 1);
+    assert_eq!(g.requests().await, 1);
     assert_eq!(g.money.open_units(), 0);
     assert_eq!(g.post.open_units(), 0);
 
-    assert!(lane.drain(std::time::Duration::from_secs(5)));
-    let persisted = book.lock().unwrap().chain_at().audit_window(1, 3).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), lane.flush())
+        .await
+        .unwrap()
+        .unwrap();
+    let chain = { book.lock().unwrap().chain_at() };
+    let persisted = chain.audit_window(1, 3).await.unwrap();
     assert_eq!(persisted.len(), 3);
     assert_eq!(
         persisted
@@ -316,11 +323,15 @@ async fn first_auth_refusals_and_success_keep_one_signed_persisted_identity() {
     let reopened = build_on_store(
         &DurabilityConfig::default(),
         node_id,
-        JournalLane::start(slots.calls(), "inbound-audit-reopen").unwrap(),
+        RuntimeJournal::open(fixture.core.clone(), node_id, BUDGET)
+            .await
+            .unwrap(),
         None,
+        BUDGET,
     )
+    .await
     .unwrap();
-    assert_eq!(reopened.audit_window(1, 3), Some(persisted));
+    assert_eq!(reopened.audit_window(1, 3).await, Some(persisted));
 }
 
 struct ReplayIdentity(std::sync::atomic::AtomicUsize);
@@ -387,11 +398,11 @@ impl busbar_contract::auth_calls::AuthCalls for ReplayIdentity {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dpop_replay_body_and_cancel_refusals_retain_signed_audit_through_store_delay() {
     let _one = PUBLISHING.lock().await;
-    let slots = crate::root::store_double::RecordSlots::new();
-    let lane = JournalLane::start(slots.calls(), "inbound-postauth-store").unwrap();
     let node_id = busbar_kernel::door::op_id().counter();
-    let mut durability =
-        build_on_store(&DurabilityConfig::default(), node_id, lane.clone(), None).unwrap();
+    let fixture = NativeFixture::new(node_id).await;
+    let slots = &fixture.faults;
+    let lane = fixture.journal.clone();
+    let mut durability = fixture.book().await;
     durability.record = busbar_kernel_audit::AuditChain::new()
         .sealing_as(node_id)
         .signing_with(busbar_kernel_audit::AuditSigningKey::from_seed(&[0x72; 32]));
@@ -406,8 +417,8 @@ async fn dpop_replay_body_and_cancel_refusals_retain_signed_audit_through_store_
         Some((Arc::clone(&node), Arc::clone(&book))),
         None,
         false,
-    );
-    assert!(g.gov.attach_store_calls(slots.calls()));
+    )
+    .await;
     let mut app = (*g.app).clone();
     app.oauth_as = Some(Arc::new(())); // Bearer cnf rejection needs no AS plugin call.
     app.role_bindings
@@ -491,7 +502,10 @@ async fn dpop_replay_body_and_cancel_refusals_retain_signed_audit_through_store_
     assert!(busbar_kernel::auth::admitted_context(&admission)
         .await
         .is_ok());
-    assert!(lane.drain(std::time::Duration::from_secs(5)));
+    tokio::time::timeout(std::time::Duration::from_secs(5), lane.flush())
+        .await
+        .unwrap()
+        .unwrap();
     slots.pause(true);
     assert_eq!(
         crate::root::listener::framed::serve_admitted_body_test(
@@ -504,16 +518,24 @@ async fn dpop_replay_body_and_cancel_refusals_retain_signed_audit_through_store_
     );
     ingress.host.stream_ended(OWNER, FRAMING, 5);
     assert!(
-        lane.pending() > 0,
+        lane.pending_records() > 0,
         "the one sealed record retains pending Store custody"
     );
     assert_eq!(ingress.observed.lock().unwrap().len(), 5);
-    slots.lose_acks(true);
+    slots.lose_acks.store(true, Ordering::Release);
     slots.pause(false);
-    node.retry_held_journal();
-    assert!(lane.drain(std::time::Duration::from_secs(5)));
-    assert_eq!(lane.pending(), 0);
-    slots.lose_acks(false);
+    assert!(node.retry_held_journal().await.is_err());
+    assert!(
+        lane.pending_records() > 0,
+        "lost acknowledgements retain exact original custody"
+    );
+    slots.lose_acks.store(false, Ordering::Release);
+    node.retry_held_journal().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), lane.flush())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(lane.pending_records(), 0);
 
     let mut ungranted = ingress.listener.clone();
     let mut app = (*ungranted.app).clone();
@@ -533,12 +555,16 @@ async fn dpop_replay_body_and_cancel_refusals_retain_signed_audit_through_store_
     ));
     ingress.host.stream_ended(OWNER, FRAMING, 6);
     drop(admission);
-    assert!(lane.drain(std::time::Duration::from_secs(5)));
+    tokio::time::timeout(std::time::Duration::from_secs(5), lane.flush())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(ingress.observed.lock().unwrap().len(), 6);
-    assert_eq!(g.requests(), 0);
+    assert_eq!(g.requests().await, 0);
     assert_eq!(g.money.open_units(), 0);
     assert_eq!(g.post.open_units(), 0);
-    let persisted = book.lock().unwrap().chain_at().audit_window(1, 6).unwrap();
+    let chain = { book.lock().unwrap().chain_at() };
+    let persisted = chain.audit_window(1, 6).await.unwrap();
     assert_eq!(
         persisted
             .iter()
@@ -583,11 +609,29 @@ async fn dpop_replay_body_and_cancel_refusals_retain_signed_audit_through_store_
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_full_audit_store_lane_stops_first_auth_minting_before_any_unit_tag() {
     let _one = PUBLISHING.lock().await;
-    let slots = crate::root::store_double::RecordSlots::new();
-    let lane = JournalLane::with_capacity(slots.calls(), "bounded-inbound-audit", 1).unwrap();
     let node_id = busbar_kernel::door::op_id().counter();
+    let fixture = NativeFixture::new(node_id).await;
+    let slots = &fixture.faults;
+    let lane = RuntimeJournal::open(
+        fixture.core.clone(),
+        node_id,
+        busbar_kernel::persistence::journal::BufferBudget {
+            records: 1,
+            bytes: BUDGET.bytes,
+        },
+    )
+    .await
+    .unwrap();
     let book = Arc::new(Mutex::new(
-        build_on_store(&DurabilityConfig::default(), node_id, lane.clone(), None).unwrap(),
+        build_on_store(
+            &DurabilityConfig::default(),
+            node_id,
+            lane.clone(),
+            None,
+            BUDGET,
+        )
+        .await
+        .unwrap(),
     ));
     let node = Arc::new(Node::new());
     node.bind_book(Arc::clone(&book));
@@ -599,7 +643,8 @@ async fn a_full_audit_store_lane_stops_first_auth_minting_before_any_unit_tag() 
         Some((Arc::clone(&node), Arc::clone(&book))),
         None,
         false,
-    );
+    )
+    .await;
     let routes = crate::root::serve::door_mounts(
         g.served.clone(),
         || None,
@@ -611,7 +656,10 @@ async fn a_full_audit_store_lane_stops_first_auth_minting_before_any_unit_tag() 
     .unwrap()
     .data;
     let ingress = Ingress::new(&g, &routes);
-    assert!(lane.drain(std::time::Duration::from_secs(5)));
+    tokio::time::timeout(std::time::Duration::from_secs(5), lane.flush())
+        .await
+        .unwrap()
+        .unwrap();
     let (rejected, head) = ingress.authenticate(1, "invalid-key").await;
     assert_eq!(rejected.flow, FLOW_STOP);
     slots.pause(true);
@@ -629,7 +677,7 @@ async fn a_full_audit_store_lane_stops_first_auth_minting_before_any_unit_tag() 
             request: Some(head.clone()),
         })
         .unwrap();
-    assert_eq!(lane.pending(), 1);
+    assert_eq!(lane.pending_records(), 1);
     assert!(node.journal_refusal().is_some());
     // Verification also recomputes the MAC; a full lane must add no tag at all.
     let before_blocked = ingress.mac_units.lock().unwrap().clone();
@@ -673,15 +721,18 @@ async fn a_full_audit_store_lane_stops_first_auth_minting_before_any_unit_tag() 
     assert_eq!(ingress.observed.lock().unwrap().len(), 1);
     assert_eq!(book.lock().unwrap().audit_records.len(), 1);
     assert_eq!(
-        lane.pending(),
+        lane.pending_records(),
         1,
         "refusals cannot grow debt behind a full audit lane"
     );
-    assert_eq!(g.requests(), 0);
+    assert_eq!(g.requests().await, 0);
     assert_eq!(g.money.open_units(), 0);
     assert_eq!(g.post.open_units(), 0);
     slots.pause(false);
-    assert!(lane.drain(std::time::Duration::from_secs(5)));
+    tokio::time::timeout(std::time::Duration::from_secs(5), lane.flush())
+        .await
+        .unwrap()
+        .unwrap();
     assert!(node.journal_refusal().is_none());
     let (next, _) = ingress.authenticate(10, "invalid-key").await;
     assert_ne!(next.unit.id, 0);
@@ -692,5 +743,8 @@ async fn a_full_audit_store_lane_stops_first_auth_minting_before_any_unit_tag() 
     assert!(!new_tags.is_empty());
     assert!(new_tags.iter().all(|id| *id == next.unit.id));
     ingress.host.stream_ended(OWNER, FRAMING, 10);
-    assert!(lane.drain(std::time::Duration::from_secs(5)));
+    tokio::time::timeout(std::time::Duration::from_secs(5), lane.flush())
+        .await
+        .unwrap()
+        .unwrap();
 }

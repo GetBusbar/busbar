@@ -3,56 +3,44 @@
 
 use super::*;
 use std::sync::{
+    Mutex,
     atomic::{AtomicBool, Ordering},
-    Condvar, Mutex,
 };
 use std::time::Duration;
 
 pub(super) struct PausedStore {
     op: &'static str,
     entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    released: Mutex<bool>,
-    changed: Condvar,
+    active: AtomicBool,
+    released: AtomicBool,
+    changed: tokio::sync::Notify,
     busy: AtomicBool,
+    pub(super) attempts: Mutex<Vec<[u8; 32]>>,
 }
-
 impl PausedStore {
-    pub(super) fn wait(&self, op: &str) {
-        if op != self.op {
+    pub(super) async fn wait(&self, op: &str) {
+        if op != self.op || !self.active.load(Ordering::SeqCst) {
             return;
         }
         self.busy.store(true, Ordering::SeqCst);
         if let Some(entered) = self.entered.lock().unwrap().take() {
             let _ = entered.send(());
         }
-        let (guard, timed) = self
-            .changed
-            .wait_timeout_while(
-                self.released.lock().unwrap(),
-                Duration::from_secs(5),
-                |released| !*released,
-            )
-            .unwrap();
-        drop(guard);
+        while !self.released.load(Ordering::SeqCst) {
+            self.changed.notified().await;
+        }
         self.busy.store(false, Ordering::SeqCst);
-        assert!(
-            !timed.timed_out(),
-            "the scheduler must release the Store while it is pending"
-        );
     }
-
     fn release(&self) {
-        *self.released.lock().unwrap() = true;
-        self.changed.notify_all();
+        self.released.store(true, Ordering::SeqCst);
+        self.changed.notify_one();
     }
 }
-
 pub(crate) struct Release(Arc<PausedStore>);
 impl Release {
     pub(crate) fn release(&self) {
         self.0.release();
     }
-
     pub(crate) fn is_busy(&self) -> bool {
         self.0.busy.load(Ordering::SeqCst)
     }
@@ -63,7 +51,7 @@ impl Drop for Release {
     }
 }
 
-fn paused(
+async fn paused(
     op: &'static str,
 ) -> (
     Arc<GovState>,
@@ -72,11 +60,11 @@ fn paused(
     Release,
     tokio::sync::oneshot::Receiver<()>,
 ) {
-    paused_at(op, crate::store::now())
+    paused_at(op, crate::store::now()).await
 }
 
 impl GovState {
-    pub(crate) fn paused_ticket_for_test(
+    pub(crate) async fn paused_ticket_for_test(
         op: &'static str,
         now: u64,
     ) -> (
@@ -86,11 +74,11 @@ impl GovState {
         Release,
         tokio::sync::oneshot::Receiver<()>,
     ) {
-        paused_at(op, now)
+        paused_at(op, now).await
     }
 }
 
-fn paused_at(
+async fn paused_at(
     op: &'static str,
     now: u64,
 ) -> (
@@ -100,26 +88,34 @@ fn paused_at(
     Release,
     tokio::sync::oneshot::Receiver<()>,
 ) {
-    let memory = crate::real_store::store();
     let (entered, heard) = tokio::sync::oneshot::channel();
     let pause = Arc::new(PausedStore {
         op,
         entered: Mutex::new(Some(entered)),
-        released: Mutex::new(false),
-        changed: Condvar::new(),
+        active: AtomicBool::new(false),
+        released: AtomicBool::new(false),
+        changed: tokio::sync::Notify::new(),
         busy: AtomicBool::new(false),
+        attempts: Mutex::new(Vec::new()),
+    });
+    let backend = Arc::new(TicketBackend {
+        inner: crate::real_store::native_backend().await,
+        pause: Some(pause.clone()),
+        fault: None,
+        published: AtomicBool::new(false),
     });
     let signer = TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID);
     let gov = Arc::new(
-        GovState::new_with_signer(
-            Arc::new(RuleCarryingOnly(memory, Some(Arc::clone(&pause)), None)),
+        GovState::new_with_core(
+            crate::real_store::core_over(backend).await,
             None,
             Some(signer),
         )
+        .await
         .unwrap(),
     );
     let (binding, _) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "caller".into(),
                 ..Default::default()
@@ -127,18 +123,21 @@ fn paused_at(
             now + 86_400,
             now,
         )
+        .await
         .unwrap();
     let id = binding.id;
     let (ticket, _) = gov
         .mint_ticket(&id, PREFIX, 600, None, b"record", now)
+        .await
         .unwrap();
+    pause.active.store(true, Ordering::SeqCst);
     (gov, id, ticket, Release(pause), heard)
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn ticket_store_waits_leave_the_scheduler_live_and_admission_is_one_shot() {
     for op in ["live", "get"] {
-        let (gov, id, ticket, release, entered) = paused(op);
+        let (gov, id, ticket, release, entered) = paused(op).await;
         let running = tokio::spawn({
             let (gov, ticket) = (Arc::clone(&gov), ticket.clone());
             async move {
@@ -171,22 +170,24 @@ async fn ticket_store_waits_leave_the_scheduler_live_and_admission_is_one_shot()
             }
         );
         if op == "live" {
-            assert!(gov
-                .admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
-                .await
-                .is_some());
+            assert!(
+                gov.admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
+                    .await
+                    .is_some()
+            );
         }
-        assert!(gov
-            .admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
-            .await
-            .is_none());
+        assert!(
+            gov.admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
+                .await
+                .is_none()
+        );
     }
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn revocation_while_ticket_store_waits_is_checked_before_accepting_identity() {
     for op in ["live", "get"] {
-        let (gov, id, ticket, release, entered) = paused(op);
+        let (gov, id, ticket, release, entered) = paused(op).await;
         let running = tokio::spawn({
             let (gov, ticket) = (Arc::clone(&gov), ticket.clone());
             async move {
@@ -202,19 +203,23 @@ async fn revocation_while_ticket_store_waits_is_checked_before_accepting_identit
             }
         });
         entered.await.unwrap();
-        gov.revoke(&id, "revoked while the Store answered").unwrap();
+        gov.revoke_async(&id, "revoked while the Store answered")
+            .await
+            .unwrap();
         release.0.release();
         assert!(!running.await.unwrap());
-        assert!(gov
-            .admit_ticket(PREFIX, &ticket, crate::store::now() + 1)
-            .is_none());
+        assert!(
+            gov.admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
+                .await
+                .is_none()
+        );
     }
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn cancelling_a_started_ticket_store_wait_does_not_reopen_redemption() {
     for op in ["live", "get"] {
-        let (gov, _, ticket, release, entered) = paused(op);
+        let (gov, _, ticket, release, entered) = paused(op).await;
         let running = tokio::spawn({
             let (gov, ticket) = (Arc::clone(&gov), ticket.clone());
             async move {
@@ -234,22 +239,34 @@ async fn cancelling_a_started_ticket_store_wait_does_not_reopen_redemption() {
         assert!(running.await.unwrap_err().is_cancelled());
         assert!(release.0.busy.load(Ordering::SeqCst));
         release.0.release();
-        assert_eq!(
+        assert!(
             gov.admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
                 .await
                 .is_some(),
-            op == "live"
+            "a cancelled waiter retains its original spend; one eligible retry delivers once"
         );
-        assert!(gov
-            .admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
-            .await
-            .is_none());
+        if op == "get" {
+            let attempts = release.0.attempts.lock().unwrap();
+            assert!(
+                attempts.len() >= 2,
+                "the retained spend reached exact receipt replay"
+            );
+            assert!(
+                attempts.iter().all(|attempt| attempt == &attempts[0]),
+                "retry preserves the same native candidate fingerprint"
+            );
+        }
+        assert!(
+            gov.admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
+                .await
+                .is_none()
+        );
     }
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn an_expired_ticket_peek_wait_cannot_accept_the_late_store_answer() {
-    let (gov, _, ticket, release, entered) = paused("live");
+    let (gov, _, ticket, release, entered) = paused("live").await;
     let running = tokio::spawn({
         let (gov, ticket) = (Arc::clone(&gov), ticket.clone());
         async move {
@@ -264,8 +281,9 @@ async fn an_expired_ticket_peek_wait_cannot_accept_the_late_store_answer() {
     assert!(running.await.unwrap().is_err());
     assert!(release.0.busy.load(Ordering::SeqCst));
     release.0.release();
-    assert!(gov
-        .admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
-        .await
-        .is_some());
+    assert!(
+        gov.admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
+            .await
+            .is_some()
+    );
 }

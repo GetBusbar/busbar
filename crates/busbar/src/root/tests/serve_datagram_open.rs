@@ -122,9 +122,10 @@ impl Drop for Deployment {
     }
 }
 impl Deployment {
-    fn requests(&self) -> u64 {
+    async fn requests(&self) -> u64 {
         self.gov
-            .usage_for(&self.app.cost, &self.key.id, busbar_kernel::store::now())
+            .usage_for_async(&self.app.cost, &self.key.id, busbar_kernel::store::now())
+            .await
             .unwrap()
             .unwrap()
             .requests
@@ -216,9 +217,7 @@ async fn deployment(instance: &'static str) -> Deployment {
             .find_map(|(dialect, _, _)| facts.dialects.get(*dialect as usize).copied())
             .unwrap()
     };
-    let store = crate::root::real_store::store();
-    let records: Arc<dyn busbar_contract::records::RecordStore> = store.clone();
-    let calls: Arc<dyn busbar_contract::store_calls::StoreCalls> = store.clone();
+    let store = crate::root::real_store::core().await;
     let settings: serde_json::Value = serde_json::from_str(
         &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
     )
@@ -227,7 +226,7 @@ async fn deployment(instance: &'static str) -> Deployment {
         "providers": {},
         "models": {},
         "auth": {"chain": ["keys"], "admin_auth": [], "signing_key": {"file": signing_file}},
-        "store": {"module": store.name(), "settings": settings},
+        "store": {"module": "memory", "settings": settings},
     }))
     .expect("the ordinary governed deployment parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
@@ -243,25 +242,23 @@ async fn deployment(instance: &'static str) -> Deployment {
         (None, None),
         None,
         &rules,
-        Some(busbar_contract::store_calls::OpenedStore {
-            records: records.clone(),
-            calls: Some(calls.clone()),
-        }),
+        Some(store.clone()),
         false,
     )
+    .await
     .expect("the production builder owns the supplied actual Store");
     std::fs::remove_file(&signing_file).expect("the signing secret was resolved at boot");
     let gov = Arc::new(
-        GovState::new_with_signer(
-            records.clone(),
+        GovState::new_with_core(
+            store.clone(),
             None,
             Some(TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID)),
         )
+        .await
         .unwrap(),
     );
-    assert!(gov.attach_store_calls(calls.clone()));
     let (key, _) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "datagram caller".into(),
                 ..Default::default()
@@ -269,14 +266,30 @@ async fn deployment(instance: &'static str) -> Deployment {
             4_000_000_000,
             1_700_000_000,
         )
+        .await
         .unwrap();
     let cost = busbar_kernel::cost::CostModel::flat(1);
-    gov.hydrate_budgets(&cost, 0).unwrap();
+    gov.hydrate_budgets_async(&cost, 0).await.unwrap();
+    let budget = busbar_kernel::persistence::journal::runtime::BufferBudget {
+        records: 4096,
+        bytes: 32 * 1024 * 1024,
+    };
+    let journal = busbar_kernel::persistence::journal::runtime::RuntimeJournal::open(
+        store,
+        busbar_kernel::door::op_id().counter(),
+        budget,
+    )
+    .await
+    .unwrap();
     let book = Arc::new(Mutex::new(
-        crate::root::durability::build(
-            &crate::root::durability::DurabilityConfig { data_dir: None },
-            Box::new(busbar_kernel_wal::NullShipper::new()),
+        crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig::default(),
+            journal.node(),
+            journal,
+            None,
+            budget,
         )
+        .await
         .unwrap(),
     ));
     let node = Arc::new(crate::root::plane_node::Node::new());
@@ -360,6 +373,7 @@ async fn deployment(instance: &'static str) -> Deployment {
         Some(&hooks),
         &tables,
     )
+    .await
     .unwrap();
     served.post = Some(post.clone());
     served.claim_doors.insert(CARRIER, claim.clone());
@@ -461,7 +475,7 @@ async fn cleaned(g: &Deployment, routes: &serving::DataRoutes, framer: &OpeningF
     let book = g.book.lock().expect("unpoisoned");
     assert_eq!(book.audit_records.len(), 1, "one final session record");
     assert_eq!(
-        g.requests(),
+        g.requests().await,
         1,
         "one real admission, including a failed attachment"
     );

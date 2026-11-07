@@ -6,7 +6,7 @@ use crate::rate::CONFIG_CLASS_RULES;
 use crate::verb::{KernelVerb, VerbScope};
 use crate::verbs::Verbs;
 use busbar_contract::caps::{AdminVerb, Grant};
-use busbar_kernel_seams::verb_store::{Store, StoreError};
+use busbar_kernel::persistence::recovery_api::{Store, StoreError};
 use std::sync::Mutex;
 
 fn node_limiter() -> std::sync::Arc<crate::rate::MutationLimiter> {
@@ -55,7 +55,7 @@ impl FakeGovernance {
 impl Governance for FakeGovernance {
     type Answer = Vec<u8>;
 
-    fn execute_legacy(
+    async fn execute_legacy(
         &self,
         _verb: KernelVerb,
         _admin: &Grant<AdminVerb>,
@@ -66,7 +66,7 @@ impl Governance for FakeGovernance {
         }
         Ok(b"ok".to_vec())
     }
-    fn execute_new_verb(
+    async fn execute_new_verb(
         &self,
         verb: KernelVerb,
         _admin: &Grant<AdminVerb>,
@@ -84,8 +84,8 @@ fn admin() -> Grant<AdminVerb> {
     busbar_kernel::teller::Kernel::new().admin_token()
 }
 
-#[test]
-fn readonly_caller_is_refused_a_mutation() {
+#[tokio::test]
+async fn readonly_caller_is_refused_a_mutation() {
     let verbs = make_verbs(FakeGovernance::new());
     let admin = admin();
     let err = verbs
@@ -97,12 +97,13 @@ fn readonly_caller_is_refused_a_mutation() {
             0,
             b"{}",
         )
+        .await
         .unwrap_err();
     assert_eq!(err.reason, crate::refusal::ReasonCode::Unauthorized);
 }
 
-#[test]
-fn readonly_caller_may_read() {
+#[tokio::test]
+async fn readonly_caller_may_read() {
     let verbs = make_verbs(FakeGovernance::new());
     let admin = admin();
     let out = verbs
@@ -114,12 +115,13 @@ fn readonly_caller_may_read() {
             0,
             b"{}",
         )
+        .await
         .unwrap();
     assert_eq!(out, b"ok");
 }
 
-#[test]
-fn every_formerly_irreducible_verb_is_admitted_by_its_grant_alone() {
+#[tokio::test]
+async fn every_formerly_irreducible_verb_is_admitted_by_its_grant_alone() {
     let admin = admin();
     let log: SeamLog = std::sync::Arc::new(Mutex::new(Vec::new()));
     let verbs = make_verbs(RoutingGovernance(std::sync::Arc::clone(&log)));
@@ -130,6 +132,7 @@ fn every_formerly_irreducible_verb_is_admitted_by_its_grant_alone() {
     ] {
         let out = verbs
             .execute(verb, &admin, "alice", VerbScope::Full, 0, b"{}")
+            .await
             .unwrap_or_else(|e| panic!("{verb:?} was refused under a full grant: {e:?}"));
         assert_eq!(out, b"new", "{verb:?} did not reach the governance seam");
     }
@@ -144,8 +147,10 @@ fn every_formerly_irreducible_verb_is_admitted_by_its_grant_alone() {
 
     let v = recovery_verbs();
     v.chain_break(&admin, "alice", VerbScope::Full, 0)
+        .await
         .expect("chain_break is admitted by its grant");
     v.store_restore(&admin, "alice", VerbScope::Full, 0, "backup-1")
+        .await
         .expect("store_restore is admitted by its grant");
     assert_eq!(
         v.store_for_test().reached(),
@@ -153,8 +158,8 @@ fn every_formerly_irreducible_verb_is_admitted_by_its_grant_alone() {
     );
 }
 
-#[test]
-fn every_formerly_irreducible_verb_is_refused_to_a_grant_that_does_not_cover_it() {
+#[tokio::test]
+async fn every_formerly_irreducible_verb_is_refused_to_a_grant_that_does_not_cover_it() {
     let admin = admin();
     let log: SeamLog = std::sync::Arc::new(Mutex::new(Vec::new()));
     let verbs = make_verbs(RoutingGovernance(std::sync::Arc::clone(&log)));
@@ -165,6 +170,7 @@ fn every_formerly_irreducible_verb_is_refused_to_a_grant_that_does_not_cover_it(
     ] {
         let err = verbs
             .execute(verb, &admin, "alice", VerbScope::ReadOnly, 0, b"{}")
+            .await
             .expect_err("a read-only grant does not cover a mutating verb");
         assert_eq!(err.reason, crate::refusal::ReasonCode::Unauthorized);
     }
@@ -173,8 +179,10 @@ fn every_formerly_irreducible_verb_is_refused_to_a_grant_that_does_not_cover_it(
     let v = recovery_verbs();
     for err in [
         v.chain_break(&admin, "alice", VerbScope::ReadOnly, 0)
+            .await
             .unwrap_err(),
         v.store_restore(&admin, "alice", VerbScope::ReadOnly, 0, "backup-1")
+            .await
             .unwrap_err(),
     ] {
         assert_eq!(err.reason, crate::refusal::ReasonCode::Unauthorized);
@@ -182,8 +190,8 @@ fn every_formerly_irreducible_verb_is_refused_to_a_grant_that_does_not_cover_it(
     assert!(v.store_for_test().reached().is_empty());
 }
 
-#[test]
-fn a_new_verb_admitted_by_its_scope_reaches_governance() {
+#[tokio::test]
+async fn a_new_verb_admitted_by_its_scope_reaches_governance() {
     let log: SeamLog = std::sync::Arc::new(Mutex::new(Vec::new()));
     let verbs = make_verbs(RoutingGovernance(std::sync::Arc::clone(&log)));
     let admin = admin();
@@ -196,6 +204,7 @@ fn a_new_verb_admitted_by_its_scope_reaches_governance() {
             0,
             b"{}",
         )
+        .await
         .unwrap();
     assert_eq!(out, b"new");
     assert_eq!(
@@ -204,8 +213,8 @@ fn a_new_verb_admitted_by_its_scope_reaches_governance() {
     );
 }
 
-#[test]
-fn amend_rate_history_is_a_full_scope_new_verb() {
+#[tokio::test]
+async fn amend_rate_history_is_a_full_scope_new_verb() {
     use crate::rate::MutationClass;
     use crate::verb::NEW_VERBS;
 
@@ -231,6 +240,7 @@ fn amend_rate_history_is_a_full_scope_new_verb() {
             0,
             b"{}",
         )
+        .await
         .expect_err("a read-only credential must be refused");
     assert_eq!(err.reason, crate::refusal::ReasonCode::Unauthorized);
 
@@ -243,12 +253,13 @@ fn amend_rate_history_is_a_full_scope_new_verb() {
             0,
             b"{}",
         )
+        .await
         .expect("a full credential is admitted");
     assert_eq!(out, b"ok");
 }
 
-#[test]
-fn a_governance_store_failure_refuses_with_store_error_on_every_call() {
+#[tokio::test]
+async fn a_governance_store_failure_refuses_with_store_error_on_every_call() {
     let admin = admin();
 
     let verbs = make_verbs(FakeGovernance::new().failing_with(GovernanceError::Store));
@@ -261,6 +272,7 @@ fn a_governance_store_failure_refuses_with_store_error_on_every_call() {
             0,
             b"{}",
         )
+        .await
         .unwrap_err();
     assert_eq!(err.reason, crate::refusal::ReasonCode::StoreError);
 
@@ -274,12 +286,13 @@ fn a_governance_store_failure_refuses_with_store_error_on_every_call() {
             0,
             b"{}",
         )
+        .await
         .unwrap_err();
     assert_eq!(err.reason, crate::refusal::ReasonCode::StoreError);
 }
 
-#[test]
-fn the_other_governance_errors_keep_their_own_reasons() {
+#[tokio::test]
+async fn the_other_governance_errors_keep_their_own_reasons() {
     let admin = admin();
     for (error, expected) in [
         (
@@ -305,27 +318,30 @@ fn the_other_governance_errors_keep_their_own_reasons() {
                 0,
                 b"{}",
             )
+            .await
             .unwrap_err();
         assert_eq!(err.reason, expected);
     }
 }
 
-fn approve_trust(
+async fn approve_trust(
     verbs: &Verbs<FakeGovernance, RecordingStore>,
     admin: &Grant<AdminVerb>,
 ) -> Result<Vec<u8>, crate::refusal::Refusal> {
-    verbs.execute(
-        KernelVerb::TrustApprove,
-        admin,
-        "alice",
-        VerbScope::Full,
-        0,
-        b"{}",
-    )
+    verbs
+        .execute(
+            KernelVerb::TrustApprove,
+            admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            b"{}",
+        )
+        .await
 }
 
-#[test]
-fn rate_limit_is_enforced_across_execute_calls() {
+#[tokio::test]
+async fn rate_limit_is_enforced_across_execute_calls() {
     let limiter = node_limiter();
     let per_request = || {
         Verbs::new(
@@ -339,14 +355,15 @@ fn rate_limit_is_enforced_across_execute_calls() {
     let budget = crate::rate::MutationClass::Crud.limit();
     for i in 0..budget {
         approve_trust(&per_request(), &admin)
+            .await
             .unwrap_or_else(|e| panic!("attempt {i} should be admitted, got {e:?}"));
     }
-    let err = approve_trust(&per_request(), &admin).unwrap_err();
+    let err = approve_trust(&per_request(), &admin).await.unwrap_err();
     assert_eq!(err.reason, crate::refusal::ReasonCode::RateLimited);
 }
 
-#[test]
-fn a_legacy_mutation_is_not_counted_a_second_time_here() {
+#[tokio::test]
+async fn a_legacy_mutation_is_not_counted_a_second_time_here() {
     let verbs = make_verbs(FakeGovernance::new());
     let admin = admin();
     let budget = crate::rate::MutationClass::Config.limit();
@@ -360,6 +377,7 @@ fn a_legacy_mutation_is_not_counted_a_second_time_here() {
                 0,
                 b"{}",
             )
+            .await
             .unwrap_or_else(|e| panic!("attempt {i} should reach its surface, got {e:?}"));
     }
 }
@@ -371,7 +389,7 @@ struct RoutingGovernance(SeamLog);
 impl Governance for RoutingGovernance {
     type Answer = Vec<u8>;
 
-    fn execute_legacy(
+    async fn execute_legacy(
         &self,
         verb: KernelVerb,
         _admin: &Grant<AdminVerb>,
@@ -380,7 +398,7 @@ impl Governance for RoutingGovernance {
         self.0.lock().unwrap().push((verb, "legacy"));
         Ok(b"legacy".to_vec())
     }
-    fn execute_new_verb(
+    async fn execute_new_verb(
         &self,
         verb: KernelVerb,
         _admin: &Grant<AdminVerb>,
@@ -389,7 +407,7 @@ impl Governance for RoutingGovernance {
         self.0.lock().unwrap().push((verb, "new"));
         Ok(b"new".to_vec())
     }
-    fn execute_ledger_read(
+    async fn execute_ledger_read(
         &self,
         verb: KernelVerb,
         _admin: &Grant<AdminVerb>,
@@ -398,7 +416,7 @@ impl Governance for RoutingGovernance {
         self.0.lock().unwrap().push((verb, "ledger"));
         Ok(b"ledger".to_vec())
     }
-    fn execute_audit_read(
+    async fn execute_audit_read(
         &self,
         verb: KernelVerb,
         _admin: &Grant<AdminVerb>,
@@ -409,8 +427,8 @@ impl Governance for RoutingGovernance {
     }
 }
 
-#[test]
-fn a_ledger_view_reaches_the_read_seam_under_a_grant_that_refuses_every_mutation() {
+#[tokio::test]
+async fn a_ledger_view_reaches_the_read_seam_under_a_grant_that_refuses_every_mutation() {
     let admin = admin();
     let log: SeamLog = std::sync::Arc::new(Mutex::new(Vec::new()));
     let verbs = make_verbs(RoutingGovernance(std::sync::Arc::clone(&log)));
@@ -418,6 +436,7 @@ fn a_ledger_view_reaches_the_read_seam_under_a_grant_that_refuses_every_mutation
     for verb in crate::verb::LEDGER_VERBS {
         let body = verbs
             .execute(*verb, &admin, "alice", VerbScope::ReadOnly, 0, b"")
+            .await
             .unwrap_or_else(|e| panic!("{verb:?} was refused: {e:?}"));
         assert_eq!(body, b"ledger", "{verb:?} did not reach the read seam");
     }
@@ -431,6 +450,7 @@ fn a_ledger_view_reaches_the_read_seam_under_a_grant_that_refuses_every_mutation
             0,
             b"",
         )
+        .await
         .unwrap_err();
     assert_eq!(refused.reason, crate::refusal::ReasonCode::Unauthorized);
 
@@ -442,8 +462,8 @@ fn a_ledger_view_reaches_the_read_seam_under_a_grant_that_refuses_every_mutation
     assert_eq!(reached.len(), crate::verb::LEDGER_VERBS.len());
 }
 
-#[test]
-fn a_ledger_view_requires_what_the_legacy_usage_read_requires() {
+#[tokio::test]
+async fn a_ledger_view_requires_what_the_legacy_usage_read_requires() {
     for verb in crate::verb::LEDGER_VERBS {
         assert_eq!(
             crate::verbs::required_scope(*verb),
@@ -454,8 +474,8 @@ fn a_ledger_view_requires_what_the_legacy_usage_read_requires() {
     }
 }
 
-#[test]
-fn a_ledger_view_never_spends_a_mutation_slot() {
+#[tokio::test]
+async fn a_ledger_view_never_spends_a_mutation_slot() {
     for verb in crate::verb::LEDGER_VERBS {
         assert_eq!(
             crate::rate::MutationClass::for_verb(*verb, CONFIG_CLASS_RULES),
@@ -470,13 +490,13 @@ fn a_ledger_view_never_spends_a_mutation_slot() {
     );
 }
 
-#[test]
-fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
+#[tokio::test]
+async fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
     struct NoLedger;
     impl Governance for NoLedger {
         type Answer = Vec<u8>;
 
-        fn execute_legacy(
+        async fn execute_legacy(
             &self,
             _verb: KernelVerb,
             _admin: &Grant<AdminVerb>,
@@ -484,7 +504,7 @@ fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
         ) -> Result<Vec<u8>, GovernanceError> {
             Ok(Vec::new())
         }
-        fn execute_new_verb(
+        async fn execute_new_verb(
             &self,
             _verb: KernelVerb,
             _admin: &Grant<AdminVerb>,
@@ -499,13 +519,14 @@ fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
     for verb in crate::verb::LEDGER_VERBS {
         let err = verbs
             .execute(*verb, &admin, "alice", VerbScope::ReadOnly, 0, b"")
+            .await
             .unwrap_err();
         assert_eq!(err.reason, crate::refusal::ReasonCode::NotFound);
     }
 }
 
-#[test]
-fn an_audit_chain_read_reaches_the_read_seam_under_a_grant_that_refuses_every_mutation() {
+#[tokio::test]
+async fn an_audit_chain_read_reaches_the_read_seam_under_a_grant_that_refuses_every_mutation() {
     let admin = admin();
     let log: SeamLog = std::sync::Arc::new(Mutex::new(Vec::new()));
     let verbs = make_verbs(RoutingGovernance(std::sync::Arc::clone(&log)));
@@ -513,6 +534,7 @@ fn an_audit_chain_read_reaches_the_read_seam_under_a_grant_that_refuses_every_mu
     for verb in crate::verb::AUDIT_VERBS {
         let body = verbs
             .execute(*verb, &admin, "alice", VerbScope::ReadOnly, 0, b"")
+            .await
             .unwrap_or_else(|e| panic!("{verb:?} was refused: {e:?}"));
         assert_eq!(body, b"audit", "{verb:?} did not reach the audit read seam");
     }
@@ -526,6 +548,7 @@ fn an_audit_chain_read_reaches_the_read_seam_under_a_grant_that_refuses_every_mu
             0,
             b"",
         )
+        .await
         .unwrap_err();
     assert_eq!(refused.reason, crate::refusal::ReasonCode::Unauthorized);
 
@@ -537,8 +560,8 @@ fn an_audit_chain_read_reaches_the_read_seam_under_a_grant_that_refuses_every_mu
     assert_eq!(reached.len(), crate::verb::AUDIT_VERBS.len());
 }
 
-#[test]
-fn an_audit_chain_read_requires_what_the_legacy_audit_read_requires() {
+#[tokio::test]
+async fn an_audit_chain_read_requires_what_the_legacy_audit_read_requires() {
     for verb in crate::verb::AUDIT_VERBS {
         assert_eq!(
             crate::verbs::required_scope(*verb),
@@ -549,8 +572,8 @@ fn an_audit_chain_read_requires_what_the_legacy_audit_read_requires() {
     }
 }
 
-#[test]
-fn an_audit_chain_read_never_spends_a_mutation_slot() {
+#[tokio::test]
+async fn an_audit_chain_read_never_spends_a_mutation_slot() {
     for verb in crate::verb::AUDIT_VERBS {
         assert_eq!(
             crate::rate::MutationClass::for_verb(*verb, CONFIG_CLASS_RULES),
@@ -565,13 +588,13 @@ fn an_audit_chain_read_never_spends_a_mutation_slot() {
     );
 }
 
-#[test]
-fn an_unbound_integrator_serves_no_chain_read_rather_than_an_empty_head() {
+#[tokio::test]
+async fn an_unbound_integrator_serves_no_chain_read_rather_than_an_empty_head() {
     struct NoChain;
     impl Governance for NoChain {
         type Answer = Vec<u8>;
 
-        fn execute_legacy(
+        async fn execute_legacy(
             &self,
             _verb: KernelVerb,
             _admin: &Grant<AdminVerb>,
@@ -579,7 +602,7 @@ fn an_unbound_integrator_serves_no_chain_read_rather_than_an_empty_head() {
         ) -> Result<Vec<u8>, GovernanceError> {
             Ok(Vec::new())
         }
-        fn execute_new_verb(
+        async fn execute_new_verb(
             &self,
             _verb: KernelVerb,
             _admin: &Grant<AdminVerb>,
@@ -594,6 +617,7 @@ fn an_unbound_integrator_serves_no_chain_read_rather_than_an_empty_head() {
     for verb in crate::verb::AUDIT_VERBS {
         let err = verbs
             .execute(*verb, &admin, "alice", VerbScope::ReadOnly, 0, b"")
+            .await
             .unwrap_err();
         assert_eq!(err.reason, crate::refusal::ReasonCode::NotFound);
     }
@@ -608,19 +632,23 @@ fn an_unbound_integrator_serves_no_chain_read_rather_than_an_empty_head() {
                 0,
                 b"",
             )
+            .await
             .expect("the legacy audit read still answers"),
         Vec::<u8>::new()
     );
 }
 
-#[test]
-fn the_two_minting_verbs_are_refused_on_the_generic_dispatcher_rather_than_double_minting() {
+#[tokio::test]
+async fn the_two_minting_verbs_are_refused_on_the_generic_dispatcher_rather_than_double_minting() {
     let admin = admin();
     let log: SeamLog = std::sync::Arc::new(Mutex::new(Vec::new()));
     let verbs = make_verbs(RoutingGovernance(std::sync::Arc::clone(&log)));
 
     for verb in [KernelVerb::PostKeys, KernelVerb::PostKeysIdRotate] {
-        let Err(err) = verbs.execute(verb, &admin, "alice", VerbScope::Full, 0, b"{}") else {
+        let Err(err) = verbs
+            .execute(verb, &admin, "alice", VerbScope::Full, 0, b"{}")
+            .await
+        else {
             panic!("{verb:?} must not be served by the generic dispatcher");
         };
         assert_eq!(err.reason, crate::refusal::ReasonCode::Internal);
@@ -640,6 +668,7 @@ fn the_two_minting_verbs_are_refused_on_the_generic_dispatcher_rather_than_doubl
             0,
             b"{}",
         )
+        .await
         .expect("an ordinary legacy mutation is still served");
     assert_eq!(
         log.lock().unwrap().clone(),
@@ -647,8 +676,8 @@ fn the_two_minting_verbs_are_refused_on_the_generic_dispatcher_rather_than_doubl
     );
 }
 
-#[test]
-fn the_two_read_only_new_verbs_answer_a_read_only_credential() {
+#[tokio::test]
+async fn the_two_read_only_new_verbs_answer_a_read_only_credential() {
     let admin = admin();
     let log: SeamLog = std::sync::Arc::new(Mutex::new(Vec::new()));
     let verbs = make_verbs(RoutingGovernance(std::sync::Arc::clone(&log)));
@@ -661,6 +690,7 @@ fn the_two_read_only_new_verbs_answer_a_read_only_credential() {
         );
         let body = verbs
             .execute(verb, &admin, "alice", VerbScope::ReadOnly, 0, b"")
+            .await
             .unwrap_or_else(|e| panic!("{verb:?} was refused: {e:?}"));
         assert_eq!(body, b"new", "{verb:?} did not reach the new-verb seam");
     }
@@ -674,10 +704,12 @@ fn the_two_read_only_new_verbs_answer_a_read_only_credential() {
             0,
             b"",
         )
+        .await
         .unwrap_err();
     assert_eq!(err.reason, crate::refusal::ReasonCode::Unauthorized);
     let body = verbs
         .execute(KernelVerb::Adjust, &admin, "alice", VerbScope::Full, 0, b"")
+        .await
         .expect("a full grant admits a mutating new verb");
     assert_eq!(body, b"new");
 }
@@ -694,17 +726,24 @@ impl RecordingStore {
 }
 
 impl Store for RecordingStore {
-    fn chain_break(&self, _admin: &Grant<AdminVerb>) -> Result<(), StoreError> {
-        self.0.lock().unwrap().push("chain_break");
-        Ok(())
+    fn chain_break<'a>(
+        &'a self,
+        _admin: &'a Grant<AdminVerb>,
+    ) -> busbar_kernel::persistence::recovery_api::RecordCall<'a> {
+        Box::pin(async move {
+            self.0.lock().unwrap().push("chain_break");
+            Ok(())
+        })
     }
-    fn store_restore(
-        &self,
-        _admin: &Grant<AdminVerb>,
-        _backup_ref: &str,
-    ) -> Result<(), StoreError> {
-        self.0.lock().unwrap().push("store_restore");
-        Ok(())
+    fn store_restore<'a>(
+        &'a self,
+        _admin: &'a Grant<AdminVerb>,
+        _backup_ref: &'a str,
+    ) -> busbar_kernel::persistence::recovery_api::RecordCall<'a> {
+        Box::pin(async move {
+            self.0.lock().unwrap().push("store_restore");
+            Ok(())
+        })
     }
 }
 
@@ -717,15 +756,17 @@ fn recovery_verbs() -> Verbs<FakeGovernance, RecordingStore> {
     )
 }
 
-#[test]
-fn the_recovery_verbs_are_gated_before_anything_reaches_the_store() {
+#[tokio::test]
+async fn the_recovery_verbs_are_gated_before_anything_reaches_the_store() {
     let admin = admin();
 
     let v = recovery_verbs();
     for err in [
         v.chain_break(&admin, "alice", VerbScope::ReadOnly, 0)
+            .await
             .unwrap_err(),
         v.store_restore(&admin, "alice", VerbScope::ReadOnly, 0, "backup-1")
+            .await
             .unwrap_err(),
     ] {
         assert_eq!(err.reason, crate::refusal::ReasonCode::Unauthorized);
@@ -734,8 +775,10 @@ fn the_recovery_verbs_are_gated_before_anything_reaches_the_store() {
 
     let v = recovery_verbs();
     v.chain_break(&admin, "alice", VerbScope::Full, 0)
+        .await
         .expect("admitted");
     v.store_restore(&admin, "alice", VerbScope::Full, 0, "backup-1")
+        .await
         .expect("admitted");
     assert_eq!(
         v.store_for_test().reached(),
@@ -743,8 +786,8 @@ fn the_recovery_verbs_are_gated_before_anything_reaches_the_store() {
     );
 }
 
-#[test]
-fn an_admitted_recovery_verb_on_a_node_with_no_store_is_a_store_failure() {
+#[tokio::test]
+async fn an_admitted_recovery_verb_on_a_node_with_no_store_is_a_store_failure() {
     let admin = admin();
     let v: Verbs<FakeGovernance, RecordingStore> = Verbs::new(
         FakeGovernance::new(),
@@ -753,8 +796,9 @@ fn an_admitted_recovery_verb_on_a_node_with_no_store_is_a_store_failure() {
         node_limiter(),
     );
     let refused = [
-        v.chain_break(&admin, "alice", VerbScope::Full, 0),
-        v.store_restore(&admin, "alice", VerbScope::Full, 0, "backup-1"),
+        v.chain_break(&admin, "alice", VerbScope::Full, 0).await,
+        v.store_restore(&admin, "alice", VerbScope::Full, 0, "backup-1")
+            .await,
     ];
     for r in refused {
         assert_eq!(

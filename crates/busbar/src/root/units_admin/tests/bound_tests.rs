@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::{Arc, Mutex};
-
-use busbar_contract::plane::PlaneDeclaration;
-use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector};
-use busbar_kernel::host_services::demotion_key;
-use busbar_kernel::store::plane_view::{PlaneStore, PlaneStoreView, KIND_DEMOTION};
-use busbar_kernel::trust::DemotionRecord;
-
 use super::{plane_record_write_effect, PlaneRecordSink};
 use crate::root::units_admin::AdminAnswer;
+use busbar_contract::plane::PlaneDeclaration;
+use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector};
+use busbar_kernel::host_records_async::AsyncHistory;
+use busbar_kernel::host_services::demotion_key;
+use busbar_kernel::store::plane_view::KIND_DEMOTION;
+use std::sync::{Arc, Mutex};
 
 fn plane(key: &'static str, record_kinds: &'static [&'static str]) -> PlaneDeclaration {
     PlaneDeclaration {
@@ -45,39 +43,19 @@ const KERNEL_KINDS: &[&str] = &[
     "ticket",
 ];
 
-fn store() -> Arc<dyn PlaneStore> {
-    PlaneStoreView::narrow(crate::root::real_store::records())
-}
-
-fn sink_into(store: &Arc<dyn PlaneStore>, landed: &Arc<Mutex<Vec<String>>>) -> PlaneRecordSink {
-    let (store, landed) = (Arc::clone(store), Arc::clone(landed));
-    Arc::new(move |record: &PlaneRecord| {
-        landed.lock().expect("landed").push(record.kind.clone());
-        store
-            .upsert_plane_record(record.view())
-            .map_err(|e| busbar_contract::store_calls::StoreFailure::Failed(e.to_string()))
-    })
-}
-
-fn write(
+async fn write(
     body: &serde_json::Value,
     planes: &[PlaneDeclaration],
     sink: &PlaneRecordSink,
 ) -> AdminAnswer {
-    let planes = planes.to_vec();
-    let lookup = move |key: &str| planes.iter().find(|p| p.key == key).copied();
-    plane_record_write_effect(
-        &serde_json::to_vec(body).expect("JSON"),
-        1_000,
-        &lookup,
-        Some(sink),
-    )
-    .expect("the effect answers")
-    .answer
+    let lookup = |key: &str| planes.iter().find(|p| p.key == key).copied();
+    plane_record_write_effect(&serde_json::to_vec(body).unwrap(), 100, &lookup, Some(sink))
+        .await
+        .expect("effect answers")
+        .answer
 }
-
 fn refusal(answer: &AdminAnswer) -> (u16, String) {
-    let body: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
+    let body: serde_json::Value = serde_json::from_slice(&answer.body).unwrap();
     (
         answer.status,
         body["error"]["code"]
@@ -87,151 +65,112 @@ fn refusal(answer: &AdminAnswer) -> (u16, String) {
     )
 }
 
-#[test]
-fn an_admin_record_write_naming_mcp_cannot_alter_a_kernel_demotion_row() {
-    let store = store();
-    let landed = Arc::new(Mutex::new(Vec::new()));
-    let sink = sink_into(&store, &landed);
-    let demotions = DemotionRecord::default();
-    demotions.set_sink(Arc::clone(&store));
-
+#[tokio::test]
+async fn an_admin_record_write_naming_mcp_cannot_alter_a_kernel_demotion_row() {
+    let core = crate::root::real_store::core().await;
+    let sink = super::live_records(Arc::clone(&core));
+    let kernel = AsyncHistory::authorized_upserts(
+        core,
+        "busbar.kernel",
+        KERNEL_KINDS.iter().map(|k| k.to_string()),
+    )
+    .unwrap();
     let key = demotion_key("mcp", "upstream-a");
-    let kept = serde_json::to_vec(&serde_json::json!({
-        "server": key, "reason": "drifted", "recorded_at": 100
-    }))
-    .expect("JSON");
-    store
-        .upsert_plane_record(
-            PlaneRecord {
-                kind: KIND_DEMOTION.to_string(),
-                id: key.clone(),
-                parent: None,
-                seq: 0,
-                ts: 100,
-                disposition: PlaneDisposition::Active,
-                body: kept.clone(),
-            }
-            .view(),
+    let kept = PlaneRecord {
+        kind: KIND_DEMOTION.into(),
+        id: key.clone(),
+        parent: None,
+        seq: 0,
+        ts: 100,
+        disposition: PlaneDisposition::Active,
+        body: serde_json::to_vec(
+            &serde_json::json!({"server":key,"reason":"drifted","recorded_at":100}),
         )
-        .expect("seeded");
-
+        .unwrap(),
+    };
+    kernel.upsert(kept.view()).await.unwrap();
     let mcp = plane("mcp", MCP_KINDS);
-    let attempts = [
-        serde_json::json!({"plane": "mcp", "kind": "demotion", "id": key,
-            "body": {"server": demotion_key("mcp", "elsewhere"), "reason": "drifted", "recorded_at": 100}}),
-        serde_json::json!({"plane": "mcp", "kind": "demotion", "id": key, "body": {"nope": true}}),
-        serde_json::json!({"plane": "mcp", "kind": "demotion", "id": key, "terminal": true,
-            "body": {"server": key, "reason": "drifted", "recorded_at": 100}}),
-    ];
-    for attempt in &attempts {
+    for attempt in [
+        serde_json::json!({"plane":"mcp","kind":"demotion","id":key,"body":{"nope":true}}),
+        serde_json::json!({"plane":"mcp","kind":"demotion","id":key,"terminal":true,"body":{}}),
+    ] {
         assert_eq!(
-            refusal(&write(attempt, &[mcp], &sink)),
-            (403, "forbidden".to_string()),
-            "refused: {attempt}"
+            refusal(&write(&attempt, &[mcp], &sink).await),
+            (403, "forbidden".into())
         );
     }
-    assert!(
-        landed.lock().expect("landed").is_empty(),
-        "a refusal writes nothing"
-    );
-    assert_eq!(
-        store.get_plane_record(KIND_DEMOTION, &key).expect("read"),
-        Some(kept),
-        "the kernel's row is byte for byte what the kernel wrote"
-    );
-    let replayed: Vec<_> = demotions
-        .read()
-        .expect("the demotions read")
-        .into_iter()
-        .map(|r| (r.upstream, r.reason, r.recorded_at))
-        .collect();
-    assert_eq!(replayed, vec![(key, "drifted".to_string(), 100)]);
-
+    assert_eq!(kernel.get(KIND_DEMOTION, &key).await.unwrap(), Some(kept));
     let squatter = plane("squatter", KERNEL_KINDS);
     for kind in KERNEL_KINDS {
-        let attempt = serde_json::json!({"plane": "squatter", "kind": kind, "id": "x", "body": {}});
+        let attempt = serde_json::json!({"plane":"squatter","kind":kind,"id":"x","body":{}});
         assert_eq!(
-            refusal(&write(&attempt, &[squatter], &sink)),
-            (403, "forbidden".to_string()),
-            "a kernel kind is refused: {kind}"
+            refusal(&write(&attempt, &[squatter], &sink).await),
+            (403, "forbidden".into())
         );
-        assert_eq!(
-            store.get_plane_record(kind, "x").expect("read"),
-            None,
-            "nothing landed under the kernel's `{kind}`"
-        );
+        assert_eq!(kernel.get(kind, "x").await.unwrap(), None);
     }
 }
 
-#[test]
-fn two_planes_declaring_one_kind_neither_see_nor_overwrite_each_others_rows() {
-    let store = store();
-    let landed = Arc::new(Mutex::new(Vec::new()));
-    let sink = sink_into(&store, &landed);
+#[tokio::test]
+async fn two_planes_declaring_one_kind_neither_see_nor_overwrite_each_others_rows() {
+    let core = crate::root::real_store::core().await;
+    let sink = super::live_records(Arc::clone(&core));
     let planes = [plane("alpha", &["note"]), plane("beta", &["note"])];
-
     for (key, text) in [("alpha", "alpha's"), ("beta", "beta's")] {
         let answer = write(
-            &serde_json::json!({"plane": key, "kind": "note", "id": "n-1", "body": {"text": text}}),
+            &serde_json::json!({"plane":key,"kind":"note","id":"n-1","body":{"text":text}}),
             &planes,
             &sink,
-        );
-        assert_eq!(answer.status, 200, "written");
-        let body: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
-        assert_eq!(
-            (&body["plane"], &body["kind"], &body["id"]),
-            (
-                &serde_json::json!(key),
-                &serde_json::json!("note"),
-                &serde_json::json!("n-1")
-            ),
-            "the answer names the record as the operator wrote it"
-        );
+        )
+        .await;
+        assert_eq!(answer.status, 200);
     }
-    let landed = landed.lock().expect("landed").clone();
-    let [alpha, beta] = landed.as_slice() else {
-        panic!("two records written: {landed:?}");
-    };
-    assert_ne!(alpha, beta, "the two planes' rows are keyed apart");
-    for (kind, text) in [(alpha, "alpha's"), (beta, "beta's")] {
-        let own = format!(r#"{{"text":"{text}"}}"#).into_bytes();
+    let mut kinds = Vec::new();
+    for (plane, text) in [("alpha", "alpha's"), ("beta", "beta's")] {
+        let kind = busbar_kernel::store::plane_view::plane_owned_kind(plane, "note").unwrap();
+        let history = AsyncHistory::authorized_upserts(
+            Arc::clone(&core),
+            &format!("busbar.admin.envelopes/{plane}"),
+            [kind.clone()],
+        )
+        .unwrap();
+        let listed = history.list(&kind, &PlaneSelector::All).await.unwrap();
+        assert_eq!(listed.len(), 1);
         assert_eq!(
-            store
-                .list_plane_records(kind, &PlaneSelector::All)
-                .expect("listed"),
-            vec![own.clone()],
-            "a read of one plane's rows answers only its own"
+            listed[0].body,
+            format!(r#"{{"text":"{text}"}}"#).into_bytes()
         );
         assert_eq!(
-            store.get_plane_record(kind, "n-1").expect("read"),
-            Some(own),
-            "neither write overwrote the other"
+            history.get(&kind, "n-1").await.unwrap(),
+            Some(listed[0].clone())
         );
+        kinds.push(kind);
     }
+    assert_ne!(kinds[0], kinds[1]);
 }
 
-#[test]
-fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_upsert() {
+#[tokio::test]
+async fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_upsert() {
     use crate::root::units_admin::AdminRequest;
-    use busbar_contract::records::RecordStore;
     use busbar_core_admin::idempotency::durable::{self, Refused};
 
-    let store: Arc<dyn RecordStore> = crate::root::real_store::records();
+    let core = crate::root::real_store::core().await;
+    let store = Arc::new(durable::scoped_store(Arc::clone(&core)).unwrap());
     let replay_store: super::ReplayStore = {
         let store = Arc::clone(&store);
         Arc::new(move || Some(Arc::clone(&store)))
     };
     let submitted = Arc::new(Mutex::new(Vec::new()));
+    let native = super::live_records(Arc::clone(&core));
     let sink: PlaneRecordSink = {
-        let (store, submitted) = (Arc::clone(&store), Arc::clone(&submitted));
-        Arc::new(move |record| {
-            submitted.lock().unwrap().push(record.clone());
-            store.upsert_plane_record(record.view()).map_err(|error| {
-                busbar_contract::store_calls::StoreFailure::Failed(error.to_string())
-            })?;
-            Err(busbar_contract::store_calls::StoreFailure::Failed(
-                "committed; acknowledgement lost".into(),
-            ))
+        let submitted = Arc::clone(&submitted);
+        Arc::new(move |decl, record| {
+            let (native, submitted) = (Arc::clone(&native), Arc::clone(&submitted));
+            Box::pin(async move {
+                submitted.lock().unwrap().push(record.clone());
+                native(decl, record).await?;
+                Err(super::PlaneWriteFailure::Unknown(None))
+            })
         })
     };
     let mut request = AdminRequest {
@@ -243,10 +182,16 @@ fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_upsert() 
     };
     let cache = super::ReplayCache::new();
     let lookup = |key: &str| (key == "alpha").then_some(plane("alpha", &["note"]));
-    let ask = |cache: &super::ReplayCache, request: &AdminRequest| {
+    async fn ask(
+        cache: &super::ReplayCache,
+        request: &AdminRequest,
+        replay_store: &super::ReplayStore,
+        sink: &PlaneRecordSink,
+        lookup: &(dyn Fn(&str) -> Option<PlaneDeclaration> + Send + Sync),
+    ) -> AdminAnswer {
         super::replayable(
             cache,
-            Some(&replay_store),
+            Some(replay_store),
             super::ReplayScope {
                 verb: busbar_core_admin::KernelVerb::PlaneRecordWrite,
                 actor: "admin",
@@ -254,11 +199,12 @@ fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_upsert() 
             request,
             &request.body,
             None,
-            || plane_record_write_effect(&request.body, request.at, &lookup, Some(&sink)),
+            || plane_record_write_effect(&request.body, request.at, lookup, Some(sink)),
         )
+        .await
         .expect("the write answers")
-    };
-    let first = ask(&cache, &request);
+    }
+    let first = ask(&cache, &request, &replay_store, &sink, &lookup).await;
     assert_eq!(first.status, 503);
     let original = submitted.lock().unwrap()[0].clone();
     assert_eq!(
@@ -276,7 +222,7 @@ fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_upsert() 
     let name =
         busbar_core_admin::verb_name(busbar_core_admin::KernelVerb::PlaneRecordWrite).unwrap();
     let replay_key = ("admin".to_string(), format!("{name}:unknown-record"));
-    let kept = match durable::claim_held(&*store, &replay_key, request.at) {
+    let kept = match durable::claim_held(&*store, &replay_key, request.at).await {
         Err(Refused::Retained(bytes)) => super::kept_answer(&bytes).expect("readable receipt"),
         other => panic!("the exact unknown receipt must be durable: {other:?}"),
     };
@@ -288,24 +234,39 @@ fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_upsert() 
     assert_eq!(
         kept.receipt,
         Some(super::EffectReceipt::PlaneRecordWrite {
-            record: original.clone()
+            record: original.clone(),
+            pending: None,
         })
     );
+    let history = AsyncHistory::authorized_upserts(
+        core,
+        "busbar.admin.envelopes/alpha",
+        [original.kind.clone()],
+    )
+    .unwrap();
     assert_eq!(
-        store
-            .get_plane_record(&original.kind, &original.id)
-            .unwrap(),
-        Some(original.body.clone())
+        history.get(&original.kind, &original.id).await.unwrap(),
+        Some(original.clone())
     );
-    assert_eq!(ask(&cache, &request), first);
+    assert_eq!(
+        ask(&cache, &request, &replay_store, &sink, &lookup).await,
+        first
+    );
     request.at += busbar_core_admin::idempotency::IDEMPOTENCY_TTL_SECS + 1;
     assert_eq!(
-        ask(&cache, &request),
+        ask(&cache, &request, &replay_store, &sink, &lookup).await,
         first,
         "local custody outlives the replay window"
     );
     assert_eq!(
-        ask(&super::ReplayCache::new(), &request),
+        ask(
+            &super::ReplayCache::new(),
+            &request,
+            &replay_store,
+            &sink,
+            &lookup
+        )
+        .await,
         first,
         "restart replays the durable receipt"
     );
@@ -316,15 +277,23 @@ fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_upsert() 
     );
     request.body = br#"{"plane":"alpha","kind":"note","id":"other","body":{}}"#.to_vec();
     assert_eq!(
-        ask(&super::ReplayCache::new(), &request).status,
+        ask(
+            &super::ReplayCache::new(),
+            &request,
+            &replay_store,
+            &sink,
+            &lookup
+        )
+        .await
+        .status,
         409,
         "a retained key still owns its first body"
     );
     assert_eq!(submitted.lock().unwrap().len(), 1);
 }
 
-#[test]
-fn trust_digest_guard_rejects_stale_and_malformed_reviews_at_the_admin_boundary() {
+#[tokio::test]
+async fn trust_digest_guard_rejects_stale_and_malformed_reviews_at_the_admin_boundary() {
     use super::{trust_decide_effect, trust_list_effect, TrustDesk};
     use busbar_contract::services::{Caller, HostServices, Ran};
     use busbar_kernel::host_services::{InstanceFacts, KernelServices};
@@ -350,6 +319,7 @@ fn trust_digest_guard_rejects_stale_and_malformed_reviews_at_the_admin_boundary(
                 ..InstanceFacts::default()
             },
         )
+        .await
         .unwrap();
     let desk: TrustDesk = {
         let kernel = Arc::clone(&kernel);
@@ -366,8 +336,10 @@ fn trust_digest_guard_rejects_stale_and_malformed_reviews_at_the_admin_boundary(
             Ran::Now(_)
         ))
     };
-    let decide = |ruling, body| {
-        trust_decide_effect(&serde_json::to_vec(&body).unwrap(), ruling, &desk).unwrap()
+    let decide = async |ruling, body| {
+        trust_decide_effect(&serde_json::to_vec(&body).unwrap(), ruling, &desk)
+            .await
+            .unwrap()
     };
     sight("reviewed");
     assert_eq!(
@@ -375,6 +347,7 @@ fn trust_digest_guard_rejects_stale_and_malformed_reviews_at_the_admin_boundary(
             Ruling::Approve,
             serde_json::json!({"key":"inst/cp","expected_digest":"reviewed"})
         )
+        .await
         .status,
         200
     );
@@ -384,7 +357,8 @@ fn trust_digest_guard_rejects_stale_and_malformed_reviews_at_the_admin_boundary(
         let stale = decide(
             ruling,
             serde_json::json!({"key":"inst/cp","expected_digest":"reviewed"}),
-        );
+        )
+        .await;
         assert_eq!(stale.status, 409);
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&stale.body).unwrap()["error"]["code"],
@@ -401,6 +375,7 @@ fn trust_digest_guard_rejects_stale_and_malformed_reviews_at_the_admin_boundary(
                     ruling,
                     serde_json::json!({"key":"inst/cp","expected_digest":guard})
                 )
+                .await
                 .status,
                 400
             );
@@ -414,16 +389,45 @@ fn trust_digest_guard_rejects_stale_and_malformed_reviews_at_the_admin_boundary(
     let revoked = decide(
         Ruling::Revoke,
         serde_json::json!({"key":"inst/cp","expected_digest":"changed"}),
-    );
+    )
+    .await;
     assert_eq!(revoked.status, 200);
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&revoked.body).unwrap()["seen"],
         "changed"
     );
-    let legacy = decide(Ruling::Approve, serde_json::json!({"key":"inst/cp"}));
+    let legacy = decide(Ruling::Approve, serde_json::json!({"key":"inst/cp"})).await;
     assert_eq!(legacy.status, 200);
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&legacy.body).unwrap()["approved"],
         "changed"
     );
+}
+
+#[test]
+fn a_native_pending_identity_survives_the_durable_effect_receipt() {
+    let value = super::ReplayValue {
+        digest: [3; 32],
+        answer: AdminAnswer {
+            status: 503,
+            headers: vec![],
+            body: b"pending".to_vec(),
+        },
+        receipt: Some(super::EffectReceipt::PlaneRecordWrite {
+            record: PlaneRecord {
+                kind: "owned".into(),
+                id: "id".into(),
+                parent: Some("opaque".into()),
+                seq: 0,
+                ts: 42,
+                disposition: PlaneDisposition::Terminal,
+                body: vec![0, 255],
+            },
+            pending: Some([7; 16]),
+        }),
+    };
+    let decoded = super::kept_answer(&super::stored_answer(&value)).expect("receipt decodes");
+    assert_eq!(decoded.digest, value.digest);
+    assert_eq!(decoded.answer, value.answer);
+    assert_eq!(decoded.receipt, value.receipt);
 }

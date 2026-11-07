@@ -42,8 +42,8 @@ impl HostServices for Judges {
     fn trust_unreached(&self, _: &Caller, _: &str) -> Stored {
         Stored::refused(busbar_contract::services::UNSERVED)
     }
-    fn trust_sight_item(&self, _: &Caller, _: &str, _: &str, _: &str) -> Stored {
-        Stored::refused(busbar_contract::services::UNSERVED)
+    fn trust_sight_item(&self, _: &Caller, _: &str, _: &str, _: &str, _: Later) -> Ran {
+        Ran::Now(Stored::refused(busbar_contract::services::UNSERVED))
     }
     fn trust_decide(
         &self,
@@ -51,8 +51,9 @@ impl HostServices for Judges {
         _: busbar_contract::services::TrustKeyRef<'_>,
         _: Option<&str>,
         _: bool,
-    ) -> Stored {
-        Stored::refused(busbar_contract::services::UNSERVED)
+        _: Later,
+    ) -> Ran {
+        Ran::Now(Stored::refused(busbar_contract::services::UNSERVED))
     }
     fn trust_state(&self, _: &Caller, _: &str) -> Stored {
         Stored::refused(busbar_contract::services::UNSERVED)
@@ -60,8 +61,8 @@ impl HostServices for Judges {
     fn session_emit(&self, _: &Caller, _: u64, _: &[u8]) -> Stored {
         Stored::refused(busbar_contract::services::UNSERVED)
     }
-    fn ticket_mint(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8]) -> Stored {
-        Stored::refused(busbar_contract::services::UNSERVED)
+    fn ticket_mint(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8], _: Later) -> Ran {
+        Ran::Now(Stored::refused(busbar_contract::services::UNSERVED))
     }
     fn ticket_take(&self, _: &Caller, _: Option<u64>) -> Stored {
         Stored::refused(busbar_contract::services::UNSERVED)
@@ -116,8 +117,8 @@ impl HostServices for Judges {
         Ran::Now(Stored::ready(12))
     }
 
-    fn snapshot_read(&self, _: &Caller, _: u32) -> busbar_contract::services::Snapshot {
-        busbar_contract::services::Snapshot::NotReady
+    fn snapshot_read(&self, _: &Caller, _: u32, _: Later) -> Ran {
+        Ran::Now(Stored::refused(busbar_contract::services::UNSERVED))
     }
 }
 
@@ -545,7 +546,7 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
         trust: vec![("peer".to_string(), entry)],
         ..InstanceFacts::default()
     };
-    k.admit("owner", facts).expect("admitted");
+    k.admit("owner", facts).await.expect("admitted");
     let caller = Caller {
         instance: Arc::from("owner"),
         plugin: Arc::from("the-plugin"),
@@ -575,10 +576,14 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
 
     assert_eq!(sight("h1"), (svc::TRUST_NEW, false));
     k.trust_rule("owner/peer", busbar_kernel::trust::book::Ruling::Approve)
+        .await
         .expect("approved");
     assert_eq!(sight("h1"), (svc::TRUST_SAME, false));
     assert_eq!(sight("h2"), (svc::TRUST_DRIFTED, false), "not written down");
     let demotions = Arc::new(DemotionRecord::default());
+    demotions
+        .set_store(crate::root::real_store::core().await)
+        .expect("the native Store owns trust changes");
     attach(
         &late,
         None,
@@ -604,66 +609,46 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
-    use busbar_contract::kinds::RecordBytes;
-    use busbar_contract::store_calls::{StoreAxis as _, StoreDoor};
-    use busbar_kernel::host_records::RecordRows as _;
-    let axis = crate::root::loader::store_v3::DoorStoreAxis {
-        dispatcher: {
-            let d = Arc::new(crate::root::loader::dispatch::Dispatcher::new(
-                crate::root::loader::dispatch::DispatchConfig::default(),
-            ));
-
-            let _ = d.lend_seal(busbar_kernel::seal::lend());
-            d
-        },
-        logs: crate::root::boot::plugin_logs().clone(),
-
-        conns: crate::root::loader::dispatch::ConnTable::NoNeeds,
-        mint: busbar_kernel::door::op_id,
-    };
-    let opened = axis
-        .open(
-            StoreDoor::Linked(
-                crate::LINKED
-                    .stores
-                    .iter()
-                    .find(|s| s.1)
-                    .expect("the build links an ephemeral store")
-                    .2,
-            ),
-            "records-attach",
-            b"{}",
+    use busbar_kernel::persistence::scoped::ClaimOutcome;
+    use busbar_kernel::persistence::scoped::{Outcome, ScopedStore};
+    let core = crate::root::real_store::core().await;
+    let rows =
+        ScopedStore::host_private(core.clone(), "busbar.attach-probe", ["attach-probe".into()])
+            .unwrap();
+    assert_eq!(
+        rows.put(
+            "attach-probe",
+            b"k",
+            busbar_contract::Secret::new(b"v".to_vec())
         )
-        .expect("the default store opens through its door");
-    let calls = opened.calls.expect("a door-opened store has its v3 slots");
-
-    let rows = busbar_kernel::host_records::StoreRows(Arc::clone(&calls));
-    let schema = busbar_contract::ids::RecordSchemaId::new("attach-probe");
-    let value = RecordBytes::new(b"v".to_vec()).expect("a small record");
-    let written = tokio::task::spawn_blocking(move || {
-        rows.record_put(schema, b"k", &value).expect("put");
-        rows.record_get(schema, b"k").expect("get")
-    })
-    .await
-    .expect("the blocking call ran");
-    assert_eq!(written.map(|v| v.as_slice().to_vec()), Some(b"v".to_vec()));
-
-    let rows = busbar_kernel::host_records::StoreRows(Arc::clone(&calls));
-    let claims = tokio::task::spawn_blocking(move || {
-        let now = busbar_kernel::store::now();
+        .await
+        .unwrap(),
+        Outcome::Applied
+    );
+    assert_eq!(
+        rows.get("attach-probe", b"k")
+            .await
+            .unwrap()
+            .map(|value| value.expose(&busbar_kernel::seal::lend()).clone()),
+        Some(b"v".to_vec())
+    );
+    let now = busbar_kernel::store::now();
+    let claims = [
+        rows.redeem("attach-claim", "t", now + 60).await.unwrap(),
+        rows.redeem("attach-claim", "t", now + 60).await.unwrap(),
+        rows.redeem("attach-other", "t", now + 60).await.unwrap(),
+    ];
+    assert!(matches!(
+        claims,
         [
-            rows.claim("attach-claim", "t", now + 60, now),
-            rows.claim("attach-claim", "t", now + 60, now),
-            rows.claim("attach-other", "t", now + 60, now),
+            ClaimOutcome::Claimed,
+            ClaimOutcome::AlreadyClaimed,
+            ClaimOutcome::Claimed
         ]
-    })
-    .await
-    .expect("the blocking call ran");
-    assert_eq!(claims, [Ok(true), Ok(false), Ok(true)]);
-
-    let gov = busbar_kernel::governance::GovState::new(Arc::clone(&opened.records), None)
+    ));
+    let gov = busbar_kernel::governance::GovState::new_with_core(core.clone(), None, None)
+        .await
         .expect("governance");
-    assert!(gov.attach_store_calls(calls));
     let late = LateServices::new();
     let k = Arc::new(KernelServices::new());
     late.install_kernel(Arc::clone(&k), Arc::clone(&k) as Arc<dyn HostServices>)
@@ -676,30 +661,17 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
         &[],
     );
     assert!(
-        !k.attach_records(Arc::new(busbar_kernel::host_records::StoreRows(
-            gov.store_calls().expect("kept")
-        ))),
-        "the governance store is already the record store"
+        !k.attach_persistence(core.clone()),
+        "the governance Store is already the native persistence owner"
     );
-
-    let bare = busbar_kernel::governance::GovState::new(crate::root::real_store::records(), None)
-        .expect("governance");
     let late = LateServices::new();
     let k = Arc::new(KernelServices::new());
     late.install_kernel(Arc::clone(&k), Arc::clone(&k) as Arc<dyn HostServices>)
         .expect("installed once");
-    attach(
-        &late,
-        Some(&bare),
-        None,
-        &Arc::new(DemotionRecord::default()),
-        &[],
-    );
+    attach(&late, None, None, &Arc::new(DemotionRecord::default()), &[]);
     assert!(
-        k.attach_records(Arc::new(busbar_kernel::host_records::StoreRows(
-            Arc::clone(&gov.store_calls().expect("kept"))
-        ))),
-        "a store with no slots bound nothing"
+        k.attach_persistence(core),
+        "an absent governance owner bound no persistence"
     );
 }
 

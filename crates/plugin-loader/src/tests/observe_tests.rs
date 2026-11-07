@@ -303,7 +303,7 @@ fn an_auth_envelope_reaches_the_host_observer() {
 
 #[test]
 fn a_store_envelope_reaches_the_host_observer() {
-    observed_through_its_bind::<crate::dispatch::kinds::store::Store>(
+    observed_through_its_bind::<crate::dispatch::kinds::store_v4::StoreV4>(
         crate::actual_store::door,
         busbar_contract::abi::mechanism::kind::STORE,
     );

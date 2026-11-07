@@ -87,7 +87,7 @@ async fn setup() -> Subject {
         }],
         ..Default::default()
     };
-    let app = application_with_resource_auth(Some(&config), None, true);
+    let app = application_with_resource_auth(Some(&config), None, true).await;
     let router = busbar_kernel::build_router(Arc::clone(&app));
     tokio::spawn(async move {
         super::serve_tls(listener, router).await;

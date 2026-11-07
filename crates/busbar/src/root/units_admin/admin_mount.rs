@@ -20,11 +20,11 @@ impl AdminNode {
         crate::root::plane_node::node().mint().get()
     }
 
-    pub fn answer(&self, request: AdminRequest) -> AdminAnswer {
-        self.answer_with_admission(request, None)
+    pub async fn answer(&self, request: AdminRequest) -> AdminAnswer {
+        self.answer_with_admission(request, None).await
     }
 
-    fn answer_with_admission(
+    async fn answer_with_admission(
         &self,
         request: AdminRequest,
         admission: Option<busbar_kernel::inbound::RequestAdmission>,
@@ -40,25 +40,33 @@ impl AdminNode {
         let arrived_at = request.at;
         let mut walk = AdminWalk::new(request);
         walk.admission = admission;
-        let ended = decide(&self.units, &mut walk);
+        let ended = decide(&self.units, &mut walk).await;
         let facts = audit(&walk, &ended);
         let answer = walk
             .answer
             .take()
             .unwrap_or_else(|| refused_answer(ended, &walk.request));
 
-        self.seal(key, arrived_at, walk.principal.as_ref(), facts, ended);
-        answer
+        if self
+            .seal(key, arrived_at, walk.principal.as_ref(), facts, ended)
+            .await
+        {
+            answer
+        } else {
+            bound::journal_unavailable(
+                "the administrative result's audit publication is unconfirmed; do not re-submit",
+            )
+        }
     }
 
-    fn seal(
+    async fn seal(
         &self,
         key: UnitKey,
         arrived_at: u64,
         principal: Option<&PrincipalId>,
         facts: busbar_contract::AuditFacts,
         ended: Outcome,
-    ) {
+    ) -> bool {
         use busbar_kernel_audit::{AuditInputs, Controls, OutcomeFacts, Subject, Usage, What};
         let card = crate::root::kernel::ROOT_CARD.pin();
         let arrived_ms = arrived_at.saturating_mul(1_000);
@@ -107,24 +115,22 @@ impl AdminNode {
             correlation_label: None,
         };
         let token = self.kernel.durability_token();
-        let sealed = self
-            .units
-            .durability
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .seal_unit(
-                inputs,
-                busbar_kernel::teller::verb_audit_pass(&self.kernel),
-                &token,
-            );
+        let sealed = crate::root::durability::Durability::seal_unit(
+            &self.units.durability,
+            inputs,
+            busbar_kernel::teller::verb_audit_pass(&self.kernel),
+            &token,
+        )
+        .await;
         if let Err(lost) = sealed {
             tracing::error!(
                 step = lost.step().as_str(),
                 unit = key.get(),
-                "the journal lost an admin unit's audit record: it is sealed on the chain and \
-                 cached, and a restart will not read it back"
+                "the journal has not confirmed an admin unit's audit record"
             );
+            return false;
         }
+        true
     }
 }
 
@@ -315,7 +321,7 @@ pub(crate) fn unavailable_answer() -> AdminAnswer {
 pub(crate) type Errand = (
     AdminRequest,
     Option<busbar_kernel::inbound::RequestAdmission>,
-    std::sync::mpsc::SyncSender<AdminAnswer>,
+    tokio::sync::oneshot::Sender<AdminAnswer>,
 );
 
 #[cfg(feature = "root-admin")]
@@ -390,29 +396,30 @@ async fn call(
 }
 
 #[cfg(feature = "root-admin")]
+#[async_trait::async_trait]
 impl AdminDispatch for RouterDispatch {
-    fn execute(&self, _verb: KernelVerb, request: &AdminRequest) -> AdminAnswer {
-        self.dispatch(request, None)
+    async fn execute(&self, _verb: KernelVerb, request: &AdminRequest) -> AdminAnswer {
+        self.dispatch(request, None).await
     }
 
-    fn execute_admitted(
+    async fn execute_admitted(
         &self,
         _verb: KernelVerb,
         request: &AdminRequest,
         admission: &busbar_kernel::inbound::RequestAdmission,
     ) -> AdminAnswer {
-        self.dispatch(request, Some(admission.clone()))
+        self.dispatch(request, Some(admission.clone())).await
     }
 }
 
 #[cfg(feature = "root-admin")]
 impl RouterDispatch {
-    fn dispatch(
+    async fn dispatch(
         &self,
         request: &AdminRequest,
         admission: Option<busbar_kernel::inbound::RequestAdmission>,
     ) -> AdminAnswer {
-        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        let (reply, answer) = tokio::sync::oneshot::channel();
         if self
             .errands
             .send((request.clone(), admission, reply))
@@ -420,7 +427,7 @@ impl RouterDispatch {
         {
             return unavailable_answer();
         }
-        answer.recv().unwrap_or_else(|_| unavailable_answer())
+        answer.await.unwrap_or_else(|_| unavailable_answer())
     }
 }
 
@@ -605,11 +612,14 @@ pub fn mount(
                 };
 
                 let exit = ExitPath { unit };
-                let answer = tokio::task::spawn_blocking(move || {
-                    node.answer_with_admission(request, admission)
-                })
-                .await
-                .unwrap_or_else(|_| unavailable_answer());
+                // The operation keeps custody through client cancellation, including
+                // publishing its durable replay receipt after a native write.
+                let answer =
+                    tokio::spawn(
+                        async move { node.answer_with_admission(request, admission).await },
+                    )
+                    .await
+                    .unwrap_or_else(|_| unavailable_answer());
 
                 let response = http_response(answer);
 
@@ -621,17 +631,20 @@ pub fn mount(
 }
 
 #[cfg(feature = "root-admin")]
+#[allow(clippy::too_many_arguments)]
 pub fn mount_node(
     admin_router: axum::Router,
     request_body_max_bytes: usize,
     app: &Arc<busbar_kernel::state::AppHandle>,
+    core: Arc<busbar_kernel::persistence::facade::CoreStore>,
     book: &crate::root::durability::NodeBook,
     retired_operator_key: Option<[u8; 32]>,
     late: &Arc<crate::root::serve::LateServices>,
     retired_breaker: crate::root::adapters::BreakerPolicy,
-) -> axum::Router {
+) -> Result<axum::Router, busbar_kernel::persistence::scoped::Error> {
     let _ = (retired_operator_key, retired_breaker);
-    mount(
+    let replay_store = live_replay_store(Arc::clone(&core))?;
+    Ok(mount(
         admin_router,
         crate::root::kernel::new_kernel(),
         request_body_max_bytes,
@@ -644,10 +657,14 @@ pub fn mount_node(
 
             let authority_handle = Arc::clone(app);
             units.admin.effect_admission = Some(Arc::new(move |context| {
-                crate::root::durability::wait_for(busbar_kernel::config::transaction::admit_effect(
-                    &authority_handle,
-                    Some(context),
-                ))
+                let authority_handle = Arc::clone(&authority_handle);
+                Box::pin(async move {
+                    busbar_kernel::config::transaction::admit_effect(
+                        &authority_handle,
+                        Some(context),
+                    )
+                    .await
+                })
             }));
             let live = Arc::clone(app);
             units.admin.pools = Arc::new(move |pool: &str| {
@@ -660,9 +677,9 @@ pub fn mount_node(
             units.admin.planes = live_planes(Arc::clone(app));
 
             units.admin.node_amendments = Some(Arc::clone(&app.load().amendments));
-            units.admin.records = Some(live_records(Arc::clone(app)));
+            units.admin.records = Some(live_records(Arc::clone(&core)));
 
-            units.admin.replay_store = Some(live_replay_store(Arc::clone(app)));
+            units.admin.replay_store = Some(Arc::clone(&replay_store));
 
             let late = Arc::clone(late);
             units.admin.trust = Arc::new(move || late.kernel());
@@ -676,7 +693,7 @@ pub fn mount_node(
                 None => units,
             }
         },
-    )
+    ))
 }
 
 #[cfg(feature = "root-admin")]

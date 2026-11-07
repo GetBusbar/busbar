@@ -17,7 +17,9 @@ use std::sync::Arc;
 /// still decides whether this caller may read; an ungranted caller receives its normal refusal.
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
-pub fn read_test_snapshot(scope: u32) -> busbar_contract::services::Snapshot {
+pub fn read_test_snapshot(
+    scope: u32,
+) -> impl std::future::Future<Output = busbar_contract::services::Snapshot> + Send + 'static {
     scrape::read(scope)
 }
 

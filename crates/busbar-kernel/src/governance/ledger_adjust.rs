@@ -210,7 +210,7 @@ impl std::error::Error for AdjustRefused {}
 // the legacy flat counter. Only that lane's per-request class belongs in this projection;
 // provider usage and session fees are separate facts, even when their class names overlap.
 fn billable_request_count(cell: &BudgetCell) -> Result<u64, busbar_contract::count::CountError> {
-    use busbar_kernel_ledger::cost::{split_plane_lane, PER_REQUEST};
+    use busbar_kernel_ledger::cost::{PER_REQUEST, split_plane_lane};
     cell.models
         .iter()
         .filter(|model| {
@@ -226,7 +226,7 @@ fn billable_request_count(cell: &BudgetCell) -> Result<u64, busbar_contract::cou
 }
 
 impl GovState {
-    pub fn priced_bucket(
+    pub async fn priced_bucket_async(
         &self,
         cost: &crate::cost::CostModel,
         bucket_id: &str,
@@ -234,7 +234,7 @@ impl GovState {
         now: u64,
     ) -> RecordStoreResult<PricedBucket> {
         let window = budget_window(budget_period, now);
-        let cell = self.bucket_cell(bucket_id, window)?;
+        let cell = self.bucket_cell_async(bucket_id, window).await?;
         Ok(PricedBucket {
             window_start: cell.window_start,
             requests: cell.requests,
@@ -244,7 +244,7 @@ impl GovState {
         })
     }
 
-    pub fn adjust_usage(
+    pub async fn adjust_usage_async(
         &self,
         cost: &crate::cost::CostModel,
         adj: &Adjustment<'_>,
@@ -259,7 +259,7 @@ impl GovState {
                 )
             })
             .collect();
-        self.adjust_usage_exact(
+        self.adjust_usage_exact_async(
             cost,
             &Adjustment {
                 key_id: adj.key_id,
@@ -272,35 +272,34 @@ impl GovState {
                 now: adj.now,
             },
         )
+        .await
     }
 
-    pub fn adjust_usage_exact(
+    pub async fn adjust_usage_exact_async(
         &self,
         cost: &crate::cost::CostModel,
         adj: &Adjustment<'_, Count>,
     ) -> RecordStoreResult<Result<(), AdjustRefused>> {
-        self.adjust_usage_exact_action(cost, adj, None)
+        self.adjust_usage_exact_action_async(cost, adj, None).await
     }
 
     /// The action id also travels in retained correction custody, linking HTTP reconciliation
     /// to the raw conditional operation without changing the Store request ABI.
-    pub fn adjust_usage_exact_action(
+    pub async fn adjust_usage_exact_action_async(
         &self,
         cost: &crate::cost::CostModel,
         adj: &Adjustment<'_, Count>,
         action_id: Option<&str>,
     ) -> RecordStoreResult<Result<(), AdjustRefused>> {
-        let _claim = self.correction_claims.claim(adj.key_id.to_string());
-        if self.resume_usage_correction(adj, action_id)? {
+        let _claim = self
+            .correction_claims
+            .claim_async(adj.key_id.to_string())
+            .await;
+        if self.resume_usage_correction(adj, action_id).await? {
             return Ok(Ok(()));
         }
         if let Err(refused) = check_epoch(adj.card_epoch_ms, crate::store::now_ms()) {
             return Ok(Err(refused));
-        }
-        if !self.store.supports_usage_correction() {
-            return Ok(Err(AdjustRefused::Preparation {
-                reason: "usage corrections unsupported".into(),
-            }));
         }
         let delta: BTreeMap<&str, Count> = adj
             .delta
@@ -311,7 +310,7 @@ impl GovState {
         if delta.is_empty() {
             return Ok(Err(AdjustRefused::Empty));
         }
-        match self.store.get_key(adj.key_id) {
+        match self.core_store()?.identity().get_key(adj.key_id).await {
             Ok(Some(_)) => {}
             Ok(None) => return Ok(Err(AdjustRefused::UnknownKey)),
             Err(error) => {
@@ -338,11 +337,15 @@ impl GovState {
         let epoch = at / 1_000;
 
         let day = crate::governance::metering_bucket(epoch);
-        self.correct_usage(cost, adj, &delta, day, action_id)
+        self.correct_usage(cost, adj, &delta, day, action_id).await
     }
 
-    pub fn usage_adjustments(&self, day: u64) -> RecordStoreResult<Vec<UsageAdjustment>> {
-        self.usage_adjustments_exact(day)?
+    pub async fn usage_adjustments_async(
+        &self,
+        day: u64,
+    ) -> RecordStoreResult<Vec<UsageAdjustment>> {
+        self.usage_adjustments_exact_async(day)
+            .await?
             .into_iter()
             .map(|row| {
                 let delta = row
@@ -368,7 +371,7 @@ impl GovState {
             .collect()
     }
 
-    pub fn usage_adjustments_exact(
+    pub async fn usage_adjustments_exact_async(
         &self,
         day: u64,
     ) -> RecordStoreResult<Vec<UsageAdjustment<Count>>> {
@@ -384,8 +387,13 @@ impl GovState {
             ));
         }
         let mut net: BTreeMap<String, BTreeMap<String, i128>> = BTreeMap::new();
-        for (bucket, sign) in [(ADJUST_UP_BUCKET, 1i128), (ADJUST_DOWN_BUCKET, -1i128)] {
-            for model in self.store.get_usage(bucket, day)?.models {
+        let (up, down) = self
+            .core_store()?
+            .ledger()
+            .get_usage_pair(ADJUST_UP_BUCKET, ADJUST_DOWN_BUCKET, day)
+            .await?;
+        for (row, sign) in [(up, 1i128), (down, -1i128)] {
+            for model in row.models {
                 for (class, count) in model.usage_units {
                     let count = Count::from_stored(count, model.scale)
                         .map_err(|e| RecordStoreError(e.to_string()))?;
@@ -477,7 +485,7 @@ mod view_tests;
 mod billable_request_count_tests {
     use super::*;
     use busbar_contract::count::CountError;
-    use busbar_kernel_ledger::cost::{plane_fee_lane, PER_REQUEST, PER_SESSION};
+    use busbar_kernel_ledger::cost::{PER_REQUEST, PER_SESSION, plane_fee_lane};
 
     #[test]
     fn ledger_request_fees_include_only_legacy_and_named_request_fee_rows() {

@@ -32,8 +32,8 @@ use crate::abi::host::service::{
     TrustServesIn, TrustSightIn, TrustSightItemIn, TrustStateIn, TrustVerifyIn, UnitNestIn,
     VerifyLookupIn, VerifyStoreIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, ABSENT,
     CLAIM_WON, CONTENT_BLOCK, DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND, HOOK_STOP_MIN,
-    SECRET_LIVE, TICKET_TAKEN, TRUST_DECIDE_APPROVE, TRUST_DECIDE_REVOKE, TRUST_REACHED,
-    TRUST_UNREACHABLE, VERIFY_FOLLOW, VERIFY_HIT, VERIFY_LEAD,
+    SECRET_LIVE, SNAPSHOT_NOT_READY_VALUE, TICKET_TAKEN, TRUST_DECIDE_APPROVE, TRUST_DECIDE_REVOKE,
+    TRUST_REACHED, TRUST_UNREACHABLE, VERIFY_FOLLOW, VERIFY_HIT, VERIFY_LEAD,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Field, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
@@ -544,7 +544,7 @@ impl Services {
         handle: CompletionHandle,
         ttl_secs: u64,
         record: &[u8],
-    ) -> Result<Minted, ServiceError> {
+    ) -> Pend<Minted> {
         let mut size = TICKET_FIRST_BYTES;
         for _ in 0..2 {
             let mut buf = Zeroizing::new(vec![0_u8; size]);
@@ -555,7 +555,7 @@ impl Services {
                 into: bufs(buf.as_mut_slice(), &mut []),
             };
             if check_ticket_mint_in(&input).is_err() {
-                return Err(ServiceError::Declined(Outcome::Refused));
+                return Poll::Ready(Err(ServiceError::Declined(Outcome::Refused)));
             }
             let crossed = self.cross(
                 op::TICKET_MINT,
@@ -563,28 +563,31 @@ impl Services {
                 &input,
                 check_ticket_mint,
             );
+            if matches!(crossed, Ok((Outcome::Pending, ..))) {
+                return Poll::Pending;
+            }
             let out = match crossed.and_then(ready) {
                 Ok(out) => out,
                 Err(ServiceError::Short { bytes, .. }) => {
                     let Ok(bytes) = usize::try_from(bytes) else {
-                        return Err(ServiceError::Broken);
+                        return Poll::Ready(Err(ServiceError::Broken));
                     };
                     size = bytes.max(size);
                     continue;
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Poll::Ready(Err(e)),
             };
 
             buf.truncate(out.len as usize);
             if std::str::from_utf8(&buf).is_err() {
-                return Err(ServiceError::Broken);
+                return Poll::Ready(Err(ServiceError::Broken));
             }
-            return Ok(Minted {
+            return Poll::Ready(Ok(Minted {
                 ticket: crate::abi::sdk::cred::Cred::captured(buf),
                 expires_at_unix: out.value,
-            });
+            }));
         }
-        Err(ServiceError::Broken)
+        Poll::Ready(Err(ServiceError::Broken))
     }
 
     /// `ticket.take`: the record of the ticket that admitted the unit this crossing serves, once.
@@ -695,20 +698,19 @@ impl Services {
         counterparty: &str,
         item: &str,
         digest: &str,
-    ) -> Result<u64, ServiceError> {
+    ) -> Pend<u64> {
         let input = TrustSightItemIn {
             head: head::<TrustSightItemIn>(op::TRUST_SIGHT_ITEM, handle),
             counterparty: text(counterparty),
             item: text(item),
             digest: text(digest),
         };
-        let crossed = self.cross(
+        verdict(self.cross(
             op::TRUST_SIGHT_ITEM,
             |t| t.trust_sight_item,
             &input,
             check_trust_sight_item,
-        )?;
-        Ok(ready(crossed)?.value)
+        ))
     }
 
     /// `trust.serves`: THE KERNEL'S APPROVE as a query, for a route leg after its live re-fetch:
@@ -742,7 +744,7 @@ impl Services {
         item: Option<&str>,
         expected: Option<&str>,
         approve: bool,
-    ) -> Result<u64, ServiceError> {
+    ) -> Pend<u64> {
         let input = TrustDecideIn {
             head: head::<TrustDecideIn>(op::TRUST_DECIDE, handle),
             counterparty: text(counterparty),
@@ -755,13 +757,12 @@ impl Services {
             },
             _reserved: 0,
         };
-        let crossed = self.cross(
+        verdict(self.cross(
             op::TRUST_DECIDE,
             |t| t.trust_decide,
             &input,
             check_trust_decide,
-        )?;
-        Ok(ready(crossed)?.value)
+        ))
     }
 
     /// `trust.state`: the KERNEL'S TRUST STATE of `counterparty` and its items, as the core-admin
@@ -1375,9 +1376,9 @@ impl Services {
         handle: CompletionHandle,
         scope: u32,
         buf: &mut [u64],
-    ) -> Result<Option<Vec<crate::export_calls::Family>>, ServiceError> {
+    ) -> Pend<Option<Vec<crate::export_calls::Family>>> {
         self.snapshot_read_with_used(handle, scope, buf)
-            .map(|snapshot| snapshot.map(|(families, _used)| families))
+            .map(|result| result.map(|snapshot| snapshot.map(|(families, _used)| families)))
     }
 
     /// [`Self::snapshot_read`] together with the exact successful layout size, in bytes. The
@@ -1386,7 +1387,7 @@ impl Services {
         handle: CompletionHandle,
         scope: u32,
         buf: &mut [u64],
-    ) -> Result<Option<(Vec<crate::export_calls::Family>, usize)>, ServiceError> {
+    ) -> Pend<Option<(Vec<crate::export_calls::Family>, usize)>> {
         let bytes = std::mem::size_of_val(buf);
         let at = buf.as_mut_ptr().cast::<u8>();
         let input = SnapshotReadIn {
@@ -1404,16 +1405,32 @@ impl Services {
             |t| t.snapshot_read,
             &input,
             check_snapshot_read,
-        )?;
-        if let (Outcome::Failed, _, Filled::Written) = crossed {
-            return Ok(None);
+        );
+        if matches!(crossed, Ok((Outcome::Pending, ..))) {
+            return Poll::Pending;
         }
-        let out = ready(crossed)?;
+        let crossed = match crossed {
+            Ok(crossed) => crossed,
+            Err(error) => return Poll::Ready(Err(error)),
+        };
+        if let (Outcome::Failed, out, Filled::Written) = crossed {
+            return Poll::Ready(if out.value == SNAPSHOT_NOT_READY_VALUE {
+                Ok(None)
+            } else {
+                Err(ServiceError::Declined(Outcome::Failed))
+            });
+        }
+        let out = match ready(crossed) {
+            Ok(out) => out,
+            Err(error) => return Poll::Ready(Err(error)),
+        };
         // SAFETY: `buf` is ours, `bytes` long; the check held `len` within it.
         let laid = unsafe { std::slice::from_raw_parts(at.cast_const(), out.len as usize) };
-        snapshot::read(laid, out.value)
-            .map(|families| Some((families, laid.len())))
-            .ok_or(ServiceError::Broken)
+        Poll::Ready(
+            snapshot::read(laid, out.value)
+                .map(|families| Some((families, laid.len())))
+                .ok_or(ServiceError::Broken),
+        )
     }
 
     /// `auth.call`: call the auth `auth` names at `point` through the host (THE DESIGN, Auth points
