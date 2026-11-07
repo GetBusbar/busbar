@@ -217,9 +217,26 @@ async fn app_with_admin_reader(
     .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
-    let book = crate::root::boot::book(&app, &module)
+    let budget = busbar_kernel::persistence::journal::BufferBudget {
+        records: 4096,
+        bytes: 4 * 1024 * 1024,
+    };
+    let core = app
+        .governance
+        .as_ref()
+        .expect("the fixture App retains its native governance owner")
+        .core_store_handle()
+        .expect("the fixture App retains its admitted CoreStore");
+    let journal = busbar_kernel::persistence::journal::RuntimeJournal::open(
+        core,
+        busbar_kernel::door::op_id().counter(),
+        budget,
+    )
+    .await
+    .expect("the fixture listener journal opens on its App's native Store");
+    let book = crate::root::durability::node_book(journal, budget)
         .await
-        .expect("the actual Store binds rate history before request admission");
+        .expect("the fixture listener retains its native NodeBook");
     limits
         .keep()
         .await

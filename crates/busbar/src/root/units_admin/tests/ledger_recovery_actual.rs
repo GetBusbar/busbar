@@ -138,15 +138,8 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
     }))
     .unwrap();
     let mut config = busbar_kernel::config::resolve(&config, &Default::default()).unwrap();
-    let token_file = std::path::Path::new("/Users/matthew/Developer/tmp/corefix-implementation")
-        .join(format!(
-            "ledger-recovery-operator-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+    let token_directory = crate::root::test_plugins::scratch("ledger-recovery-operator");
+    let token_file = token_directory.join("operator-token");
     std::fs::write(&token_file, ADMIN_TOKEN).unwrap();
     config.auth.as_mut().unwrap().admin_auth[0].token = Some(
         busbar_kernel::config::secret::SecretRef::file(token_file.to_string_lossy()),
@@ -168,6 +161,7 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
     .await
     .expect("the normal product builder owns the supplied actual Store");
     std::fs::remove_file(token_file).unwrap();
+    std::fs::remove_dir(token_directory).unwrap();
     limits.stage_boot();
     let book = crate::root::boot::book(&app, &module)
         .await

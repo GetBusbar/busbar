@@ -185,9 +185,6 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
         .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
-        let _book = crate::root::boot::book(&app, "configured-store")
-            .await
-            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -346,9 +343,6 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
         .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
-        let _book = crate::root::boot::book(&app, "configured-store")
-            .await
-            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -492,9 +486,6 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
         .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
-        let _book = crate::root::boot::book(&app, "configured-store")
-            .await
-            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -688,9 +679,6 @@ async fn drive_key_cap_and_delegation_errors() {
         .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
-        let _book = crate::root::boot::book(&app, "configured-store")
-            .await
-            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -925,9 +913,6 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
         .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
-        let _book = crate::root::boot::book(&app, "configured-store")
-            .await
-            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -1174,11 +1159,6 @@ async fn serve_keys_fixture(
                 .await
                 .expect("the product root builds the actual admin application");
                 limits.stage_boot();
-                let _book = crate::root::boot::book(&app, "configured-store")
-                    .await
-                    .expect(
-                        "the actual configured Store binds boot rate history before activation",
-                    );
                 limits.keep().await.expect("the product limits commit");
                 if let Some(rotate) = rotate {
                     rotate.await;
@@ -1263,11 +1243,6 @@ async fn serve_keys_fixture(
                 .await
                 .expect("the product root builds the actual admin application");
                 limits.stage_boot();
-                let _book = crate::root::boot::book(&app, "configured-store")
-                    .await
-                    .expect(
-                        "the actual configured Store binds boot rate history before activation",
-                    );
                 limits.keep().await.expect("the product limits commit");
                 if let Some(rotate) = rotate {
                     rotate.await;
@@ -1344,9 +1319,6 @@ async fn serve_keys_fixture(
             .await
             .expect("the product root builds the actual admin application");
             limits.stage_boot();
-            let _book = crate::root::boot::book(&app, "configured-store")
-                .await
-                .expect("the actual configured Store binds boot rate history before activation");
             limits.keep().await.expect("the product limits commit");
             if let Some(rotate) = rotate {
                 rotate.await;
@@ -1947,9 +1919,6 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
         .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
-        let _book = crate::root::boot::book(&app, "configured-store")
-            .await
-            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -2847,9 +2816,6 @@ async fn drive_plugin_reload_errors() {
         .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
-        let _book = crate::root::boot::book(&app, "configured-store")
-            .await
-            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -2967,9 +2933,6 @@ async fn drive_plugin_rollback_errors() {
         .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
-        let _book = crate::root::boot::book(&app, "configured-store")
-            .await
-            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -3205,9 +3168,6 @@ async fn drive_plugin_inspect_errors() {
         .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
-        let _book = crate::root::boot::book(&app, "configured-store")
-            .await
-            .expect("the actual configured Store binds boot rate history before activation");
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
@@ -3638,9 +3598,6 @@ async fn named_map_app_opts(
     .await
     .expect("the actual product builds the named-map application");
     limits.stage_boot();
-    let _book = crate::root::boot::book(&app, "configured-store")
-        .await
-        .expect("the actual configured Store binds boot rate history before activation");
     limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
         rotate.await;
@@ -4910,9 +4867,6 @@ async fn drive_named_map_errors() {
             .await
             .expect("the product root builds the actual admin application");
             limits.stage_boot();
-            let _book = crate::root::boot::book(&app, "configured-store")
-                .await
-                .expect("the actual configured Store binds boot rate history before activation");
             limits.keep().await.expect("the product limits commit");
             if let Some(rotate) = rotate {
                 rotate.await;

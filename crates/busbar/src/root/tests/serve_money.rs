@@ -405,9 +405,6 @@ async fn governed_full(
     .await
     .expect("the actual root builds the money deployment");
     limits.stage_boot();
-    let _boot_book = crate::root::boot::book(&app, &store_module)
-        .await
-        .expect("the actual configured Store binds its boot rate history");
     limits.keep().await.expect("the product limits commit");
     std::fs::remove_file(&signing_file).expect("the signing secret was resolved at boot");
     if let Some(rotate) = rotate {
