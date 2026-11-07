@@ -291,7 +291,7 @@ fn boot_default_config_defers_store_overlay_recovery_until_the_anchor_opens() {
     println!("{WITNESS}");
 }
 #[test]
-fn boot_mutable_with_overlay_disabled_refuses_to_boot() {
+fn boot_mutable_historical_overlay_selector_is_normalized_without_changing_values() {
     const CHILD: &str = "BUSBAR_CENTRAL2_DISK_CHILD";
     const WITNESS: &str = "actual root disk config assertions completed";
     if std::env::var_os(CHILD).is_none() {
@@ -346,19 +346,38 @@ fn boot_mutable_with_overlay_disabled_refuses_to_boot() {
     crate::dist_root_install::install();
     let cfg = "providers: {}\nmodels: {}\nstore: {module: memory}\nauth: {chain: [], admin_auth: []}\nconfig:\n  locked: false\n  overlay: false\n";
     let (dir, config_path, _p) = boot_config_dir("no-backend", cfg);
-    let Err(err) = load_config_from_disk(
+    let rules = crate::root::door_steps::Rules::default();
+    let normalized = busbar_kernel::appbuild::RootRules::normalize_document(
+        &rules,
+        busbar_kernel::appbuild::ConfigDocument::Deployment,
+        &config_path,
+        cfg,
+    )
+    .expect("the actual startup normalizes the historical selector")
+    .expect("the obsolete field requires a converted document");
+    let normalized: serde_yaml::Value = serde_yaml::from_str(&normalized).unwrap();
+    assert!(
+        normalized["config"].get("overlay").is_none(),
+        "the converted document contains no obsolete selector"
+    );
+    assert_eq!(
+        normalized["config"]["locked"],
+        serde_yaml::Value::Bool(false)
+    );
+    assert_eq!(normalized["store"]["module"].as_str(), Some("memory"));
+    let loaded = load_config_from_disk(
         &config_path,
         None,
         false,
         busbar_kernel::config::EnvSubst::Strict,
-        &crate::root::door_steps::Rules::default(),
-    ) else {
-        panic!("mutable + overlay disabled must refuse to boot");
-    };
-
-    assert!(
-        err.contains("unknown field `overlay`") && err.contains("expected `locked`"),
-        "the removed selector must be refused by the current configuration grammar: {err}"
+        &rules,
+    )
+    .expect("the normal startup accepts the lossless historical conversion");
+    assert!(!loaded.deploy.config.locked);
+    assert_eq!(
+        std::fs::read_to_string(&config_path).unwrap(),
+        cfg,
+        "normalization never rewrites the authored source"
     );
     std::fs::write(&config_path, cfg.replace("  overlay: false\n", "")).unwrap();
     assert!(

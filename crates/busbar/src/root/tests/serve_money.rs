@@ -2039,9 +2039,30 @@ async fn root_custody_expiry_obeys_store_liveness_and_preserves_the_paid_request
     assert_source_request_retained(&g, &source).await;
 
     let source = reserved_source(&g, "root-ticket-expired-cap").await;
-    let _expired = mint_reserved_source(&g, &source, source.now - 120).await;
+    let at = busbar_kernel::store::now();
+    let (_, expiry) = g
+        .gov
+        .mint_ticket_bound(
+            &source.key.id,
+            "custody_test",
+            2,
+            None,
+            b"opaque",
+            at,
+            |identity| source.owner.custody.bind(&source.owner.source, identity),
+        )
+        .await
+        .expect("the native Store accepts a live ticket before its expiry");
     source.money.settle_end(source.unit, 200);
     source.owner.custody.terminal(source.unit, true);
+    // Expire the accepted ticket on the actual Store's clock, rather than
+    // asking a native transaction to mint an already-expired capability.
+    tokio::time::sleep(std::time::Duration::from_secs(
+        expiry
+            .saturating_sub(busbar_kernel::store::now())
+            .saturating_add(1),
+    ))
+    .await;
     source.owner.custody.sweep().await;
     assert_concurrent_custody(&g, &source.group, false, source.now).await;
     assert!(source
