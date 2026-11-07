@@ -221,12 +221,43 @@ async fn transient_pointer(mode: u8) {
     let reads = AtomicU64::new(0);
     let observed_transient = Arc::new(AtomicBool::new(false));
     let observed = observed_transient.clone();
-    let swap_after = match mode {
-        0 => 2,
-        1 => 0,
-        _ => 4,
-    };
+    let swap_after = if mode == 0 { 2 } else { 0 };
+    let parent_head = address(&checkpoint.operation_id);
+    let ancestry_phase = Arc::new(AtomicU64::new(0));
+    let phase = ancestry_phase.clone();
     *backend.after_read.lock().unwrap() = Some(Arc::new(move |backend, request| {
+        if mode == 2 {
+            // The child selection reads no parent head. verify_origin reads it
+            // after the complete canonical prefix proof, immediately before
+            // looking up the selected parent candidate. A fixed record-read
+            // count instead reached the final owned replay after caching and
+            // mutated bytes only after the last preflight read had completed.
+            if request.addresses == [parent_head.clone()]
+                && phase
+                    .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            {
+                backend
+                    .state
+                    .lock()
+                    .unwrap()
+                    .rows
+                    .insert(at.clone(), changed.clone());
+            } else if request.addresses == [at.clone()]
+                && phase
+                    .compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            {
+                observed.store(true, Ordering::SeqCst);
+                backend
+                    .state
+                    .lock()
+                    .unwrap()
+                    .rows
+                    .insert(at.clone(), original.clone());
+            }
+            return;
+        }
         if request.addresses == [at.clone()] {
             match reads.fetch_add(1, Ordering::SeqCst) {
                 count if count == swap_after => {
@@ -272,6 +303,13 @@ async fn transient_pointer(mode: u8) {
         "ancestry lookup must actually observe the transient resealed frame"
     );
     let rejected = result.is_err();
+    if mode == 2 {
+        assert_eq!(
+            ancestry_phase.load(Ordering::SeqCst),
+            2,
+            "swap once at parent-head selection and restore after its candidate read"
+        );
+    }
     if mode == 2 && rejected {
         assert_eq!(
             backend.state.lock().unwrap().sent.len(),
