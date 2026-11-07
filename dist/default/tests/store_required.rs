@@ -4,8 +4,8 @@
 //! A missing `store:` block is refused at the
 //! outermost surface — the REAL binary over the no-store fixture (`fixtures/no_store_1_5_5.yaml`):
 //!
-//! 1. `busbar --validate` REFUSES a config with no `store:` block (exit 1), naming the store to add
-//!    and the migration that adds it.
+//! 1. `busbar --validate` REFUSES a config with no `store:` block (exit 1), requiring the
+//!    configured Store module and settings.
 //! 2. `busbar --migrate-config` inserts `store: {module: memory}` and says so.
 //! 3. The migrated config validates.
 
@@ -63,15 +63,13 @@ fn validate_refuses_a_config_without_a_store_block() {
     assert_eq!(out.status.code(), Some(1), "refused; stderr:\n{stderr}");
     assert!(
         stderr.contains(
-            "  - store is required; add a `store:` block, e.g. `store: {module: memory}`"
+            "  - store is required; add a `store:` block with the configured Store module and settings"
         ),
         "the refusal names the store to add; stderr:\n{stderr}"
     );
     assert!(
-        stderr.contains(
-            "run `busbar --migrate-config <config.yaml>`, which inserts `store: {module: memory}`"
-        ),
-        "the refusal names the migration; stderr:\n{stderr}"
+        stderr.contains("BUSBAR-3015: config validation failed:"),
+        "the missing Store is refused during configuration validation; stderr:\n{stderr}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

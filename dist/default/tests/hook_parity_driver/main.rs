@@ -11,3 +11,8 @@ include!(concat!(env!("OUT_DIR"), "/driver_proofs.rs"));
 mod common;
 
 mod rig;
+
+// One native Store fixture owner for this standalone target, matching plane_driver.
+use busbar_kernel::{door, persistence};
+#[path = "../../../../crates/busbar-kernel/src/tests/real_store.rs"]
+mod real_store;

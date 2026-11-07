@@ -10,7 +10,7 @@ use busbar_contract::abi::mechanism::call::{Blob, Outcome as AbiOutcome, BLOB_OC
 use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
 use busbar_contract::abi::plane::{PlaneOpenIn, PlaneOpenOut, UnitCount};
 use busbar_contract::abi::transport::STATUS_SUCCESS;
-use busbar_contract::caps::{Outcome, Pass, ReasonCode, Route, StepName};
+use busbar_contract::caps::{DurableWrite, Grant, Outcome, Pass, ReasonCode, Route, StepName};
 use busbar_contract::hooks::{BudgetBucketState, RoutingPolicy};
 use busbar_kernel::canary::Canary;
 use busbar_kernel::hooks::{RequestedSignals, ResolvedPolicy};
@@ -21,6 +21,8 @@ use busbar_kernel::plane_driver::{
 };
 use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
 use busbar_kernel::teller::{run_unit_async, AccrualMeter, Ended, Kernel, Run, UnitCtx};
+use busbar_kernel_audit::amend::{self as amend, AmendBody, AmendSink, Amendment};
+use busbar_kernel_wal::{BodyWriter, Entry, RecordClass};
 use busbar_plugin_loader::dispatch::{
     in_head, kinds::plane::Plane, load_linked, out_head, plane_calls::PlaneInstance, Bind,
     DispatchConfig, Dispatcher, Frame, LinkedRow, NoSink, Plugin,
@@ -363,6 +365,132 @@ impl CallerFacts for Callers {
     }
 }
 
+// The production amendment codec and retained-original sink, over this fixture's
+// actual native Store. A content handoff must await Applied just as normal boot does.
+const AMENDMENT: &str = "amend.v1";
+
+fn amendment_entry(amendment: &Amendment) -> Entry {
+    let (class, wall) = match &amendment.body {
+        AmendBody::Access(a) => (RecordClass::Access, a.wall),
+        AmendBody::Adjust(a) => (RecordClass::Transaction, a.wall),
+    };
+    Entry::new(class, amendment_body(amendment)).at(wall, 0)
+}
+
+fn amendment_body(amendment: &Amendment) -> Vec<u8> {
+    let mut body = BodyWriter::new();
+    body.text(AMENDMENT)
+        .num(amendment.seq)
+        .text(&amendment.prev_hash)
+        .text(&amendment.hash)
+        .text(amendment.class().as_str());
+    let subject = |body: &mut BodyWriter, s| {
+        let (tag, value) = amend::subject_fields(s);
+        body.text(tag).text(&value);
+    };
+    match &amendment.body {
+        AmendBody::Access(a) => {
+            body.text(a.reader.as_str()).text(&a.name);
+            subject(&mut body, &a.subject);
+            body.text(a.op_class.as_str()).num(a.fields.len() as u64);
+            for field in &a.fields {
+                body.text(field);
+            }
+            body.num(a.wall);
+        }
+        AmendBody::Adjust(a) => {
+            body.text(&a.amends_hash);
+            subject(&mut body, &a.subject);
+            body.text(&a.lane).num(a.card_epoch_ms);
+            for side in [&a.was, &a.now] {
+                body.num(side.len() as u64);
+                for (class, count) in side {
+                    body.text(class).text(&count.to_decimal_string());
+                }
+            }
+            body.text(&a.authorised_by).text(&a.reason).num(a.wall);
+
+            if let Some(pool) = &a.pool {
+                body.text(pool);
+            }
+        }
+    }
+    body.finish()
+}
+
+type PendingAmendments = std::collections::BTreeMap<
+    u64,
+    (
+        String,
+        Arc<busbar_kernel::persistence::journal::runtime::StagedRun>,
+    ),
+>;
+
+struct NativeAmendments {
+    journal: Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>,
+    pending: Arc<Mutex<PendingAmendments>>,
+    token: Grant<DurableWrite>,
+}
+
+impl AmendSink for NativeAmendments {
+    fn sealed(
+        &self,
+        amendment: &Amendment,
+    ) -> Result<
+        busbar_kernel_audit::amend::AmendCommit,
+        busbar_kernel_audit::amend::AmendPersistError,
+    > {
+        use busbar_kernel_audit::amend::AmendPersistError;
+        let staged = (|| {
+            let mut pending = self.pending.lock().map_err(|_| AmendPersistError)?;
+            pending.retain(|_, (_, run)| !matches!(self.journal.is_confirmed(run), Ok(true)));
+            if let Some((hash, run)) = pending.get(&amendment.seq) {
+                if hash != &amendment.hash {
+                    return Err(AmendPersistError);
+                }
+                return Ok(run.clone());
+            }
+            let run = self
+                .journal
+                .stage_run(&[amendment_entry(amendment)])
+                .map_err(|_| AmendPersistError)?;
+            pending.insert(amendment.seq, (amendment.hash.clone(), run.clone()));
+            Ok(run)
+        })()?;
+        let journal = self.journal.clone();
+        let pending = self.pending.clone();
+        let seq = amendment.seq;
+        Ok(Box::pin(async move {
+            let run = staged;
+            journal.confirm(&run).await.map_err(|_| AmendPersistError)?;
+            pending.lock().map_err(|_| AmendPersistError)?.remove(&seq);
+            Ok(())
+        }))
+    }
+}
+
+async fn bind_native_amendments(amendments: &amend::NodeAmendments) {
+    let journal = busbar_kernel::persistence::journal::RuntimeJournal::open(
+        crate::real_store::core().await,
+        busbar_kernel::door::op_id().counter(),
+        busbar_kernel::persistence::journal::BufferBudget {
+            records: busbar_kernel_wal::MEMORY_BUFFER_RECORDS,
+            bytes: 32 * 1024 * 1024,
+        },
+    )
+    .await
+    .expect("the actual native fixture amendment journal opens");
+    let sink = Arc::new(NativeAmendments {
+        journal,
+        pending: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
+        token: Kernel::new().durability_token(),
+    });
+    amendments
+        .bind(Some(sink.clone() as Arc<dyn AmendSink>), 0, &sink.token)
+        .await
+        .expect("content handoffs bind their actual native amendment sink");
+}
+
 /// The deployment's hooks, as a test states them.
 #[derive(Default)]
 pub struct Hooks {
@@ -550,6 +678,7 @@ pub struct Rig {
 
 impl Rig {
     pub async fn new(primary: Pool, fallback: Option<Pool>, hooks: Hooks) -> Self {
+        bind_native_amendments(&hooks.callers.journal).await;
         let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
             workers: 2,
             ..DispatchConfig::default()
