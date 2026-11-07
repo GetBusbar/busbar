@@ -169,8 +169,12 @@ async fn timeout_only_admin_put_refreshes_the_actual_policy_atomically() {
     );
 
     app.plugin_routes = metrics_routes();
-    let (data, admin, handle) =
-        busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let (data, admin, handle) = busbar_kernel::build_split_routers_with_limits(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+        1 << 20,
+        0,
+        false,
+    );
     let data_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let data_address = data_listener.local_addr().unwrap();
     let data_serving = tokio::spawn(async move { axum::serve(data_listener, data).await.unwrap() });

@@ -782,12 +782,21 @@ pub(crate) async fn register_and_restore(
     }
     let restored = restore_native(&AUDIT_LOG, &native).await?;
     native.ready.store(true, Ordering::Release);
-    tracing::info!(
-        records = restored.records,
-        unreadable = restored.unreadable,
-        chain_breaks = restored.chain_breaks.len(),
-        "admin audit restored from canonical native storage"
-    );
+    if restored.records == 0 && restored.unreadable == 0 && restored.chain_breaks.is_empty() {
+        tracing::debug!(
+            records = restored.records,
+            unreadable = restored.unreadable,
+            chain_breaks = restored.chain_breaks.len(),
+            "admin audit restored from canonical native storage"
+        );
+    } else {
+        tracing::info!(
+            records = restored.records,
+            unreadable = restored.unreadable,
+            chain_breaks = restored.chain_breaks.len(),
+            "admin audit restored from canonical native storage"
+        );
+    }
     open_plugin_refusals();
     drain_pending_audit();
     Ok(())

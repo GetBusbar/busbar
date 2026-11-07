@@ -247,7 +247,8 @@ async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
         .expect("value request admits");
     gov.record_usage(&app.cost, &k, "value", "m", &input_toks(50_000), now);
 
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -438,7 +439,8 @@ async fn get_group_usage_unknown_group_not_found() {
     }
     app.cost = Arc::new(usage_cost(&groups));
     app.groups_registry = groups;
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -602,7 +604,8 @@ async fn get_group_usage_governance_off_zero_usage_caps_projected() {
     app.cost = Arc::new(usage_cost(&groups));
     app.groups_registry = groups;
     app.governance = None;
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

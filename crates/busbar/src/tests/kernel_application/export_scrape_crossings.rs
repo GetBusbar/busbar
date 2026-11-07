@@ -29,6 +29,27 @@ fn sink() -> Arc<dyn ExportCalls> {
         DispatchConfig::default(),
         Arc::new(services),
     ));
+    crate::root::connector::install_io(&dispatcher);
+    let transport_settings = busbar_contract::transport::TransportSettings::default();
+    let conns = busbar_core_connector::process::build_with_secrets(
+        || {
+            crate::root::connector::entries_on(
+                &dispatcher,
+                crate::LINKED_TRANSPORT_DOORS,
+                &transport_settings,
+            )
+        },
+        busbar_core_connector::process::dest_judge(&busbar_kernel::config::Destinations {
+            block_private_addresses: true,
+            ..Default::default()
+        })
+        .expect("the scrape fixture's native destination guard builds"),
+        &[],
+        dispatcher.conn_waker(),
+        crate::root::connector::pool_posture(&transport_settings),
+        crate::root::connector::spawn_secret_resolver(),
+    )
+    .expect("the scrape fixture builds its actual linked transport connection table");
     let plugin = load_dropped::<Export>(
         &path,
         &statement,
@@ -37,7 +58,7 @@ fn sink() -> Arc<dyn ExportCalls> {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: ConnTable::NoNeeds,
+            conns: ConnTable::Host(conns),
         },
     )
     .expect("the actual scrape exporter loads with its asynchronous host services");

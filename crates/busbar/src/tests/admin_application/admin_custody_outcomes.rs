@@ -109,7 +109,7 @@ impl PersistenceBackend for Store {
                 return Err(Failure::Refused);
             }
             if self.fail_delete.load(Ordering::SeqCst) && candidate.candidate().mutations.iter().any(|mutation| matches!(mutation, Mutation::Put { address, value } if identity_key(address) && serde_json::from_slice::<Value>(value.expose(&busbar_kernel::seal::lend())).is_ok_and(|row| !row["record"]["deleted_at"].is_null()))) {
-                return Err(Failure::Unavailable);
+                return Err(Failure::Refused);
             }
             if key && self.pause_write.swap(false, Ordering::SeqCst) {
                 self.write.entered.notify_one();
@@ -697,6 +697,29 @@ async fn lost_mint_reply_does_not_release_a_committed_claim() {
     store.lose_write_reply.store(true, Ordering::SeqCst);
     let first = mint(router.clone(), "custody:lost-mint", "lost").await;
     assert_eq!(first.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let deferred = store
+        .core
+        .get()
+        .unwrap()
+        .identity()
+        .list_keys()
+        .await
+        .expect_err("an unresolved native mint cannot publish an identity snapshot");
+    assert!(
+        deferred
+            .to_string()
+            .contains("identity publication deferred"),
+        "the original mint retains native custody: {deferred}"
+    );
+    store.lose_write_reply.store(false, Ordering::SeqCst);
+    store
+        .core
+        .get()
+        .unwrap()
+        .identity()
+        .settle_pending()
+        .await
+        .expect("confirm the exact original mint after native replies resume");
     assert_eq!(
         store
             .core
@@ -709,7 +732,6 @@ async fn lost_mint_reply_does_not_release_a_committed_claim() {
             .len(),
         1
     );
-    store.lose_write_reply.store(false, Ordering::SeqCst);
     let retry = mint(router.clone(), "custody:lost-mint", "lost").await;
     assert_eq!(retry.status(), StatusCode::CONFLICT);
     assert_eq!(
@@ -746,6 +768,29 @@ async fn lost_rotate_reply_does_not_release_a_committed_claim() {
     )
     .await;
     assert_eq!(first.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let deferred = store
+        .core
+        .get()
+        .unwrap()
+        .identity()
+        .get_key(&id)
+        .await
+        .expect_err("the original uncertain rotation blocks publication of this key");
+    assert!(
+        deferred
+            .to_string()
+            .contains("same-key native outcome unresolved"),
+        "the original rotation retains native custody: {deferred}"
+    );
+    store.lose_write_reply.store(false, Ordering::SeqCst);
+    store
+        .core
+        .get()
+        .unwrap()
+        .identity()
+        .settle_pending()
+        .await
+        .expect("confirm the exact original rotation after native replies resume");
     let generation = store
         .core
         .get()
@@ -756,7 +801,6 @@ async fn lost_rotate_reply_does_not_release_a_committed_claim() {
         .unwrap()
         .unwrap()
         .generation_hash;
-    store.lose_write_reply.store(false, Ordering::SeqCst);
     let retry = request(
         router.clone(),
         "POST",

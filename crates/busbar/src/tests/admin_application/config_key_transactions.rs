@@ -135,8 +135,12 @@ async fn slow_store_read_does_not_stall_the_executor() {
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let (_data, admin, _handle) =
-        busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let (_data, admin, _handle) = busbar_kernel::build_split_routers_with_limits(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+        1 << 20,
+        0,
+        false,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, admin).await });
@@ -300,8 +304,12 @@ async fn cap_is_read_from_the_post_lock_snapshot() {
     app.overlay_path = Some(
         busbar_kernel::config::overlay::OverlayStore::from_core(calls).expect("actual overlay"),
     );
-    let (_data, admin, handle) =
-        busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let (_data, admin, handle) = busbar_kernel::build_split_routers_with_limits(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+        1 << 20,
+        0,
+        false,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, admin).await });
@@ -469,8 +477,12 @@ async fn concurrent_mints_never_bind_a_deleted_group() {
         app.overlay_path = Some(
             busbar_kernel::config::overlay::OverlayStore::from_core(calls).expect("actual overlay"),
         );
-        let (_data, admin, _handle) =
-            busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+        let (_data, admin, _handle) = busbar_kernel::build_split_routers_with_limits(
+            crate::root::real_store::hydrated(Arc::new(app)).await,
+            1 << 20,
+            0,
+            false,
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, admin).await });
@@ -557,8 +569,12 @@ async fn concurrent_mints_never_bind_a_deleted_group() {
         app.overlay_path = Some(
             busbar_kernel::config::overlay::OverlayStore::from_core(calls).expect("actual overlay"),
         );
-        let (_data, admin, handle) =
-            busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+        let (_data, admin, handle) = busbar_kernel::build_split_routers_with_limits(
+            crate::root::real_store::hydrated(Arc::new(app)).await,
+            1 << 20,
+            0,
+            false,
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, admin).await });
@@ -740,8 +756,12 @@ async fn concurrent_rebinds_never_bind_a_deleted_group() {
     app.overlay_path = Some(
         busbar_kernel::config::overlay::OverlayStore::from_core(calls).expect("actual overlay"),
     );
-    let (_data, admin, handle) =
-        busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let (_data, admin, handle) = busbar_kernel::build_split_routers_with_limits(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+        1 << 20,
+        0,
+        false,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, admin).await });

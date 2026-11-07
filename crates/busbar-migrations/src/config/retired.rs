@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::migration_table as declared_vocabulary;
+
 pub fn retired_config_keys_1_5_3() -> Vec<(&'static str, String)> {
     let trace_home = format!(
         "an `export:` instance with `module: {}` and `settings.url`",

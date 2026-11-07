@@ -152,8 +152,12 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
         let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(core.clone())
             .expect("actual Store overlay");
         app.overlay_path = Some(overlay.clone());
-        let (_data, admin, handle) =
-            busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+        let (_data, admin, handle) = busbar_kernel::build_split_routers_with_limits(
+            crate::root::real_store::hydrated(Arc::new(app)).await,
+            1 << 20,
+            0,
+            false,
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, admin).await });
@@ -366,8 +370,12 @@ async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generatio
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(core.clone())
         .expect("actual Store overlay");
     app.overlay_path = Some(overlay.clone());
-    let (_data, admin, handle) =
-        busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let (_data, admin, handle) = busbar_kernel::build_split_routers_with_limits(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+        1 << 20,
+        0,
+        false,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, admin).await });
@@ -515,8 +523,12 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
         let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(core.clone())
             .expect("actual Store overlay");
         app.overlay_path = Some(overlay.clone());
-        let (_data, admin, handle) =
-            busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+        let (_data, admin, handle) = busbar_kernel::build_split_routers_with_limits(
+            crate::root::real_store::hydrated(Arc::new(app)).await,
+            1 << 20,
+            0,
+            false,
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, admin).await });
@@ -686,8 +698,12 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(core.clone())
         .expect("actual Store overlay");
     app.overlay_path = Some(overlay.clone());
-    let (_data, admin, _handle) =
-        busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let (_data, admin, _handle) = busbar_kernel::build_split_routers_with_limits(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+        1 << 20,
+        0,
+        false,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, admin).await });
@@ -881,8 +897,12 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(core.clone())
         .expect("actual Store overlay");
     app.overlay_path = Some(overlay.clone());
-    let (_data, admin, handle) =
-        busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let (_data, admin, handle) = busbar_kernel::build_split_routers_with_limits(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+        1 << 20,
+        0,
+        false,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, admin).await });
@@ -1143,7 +1163,9 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(core.clone())
         .expect("actual Store overlay");
     app.overlay_path = Some(overlay.clone());
-    let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::new(app)));
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+    ));
     let before = handle.load();
     faults.lose_reply.store(true, Ordering::SeqCst);
     let commit = || {
@@ -1328,7 +1350,9 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(core.clone())
         .expect("actual Store overlay");
     app.overlay_path = Some(overlay.clone());
-    let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::new(app)));
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+    ));
     let before = handle.load().config_version;
     let barrier = Arc::new(tokio::sync::Notify::new());
     *faults.block_read.lock().unwrap() = Some(barrier.clone());

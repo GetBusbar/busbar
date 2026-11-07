@@ -157,7 +157,7 @@ async fn hook_snapshot_builders_recompute_the_content_gate() {
     );
 
     let (router, handle) = busbar_kernel::build_router_with_limits(
-        Arc::new(deleted),
+        crate::root::real_store::hydrated(Arc::new(deleted)).await,
         busbar_kernel_egress::upstream::max_translate_body_bytes(),
         busbar_kernel::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         busbar_kernel::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
@@ -334,7 +334,7 @@ async fn hook_derived_fields_follow_the_registry() {
     );
 
     let (router, handle) = busbar_kernel::build_router_with_limits(
-        Arc::new(deleted),
+        crate::root::real_store::hydrated(Arc::new(deleted)).await,
         busbar_kernel_egress::upstream::max_translate_body_bytes(),
         busbar_kernel::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         busbar_kernel::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
@@ -481,7 +481,8 @@ async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
     missing.plugin = "totally-unregistered-plugin-name".to_string();
     app.hook_registry.insert("missing".into(), missing);
 
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

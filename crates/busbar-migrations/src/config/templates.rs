@@ -63,7 +63,7 @@ impl ResolvedTemplates {
             }
             (Yaml::Mapping(_) | Yaml::Sequence(_), _)
             | (_, Yaml::Mapping(_) | Yaml::Sequence(_)) => {
-                return Err("detection changed document structure".into())
+                return Err("detection changed document structure".into());
             }
             _ => {}
         }

@@ -221,8 +221,9 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits()
         ),
         "the actual destination-wide failure trips the configured m0 lane"
     );
+    let app = crate::root::real_store::hydrated(Arc::new(app)).await;
     outage.armed.store(true, Ordering::SeqCst);
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -452,8 +453,9 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
         .expect("actual root governance")
         .clone();
     let before_hash = gov.admin_token_hash();
+    let app = crate::root::real_store::hydrated(Arc::new(app)).await;
     outage.armed.store(true, Ordering::SeqCst);
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

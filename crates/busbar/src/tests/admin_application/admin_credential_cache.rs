@@ -173,7 +173,7 @@ async fn filtered_credential_flush_uses_actual_admin_and_data_caches() {
         rotate.await;
     }
 
-    let app = Arc::new(app);
+    let app = crate::root::real_store::hydrated(Arc::new(app)).await;
     let target_token = common::credentials::token_for("cache-target", &["admins"], AUDIENCE);
     let omitted_token =
         common::credentials::token_for("cache-omitted", &["admins"], "api://omitted-cache");

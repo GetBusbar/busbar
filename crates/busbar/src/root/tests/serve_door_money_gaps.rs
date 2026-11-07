@@ -743,6 +743,20 @@ async fn the_pools_doors_gate_stops_a_unit_and_a_passing_gate_changes_nothing() 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_dials_a_served_unit_once_and_a_refused_one_never() {
+    const EXACT: &str = concat!(
+        module_path!(),
+        "::the_pools_door_dials_a_served_unit_once_and_a_refused_one_never"
+    );
+    let Some(case) = super::independent_cases(
+        EXACT,
+        &[
+            "door-strong-dial-pool-acl",
+            "door-strong-dial-over-budget",
+            "door-strong-dial-served",
+        ],
+    ) else {
+        return;
+    };
     let _one = PUBLISHING.lock().await;
     let spent = [limit(LimitMetric::Budget, 0, LimitWindow::Total)];
     for (instance, opts_of, expected, why) in [
@@ -765,6 +779,9 @@ async fn the_pools_door_dials_a_served_unit_once_and_a_refused_one_never() {
             "served: the whole walk, exactly once",
         ),
     ] {
+        if case != instance {
+            continue;
+        }
         let far = far_end_answering(200, ANSWER).await;
         let members = [(far.port, 1)];
         let opts = match opts_of {
@@ -796,6 +813,7 @@ async fn the_pools_door_dials_a_served_unit_once_and_a_refused_one_never() {
             "{why}: the far end was dialled {} time(s), expected {expected} (status {status})",
             far.served()
         );
+        super::independent_case_done(EXACT, &case);
     }
 }
 

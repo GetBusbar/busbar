@@ -159,7 +159,9 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::new(app)));
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+    ));
     let swap_on_capture = Arc::new(AtomicBool::new(false));
     let replace_pending = Arc::new(AtomicBool::new(false));
     let observer: Arc<dyn Fn() -> busbar_kernel::state::ApplyFuture + Send + Sync> = {

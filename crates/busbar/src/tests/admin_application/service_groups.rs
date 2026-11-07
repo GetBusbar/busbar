@@ -128,7 +128,7 @@ async fn list_groups_projects_the_limit_tree() {
         rotate.await;
     }
     let app = Arc::new(app);
-    let router = busbar_kernel::build_router(app);
+    let router = busbar_kernel::build_router(crate::root::real_store::hydrated(app).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -249,7 +249,7 @@ async fn list_groups_is_cursor_paginated() {
         rotate.await;
     }
     let app = Arc::new(app);
-    let router = busbar_kernel::build_router(app);
+    let router = busbar_kernel::build_router(crate::root::real_store::hydrated(app).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -394,7 +394,7 @@ async fn get_group_by_name_and_not_found() {
         rotate.await;
     }
     let app = Arc::new(app);
-    let router = busbar_kernel::build_router(app);
+    let router = busbar_kernel::build_router(crate::root::real_store::hydrated(app).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

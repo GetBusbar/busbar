@@ -372,7 +372,8 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
             Some(i128::from(TOKENS) * 2 * 10_i128.pow(busbar_contract::count::COUNT_SCALE))
         );
     }
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

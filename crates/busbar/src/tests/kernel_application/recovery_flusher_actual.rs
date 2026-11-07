@@ -14,6 +14,37 @@ use busbar_kernel::persistence::facade::CoreStore;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 const MODEL: &str = "m";
+
+#[derive(Clone, Default)]
+struct RecoveryDiagnostics(Arc<std::sync::Mutex<Vec<String>>>);
+impl tracing::Subscriber for RecoveryDiagnostics {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        *metadata.level() <= tracing::Level::WARN
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Fields(String);
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                use std::fmt::Write;
+                let _ = write!(self.0, "{}={value:?}; ", field.name());
+            }
+        }
+        let mut fields = Fields(String::new());
+        event.record(&mut fields);
+        let mut events = self.0.lock().unwrap();
+        if events.len() < 64 {
+            events.push(fields.0);
+        }
+    }
+}
+
 async fn input(store: &CoreStore, bucket: &str, window: u64) -> i128 {
     let usage = store.ledger().get_usage(bucket, window).await.unwrap();
     let count =
@@ -211,6 +242,9 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
         );
         return;
     }
+    let diagnostics = RecoveryDiagnostics::default();
+    tracing::subscriber::set_global_default(diagnostics.clone())
+        .expect("the isolated flusher child owns its diagnostic subscriber");
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -465,7 +499,12 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
             if journal.current(original.operation_id).state == RecoveryState::Settled { break; }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-    }).await.expect("the actual periodic flusher resumes the durable verdict without another resolve or restart");
+    }).await.unwrap_or_else(|elapsed| {
+        let states: Vec<_> = journal.selected.lock().unwrap().iter()
+            .map(|event| (hex::encode(event.operation_id), event.kind, event.revision, event.state))
+            .collect();
+        panic!("the actual periodic flusher resumes the durable verdict without another resolve or restart: {elapsed}; native checkpoints={states:?}; recovery diagnostics={:?}", diagnostics.0.lock().unwrap());
+    });
     shutdown_tx.send(()).unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), flusher)
         .await
