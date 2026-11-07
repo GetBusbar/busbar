@@ -2401,15 +2401,6 @@ fn migrate_identity_providers(
         }
     }
 
-    if auth.contains_key(Value::from(field::ROLE_BINDINGS)) && !defs.is_empty() {
-        todos.push(
-            "auth.role_bindings is nested by the IDENTITY-PROVIDER NAME in 1.5.3. The migrator named \
-             each new definition after its module, so existing bindings still resolve — but if you \
-             RENAME a definition in `identity-providers:`, rename its `role_bindings:` table to match."
-                .into(),
-        );
-    }
-
     root.insert(field::AUTH.into(), Value::Mapping(auth));
     if !defs.is_empty() {
         root.insert(Kind::Auth.root().into(), Value::Mapping(defs));
@@ -2464,5 +2455,66 @@ mod hook_migration_tests {
             serde_yaml::from_value(root["hooks"]["observer"].clone()).unwrap();
         assert_eq!(definition.module, "observer");
         assert_eq!(definition.phase, vec![HookStage::Response]);
+    }
+}
+
+#[cfg(test)]
+mod identity_provider_migration_tests {
+    use super::*;
+
+    #[test]
+    fn current_named_provider_and_bindings_require_no_decision() {
+        let mut root: Mapping = serde_yaml::from_str(
+            "identity-providers: {rig: {module: oidc, settings: {issuer: https://issuer.example}, max_admin_scope: full}}
+auth: {chain: [keys], admin_auth: [rig], role_bindings: {rig: {reader: {admin_scope: read-only}, writer: {verbs: [get_keys, post_keys]}}}}",
+        ).unwrap();
+        let original = root.clone();
+        let (mut changes, mut todos) = (Vec::new(), Vec::new());
+        migrate_identity_providers(&mut root, &mut changes, &mut todos);
+        assert_eq!(root, original);
+        assert!(changes.is_empty(), "{changes:?}");
+        assert!(todos.is_empty(), "{todos:?}");
+    }
+
+    #[test]
+    fn unambiguous_inline_provider_lift_preserves_exact_bindings_without_debt() {
+        let mut root: Mapping = serde_yaml::from_str(
+            "auth: {chain: [keys], admin_auth: [{oidc: {settings: {issuer: https://issuer.example}, max_admin_scope: full}}], role_bindings: {oidc: {reader: {admin_scope: read-only}, writer: {verbs: [get_keys, post_keys]}}}}",
+        ).unwrap();
+        let bindings = root["auth"]["role_bindings"].clone();
+        let (mut changes, mut todos) = (Vec::new(), Vec::new());
+        migrate_identity_providers(&mut root, &mut changes, &mut todos);
+        assert!(todos.is_empty(), "{todos:?}");
+        assert!(!changes.is_empty());
+        let expected: Mapping = serde_yaml::from_str(
+            "identity-providers: {oidc: {module: oidc, settings: {issuer: https://issuer.example}, max_admin_scope: full}}
+auth: {chain: [keys], admin_auth: [oidc], role_bindings: {oidc: {reader: {admin_scope: read-only}, writer: {verbs: [get_keys, post_keys]}}}}",
+        ).unwrap();
+        assert_eq!(root, expected);
+        assert_eq!(root["auth"]["role_bindings"], bindings);
+    }
+
+    #[test]
+    fn conflicting_inline_providers_preserve_both_definitions_and_require_a_decision() {
+        let mut root: Mapping = serde_yaml::from_str(
+            "auth: {chain: [{oidc: {settings: {issuer: https://data.example}}}], admin_auth: [{oidc: {settings: {issuer: https://admin.example}}}], role_bindings: {oidc: {reader: {admin_scope: read-only}}}}",
+        ).unwrap();
+        let bindings = root["auth"]["role_bindings"].clone();
+        let (mut changes, mut todos) = (Vec::new(), Vec::new());
+        migrate_identity_providers(&mut root, &mut changes, &mut todos);
+        assert_eq!(todos.len(), 1, "{todos:?}");
+        assert!(todos[0].contains("DIFFERENT `settings:`"), "{todos:?}");
+        let chain = root["auth"]["chain"][0].as_str().unwrap();
+        let admin = root["auth"]["admin_auth"][0].as_str().unwrap();
+        assert_ne!(chain, admin);
+        assert_eq!(
+            root["identity-providers"][chain]["settings"]["issuer"].as_str(),
+            Some("https://data.example")
+        );
+        assert_eq!(
+            root["identity-providers"][admin]["settings"]["issuer"].as_str(),
+            Some("https://admin.example")
+        );
+        assert_eq!(root["auth"]["role_bindings"], bindings);
     }
 }
