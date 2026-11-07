@@ -1705,7 +1705,7 @@ pub async fn admin_verdict_async(
     target: &str,
     headers: &HeaderMap,
 ) -> AdminVerdict {
-    let (door, claim) = probe_admin_verdict_async(app, method, target, headers).await;
+    let (door, claim) = probe_admin_verdict_async(app, method, target, headers, false).await;
     AdminVerdict { door, claim }
 }
 
@@ -1740,7 +1740,9 @@ fn probe_admin_verdict(
     target: &str,
     headers: &HeaderMap,
 ) -> (AdminDoor, Option<PendingClaim>) {
-    let judged = std::pin::pin!(probe_admin_verdict_async(app, method, target, headers));
+    let judged = std::pin::pin!(probe_admin_verdict_async(
+        app, method, target, headers, true
+    ));
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     match std::future::Future::poll(judged, &mut cx) {
         std::task::Poll::Ready(verdict) => verdict,
@@ -1753,10 +1755,11 @@ async fn probe_admin_verdict_async(
     method: &str,
     target: &str,
     headers: &HeaderMap,
+    probe: bool,
 ) -> (AdminDoor, Option<PendingClaim>) {
     let mut strips = Vec::new();
     let (verdict, cap, replay, no_verdict) =
-        judge_admin_chain(app, method, target, headers, true, &mut strips).await;
+        judge_admin_chain(app, method, target, headers, probe, &mut strips).await;
     admin_probe_projection(admin_chain_outcome(verdict, no_verdict), |verdict| {
         admin_door_claim_of(app, verdict, cap, replay)
     })
