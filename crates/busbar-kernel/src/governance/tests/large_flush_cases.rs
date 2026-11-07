@@ -517,15 +517,16 @@ async fn ordinary_large_positive_debt_flushes_all_chunks_with_historical_counts(
             .usage_units[busbar_contract::records::UNIT_INPUT],
         i128::MAX
     );
-    let batches = store.batches.lock().unwrap();
-    assert_eq!(
-        batches.len(),
-        1,
-        "the full Count range fits one signed wire operation"
-    );
-    assert!(batches.windows(2).all(|pair| pair[0].0 != pair[1].0));
-    assert!(gov.budget_flushes.lock().unwrap().is_empty());
-    drop(batches);
+    {
+        let batches = store.batches.lock().unwrap();
+        assert_eq!(
+            batches.len(),
+            1,
+            "the full Count range fits one signed wire operation"
+        );
+        assert!(batches.windows(2).all(|pair| pair[0].0 != pair[1].0));
+        assert!(gov.budget_flushes.lock().unwrap().is_empty());
+    }
     assert_eq!(gov.flush_budgets().await, 0);
 }
 

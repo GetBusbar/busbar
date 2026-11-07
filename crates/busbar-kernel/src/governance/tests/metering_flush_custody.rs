@@ -212,18 +212,20 @@ async fn unknown_and_unwound_flushes_keep_exact_same_timestamp_entry_identity() 
         .await
         .is_err());
     assert_eq!(gov.flush_metering_final().await, 2);
-    let calls = store.calls.lock().unwrap();
-    assert_eq!(calls[0], calls[1]);
-    assert_eq!(calls[0], calls[2]);
-    assert_eq!(
-        calls[0].1[0].pricing_version,
-        first.entry_id.unwrap().metering_version()
-    );
-    assert_eq!(
-        calls[3].1[0].pricing_version,
-        second.entry_id.unwrap().metering_version()
-    );
-    assert_ne!(calls[0].0, calls[3].0);
+    {
+        let calls = store.calls.lock().unwrap();
+        assert_eq!(calls[0], calls[1]);
+        assert_eq!(calls[0], calls[2]);
+        assert_eq!(
+            calls[0].1[0].pricing_version,
+            first.entry_id.unwrap().metering_version()
+        );
+        assert_eq!(
+            calls[3].1[0].pricing_version,
+            second.entry_id.unwrap().metering_version()
+        );
+        assert_ne!(calls[0].0, calls[3].0);
+    }
     let rows = gov.metering_for_async(metering_bucket(NOW)).await.unwrap();
     assert_eq!(rows.len(), 2);
     assert_eq!(
@@ -298,17 +300,18 @@ async fn lost_ack_then_unknown_replays_exact_body_before_fresh_arrivals() {
         3,
         "lost acknowledgement must not duplicate consumption"
     );
-    let calls = store.calls.lock().unwrap();
-    assert_eq!(calls[0], calls[1]);
-    assert_eq!(calls[0], calls[2]);
-    assert_eq!(
-        Count::from_stored(calls[0].1[0].tokens_input, calls[0].1[0].scale).unwrap(),
-        whole_count(3)
-    );
-    assert_eq!(calls[0].1[0].priced_from_ms, 123);
-    assert_eq!(calls[0].1[0].key_group_at_use, "historical-group");
-    assert!(calls[3..].iter().all(|call| call.0 != calls[0].0));
-
+    {
+        let calls = store.calls.lock().unwrap();
+        assert_eq!(calls[0], calls[1]);
+        assert_eq!(calls[0], calls[2]);
+        assert_eq!(
+            Count::from_stored(calls[0].1[0].tokens_input, calls[0].1[0].scale).unwrap(),
+            whole_count(3)
+        );
+        assert_eq!(calls[0].1[0].priced_from_ms, 123);
+        assert_eq!(calls[0].1[0].key_group_at_use, "historical-group");
+        assert!(calls[3..].iter().all(|call| call.0 != calls[0].0));
+    }
     assert_eq!(gov.pending_metering_totals().1.requests, 0);
     let rows = gov.metering_for_async(metering_bucket(NOW)).await.unwrap();
     assert_eq!(rows.len(), 2, "historical pricing instants remain distinct");

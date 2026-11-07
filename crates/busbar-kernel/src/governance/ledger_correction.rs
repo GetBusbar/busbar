@@ -2258,8 +2258,10 @@ mod async_correction_boundaries {
 
     #[test]
     fn refund_floor_keeps_the_entire_raw_candidate_unapplied() {
-        let mut row = UsageLedger::default();
-        row.requests = 1;
+        let mut row = UsageLedger {
+            requests: 1,
+            ..Default::default()
+        };
         let before = row.clone();
         let mut delta = ExactUsageDelta {
             requests: -1,

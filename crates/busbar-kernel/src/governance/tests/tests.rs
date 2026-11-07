@@ -2630,19 +2630,20 @@ async fn test_hydrate_budgets_trusts_billable_requests_even_when_it_looks_like_a
     gov.hydrate_budgets_async(&flat_cost(1), 0)
         .await
         .expect("hydrate");
-    let cell = gov.budget.read("vk_refunded");
-    let cell = cell.get("vk_refunded").expect("hydrated cell exists");
-    assert_eq!(
-        cell.requests, 7,
-        "requests is always trusted verbatim from the ledger"
-    );
-    assert_eq!(
-        cell.billable_requests, 0,
-        "billable_requests must be trusted verbatim too - re-deriving it from requests here is \
-         exactly the bug this test guards against (it would silently re-bill a refunded window \
-         on every restart)"
-    );
-
+    {
+        let cell = gov.budget.read("vk_refunded");
+        let cell = cell.get("vk_refunded").expect("hydrated cell exists");
+        assert_eq!(
+            cell.requests, 7,
+            "requests is always trusted verbatim from the ledger"
+        );
+        assert_eq!(
+            cell.billable_requests, 0,
+            "billable_requests must be trusted verbatim too - re-deriving it from requests here is \
+             exactly the bug this test guards against (it would silently re-bill a refunded window \
+             on every restart)"
+        );
+    }
     let store2: Arc<crate::persistence::facade::CoreStore> = crate::real_store::core().await;
     let k2 = sample_key("vk_split", "split_h");
     store2.identity().put_key(&k2).await.unwrap();

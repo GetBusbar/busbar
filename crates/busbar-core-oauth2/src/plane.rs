@@ -863,11 +863,6 @@ impl Sweeper {
 
 impl AsPlane {
     #[cfg(test)]
-    pub(crate) fn unconfigured_key(&self) -> Option<Vec<u8>> {
-        self.carried.ephemeral_key.get().cloned()
-    }
-
-    #[cfg(test)]
     pub(crate) fn sweeper(&self) -> Option<&Sweeper> {
         self.sweeper.as_ref()
     }
