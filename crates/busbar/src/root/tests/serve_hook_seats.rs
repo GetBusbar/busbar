@@ -896,7 +896,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     let sections = kernel_sections(&cfg)?;
     let model_pools = crate::root::model_egress::ModelPools::of(&cfg);
 
-    let store = crate::root::real_store::core().await;
+    let store = super::door_tests::process_store().await;
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
     let gov = Arc::new(
         GovState::new_with_core(store.clone(), None, Some(signer))
@@ -1017,11 +1017,12 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     )
     .await
     .expect("native node book");
-    let durability = if opts.full_journal {
+    let mut durability = if opts.full_journal {
         full_journal_book().await
     } else {
-        Arc::clone(&book.durability)
+        book.durability
     };
+    super::door_tests::bind_process_amendments(&mut durability, gov.amendments()).await;
     node.bind_book(Arc::clone(&durability));
     let post = Arc::new(NodeEndPost::new(Arc::clone(&node)));
     let site = Arc::clone(&post);
@@ -1049,21 +1050,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     )
     .await?;
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD
-        .keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the actual configured Store owns governance")
-                .core_store_handle()
-                .expect("the actual configured Store exposes rate history calls"),
-            durability
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .record
-                .node(),
-        )
-        .expect("native rate history attaches");
-    crate::root::kernel::ROOT_CARD.boot_in_store(None).await?;
+    super::door_tests::attach_process_prices(&app).await?;
     limits.keep().await?;
     if let Some(rotate) = rotate {
         rotate.await;
@@ -1110,6 +1097,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             "the actual configured group is exhausted before the tested request"
         );
     }
+    app.amendments = Arc::clone(gov.amendments());
     app.governance = Some(Arc::clone(&gov));
     app.cost = Arc::new(cost);
     let mut app = Arc::new(app);
