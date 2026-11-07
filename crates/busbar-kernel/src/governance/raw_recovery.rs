@@ -119,9 +119,14 @@ mod legacy_value_tests {
             models: vec![],
         };
         let dated = UsageDelta {
-            requests: 2,
-            billable_requests: 1,
-            models: vec![],
+            // Request/fee counters live in the aggregate. The dated sibling
+            // preserves the same fee through its existing era-qualified unit.
+            models: vec![busbar_contract::records::ModelTokensDelta {
+                scale: COUNT_SCALE,
+                model: era_tag(RawRateEra::legacy(7)),
+                usage_units: std::collections::BTreeMap::from([(ERA_FEE_UNIT.into(), 1_000_000)]),
+            }],
+            ..UsageDelta::default()
         };
         let child = GovState::usage_recovery_child(
             "bucket",

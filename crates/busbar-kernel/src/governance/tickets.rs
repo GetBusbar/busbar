@@ -626,7 +626,15 @@ impl GovState {
         native_record(self.core_store().ok()?, &id, expires_at)
             .await
             .ok()??;
-        Some(key)
+        let (current, current_id, current_expiry) = self.checked_ticket(prefix, credential, now)?;
+        if current.id != key.id
+            || current.generation_hash != key.generation_hash
+            || current_id != id
+            || current_expiry != expires_at
+        {
+            return None;
+        }
+        Some(current)
     }
     pub async fn mint_ticket(
         &self,

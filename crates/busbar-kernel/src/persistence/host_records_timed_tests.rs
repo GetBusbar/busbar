@@ -10,14 +10,13 @@ use busbar_contract::persistence::{
 use std::{
     collections::BTreeSet,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
         Mutex,
     },
 };
 
 pub(crate) struct Backend {
     inner: super::tests::Backend,
-    pub(crate) now: AtomicU64,
     pub(crate) lose_reply: AtomicBool,
     receipts: Mutex<BTreeSet<[u8; 16]>>,
 }
@@ -25,10 +24,16 @@ impl Default for Backend {
     fn default() -> Self {
         Self {
             inner: Default::default(),
-            now: AtomicU64::new(10),
             lose_reply: AtomicBool::new(false),
             receipts: Default::default(),
         }
+    }
+}
+impl std::ops::Deref for Backend {
+    type Target = super::tests::Backend;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
     }
 }
 impl PersistenceBackend for Backend {

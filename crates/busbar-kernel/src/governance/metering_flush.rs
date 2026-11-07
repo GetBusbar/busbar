@@ -155,7 +155,7 @@ impl GovState {
                     .cloned()
             };
             let Some(write) = write else {
-                if shutdown && !captured {
+                if !captured {
                     let mut flight = pending.flight.lock().unwrap_or_else(|p| p.into_inner());
                     flight.extend(pending.drain().into_iter().filter_map(MeteringWrite::new));
                     captured = true;
