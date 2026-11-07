@@ -781,8 +781,9 @@ async fn offline_bootstrap_retains_unknown_and_resumes_without_publishing_format
     }
     let mut restart = TargetBootstrap::new(backend.clone(), authority(), [90; 16]).unwrap();
     assert_eq!(restart.advance().await, Ok(BootstrapProgress::Ready));
+    let sends = backend.0.lock().unwrap().sends.len();
     let mut wrong = TargetBootstrap::new(
-        backend,
+        backend.clone(),
         WriterAuthority {
             writer: [66; 16],
             ..authority()
@@ -790,7 +791,14 @@ async fn offline_bootstrap_retains_unknown_and_resumes_without_publishing_format
         [90; 16],
     )
     .unwrap();
-    assert_eq!(wrong.advance().await, Err(Error::InvalidState));
+    // An existing dataset root with no matching bootstrap writer is a corrupt
+    // partial initialization; a different writer cannot repair or adopt it.
+    assert_eq!(wrong.advance().await, Err(Error::Corrupt));
+    let native = backend.0.lock().unwrap();
+    assert_eq!(native.sends.len(), sends);
+    assert!(!native
+        .rows
+        .contains_key(&busbar_kernel::persistence::import_target::target::manifest_address()));
 }
 
 #[tokio::test]

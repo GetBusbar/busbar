@@ -556,10 +556,9 @@ pub(crate) async fn reload_native(
     order: &CacheOrder,
     denylist: &revocation::RevocationSync,
 ) -> RecordStoreResult<()> {
-    core.identity().settle_pending().await?;
     loop {
         let ticket = order.ticket();
-        let snapshot = core.identity().snapshot().await?;
+        let snapshot = core.identity().snapshot_for_refresh().await?;
         let denied = snapshot.denied.clone();
         let mut fresh = cache_snapshot(snapshot);
         match order.turn(ticket) {

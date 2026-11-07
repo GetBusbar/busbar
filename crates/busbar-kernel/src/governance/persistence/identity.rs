@@ -696,10 +696,17 @@ impl Identity<'_> {
                 if &previous != *expected || previous.deleted_at.is_some() {
                     return Err(Error::Invalid("self binding changed; retry the request"));
                 }
-                if expected.id == replacement.id
-                    || replacement.deleted_at.is_some()
-                    || tx.key(&replacement.id).await?.is_some()
-                {
+                if replacement.deleted_at.is_some() {
+                    return Err(Error::Invalid("replacement binding is tombstoned"));
+                }
+                if expected.id == replacement.id {
+                    // The default self-serve epoch can derive the current id
+                    // again after an admin generation change. Its exact prior
+                    // row is still a CAS precondition; never tombstone that id.
+                    tx.put_key(replacement).await?;
+                    return Ok(true);
+                }
+                if tx.key(&replacement.id).await?.is_some() {
                     return Err(Error::Invalid(
                         "replacement binding id is occupied or invalid",
                     ));
@@ -911,6 +918,24 @@ impl Identity<'_> {
             ));
         }
         Ok(output)
+    }
+    /// Warm refresh may observe the confirmed revision before an active commit.
+    /// Inactive uncertain originals must settle first; query's guards reject any
+    /// remaining unresolved candidate before and after the coherent native read.
+    pub(in crate::governance) async fn snapshot_for_refresh(
+        &self,
+    ) -> RecordStoreResult<IdentitySnapshot> {
+        let _ = self
+            .store
+            .settle_identity_pending()
+            .await
+            .map_err(Error::from)?;
+        self.query(Query::Snapshot)
+            .await
+            .map(|output| match output {
+                Output::Snapshot(snapshot) => snapshot,
+                _ => unreachable!(),
+            })
     }
     pub async fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
         self.query(Query::Keys(None)).await.map(|v| match v {

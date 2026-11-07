@@ -234,12 +234,39 @@ struct PendingState {
 }
 
 type ClaimAddress = (String, String);
-type ClaimState = (u64, Option<scoped::PendingClaim>);
+struct ClaimState {
+    expires_at: u64,
+    pending: Option<scoped::PendingClaim>,
+    terminal: bool,
+}
+type ClaimCell = Arc<tokio::sync::Mutex<ClaimState>>;
+type ClaimEntries = Mutex<BTreeMap<ClaimAddress, ClaimCell>>;
+
+struct ClaimLease<'a> {
+    entries: &'a ClaimEntries,
+    address: ClaimAddress,
+    state: ClaimCell,
+}
+impl Drop for ClaimLease<'_> {
+    fn drop(&mut self) {
+        // Keep one gate while any caller can still use it. The last waiter also
+        // cleans a terminal entry when cancellation prevents a normal return.
+        let mut claims = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        if claims
+            .get(&self.address)
+            .is_some_and(|current| Arc::ptr_eq(current, &self.state))
+            && Arc::strong_count(&self.state) == 2
+            && self.state.try_lock().is_ok_and(|state| state.terminal)
+        {
+            claims.remove(&self.address);
+        }
+    }
+}
 
 pub(crate) struct Shared {
     store: Arc<ScopedStore>,
     pending: Mutex<Vec<Arc<Pending>>>,
-    claims: Mutex<BTreeMap<ClaimAddress, ClaimState>>,
+    claims: ClaimEntries,
 }
 
 impl Shared {
@@ -744,17 +771,38 @@ impl Shared {
             .register_claims(&kind)
             .map_err(|error| failed("register claim cleanup", error))?;
         let address = (kind.clone(), token.to_string());
-        let claim = {
+        let state = {
             let mut claims = self.claims.lock().unwrap_or_else(|p| p.into_inner());
-            let (expiry, claim) = claims.entry(address.clone()).or_insert((expires_at, None));
-            if *expiry != expires_at {
-                return Err(StorageError::new(
-                    "oauth_as store: pending claim expiry changed",
-                ));
-            }
-            *claim
+            claims
+                .entry(address.clone())
+                .or_insert_with(|| {
+                    Arc::new(tokio::sync::Mutex::new(ClaimState {
+                        expires_at,
+                        pending: None,
+                        terminal: false,
+                    }))
+                })
+                .clone()
         };
-        let outcome = match claim {
+        let lease = ClaimLease {
+            entries: &self.claims,
+            address,
+            state,
+        };
+        // One delivery owner resolves this address at a time. A competing caller
+        // observes the durable consumed claim after the first owner finishes;
+        // cancellation keeps the same expiry and native attempt available to retry.
+        let mut claim = lease.state.lock().await;
+        if claim.terminal {
+            claim.expires_at = expires_at;
+            claim.terminal = false;
+        }
+        if claim.expires_at != expires_at {
+            return Err(StorageError::new(
+                "oauth_as store: pending claim expiry changed",
+            ));
+        }
+        let outcome = match claim.pending {
             Some(claim) => self.store.retry_claim(&kind, claim).await,
             None => self.store.redeem(&kind, token, expires_at).await,
         }
@@ -763,19 +811,14 @@ impl Shared {
             scoped::ClaimOutcome::Claimed
             | scoped::ClaimOutcome::AlreadyClaimed
             | scoped::ClaimOutcome::Expired => {
-                self.claims
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .remove(&address);
+                claim.pending = None;
+                claim.terminal = true;
                 Ok(matches!(outcome, scoped::ClaimOutcome::Claimed))
             }
-            scoped::ClaimOutcome::Pending(claim)
-            | scoped::ClaimOutcome::Reconcile(claim)
-            | scoped::ClaimOutcome::Busy(claim) => {
-                self.claims
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .insert(address, (expires_at, Some(claim)));
+            scoped::ClaimOutcome::Pending(pending)
+            | scoped::ClaimOutcome::Reconcile(pending)
+            | scoped::ClaimOutcome::Busy(pending) => {
+                claim.pending = Some(pending);
                 Err(failed("unresolved claim", outcome))
             }
         }

@@ -807,26 +807,28 @@ impl NativeWorkWriter {
     fn put(&self, key: Vec<u8>, value: RecordBytes, acked: Acked) {
         let instance = Arc::clone(&self.instance);
         let owed = WriteOwed::new(acked);
-        if self.batcher.push_native_private_with(move || Write {
-            instance,
-            schema: WORK_SCHEMA,
-            key,
-            value,
-            seq: 0,
-            owed,
-            chain: None,
-        }) == Some(true)
-        {
-            let unrun = Unrun(Some(Arc::clone(&self.batcher)));
-            let pending = Arc::clone(&self.pending);
-            let store = Arc::clone(&self.store);
-            let chains = Arc::clone(&self.chains);
-            self.pool.run_async(Box::pin(async move {
-                if let Some(batcher) = unrun.run() {
-                    batcher.flush_native(&pending, &store, &chains).await;
-                }
-            }));
-        }
+        let batcher = Arc::clone(&self.batcher);
+        let pending = Arc::clone(&self.pending);
+        let store = Arc::clone(&self.store);
+        let chains = Arc::clone(&self.chains);
+        // Before its first poll the scheduled job owns the unsent write. A pool
+        // refusal drops that owner and answers its caller without queuing a write.
+        self.pool.run_async(Box::pin(async move {
+            if batcher.push_native_private_with(move || Write {
+                instance,
+                schema: WORK_SCHEMA,
+                key,
+                value,
+                seq: 0,
+                owed,
+                chain: None,
+            }) == Some(true)
+            {
+                // A false result leaves this write with the existing driver.
+                // Once admitted, flush_native retains exact uncertain custody.
+                batcher.flush_native(&pending, &store, &chains).await;
+            }
+        }));
     }
 }
 
@@ -3655,7 +3657,10 @@ impl HostServices for KernelServices {
                 writer.put(
                     key,
                     row,
-                    Box::new(move |result| unwritten.answer(result.is_ok())),
+                    Box::new(move |result| match result {
+                        Err(crate::host_records::WRITE_DROPPED) => drop(unwritten),
+                        result => unwritten.answer(result.is_ok()),
+                    }),
                 );
                 return Ran::Later;
             }

@@ -20,6 +20,19 @@ impl GovState {
             .map(Arc::new)
     }
 
+    fn cached_self_binding(&self, user_sub: &str) -> Option<Arc<VirtualKey>> {
+        let group = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}");
+        self.caches_read()
+            .by_id
+            .values()
+            .find(|key| {
+                key.enabled
+                    && key.deleted_at.is_none()
+                    && key.group.as_deref() == Some(group.as_str())
+            })
+            .cloned()
+    }
+
     async fn read_self_binding(
         &self,
         id: &str,
@@ -99,8 +112,12 @@ impl GovState {
             let epoch = from.saturating_add(stride);
             let id = Self::derive_self_subject(seed, user_sub, epoch);
 
-            let occupied = self.core_store()?.identity().get_key(&id).await?.is_some();
-            if !occupied {
+            let occupied = self.core_store()?.identity().get_key(&id).await?;
+            // Default 1.5.5 issuance reused a derived live/disabled row. Only
+            // tombstones force a new epoch; the explicit hold policy is stricter.
+            let unavailable =
+                occupied.is_some_and(|key| key.deleted_at.is_some() || self.self_mint_holds());
+            if !unavailable {
                 return Ok((id, epoch));
             }
             stride = if stride == 0 {
@@ -174,7 +191,13 @@ impl GovState {
                 if before.as_ref().is_some_and(|key| {
                     self.self_mint_holds()
                         || key.deleted_at.is_some()
-                        || key.group.as_deref() != binding.group.as_deref()
+                        || (key.group.as_deref() != binding.group.as_deref()
+                            && !(key.idp_subject.as_deref() == Some(user_sub)
+                                && key.binding_mode.as_deref() == Some(SELF_KEY_BINDING_MODE)))
+                        || key
+                            .binding_mode
+                            .as_deref()
+                            .is_some_and(|mode| mode != SELF_KEY_BINDING_MODE)
                         || key
                             .idp_subject
                             .as_deref()
@@ -228,7 +251,13 @@ impl GovState {
         if let Some(refusal) = self.self_mint_refusal(user_sub, provider, &rows) {
             return Err(SelfMintError::Refused(refusal));
         }
-        match Self::current_self_binding(&rows, user_sub) {
+        // A locally observed enabled binding is an expectation, not permission
+        // to treat an unseen durable disable as a fresh login. Re-read it under
+        // the key claim before updating scopes or issuing a token.
+        let existing = self
+            .cached_self_binding(user_sub)
+            .or_else(|| Self::current_self_binding(&rows, user_sub));
+        match existing {
             Some(existing) => {
                 let _key = self.identity_key_guard(&existing.id).await;
                 let existing = self.read_self_binding(&existing.id, user_sub).await?;
