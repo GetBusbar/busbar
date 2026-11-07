@@ -62,13 +62,28 @@ fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
         "admin_insecure: true\nproviders: {}\nmodels: {}\npools: {}\n",
     )
     .expect_err("the retired admin_insecure key must be rejected at parse");
-    let hint = busbar_kernel::config::augment_config_error(err);
-    assert!(
-        hint.contains("admin_insecure")
-            && hint.contains("admin_require_mtls")
-            && hint.contains("--migrate-config"),
-        "the retired-key error must name the new key + the migrator; got: {hint}"
+    let current = err.to_string();
+    assert_eq!(
+        busbar_kernel::config::augment_config_error(&current),
+        current,
+        "the current parser must not reinterpret historical keys"
     );
+    assert!(
+        current.contains("unknown field `admin_insecure`"),
+        "the current parser rejects the retired field without interpreting it: {current}"
+    );
+    for (insecure, require_mtls) in [(true, false), (false, true)] {
+        let raw =
+            format!("admin_insecure: {insecure}\nproviders: {{}}\nmodels: {{}}\npools: {{}}\n");
+        let migrated = busbar_migrations::config::migrate::migrate_config(&raw)
+            .expect("the actual historical migrator converts the inverted posture");
+        let doc: serde_yaml::Value = serde_yaml::from_str(&migrated.yaml).unwrap();
+        assert!(doc.get("admin_insecure").is_none());
+        assert_eq!(doc["admin_require_mtls"].as_bool(), Some(require_mtls));
+        let current: DeployCfg = serde_yaml::from_str(&migrated.yaml)
+            .expect("the converted configuration passes the current parser");
+        assert_eq!(current.admin_require_mtls, require_mtls);
+    }
 }
 
 #[test]
